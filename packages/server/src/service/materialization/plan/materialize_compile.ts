@@ -26,6 +26,7 @@ import {
    givenReadTerms,
    MATERIALIZE_COMPANION_SUFFIX,
    planModelMaterialize,
+   splitSourceID,
    type MaterializePlan,
    type MaterializeRefusal,
 } from "./build_file_generator";
@@ -114,6 +115,23 @@ export async function tryCompileMaterializeCompanion(args: {
             );
             return typeof read === "string" ? read : read.contents;
          },
+         async (fileName, text) => {
+            // The copy compiled on its own, beside the author's model, so its
+            // imports resolve as the author's do; never run.
+            const url = pathToFileURL(
+               path.join(path.dirname(modelFile), fileName),
+            );
+            const { runtime, importBaseURL } = await args.getRuntime(
+               new Map([[url.href, text]]),
+            );
+            const model = await runtime
+               .loadModel(url, { importBaseURL })
+               .getModel();
+            return {
+               contents: model._modelDef.contents as Record<string, unknown>,
+               url: url.href,
+            };
+         },
       );
       refused.push(...withCopies.refused);
       let { plans } = withCopies;
@@ -131,14 +149,37 @@ export async function tryCompileMaterializeCompanion(args: {
          for (const plan of plans) {
             const names = leaked.get(plan.sourceID);
             if (!names) continue;
+            if (givenReadTerms(plan).length === 0) {
+               // A copy made only to store hidden columns (P3): build from the
+               // author's file instead, storing the public ones.
+               copies.delete(plan.sourceID);
+               const columns = plan.columns.filter((c) => !c.access);
+               const kept = new Set(columns.map((c) => c.column));
+               if (
+                  columns.length > 0 &&
+                  (plan.readTimeTerms ?? []).every((t) =>
+                     t.columns.every((c) => kept.has(c)),
+                  )
+               ) {
+                  leaked.delete(plan.sourceID);
+                  plans = plans.map((p) =>
+                     p === plan ? { ...plan, columns } : p,
+                  );
+                  continue;
+               }
+            }
             refused.push({
                sourceName: plan.sourceName,
                sourceID: plan.sourceID,
                reason:
-                  "a `where:` reading a given cannot yet be left out of the " +
-                  "build of a source that reads a #@ persist source " +
-                  `(${names.join(", ")}): its build would declare that source ` +
-                  "a second time",
+                  givenReadTerms(plan).length > 0
+                     ? "a `where:` reading a given cannot yet be left out of the " +
+                       "build of a source that reads a #@ persist source " +
+                       `(${names.join(", ")}): its build would declare that source ` +
+                       "a second time"
+                     : "the source stores only hidden fields, which its build " +
+                       "cannot read while it reads a #@ persist source " +
+                       `(${names.join(", ")})`,
             });
          }
          plans = plans.filter((p) => !leaked.has(p.sourceID));
@@ -267,18 +308,32 @@ async function copyDeclaredBuilds(
 }
 
 /**
- * Give each plan with given-reading terms (P2) a build copy of the author's model,
- * whose text is read back here. Such a source must be declared in that model
- * and read givens declared in local files; otherwise, or when the file cannot
- * be read or a term not placed in it, the plan is refused (fail closed: built
+ * Give each plan that needs one a build copy of the author's model, whose
+ * text is read back here: a plan with given-reading terms (P2), which the
+ * copy takes out, and a plan with hidden columns (P3), whose own access
+ * modifiers the copy lifts. Such a source must be declared in that model, and
+ * its givens in local files.
+ *
+ * Given terms: when the source is not declared there, the file cannot be
+ * read, or a term not placed in it, the plan is refused (fail closed: built
  * from the author's file, the term would be baked into the table with the
- * given's default). Each given declared in another file is imported from that
- * file.
+ * given's default). Each given declared in another file is imported from it.
+ *
+ * Hidden columns: which ones the build can select is settled by compiling the
+ * copy (`compileCopy`) and reading its source: a field public there is
+ * stored, any other is dropped from the plan and stays computed at read
+ * (live), such as a field private on a source this one extends. A copy that
+ * cannot be made or compiled drops them all. A plan left with no column, or
+ * with a read-time term over a dropped column, is refused.
  */
 async function withBuildCopies(
    plans: MaterializePlan[],
    modelFile: string,
    readModelText: () => Promise<string>,
+   compileCopy: (
+      fileName: string,
+      text: string,
+   ) => Promise<{ contents: Record<string, unknown>; url: string }>,
 ): Promise<{
    plans: MaterializePlan[];
    copies: Map<string, BuildCopy>;
@@ -286,7 +341,13 @@ async function withBuildCopies(
 }> {
    const copies = new Map<string, BuildCopy>();
    const refused: MaterializeRefusal[] = [];
-   if (!plans.some((plan) => givenReadTerms(plan).length > 0)) {
+   const hiddenOf = (plan: MaterializePlan) =>
+      plan.columns.filter((c) => c.access !== undefined);
+   if (
+      !plans.some(
+         (plan) => givenReadTerms(plan).length > 0 || hiddenOf(plan).length > 0,
+      )
+   ) {
       return { plans, copies, refused };
    }
    const refuse = (plan: MaterializePlan, reason: string) =>
@@ -310,14 +371,91 @@ async function withBuildCopies(
       unreadable = error instanceof Error ? error.message : String(error);
    }
    const kept: MaterializePlan[] = [];
-   for (const plan of plans) {
-      if (givenReadTerms(plan).length === 0) {
+   for (const original of plans) {
+      const hidden = hiddenOf(original);
+      const declaredIn = original.declaration
+         ? localPath(original.declaration.url)
+         : undefined;
+      // P3: the hidden columns the build copy lets the build select.
+      let lifted: { copy: string; selectable: Set<string> } | undefined;
+      if (hidden.length > 0 && declaredIn === modelFile && text !== undefined) {
+         const copy = buildCopyText(text, original, { liftAccess: true });
+         if ("copy" in copy) {
+            const compiled = await compileCopy(
+               buildCopyName(path.basename(modelFile), copies.size),
+               copy.copy,
+            ).catch(() => undefined);
+            // The copy's own declaration of the source: its sourceID names
+            // the copy's file in place of the author's (the keying rule).
+            const declared = splitSourceID(original.sourceID);
+            const copyID =
+               compiled && declared
+                  ? `${declared.name}@${compiled.url}`
+                  : undefined;
+            const fields = (
+               Object.values(compiled?.contents ?? {}).find(
+                  (d) =>
+                     (d as { sourceID?: unknown } | null)?.sourceID === copyID,
+               ) as
+                  | {
+                       fields?: {
+                          name?: unknown;
+                          as?: unknown;
+                          accessModifier?: unknown;
+                       }[];
+                    }
+                  | undefined
+            )?.fields;
+            const selectable = new Set(
+               (fields ?? [])
+                  .filter(
+                     (f) =>
+                        f.accessModifier == null ||
+                        f.accessModifier === "public",
+                  )
+                  .map((f) => String(f.as ?? f.name)),
+            );
+            if (hidden.some((c) => selectable.has(c.dimension))) {
+               lifted = { copy: copy.copy, selectable };
+            }
+         }
+      }
+      const columns = original.columns.filter(
+         (c) => c.access === undefined || lifted?.selectable.has(c.dimension),
+      );
+      const plan: MaterializePlan =
+         columns.length === original.columns.length
+            ? original
+            : { ...original, columns };
+      if (columns.length === 0) {
+         refuse(plan, "the source has no dimension the build can store");
+         continue;
+      }
+      const stored = new Set(columns.map((c) => c.column));
+      const unstored = (plan.readTimeTerms ?? []).find(
+         (t) => !t.columns.every((c) => stored.has(c)),
+      );
+      if (unstored) {
+         refuse(
+            plan,
+            `\`where: ${unstored.code}\` reads a field the build cannot ` +
+               "select (one private on a source this one extends, or hidden " +
+               "where the build copy cannot lift it), so it could not be " +
+               "re-applied over the table at read",
+         );
+         continue;
+      }
+      const needsTerms = givenReadTerms(plan).length > 0;
+      if (!needsTerms) {
+         if (lifted) {
+            copies.set(plan.sourceID, {
+               fileName: buildCopyName(path.basename(modelFile), copies.size),
+               text: lifted.copy,
+            });
+         }
          kept.push(plan);
          continue;
       }
-      const declaredIn = plan.declaration
-         ? localPath(plan.declaration.url)
-         : undefined;
       const givens = (plan.givenDeclarations ?? []).map((g) => ({
          ...g,
          file: localPath(g.url),
@@ -339,7 +477,9 @@ async function withBuildCopies(
          );
          continue;
       }
-      const copy = buildCopyText(text, plan);
+      // One copy per source: the terms taken out, and its access modifiers
+      // lifted when it stores a hidden column. `lifted.copy` already is both.
+      const copy = lifted ? { copy: lifted.copy } : buildCopyText(text, plan);
       if ("reason" in copy) {
          refuse(plan, copy.reason);
          continue;

@@ -265,9 +265,11 @@ source: orders is scoped extend { dimension: big is amount > 10 }
       async () => {
          expect(
             await refusal(`${HEAD}
+source: orgs is duckdb.sql("select 1 as org_id") extend { primary_key: org_id }
 #(materialize) storage="lake"
 source: orders is raw extend {
-  private dimension: org is org_id
+  join_one: orgs with org_id
+  dimension: org is orgs.org_id
   where: org = $ORG_ID
 }
 `),

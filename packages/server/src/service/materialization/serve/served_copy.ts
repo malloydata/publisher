@@ -63,7 +63,8 @@ export interface Reroot {
    /** The `type:` the virtual source is declared as; unique in the file. */
    typeName: string;
    /**
-    * The stored table's public columns, under the author's spelling, each with
+    * The stored table's columns, under the author's spelling (a hidden one
+    * with its access modifier, P3), each with
     * the annotation lines its field carries (`#(doc) "…"`, `#(classification)
     * …`), written on the field in the `type:` so they read back on it.
     */
@@ -100,6 +101,13 @@ export interface ServedColumn {
    type: string;
    /** The annotation lines its field carries, written on it again. */
    notes?: readonly string[];
+   /**
+    * The access modifier the author's source gives the field, when it is not
+    * public (P3). The re-root writes it again on the stored table,
+    * `include { public: *; private: org_id }`, so a caller cannot select the
+    * column, and the source's own `extend` reads it as it read the field.
+    */
+   access?: "private" | "internal";
    /**
     * The timeframe the author's field truncates to (`order_date.month`). A
     * `type:` field cannot carry one, so the stored column is renamed
@@ -148,6 +156,13 @@ export interface ServedCopy {
 
 /** The compiler flag every served copy needs for `virtual()` sources. */
 export const SERVED_COPY_FLAG = "##! experimental { virtual_source }";
+
+/**
+ * The flag for a served copy that writes access modifiers again on a stored
+ * table (P3): `include { … }` needs `access_modifiers` too.
+ */
+export const SERVED_COPY_ACCESS_FLAG =
+   "##! experimental { virtual_source access_modifiers }";
 
 /**
  * Produce the served copy of every file that declares a source in `reroots`.
@@ -206,8 +221,10 @@ export function buildServedCopy(
             });
             continue;
          }
-         const replaced = rerootDeclaration(declaration, r);
-         if (replaced === undefined) {
+         const effective = keepHiddenDefinitions(declaration, r);
+         const replaced =
+            effective && rerootDeclaration(declaration, effective);
+         if (!effective || replaced === undefined) {
             refused.push({
                sourceName: r.sourceName,
                url,
@@ -216,12 +233,78 @@ export function buildServedCopy(
             continue;
          }
          out = out.slice(0, start) + replaced + out.slice(end);
-         applied.push(r);
+         applied.push(effective);
       }
       if (applied.length === 0) continue;
       files.set(url, withTypes(out, applied));
    }
    return { files, refused };
+}
+
+/**
+ * The re-root with each hidden stored dimension the declaration's own
+ * trailing `extend` defines left to that definition (P3): its column is left
+ * out of the `type:` and its definition is kept as written, access modifier
+ * and all, and computed at read from the stored columns it reads. Dropping
+ * it instead would leave the stored column in its place, public. A hidden
+ * column the source's own text does not define (one an `include` in the
+ * replaced base hides, or one it inherits) stays a stored column, and the
+ * re-root writes its modifier again ({@link hiddenInclude}). Undefined when
+ * the declaration does not lex.
+ */
+function keepHiddenDefinitions(
+   declaration: string,
+   r: Reroot,
+): Reroot | undefined {
+   const hidden = new Set(
+      r.columns.filter((c) => c.access !== undefined).map((c) => c.name),
+   );
+   if (hidden.size === 0) return r;
+   const spans = declarationSpans(declaration);
+   if (!spans) return undefined;
+   const extend =
+      spans.extendStart === undefined
+         ? ""
+         : declaration.slice(spans.extendStart);
+   const defined = rewriteDimensions(extend, hidden, new Map());
+   if (!defined) return undefined;
+   if (defined.dropped.size === 0) return r;
+   return {
+      ...r,
+      columns: r.columns.filter((c) => !defined.dropped.has(c.name)),
+      ...(r.storedDimensions
+         ? {
+              storedDimensions: r.storedDimensions.filter(
+                 (n) => !defined.dropped.has(n),
+              ),
+           }
+         : {}),
+   };
+}
+
+/**
+ * The `include { … }` that writes the author's access modifiers again on the
+ * stored table's hidden columns (P3), or "" when it has none. Every other
+ * column stays public (`public: *`; an `include` makes what it does not list
+ * private). It sits just before the author's own `extend`, which reads a
+ * field the `include` hides as it read the field on the author's source.
+ */
+export function hiddenInclude(columns: readonly ServedColumn[]): string {
+   const byAccess = (access: "private" | "internal") =>
+      columns.filter((c) => c.access === access).map((c) => identifier(c.name));
+   const items = [
+      "public: *",
+      ...(["private", "internal"] as const).flatMap((access) => {
+         const names = byAccess(access);
+         return names.length > 0 ? [`${access}: ${names.join(", ")}`] : [];
+      }),
+   ];
+   return items.length > 1 ? ` include { ${items.join("; ")} }` : "";
+}
+
+/** Whether a re-root writes access modifiers again, so needs their flag. */
+function hasHiddenColumns(r: Pick<Reroot, "columns">): boolean {
+   return r.columns.some((c) => c.access !== undefined);
 }
 
 /**
@@ -290,7 +373,8 @@ export function rerootDeclaration(
       .map(readTimeTermText)
       .filter((t) => t !== undefined);
    const reread = terms.length ? ` extend { where: ${terms.join(", ")} }` : "";
-   return `${name} is ${virtual}${reread}${extend ? ` ${extend}` : ""}`;
+   const hide = hiddenInclude(r.columns ?? []);
+   return `${name} is ${virtual}${reread}${hide}${extend ? ` ${extend}` : ""}`;
 }
 
 /**
@@ -600,5 +684,8 @@ function withTypes(text: string, applied: readonly Reroot[]): string {
    const types = applied.map(typeDeclaration).join("\n");
    const head = lines.slice(0, i).join("\n");
    const rest = lines.slice(i).join("\n");
-   return `${head}${head ? "\n" : ""}${SERVED_COPY_FLAG}\n${types}\n\n${rest}`;
+   const flag = applied.some(hasHiddenColumns)
+      ? SERVED_COPY_ACCESS_FLAG
+      : SERVED_COPY_FLAG;
+   return `${head}${head ? "\n" : ""}${flag}\n${types}\n\n${rest}`;
 }

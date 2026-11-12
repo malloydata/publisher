@@ -145,7 +145,10 @@ export interface R4Fixture {
     */
    setBindings(bindings: ServeBinding[]): void;
    /** One query under the bindings already set, with nothing around it. */
-   runAsIs(malloy: string): Promise<{
+   runAsIs(
+      malloy: string,
+      givens?: Record<string, GivenValue>,
+   ): Promise<{
       rows: Row[];
       servedFrom: string | null;
       path: Awaited<ReturnType<Model["runQuery"]>>["path"];

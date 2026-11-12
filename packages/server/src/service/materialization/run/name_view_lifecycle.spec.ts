@@ -107,6 +107,15 @@ async function settledRun(
 
 let restoreSettings: () => void;
 
+/**
+ * These builds put a colocated `#(materialize)` table and its view in the
+ * source's own warehouse, which is not built until the served copy can serve
+ * it (`materialize-not-built`, decided 2026-11-12): the view's colocated site
+ * returns with colocated serving, and these run again then. A storage
+ * destination is a DuckLake, which a unit spec cannot attach.
+ */
+const colocatedIt = it.skip;
+
 describe("the name= view through real builds", () => {
    let root: string;
    let envPath: string;
@@ -292,7 +301,7 @@ describe("the name= view through real builds", () => {
       await __setPackageLoadPoolForTests(null);
    });
 
-   it(
+   colocatedIt(
       "scope: version: the view follows each version's build, falls back to the standing generation, and goes with the last",
       async () => {
          await publish("1.0.0", 1, "version");
@@ -349,7 +358,7 @@ describe("the name= view through real builds", () => {
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "orchestrated: the view follows the host's generations, and a deleted run's drop repoints or drops it",
       async () => {
          await publish("1.0.0", 1, "package");
@@ -383,7 +392,7 @@ describe("the name= view through real builds", () => {
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "a run whose commit fails puts the view back on the table it read",
       async () => {
          await publish("1.0.0", 1, "package");
@@ -409,7 +418,7 @@ describe("the name= view through real builds", () => {
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "a deleted run whose view another run repointed leaves the view alone",
       async () => {
          await publish("1.0.0", 1, "package");
@@ -425,7 +434,7 @@ describe("the name= view through real builds", () => {
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "refuses the build when name= is held by a table Publisher did not create, and writes nothing",
       async () => {
          await sql('CREATE TABLE "summary" AS SELECT 42 AS answer');
@@ -443,7 +452,7 @@ describe("the name= view through real builds", () => {
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "never replaces or drops a view Publisher did not mark",
       async () => {
          await publish("1.0.0", 1, "package");
@@ -454,6 +463,26 @@ describe("the name= view through real builds", () => {
          expect(await sql('SELECT answer FROM "summary"')).toEqual([
             { answer: 7 },
          ]);
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
+      "a colocated #(materialize) builds nothing and makes no view, until it can be served",
+      async () => {
+         await publish("1.0.0", 1, "version");
+         const plan = (
+            await env.getPackage(parsePackageName(PKG), false, {
+               versionId: VersionRef.parse("1.0.0"),
+            })
+         ).getBuildPlan();
+         expect(
+            Object.values(plan?.sources ?? {}).map((s) => s.name),
+         ).not.toContain("summary");
+         const run = await build({ versionId: VersionRef.parse("1.0.0") });
+         expect(run.status).not.toBe("FAILED");
+         expect(await tables()).toEqual([]);
+         expect(await summaryView()).toBeUndefined();
       },
       { timeout: 60_000 },
    );

@@ -84,3 +84,97 @@ export function topLevelTokens(s: string): Token[] | undefined {
             t.text === "}"),
    );
 }
+
+/** One edit to a text: `[start, end)` replaced by `insert`. */
+export interface TextEdit {
+   start: number;
+   end: number;
+   insert: string;
+}
+
+/** The access labels a declaration's build copy lifts. */
+const LIFTED_LABELS: ReadonlySet<string> = new Set(["private", "internal"]);
+
+/**
+ * The edits that lift a source declaration's own access modifiers, so a query
+ * over the source can select the fields they hide (P3: the build stores the
+ * source's private and internal fields). Offsets are into `declaration`.
+ *
+ * - A statement's label (`private dimension:`, `internal rename:`) is deleted.
+ * - An `include { … }` block's labels (`private: org_id`, `internal: *`)
+ *   become `public`, and a block with no wildcard gains a `public: *` item,
+ *   since `include` makes every field it does not list private.
+ *
+ * `except:` is left alone: an excluded field is never stored. Only the
+ * declaration's own text is edited, so a field private on a source it extends
+ * (ancestor-private) stays private, and `include { public: * }` cannot lift it
+ * either (Malloy keeps an inaccessible field inaccessible). Undefined when the
+ * text does not lex. The inserted text is Malloy's own keywords, no name.
+ */
+export function accessLiftEdits(declaration: string): TextEdit[] | undefined {
+   const tokens = lexAll(declaration);
+   if (!tokens) return undefined;
+   const edits: TextEdit[] = [];
+   for (let k = 0; k < tokens.length; k++) {
+      const t = tokens[k];
+      if (t.kind !== "word" || !LIFTED_LABELS.has(t.text)) continue;
+      const next = tokens[k + 1];
+      const after = tokens[k + 2];
+      if (next?.text === ":" && next.start === t.end && after?.text !== ":") {
+         // An include item's label: `private: org_id`.
+         edits.push({ start: t.start, end: t.end, insert: "public" });
+      } else if (
+         next?.kind === "word" &&
+         after?.text === ":" &&
+         after.start === next.end &&
+         tokens[k + 3]?.text !== ":"
+      ) {
+         // A statement's label: `private dimension: …`.
+         edits.push({ start: t.start, end: next.start, insert: "" });
+      }
+   }
+   for (let k = 0; k + 1 < tokens.length; k++) {
+      const t = tokens[k];
+      const open = tokens[k + 1];
+      if (t.kind !== "word" || t.text !== "include") continue;
+      if (open.kind !== "open" || open.text !== "{") continue;
+      const close = tokens.find(
+         (c, j) => j > k + 1 && c.kind === "close" && c.depth === open.depth,
+      );
+      if (!close || close.text !== "}") return undefined;
+      const wildcard = tokens.some(
+         (c) =>
+            c.start > open.start &&
+            c.end <= close.start &&
+            c.depth === open.depth + 1 &&
+            c.text === "*",
+      );
+      if (!wildcard) {
+         edits.push({
+            start: close.start,
+            end: close.start,
+            insert: "\n  public: *\n",
+         });
+      }
+   }
+   return edits;
+}
+
+/** `text` with `edits` applied; undefined when two of them overlap. */
+export function applyEdits(
+   text: string,
+   edits: readonly TextEdit[],
+): string | undefined {
+   const ordered = [...edits].sort(
+      (a, b) => b.start - a.start || b.end - a.end,
+   );
+   for (let i = 1; i < ordered.length; i++) {
+      // Sorted from the end: each edit must end at or before the one after it.
+      if (ordered[i].end > ordered[i - 1].start) return undefined;
+   }
+   let out = text;
+   for (const e of ordered) {
+      out = out.slice(0, e.start) + e.insert + out.slice(e.end);
+   }
+   return out;
+}
