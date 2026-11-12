@@ -5852,6 +5852,16 @@ components:
                   naming it). `deprecated-filter-annotation`: a source declaring
                   deprecated `#(filter)` annotations (one per declaring source,
                   `model` naming its file and `subject` the source).
+                  `deprecated-persist-opt-out`: a source declaring v1's
+                  `#@ -persist`, which materialization v2 deprecates (one per
+                  declaring source, `model` its file and `subject` the source;
+                  `warn`; only while `PUBLISHER_MATERIALIZE` is on; see
+                  docs/materialization-migration.md).
+                  `deprecated-preaggregate-annotation`: a measure declaring
+                  `#@ preaggregate`, whose v2 spelling is `#(preaggregate)` (one
+                  per measure, `model` its file, `subject` the source and the
+                  message the measure; `warn`; only while
+                  `PUBLISHER_MATERIALIZE` is on).
                   `report-name-ambiguous`: two or more grid reports share a
                   basename, so the deprecated `GET …/dashboards/{name}` route
                   answers 409 for it (one per name, `subject` naming it and the

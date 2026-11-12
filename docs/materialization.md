@@ -39,6 +39,8 @@ Each source needs a table of its own. When two different sources resolve to one 
 
 ### Opting a reader out: `#@ -persist`
 
+> **Deprecated in materialization v2.** Under `#(materialize)` a materialized source serves every reader, so `#@ -persist` has no v2 form. It keeps working through 0.x; [materialization-migration.md](materialization-migration.md#persist-opt-out) has the rewrite.
+
 A source that `extend`s a persisted source reads the persisted table too — the extension adds computed fields on top of the stored rows rather than recomputing them. Annotate the extension with `#@ -persist` when you want it recomputed live instead:
 
 ```malloy
@@ -735,6 +737,8 @@ With `PUBLISHER_MATERIALIZE=true` and `PERSIST_STORAGE_MODE=on`, a query on a bu
 **Gated sources (`PUBLISHER_MATERIALIZE_GATED_SOURCES`, off by default).** Today a query whose entry point carries a row-level gate (`#(access_filter)`, or an `#(authorize)` that filters rows) is never answered from a stored table, because today's serve shape carries no annotations. The served copy keeps them: with this switch on as well, such a query may be answered from the served copy, the gate grafted and proven on the served compile exactly as on live, so the caller gets live's rows read from the stored table; today's serve shape and rollups stay blocked, and so does a query whose own join reaches a gated source (that gate is never grafted on a routed compile), which is answered live. The switch also decides what is stored: on, a `#(materialize) storage=` source whose gate is its own and compiles to a row filter or a lock (the bar a colocated `#@ persist` meets) is built, bound and served; a gated `#@ persist storage=` source, a gate reached only through a join, and every gated source with the switch off are refused as before (`persist-source-refused`, reason `authorize`), so the managed tier never holds a gated source's columns unless the switch is on. The verdict for a stored table reached only through gated entry points reads `serves` rather than `WARNED` `row_level_gate` while the switch is on. A served-copy answer to a gated query is denied (`403`) if governing it on the served copy finds no gate there, and its access record's `path.servedBy` carries `via: "served_copy"`. Publisher does not authenticate callers: the gate holds only behind the gateway that sets the givens from a verified identity ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)). It is off until a security review of storing gated sources' columns in the managed tier.
 
 A served copy that does not compile, or a source it cannot re-root, is a `served-copy-not-served` package warning, and those sources serve as they did without it. A model that joins sources on different connections compiles once both sides are built into one destination, and reports that wait under the same code until then. Off (the default), nothing here runs.
+
+To move a v1 `#@ persist` source to `#(materialize)`, and for what each v1 form becomes, see [materialization-migration.md](materialization-migration.md).
 
 ### The `name=` view (in development, `PUBLISHER_MATERIALIZE`)
 

@@ -130,6 +130,10 @@ import {
    type FilterParams,
 } from "./filter";
 import { assertFilterGivensParse, gateGivenSource } from "./given";
+import {
+   deprecatedPersistAnnotations,
+   type DeprecatedPersistAnnotation,
+} from "./deprecated/persist_annotations";
 import { filterPublisherOwnedRenderLogs } from "./report_manifest";
 import {
    docCommentTitleAndDescription,
@@ -400,6 +404,10 @@ export class Model {
    private modelType: ModelType;
    private modelMaterializer: ModelMaterializer | undefined;
    private modelDef: ModelDef | undefined;
+   /** See {@link declaredDeprecatedPersistAnnotations}. */
+   private deprecatedPersistAnnotationsMemo:
+      | DeprecatedPersistAnnotation[]
+      | undefined;
    private modelInfo: Malloy.ModelInfo | undefined;
    private storageServe = new StorageServeShape(this.serveShapeHost());
    /**
@@ -670,6 +678,17 @@ export class Model {
          if (declares) names.push(entry.as || entry.name);
       }
       return names.sort();
+   }
+
+   /**
+    * The deprecated v1 `#@ -persist` and `#@ preaggregate` annotations THIS
+    * file declares, each once, at the source or measure it is written on.
+    */
+   public declaredDeprecatedPersistAnnotations(): DeprecatedPersistAnnotation[] {
+      if (!this.modelDef) return [];
+      // Read per package request, and the model never changes: walk it once.
+      return (this.deprecatedPersistAnnotationsMemo ??=
+         deprecatedPersistAnnotations(this.modelDef, this.modelPath));
    }
 
    /** The parsed filter definitions for a source; empty when none. */
