@@ -87,6 +87,7 @@ def build(cfg: config.Config, out: pathlib.Path) -> dict[str, int]:
     for name in ("publisher.json", "history.malloy", "history_report.malloy"):
         shutil.copy(TEMPLATE / name, out / name)
     stamp_version(out / "publisher.json")   # a rebuild publishes as a new version
+    shutil.copytree(TEMPLATE / "public", out / "public", dirs_exist_ok=True)
     return {"runs": len(runs), "versions": len(versions), "tag rows": len(tags)}
 
 
@@ -110,7 +111,8 @@ def main(argv: list[str] | None = None) -> int:
     if failed:
         print(f"  ! could not register on {base}: {failed}", file=sys.stderr)
         return 1
-    print(f"  report: {base}/{env}/{out.name}/history_report")
+    print(f"  data app: {base}/environments/{env}/packages/{out.name}/")
+    print(f"  report:   {base}/{env}/{out.name}/history_report")
     return 0
 
 
