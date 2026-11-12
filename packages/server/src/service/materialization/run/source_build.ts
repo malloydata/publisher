@@ -74,10 +74,6 @@ export class SourceBuilder {
       persistSource: PersistSource,
       instruction: BuildInstruction,
       connection: MalloyConnection,
-      // Unused: the build SQL now comes from the source's build target, which
-      // resolves the manifest under the digests it was keyed with. Kept so the
-      // positional signature (and its callers) are unchanged.
-      _connectionDigests: Record<string, string>,
       manifest: Manifest,
       environment: BuildEnvironment,
       builtEntries: Record<string, ManifestEntry>,

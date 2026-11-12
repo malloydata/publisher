@@ -371,7 +371,6 @@ export class InstructedBuild {
             persistSource,
             instruction,
             connection,
-            compiled.connectionDigests,
             run.manifest,
             run.environment,
             run.entries,
