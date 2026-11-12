@@ -897,6 +897,14 @@ export const getPersistAddressIncludesDestination = (): boolean =>
    settings.get("persist.addressIncludesDestination");
 
 /**
+ * Whether `#(materialize)` is read and its generated `#@ persist` sources built
+ * (materialization v2, phase 3), from `PUBLISHER_MATERIALIZE` (default
+ * `false`). Off, the build plan is exactly what it was without it.
+ */
+export const getMaterializeEnabled = (): boolean =>
+   settings.get("materialize.enabled");
+
+/**
  * Whether a within-package persist-target COLLISION (two distinct persist
  * sources resolving to the same physical table in the same destination) is a
  * hard publish rejection, from `PERSIST_COLLISION_ENFORCE` (default `false`).

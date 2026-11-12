@@ -77,6 +77,15 @@ export const storage = [
       aliases: { env: ["PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION"] },
    }),
    setting({
+      key: "materialize.enabled",
+      type: boolean(),
+      default: false,
+      description:
+         "Read #(materialize) and build its generated #@ persist sources (materialization v2, in development).",
+      notes: "Materialization v2's `#(materialize)` front end, still being built (phase 3). On, a source annotated `#(materialize)` gets a generated build source, `<source>__mat`, a query-shaped `#@ persist` over the source in a companion model the package never shows, and the build plan builds it. Serving from it comes with the re-root rewriter, behind this same setting; until then the source serves as it does today. Off, `#(materialize)` is ignored and the build plan is exactly what it was. Read at startup. Leave it off outside development.",
+      aliases: { env: ["PUBLISHER_MATERIALIZE"] },
+   }),
+   setting({
       key: "persist.collisionEnforcementEnabled",
       type: boolean(),
       default: false,

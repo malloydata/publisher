@@ -52,6 +52,9 @@ import {
    type SynthesizedRuntimeFactory,
 } from "./preaggregation_compile";
 import type { RollupPlan } from "./preaggregation_synthesis";
+import type { MaterializePlan } from "./build_file_generator";
+import { tryCompileMaterializeCompanion } from "./materialize_compile";
+import { getMaterializeEnabled } from "../../../config";
 import {
    classifyDynamicTerms,
    type DynamicTerm,
@@ -190,6 +193,13 @@ export interface CompiledBuildPlan {
     * source.
     */
    sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
+   /**
+    * sourceID -> the `#(materialize)` declaration a generated build source was
+    * written from; absent for an authored `#@ persist` source and a rollup.
+    * Read by the re-root rewriter, which serves the author's source from the
+    * generated source's table (materialization v2, phase 3).
+    */
+   materializePlans?: Record<string, MaterializePlan>;
 }
 
 function wireTerm(term: DynamicTerm): WireStrippedTerm {
@@ -446,6 +456,7 @@ export interface BuildPlanParts {
    sourceModelPaths: Record<string, string>;
    droppedPersistSources: { name: string; modelPath: string }[];
    preaggregatePlans: Record<string, RollupPlan>;
+   materializePlans: Record<string, MaterializePlan>;
    sourceGateOutcomes: Record<string, PersistSourceGateOutcome>;
    /** Findings on the `#@` annotations of this model's sources (see annotation_reader). */
    annotationFindings: PackageAnnotationFinding[];
@@ -459,6 +470,7 @@ export function emptyBuildPlanParts(): BuildPlanParts {
       sourceModelPaths: {},
       droppedPersistSources: [],
       preaggregatePlans: {},
+      materializePlans: {},
       sourceGateOutcomes: {},
       annotationFindings: [],
    };
@@ -479,6 +491,7 @@ export function mergeBuildPlanParts(
    Object.assign(into.sourceModelPaths, from.sourceModelPaths);
    into.droppedPersistSources.push(...from.droppedPersistSources);
    Object.assign(into.preaggregatePlans, from.preaggregatePlans);
+   Object.assign(into.materializePlans, from.materializePlans);
    Object.assign(into.sourceGateOutcomes, from.sourceGateOutcomes);
    for (const finding of from.annotationFindings) {
       addAnnotationFinding(into, finding);
@@ -566,6 +579,54 @@ function sourceIDFileURL(sourceID: string): string | undefined {
  * Imports nothing from `./model`: the package-load worker runs this, and the
  * renderer `./model` loads must not enter that isolate.
  */
+/**
+ * Add the generated `#(materialize)` build sources of one author model to
+ * `parts`, as the rollup companion's are added: whole builds (so a generated
+ * source orders after a persisted source it reads), and only the generated
+ * sources as planned sources, under the AUTHOR's model path, where the
+ * annotation is changed. Each is judged by the same gates as any persist source.
+ */
+async function collectGeneratedMaterialize(
+   parts: BuildPlanParts,
+   args: {
+      modelPath: string;
+      packagePath: string;
+      getRuntime: SynthesizedRuntimeFactory;
+      contents: Record<string, unknown>;
+   },
+): Promise<void> {
+   const generated = await tryCompileMaterializeCompanion(args);
+   if (!generated) return;
+   const targets = await generated.runtime.getBuildTargets(generated.model);
+   parts.builds.push(...sourceBuildsOf(targets));
+   const planByName = new Map(
+      generated.plans.map((p) => [p.buildSourceName, p]),
+   );
+   const givens = Array.from(
+      generated.model.givens.values(),
+   ) as unknown as MalloyGiven[];
+   const deps = createGateClassificationDeps(
+      givens.map(malloyGivenToApi),
+      `${args.modelPath}#materialize`,
+   );
+   for (const source of plannedSources(targets)) {
+      const plan = planByName.get(source.name);
+      if (!plan) continue;
+      const sourceID = source.sourceID;
+      parts.sources[sourceID] = source;
+      recordTarget(parts, sourceID, source);
+      parts.sourceModelPaths[sourceID] = args.modelPath;
+      parts.materializePlans[sourceID] = plan;
+      parts.sourceGateOutcomes[sourceID] = await classifyPersistSourceGate(
+         source,
+         generated.model._modelDef,
+         generated.materializer,
+         deps,
+         `${args.modelPath}#materialize`,
+      );
+   }
+}
+
 export async function collectModelBuildPlan(
    parts: BuildPlanParts,
    args: {
@@ -647,6 +708,21 @@ export async function collectModelBuildPlan(
             `${modelPath}#preaggregate`,
          );
       }
+   }
+
+   // `#(materialize)` (materialization v2, phase 3), behind
+   // PUBLISHER_MATERIALIZE: off, nothing here runs and the plan is exactly what
+   // it was. Like pre-aggregation, BEFORE the early `return`s below: the
+   // author's model needs no persistence flag, since the generated companion
+   // carries it.
+   if (getMaterializeEnabled()) {
+      await collectGeneratedMaterialize(parts, {
+         modelPath,
+         packagePath,
+         getRuntime,
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         contents: (malloyModel as any)._modelDef?.contents ?? {},
+      });
    }
 
    // getBuildTargets() THROWS on a model without `##! experimental.persistence`,

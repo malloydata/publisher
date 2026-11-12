@@ -98,6 +98,7 @@ export async function compilePackageBuildPlan(
       droppedPersistSources: parts.droppedPersistSources,
       annotationFindings: parts.annotationFindings,
       preaggregatePlans: parts.preaggregatePlans,
+      materializePlans: parts.materializePlans,
       sourceGateOutcomes: parts.sourceGateOutcomes,
    };
 }
