@@ -49,11 +49,12 @@ import {
    evaluateManifestFreshness,
    filterFreshManifest,
 } from "./run/freshness";
-import type {
-   BoundTable,
-   LiveTableVerdict,
-   MaterializedTableCatalog,
-   PlannedTable,
+import {
+   type BoundTable,
+   type LiveTableVerdict,
+   liveVerdictKey,
+   type MaterializedTableCatalog,
+   type PlannedTable,
 } from "./serve/query_path";
 import {
    deriveServeBindings,
@@ -451,8 +452,9 @@ export class PackageMaterialization {
 
    /**
     * The tables no query can be answered from, by their serve verdicts, for
-    * the path report: keyed by `sourceEntityId`, a table only when every
-    * planned source sharing it is `live`. Staleness is left out, since the
+    * the path report: keyed by tier and `sourceEntityId`
+    * ({@link liveVerdictKey}), a table only when every planned source sharing
+    * it on that tier is `live`. Staleness is left out, since the
     * report decides it per query from the window it reads now, and every other
     * reason reads no clock, so this is memoized on the facts the verdicts read
     * (each replaced wholesale) and costs a query only a key compare.
@@ -483,19 +485,20 @@ export class PackageMaterialization {
          for (const verdict of this.serveVerdicts()) {
             const entityId = sources[verdict.sourceID]?.sourceEntityId;
             if (!entityId) continue;
-            const list = perTable.get(entityId) ?? [];
+            const key = liveVerdictKey(verdict.tier, entityId);
+            const list = perTable.get(key) ?? [];
             list.push(verdict);
-            perTable.set(entityId, list);
+            perTable.set(key, list);
          }
          byTable = new Map();
-         for (const [entityId, verdicts] of perTable) {
+         for (const [tableKey, verdicts] of perTable) {
             const live = verdicts.every(
                (v) => v.verdict === "live" && v.reason && v.reason !== "stale",
             );
             if (!live) continue;
             const first = verdicts[0];
             const plan = sources[first.sourceID];
-            byTable.set(entityId, {
+            byTable.set(tableKey, {
                reason: first.reason as string,
                sourceName:
                   plan?.preaggregate?.baseSourceName ?? first.sourceName,

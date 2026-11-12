@@ -67,9 +67,9 @@ export interface BoundTable {
 
 /**
  * A table no query can be answered from, by its serve verdict: every planned
- * source sharing its `sourceEntityId` has a `live` verdict for a reason other
- * than staleness (which the report decides per query, from the freshness
- * window it reads now).
+ * source sharing its `sourceEntityId` on its tier has a `live` verdict for a
+ * reason other than staleness (which the report decides per query, from the
+ * freshness window it reads now).
  */
 export interface LiveTableVerdict {
    /** The verdict's reason: `storage_mode`, `unreachable`, `row_level_gate`, `refused`, `shadowed`. Open. */
@@ -89,9 +89,19 @@ export interface MaterializedTableCatalog {
    bound: Readonly<Record<string, BoundTable>>;
    /**
     * The tables whose serve verdict says no query is answered from them,
-    * keyed by `sourceEntityId`. Absent when the verdicts are not known.
+    * keyed by {@link liveVerdictKey} (tier and `sourceEntityId`: a `storage=`
+    * table and its colocated twin share the id but not the verdict). Absent
+    * when the verdicts are not known.
     */
    liveVerdicts?: ReadonlyMap<string, LiveTableVerdict>;
+}
+
+/** The key of {@link MaterializedTableCatalog.liveVerdicts}. */
+export function liveVerdictKey(
+   tier: "storage" | "colocated",
+   sourceEntityId: string,
+): string {
+   return `${tier}:${sourceEntityId}`;
 }
 
 /** A `storage=` serve binding, as the report reads it. */
@@ -208,6 +218,9 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    const freshStorage = new Set(input.storage.fresh.map((b) => b.tablePath));
    const tables = tablesFor(input, onChain, freshStorage, !!storageDecision);
    const considered: ApiCandidate[] = [];
+   // Each skipped candidate's tier, which the wire does not carry, so a serve
+   // verdict is read for the table that was skipped, not its twin.
+   const tierOf = new Map<ApiCandidate, TableState["tier"]>();
    let servedBy: ApiServer = { kind: "live" };
    const markUsed = (t: TableState) => {
       if (t.tableId) {
@@ -221,13 +234,15 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    };
    const skip = (t: TableState, reason: SkipReason, detail?: string) => {
       if (!t.tableId) return;
-      considered.push({
+      const candidate: ApiCandidate = {
          tableId: t.tableId,
          kind: t.kind,
          outcome: "skipped",
          reason,
          ...(detail ? { detail } : {}),
-      });
+      };
+      tierOf.set(candidate, t.tier);
+      considered.push(candidate);
    };
 
    // `storage=`: tried only when the tier was a candidate at all (mode on,
@@ -343,21 +358,35 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
          onChain,
          new Set(tables.map((t) => t.tableId)),
       ),
-      warnings: applyServeVerdicts(considered, input),
+      warnings: applyServeVerdicts(considered, tierOf, input),
    };
+}
+
+/**
+ * Whether a serve verdict explains a skip better than the query did. Only
+ * skips where the router never tried the table: `NOT_BUILT` and `WARNED`
+ * (nothing to try), and `CONTRACT` when the verdict is the same gate. A skip
+ * the router reached by trying the table (`MISSING_FIELD`, `GRAIN_TOO_COARSE`,
+ * `COUNT_SEMANTICS`, …) is this query's own reason, and a caller who can reach
+ * a table no published entry point reaches is seeing exactly that; `STALE` and
+ * `RUN_FAILED` are facts only the query knows.
+ */
+function verdictExplains(reason: SkipReason | undefined, verdict: string) {
+   if (reason === "NOT_BUILT" || reason === "WARNED") return true;
+   return reason === "CONTRACT" && verdict === "row_level_gate";
 }
 
 /**
  * Re-read each skipped table against its serve verdict: a table no query can
  * be answered from is reported `WARNED`, with the verdict's reason as `code`,
- * in place of what this query alone showed (`NOT_BUILT` for a source the bind
- * refuses, `CONTRACT` for a rollup every entry point gates). A table that
- * answered stays `used`, and a per-query fact the verdict cannot know stays as
- * it is: `RUN_FAILED`, and `STALE`, decided from the window read now. Returns
- * one warning per such table whose source the caller may see.
+ * in place of what this query alone showed when the verdict explains it
+ * ({@link verdictExplains}): `NOT_BUILT` for a source the bind refuses,
+ * `CONTRACT` for a rollup every entry point gates. A table that answered stays
+ * `used`. Returns one warning per such table whose source the caller may see.
  */
 function applyServeVerdicts(
    considered: ApiCandidate[],
+   tierOf: ReadonlyMap<ApiCandidate, TableState["tier"]>,
    input: Pick<QueryPathInput, "catalog" | "isVisibleSource">,
 ): ApiWarning[] {
    const verdicts = input.catalog?.liveVerdicts;
@@ -372,11 +401,12 @@ function applyServeVerdicts(
    const warned = new Set<string>();
    for (const candidate of considered) {
       if (candidate.outcome !== "skipped") continue;
-      if (candidate.reason === "RUN_FAILED" || candidate.reason === "STALE") {
+      const tier = tierOf.get(candidate);
+      if (!tier) continue;
+      const verdict = verdicts.get(liveVerdictKey(tier, candidate.tableId));
+      if (!verdict || !verdictExplains(candidate.reason, verdict.reason)) {
          continue;
       }
-      const verdict = verdicts.get(candidate.tableId);
-      if (!verdict) continue;
       candidate.reason = "WARNED";
       candidate.code = verdict.reason;
       delete candidate.detail;

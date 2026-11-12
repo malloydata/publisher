@@ -424,7 +424,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
       const tables = {
          ...catalog([planned("daily")]),
          liveVerdicts: verdicts({
-            id_daily: { reason: "refused", sourceName: "daily" },
+            "colocated:id_daily": { reason: "refused", sourceName: "daily" },
          }),
       };
       const report = buildQueryPath(input({ catalog: tables }));
@@ -454,7 +454,10 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             catalog: {
                ...catalog([planned("daily")]),
                liveVerdicts: verdicts({
-                  id_daily: { reason: "row_level_gate", sourceName: "daily" },
+                  "storage:id_daily": {
+                     reason: "row_level_gate",
+                     sourceName: "daily",
+                  },
                }),
             },
             storage: { all: [daily], fresh: [daily] },
@@ -482,7 +485,8 @@ describe("buildQueryPath, reading the serve verdicts", () => {
    it("keeps what only this query shows: a table that answered, STALE and RUN_FAILED", () => {
       const daily = storageOf("daily");
       const liveVerdicts = verdicts({
-         id_daily: { reason: "unreachable", sourceName: "daily" },
+         "colocated:id_daily": { reason: "unreachable", sourceName: "daily" },
+         "storage:id_daily": { reason: "unreachable", sourceName: "daily" },
       });
       const usedReport = buildQueryPath(
          input({
@@ -526,7 +530,10 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             catalog: {
                ...catalog([planned("daily")]),
                liveVerdicts: verdicts({
-                  id_daily: { reason: "unreachable", sourceName: "daily" },
+                  "colocated:id_daily": {
+                     reason: "unreachable",
+                     sourceName: "daily",
+                  },
                }),
             },
             isVisibleSource: (name) => name !== "daily",
@@ -547,7 +554,10 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             catalog: {
                ...catalog([planned("daily")], { id_daily: "daily_t" }),
                liveVerdicts: verdicts({
-                  id_daily: { reason: "storage_mode", sourceName: "daily" },
+                  "storage:id_daily": {
+                     reason: "storage_mode",
+                     sourceName: "daily",
+                  },
                }),
             },
             storage: { all: [daily], fresh: [daily] },
@@ -564,6 +574,95 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             code: "storage_mode",
          },
          { tableId: "id_daily", kind: "materialized", outcome: "used" },
+      ]);
+      expect(report.warnings).toEqual([]);
+   });
+   it("keeps a skip the router reached by trying the table, with its detail", () => {
+      const daily = storageOf("daily");
+      const report = buildQueryPath(
+         input({
+            catalog: {
+               ...catalog([planned("daily")]),
+               liveVerdicts: verdicts({
+                  "storage:id_daily": {
+                     reason: "unreachable",
+                     sourceName: "daily",
+                  },
+               }),
+            },
+            storage: { all: [daily], fresh: [daily] },
+            considered: [
+               {
+                  kind: "storage",
+                  outcome: "skipped",
+                  reason: "does_not_answer",
+                  code: "rollup_missing_field",
+                  callerDetail: "region",
+               },
+            ],
+         }),
+      );
+      expect(report.considered[0]).toMatchObject({
+         reason: "MISSING_FIELD",
+         detail: "region",
+      });
+      expect(report.considered[0]).not.toHaveProperty("code");
+      expect(report.warnings).toEqual([]);
+   });
+
+   it("keeps CONTRACT when the verdict names a different reason than the gate", () => {
+      const daily = storageOf("daily");
+      const report = buildQueryPath(
+         input({
+            catalog: {
+               ...catalog([planned("daily")]),
+               liveVerdicts: verdicts({
+                  "storage:id_daily": {
+                     reason: "unreachable",
+                     sourceName: "daily",
+                  },
+               }),
+            },
+            storage: { all: [daily], fresh: [daily] },
+            considered: [
+               {
+                  kind: "storage",
+                  outcome: "skipped",
+                  reason: "row_level_gate",
+               },
+            ],
+         }),
+      );
+      expect(report.considered[0]).toMatchObject({ reason: "CONTRACT" });
+      expect(report.considered[0]).not.toHaveProperty("code");
+   });
+
+   it("reads the verdict of the tier that was skipped, never its twin's", () => {
+      const daily = storageOf("daily");
+      const report = buildQueryPath(
+         input({
+            catalog: {
+               ...catalog([planned("daily")]),
+               // Only the colocated copy is refused; the storage copy is
+               // merely unrouted, which this verdict does not explain.
+               liveVerdicts: verdicts({
+                  "colocated:id_daily": {
+                     reason: "refused",
+                     sourceName: "daily",
+                  },
+               }),
+            },
+            storage: { all: [daily], fresh: [daily] },
+            storageWarned: true,
+         }),
+      );
+      expect(report.considered).toEqual([
+         {
+            tableId: "id_daily",
+            kind: "materialized",
+            outcome: "skipped",
+            reason: "WARNED",
+         },
       ]);
       expect(report.warnings).toEqual([]);
    });
