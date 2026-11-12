@@ -2367,9 +2367,25 @@ async function doesSecretExistInDuckDB(
    return Number(rows?.[0]?.count ?? 0) > 0;
 }
 
-/** A digest of the settings one database is attached with. */
-function attachmentDigest(attachedDb: AttachedDatabase): string {
-   return createHash("sha256").update(JSON.stringify(attachedDb)).digest("hex");
+/**
+ * A digest of the settings one database is attached with. Keys are sorted, so
+ * the same settings digest the same whatever order they arrive in: an echoed
+ * update has its withheld credentials put back after the other fields
+ * (mergeConnectionUpdate), and a JSON column may store keys in its own order.
+ * An order-sensitive digest would re-attach every such database on an edit
+ * that did not touch it, failing queries in flight against it.
+ */
+export function attachmentDigest(attachedDb: AttachedDatabase): string {
+   const canonical = JSON.stringify(attachedDb, (_key, value: unknown) =>
+      value !== null && typeof value === "object" && !Array.isArray(value)
+         ? Object.fromEntries(
+              Object.entries(value as Record<string, unknown>).sort(
+                 ([a], [b]) => (a < b ? -1 : a > b ? 1 : 0),
+              ),
+           )
+         : value,
+   );
+   return createHash("sha256").update(canonical).digest("hex");
 }
 
 /**
@@ -3196,6 +3212,9 @@ function isDuckDBConnection(
    return connection instanceof DuckDBConnection;
 }
 
+/** Environment config builds so far, numbering each one's generation. */
+let environmentConfigGenerations = 0;
+
 /**
  * @param isUpdateConnectionRequest Forces a DuckLake re-ATTACH even when the
  *   catalog is already attached, so a generation replacing one after a config
@@ -3204,9 +3223,6 @@ function isDuckDBConnection(
  * @param options.origin "storage-destination" for the operator's own storage
  *   destinations, which the S3 credential-chain policy treats differently.
  */
-/** Environment config builds so far, numbering each one's generation. */
-let environmentConfigGenerations = 0;
-
 export function buildEnvironmentMalloyConfig(
    connections: ApiConnection[] = [],
    environmentPath: string = "",

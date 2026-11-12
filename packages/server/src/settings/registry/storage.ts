@@ -7,23 +7,55 @@ import { setting } from "../setting";
 import { boolean, integer, oneOf, string } from "../types";
 
 /**
- * The CPUs this process may run on: the host's, bounded by a cgroup v2 CPU
- * quota when the container sets one. `os.availableParallelism()` reports the
- * node's cores inside a CPU-limited container.
+ * The whole CPUs a cgroup CPU quota allows, from a quota and period in
+ * microseconds; undefined for no quota (v2 `max`, v1 `-1`) or text that is not
+ * one. A fractional quota rounds up: half a CPU still runs one thread.
+ */
+export function cgroupCpuLimit(
+   quota: string | undefined,
+   period: string | undefined,
+): number | undefined {
+   const limit = Math.ceil(Number(quota) / Number(period));
+   return Number.isFinite(limit) && limit >= 1 ? limit : undefined;
+}
+
+/** The CPUs the cgroup CPU quota allows (v2, else v1); undefined for none. */
+function cgroupQuota(): number | undefined {
+   const reads: (() => [string | undefined, string | undefined])[] = [
+      // cgroup v2: "<quota> <period>", or "max <period>" for none.
+      () => {
+         const [quota, period] = fs
+            .readFileSync("/sys/fs/cgroup/cpu.max", "utf8")
+            .trim()
+            .split(/\s+/);
+         return [quota, period];
+      },
+      // cgroup v1: the quota is -1 for none.
+      () => [
+         fs.readFileSync("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "utf8").trim(),
+         fs.readFileSync("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "utf8").trim(),
+      ],
+   ];
+   for (const read of reads) {
+      try {
+         return cgroupCpuLimit(...read());
+      } catch {
+         // Not this cgroup version, or not Linux.
+      }
+   }
+   return undefined;
+}
+
+/**
+ * The CPUs this process may run on: the host's (its CPU affinity), bounded by
+ * a cgroup CPU quota when the container sets one, as DuckDB bounds its own
+ * default. `os.availableParallelism()` reports the node's cores inside a
+ * CPU-limited container.
  */
 export function availableCpus(): number {
-   let cpus = os.availableParallelism();
-   try {
-      const [quota, period] = fs
-         .readFileSync("/sys/fs/cgroup/cpu.max", "utf8")
-         .trim()
-         .split(/\s+/);
-      const limit = Math.ceil(Number(quota) / Number(period));
-      if (Number.isFinite(limit) && limit >= 1) cpus = Math.min(cpus, limit);
-   } catch {
-      // Not Linux, or no cgroup v2 quota: the host's count stands.
-   }
-   return cpus;
+   const cpus = os.availableParallelism();
+   const quota = cgroupQuota();
+   return quota === undefined ? cpus : Math.min(cpus, quota);
 }
 
 /** The configuration design's `duckdb`, `ducklake`, `persist`, `materialization` table. */
@@ -57,7 +89,7 @@ export const storage = [
       defaultText: "`4`, or the CPUs available when fewer",
       description:
          "Threads each DuckDB instance starts with, unless its connection sets threads, or off.",
-      notes: "The size of the thread pool each DuckDB instance Publisher opens starts with, unless the connection sets its own `threads`. DuckDB's own default is one thread per core **per instance**, and Publisher opens many instances in one process: one sandbox per loaded package (and per version), one per file-backed DuckDB, DuckLake or Azure connection, one per in-flight materialization build, plus the metadata store. Measured on an 18-core host: about 15 threads per loaded package. The pools are fixed when each instance opens, so they add up, and the process fails when they reach the thread limit (`kern.num_taskthreads`, 12,288 per process on macOS; on Linux the cgroup `pids.max`, which Kubernetes and `docker run --pids-limit` often set to a few thousand): DuckDB reports `thread constructor failed: Resource temporarily unavailable`, and under Bun the process aborts with `panic: A C++ exception occurred`, taking every package with it. **Sizing:** count the instances as for `PUBLISHER_DUCKDB_MEMORY_LIMIT` and keep (instances × this) well under the limit. A higher value buys parallelism within one large local query (a scan of package-local Parquet or CSV); a dashboard's small queries rarely use more than a few threads. The default is `4`, or the CPUs the process may use when fewer (the host's, bounded by a cgroup v2 CPU quota), so it never starts a larger pool than DuckDB itself would. `off` restores DuckDB's one-per-core default, the behaviour before this setting existed. Applies at instance open, so a change takes effect for instances opened after a restart. A materialization build that lowers threads for a partitioned write (`PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`) still does so. Validated at startup.",
+      notes: "The size of the thread pool each DuckDB instance Publisher opens starts with, unless the connection sets its own `threads`. DuckDB's own default is one thread per core **per instance**, and Publisher opens many instances in one process: one sandbox per loaded package (and per version), one per file-backed DuckDB, DuckLake or Azure connection, one per in-flight materialization build, plus the metadata store. Measured on an 18-core host: about 15 threads per loaded package. The pools are fixed when each instance opens, so they add up, and the process fails when they reach the thread limit (`kern.num_taskthreads`, 12,288 per process on macOS; on Linux the cgroup `pids.max`, which Kubernetes and `docker run --pids-limit` often set to a few thousand): DuckDB reports `thread constructor failed: Resource temporarily unavailable`, and under Bun the process aborts with `panic: A C++ exception occurred`, taking every package with it. **Sizing:** count the instances as for `PUBLISHER_DUCKDB_MEMORY_LIMIT` and keep (instances × this) well under the limit. A higher value buys parallelism within one large local query (a scan of package-local Parquet or CSV); a dashboard's small queries rarely use more than a few threads. The default is `4`, or the CPUs the process may use when fewer (the host's, bounded by a cgroup v1 or v2 CPU quota), so it never starts a larger pool than DuckDB itself would. `off` restores DuckDB's one-per-core default, the behaviour before this setting existed. Applies at instance open, so a change takes effect for instances opened after a restart. A materialization build that lowers threads for a partitioned write (`PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`) still does so. Validated at startup.",
       aliases: { env: ["PUBLISHER_DUCKDB_THREADS"] },
    }),
    setting({

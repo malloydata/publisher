@@ -18,8 +18,9 @@ import {
    serializeAttachRun,
    withThreadCap,
 } from "./duckdb_instance_sharing";
+import { attachmentDigest } from "./connection";
 import { Environment } from "./environment";
-import { availableCpus } from "../settings/registry/storage";
+import { availableCpus, cgroupCpuLimit } from "../settings/registry/storage";
 import { installSettings } from "../test_helpers/settings_env";
 
 installDuckDBInstanceSharing();
@@ -237,6 +238,29 @@ describe("attach runs of one connection on one instance", () => {
    });
 });
 
+it("digests an attached database's settings whatever order its keys arrive in", () => {
+   const stored = {
+      name: "warehouse",
+      type: "postgres",
+      postgresConnection: { host: "h", password: "p", port: 5432 },
+   };
+   // As an echoed update arrives: the withheld password put back last.
+   const echoed = {
+      type: "postgres",
+      name: "warehouse",
+      postgresConnection: { port: 5432, host: "h", password: "p" },
+   };
+   expect(attachmentDigest(echoed as never)).toBe(
+      attachmentDigest(stored as never),
+   );
+   expect(
+      attachmentDigest({
+         ...stored,
+         postgresConnection: { ...stored.postgresConnection, host: "other" },
+      } as never),
+   ).not.toBe(attachmentDigest(stored as never));
+});
+
 it("finds the db-duckdb internals it patches", () => {
    // False skips sharing and the thread cap with only a warning, so an
    // upgrade that reshapes them must fail here instead.
@@ -257,6 +281,17 @@ describe("the per-instance thread cap", () => {
       });
    });
 
+   it("reads a cgroup CPU quota as whole CPUs, and no quota as none", () => {
+      expect(cgroupCpuLimit("200000", "100000")).toBe(2);
+      expect(cgroupCpuLimit("50000", "100000")).toBe(1);
+      expect(cgroupCpuLimit("150000", "100000")).toBe(2);
+      // v2 and v1 spellings of "no quota", and a file that held nothing.
+      expect(cgroupCpuLimit("max", "100000")).toBeUndefined();
+      expect(cgroupCpuLimit("-1", "100000")).toBeUndefined();
+      expect(cgroupCpuLimit("", undefined)).toBeUndefined();
+      expect(availableCpus()).toBeGreaterThanOrEqual(1);
+   });
+
    it("keeps a connection's own threads setting", () => {
       restore = installSettings({
          env: { PUBLISHER_DUCKDB_THREADS: "8" },
@@ -270,6 +305,19 @@ describe("the per-instance thread cap", () => {
          env: { PUBLISHER_DUCKDB_THREADS: "off" },
       }).restore;
       expect(withThreadCap({})).toEqual({});
+   });
+
+   it("caps an instance whose connection sets no threads", async () => {
+      // Through db-duckdb's own open: an upgrade that stops building instance
+      // options in buildInstanceOptions would drop the cap silently. The test
+      // preload's cap applies here, ahead of the production one.
+      const a = open({ databasePath: path.join(dir, "capped.duckdb") });
+      expect(
+         (await a.runSQL("SELECT current_setting('threads')::INTEGER AS n"))
+            .rows,
+      ).toEqual([
+         { n: Number(process.env.PUBLISHER_TEST_DUCKDB_THREADS ?? 2) },
+      ]);
    });
 
    it("opens an instance with the threads its connection asks for", async () => {
