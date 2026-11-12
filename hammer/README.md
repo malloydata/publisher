@@ -202,22 +202,37 @@ bun hammer/run.ts --attention-older-than 30 # show only ⚠ callouts raised ≥3
 bun hammer/run.ts --workers 2              # scenarios in parallel (default 6)
 bun hammer/run.ts --rebuild                # force a fresh server build first
 bun hammer/run.ts --keep                   # leave the pg container + workdir up to inspect
-bun hammer/run.ts --reuse-pg               # reuse a running hammer pg container (fast iteration)
+bun hammer/run.ts --reuse-pg               # reuse the running hammer pg container on 55432 (fast iteration)
 ```
 
 `--scenarios` and `--tags` narrow together (a scenario must match both).
 
-Flags: `--pg-port` (default 55432), `--port` (14000), `--mcp-port` (14040),
-`--quiet`. Exit code is nonzero if any scenario fails.
+Flags: `--pg-port` (default: the first free port from 55432; 55432 itself
+with `--reuse-pg`), `--pg-container` (default `publisher-hammer-pg-<pg-port>`),
+`--port` (14000), `--mcp-port` (14040), `--quiet`. Exit code is nonzero if any
+scenario fails.
 
 Set `HAMMER_STEP_TIMING=1` to report any step over 500ms — how you localise a
 scenario that is slow only inside a full run.
 
 The harness picks non-default ports so it won't collide with your own stacks.
-If you used `--keep`, tear the container down with:
+If you used `--keep`, the run prints the container's name; tear it down with:
 
 ```bash
-docker rm -fv publisher-hammer-pg
+docker rm -fv publisher-hammer-pg-55432   # the name the run printed
+```
+
+### Running two at once
+
+Each run gets its own Postgres container, named for its port and labelled with
+the run's pid. A run never removes a container a live run created, and its
+teardown removes only the container it started; a container it reused stays up.
+Give the second run its own Publisher ports, since each worker's servers sit at
+fixed offsets from `--port` and `--mcp-port`:
+
+```bash
+bun hammer/run.ts --tags security &
+bun hammer/run.ts --tags orchestration --port 24000 --mcp-port 24040
 ```
 
 ## Each scenario is a clean room

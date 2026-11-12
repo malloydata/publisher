@@ -26,7 +26,9 @@ import {
 } from "./lib/config";
 import { writePackage } from "./lib/packages";
 import { runLakeSql } from "./lib/ducklake";
-import { startPostgres } from "./lib/postgres";
+import { firstFreePort, startPostgres } from "./lib/postgres";
+
+const DEFAULT_PG_PORT = 55432;
 import {
    buildServerIfNeeded,
    startServer,
@@ -52,7 +54,10 @@ interface Args {
    rebuild: boolean;
    reusePg: boolean;
    quiet: boolean;
-   pgPort: number;
+   /** Unset: the first free port from 55432 (55432 itself under --reuse-pg). */
+   pgPort?: number;
+   /** Unset: one name per port (see defaultContainerName). */
+   pgContainer?: string;
    port: number;
    mcpPort: number;
    /**
@@ -69,7 +74,6 @@ function parseArgs(argv: string[]): Args {
       rebuild: false,
       reusePg: false,
       quiet: false,
-      pgPort: 55432,
       port: 14000,
       mcpPort: 14040,
       // 6 measured fastest on a 10-core laptop: ~51s, against ~57s at 4 and flat at
@@ -106,12 +110,13 @@ function parseArgs(argv: string[]): Args {
       else if (arg === "--reuse-pg") a.reusePg = true;
       else if (arg === "--quiet") a.quiet = true;
       else if (arg === "--pg-port") a.pgPort = Number(next());
+      else if (arg === "--pg-container") a.pgContainer = next();
       else if (arg === "--port") a.port = Number(next());
       else if (arg === "--mcp-port") a.mcpPort = Number(next());
       else if (arg === "--workers") a.workers = Math.max(1, Number(next()));
       else if (arg === "--help" || arg === "-h") {
          console.log(
-            "Usage: bun hammer/run.ts [--scenarios a,b] [--tags security,orchestration] [--attention-older-than DAYS] [--keep] [--rebuild] [--reuse-pg] [--pg-port N] [--port N] [--mcp-port N] [--workers N] [--quiet]",
+            "Usage: bun hammer/run.ts [--scenarios a,b] [--tags security,orchestration] [--attention-older-than DAYS] [--keep] [--rebuild] [--reuse-pg] [--pg-port N] [--pg-container NAME] [--port N] [--mcp-port N] [--workers N] [--quiet]",
          );
          process.exit(0);
       }
@@ -435,8 +440,16 @@ async function main(): Promise<void> {
 
    await buildServerIfNeeded(repoRoot, args.rebuild);
 
+   // A fixed default port would make a second concurrent run fail to publish
+   // it; reuse keeps the default so it finds the container a --keep run left.
+   const pgPort =
+      args.pgPort ??
+      (args.reusePg || args.pgContainer
+         ? DEFAULT_PG_PORT
+         : await firstFreePort(DEFAULT_PG_PORT));
    const pg = await startPostgres({
-      hostPort: args.pgPort,
+      hostPort: pgPort,
+      containerName: args.pgContainer,
       reuse: args.reusePg,
    });
    const results: ScenarioResult[] = [];
