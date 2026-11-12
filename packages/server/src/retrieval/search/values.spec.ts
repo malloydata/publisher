@@ -98,6 +98,12 @@ describe("value matching", () => {
       expect(filterStem("the Home Gardeners")).toBe("gard");
       expect(filterStem("ab")).toBeUndefined();
    });
+
+   it("cuts the stem by character, never through a surrogate pair", () => {
+      // U+20000 is one letter in two UTF-16 units; a cut by unit would leave
+      // half of it, which the value scan refuses as not a letter.
+      expect(filterStem("abc\u{20000}de")).toBe("abc\u{20000}");
+   });
 });
 
 // ---------------------------------------------------------------------------

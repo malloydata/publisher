@@ -10,38 +10,46 @@
  *
  * It reads every non-test source with the TypeScript parser and finds
  * generated Malloy in three shapes: a template literal, a `+` chain of strings,
- * and an array of strings `.join()`ed. Each counts as Malloy when its fixed
+ * and an array `.join()`ed (a literal, or a local array with every value
+ * pushed onto it). Each counts as Malloy when its fixed
  * text carries a Malloy construct (MALLOY_CONTEXT: a statement keyword, a
  * clause such as `where:` or `join_one:`, `-> {`, `extend {`, `+ {`,
  * `.table(`, `.sql(`, `.virtual(`, `compose(`, `#@ persist`, `##!`, `import {`
  * or `given:`). Every value spliced into one must be SAFE:
  *
  * - a call to one of the module's emitters (`escapeString` only between
- *   quotes, since it escapes but does not quote);
- * - a string or number literal, or a template, `+` chain, ternary or `.join()`
- *   whose every part is safe (`xs.map((x) => identifier(x)).join(", ")`);
+ *   single quotes, the only quote it escapes);
+ * - a string or number literal, or arithmetic;
+ * - a template, `+` chain, ternary or `.join()` whose every part is safe
+ *   (`xs.map((x) => identifier(x)).join(", ")`);
  * - a `const` whose declaration, resolved by scope rather than by name across
- *   the file, is initialized safe; or an array whose initializer and every
- *   value pushed onto it are safe.
+ *   the file, is initialized safe; a `let` whose every assignment is safe; or
+ *   an array whose initializer and every value pushed onto it are safe, and
+ *   which is never handed to a call or aliased;
+ * - a call to a helper in the same file whose every `return` is safe.
  *
  * A parameter, a property access (`${n.foo}`) or an imported name is never
  * safe on its own. A template that is just one interpolation in backticks is
  * a private quoter and is flagged anywhere.
  *
- * A message that shows Malloy is skipped by where it sits, not by how it
- * reads: a template thrown, passed to `new …Error(…)` or a logger, or held by
- * a `message`/`detail`/`hint`/`reason`-style property or variable.
+ * A message that shows Malloy is skipped by where it sits: a template thrown,
+ * passed to `new …Error(…)` or a logger, or held by a
+ * `message`/`detail`/`hint`/`reason`-style property or variable. Otherwise it
+ * is skipped only when it reads as prose: five or more English words (Malloy's
+ * own keywords do not count) and no line that starts a Malloy statement.
  *
  * A legitimate exception is marked at the site, with a
  * `// malloy-text: <reason>` comment on the line before the value, or before
  * the parameter or variable that holds it (then trusted wherever it flows).
- * The mark covers that one site, never new code elsewhere in the file, and a
- * mark that no longer excuses anything fails too, so the marks cannot rot.
+ * The mark covers the statement it precedes, never the next one or new code
+ * elsewhere in the file. It is consulted only for a value that is unsafe
+ * without it, and a mark that excuses nothing fails, so the marks cannot rot.
  * Findings name the enclosing function, to find them.
  *
  * What it still cannot see: Malloy assembled from pieces none of which carries
  * a construct on its own (each piece is plain text until it is joined in some
- * other function), and a value laundered through a helper function's return.
+ * other function), a value passed through a helper in another file, and
+ * `String.prototype.concat`.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -86,9 +94,20 @@ const MALLOY_CONTEXT = new RegExp(
  */
 const STATEMENT_START =
    /(^|\n)\s*((source|query|run|view|type|given|dimension|measure|where|group_by|aggregate|select|nest|order_by|join_(one|many|cross)):|#@|##!|import \{|\}|->)/;
+/** Malloy's own words, which a generated line is made of and prose is not. */
+const MALLOY_WORDS = new Set(
+   (
+      "source query run view type given dimension measure where having group_by " +
+      "aggregate select nest order_by calculate limit extend join_one join_many " +
+      "join_cross with and not null true false asc desc sum count avg min max " +
+      "table sql compose import from primary_key rename except accept persist"
+   ).split(" "),
+);
 /** Plain English words, outside any backtick-quoted code. */
 const proseWords = (fixed: string) =>
-   fixed.replace(/`[^`]*`/g, " ").match(/\b[a-z]{3,}\b/gi)?.length ?? 0;
+   (fixed.replace(/`[^`]*`/g, " ").match(/\b[a-z]{3,}\b/gi) ?? []).filter(
+      (w) => !MALLOY_WORDS.has(w.toLowerCase()),
+   ).length;
 const isProseMessage = (fixed: string) =>
    proseWords(fixed) >= 5 && !STATEMENT_START.test(fixed);
 
@@ -169,6 +188,33 @@ function importsName(st: ts.ImportDeclaration, name: string): boolean {
    if (!b) return false;
    if (ts.isNamespaceImport(b)) return b.name.text === name;
    return b.elements.some((e) => e.name.text === name);
+}
+
+/**
+ * The Malloy-text export a name refers to: imported from malloy_text, or
+ * declared in it. A local function that shares an emitter's name is not one.
+ */
+function emitterName(id: ts.Identifier): string | undefined {
+   const d = resolve(id);
+   if (
+      d &&
+      ts.isImportDeclaration(d) &&
+      ts.isStringLiteral(d.moduleSpecifier) &&
+      /(^|\/)malloy_text$/.test(d.moduleSpecifier.text)
+   ) {
+      const bindings = d.importClause?.namedBindings;
+      if (!bindings || !ts.isNamedImports(bindings)) return undefined;
+      const el = bindings.elements.find((b) => b.name.text === id.text);
+      return el && (el.propertyName ?? el.name).text;
+   }
+   if (
+      d &&
+      ts.isFunctionDeclaration(d) &&
+      /(^|\/)malloy_text\.ts$/.test(id.getSourceFile().fileName)
+   ) {
+      return id.text;
+   }
+   return undefined;
 }
 
 /** The declaration a name resolves to, walking scopes outward. */
@@ -264,10 +310,28 @@ function pushedValues(decl: ts.VariableDeclaration): ts.Expression[] | null {
       ) {
          out.push(n.parent.right);
       }
+      // Handed to a call, or aliased: something out of sight may push onto it.
+      if (ts.isIdentifier(n) && n.text === name && escapes(n)) opaque = true;
       ts.forEachChild(n, walk);
    };
    walk(scope);
    return opaque ? null : out;
+}
+
+/** Whether an array reference leaves the code that can see its pushes. */
+function escapes(id: ts.Identifier): boolean {
+   const p = id.parent;
+   return (
+      (ts.isCallExpression(p) && p.arguments.includes(id)) ||
+      (ts.isNewExpression(p) && p.arguments?.includes(id) === true) ||
+      (ts.isVariableDeclaration(p) && p.initializer === id) ||
+      (ts.isBinaryExpression(p) &&
+         p.right === id &&
+         p.operatorToken.kind === ts.SyntaxKind.EqualsToken) ||
+      (ts.isPropertyAssignment(p) && p.initializer === id) ||
+      ts.isShorthandPropertyAssignment(p) ||
+      ts.isArrayLiteralExpression(p)
+   );
 }
 
 /** The expressions a function's body can return. */
@@ -309,7 +373,10 @@ function returnsSafe(fn: ts.SignatureDeclaration, seen: Set<ts.Node>): boolean {
    return rs.length > 0 && rs.every((r) => isSafe(r, false, seen));
 }
 
-/** The index parameter of an array callback (`xs.map((x, i) => …)`): a number. */
+/**
+ * The index parameter of an array callback (`xs.map((x, i) => …)`): a number.
+ * Not `forEach`, whose second parameter on a Map is the key.
+ */
 function isMapIndex(p: ts.ParameterDeclaration): boolean {
    const fn = p.parent;
    if (!(ts.isArrowFunction(fn) || ts.isFunctionExpression(fn))) return false;
@@ -318,9 +385,7 @@ function isMapIndex(p: ts.ParameterDeclaration): boolean {
    return (
       ts.isCallExpression(call) &&
       ts.isPropertyAccessExpression(call.expression) &&
-      ["map", "flatMap", "forEach", "filter"].includes(
-         call.expression.name.text,
-      )
+      ["map", "flatMap", "filter"].includes(call.expression.name.text)
    );
 }
 
@@ -404,9 +469,25 @@ function isSafe(
    seen: Set<ts.Node> = new Set(),
 ): boolean {
    const e = unwrap(expr);
-   if (seen.has(e)) return true; // a cycle adds nothing new
+   // Only a node already being checked further up this path is assumed safe
+   // (a cycle adds nothing new); one checked and finished elsewhere is
+   // checked again, since its answer can depend on `quoted`.
+   if (seen.has(e)) return true;
    seen.add(e);
-   if (hasAllowComment(e)) return true;
+   try {
+      // An allowance is consulted only for a value that is otherwise unsafe,
+      // so a mark on a value that has since become safe is reported stale.
+      return isSafeShape(e, quoted, seen) || hasAllowComment(e);
+   } finally {
+      seen.delete(e);
+   }
+}
+
+function isSafeShape(
+   e: ts.Expression,
+   quoted: boolean,
+   seen: Set<ts.Node>,
+): boolean {
    if (
       ts.isStringLiteral(e) ||
       ts.isNoSubstitutionTemplateLiteral(e) ||
@@ -457,8 +538,9 @@ function isSafe(
    if (ts.isCallExpression(e)) {
       if (ts.isIdentifier(e.expression)) {
          const name = e.expression.text;
-         if (QUOTING_EMITTERS.has(name)) return true;
-         if (ESCAPING_EMITTERS.has(name)) return quoted;
+         const emitter = emitterName(e.expression);
+         if (emitter && QUOTING_EMITTERS.has(emitter)) return true;
+         if (emitter && ESCAPING_EMITTERS.has(emitter)) return quoted;
          if (name === "Number") return true;
          const fn = localFunction(e.expression);
          return fn !== undefined && returnsSafe(fn, seen);
@@ -496,10 +578,13 @@ function isSafe(
    if (ts.isIdentifier(e)) {
       const d = resolve(e);
       if (d && ts.isParameter(d)) {
-         if (isMapIndex(d) || hasAllowComment(d)) return true;
+         if (isMapIndex(d)) return true;
          // The element of an array callback over a safe array.
          const over = callbackReceiver(d);
-         return over !== undefined && isSafeArray(over, seen);
+         return (
+            (over !== undefined && isSafeArray(over, seen)) ||
+            hasAllowComment(d)
+         );
       }
       // The element of a `for … of` over a safe array.
       if (
@@ -512,39 +597,51 @@ function isSafe(
          return isSafeArray(d.parent.parent.parent.expression, seen);
       }
       if (!d || !ts.isVariableDeclaration(d)) return false;
-      if (hasAllowComment(d)) return true;
-      if (!d.initializer) {
-         const assigned = assignedValues(d);
-         return (
-            assigned !== null &&
-            assigned.length > 0 &&
-            assigned.every((a) => isSafe(a, quoted, seen))
-         );
-      }
-      const init = unwrap(d.initializer);
-      if (ts.isArrayLiteralExpression(init)) {
-         const pushed = pushedValues(d);
-         return (
-            pushed !== null &&
-            isSafe(init, quoted, seen) &&
-            pushed.every((p) => isSafe(p, quoted, seen))
-         );
-      }
-      if (!isSafe(init, quoted, seen)) return false;
-      const isConst = (ts.getCombinedNodeFlags(d) & ts.NodeFlags.Const) !== 0;
-      if (isConst) return true;
-      const assigned = assignedValues(d);
-      return (
-         assigned !== null && assigned.every((a) => isSafe(a, quoted, seen))
-      );
+      return isSafeVariable(d, quoted, seen) || hasAllowComment(d);
    }
    return false;
+}
+
+/** Whether every value a variable can hold is safe. */
+function isSafeVariable(
+   d: ts.VariableDeclaration,
+   quoted: boolean,
+   seen: Set<ts.Node>,
+): boolean {
+   if (!d.initializer) {
+      const assigned = assignedValues(d);
+      return (
+         assigned !== null &&
+         assigned.length > 0 &&
+         assigned.every((a) => isSafe(a, quoted, seen))
+      );
+   }
+   const init = unwrap(d.initializer);
+   if (ts.isArrayLiteralExpression(init)) {
+      const pushed = pushedValues(d);
+      if (
+         pushed === null ||
+         !isSafe(init, quoted, seen) ||
+         !pushed.every((p) => isSafe(p, quoted, seen))
+      ) {
+         return false;
+      }
+   } else if (!isSafe(init, quoted, seen)) {
+      return false;
+   }
+   const isConst = (ts.getCombinedNodeFlags(d) & ts.NodeFlags.Const) !== 0;
+   if (isConst) return true;
+   const assigned = assignedValues(d);
+   return assigned !== null && assigned.every((a) => isSafe(a, quoted, seen));
 }
 
 /** Whether an array expression only ever holds safe strings. */
 function isSafeArray(arr: ts.Expression, seen: Set<ts.Node>): boolean {
    const a = unwrap(arr);
-   if (hasAllowComment(a)) return true;
+   return isSafeArrayShape(a, seen) || hasAllowComment(a);
+}
+
+function isSafeArrayShape(a: ts.Expression, seen: Set<ts.Node>): boolean {
    if (ts.isArrayLiteralExpression(a) || ts.isIdentifier(a)) {
       return isSafe(a, false, seen);
    }
@@ -553,7 +650,8 @@ function isSafeArray(arr: ts.Expression, seen: Set<ts.Node>): boolean {
       if (m === "map" || m === "flatMap") {
          const cb = a.arguments[0] ? unwrap(a.arguments[0]) : undefined;
          if (cb && ts.isIdentifier(cb)) {
-            if (QUOTING_EMITTERS.has(cb.text)) return true;
+            const emitter = emitterName(cb);
+            if (emitter && QUOTING_EMITTERS.has(emitter)) return true;
             const fn = localFunction(cb);
             return fn !== undefined && returnsSafe(fn, seen);
          }
@@ -577,8 +675,12 @@ interface Part {
    quoted: boolean;
 }
 
+/**
+ * Whether a value sits between single quotes, the only quote `escapeString`
+ * escapes; between double quotes or backticks it can still end the string.
+ */
 function quotedBetween(before: string, after: string): boolean {
-   return /[`'"]%?$/.test(before) && /^%?[`'"]/.test(after);
+   return /'%?$/.test(before) && /^%?'/.test(after);
 }
 
 function templateParts(t: ts.TemplateExpression): Part[] {
@@ -679,13 +781,34 @@ function hasAllowComment(n: ts.Node): boolean {
    const lines = sf.text.split("\n");
    const start = sf.getLineAndCharacterOfPosition(n.getStart(sf)).line;
    for (let l = start; l >= Math.max(0, start - 3); l--) {
+      // A line that ends a statement or opens a block stands between this
+      // node and any comment above it: that comment marks another site.
+      if (l < start && /[;{}]\s*$/.test(lines[l] ?? "")) break;
       if (ALLOW_COMMENT.test(lines[l - 1] ?? "")) {
          usedAllowances.add(`${sf.fileName}:${l - 1}`);
          return true;
       }
-      if (l < start && /[;{}]\s*$/.test(lines[l] ?? "")) break;
    }
    return false;
+}
+
+/**
+ * The elements a `.join()` receiver holds: an array literal's, or a local
+ * array variable's initializer plus every value pushed onto it. Undefined
+ * when they cannot all be seen.
+ */
+function joinedElements(
+   receiver: ts.Expression,
+): readonly ts.Expression[] | undefined {
+   const r = unwrap(receiver);
+   if (ts.isArrayLiteralExpression(r)) return r.elements;
+   if (!ts.isIdentifier(r)) return undefined;
+   const d = resolve(r);
+   if (!d || !ts.isVariableDeclaration(d) || !d.initializer) return undefined;
+   const init = unwrap(d.initializer);
+   if (!ts.isArrayLiteralExpression(init)) return undefined;
+   const pushed = pushedValues(d);
+   return pushed ? [...init.elements, ...pushed] : undefined;
 }
 
 /** The values spliced into one file's generated Malloy without an emitter. */
@@ -773,22 +896,20 @@ export function scanForUnquotedMalloy(file: string, text: string): Finding[] {
       } else if (
          ts.isCallExpression(n) &&
          ts.isPropertyAccessExpression(n.expression) &&
-         n.expression.name.text === "join" &&
-         ts.isArrayLiteralExpression(unwrap(n.expression.expression))
+         n.expression.name.text === "join"
       ) {
-         const arr = unwrap(
-            n.expression.expression,
-         ) as ts.ArrayLiteralExpression;
-         const fixed = arr.elements
+         const elements = joinedElements(n.expression.expression);
+         const fixed = (elements ?? [])
             .map((el) => (ts.isSpreadElement(el) ? undefined : fixedText(el)))
             .filter((t) => t !== undefined)
             .join(" ");
          if (
+            elements &&
             MALLOY_CONTEXT.test(fixed) &&
             !isProseMessage(fixed) &&
             !isMessage(n, sf)
          ) {
-            for (const el of arr.elements) {
+            for (const el of elements) {
                if (ts.isSpreadElement(el)) {
                   if (!isSafeArray(el.expression, new Set())) {
                      report(el.expression);
@@ -803,6 +924,17 @@ export function scanForUnquotedMalloy(file: string, text: string): Finding[] {
    };
    visit(sf);
    return findings;
+}
+
+/** The `// malloy-text:` comments in a scanned file that excused nothing. */
+function staleAllowances(file: string, text: string): string[] {
+   return text
+      .split("\n")
+      .flatMap((line, i) =>
+         ALLOW_COMMENT.test(line) && !usedAllowances.has(`${file}:${i}`)
+            ? [`${file}:${i + 1}: ${line.trim()}`]
+            : [],
+      );
 }
 
 function sources(dir: string, out: string[] = []): string[] {
@@ -832,24 +964,15 @@ describe("generated Malloy goes through the Malloy-text module", () => {
    });
 
    it("keeps no `// malloy-text:` allowance that excuses nothing", () => {
-      const stale: string[] = [];
-      for (const f of files) {
-         f.text.split("\n").forEach((line, i) => {
-            if (
-               ALLOW_COMMENT.test(line) &&
-               !usedAllowances.has(`${f.rel}:${i}`)
-            ) {
-               stale.push(`${f.rel}:${i + 1}: ${line.trim()}`);
-            }
-         });
-      }
-      expect(stale).toEqual([]);
+      expect(files.flatMap((f) => staleAllowances(f.rel, f.text))).toEqual([]);
    });
 });
 
 describe("the scanner itself", () => {
+   const IMPORTS =
+      "import { annotationValue, escapeString, identifier, quotedIdentifier, stringLiteral } from './malloy_text';\n";
    const scan = (body: string) =>
-      scanForUnquotedMalloy("x.ts", body).map((f) => f.expr);
+      scanForUnquotedMalloy("x.ts", IMPORTS + body).map((f) => f.expr);
 
    it("flags a bare name in a template", () => {
       expect(scan("const t = `source: ${name} is duckdb.table('t')`;")).toEqual(
@@ -967,6 +1090,63 @@ describe("the scanner itself", () => {
       );
    });
 
+   it("flags escapeString between double quotes or backticks, which it does not escape", () => {
+      expect(
+         scan('const t = `run: s -> { where: a = "${escapeString(v)}" }`;'),
+      ).toEqual(["escapeString(v)"]);
+      expect(
+         scan("const t = `source: \\`${escapeString(v)}\\` is t`;"),
+      ).toEqual(["escapeString(v)"]);
+   });
+
+   it("judges a value again in each quoting context it reaches", () => {
+      expect(
+         scan(
+            "const v = escapeString(x);\nconst t = `source: ${c ? `'${v}'` : v} is t`;",
+         ),
+      ).toEqual(["c ? `'${v}'` : v"]);
+   });
+
+   it("flags a Map key, which forEach passes where an array passes its index", () => {
+      expect(
+         scan(
+            "const lines = [];\nm.forEach((v, name) => lines.push(`dimension: ${identifier(v)} is ${name}`));",
+         ),
+      ).toEqual(["name"]);
+   });
+
+   it("flags an array handed to a call, which may push onto it out of sight", () => {
+      expect(
+         scan(
+            "const lines = [];\naddRaw(lines, raw);\nconst t = `source: s is t extend { ${lines.join('\\n')} }`;",
+         ),
+      ).toEqual(["lines.join('\\n')"]);
+   });
+
+   it("flags a `let` array reassigned to a raw value", () => {
+      expect(
+         scan(
+            "let parts = [];\nparts = raw.split(',');\nconst t = `source: s is t extend { ${parts.join('\\n')} }`;",
+         ),
+      ).toEqual(["parts.join('\\n')"]);
+   });
+
+   it("scans an array variable joined into Malloy, pushes included", () => {
+      expect(
+         scan(
+            "const parts = ['where:'];\nparts.push(x);\nconst t = parts.join(' ');",
+         ),
+      ).toEqual(["x"]);
+   });
+
+   it("does not take a line of Malloy keywords for prose", () => {
+      expect(
+         scan(
+            "const t = `${base} extend { where: ${cond} } -> { group_by: ${dim} aggregate: total is sum(${m}) }`;",
+         ),
+      ).toEqual(["base", "cond", "dim", "m"]);
+   });
+
    it("honours an inline allowance at the site", () => {
       expect(
          scan(
@@ -975,10 +1155,44 @@ describe("the scanner itself", () => {
       ).toEqual([]);
    });
 
-   it("keys an allowance on the enclosing function", () => {
+   it("trusts only the module's emitters, not a local function sharing a name", () => {
+      expect(
+         scanForUnquotedMalloy(
+            "x.ts",
+            "function identifier(v) { return v; }\nconst t = `source: ${identifier(n)} is t`;",
+         ).map((f) => f.expr),
+      ).toEqual(["identifier(n)"]);
+      expect(
+         scan(
+            "const t = `source: ${identifier(n)} is t`;\nconst u = `run: s -> { group_by: ${xs.map(identifier).join(', ')} }`;",
+         ),
+      ).toEqual([]);
+   });
+
+   it("lets an allowance cover only the statement after it", () => {
+      expect(
+         scan(
+            "// malloy-text: the author's own expression\nconst a = `where: ${authorText}`;\nconst b = `source: ${evil} is t`;",
+         ),
+      ).toEqual(["evil"]);
+   });
+
+   it("reports an allowance on a value that is safe without it as stale", () => {
+      const text =
+         IMPORTS +
+         "// malloy-text: no longer needed\nconst t = `source: ${identifier(n)} is t`;\n" +
+         "// malloy-text: still needed\nconst u = `where: ${authorText}`;";
+      expect(scanForUnquotedMalloy("stale.ts", text)).toEqual([]);
+      expect(staleAllowances("stale.ts", text)).toEqual([
+         "stale.ts:2: // malloy-text: no longer needed",
+      ]);
+   });
+
+   it("names the enclosing function in a finding", () => {
       const found = scanForUnquotedMalloy(
          "x.ts",
-         "function lift(t) { return `run: ${t}`; }\nconst other = (q) => `run: ${q}`;",
+         IMPORTS +
+            "function lift(t) { return `run: ${t}`; }\nconst other = (q) => `run: ${q}`;",
       );
       expect(found.map((f) => [f.fn, f.expr])).toEqual([
          ["lift", "t"],
