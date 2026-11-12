@@ -251,6 +251,19 @@ The core lane is the critical path, phases 0, 1, 3, 4 and then 5; phase 2 fits b
 
 **Dependencies.** Phases 3 and 4 need phase 1's router and annotation reader. Phase 4 needs phase 3's source map and rewriter. Phase 5's design pass can run beside phase 3; its build waits for phase 4, since generations must cover rollups. It also waits for the v1 plan's B1, which supplies the generation records. The control plane's promote instruction (for `name=` and generations) is a Credible change. Phase 6 needs phase 2's log, phase 3's generator, and a core that phase 5 has vetted and simplified: estimates and the agent loop optimize the core, so they wait until it is settled.
 
+**Phase 3 in six pull requests (decided 2026-11-11).** The clean-ups the phases 0–2 review recommends ride in the pull request that needs them rather than landing separately.
+
+| # | Pull request | Scope |
+| --- | --- | --- |
+| 1 | Source map | The design note in the description; the source map on the governance IR, replacing the three hand-written chain walkers; one keying rule: a declaration by `sourceID`, a stored table by address and destination, a name for display only |
+| 2 | Build side | Addressing split out of `build_plan.ts`; the build-file generator; P12 and P2 as one re-address with its rollout (question 13) |
+| 3 | Serving core | One module that writes Malloy text; the re-root rewriter (single-file, cross-file, query-shaped segments); the served model on `virtual` with load-time compile; routing out of `model.ts` behind one answer record |
+| 4 | Joins | Reference joins; inline join_one with the uniqueness check; joins across origin connections on one destination (#6982) |
+| 5 | Table behaviours | Rolling windows with the incremental delete; extension tables; the `name=` view; contracts at read (R3); phase 0's three remaining checks |
+| 6 | v1 cutover | v1 packages through the rewriter behind the public #7098 fixture; today's storage serve shape retired once Credible's private CI passes (question 15); D3 removal; the `#@ -persist` warning; the migration recipe; docs and skill |
+
+Order: 1, then 3, 4, 5 and 6, with 2 beside 3. If 2 or 3 is too large to review, 3 splits into the text module and answer record, then the rewriter and served model; 2 lands the generator before the re-address.
+
 ## Telemetry and cost estimation
 
 T1–T7 reuse what Publisher already writes per query and per build; the new work is the store, the warehouse adapters, and estimates honest about their error. The Nov 1 plan's `estimate` call becomes the estimate half of `what_if`.
