@@ -51,6 +51,7 @@ import {
 } from "./run/freshness";
 import type {
    BoundTable,
+   LiveTableVerdict,
    MaterializedTableCatalog,
    PlannedTable,
 } from "./serve/query_path";
@@ -171,12 +172,20 @@ export class PackageMaterialization {
    private preaggregateEntityIdCache:
       | { plan: BuildPlan | null; ids: ReadonlySet<string> }
       | undefined;
-   // Keyed on the plan and the bound entries it came from.
+   // Keyed on the plan, the bound entries and the live verdicts it came from.
    private tableCatalogCache:
       | {
            plan: BuildPlan | null;
            bound: FreshnessManifest | undefined;
+           liveVerdicts: ReadonlyMap<string, LiveTableVerdict> | undefined;
            catalog: MaterializedTableCatalog;
+        }
+      | undefined;
+   // Keyed on every fact a verdict reads that is not the clock.
+   private liveVerdictCache:
+      | {
+           key: readonly unknown[];
+           byTable: ReadonlyMap<string, LiveTableVerdict> | undefined;
         }
       | undefined;
    // `#@ persist` sources Malloy's build walk did not plan, which
@@ -394,11 +403,13 @@ export class PackageMaterialization {
     * Memoized on the plan and the bound entries, both replaced wholesale.
     */
    materializedTableCatalog(): MaterializedTableCatalog {
+      const liveVerdicts = this.liveVerdictsByTable();
       const cached = this.tableCatalogCache;
       if (
          cached &&
          cached.plan === this.buildPlan &&
-         cached.bound === this.freshnessEntries
+         cached.bound === this.freshnessEntries &&
+         cached.liveVerdicts === liveVerdicts
       ) {
          return cached.catalog;
       }
@@ -424,13 +435,75 @@ export class PackageMaterialization {
             ...(entry.dataAsOf ? { dataAsOf: entry.dataAsOf } : {}),
          };
       }
-      const catalog = { planned, bound };
+      const catalog: MaterializedTableCatalog = {
+         planned,
+         bound,
+         ...(liveVerdicts ? { liveVerdicts } : {}),
+      };
       this.tableCatalogCache = {
          plan: this.buildPlan,
          bound: this.freshnessEntries,
+         liveVerdicts,
          catalog,
       };
       return catalog;
+   }
+
+   /**
+    * The tables no query can be answered from, by their serve verdicts, for
+    * the path report: keyed by `sourceEntityId`, a table only when every
+    * planned source sharing it is `live`. Staleness is left out, since the
+    * report decides it per query from the window it reads now, and every other
+    * reason reads no clock, so this is memoized on the facts the verdicts read
+    * (each replaced wholesale) and costs a query only a key compare.
+    */
+   private liveVerdictsByTable():
+      | ReadonlyMap<string, LiveTableVerdict>
+      | undefined {
+      const models = this.owner.models();
+      const key = [
+         this.buildPlan,
+         this.freshnessEntries,
+         this.buildManifestEntries,
+         this.storageServeBindings,
+         this.sourceEligibility,
+         this.colocatedSourceEligibility,
+         this.rollupsOverStoredBase,
+         getPersistStorageMode(),
+         models,
+      ];
+      const cached = this.liveVerdictCache;
+      if (cached && cached.key.every((part, i) => part === key[i])) {
+         return cached.byTable;
+      }
+      let byTable: Map<string, LiveTableVerdict> | undefined;
+      if (this.buildPlan) {
+         const sources = this.buildPlan.sources ?? {};
+         const perTable = new Map<string, ServeVerdict[]>();
+         for (const verdict of this.serveVerdicts()) {
+            const entityId = sources[verdict.sourceID]?.sourceEntityId;
+            if (!entityId) continue;
+            const list = perTable.get(entityId) ?? [];
+            list.push(verdict);
+            perTable.set(entityId, list);
+         }
+         byTable = new Map();
+         for (const [entityId, verdicts] of perTable) {
+            const live = verdicts.every(
+               (v) => v.verdict === "live" && v.reason && v.reason !== "stale",
+            );
+            if (!live) continue;
+            const first = verdicts[0];
+            const plan = sources[first.sourceID];
+            byTable.set(entityId, {
+               reason: first.reason as string,
+               sourceName:
+                  plan?.preaggregate?.baseSourceName ?? first.sourceName,
+            });
+         }
+      }
+      this.liveVerdictCache = { key, byTable };
+      return byTable;
    }
 
    /**

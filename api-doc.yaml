@@ -8583,6 +8583,42 @@ components:
             let a table answer.
           items:
             $ref: "#/components/schemas/QueryPathNearby"
+        warnings:
+          type: array
+          description: >-
+            The serve verdicts behind this query's `WARNED` skips: one per table
+            on the queried source's chain that no query can be answered from,
+            each with a code and a sentence for a person. A table whose source
+            the caller cannot list is left out, as in `notConsidered`. Empty
+            when there are none. The package's own warnings, and its status,
+            carry the full message and the fixes.
+          items:
+            $ref: "#/components/schemas/QueryPathWarning"
+
+    QueryPathWarning:
+      type: object
+      description: Why a table on the queried source's chain answers no query.
+      required: [code, tableId, message]
+      properties:
+        code:
+          type: string
+          description: >-
+            The serve verdict's reason: `storage_mode` (built into storage, but
+            the server's PERSIST_STORAGE_MODE routes no query to it),
+            `unreachable` (no published source reaches it), `row_level_gate`
+            (every published entry point over it carries a gate it cannot keep
+            yet), `refused` (the package refuses to serve it) or `shadowed` (its
+            storage table is bound to another source of the same name). An open
+            set: treat a code you do not know as a warning like any other.
+        tableId:
+          type: string
+          description: The table, as `considered` names it.
+        sourceName:
+          type: string
+          description: The source a query names to reach the table; for a rollup, the source it rolls up.
+        message:
+          type: string
+          description: What the code means, for a person. Never a refusal's own detail.
 
     QueryShape:
       type: object
@@ -8657,6 +8693,13 @@ components:
           description: "`used`, the table answered; `skipped`, it could not, and `reason` says why."
         reason:
           $ref: "#/components/schemas/SkipReason"
+        code:
+          type: string
+          description: >-
+            For a `WARNED` skip, the serve verdict's reason the table answers no
+            query: `storage_mode`, `unreachable`, `row_level_gate`, `refused` or
+            `shadowed` (see `QueryPathWarning`). An open set. Absent on any
+            other outcome, and on a `WARNED` skip whose verdict is not known.
         detail:
           type: string
           description: >-
@@ -8713,7 +8756,7 @@ components:
       description: >-
         Why a table could not answer a query. `NOT_BUILT`, it is not bound to
         this package; `WARNED`, its annotation carries a publish warning and
-        serves live; `MISSING_FIELD`, the query reads a field the table lacks (or
+        serves live, and the candidate's `code` says which; `MISSING_FIELD`, the query reads a field the table lacks (or
         otherwise does not compile against it); `CONTRACT`, answering from it
         would bypass an access control on the queried source; `GRAIN_TOO_COARSE`,
         a rollup's grain does not cover the query's groups or filters;

@@ -15,7 +15,9 @@
  *   router. Read from Malloy's own lookup, never from the SQL text;
  * - the package's catalog of materialized tables (its build plan, bound
  *   manifest and `storage=` bindings), read against the queried source's
- *   chain.
+ *   chain, with the serve verdict (D2) of every table no query can be answered
+ *   from, so a skip says why the table will not serve rather than only that it
+ *   did not.
  *
  * Reporting only: nothing here changes which table answers, and a report that
  * cannot be assembled is left off the result rather than failing the query.
@@ -37,6 +39,7 @@ type ApiCandidate = components["schemas"]["QueryPathCandidate"];
 type ApiNearby = components["schemas"]["QueryPathNearby"];
 type ApiServer = components["schemas"]["QueryPathServer"];
 type SkipReason = components["schemas"]["SkipReason"];
+type ApiWarning = components["schemas"]["QueryPathWarning"];
 
 /** At most this many nearby tables are reported, nearest first. */
 export const MAX_NOT_CONSIDERED = 10;
@@ -63,6 +66,19 @@ export interface BoundTable {
 }
 
 /**
+ * A table no query can be answered from, by its serve verdict: every planned
+ * source sharing its `sourceEntityId` has a `live` verdict for a reason other
+ * than staleness (which the report decides per query, from the freshness
+ * window it reads now).
+ */
+export interface LiveTableVerdict {
+   /** The verdict's reason: `storage_mode`, `unreachable`, `row_level_gate`, `refused`, `shadowed`. Open. */
+   reason: string;
+   /** The source a query names to reach it: a rollup's base, else its own. */
+   sourceName: string;
+}
+
+/**
  * The package's materialized tables, as the path report reads them. Read per
  * query from the package, so a rebind or a new plan is seen at once.
  */
@@ -71,6 +87,11 @@ export interface MaterializedTableCatalog {
    planned: ReadonlyMap<string, PlannedTable>;
    /** The colocated tables bound now, keyed by `sourceEntityId`. */
    bound: Readonly<Record<string, BoundTable>>;
+   /**
+    * The tables whose serve verdict says no query is answered from them,
+    * keyed by `sourceEntityId`. Absent when the verdicts are not known.
+    */
+   liveVerdicts?: ReadonlyMap<string, LiveTableVerdict>;
 }
 
 /** A `storage=` serve binding, as the report reads it. */
@@ -322,7 +343,81 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
          onChain,
          new Set(tables.map((t) => t.tableId)),
       ),
+      warnings: applyServeVerdicts(considered, input),
    };
+}
+
+/**
+ * Re-read each skipped table against its serve verdict: a table no query can
+ * be answered from is reported `WARNED`, with the verdict's reason as `code`,
+ * in place of what this query alone showed (`NOT_BUILT` for a source the bind
+ * refuses, `CONTRACT` for a rollup every entry point gates). A table that
+ * answered stays `used`, and a per-query fact the verdict cannot know stays as
+ * it is: `RUN_FAILED`, and `STALE`, decided from the window read now. Returns
+ * one warning per such table whose source the caller may see.
+ */
+function applyServeVerdicts(
+   considered: ApiCandidate[],
+   input: Pick<QueryPathInput, "catalog" | "isVisibleSource">,
+): ApiWarning[] {
+   const verdicts = input.catalog?.liveVerdicts;
+   const warnings: ApiWarning[] = [];
+   if (!verdicts || verdicts.size === 0) return warnings;
+   // A table that answered (its colocated copy, beside a storage copy that is
+   // not routed) is no table that "answers no query": its skipped twin keeps
+   // the code, and no warning says otherwise.
+   const used = new Set(
+      considered.filter((c) => c.outcome === "used").map((c) => c.tableId),
+   );
+   const warned = new Set<string>();
+   for (const candidate of considered) {
+      if (candidate.outcome !== "skipped") continue;
+      if (candidate.reason === "RUN_FAILED" || candidate.reason === "STALE") {
+         continue;
+      }
+      const verdict = verdicts.get(candidate.tableId);
+      if (!verdict) continue;
+      candidate.reason = "WARNED";
+      candidate.code = verdict.reason;
+      delete candidate.detail;
+      if (used.has(candidate.tableId) || warned.has(candidate.tableId)) {
+         continue;
+      }
+      warned.add(candidate.tableId);
+      // Named like `notConsidered`: never a source the caller cannot list.
+      if (input.isVisibleSource && !input.isVisibleSource(verdict.sourceName)) {
+         continue;
+      }
+      warnings.push({
+         code: verdict.reason,
+         tableId: candidate.tableId,
+         sourceName: verdict.sourceName,
+         message: verdictWarningMessage(verdict.reason),
+      });
+   }
+   return warnings;
+}
+
+/**
+ * A caller-safe sentence for a verdict reason. Never the package warning's own
+ * text, which can carry a refusal's detail; that stays on the package's
+ * warnings and its status.
+ */
+export function verdictWarningMessage(reason: string): string {
+   switch (reason) {
+      case "storage_mode":
+         return "Built into storage, but the server's storage mode routes no query to it, so its queries are answered live.";
+      case "unreachable":
+         return "No source the package publishes reaches this table, so no query is answered from it.";
+      case "row_level_gate":
+         return "Every published entry point over this table carries a row-level gate it cannot keep yet, so its queries are answered live.";
+      case "refused":
+         return "The package refuses to serve this table, so its queries are answered live; the package's warnings say why.";
+      case "shadowed":
+         return "Its storage table is bound to a different source of the same name, so its queries are answered live.";
+      default:
+         return "This table carries a publish warning and serves live; the package's warnings say why.";
+   }
 }
 
 /**
