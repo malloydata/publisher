@@ -59,10 +59,7 @@ import {
 import { tryCompileMaterializeCompanion } from "./materialize_compile";
 import { rollingWindowsOf } from "./rolling_window";
 import { getMaterializeEnabled } from "../../../config";
-import {
-   classifyDynamicTerms,
-   type DynamicTerm,
-} from "./persist_dynamic_terms";
+import { admitGivenPositions, type DynamicTerm } from "./persist_dynamic_terms";
 import { resolvePartitionColumns } from "./persist_partition";
 import {
    deriveAnnotationFields,
@@ -235,7 +232,7 @@ function planDynamicFields(
    if (partition.ok && partition.columns.length > 0) {
       out.partition = partition.columns;
    }
-   const classified = classifyDynamicTerms(source);
+   const classified = admitGivenPositions(source);
    if (classified.ok && classified.terms.length > 0) {
       out.strippedTerms = classified.terms.map(wireTerm);
    }
