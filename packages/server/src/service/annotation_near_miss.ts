@@ -41,6 +41,7 @@ import {
    type AnnotationNote,
 } from "./annotations";
 import { collectAuthorizeNearMissesAllRoutes } from "./authorize";
+import { getMaterializeEnabled } from "../config";
 
 /** The code of a finding for an annotation that was reaching for one of Publisher's routes. */
 export const ANNOTATION_NEAR_MISS_CODE = "annotation-near-miss";
@@ -168,6 +169,9 @@ function intendedRoute(text: string): Intended | "malformed" | undefined {
    ) {
       return undefined;
    }
+   // `#(preaggregate)` is read only with the materialize switch on; off, it
+   // is still reported as reaching for `#@ preaggregate`, which works there.
+   if (read === "preaggregate" && getMaterializeEnabled()) return undefined;
 
    const route = routeOfNote(trimmed);
    if (route === undefined) {

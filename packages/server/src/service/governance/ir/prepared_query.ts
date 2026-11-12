@@ -138,3 +138,78 @@ export function probeFilterList<T>(view: PreparedQueryView): T[] | undefined {
    const ref = view.structRef as { filterList?: T[] } | undefined;
    return ref?.filterList;
 }
+
+/**
+ * One level of a query that reads its source's rows: the first stage, or the
+ * first stage of a `nest:` in it. What a stored rollup must reproduce to
+ * answer it (see `serve/rollup_variants.ts`).
+ */
+export interface QueryLevelFacts {
+   /** `reduce` (group_by/aggregate), `project` (select:), `index`, or another kind. */
+   kind: string;
+   /** The `where:` filters' text, in order. */
+   whereCodes: string[];
+   /** The `having:` filters' text (filters on an aggregate), in order. */
+   havingCodes: string[];
+   /**
+    * Each `nest:` defined inline at this level, by output name. A nest that
+    * names a view (`nest: by_category`) is not here: its stages are on the
+    * source, not the query.
+    */
+   nests: Map<string, QueryLevelFacts>;
+}
+
+interface IrStageLike {
+   type?: unknown;
+   filterList?: { code?: unknown; expressionType?: unknown }[];
+   queryFields?: {
+      type?: unknown;
+      name?: unknown;
+      as?: unknown;
+      path?: unknown;
+      pipeline?: unknown;
+   }[];
+}
+
+/**
+ * The first stage of a prepared query and of each inline nest in it, or
+ * undefined when the query has no stage. A later stage reads the previous
+ * stage's output, not the source's rows, so it is not read.
+ */
+export function queryLevelFacts(
+   view: PreparedQueryView,
+): QueryLevelFacts | undefined {
+   const pipeline = view.pipeline;
+   if (!Array.isArray(pipeline) || pipeline.length === 0) return undefined;
+   const read = (stage: IrStageLike, depth: number): QueryLevelFacts => {
+      const facts: QueryLevelFacts = {
+         kind: typeof stage.type === "string" ? stage.type : "unknown",
+         whereCodes: [],
+         havingCodes: [],
+         nests: new Map(),
+      };
+      for (const f of stage.filterList ?? []) {
+         const code = typeof f.code === "string" ? f.code : "";
+         if (f.expressionType === "scalar") facts.whereCodes.push(code);
+         else facts.havingCodes.push(code);
+      }
+      for (const field of stage.queryFields ?? []) {
+         const name =
+            typeof field.as === "string"
+               ? field.as
+               : typeof field.name === "string"
+                 ? field.name
+                 : Array.isArray(field.path)
+                   ? String(field.path[field.path.length - 1])
+                   : undefined;
+         if (name === undefined) continue;
+         if (field.type !== "turtle") continue;
+         const first = Array.isArray(field.pipeline)
+            ? (field.pipeline[0] as IrStageLike | undefined)
+            : undefined;
+         if (first && depth < 64) facts.nests.set(name, read(first, depth + 1));
+      }
+      return facts;
+   };
+   return read(pipeline[0] as IrStageLike, 0);
+}

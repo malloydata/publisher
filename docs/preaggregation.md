@@ -11,6 +11,32 @@ Queries do not change. They name the source they always named, ask for the measu
 
 This is the same machinery as [materialization](materialization.md) with a different trigger. `#@ persist` stores a source you wrote; `#@ preaggregate` stores a rollup Publisher derives from a measure you annotated. Both build through the same plan, manifest, and scheduler.
 
+## `#(preaggregate)` (materialization v2, behind `PUBLISHER_MATERIALIZE`)
+
+With `PUBLISHER_MATERIALIZE` on, write the rollup as `#(preaggregate)` on the measure, with its grain as a list:
+
+```malloy
+source: orders is duckdb.table('data/orders.parquet') extend {
+  dimension: order_day is order_time.day
+  #(preaggregate) grain=["category"]
+  #(preaggregate) grain=["category", "order_day"] storage="lake"
+  measure: revenue is amount.sum()
+  #(preaggregate) grain=["category"]
+  measure: aov is coalesce(amount.sum() / count(), 0)
+}
+```
+
+The rest of this page describes `#@ preaggregate`, which keeps working (deprecated). Where `#(preaggregate)` differs:
+
+- **Keys.** `grain=[…]` (required), and `storage=` or `namespace=`, never both. Any other key, a grain that is not a list of the source's own dimensions, or the annotation on anything but a measure is refused at publish.
+- **Which measures.** Read from the measure's own text: `count()`, `x.sum()`, `x.min()`, `x.max()` (and `sum(x)` and so on), each optionally filtered, references to other such measures, and arithmetic or scalar functions over them. Each aggregate is stored as its own partial and merged at read, so `revenue / order_count` stays a ratio of totals. `avg`, a distinct count (`count(x)`, `x.count()` on a field), `all()`, `exclude()` and other aggregates are refused at publish. Text outside the grammar (`pick`, a cast, a date literal, `|` in a filter) is a warning, and the measure serves live.
+- **Joins.** A source with a `join_many` or `join_cross` can be rolled up. An aggregate through a join (`carriers.fleet.sum()`) is stored only when the join's key (`carrier` in `join_one: carriers with carrier`) is in the grain; otherwise it is a warning and serves live. A grain dimension read through a `join_many` is a fan-out dimension: a query reads the rollup only when it groups by it, or fixes it to one value with `where:`, at every level that aggregates.
+- **Where it is declared.** A declaration belongs to the source that writes it. An extension inherits its base's rollups' meaning but does not get its own; an include-list item's annotation is the including source's. Each rollup is planned once, under the model that declares its base, and its name carries that model, so two same-named sources in two models never share a table.
+- **Access filters.** A rollup over a source whose `#(access_filter)` or `#(authorize)` reads a field the grain drops is not built (a warning). A gated entry point is answered live for now.
+- **A stored base.** A rollup builds from the author's rows, never from its base's stored table, so a rollup over a `#@ persist storage=` base builds and serves (#6293).
+- **What routes.** The query's text is compiled where its source's name means the rollup. It routes when every field it groups or filters by is in the grain, every aggregate is a stored measure's merge (an aggregate written in the query, a `having:` that counts rows, or a `select:` stage does not), and it sets no `timezone:`. A query that supplies a given routes. A named `view:` does not route yet. The path report names the reason for each skip.
+- **Givens.** A rollup whose build reads a given is not built (a warning): its table would hold one value's rows.
+
 ## Declare a rollup
 
 Annotate a **measure** with the grain to store it at:

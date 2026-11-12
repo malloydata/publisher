@@ -117,6 +117,10 @@ export interface FixedModelPolicy {
    siblingModelDefResolver?: SiblingModelDefResolver;
    /** The materialized tables the path report reads; omitted names none. */
    materializedTables?: MaterializedTableCatalog;
+   /** The per-query build manifest; omitted passes none. Read per call. */
+   freshBuildManifestEntries?: () => BuildManifest["entries"] | undefined;
+   /** The rollups' `sourceEntityId`s, stripped from the author's manifest. */
+   preaggregateEntityIds?: ReadonlySet<string>;
 }
 
 function fixedPolicy(
@@ -132,8 +136,8 @@ function fixedPolicy(
       discoveryCurationEnabled: () => discoveryCuration,
       queryBoundary: () => boundary,
       siblingModelDefResolver: () => sibling,
-      freshBuildManifestEntries: () => undefined,
-      preaggregateEntityIds: () => undefined,
+      freshBuildManifestEntries: () => fields.freshBuildManifestEntries?.(),
+      preaggregateEntityIds: () => fields.preaggregateEntityIds,
       materializedTables: () => tables,
    });
 }

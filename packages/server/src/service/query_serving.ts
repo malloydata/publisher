@@ -62,6 +62,10 @@ import {
 } from "./materialization/serve/query_path";
 import type { BuildManifest } from "./materialization/types";
 import {
+   RollupSkip,
+   type RollupVariantServe,
+} from "./materialization/serve/rollup_variants";
+import {
    readPreparedQuery,
    resolveStructRefSource,
 } from "./governance/ir/prepared_query";
@@ -102,9 +106,14 @@ export type RoutedExtra =
         kind: "rollup";
         /**
          * The composite member the compiled query resolved to: the rollup that
-         * answered, or the base when no rollup's grain covers the query.
+         * answered, or the base when no rollup's grain covers the query. For a
+         * `#(preaggregate)` rollup, the rollup that answered.
          */
         resolvedMember?: string;
+        /** A `#(preaggregate) storage=` rollup: how its table resolves. */
+        virtualMap?: VirtualMap;
+        /** A `#(preaggregate) storage=` rollup: its binding. */
+        binding?: ServeBinding;
      };
 
 /**
@@ -172,6 +181,17 @@ export function routedAnswer(route: RouteDecision<RoutedExtra>): Answer {
       tier: "rollup",
       routedRunnable: route.runnable,
       rollupMember: route.extra.resolvedMember,
+      // A stored rollup reads through `virtual()`; a run failure on it may
+      // degrade to live, since a rollup only accelerates (its binding's
+      // `preaggregate` origin never vetoes).
+      ...(route.extra.virtualMap
+         ? {
+              virtualMap: route.extra.virtualMap,
+              serveShapeBindings: route.extra.binding
+                 ? [route.extra.binding]
+                 : [],
+           }
+         : {}),
    });
 }
 
@@ -340,6 +360,8 @@ export interface QueryServingHost {
    admitsSourceByName(name: string): boolean;
    /** Every source's `sourceID` chain in the model. */
    sourceChains(): ReadonlyMap<string, readonly string[]>;
+   /** The `#(preaggregate)` rollup leg (materialization v2, phase 4). */
+   readonly rollupVariants: RollupVariantServe;
 }
 
 /**
@@ -359,6 +381,11 @@ export function routeCandidates(
       storageRoutingPossible: boolean;
       servedCopyPossible: boolean;
       preaggServeMaterializer: ModelMaterializer | undefined;
+      /**
+       * The caller's own compile, for the `#(preaggregate)` leg; absent when
+       * the leg is off (`materialize.enabled`) or the model has no rollup.
+       */
+      rollupVariantsFor?: QueryMaterializer;
    },
 ): Variant<RoutedExtra>[] {
    const {
@@ -370,6 +397,45 @@ export function routeCandidates(
       preaggServeMaterializer,
    } = args;
    const candidates: Variant<RoutedExtra>[] = [];
+   // `#(preaggregate)` rollups first (R1: rollup, then the nearest table,
+   // then live): the caller's text compiled where its source's name means
+   // the coarsest rollup that reproduces it.
+   if (args.rollupVariantsFor) {
+      const authorRunnable = args.rollupVariantsFor;
+      candidates.push({
+         kind: "rollup",
+         applicable: true,
+         attempt: async () => {
+            const answer = await host.rollupVariants.attempt({
+               queryString,
+               givens: surfaceGivens,
+               authorRunnable,
+               buildManifest,
+            });
+            return {
+               runnable: answer.runnable,
+               extra: {
+                  kind: "rollup",
+                  resolvedMember: answer.rollupSourceName,
+                  ...(answer.virtualMap
+                     ? { virtualMap: answer.virtualMap }
+                     : {}),
+                  ...(answer.binding ? { binding: answer.binding } : {}),
+               },
+            };
+         },
+         explain: (err) =>
+            err instanceof RollupSkip
+               ? { code: err.code, callerDetail: err.callerDetail }
+               : undefined,
+         onSkip: (err) => {
+            logger.debug("no #(preaggregate) rollup answers this query", {
+               modelPath: host.modelPath,
+               error: err instanceof Error ? err.message : String(err),
+            });
+         },
+      });
+   }
    // The served copy on `virtual` (materialization v2): the author's own
    // files with each stored source re-rooted on its table. Tried first when
    // enabled; a query it cannot answer falls through to the serve shape.
@@ -591,6 +657,9 @@ export async function queryPathFor(
       });
       const catalog = host.materializedTables();
       const plans = host.rollupPlans();
+      const variantRollups = host.rollupVariants.hasRollups()
+         ? host.rollupVariants.rollups()
+         : [];
       // Nothing materialized for this model: the answer is live and there is
       // nothing to name, so skip the chain walks and the catalog reads.
       if (
@@ -598,6 +667,7 @@ export async function queryPathFor(
          host.storageServe.serveBindings.length === 0 &&
          host.servedCopy.materializeBindings().length === 0 &&
          plans.length === 0 &&
+         variantRollups.length === 0 &&
          answer.considered.length === 0
       ) {
          return {
@@ -632,17 +702,22 @@ export async function queryPathFor(
             all: [
                ...host.storageServe.serveBindings,
                ...host.servedCopy.materializeBindings(),
+               ...host.rollupVariants.rollupBindings(),
             ].map(toTable),
             fresh: [
                ...host.storageServe.freshServeBindings(now),
                ...host.servedCopy.materializeBindings(now),
+               ...host.rollupVariants.rollupBindings(now),
             ].map(toTable),
          },
-         rollups: plans.map((p) => ({
-            rollupSourceName: p.rollupSourceName,
-            baseSourceName: p.baseSourceName,
-            ...(p.baseSourceID ? { baseSourceID: p.baseSourceID } : {}),
-         })),
+         rollups: [
+            ...plans.map((p) => ({
+               rollupSourceName: p.rollupSourceName,
+               baseSourceName: p.baseSourceName,
+               ...(p.baseSourceID ? { baseSourceID: p.baseSourceID } : {}),
+            })),
+            ...variantRollups.map((r) => ({ ...r, variant: true })),
+         ],
          // Every `storage=` source carries a package warning when the tier
          // is off or write-only (see storageWarnings).
          storageWarned: getPersistStorageMode() !== "on",
