@@ -169,20 +169,20 @@ describe("R4: an inlined join_many, served flat from its pair table, answers equ
 
    const served = [
       [
-         "parent-level measures only",
-         "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, avg_distance }",
+         "parent-level measures beside a child one",
+         "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, avg_distance, seg_n }",
       ],
       [
          "non-additive parent measures: avg, max, a distinct count",
-         "run: flights -> { group_by: long_haul; aggregate: avg_distance, longest_flight, carrier_count }",
+         "run: flights -> { group_by: long_haul; aggregate: avg_distance, longest_flight, carrier_count, seg_n }",
       ],
       [
          "a ratio of measures, and a filtered measure that reads a measure",
-         "run: flights -> { group_by: carrier; aggregate: distance_per_flight, long_flights }",
+         "run: flights -> { group_by: carrier; aggregate: distance_per_flight, long_flights, seg_total }",
       ],
       [
          "a parent-level filter",
-         "run: flights -> { where: long_haul; group_by: carrier; aggregate: flight_count, total_distance }",
+         "run: flights -> { where: long_haul; group_by: carrier; aggregate: flight_count, total_distance, seg_n }",
       ],
       [
          "child-level measures",
@@ -278,7 +278,7 @@ describe("R4: an inlined join_many, served flat from its pair table, answers equ
    const declined = [
       [
          "a parent aggregate written in the query",
-         "run: flights -> { group_by: carrier; aggregate: c is count(), d is distance.sum() }",
+         "run: flights -> { group_by: carrier; aggregate: c is count(), d is distance.sum(), seg_n }",
          "COUNT_SEMANTICS",
       ],
       [
@@ -313,7 +313,7 @@ describe("R4: an inlined join_many, served flat from its pair table, answers equ
       ],
       [
          "a window function",
-         "run: flights -> { group_by: carrier; aggregate: flight_count; calculate: r is rank() }",
+         "run: flights -> { group_by: carrier; aggregate: flight_count, seg_n; calculate: r is rank() }",
          "COUNT_SEMANTICS",
       ],
       [
@@ -323,7 +323,7 @@ describe("R4: an inlined join_many, served flat from its pair table, answers equ
       ],
       [
          "a select: over the source",
-         "run: flights -> { select: id, carrier }",
+         "run: flights -> { select: id, segments.miles }",
          "COUNT_SEMANTICS",
       ],
       [
@@ -345,6 +345,47 @@ describe("R4: an inlined join_many, served flat from its pair table, answers equ
          fixture.setBindings(fixture.bindings);
          const { path } = await fixture.runAsIs(malloy);
          expect(path?.considered?.map((c) => c.reason)).toContain(reason);
+      });
+   }
+
+   // A query that reads nothing through the inlined join is exact over the
+   // pair table under the parent-row flag, but costs a scan of every pair row
+   // where live scans the parents: the pair table is passed over for it.
+   const parentOnly = [
+      [
+         "parent-level measures only",
+         "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, avg_distance }",
+      ],
+      [
+         "non-additive parent measures only",
+         "run: flights -> { group_by: long_haul; aggregate: avg_distance, longest_flight, carrier_count }",
+      ],
+      [
+         "a ratio and a filtered measure over parent fields",
+         "run: flights -> { where: long_haul; group_by: carrier; aggregate: distance_per_flight, long_flights }",
+      ],
+      [
+         "a parent aggregate written in the query",
+         "run: flights -> { group_by: carrier; aggregate: c is count(), d is distance.sum() }",
+      ],
+      ["parent dimensions only", "run: flights -> { group_by: carrier }"],
+      ["a select: of parent fields", "run: flights -> { select: id, carrier }"],
+      [
+         "a many-to-many source, parent measures only",
+         "run: flights_notes -> { group_by: carrier; aggregate: flight_count, total_distance }",
+      ],
+   ] as const;
+   for (const [name, malloy] of parentOnly) {
+      it(`passes over the pair table, reading no child: ${name}`, async () => {
+         const run = await fixture.run({ name, malloy, expectLive: true });
+         expect(run.servedVia).toBeUndefined();
+         expect(run.live.length).toBeGreaterThan(0);
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         fixture.setBindings(fixture.bindings);
+         const { path } = await fixture.runAsIs(malloy);
+         const skipped = path?.considered?.find((c) => c.outcome === "skipped");
+         expect(skipped?.reason).toBe("COUNT_SEMANTICS");
+         expect(skipped?.detail).toMatch(/reads no child field/);
       });
    }
 

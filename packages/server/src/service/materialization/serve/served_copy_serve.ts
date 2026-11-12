@@ -50,7 +50,7 @@ import {
    resolveStructRefSource,
 } from "../../governance/ir/prepared_query";
 import {
-   flatPairQueryRefusal,
+   flatPairQueryVerdict,
    pairMeasureLevels,
    type FlatPair,
 } from "../../governance/ir/pair_flat_query";
@@ -90,14 +90,17 @@ type VirtualMap = Map<string, Map<string, string>>;
  * queried source in it) carries a `served-copy-not-served` warning;
  * `opt_out`, the queried source opts out with `#@ -persist`; `pair_shape`,
  * the query aggregates a pair table (an inlined join_many, served flat) in a
- * way that table does not reproduce exactly.
+ * way that table does not reproduce exactly; `pair_parent_only`, the query
+ * reads nothing through the inlined join, so the pair table (one row per
+ * child) is the costly way to answer it.
  */
 export type ServedCopyDeclineCode =
    | "time_zone"
    | "cross_connection"
    | "not_served"
    | "opt_out"
-   | "pair_shape";
+   | "pair_shape"
+   | "pair_parent_only";
 
 /** A query the served copy declines, with why. */
 export class ServedCopyDecline extends Error {
@@ -473,16 +476,31 @@ export class ServedCopyServe {
             ? SourceMap.of(compiled.modelDef).chainOf(struct as never)
             : [];
          const own = pairsRead.find((p) => chain.includes(p.sourceID));
-         const refusal =
+         const verdict =
             pairsRead.length > 1 || !own
-               ? "the query reads a pair table through a join to it, whose rows would fan out the joining source"
-               : flatPairQueryRefusal(prepared.query, struct, own.pair);
-         if (refusal !== undefined) {
-            decline(
-               `the pair table cannot answer this query exactly: ${refusal}`,
-               "pair_shape",
-               `The table stores an inlined join_many flat, which cannot answer this query exactly (${refusal}), so it is answered live.`,
-            );
+               ? {
+                    kind: "refused" as const,
+                    reason:
+                       "the query reads a pair table through a join to it, whose rows would fan out the joining source",
+                 }
+               : flatPairQueryVerdict(prepared.query, struct, own.pair);
+         if (verdict.kind !== "served") {
+            // A query that reads no child field goes to the next candidate
+            // (another stored table, or live) even when the flat rows would
+            // answer it exactly: they hold each parent once per child.
+            if (verdict.kind === "parent_only") {
+               decline(
+                  "the query reads nothing through the inlined join_many, so its pair table is not read for it",
+                  "pair_parent_only",
+                  "The table stores this source once per child of its inlined join_many and the query reads no child field, so it is answered without this table, which would read every child row to count each parent once.",
+               );
+            } else {
+               decline(
+                  `the pair table cannot answer this query exactly: ${verdict.reason}`,
+                  "pair_shape",
+                  `The table stores an inlined join_many flat, which cannot answer this query exactly (${verdict.reason}), so it is answered without this table.`,
+               );
+            }
          }
       }
       // A query that sets a timezone is answered live when it reads either

@@ -25,6 +25,13 @@
  * under the flag; {@link flatPairQueryRefusal} says whether one compiled query
  * is exact over the flat table, and why not. Anything it cannot read is a
  * refusal: the query is then answered live.
+ *
+ * Exact is not enough: a query that reads nothing through the join (only the
+ * source's own fields) reads each parent off its flagged row, which costs a
+ * scan of every pair row where live scans the parents alone (4 to 5.5 times
+ * live on the cheapest such query). {@link flatPairQueryVerdict} sends it to
+ * the next candidate ({@link pairQueryReadsChild} decides, and fails closed:
+ * a query it cannot read is not answered from the pair table either).
  */
 
 /** The pair table a query is checked against. */
@@ -536,4 +543,163 @@ function checkSegment(
 
 function pipelineOf(f: Field): Segment[] {
    return Array.isArray(f.pipeline) ? (f.pipeline as Segment[]) : [];
+}
+
+/**
+ * Whether a compiled query reads anything through the inlined join: a field,
+ * an aggregate, a filter, a group-by or a nest through it, directly or through
+ * the definitions it reads by name (a dimension, a measure, a view), in its
+ * first stage, a nest's, or the source's own `where:`. Undefined when the query
+ * cannot be read (a reference that does not resolve, a node of no known
+ * shape): the caller then treats it as not answerable from the pair table.
+ * `query` and `source` are as {@link flatPairQueryRefusal} takes them.
+ */
+export function pairQueryReadsChild(
+   query: { pipeline?: unknown } | undefined,
+   source: { fields?: unknown; filterList?: unknown } | undefined,
+   join: string,
+): boolean | undefined {
+   try {
+      const fields = fieldsByName(source?.fields);
+      const pipeline = Array.isArray(query?.pipeline)
+         ? (query?.pipeline as Segment[])
+         : [];
+      if (pipeline.length === 0) return undefined;
+      const scan = new ChildScan(join);
+      for (const c of Array.isArray(source?.filterList)
+         ? (source?.filterList as unknown[])
+         : []) {
+         if (scan.value(c, fields, 0)) return true;
+      }
+      return scan.stage(pipeline[0], fields, 0);
+   } catch (e) {
+      if (e instanceof Refusal) return undefined;
+      throw e;
+   }
+}
+
+/**
+ * The walk behind {@link pairQueryReadsChild}: every node of a stage, each
+ * field reference resolved by name through its definition, each nest by its
+ * first stage. Later stages read the first stage's output, not the source.
+ */
+class ChildScan {
+   /** Each definition's answer, read once however often it is named. */
+   private readonly resolved = new WeakMap<object, boolean>();
+   /** The joins whose condition is being read, which read their own fields. */
+   private readonly joining = new Set<string>();
+
+   constructor(private readonly join: string) {}
+
+   stage(segment: unknown, fields: Map<string, Field>, depth: number): boolean {
+      if (depth > MAX_DEPTH) throw new Refusal("a query nests too deep");
+      if (!segment || typeof segment !== "object") {
+         throw new Refusal("a stage that cannot be read");
+      }
+      const s = segment as Segment;
+      const local = new Map(fields);
+      for (const [n, f] of fieldsByName(s.extendSource)) local.set(n, f);
+      for (const [k, v] of Object.entries(s)) {
+         // A stage's own `extend:` is read where the stage names it; its
+         // output schema is what it produces, not what it reads.
+         if (k === "extendSource" || k === "outputStruct") continue;
+         if (this.value(v, local, depth + 1)) return true;
+      }
+      return false;
+   }
+
+   value(v: unknown, fields: Map<string, Field>, depth: number): boolean {
+      if (depth > MAX_DEPTH) throw new Refusal("an expression nests too deep");
+      if (Array.isArray(v)) {
+         return v.some((x) => this.value(x, fields, depth + 1));
+      }
+      if (!v || typeof v !== "object") return false;
+      const n = v as Node & Field & { type?: unknown };
+      if (Array.isArray(n.structPath) && n.structPath[0] === this.join) {
+         return true;
+      }
+      if (n.node === "field" || n.type === "fieldref") {
+         const p = pathOf(n);
+         if (!p) throw new Refusal("a field reference that cannot be read");
+         return this.path(p, fields, depth + 1);
+      }
+      if (n.type === "turtle" && n.pipeline !== undefined) {
+         const nest = pipelineOf(n);
+         if (nest.length === 0) throw new Refusal("a nest with no stage");
+         return this.stage(nest[0], fields, depth + 1);
+      }
+      return Object.values(v).some((x) => this.value(x, fields, depth + 1));
+   }
+
+   private path(
+      p: string[],
+      fields: Map<string, Field>,
+      depth: number,
+   ): boolean {
+      if (p[0] === this.join) return true;
+      const f = fields.get(p[0]);
+      if (!f) throw new Refusal(`the query reads \`${p[0]}\`, unresolved`);
+      if (p.length > 1) {
+         // Through another join: the joined source's own field, reached by
+         // that join's condition, which may read the inlined join (its reads
+         // of the join's own fields are the join's, not the parent's).
+         if (this.joining.has(p[0])) return false;
+         const on = (f as { onExpression?: unknown }).onExpression;
+         if (on === undefined) return false;
+         this.joining.add(p[0]);
+         try {
+            return this.value(on, fields, depth + 1);
+         } finally {
+            this.joining.delete(p[0]);
+         }
+      }
+      if (f.type === "turtle") {
+         const nest = pipelineOf(f);
+         if (nest.length === 0) throw new Refusal("a view with no stage");
+         return this.stage(nest[0], fields, depth + 1);
+      }
+      if (f.e === undefined) return false;
+      const known = this.resolved.get(f);
+      if (known !== undefined) return known;
+      const reads = this.value(f.e, fields, depth + 1);
+      this.resolved.set(f, reads);
+      return reads;
+   }
+}
+
+/** What {@link flatPairQueryVerdict} decides for one query over a pair table. */
+export type FlatPairVerdict =
+   /** Answered from the pair table, exactly. */
+   | { kind: "served" }
+   /**
+    * Reads nothing through the join: exact or not, the pair table is not the
+    * table to read it from; the next candidate answers.
+    */
+   | { kind: "parent_only" }
+   /** Not exact over the pair table, or not readable; `reason` says why. */
+   | { kind: "refused"; reason: string };
+
+/**
+ * Whether the pair table answers a compiled query: only one that reads the
+ * inlined join (anything else reads each parent off a flag over every pair
+ * row, slower than live) and that the flat rows reproduce exactly.
+ */
+export function flatPairQueryVerdict(
+   query: { pipeline?: unknown } | undefined,
+   source: { fields?: unknown; filterList?: unknown } | undefined,
+   pair: FlatPair,
+): FlatPairVerdict {
+   const child = pairQueryReadsChild(query, source, pair.join);
+   if (child === undefined) {
+      return {
+         kind: "refused",
+         reason:
+            "the query could not be read to tell whether it reads the inlined join",
+      };
+   }
+   if (!child) return { kind: "parent_only" };
+   const reason = flatPairQueryRefusal(query, source, pair);
+   return reason === undefined
+      ? { kind: "served" }
+      : { kind: "refused", reason };
 }
