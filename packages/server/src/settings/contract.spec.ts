@@ -1566,6 +1566,19 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION"),
       },
    ],
+   "materialize.enabled": [
+      { name: "unset", expect: value(false) },
+      {
+         name: "PUBLISHER_MATERIALIZE",
+         env: { PUBLISHER_MATERIALIZE: "true" },
+         expect: value(true),
+      },
+      {
+         name: "not a boolean",
+         env: { PUBLISHER_MATERIALIZE: "sometimes" },
+         expect: fails("PUBLISHER_MATERIALIZE"),
+      },
+   ],
    "persist.collisionEnforcementEnabled": [
       { name: "unset", expect: value(false) },
       {

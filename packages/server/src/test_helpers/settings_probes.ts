@@ -25,6 +25,7 @@ import {
    getMemoryGovernorConfig,
    getModelPageMode,
    getPartitionedWriteFlushThreshold,
+   getMaterializeEnabled,
    getPersistAddressIncludesDestination,
    getPersistCollisionEnforce,
    getPersistStorageMode,
@@ -159,6 +160,7 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    "persist.addressIncludesDestination": () =>
       getPersistAddressIncludesDestination(),
    "persist.collisionEnforcementEnabled": () => getPersistCollisionEnforce(),
+   "materialize.enabled": () => getMaterializeEnabled(),
    "materialization.schedulerEnabled": () =>
       getMaterializationSchedulerConfig() !== null,
    "materialization.schedulerIntervalMs": () =>

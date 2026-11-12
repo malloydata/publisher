@@ -92,6 +92,7 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
       "PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION",
    "persist.collisionEnforcementEnabled":
       "PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED",
+   "materialize.enabled": "PUBLISHER_MATERIALIZE_ENABLED",
    "materialization.schedulerEnabled":
       "PUBLISHER_MATERIALIZATION_SCHEDULER_ENABLED",
    "materialization.schedulerIntervalMs":
