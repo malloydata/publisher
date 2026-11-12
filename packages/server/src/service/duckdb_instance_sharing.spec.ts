@@ -8,6 +8,7 @@ import * as os from "os";
 import * as path from "path";
 import {
    canonicalDuckDBFile,
+   dbDuckDBInternalsMatch,
    DuckDBInstanceSettingsChangedError,
    installDuckDBInstanceSharing,
    instanceKeyOf,
@@ -234,6 +235,12 @@ describe("attach runs of one connection on one instance", () => {
       await expect(first).rejects.toThrow("unreachable host");
       expect(await second).toBe("ran");
    });
+});
+
+it("finds the db-duckdb internals it patches", () => {
+   // False skips sharing and the thread cap with only a warning, so an
+   // upgrade that reshapes them must fail here instead.
+   expect(dbDuckDBInternalsMatch()).toBe(true);
 });
 
 describe("the per-instance thread cap", () => {

@@ -172,11 +172,12 @@ export function installDuckDBInstanceSharing(): void {
    const detachInstance = proto.detachInstance;
    const buildInstanceOptions = proto.buildInstanceOptions;
    // This patches `@malloydata/db-duckdb` internals. If a release reshapes
-   // them, sharing is skipped (the second-instance limitation returns) rather
-   // than guessed at; duckdb_instance_sharing.spec.ts fails on the upgrade.
+   // them, sharing and the thread cap are skipped (the second-instance
+   // limitation and one-per-core pools return) rather than guessed at;
+   // duckdb_instance_sharing.spec.ts fails on the upgrade.
    if (!dbDuckDBInternalsMatch()) {
       logger.warn(
-         "DuckDB instance sharing is off: @malloydata/db-duckdb's internals changed shape",
+         "DuckDB instance sharing and the thread cap are off: @malloydata/db-duckdb's internals changed shape",
       );
       return;
    }
