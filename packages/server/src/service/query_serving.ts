@@ -68,7 +68,15 @@ import type {
    VariantSkipExplanation,
 } from "./query_router";
 
-/** How an answer was produced, for the query histogram and `servedFrom`. */
+/**
+ * How a query's answer was ultimately produced, once it reached the storage
+ * routing decision at all. `storage` = served from the materialized table via
+ * the virtual-source transform. `live_fallback` = it routed, then a run-time
+ * store failure degraded it to the live warehouse (a success the caller cannot
+ * distinguish from a storage hit, which is exactly why it is reported
+ * separately; on the error metric, the live retry failed too). Absent means
+ * the query never had a storage binding to consider.
+ */
 export type ServedFrom = "storage" | "live_fallback";
 
 /**

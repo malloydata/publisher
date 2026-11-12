@@ -258,15 +258,6 @@ const MALLOY_VERSION = (
 export type { OffSurfaceContext, QueryBoundaryPolicy } from "./model_policy";
 export { ModelPolicy, PackageModelPolicy } from "./model_policy";
 
-/**
- * How a query's answer was ultimately produced, once it reached the storage
- * routing decision at all. `storage` = served from the materialized table via
- * the virtual-source transform. `live_fallback` = it routed, then a run-time
- * store failure degraded it to the live warehouse — a success the caller cannot
- * distinguish from a storage hit, which is exactly why it is reported
- * separately. Absent means the query never had a storage binding to consider.
- */
-
 /** What {@link Model.runQuery} answers. */
 export interface ModelQueryResults {
    result: Malloy.Result;
@@ -3314,6 +3305,10 @@ export class Model {
             },
          );
          recordStorageServeRouting("runtime_live_fallback");
+         // From here the query is the live retry: a retry failure's error
+         // metric reads `live_fallback`, not a storage error the tier never
+         // answered.
+         answer = liveFallbackAnswer(answer);
          // The retry runs the LIVE compile, which `governed` is not (it is the
          // serve shape), so it is governed in its own right here: the same
          // bind, on the runnable that will execute. Today routing already
@@ -3365,8 +3360,8 @@ export class Model {
          } catch (retryError) {
             failQuery(retryError);
          }
-         // NOT a storage hit: servedFromOf reads `live_fallback` from here on.
-         answer = answeredWith(liveFallbackAnswer(answer), retryRead);
+         // NOT a storage hit: servedFromOf reads `live_fallback`.
+         answer = answeredWith(answer, retryRead);
          executionTime = performance.now() - startTime;
       }
       const {
