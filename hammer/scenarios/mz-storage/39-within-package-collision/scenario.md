@@ -30,7 +30,11 @@ opts out) is covered by `collision-enforce-refuses-publish`.
 
 ## Publisher
 
+The harness publishes the package, and a colliding publish is refused by
+default, so this publisher opts out to reach the load-time warning.
+
 - PERSIST_STORAGE_MODE: on
+- PERSIST_COLLISION_ENFORCE: false
 
 ## Data orders_pg.col_orders
 
