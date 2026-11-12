@@ -115,7 +115,7 @@
  */
 
 import { Annotations } from "@malloydata/malloy";
-import { ownLevelNotes } from "../../annotations";
+import { ownLevelNotes, sameNotePosition } from "../../annotations";
 import { declaredNotes } from "../../governance/ir/declared_notes";
 import {
    routeOfNote,
@@ -315,6 +315,12 @@ export interface MaterializePlan {
    /** One uniqueness check per inlined join (P8). */
    uniquenessChecks?: InlineUniquenessCheck[];
    /**
+    * The table takes the source's own name because the declaration has no
+    * `name=`, which the refusal of a colliding table name says (see
+    * `refuseCollidingMaterialize`).
+    */
+   nameDefaulted?: true;
+   /**
     * For an extension table (P10): the materialized parent whose build source
     * this source's build reads, so its table is computed from the parent's.
     * Absent: built over the raw chain.
@@ -440,6 +446,47 @@ function declaresOwnPersist(
       "@",
       "persist",
    );
+}
+
+/**
+ * Whether the source is persisted through a `#@ persist` it INHERITS (it
+ * extends or renames a persisted source, here or in an imported file) rather
+ * than declares, and the source that declares it when this model holds it.
+ * Read as Malloy reads it: the whole annotation chain decides whether the
+ * source persists, and {@link declaredNotes} decides which of those notes its
+ * own statement wrote. Undefined when it does not persist, or persists by its
+ * own annotation (see {@link declaresOwnPersist}).
+ */
+function inheritedPersist(
+   def: SourceDefLike,
+   contents: Readonly<Record<string, unknown>>,
+): { from?: string } | undefined {
+   const chain = new Annotations(
+      (def.annotations ?? {}) as ConstructorParameters<typeof Annotations>[0],
+   );
+   if (!routeHasKey(chain, "@", "persist")) return undefined;
+   const own = declaredNotes(def, contents);
+   const inherited = chain
+      .forRoute("@")
+      .filter(
+         (note) =>
+            !own.some(
+               (o) => o.at && note.at && sameNotePosition(o.at, note.at),
+            ),
+      );
+   if (inherited.length === 0) return undefined;
+   for (const [name, object] of Object.entries(contents)) {
+      if (object === def || !object || typeof object !== "object") continue;
+      const other = object as SourceDefLike;
+      if (!declaresOwnPersist(other, contents)) continue;
+      const declares = declaredNotes(other, contents).some((o) =>
+         inherited.some(
+            (note) => o.at && note.at && sameNotePosition(o.at, note.at),
+         ),
+      );
+      if (declares) return { from: name };
+   }
+   return {};
 }
 
 /**
@@ -887,6 +934,22 @@ export function planModelMaterialize(
          });
          continue;
       }
+      // A source that inherits `#@ persist` is already its base's table under
+      // v1 (an extension is its base's table): the plan holds it under its
+      // own sourceID, so a generated build source presented as it would
+      // overwrite that entry and read itself in the build graph.
+      const inherited = inheritedPersist(def, contents);
+      if (inherited) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason:
+               `the source inherits #@ persist from ${inherited.from ? `\`${inherited.from}\`` : "the source it is built on"}, ` +
+               "so it is already stored as that source's table; put #(materialize) on a " +
+               "source that does not inherit #@ persist, or drop the #@ persist",
+         });
+         continue;
+      }
       const deferred = declaration.keys.find((key) => key in DEFERRED_KEYS);
       if (deferred) {
          refused.push({
@@ -1037,6 +1100,7 @@ export function planModelMaterialize(
               }
             : {}),
          ...(inline.length > 0 ? { inline, uniquenessChecks } : {}),
+         ...(declaration.keys.includes("name") ? {} : { nameDefaulted: true }),
       });
    }
    chainExtensionTables(plans, map);

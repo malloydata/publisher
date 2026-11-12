@@ -86,6 +86,7 @@ import {
    collectColocatedSourceEligibility,
    collectSourceEligibility,
    collidingRollups,
+   refuseCollidingMaterialize,
    storedBaseOfRollup,
    type ColocatedSourceEligibility,
    type SourceEligibility,
@@ -1132,9 +1133,12 @@ export interface BuildPlanOutcome {
  * package-load worker as on the main thread.
  */
 export function deriveBuildPlanOutcome(
-   compiled: Omit<CompiledBuildPlan, "connections">,
+   collected: Omit<CompiledBuildPlan, "connections">,
    materializationConfig: WirePackageMaterialization | null,
 ): BuildPlanOutcome {
+   // Before anything reads the plan: a refused source is neither built nor
+   // served, and its warning replaces it (#6644).
+   const compiled = refuseCollidingMaterialize(collected);
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
    const incrementalDeclarations = collectIncrementalDeclarations(
       compiled.sources,
