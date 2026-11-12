@@ -126,3 +126,56 @@ export function derivedStructsReachable(
    }
    return found;
 }
+
+/**
+ * The source `struct` extends (`source: b is a extend { … }` records
+ * `extends: "a@url"`), resolved through the source registry; undefined for a
+ * source that extends nothing or whose base the registry does not hold.
+ */
+export function resolveExtendedSource(
+   struct: SourceDef,
+   modelDef: ModelDef | undefined,
+): SourceDef | undefined {
+   const id = (struct as unknown as { extends?: unknown }).extends;
+   if (typeof id !== "string" || !modelDef) return undefined;
+   const entry = modelDef.sourceRegistry?.[id]?.entry;
+   if (!entry) return undefined;
+   const declared =
+      entry.type === "source_registry_reference"
+         ? modelDef.contents[entry.name]
+         : entry;
+   return declared && isSourceDef(declared) && declared !== struct
+      ? declared
+      : undefined;
+}
+
+/**
+ * `roots` and every source their walks reach: the declaration each names
+ * ({@link resolveDeclaredSource}) and the source each extends
+ * ({@link resolveExtendedSource}), as well as what
+ * {@link derivedStructsReachable} follows. For a reader asking which sources a
+ * set of entry points reads, not which gates they inherit. Identity-guarded
+ * against cycles.
+ */
+export function structsReachedFrom(
+   roots: readonly SourceDef[],
+   modelDef: ModelDef | undefined,
+): SourceDef[] {
+   const seen = new Set<SourceDef>(roots);
+   const worklist: SourceDef[] = [...roots];
+   for (let i = 0; i < worklist.length; i++) {
+      const struct = worklist[i];
+      const declared = resolveDeclaredSource(struct, modelDef);
+      for (const next of [
+         declared.kind === "resolved" ? declared.source : undefined,
+         resolveExtendedSource(struct, modelDef),
+         resolveQuerySourceBase(struct, modelDef),
+         resolveCompositeResolvedBase(struct),
+      ]) {
+         if (!next || seen.has(next)) continue;
+         seen.add(next);
+         worklist.push(next);
+      }
+   }
+   return worklist;
+}

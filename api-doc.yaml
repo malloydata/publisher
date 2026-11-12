@@ -1498,7 +1498,9 @@ paths:
         name (if any) is untouched, no version is recorded, and the load's connections are
         closed. The answer is what a publish would answer for the tree itself: the same 400 or
         424 refusal, or 200 with the package as it would load, its `warnings` included, plus the
-        `location` it was loaded from. With package versioning on, the tree's `publisher.json`
+        `location` it was loaded from. The 200 also carries what a publish would build and serve:
+        the `buildPlan`, and `serveVerdicts`, each materialized source's serve verdict with each
+        stored source's named views compiled against a serve shape (no table is built). With package versioning on, the tree's `publisher.json`
         must declare a valid version, as a versioned publish requires (400
         `MANIFEST_VERSION_MISSING` or `MANIFEST_VERSION_INVALID`), and the 200 names it as
         `versionId`. Version lifecycle checks (a version that already exists, `latest`) are not
@@ -5073,6 +5075,87 @@ components:
           format: date-time
           description: When the in-progress load began. Present only while `loading` is true.
 
+    ServeVerdict:
+      type: object
+      description: >-
+        One materialized source's serve verdict: whether queries are answered
+        from its table. `reason` is an open string, so a later release can add
+        one; treat an unknown value as `live` for an unnamed cause.
+      required: [sourceName, sourceID, origin, tier, verdict, message]
+      properties:
+        sourceName:
+          type: string
+          description: >-
+            The source's name. A rollup's is generated and names no source in
+            any model file; its message names the base it pre-aggregates.
+        sourceID:
+          type: string
+          description: The source's identity, `name@modelURL`.
+        modelPath:
+          type: string
+          description: The model file that declares it.
+        origin:
+          type: string
+          description: >-
+            `persist` for a source a modeler annotated, `preaggregate` for a
+            rollup the publisher synthesized. A string, not an enum, so a new
+            kind of variant needs no client change.
+        tier:
+          type: string
+          description: >-
+            Where its table lives: `colocated` (the source's own connection) or
+            `storage` (a `storage=` destination).
+        verdict:
+          type: string
+          description: >-
+            `serves`: its table is bound and queries can be answered from it.
+            `not_built`: nothing is bound yet; queries are answered from its
+            table once a build binds it. `live`: no query is answered from it,
+            for `reason`, until something changes.
+        reason:
+          type: string
+          description: >-
+            For a `live` verdict, why: `refused` (the plan refused to build it),
+            `storage_mode` (`storage=` while `PERSIST_STORAGE_MODE` is not
+            `on`), `rollup_over_stored_base` (a rollup over a `storage=` base,
+            left out of the plan), `unreachable` (no source on the package's
+            published surface reads it), `row_level_gate` (every query through
+            it carries an `#(authorize)` or `#(access_filter)` gate, which the
+            storage tier and rollups cannot keep yet), `shadowed` (its storage
+            table is bound, but every model's source of that name is another
+            source).
+        message:
+          type: string
+          description: What the verdict means for this source, in a sentence.
+        fixes:
+          type: array
+          items:
+            type: string
+          description: For a `live` verdict, the changes that would let it serve.
+        views:
+          type: array
+          description: >-
+            On a dry run, for a source stored with `storage=`: each named view
+            on it, and whether it compiles against the serve shape. A view that
+            does not is answered live, and `detail` carries the compile error
+            that says why (usually a field the shape cannot reproduce).
+          items:
+            $ref: "#/components/schemas/ViewServeVerdict"
+
+    ViewServeVerdict:
+      type: object
+      required: [view, verdict]
+      properties:
+        view:
+          type: string
+          description: The named view.
+        verdict:
+          type: string
+          description: "`serves` or `live`."
+        detail:
+          type: string
+          description: For a `live` view, the compile error that sends it live.
+
     StorageServeBinding:
       type: object
       properties:
@@ -5292,6 +5375,27 @@ components:
 
     PackageStatusEntry:
       description: |
+        serveVerdicts:
+          type: array
+          readOnly: true
+          description: >-
+            Server-computed, read-only: for each source the package
+            materializes (each `#@ persist` source and each synthesized
+            rollup), whether queries are answered from its table, and when
+            not, why and what to change. Recomputed on every read from the
+            build plan and the binding as they stand, so it moves with each
+            bind. Absent when the package materializes nothing.
+
+
+            A `live` verdict is the package-level form of a live fallback
+            that is otherwise visible only per query: a source built into
+            storage while `PERSIST_STORAGE_MODE` is off, one no published
+            source reaches, one under a row-level gate the storage tier cannot
+            keep. `POST …/packages?dryRun=true` answers the same verdicts for a
+            package before it is published, with each stored source's named
+            views checked as well.
+          items:
+            $ref: "#/components/schemas/ServeVerdict"
         A package's entry in `GET /status`, carrying what an orchestrator reconciles
         a server from: which package or version it is, whether it is serving or
         loading, and which manifest is bound. The rest of the package's serving
@@ -5944,6 +6048,19 @@ components:
             **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.storageServeBindings`). Present on a package response only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
           items:
             $ref: "#/components/schemas/StorageServeBinding"
+        serveVerdicts:
+          type: array
+          readOnly: true
+          description: >-
+            Present only on the answer to `POST …/packages?dryRun=true`: the
+            serve verdict of each source the package would materialize, as
+            `PackageServingState.serveVerdicts` reports it once published,
+            plus each stored source's named views compiled against a serve
+            shape declared from the plan's output columns, which needs no
+            built table. A served package reports its verdicts at
+            `GET …/packages/{packageName}/status`.
+          items:
+            $ref: "#/components/schemas/ServeVerdict"
         buildPlan:
           deprecated: true
           oneOf:

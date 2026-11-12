@@ -1180,6 +1180,7 @@ export class Environment {
             archiveStatus: row.archiveStatus,
             status: this.describePackageStatus(packageName, row.versionId),
             ...loaded?.getOperationalFields(),
+            ...servingVerdicts(loaded),
          };
       }
       const resident = this.packages.get(packageName);
@@ -1197,6 +1198,7 @@ export class Environment {
          resource,
          status: this.describePackageStatus(packageName),
          ...resident?.getOperationalFields(),
+         ...servingVerdicts(resident),
       };
    }
 
@@ -2652,7 +2654,10 @@ export class Environment {
       options: {
          validate?: (pkg: Package) => string | undefined;
          readVersion: boolean;
-         describe: (pkg: Package, versionId: string | undefined) => T;
+         describe: (
+            pkg: Package,
+            versionId: string | undefined,
+         ) => T | Promise<T>;
       },
    ): Promise<T> {
       assertSafePackageName(packageName);
@@ -2686,7 +2691,10 @@ export class Environment {
       options: {
          validate?: (pkg: Package) => string | undefined;
          readVersion: boolean;
-         describe: (pkg: Package, versionId: string | undefined) => T;
+         describe: (
+            pkg: Package,
+            versionId: string | undefined,
+         ) => T | Promise<T>;
       },
    ): Promise<T> {
       const stagingPath = await this.stageDownload(packageName, downloader);
@@ -2704,7 +2712,8 @@ export class Environment {
             { dryRun: true },
          );
          try {
-            return options.describe(pkg, versionId);
+            // Awaited here: a preview compiles against the staged files.
+            return await options.describe(pkg, versionId);
          } finally {
             // Never served, so nothing is in flight on its connections.
             await Environment.releasePackageConnections(
@@ -4004,4 +4013,23 @@ export function extractPreambleFromSource(content: string): string {
    }
 
    return preambleLines.join("\n").trimEnd();
+}
+
+/**
+ * A loaded package's serve verdicts, for its serving state; nothing when it is
+ * not loaded or materializes nothing.
+ */
+function servingVerdicts(pkg: Package | undefined): {
+   serveVerdicts?: ReturnType<Package["getServeVerdicts"]>;
+} {
+   if (!pkg) return {};
+   try {
+      const verdicts = pkg.getServeVerdicts();
+      return verdicts.length > 0 ? { serveVerdicts: verdicts } : {};
+   } catch (error) {
+      logger.warn("Could not compute serve verdicts", {
+         error: error instanceof Error ? error.message : String(error),
+      });
+      return {};
+   }
 }

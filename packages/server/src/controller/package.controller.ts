@@ -541,11 +541,19 @@ export class PackageController {
                validate: (loaded) => formatPublishRejections(loaded),
                // A versioned publish refuses a tree with no valid version.
                readVersion: versioned,
-               describe: (pkg, versionId) => ({
-                  ...pkg.getPackageMetadata(),
-                  location: bodyLocation,
-                  ...(versionId !== undefined && { versionId }),
-               }),
+               describe: async (pkg, versionId) => {
+                  // What a publish would build and serve (#7090): the
+                  // verdicts, views checked, and the plan they come from.
+                  const serveVerdicts = await pkg.previewServeVerdicts();
+                  const buildPlan = pkg.getBuildPlan();
+                  return {
+                     ...pkg.getPackageMetadata(),
+                     location: bodyLocation,
+                     ...(versionId !== undefined && { versionId }),
+                     ...(buildPlan && { buildPlan }),
+                     ...(serveVerdicts.length > 0 && { serveVerdicts }),
+                  };
+               },
             },
          );
       } catch (error) {

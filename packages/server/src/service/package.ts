@@ -251,6 +251,7 @@ interface ReportDiscovery {
 export type ApiPackage = components["schemas"]["Package"];
 type ApiModelEntities = components["schemas"]["ModelEntities"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
+type ApiServeVerdict = components["schemas"]["ServeVerdict"];
 
 interface ClassificationMemo {
    forModels: Map<string, Model>;
@@ -309,6 +310,7 @@ const COMPUTED_PACKAGE_FIELDS = [
    "servedRevision",
    "sourceContentSha",
    "storageServeBindings",
+   "serveVerdicts",
    "buildPlan",
    "agents",
    "secureGivens",
@@ -384,6 +386,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       packagePath: () => this.packagePath,
       malloyConfig: () => this.malloyConfig,
       buildPlanPackage: this,
+      publishedSurface: () => this.publishedSurface(),
    });
    // The load path is the only writer of these; the accessors let a spec that
    // isolates a filter set them on the package, where they used to live
@@ -689,6 +692,35 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /** Decide discovery curation (`explores` listing, `export {}` filtering) for every model. */
    private applyDiscoveryPolicyToModels(): void {
       this.modelPolicy.setDiscoveryCuration(this.exploresDeclared());
+   }
+
+   /**
+    * The sources a caller may query, by the model that publishes them, or
+    * undefined when every source is queryable (no surface resolved, or
+    * `queryableSources: "all"`). The same files
+    * {@link applyQueryBoundaryToModels} admits: the surface's `.malloy` files,
+    * not its reports, each with the names its export closure lists.
+    */
+   private publishedSurface():
+      | { modelPath: string; names: string[] }[]
+      | undefined {
+      if (this.packageMetadata.queryableSources === "all") return undefined;
+      const exploreSet = this.exploreSet();
+      if (!this.exploresDeclared() || !exploreSet) return undefined;
+      const out: { modelPath: string; names: string[] }[] = [];
+      for (const [modelPath, model] of this.models) {
+         if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+         if (!exploreSet.has(modelPath) || this.isServedReport(modelPath)) {
+            continue;
+         }
+         out.push({
+            modelPath,
+            names: (model.getSources() ?? []).flatMap((source) =>
+               source.name ? [source.name] : [],
+            ),
+         });
+      }
+      return out;
    }
 
    /**
@@ -1890,6 +1922,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.materialization.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),
          ...this.materialization.persistRefusalWarnings(),
+         ...this.materialization.unreachableMaterializationWarnings(),
          // Not in exploresWarnings: an import-only file must not block publish.
          ...this.emptyDiscoveryWarnings(),
          ...deprecatedFormatWarnings(this.models),
@@ -2190,6 +2223,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.materialization.droppedPersistWarnings(),
          ...this.materialization.annotationFindingWarnings(),
          ...this.materialization.rollupsOverStoredBaseWarnings(),
+         ...this.materialization.unreachableMaterializationWarnings(),
          ...this.preaggregateAccessWarnings(),
          ...this.annotationNearMissWarnings(),
       ].filter((warning) => warning.code !== undefined);
@@ -2220,6 +2254,24 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          }
       }
       return warnings;
+   }
+
+   /**
+    * Each materialized source's serve verdict, as the binding stands now (see
+    * {@link PackageMaterialization.serveVerdicts}). Served at
+    * `GET …/packages/{pkg}/status`; cheap enough to read on every poll.
+    */
+   public getServeVerdicts(): ApiServeVerdict[] {
+      return this.materialization.serveVerdicts();
+   }
+
+   /**
+    * {@link getServeVerdicts} with each stored source's named views compiled
+    * against a serve shape declared from the plan, before anything is built
+    * (ms2data/service#7090). For a dry run: it compiles.
+    */
+   public async previewServeVerdicts(): Promise<ApiServeVerdict[]> {
+      return this.materialization.previewServeVerdicts();
    }
 
    /** See {@link PackageMaterialization.preaggregateAccessWarnings}. */

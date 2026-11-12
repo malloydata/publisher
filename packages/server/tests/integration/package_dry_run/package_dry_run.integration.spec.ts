@@ -111,6 +111,54 @@ describe("a dry-run publish", () => {
       ).toBe(404);
    }, 60_000);
 
+   // ms2data/service#7090: what a publish would build and serve, before it.
+   it("previews what the package would build and serve, and the status of a published one agrees", async () => {
+      const files = {
+         "orders.malloy": `##! experimental.persistence
+#@ persist name="orders_t"
+source: orders is ${ROWS} -> { select: * }
+
+#@ persist name="staging_t"
+source: staging is ${ROWS} -> { group_by: channel }
+
+source: orders_public is orders extend { measure: n is count() }
+`,
+         "index.malloy": `import "orders.malloy"\nexport { orders_public }\n`,
+      };
+      const { status, json } = await post(
+         "preview",
+         writePackage("preview", files),
+         true,
+      );
+      expect(status).toBe(200);
+      const verdicts = json.serveVerdicts as {
+         sourceName: string;
+         verdict: string;
+         reason?: string;
+      }[];
+      const staging = verdicts.find((v) => v.sourceName === "staging");
+      expect(staging).toMatchObject({ verdict: "live", reason: "unreachable" });
+      expect(verdicts.find((v) => v.sourceName === "orders")?.verdict).toBe(
+         "not_built",
+      );
+      const plan = json.buildPlan as { sources: Record<string, unknown> };
+      expect(Object.keys(plan.sources).length).toBe(verdicts.length);
+      expect(await listed()).not.toContain("preview");
+
+      // Published, its serving state carries the same verdicts.
+      expect(
+         (await post("preview", writePackage("preview", files), false)).status,
+      ).toBe(200);
+      const served = (
+         await get(`/environments/${ENV_NAME}/packages/preview/status`)
+      ).json;
+      expect(
+         (
+            served.serveVerdicts as { sourceName: string; reason?: string }[]
+         ).map((v) => [v.sourceName, v.reason]),
+      ).toEqual(verdicts.map((v) => [v.sourceName, v.reason]));
+   }, 60_000);
+
    it("answers a tree that does not compile with the refusal a publish would give", async () => {
       const location = writePackage("broken", {
          "orders.malloy": `source: orders is ${ROWS} extend { dimension: x is nope }\n`,

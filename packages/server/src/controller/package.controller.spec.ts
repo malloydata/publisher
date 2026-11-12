@@ -1909,6 +1909,8 @@ describe("PackageController.dryRunPackage", () => {
 
    const loadedPackage = {
       getPackageMetadata: () => ({ name: "pkg", warnings: [] }),
+      previewServeVerdicts: async () => [],
+      getBuildPlan: () => null,
    };
    const body = { name: "pkg", location: "gs://bucket/pkg.zip" };
 
@@ -1933,6 +1935,31 @@ describe("PackageController.dryRunPackage", () => {
          location: "gs://bucket/pkg.zip",
       });
       expect(seen[0].readVersion).toBe(false);
+   });
+
+   // ms2data/service#7090: what a publish would build and serve.
+   it("adds the build plan and the previewed serve verdicts when the package materializes", async () => {
+      const buildPlan = { graphs: [], sources: {} };
+      const verdict = {
+         sourceName: "orders",
+         sourceID: "orders@file:///pkg/m.malloy",
+         origin: "persist",
+         tier: "colocated",
+         verdict: "not_built",
+         message: "`orders` will serve from its table once a build binds it.",
+      };
+      const { controller } = controllerWith(async (options) =>
+         options.describe(
+            {
+               ...loadedPackage,
+               previewServeVerdicts: async () => [verdict],
+               getBuildPlan: () => buildPlan,
+            },
+            undefined,
+         ),
+      );
+      const answer = await controller.dryRunPackage("env", body);
+      expect(answer).toMatchObject({ buildPlan, serveVerdicts: [verdict] });
    });
 
    it("with versioning on, reads the tree's version and names it in the answer", async () => {

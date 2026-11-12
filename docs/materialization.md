@@ -451,6 +451,46 @@ rest, give the field a native cast in the model so the warehouse returns the dec
 example `amount_text::"double"`: a cast to a type Malloy already believes the field has, such as
 `::number` here, emits no SQL.
 
+## Will it serve? The serve verdict
+
+Every source a package materializes (each `#@ persist` source, and each rollup a `#@ preaggregate`
+synthesizes) carries a **serve verdict**: whether queries are answered from its table, and when
+not, why and what to change. A materialized table that no query reads otherwise looks exactly like
+a working one: the build succeeds, the manifest binds, and every query is quietly answered live.
+
+`GET …/packages/{pkg}/status` reports the verdicts as `serveVerdicts`, recomputed from the build
+plan and the binding on every read:
+
+| `verdict` | Meaning |
+| --- | --- |
+| `serves` | Its table is bound, and queries can be answered from it. |
+| `not_built` | Nothing is bound yet; queries are answered from its table once a build binds it. |
+| `live` | No query is answered from it until something changes. `reason` says why and `fixes` says what to change. |
+
+A `live` verdict's `reason`:
+
+| `reason` | Why | Fix |
+| --- | --- | --- |
+| `refused` | The plan refused to build it (the build plan's `refusedSources` names why). | Remove what the refusal names. |
+| `storage_mode` | `storage=` while `PERSIST_STORAGE_MODE` is not `on`. | Turn the mode on, or drop `storage=`. |
+| `rollup_over_stored_base` | A rollup over a `storage=` base, left out of the plan. | Declare the rollup on a source the base is built from. |
+| `unreachable` | No source on the package's published surface reads it: `index.malloy` hides it, and nothing it publishes is built on it, extends it or joins it. | Publish it, or a source built on it, or drop the annotation. |
+| `row_level_gate` | Every query through it carries an `#(authorize)` or `#(access_filter)` gate, which the storage tier and rollups cannot keep yet. | Materialize without `storage=`, or move the gate onto an entry point over the table. |
+| `shadowed` | Its storage table is bound, but every model's source of that name is another source. | Rename it. |
+
+`unreachable` is also a publish warning, code `materialization-unreachable`: the table is built
+for no query. The other `live` reasons already carry warnings of their own.
+
+**Preview before publishing.** `POST …/packages?dryRun=true` answers the same verdicts, plus the
+`buildPlan`, for a package that is not published. For a source stored with `storage=` it also
+compiles each named view against a serve shape declared from the plan's output columns, which needs
+no built table, and lists it under `views` as `serves` or `live` with the compile error. Use it to
+learn what a change builds and serves without a publish and a build per attempt.
+
+A `views` entry that says the shape left the source's views off is what serving does today: when
+one view of a stored source does not compile against its stored columns, the serve shape drops all
+of that source's views, and each is answered live.
+
 ## The persistence policy (the publish gate)
 
 Package-level persistence policy lives at the root of `publisher.json`:
