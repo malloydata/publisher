@@ -56,10 +56,9 @@
  * - A materialized extension builds from its own source over the raw tables,
  *   not from its parent's build source (P10): building over the parent needs
  *   the rewriter's re-rooted copy, so it waits for it.
- * - Given-reading `where:` terms (P2) are not stripped from the build, and a
- *   dimension that reads a given is not left out of it: a source with either
- *   is refused by the same eligibility gates that refuse it under `#@ persist`
- *   today.
+ * - A dimension that reads a given is not left out of the build: a source
+ *   with one is refused by the same eligibility gates that refuse it under
+ *   `#@ persist` today.
  * - A dimension that depends on the query time zone (`hour(ts)`) is stored as
  *   the build computes it; the plan computes it at read instead, which needs
  *   the rewriter's served copy to tell such a column apart.
@@ -73,6 +72,27 @@
  * read and an incremental refresh deletes below it. Any other current-time
  * term refuses the source. A dimension whose value depends on the current time
  * is not stored: the served copy keeps its definition and computes it at read.
+ *
+ * Given-reading `where:` terms (P2). A `where:` that reads a given is left
+ * out of the build and re-applied at read, so the table holds every caller's
+ * rows and each read filters to its own. The build cannot simply select from
+ * the source, which applies every `where:` it has, so the generator writes a
+ * build copy of the author's model for each such source
+ * (`<model>.<n>.materialize-build.malloy`, an overlay like the companion) in
+ * which that source's terms, and no other's, are replaced by `true`; builds
+ * from the copy's source; and writes the terms onto the generated source's own
+ * `extend { where: … }`, where Malloy's persistence leaves them out of the
+ * build SQL and v1's machinery reports them as stripped terms
+ * (`strippedTerms`, the merge-key scope, the eligibility gate). The served
+ * copy keeps each term because it is in the declaration's own trailing
+ * `extend` run, which the re-root keeps as written; both sides read that run
+ * with one reader (`../declaration_text.ts`). A term is only taken out when
+ * that holds, and the source is refused otherwise: a term written on a source
+ * this one extends, or anywhere in its declaration but that run (the re-root
+ * would drop it); one that reads a field the table does not store (it could
+ * not be re-applied over the table); one whose text cannot be found exactly
+ * once where the compiler says it is; and a source whose build reads a
+ * `#@ persist` source (the copy would plan that source a second time).
  *
  * A declaration that is not built is reported as a package warning
  * (`materialize-not-built`), so an author sees why, and the source serves live.
@@ -89,7 +109,15 @@ import {
 } from "../../annotation_reader";
 import { annotationValue, identifier, stringLiteral } from "../../malloy_text";
 import { parseRouteTag, routeHasKey } from "../../motly";
-import { classifyWhereTerms, currentTimeFields } from "./persist_dynamic_terms";
+import { declarationSpans } from "../declaration_text";
+import { offsetOf } from "../malloy_lexer";
+import {
+   classifyWhereTerms,
+   currentTimeFields,
+   type ClassifiedWhereTerm,
+   type MalloyRange,
+   type TermUse,
+} from "./persist_dynamic_terms";
 import { rollingWindowTerms, type CurrentTimeReadTerm } from "./rolling_window";
 import { SourceMap, type FieldJoinReads, type SourceJoin } from "./source_map";
 
@@ -98,6 +126,21 @@ export const MATERIALIZE_ROUTE = "materialize";
 
 /** Appended to an author model path to name its generated build companion. */
 export const MATERIALIZE_COMPANION_SUFFIX = ".materialize.malloy";
+
+/**
+ * Ends the name of a build copy: the author's file with one materialized
+ * source's given-reading `where:` terms taken out (P2).
+ */
+export const MATERIALIZE_BUILD_COPY_SUFFIX = ".materialize-build.malloy";
+
+/**
+ * The `index`th build copy of an author model, by its file name. One copy per
+ * source with read-time terms, so each source's build leaves out its own
+ * terms and no other's (see {@link buildCopyText}).
+ */
+export function buildCopyName(modelFileName: string, index: number): string {
+   return `${modelFileName}.${index}${MATERIALIZE_BUILD_COPY_SUFFIX}`;
+}
 
 /** The generated build source's name for a materialized source. */
 export function buildSourceName(declaredName: string): string {
@@ -174,14 +217,55 @@ export interface InlineUniquenessCheck {
 }
 
 /**
+ * A given-reading `where:` term a materialized source's build leaves out and
+ * its served copy keeps (P2). `columns` are the stored columns it reads, so a
+ * read over the table can apply it. The served copy writes nothing for it:
+ * the term is in the declaration's own trailing `extend`, which the re-root
+ * keeps as written (see {@link termSpans}).
+ */
+export interface GivenReadTerm {
+   kind: "given";
+   /** The term as the author wrote it, verbatim. */
+   code: string;
+   /** The givens it reads. */
+   givens: string[];
+   /** The stored columns it reads. */
+   columns: string[];
+   /** Where it reads each field and given, in the declaring file. */
+   at: TermUse[];
+}
+
+/**
  * A `where:` term of a materialized source that depends on the read, so the
  * served copy applies it again over the stored table, by what it reads
- * (`classifyWhereTerms`, the one term classifier). A current-time term
- * (rolling_window.ts) is built as written, since the build's own `now` stores
- * the widest set, and is also the bound an incremental refresh deletes below.
- * A given-reading term (P2) joins this union as its own `kind`.
+ * (`classifyWhereTerms`, the one term classifier), told apart by `kind`. A
+ * current-time term (rolling_window.ts) is built as written, since the
+ * build's own `now` stores the widest set, and is also the bound an
+ * incremental refresh deletes below. A given-reading term (P2) is left out of
+ * the build and kept by the served copy as the author wrote it.
  */
-export type MaterializeReadTimeTerm = CurrentTimeReadTerm;
+export type MaterializeReadTimeTerm = CurrentTimeReadTerm | GivenReadTerm;
+
+/** The given-reading terms (P2) among a plan's read-time terms. */
+export function givenReadTerms(
+   plan: Pick<MaterializePlan, "readTimeTerms">,
+): GivenReadTerm[] {
+   return (plan.readTimeTerms ?? []).filter(
+      (t): t is GivenReadTerm => t.kind === "given",
+   );
+}
+
+/** A given a read-time term reads, and the file that declares it. */
+export interface MaterializeGivenDeclaration {
+   name: string;
+   url: string;
+   /**
+    * The path the generated file imports it from, relative to the companion;
+    * set by the caller that knows the package layout. Absent: the author's
+    * model, which declares it.
+    */
+   from?: string;
+}
 
 /** What the generator writes for one `#(materialize)` source. */
 export interface MaterializePlan {
@@ -203,6 +287,10 @@ export interface MaterializePlan {
     * again over the stored table at every read. Absent when it has none.
     */
    readTimeTerms?: MaterializeReadTimeTerm[];
+   /** The declaration's range in its declaring file, when it has given terms. */
+   declaration?: TermUse;
+   /** The givens its given-reading terms read, for the generated file to import. */
+   givenDeclarations?: MaterializeGivenDeclaration[];
    /** The joins the declaration inlines (`inline=[…]`), each a join_one. */
    inline?: string[];
    /** One uniqueness check per inlined join (P8). */
@@ -551,6 +639,156 @@ function inlineRefusal(
    return undefined;
 }
 
+/** Whether `inner` lies within `outer` (both zero-based, end exclusive). */
+function rangeWithin(inner: MalloyRange, outer: MalloyRange): boolean {
+   const before = (
+      a: { line: number; character: number },
+      b: { line: number; character: number },
+   ) => a.line < b.line || (a.line === b.line && a.character <= b.character);
+   return before(outer.start, inner.start) && before(inner.end, outer.end);
+}
+
+/** A compiled declaration's location, or undefined when it has none. */
+function declarationOf(def: SourceDefLike): TermUse | undefined {
+   const location = def.location as
+      | { url?: unknown; range?: MalloyRange }
+      | undefined;
+   if (
+      typeof location?.url !== "string" ||
+      typeof location.range?.start?.line !== "number" ||
+      typeof location.range?.end?.line !== "number"
+   ) {
+      return undefined;
+   }
+   return { url: location.url, range: location.range };
+}
+
+/**
+ * The given-reading `where:` terms of a materialized source (the `given` kind
+ * of its classified terms, {@link classifyWhereTerms}), each one its own
+ * declaration writes and over stored columns only, or why one is not (P2).
+ * See the module comment for why each refusal is one. A term that reads both
+ * a given and the current time is not this function's: rolling_window.ts
+ * refuses it.
+ */
+export function readTimeTermsOf(
+   def: SourceDefLike,
+   classified: readonly ClassifiedWhereTerm[],
+   columns: readonly MaterializeColumn[],
+   givens: Record<string, unknown> = {},
+):
+   | {
+        ok: true;
+        terms: GivenReadTerm[];
+        declaration?: TermUse;
+        givenDeclarations?: MaterializeGivenDeclaration[];
+     }
+   | { ok: false; reason: string } {
+   const located = classified.flatMap(({ dependsOn }) =>
+      dependsOn.kind === "given"
+         ? [
+              {
+                 ...dependsOn.term,
+                 at: dependsOn.at,
+                 givenIds: dependsOn.givenIds,
+              },
+           ]
+         : [],
+   );
+   if (located.length === 0) return { ok: true, terms: [] };
+   const declaration = declarationOf(def);
+   const stored = new Set(columns.map((c) => c.column));
+   const terms: GivenReadTerm[] = [];
+   const givenDeclarations = new Map<string, string>();
+   for (const term of located) {
+      // malloy-text: markdown code formatting in a refusal reason, not Malloy
+      const shown = term.code ? `\`where: ${term.code}\`` : "a `where:`";
+      if (term.givens.length === 0 || term.code === "") {
+         return {
+            ok: false,
+            reason: `${shown} reads a given that could not be read back, so it cannot be left out of the build`,
+         };
+      }
+      if (
+         !declaration ||
+         term.at.length === 0 ||
+         !term.at.every(
+            (use) =>
+               use.url === declaration.url &&
+               rangeWithin(use.range, declaration.range),
+         )
+      ) {
+         return {
+            ok: false,
+            reason:
+               `${shown} reads a given and is written on a source this one ` +
+               `is built from, not on this source's own declaration; the ` +
+               `served copy re-roots only this declaration, so it could not ` +
+               `re-apply the term at read. Move the \`where:\` onto this ` +
+               `source, or materialize the source that writes it`,
+         };
+      }
+      if (
+         term.columns.length === 0 ||
+         !term.columns.every((column) => stored.has(column))
+      ) {
+         return {
+            ok: false,
+            reason:
+               `${shown} reads a given and a field the table does not store ` +
+               `(only public dimensions of this source are stored), so it ` +
+               `could not be re-applied over the table at read`,
+         };
+      }
+      // The generated `where:` reads each given by the name the author wrote,
+      // so each must be importable under that name from the file declaring it.
+      const declared = term.givenIds.map((id) =>
+         givenDeclarationOf(givens[id]),
+      );
+      if (
+         declared.length === 0 ||
+         declared.some((d) => d === undefined) ||
+         [...new Set(declared.map((d) => d?.name))].sort().join() !==
+            [...new Set(term.givens)].sort().join()
+      ) {
+         return {
+            ok: false,
+            reason: `${shown} reads a given whose declaration could not be read back, so the build cannot re-write the term`,
+         };
+      }
+      for (const d of declared as { name: string; url: string }[]) {
+         givenDeclarations.set(d.name, d.url);
+      }
+      terms.push({
+         kind: "given",
+         code: term.code,
+         givens: term.givens,
+         columns: term.columns,
+         at: term.at,
+      });
+   }
+   return {
+      ok: true,
+      terms,
+      declaration,
+      givenDeclarations: [...givenDeclarations]
+         .map(([name, url]) => ({ name, url }))
+         .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+   };
+}
+
+/** A compiled given's name and declaring file, or undefined. */
+function givenDeclarationOf(
+   given: unknown,
+): { name: string; url: string } | undefined {
+   const g = given as
+      | { name?: unknown; location?: { url?: unknown } }
+      | undefined;
+   return typeof g?.name === "string" && typeof g.location?.url === "string"
+      ? { name: g.name, url: g.location.url }
+      : undefined;
+}
+
 /**
  * Plan the `#(materialize)` sources a compiled model's `contents` declares,
  * sorted by source name so the generated text does not depend on declaration
@@ -566,6 +804,7 @@ function inlineRefusal(
 export function planModelMaterialize(
    contents: Record<string, unknown>,
    declaredHere?: (declaringURL: string) => boolean,
+   givens?: Record<string, unknown>,
 ): {
    plans: MaterializePlan[];
    refused: MaterializeRefusal[];
@@ -677,8 +916,9 @@ export function planModelMaterialize(
          });
          continue;
       }
+      const classified = classifyWhereTerms(def);
       const window = rollingWindowTerms(
-         classifyWhereTerms(def),
+         classified,
          new Map(columns.map((c) => [c.column, columnType(def, c.dimension)])),
       );
       if (!window.ok) {
@@ -686,6 +926,15 @@ export function planModelMaterialize(
             sourceName: name,
             sourceID: def.sourceID,
             reason: window.detail,
+         });
+         continue;
+      }
+      const readTime = readTimeTermsOf(def, classified, columns, givens);
+      if (!readTime.ok) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: readTime.reason,
          });
          continue;
       }
@@ -743,7 +992,15 @@ export function planModelMaterialize(
          buildSourceName: build,
          columns,
          persist,
-         ...(window.terms.length > 0 ? { readTimeTerms: window.terms } : {}),
+         ...(window.terms.length + readTime.terms.length > 0
+            ? { readTimeTerms: [...window.terms, ...readTime.terms] }
+            : {}),
+         ...(readTime.terms.length > 0
+            ? {
+                 declaration: readTime.declaration,
+                 givenDeclarations: readTime.givenDeclarations,
+              }
+            : {}),
          ...(inline.length > 0 ? { inline, uniquenessChecks } : {}),
       });
    }
@@ -796,11 +1053,16 @@ function emitBuildSource(plan: MaterializePlan): string {
             : `    ${identifier(c.column)} is ${identifier(c.join)}.${identifier(c.dimension)}`,
       )
       .join(",\n");
+   const given = givenReadTerms(plan);
+   // malloy-text: each term is the author's own given-reading where:, re-applied as written on its own declaration
+   const readTime = given.length
+      ? ` extend {\n${given.map((term) => `  where: ${term.code}`).join("\n")}\n}`
+      : "";
    return `${persistLine(plan)}
 source: ${identifier(plan.buildSourceName)} is ${identifier(importAlias(plan))} -> {
   select:
 ${select}
-}`;
+}${readTime}`;
 }
 
 /**
@@ -829,6 +1091,102 @@ function importAlias(plan: MaterializePlan): string {
 }
 
 /**
+ * The build copy of one planned source's declaring file: `text` with that
+ * source's read-time terms replaced by `true` (P2), so a query over the
+ * copy's source applies every `where:` but those, or why a term cannot be
+ * placed (see {@link termSpans}), which refuses the source rather than guess.
+ *
+ * One copy per source, never one for the file: a copy with two sources' terms
+ * taken out would let the one source's build read the other (a join to it, a
+ * query over it) without that other's term, and store its rows for every
+ * caller. In a copy of its own, a source that reads another such source still
+ * reads that one's given, and the eligibility gate refuses its build
+ * (`given_in_persisted_query`).
+ */
+export function buildCopyText(
+   text: string,
+   plan: MaterializePlan,
+): { copy: string } | { reason: string } {
+   const found =
+      plan.declaration && givenReadTerms(plan).length > 0
+         ? termSpans(text, plan.declaration, givenReadTerms(plan))
+         : { reason: NOT_FOUND };
+   if ("reason" in found) return found;
+   let copy = text;
+   for (const span of [...found.spans].sort((a, b) => b.start - a.start)) {
+      copy = `${copy.slice(0, span.start)}true${copy.slice(span.end)}`;
+   }
+   return { copy };
+}
+
+const NOT_FOUND =
+   "a `where:` reading a given could not be found as written in the " +
+   "source's declaration, so it cannot be left out of the build";
+
+/**
+ * Each term's span in `text`, or why one cannot be taken out.
+ *
+ * A term is found as its verbatim text (`code`) at the one occurrence inside
+ * the declaration that covers every place the compiler says it reads a field
+ * or a given, so the same text in a comment, a string, another term or
+ * another source never matches; none, or more than one, is refused.
+ *
+ * The occurrence must also lie in the declaration's trailing `extend { … }`
+ * run, read with the re-root rewriter's own reader ({@link declarationSpans}):
+ * that run is the only text the served copy keeps, so a term written anywhere
+ * else (a parenthesised head, an inline `extend` in the base) would be built
+ * out of the table and then never re-applied. The served copy refuses such a
+ * source at read too (`read_terms_not_kept`); refusing it here means its
+ * table is never built for nothing.
+ */
+function termSpans(
+   text: string,
+   declaration: TermUse,
+   terms: readonly GivenReadTerm[],
+): { spans: { start: number; end: number }[] } | { reason: string } {
+   const from = offsetOf(text, declaration.range.start);
+   const to = offsetOf(text, declaration.range.end);
+   if (from < 0 || to < from) return { reason: NOT_FOUND };
+   const extendStart = declarationSpans(text.slice(from, to))?.extendStart;
+   const spans: { start: number; end: number }[] = [];
+   for (const term of terms) {
+      const uses = term.at.map((use) => ({
+         start: offsetOf(text, use.range.start),
+         end: offsetOf(text, use.range.end),
+      }));
+      if (uses.some((u) => u.start < 0 || u.end < u.start)) {
+         return { reason: NOT_FOUND };
+      }
+      const matches: number[] = [];
+      for (
+         let at = text.indexOf(term.code, from);
+         at >= 0 && at + term.code.length <= to;
+         at = text.indexOf(term.code, at + 1)
+      ) {
+         const end = at + term.code.length;
+         if (uses.every((u) => u.start >= at && u.end <= end)) matches.push(at);
+      }
+      if (matches.length !== 1) return { reason: NOT_FOUND };
+      const span = { start: matches[0], end: matches[0] + term.code.length };
+      if (spans.some((s) => s.start < span.end && span.start < s.end)) {
+         return { reason: NOT_FOUND };
+      }
+      if (extendStart === undefined || span.start < from + extendStart) {
+         return {
+            reason:
+               `\`where: ${term.code}\` reads a given and is not in this ` +
+               "source's trailing `extend { … }`, the only part of its " +
+               "declaration the served copy keeps, so it could not be " +
+               "re-applied at read. Write it in a trailing `extend` on this " +
+               "source",
+         };
+      }
+      spans.push(span);
+   }
+   return { spans };
+}
+
+/**
  * The generated build companion for one author model, or undefined when the
  * model declares nothing. `importPath` resolves the author's model from the
  * companion's own URL; every planned source is declared there (see
@@ -837,27 +1195,59 @@ function importAlias(plan: MaterializePlan): string {
  * `importPathForFile` resolves that file (it may be imported into the author's
  * model under another name). The experimental flag lives here, so the
  * author's file needs none (D3).
+ *
+ * A plan with read-time terms (P2) is imported from its own build copy,
+ * `buildCopyPaths` by sourceID, together with the givens its terms read,
+ * which the re-written `where:` needs in scope: each from the file that
+ * declares it (`from`), or the author's model. A model with no such plan
+ * generates exactly the text it did before P2.
  */
 export function generateBuildFile(
    plans: MaterializePlan[],
    importPath: string,
    importPathForFile?: (url: string) => string | undefined,
+   buildCopyPaths: ReadonlyMap<string, string> = new Map(),
 ): string | undefined {
    if (plans.length === 0) return undefined;
-   const imports = plans
-      .map((plan) => {
-         const own = `import { ${identifier(importAlias(plan))} is ${identifier(plan.sourceName)} } from ${stringLiteral(importPath)}`;
-         const checks = (plan.uniquenessChecks ?? []).map((check) => {
-            const joined = splitSourceID(check.joinedSourceID);
-            const path =
-               (joined && importPathForFile?.(joined.url)) ?? importPath;
-            return `import { ${identifier(checkAlias(check))} is ${identifier(joined?.name ?? check.join)} } from ${stringLiteral(path)}`;
-         });
-         return [own, ...checks].join("\n");
-      })
-      .join("\n");
-   return `##! experimental.persistence
-${imports}
+   const copyOf = (plan: MaterializePlan) =>
+      givenReadTerms(plan).length > 0
+         ? buildCopyPaths.get(plan.sourceID)
+         : undefined;
+   const imports = plans.map((plan) => {
+      const own = `import { ${identifier(importAlias(plan))} is ${identifier(plan.sourceName)} } from ${stringLiteral(copyOf(plan) ?? importPath)}`;
+      const checks = (plan.uniquenessChecks ?? []).map((check) => {
+         const joined = splitSourceID(check.joinedSourceID);
+         const path = (joined && importPathForFile?.(joined.url)) ?? importPath;
+         return `import { ${identifier(checkAlias(check))} is ${identifier(joined?.name ?? check.join)} } from ${stringLiteral(path)}`;
+      });
+      return [own, ...checks].join("\n");
+   });
+   const givensByPath = new Map<string, Set<string>>();
+   for (const plan of plans) {
+      if (copyOf(plan) === undefined) continue;
+      for (const given of plan.givenDeclarations ?? []) {
+         const from = given.from ?? importPath;
+         const names = givensByPath.get(from) ?? new Set<string>();
+         names.add(given.name);
+         givensByPath.set(from, names);
+      }
+   }
+   for (const [from, names] of [...givensByPath].sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0,
+   )) {
+      imports.push(
+         `import { ${[...names]
+            .sort()
+            .map((g) => identifier(g))
+            .join(", ")} } from ${stringLiteral(from)}`,
+      );
+   }
+   const flag =
+      givensByPath.size > 0
+         ? "##! experimental { persistence givens }"
+         : "##! experimental.persistence";
+   return `${flag}
+${imports.join("\n")}
 
 ${plans
    .flatMap((plan) => [

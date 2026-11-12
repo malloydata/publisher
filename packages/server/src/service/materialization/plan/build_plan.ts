@@ -596,6 +596,7 @@ async function collectGeneratedMaterialize(
    const { generated, refused } = await tryCompileMaterializeCompanion({
       ...args,
       contents: authorDef.contents ?? {},
+      givens: authorDef.givens ?? {},
    });
    for (const refusal of refused) {
       addAnnotationFinding(

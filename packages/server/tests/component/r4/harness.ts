@@ -325,6 +325,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
            packagePath: dir,
            modelPath: entry,
            contents: authorDef.contents,
+           givens: authorDef.givens ?? {},
            getRuntime: async (overlay) => ({
               runtime: new Runtime({
                  urlReader: new InMemoryURLReader(

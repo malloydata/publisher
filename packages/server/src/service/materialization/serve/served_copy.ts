@@ -309,6 +309,11 @@ function readTimeTermText(term: MaterializeReadTimeTerm): string | undefined {
             term.window.op,
             term.window.offset,
          );
+      case "given":
+         // Kept, not written: a given-reading term (P2) is in the
+         // declaration's own trailing `extend`, which the re-root keeps as the
+         // author wrote it (the build generator takes a term out only there).
+         return;
    }
 }
 
