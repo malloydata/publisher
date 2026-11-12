@@ -7,10 +7,10 @@
 /**
  * With materialization v2 switched on (`PUBLISHER_MATERIALIZE`), a package
  * that declares `#@ -persist` gets one coded warning per declaration, in the
- * file that declares it, naming the v2 rewrite. Off, it gets none. The
- * `#@ preaggregate` warning is held back even with the switch on, until
- * `#(preaggregate)` is read (materialization v2 phase 4), but its usage is
- * still counted. Either way the package loads and builds as before. Drives
+ * file that declares it, naming the v2 rewrite, and one per measure that
+ * declares `#@ preaggregate` (whose v2 spelling, `#(preaggregate)`, is read
+ * there). Off, it gets none, but usage is still counted. Either way the
+ * package loads and builds as before. Drives
  * `Package.create` on the worker path, as the other warnings specs do.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -133,7 +133,9 @@ describe("deprecation warnings for #@ -persist and #@ preaggregate", () => {
          `##! experimental.persistence\nimport { summary_fresh, orders } from "v1.malloy"\n\nsource: again is summary_fresh extend {}\nsource: more is orders extend {}\n`,
       );
 
-      const found = await deprecations(true);
+      const found = (await deprecations(true)).filter(
+         (w) => w.code === "deprecated-persist-opt-out",
+      );
 
       expect(found.map((w) => [w.model, w.subject, w.code])).toEqual([
          ["models/v1.malloy", "summary_fresh", "deprecated-persist-opt-out"],
@@ -155,7 +157,9 @@ describe("deprecation warnings for #@ -persist and #@ preaggregate", () => {
          `##! experimental.persistence\nimport { summary_fresh } from "../sub/models/v1.malloy"\n\nsource: again is summary_fresh extend {}\n\n#@ -persist\nsource: a is ${ROWS}, b is ${ROWS}\nsource: a_ext is a extend {}\n`,
       );
 
-      const found = await deprecations(true);
+      const found = (await deprecations(true)).filter(
+         (w) => w.code === "deprecated-persist-opt-out",
+      );
 
       expect(found.map((w) => [w.model, w.subject])).toEqual([
          ["models/v1.malloy", "a"],
@@ -185,16 +189,21 @@ describe("deprecation warnings for #@ -persist and #@ preaggregate", () => {
       }
    });
 
-   it("holds back the #@ preaggregate warning with the switch on, but still counts it", async () => {
+   it("warns once per #@ preaggregate measure with the switch on, and counts it", async () => {
       write("models/v1.malloy", MODEL);
       const harness: MetricsHarness = await startMetricsHarness();
       resetDeprecatedUsageMetricsForTest();
       try {
          const found = await deprecations(true);
 
-         expect(
-            found.some((w) => w.code === "deprecated-preaggregate-annotation"),
-         ).toBe(false);
+         const preaggregate = found.filter(
+            (w) => w.code === "deprecated-preaggregate-annotation",
+         );
+         expect(preaggregate.map((w) => [w.model, w.subject])).toEqual([
+            ["models/v1.malloy", "orders"],
+         ]);
+         expect(preaggregate[0].severity).toBe("warn");
+         expect(preaggregate[0].message).toContain("#(preaggregate)");
          // One per measure, however many grains it declares.
          expect(
             await harness.collectCounter("publisher_deprecated_usage_total", {

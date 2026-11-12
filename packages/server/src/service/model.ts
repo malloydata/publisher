@@ -224,6 +224,7 @@ import {
    type SourceTypeMismatches,
 } from "./materialization/serve/model_serve_shape";
 import type { MaterializePlan } from "./materialization/plan/build_file_generator";
+import { RollupVariantServe } from "./materialization/serve/rollup_variants";
 import {
    ServedCopyServe,
    type ServedCopyProblem,
@@ -429,6 +430,17 @@ export class Model {
       modelPath: () => this.modelPath,
       modelDef: () => this.modelDef,
       serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
+   });
+   /**
+    * The `#(preaggregate)` rollup leg (materialization v2, phase 4): a router
+    * candidate only when `materialize.enabled` is on and a source this model
+    * sees declares a rollup.
+    */
+   private rollupVariants = new RollupVariantServe({
+      modelPath: () => this.modelPath,
+      modelDef: () => this.modelDef,
+      serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
+      catalog: () => this.policy.materializedTables(),
    });
    /**
     * The synthesized pre-aggregation model for this model, compiled once per load
@@ -2756,6 +2768,7 @@ export class Model {
    public setServeDestinationConfig(provider: () => MalloyConfig): void {
       this.storageServe.setServeDestinationConfig(provider);
       this.servedCopy.invalidate();
+      this.rollupVariants.invalidate();
    }
 
    /**
@@ -2769,6 +2782,7 @@ export class Model {
    ): void {
       this.materializeSourceIDs = new Set(Object.keys(materializePlans));
       this.servedCopy.setContext(packagePath, malloyConfig, materializePlans);
+      this.rollupVariants.setContext(packagePath, malloyConfig);
    }
 
    /**
@@ -2783,6 +2797,19 @@ export class Model {
          !this.isNotebook() &&
          getMaterializeEnabled() &&
          getPersistStorageMode() === "on"
+      );
+   }
+
+   /**
+    * Whether the router may try the `#(preaggregate)` rollup leg: a model file,
+    * the materialize switch on, and a rollup declared on a source it sees.
+    */
+   private rollupVariantsEnabled(): boolean {
+      return (
+         this.modelType === "model" &&
+         !this.isNotebook() &&
+         getMaterializeEnabled() &&
+         this.rollupVariants.hasRollups()
       );
    }
 
@@ -2820,6 +2847,7 @@ export class Model {
    public invalidateServeShapeCache(): void {
       this.storageServe.invalidateServeShapeCache();
       this.servedCopy.invalidate();
+      this.rollupVariants.invalidate();
    }
 
    /** See {@link StorageServeShape.setServeBindings}. */
@@ -2836,6 +2864,7 @@ export class Model {
               ),
       );
       this.servedCopy.setBindings(bindings);
+      this.rollupVariants.setBindings(bindings);
    }
 
    /** See {@link StorageServeShape.storedColumnTypeMismatches}. */
@@ -3220,6 +3249,9 @@ export class Model {
                storageRoutingPossible,
                servedCopyPossible,
                preaggServeMaterializer,
+               ...(this.rollupVariantsEnabled()
+                  ? { rollupVariantsFor: runnable }
+                  : {}),
             }),
             async () => {
                // Cheap short-circuit for gate-free models. Safe, unlike
@@ -3730,6 +3762,7 @@ export class Model {
          modelPath: this.modelPath,
          storageServe: this.storageServe,
          servedCopy: this.servedCopy,
+         rollupVariants: this.rollupVariants,
          rollupPlans: () => this.preaggregateRollupPlans,
          modelDef: () => this.modelDef,
          materializedTables: () => this.policy.materializedTables(),
