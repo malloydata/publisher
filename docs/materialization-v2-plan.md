@@ -217,7 +217,7 @@ Seven phases in two lanes: telemetry work runs beside the core. The core (phases
 | 2. v1 defects and telemetry base | #7096, #6646, #6293 (interim; real fix in phase 4), #6642, #6145, #6986 and #6847 (failure classification), #7078; workload log on the access record and an opt-in local store (T1), which also carries each query's path report and a `storage=` build's row count; build_plan.ts moved off the deprecated getSQL() and makeBuildId() | S17 |
 | 3. `#(materialize)` | Source map; re-root rewriter (cross-file, query-shaped segments, inline joins); build-file generator; served model on `virtual` with load-time compile; reference joins; inline join_one with the uniqueness check; P9 probes; rolling windows with the incremental delete; extension tables; `name=` view; contracts at read (R3); phase 0's three open checks (pinned-clock rolling-window reads, the text reader for a query starting from a view, and the served copy against the #7098 fixture); the shared chain, probe service and generated-file host; P12, the storage destination in the content address (#7087), shipped with P2's re-address so each `storage=` table moves once (question 13); v1 packages served through the same rewriter, gated on the #7098 fixture; joins across origin connections between sources stored in one destination (#6982): builds planned from the author's file with those joins removed (the file does not compile live), the served copy as the compile of record, and a coded refusal from build state, leaving an unbuilt side's handle out of the `virtualMap`; the v1-to-#(materialize) migration recipe, which ships with the minor that ships the v2 annotations; publish warnings for a connection that can't hold a table or a missing destination (P13); the orchestrator refusing the warehouse recompute (#6756) | S1–S7, S2c, S2d, S3, S3a, S6a, S12, S25–S25c |
 | 4. Rollups, view routing, inline join_many | `#(preaggregate)` A1–A7 on the source map and measure grammar; the real fix for a rollup over a storage base (#6293); rollup variants in the user's file; retire `preaggregation_coverage.ts` and the IR classifier; `#@ persist` view leg (P14); join-to-rollup leg (A7); pair-table serving (P5) | S2a, S8–S11, S9a, S9b, S15, S16, S16a |
-| 5. Consistency and simplification | Consistency's own design pass first (it can run beside phase 3), then: run manifest published whole, per-query manifest pinning, upstream-pinned fingerprints, per-warehouse as-of reads, as-of in D1 and T1; the control plane's promote and cleanup, all on the v1 plan's B1 records (#1563). Then a simplification pass over the core: remove what the router and rewriter replaced, merge duplicate paths, and leave it easy to understand and maintain. The core is vetted (R4, the hammer suite, the #7098 fixture) before phase 6 starts | S22–S24 |
+| 5. Consistency and simplification | Consistency's own design pass first (it can run beside phase 3), then: run manifest published whole, per-query manifest pinning, upstream-pinned fingerprints, per-warehouse as-of reads, as-of in D1 and T1; the control plane's promote and cleanup, all on the v1 plan's B1 records (#1563). Then a simplification pass over the core: remove what the router and rewriter replaced, merge duplicate paths, and leave it easy to understand and maintain. The core is vetted (R4, the hammer suite, the #7098 fixture) before phase 6 starts. The pass also gives Publisher one reader of the Malloy IR: the governance, gate, classification, extraction and retrieval code that walks model and source definitions directly moves onto `governance/ir` and the source map (materialization moves in phase 3). Duplicated interpretation of the same IR has already produced disagreements, and the IR is not a stable public API, so one reader limits the blast radius of a Malloy upgrade (Appendix: direct readers of the Malloy IR) | S22–S24 |
 | 6. Cost estimation and the agent loop | T2 table stats; T4 (row counts first, then column widths and dry runs), T5 adapters, T6 compare, T7 tools; what-if (T3) over existing v1 and proposed v2 annotations; the `estimating` skill reference and tuning guide | S18–S21 |
 
 ```mermaid
@@ -531,3 +531,67 @@ Every point in the Nov 5 design review, "Review: Materialization v2", is answere
 | The `join_one` uniqueness check is a full scan | **Added:** counted in the estimate, skipped when the joined table is unchanged (Joins) |
 | Is `partition=` deprecated? | No: it carries over unchanged (P13) |
 | On storage, a join to an unpersisted source runs live | **Added:** a `cross_connection` skip and a publish verdict naming the join and its fixes (Joins, question 11) |
+
+## Appendix: direct readers of the Malloy IR
+
+Inventory of `packages/server/src` (non-test) on 2026-11-12, read file by file: 63 files mention the IR types (`ModelDef`, `StructDef`, `SourceDef`, `FieldDef`, pipeline segments, `structRef`). 42 walk or interpret the IR; 18 only pass a model definition through; 3 are false positives (`db_utils.ts`, `connection.ts`, `controller/connection.controller.ts` read warehouse schema fields, not the IR). The package-load worker (`package_load_worker.ts`, and `source_extraction.ts`, which it shares with `Model.create`) runs in a worker thread, so whatever replaces those readers must be importable there.
+
+**The layering (decided 2026-11-12).** Two layers, one shared at the bottom. `governance/ir/source_graph.ts` (with `prepared_query.ts`) is the one reader of a source's segments: its extends chain, renames, query bases, composites, joins and reachability. Every part of Publisher that needs segments reads it. The source map is materialization's view over that structure and adds only what materialization needs (keying by `sourceID`, stored tables, addresses, which annotations apply where); it never walks segments itself, and a walk it lacks is added to `source_graph.ts` first. Gates, classification, extraction and retrieval read `source_graph.ts`, not the source map, so they never depend on materialization concepts.
+
+Dispositions: **shared reader** is the target; **phase 5** moves onto `governance/ir` or the source map; **phase 3** or **phase 4** is replaced or absorbed by that phase's work; **as is** reads a narrow, stable signal or is trivial.
+
+| Area | File | What it reads | Uses `governance/ir` | Disposition |
+| --- | --- | --- | --- | --- |
+| Shared reader | `governance/ir/source_graph.ts` | Extends chains, query bases, derivation hops, joins | It is it | Shared reader; the source map builds on it |
+| Shared reader | `governance/ir/prepared_query.ts` | Compiled query view: stages, struct refs, filters | It is it | Shared reader |
+| Governance | `governance/query_governor.ts` | Filter lists, struct refs, joins, locations across the entry point and caller joins | Partly (`derivedStructsReachable`) | Phase 5 |
+| Governance | `governance/gate_plan.ts` | Gate inheritance up the chain, per route | No | Phase 5: walk the chain through `source_graph`, keep the gate logic |
+| Governance | `gate_classification.ts` | Entry-point gates, notes, joins | Partly (`resolveDeclaredSource`) | Phase 5 |
+| Governance | `gate_registry_walk.ts` | Query-source base hop (`resolveQuerySourceBase`) | No | Phase 5 (duplicates `source_graph`'s query-base hop) |
+| Gates and access | `filter_binding_guard.ts` | Filters, fields, renames, joins, locations | No | Phase 5 |
+| Gates and access | `caller_joins.ts` | Joins a caller wrote in a compiled query, pipeline stages | Partly | Phase 5 |
+| Gates and access | `join_bypass.ts` | Struct joins and stage joins | No | Phase 5 (overlaps `caller_joins.ts`) |
+| Gates and access | `sql_embed_gates.ts` | Pipeline segments' struct refs | No | Phase 5 |
+| Gates and access | `gate_dimension.ts` | Field and join path resolution | No | Phase 5 |
+| Gates and access | `entities/access_gates.ts` | Query-source base hop | No | Phase 5 |
+| Gates and access | `given.ts` | Given references in filter lists and query bases | No | Phase 5 |
+| Gates and access | `authorize.ts` | A query's filter list (one place) | Partly | As is |
+| Classification | `classification.ts` | Fields, joins, pipeline lineage of classes | Partly | Phase 5 |
+| Classification | `classification_report.ts` | Source classifications and view exposures | No | Phase 5 (through `classification.ts`) |
+| Extraction | `source_extraction.ts` | Sources, queries, fields, notes (load worker and `Model.create`) | Partly (`derivedStructsReachable`) | Phase 5 |
+| Extraction | `entities/source_extraction.ts` | Struct parameters and filters | No | Phase 5 |
+| Extraction | `entities/dim_index_discovery.ts` | Struct parameters for `#(index)` | No | Phase 5 (with `entities/source_extraction.ts`) |
+| Extraction | `entities/field_helpers.ts` | A field's annotation notes | No | As is (or the annotation reader) |
+| Extraction | `entities/filters.ts` | One struct field | No | As is |
+| Retrieval | `retrieval/model/catalog.ts` | Joins, fields, extends edges, connections | No | Phase 5 (its extends and join edges duplicate `source_graph`) |
+| Retrieval | `retrieval/model/package_entities.ts` | Joins, fields, types | No | Phase 5 |
+| Model and package | `model.ts` | Named queries, views, fields | No | Phase 5 (phase 3 PR 3a moves routing out first) |
+| Model and package | `model_info.ts` | The model definition, projected to the API's `ModelInfo` | No | As is (the public projection) |
+| Model and package | `model_projection.ts` | Query struct refs, join fields | No | As is |
+| Model and package | `compile_document.ts` | A document's query struct ref | No | Phase 5 |
+| Model and package | `package_load/package_load_worker.ts` | Struct definitions for the worker's results | No | Phase 5 (worker thread) |
+| Annotations and reports | `annotations.ts` | Model and block notes folded across imports | No | Phase 5 (with the annotation reader) |
+| Annotations and reports | `annotation_near_miss.ts` | Authored notes on structs and fields | No | Phase 5 (with the annotation reader) |
+| Annotations and reports | `report_manifest.ts` | Notes, struct refs, pipeline, joins | No | Phase 5 |
+| Materialization | `serve/materialization_serve_transform.ts` | Chains, fields, refinements, joins | No | Phase 3 (the rewriter replaces it) |
+| Materialization | `serve/query_path.ts` | Source chain; query shape | Chain on the source map (#1625) | Phase 3 for the chain; phase 5 for the shape (one reader with `workload_shape.ts`) |
+| Materialization | `workload_shape.ts` | First stage's fields, filters, time zone | Partly (`resolveStructRef`) | Phase 5 (one shape reader with `query_path.ts`) |
+| Materialization | `plan/persist_dynamic_terms.ts` | Givens in a persisted query | No | Phase 3 (source map) |
+| Materialization | `stored_column_types.ts` | Declared fields and query time zone of a build target | No | Phase 3 (source map) |
+| Materialization | `plan/preaggregation_coverage.ts` | Composite resolution and rollup fields | No | Phase 4 (retired) |
+| Materialization | `plan/preaggregation_classifier.ts` | Measure expressions | No | Phase 4 (retired) |
+| Materialization | `plan/preaggregation_annotation.ts` | Measure annotations | No | Phase 4 |
+| Materialization | `plan/persist_partition.ts` | A source's `partition=` columns | No | As is |
+| Materialization | `plan/build_plan.ts` | Build targets, model definitions | Through build targets | As is (addressing moves in phase 3 PR 2) |
+| Materialization | `package_materialization.ts` | Source IDs and struct refs for eligibility | Partly | As is (keyed by sourceID in phase 3 PR 1) |
+
+Pass-through only (hold or forward a model definition without walking it): `model_runtime.ts`, `model_notebook_cell.ts`, `compile_source.ts`, `report.ts`, `notebook.ts`, `model_policy.ts`, `model_load_checks.ts`, `access_record.ts`, `package.ts`, `package_load/protocol.ts`, `package_load/protocol_decode.ts`, `package_load/package_load_pool.ts`, `package_load/job_files.ts`, `materialization/plan/preaggregation_compile.ts`, `materialization/plan/materialization_eligibility.ts`, `materialization/serve/model_serve_shape.ts`, `materialization/run/storage_build_strategy.ts`, `materialization/run/source_build.ts`.
+
+The interpretations repeated most often, and so the first to fold into one reader:
+
+1. **The query-source base hop** (`query.structRef`): `source_graph.ts`, `gate_registry_walk.ts`, `entities/access_gates.ts`, `sql_embed_gates.ts`, `compile_document.ts`, `given.ts`, `model_projection.ts`, `workload_shape.ts`.
+2. **Joins on a struct and in pipeline stages:** `caller_joins.ts`, `join_bypass.ts`, `catalog.ts`, `package_entities.ts`, `classification.ts`, `gate_dimension.ts`, `filter_binding_guard.ts`, the serve transform.
+3. **Notes and annotations across imports and inheritance:** `annotations.ts`, `annotation_near_miss.ts`, `entities/field_helpers.ts`, `report_manifest.ts`, `source_extraction.ts`, beside the annotation reader.
+4. **Givens and filter lists:** `given.ts`, `persist_dynamic_terms.ts`, `query_governor.ts`, `filter_binding_guard.ts`, `entities/source_extraction.ts`, `entities/dim_index_discovery.ts`.
+5. **The extends chain and derivation:** `source_graph.ts`, `gate_plan.ts`, `catalog.ts`'s extends edges, `classification.ts`'s lineage, the source map.
+6. **A query's shape:** `workload_shape.ts` and `query_path.ts` (`queryShapeOf`), already fixed twice in step for nested views.
