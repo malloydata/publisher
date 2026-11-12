@@ -20,6 +20,7 @@
  */
 
 import { createHash } from "crypto";
+import { quotedPath } from "../malloy_text";
 
 /**
  * The definitional inputs reported for a single ``#(index)``-tagged
@@ -39,24 +40,6 @@ export interface DimIndexFingerprintInputs {
  */
 export function computeSqlFingerprint(compiledSql: string): string {
    return createHash("sha256").update(compiledSql, "utf8").digest("hex");
-}
-
-/**
- * Backtick-quote a (possibly dotted) Malloy field reference per segment.
- * Malloy traverses joins with ``.`` but quotes *identifiers* with
- * backticks, so a join-qualified path must be quoted segment-wise
- * (``\`order_items\`.\`oi_label\``) — wrapping the whole dotted string in
- * one pair would be read as a single bogus identifier and fail the
- * compile. An indexer that scans the dimension's values should quote the
- * same way, so its scan query and the fingerprint fragment agree. A
- * dot-free name is unchanged, so derived ids for top-level dims are
- * unaffected.
- */
-function quoteMalloyPath(path: string): string {
-   return path
-      .split(".")
-      .map((segment) => `\`${segment}\``)
-      .join(".");
 }
 
 const leafOf = (path: string): string => path.split(".").at(-1) ?? path;
@@ -100,16 +83,16 @@ export function buildFingerprintQuery(
    const groupByColumns = [
       ...sortedFilters.map((column, i) =>
          leaves.indexOf(leafOf(column)) !== leaves.lastIndexOf(leafOf(column))
-            ? `\`__pk${i}\` is ${quoteMalloyPath(column)}`
-            : quoteMalloyPath(column),
+            ? `\`__pk${i}\` is ${quotedPath(column)}`
+            : quotedPath(column),
       ),
       ...[...gateDimensions]
          .sort()
-         .map((column, i) => `\`__g${i}\` is ${quoteMalloyPath(column)}`),
-      `value is ${quoteMalloyPath(dimensionPath)}`,
+         .map((column, i) => `\`__g${i}\` is ${quotedPath(column)}`),
+      `value is ${quotedPath(dimensionPath)}`,
    ];
    return (
-      `run: ${quoteMalloyPath(sourceName)} -> { ` +
+      `run: ${quotedPath(sourceName)} -> { ` +
       `group_by: ${groupByColumns.join(", ")} ` +
       `aggregate: weight is count() ` +
       `order_by: value ` +

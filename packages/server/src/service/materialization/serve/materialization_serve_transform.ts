@@ -16,6 +16,7 @@ import {
 } from "../../../materialization_metrics";
 import type { ManifestEntry } from "../types";
 import { quoteManifestTablePath } from "../../quoting";
+import { identifier } from "../../malloy_text";
 import { storageTablePath } from "../run/storage_table_path";
 
 /**
@@ -441,14 +442,6 @@ export function duckdbTypeToMalloy(duckdbType: string): string {
    return "json";
 }
 
-/** A Malloy identifier that needs no quoting. */
-const BARE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-/** Emit a field name bare when it is a plain identifier, else backtick-quoted. */
-function emitFieldName(name: string): string {
-   return BARE_IDENTIFIER.test(name) ? name : `\`${name.replace(/`/g, "``")}\``;
-}
-
 /**
  * Generate the transient serve-shape model that rebinds a materialized source to
  * a virtual source on its storage connection.
@@ -494,7 +487,7 @@ function serveShapeGivenLine(given: ServeShapeGiven): string {
 function serveShapeFragment(binding: ServeBinding): string {
    const shapeTypeName = `${binding.sourceName}__shape`;
    const fields = binding.schema
-      .map((c) => `   ${emitFieldName(c.name)}::${duckdbTypeToMalloy(c.type)}`)
+      .map((c) => `   ${identifier(c.name)}::${duckdbTypeToMalloy(c.type)}`)
       .join(",\n");
    const virtual = `${binding.destinationName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`;
    const casts = new Map(
@@ -511,7 +504,7 @@ function serveShapeFragment(binding: ServeBinding): string {
       prelude = `source: ${stored} is ${virtual}\n`;
       const select = binding.schema
          .map((c) => {
-            const name = emitFieldName(c.name);
+            const name = identifier(c.name);
             const to = casts.get(c.name);
             return to ? `${name} is ${name}::${duckdbTypeToMalloy(to)}` : name;
          })

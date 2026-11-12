@@ -50,6 +50,7 @@
 
 import { Annotations } from "@malloydata/malloy";
 import { parseRouteTag } from "../../motly";
+import { annotationValue, identifier } from "../../malloy_text";
 import { createHash } from "node:crypto";
 import {
    readPreaggregateAnnotation,
@@ -397,11 +398,6 @@ function splitSourceID(
    return match ? { name: match[1], url: match[2] } : undefined;
 }
 
-/** An identifier as Malloy text: backticked unless it is a plain name. */
-function malloyIdentifier(name: string): string {
-   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : `\`${name}\``;
-}
-
 /** One rollup's `#@ persist source: …` declaration. */
 function emitRollup(plan: RollupPlan): string {
    const alias = baseAlias(plan.baseSourceName);
@@ -425,9 +421,9 @@ function emitRollup(plan: RollupPlan): string {
    // Colocated: `name=` only when a namespace was named or inherited;
    // otherwise the build self-assigns from the source name.
    const persist = plan.storage
-      ? `#@ persist storage=${JSON.stringify(plan.storage)}`
+      ? `#@ persist storage=${annotationValue(plan.storage)}`
       : plan.namespace
-        ? `#@ persist name="${plan.namespace}.${plan.rollupSourceName}"`
+        ? `#@ persist name=${annotationValue(`${plan.namespace}.${plan.rollupSourceName}`)}`
         : "#@ persist";
    return `${persist}
 source: ${plan.rollupSourceName} is ${alias} -> {
@@ -482,7 +478,7 @@ export function synthesizePreaggregationModel(
          // A re-exported base is imported under the name its own file gives
          // it, which an `index.malloy` rename (`o is orders`) does not change.
          return fromDeclaring
-            ? `import { ${baseAlias(base)} is ${malloyIdentifier(declared.name)} } from ${JSON.stringify(fromDeclaring)}`
+            ? `import { ${baseAlias(base)} is ${identifier(declared.name)} } from ${JSON.stringify(fromDeclaring)}`
             : `import { ${baseAlias(base)} is ${base} } from ${JSON.stringify(importPath)}`;
       })
       .join("\n");

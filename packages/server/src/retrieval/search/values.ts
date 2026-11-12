@@ -24,7 +24,7 @@ import {
    runUnrecorded,
    withAccessRecord,
 } from "../../service/access_record";
-import { quoteMalloyIdentifier } from "../../service/authorize";
+import { quotedIdentifier } from "../../service/malloy_text";
 import type { PackageLookup } from "../../service/environment_ports";
 import { QueryPrivileges } from "../../service/model_query_request";
 import { runWithQueryTimeout } from "../../query_timeout";
@@ -186,8 +186,8 @@ export async function queryDistinctValues(
          // `delivery.city` quoted whole is one name that does not exist.
          const dim =
             typeof request.dimension === "string"
-               ? quoteMalloyIdentifier(request.dimension)
-               : request.dimension.map(quoteMalloyIdentifier).join(".");
+               ? quotedIdentifier(request.dimension)
+               : request.dimension.map(quotedIdentifier).join(".");
          // The stem is letters and digits only (see filterStem), so it needs no escaping.
          const where = request.stem
             ? `${dim} != null and lower(${dim}) ~ '%${request.stem}%'`
@@ -195,7 +195,7 @@ export async function queryDistinctValues(
          const body = request.counted
             ? `where: ${where} group_by: v is ${dim} aggregate: n is count() order_by: n desc limit: ${request.limit + 1}`
             : `where: ${where} group_by: v is ${dim} limit: ${request.limit + 1}`;
-         const query = `run: ${quoteMalloyIdentifier(request.source)} -> { ${body} }`;
+         const query = `run: ${quotedIdentifier(request.source)} -> { ${body} }`;
          const slot = deps.querySlots.tryAcquire(request.routeLabel);
          try {
             const { compactResult } = await runWithQueryTimeout(

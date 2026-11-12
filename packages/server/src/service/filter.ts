@@ -11,6 +11,8 @@
  * based on the provided filter values and the declared filter definitions.
  */
 
+import { escapeString } from "./malloy_text";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -160,10 +162,6 @@ export function parseFilters(annotations: string[]): FilterDefinition[] {
 // Filter Clause Generation
 // ---------------------------------------------------------------------------
 
-function escapeMalloyString(value: string): string {
-   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-}
-
 function isBooleanLiteral(v: string): boolean {
    const lower = v.toLowerCase();
    return lower === "true" || lower === "false";
@@ -184,7 +182,7 @@ function malloyLiteral(v: string): string {
    if (isDateLiteral(v)) {
       return `@${v.slice(0, 10)}`;
    }
-   return `'${escapeMalloyString(v)}'`;
+   return `'${escapeString(v)}'`;
 }
 
 function buildPredicate(
@@ -208,7 +206,7 @@ function buildPredicate(
       }
       case "like": {
          const v = Array.isArray(value) ? value[0] : value;
-         const escaped = escapeMalloyString(v.toLowerCase());
+         const escaped = escapeString(v.toLowerCase());
          const pattern =
             escaped.startsWith("%") || escaped.endsWith("%")
                ? escaped
