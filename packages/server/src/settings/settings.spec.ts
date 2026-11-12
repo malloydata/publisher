@@ -88,6 +88,8 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    "ducklake.rowGroupSizeBytes": "PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES",
    "ducklake.targetFileSizeBytes": "PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES",
    "persist.storageMode": "PUBLISHER_PERSIST_STORAGE_MODE",
+   "persist.addressIncludesDestination":
+      "PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION",
    "persist.collisionEnforcementEnabled":
       "PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED",
    "materialization.schedulerEnabled":

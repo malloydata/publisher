@@ -888,6 +888,15 @@ export const getPersistStorageMode = (): PersistStorageMode =>
    settings.get("persist.storageMode");
 
 /**
+ * Whether a `storage=` source's destination is folded into its content
+ * address (materialization v2's P12), from
+ * `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` (default `false`). Turning
+ * it on re-addresses every `storage=` table once, so it is a scheduled rollout.
+ */
+export const getPersistAddressIncludesDestination = (): boolean =>
+   settings.get("persist.addressIncludesDestination");
+
+/**
  * Whether a within-package persist-target COLLISION (two distinct persist
  * sources resolving to the same physical table in the same destination) is a
  * hard publish rejection, from `PERSIST_COLLISION_ENFORCE` (default `false`).

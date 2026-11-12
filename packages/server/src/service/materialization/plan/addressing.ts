@@ -18,8 +18,15 @@ import type {
    UnbuildableSource,
 } from "@malloydata/malloy";
 import { makeDigest } from "@malloydata/malloy";
+import {
+   getPersistAddressIncludesDestination,
+   getPersistStorageMode,
+} from "../../../config";
 import { resolvePartitionColumns } from "./persist_partition";
-import { deriveAnnotationFields } from "./persist_source_fields";
+import {
+   declaredStorage,
+   deriveAnnotationFields,
+} from "./persist_source_fields";
 
 /**
  * One connection's persist sources in the order they build, from Malloy's
@@ -277,14 +284,36 @@ export function compilerBuildId(
 }
 
 /**
- * Fold a source's `partition=` into the text its address is computed from. The
- * target's `sql` carries no annotation bytes, so without this a `partition=`
- * change would be skipped as unchanged and the table would keep the old layout.
+ * The storage destination folded into `source`'s address, or undefined: the
+ * destination it declares with `storage=`, when
+ * `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` is on and
+ * `PERSIST_STORAGE_MODE` is not `off` (off, `storage=` is inert and the source
+ * builds colocated). Undefined for every colocated source, so turning the
+ * switch on moves no colocated address (materialization v2's P12).
+ */
+export function addressDestination(source: PersistSource): string | undefined {
+   if (!getPersistAddressIncludesDestination()) return undefined;
+   if (getPersistStorageMode() === "off") return undefined;
+   try {
+      return declaredStorage(source);
+   } catch {
+      // An unreadable annotation addresses as colocated, as partition does.
+      return undefined;
+   }
+}
+
+/**
+ * Fold what the target's `sql` cannot carry into the text a source's address
+ * is computed from: its `partition=` layout, and (P12, behind a switch) the
+ * storage destination it builds into. The target's `sql` carries no
+ * annotation bytes, so without this a `partition=` change would be skipped as
+ * unchanged and the table would keep the old layout, and a source moved to
+ * `storage=` would keep its colocated address (#7087).
  *
  * Derived here rather than passed in so every caller agrees
- * (`build_targets_address_equality` pins it). No `partition=` appends nothing,
- * keeping unpartitioned addresses stable; a change moves the address once, which
- * is the rebuild the author asked for.
+ * (`build_targets_address_equality` pins it). Nothing to fold appends
+ * nothing, keeping such addresses stable; a change moves the address once,
+ * which is the rebuild the author asked for.
  */
 export function addressText(source: PersistSource, sql: string): string {
    let columns: string[] = [];
@@ -298,8 +327,11 @@ export function addressText(source: PersistSource, sql: string): string {
    } catch {
       // An unreadable annotation addresses as unpartitioned.
    }
-   if (columns.length === 0) return sql;
-   return `${sql}\n-- partitioned by: ${columns.join(", ")}`;
+   let text = sql;
+   if (columns.length > 0) text += `\n-- partitioned by: ${columns.join(", ")}`;
+   const destination = addressDestination(source);
+   if (destination !== undefined) text += `\n-- stored in: ${destination}`;
+   return text;
 }
 
 /**

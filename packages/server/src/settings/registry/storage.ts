@@ -68,6 +68,15 @@ export const storage = [
       aliases: { env: ["PERSIST_STORAGE_MODE"] },
    }),
    setting({
+      key: "persist.addressIncludesDestination",
+      type: boolean(),
+      default: false,
+      description:
+         "Fold a storage= source's destination into its content address (re-addresses every storage= table once).",
+      notes: "Materialization v2's P12: a `storage=` source's content address (its `sourceEntityId`) also covers the storage destination it builds into, so moving a source between colocated and `storage=`, or between destinations, gives it a new table instead of reusing or resolving the old one (#7087). The destination is folded in only when the source declares `storage=` and `PERSIST_STORAGE_MODE` is not `off`, so colocated addresses never move. **Turning it on re-addresses every `storage=` table once**: reuse misses, each table rebuilds under its new address on its next run, and the reclaimer retires the old generation once the new one commits. Off by default; turn it on per deployment as a scheduled rollout, after checking the rebuild cost.",
+      aliases: { env: ["PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION"] },
+   }),
+   setting({
       key: "persist.collisionEnforcementEnabled",
       type: boolean(),
       default: false,
