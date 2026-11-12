@@ -8,6 +8,7 @@ import {
 } from "@malloydata/malloy";
 import {
    findingSeverity,
+   MATERIALIZE_V2_ROUTES,
    type PackageAnnotationFinding,
 } from "../annotation_reader";
 import { components } from "../../api";
@@ -1844,8 +1845,10 @@ export class PackageMaterialization {
    }
 
    /**
-    * The publish refusal for `#@` lines that do not parse, one per line, or ""
-    * when none. Publish only: a load warns (the finding rides
+    * The publish refusal for `#@` lines that do not parse, and for malformed
+    * materialization v2 declarations (an unknown key on `#(materialize)` or
+    * `#(preaggregate)`, whose key sets are closed), one per line, or "" when
+    * none. Publish only: a load warns (the finding rides
     * `Package.warnings`), so a package already published keeps loading and its
     * schedule keeps running, and a metadata PATCH is not refused for it. Kept
     * out of {@link persistencePolicyWarnings}, which the scheduler and the
@@ -1853,7 +1856,12 @@ export class PackageMaterialization {
     */
    formatUnparseableAnnotations(): string {
       return this.annotationFindings
-         .filter((finding) => finding.code === "persist-unparseable")
+         .filter(
+            (finding) =>
+               finding.code === "persist-unparseable" ||
+               (finding.tier === "malformed" &&
+                  MATERIALIZE_V2_ROUTES.has(finding.route)),
+         )
          .map(
             (finding) =>
                `${finding.model ? `${finding.model}: ` : ""}${finding.message}`,

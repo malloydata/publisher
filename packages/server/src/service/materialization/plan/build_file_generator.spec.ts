@@ -629,14 +629,20 @@ source: orders is orders_raw
 `);
          expect(generatedPlans(c).map((p) => p.sourceName)).toEqual(["orders"]);
          const findings = (c.annotationFindings ?? []).filter(
-            (f) => f.code === "materialize-not-built",
+            (f) =>
+               f.code === "materialize-not-built" ||
+               f.code === "materialize-unknown-key",
          );
-         expect(findings.map((f) => [f.subject, f.tier, f.model])).toEqual([
-            ["misspelt", "unservable", "m.malloy"],
-            ["unnamed", "unservable", "m.malloy"],
+         expect(
+            findings.map((f) => [f.subject, f.code, f.tier, f.model]),
+         ).toEqual([
+            ["misspelt", "materialize-unknown-key", "malformed", "m.malloy"],
+            ["unnamed", "materialize-not-built", "unservable", "m.malloy"],
          ]);
-         // A misspelt name= is refused, never defaulted to the source's name.
+         // A misspelt name= is malformed (refused at publish), never defaulted
+         // to the source's name.
          expect(findings[0].message).toContain("`nmae=`");
+         expect(findings[0].message).toContain("did you mean `name=`?");
          expect(findings[1].message).toContain("needs name=");
       },
       { timeout: 30000 },

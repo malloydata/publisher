@@ -11,9 +11,9 @@
  * helpers for annotation bundles (own notes, model notes, positions); this
  * module is about routes.
  *
- * Materialization v2's routes (`#(materialize)`, `#(preaggregate)`) join the
- * registry in the phases that make them work (3 and 4), so nothing here
- * recognizes a spelling that still does nothing.
+ * Materialization v2's routes (`#(materialize)`, `#(preaggregate)`) are in the
+ * registry with their closed key sets, and are read only with the materialize
+ * switch on (`PUBLISHER_MATERIALIZE`): see {@link MATERIALIZE_V2_ROUTES}.
  */
 
 import {
@@ -56,7 +56,15 @@ function readNote(
    const route = routeOfNote(text);
    if (route !== undefined) return { route, payload: payloadOfNote(text) };
    const glued = GLUED_PREFIX.exec(text);
-   if (glued && glued[1] !== undefined && glued[1] in PUBLISHER_ROUTES) {
+   // Only the routes that were always read glued: a v2 route's reader is
+   // Malloy's `routeOf`, so a glued `#(materialize)…` declares nothing and
+   // must stay visible to the near-miss scan.
+   if (
+      glued &&
+      glued[1] !== undefined &&
+      glued[1] in PUBLISHER_ROUTES &&
+      !MATERIALIZE_V2_ROUTES.has(glued[1])
+   ) {
       return { route: glued[1], payload: glued[2] ?? "" };
    }
    const docString = GLUED_DOC_STRING.exec(text);
@@ -146,6 +154,46 @@ const PREAGGREGATE_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * `#(materialize)`'s keys (materialization v2, P13): the `#@ persist` keys it
+ * carries onto its generated build source, and `inline`, which the plan reads.
+ * A closed set: any other key is malformed, refused at publish.
+ */
+export const MATERIALIZE_KEYS: ReadonlySet<string> = new Set([
+   "name",
+   "storage",
+   "refresh",
+   "watermark",
+   "merge_key",
+   "partition",
+   "freshness",
+   "queryMetadata",
+   "inline",
+]);
+
+/**
+ * `#(preaggregate)`'s keys (materialization v2, A1): the grain it stores a
+ * measure at, and where (a `storage=` destination, or a `namespace=` in the
+ * source's own warehouse). A closed set: any other key is malformed.
+ */
+export const PREAGGREGATE_ROUTE_KEYS: ReadonlySet<string> = new Set([
+   "grain",
+   "storage",
+   "namespace",
+]);
+
+/**
+ * The materialization v2 routes. Each is read only with the materialize switch
+ * on (`PUBLISHER_MATERIALIZE`); off, nothing reads them and the near-miss scan
+ * treats them as it did before they were registered. A key outside a v2
+ * route's set is malformed (`<route>-unknown-key`), refused at publish, where
+ * an unknown key on v1's `#@` route only warns (P13).
+ */
+export const MATERIALIZE_V2_ROUTES: ReadonlySet<string> = new Set([
+   "materialize",
+   "preaggregate",
+]);
+
+/**
  * The routes Publisher reads, keyed by route: the bracketed app routes it
  * owns, and the Malloy routes it reads directives from (`@`, `!`, and `""`
  * for MOTLY tags).
@@ -170,6 +218,8 @@ export const PUBLISHER_ROUTES: Readonly<Record<string, RouteSpec>> = {
             "set materialization.schedule in publisher.json; a source no longer sets its own schedule",
       },
    },
+   materialize: { payload: "tag", keys: MATERIALIZE_KEYS },
+   preaggregate: { payload: "tag", keys: PREAGGREGATE_ROUTE_KEYS },
    "!": { payload: "tag" },
    "": { payload: "tag" },
 };
@@ -210,7 +260,9 @@ export interface AnnotationFinding {
  * A route's tag, read without the server's environment (see `parseRouteTag`),
  * and a finding for each top-level key the route does not accept or has
  * retired. The findings are reported at the tier the callers already use:
- * an unknown key is `unservable` (a warning), a retired one `malformed`.
+ * an unknown key is `unservable` (a warning), a retired one `malformed`. On a
+ * v2 route ({@link MATERIALIZE_V2_ROUTES}) the key set is closed, so an
+ * unknown key is `malformed` too.
  */
 export function readRouteTag(
    annotations: Annotations,
@@ -237,7 +289,9 @@ export function readRouteTag(
             const near = nearestKey(key, accepted);
             findings.push({
                route,
-               tier: "unservable",
+               tier: MATERIALIZE_V2_ROUTES.has(route)
+                  ? "malformed"
+                  : "unservable",
                code: `${route === "@" ? "persist" : route}-unknown-key`,
                message: `\`${key}=\` is not a key \`#${route}\` reads, so it does nothing${near ? ` (did you mean \`${near}=\`?)` : ""}`,
             });
@@ -281,7 +335,7 @@ export function persistAnnotationFindings(
  * The accepted key within edit distance 2 of `key`, closest first, or
  * undefined: the likely intended spelling of an unknown key.
  */
-function nearestKey(
+export function nearestKey(
    key: string,
    accepted: ReadonlySet<string>,
 ): string | undefined {

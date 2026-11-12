@@ -104,6 +104,8 @@ import { Annotations } from "@malloydata/malloy";
 import { ownLevelNotes, sameNotePosition } from "../../annotations";
 import { declaredNotes } from "../../governance/ir/declared_notes";
 import {
+   MATERIALIZE_KEYS,
+   nearestKey,
    routeOfNote,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
@@ -177,6 +179,20 @@ const PLANNED_KEYS = ["inline"] as const;
 
 /** Keys `#(materialize)` accepts but a later pull request implements. */
 const DEFERRED_KEYS: Readonly<Record<string, string>> = {};
+
+/**
+ * Every key the generator reads, which must be the route's closed set in the
+ * annotation reader (`MATERIALIZE_KEYS`); a spec holds the two equal.
+ */
+export const GENERATOR_KEYS: readonly string[] = [
+   ...CARRIED_KEYS,
+   ...CARRIED_GROUPS,
+   ...PLANNED_KEYS,
+   ...Object.keys(DEFERRED_KEYS),
+];
+
+/** The code of a `#(materialize)` key outside the route's closed set. */
+export const MATERIALIZE_UNKNOWN_KEY_CODE = "materialize-unknown-key";
 
 /** One stored column of a materialized source. */
 export interface MaterializeColumn {
@@ -308,6 +324,12 @@ export interface MaterializeRefusal {
    sourceName: string;
    sourceID?: string;
    reason: string;
+   /**
+    * Set when the declaration cannot be read as written (an unknown key):
+    * the finding is `malformed` under this code, refused at publish, rather
+    * than the `unservable` `materialize-not-built`.
+    */
+   malformedCode?: string;
 }
 
 interface SourceDefLike {
@@ -455,28 +477,34 @@ function inheritedPersist(
 }
 
 /**
+ * The declaration's key outside the route's closed set, as a malformed
+ * refusal, or undefined. A misspelt `name=` must never fall back to a default
+ * table, so the source is not built, and the publish is refused.
+ */
+function unknownKeyRefusal(
+   declaration: NonNullable<ReturnType<typeof readMaterializeDeclaration>>,
+): string | undefined {
+   const unknown = declaration.keys.filter((key) => !MATERIALIZE_KEYS.has(key));
+   if (unknown.length === 0) return undefined;
+   const near = unknown
+      .map((k) => nearestKey(k, MATERIALIZE_KEYS))
+      .find((k) => k !== undefined);
+   return (
+      `#(materialize) does not accept ${unknown.map((k) => `\`${k}=\``).join(", ")}; ` +
+      `it reads ${[...CARRIED_KEYS, ...CARRIED_GROUPS, ...PLANNED_KEYS].join(", ")}` +
+      (near ? ` (did you mean \`${near}=\`?)` : "")
+   );
+}
+
+/**
  * The declaration's `#@ persist` keys by key path, or why one cannot be
- * carried: a key `#(materialize)` does not accept (a misspelt `name=` must not
- * fall back to a default table), or a value of the wrong shape (an array where
- * a string goes would otherwise be dropped silently).
+ * carried: a value of the wrong shape (an array where a string goes would
+ * otherwise be dropped silently). Unknown keys are refused first
+ * ({@link unknownKeyRefusal}).
  */
 function carriedPersistKeys(
    declaration: NonNullable<ReturnType<typeof readMaterializeDeclaration>>,
 ): { persist: Record<string, string> } | { reason: string } {
-   const accepted = new Set<string>([
-      ...CARRIED_KEYS,
-      ...CARRIED_GROUPS,
-      ...PLANNED_KEYS,
-      ...Object.keys(DEFERRED_KEYS),
-   ]);
-   const unknown = declaration.keys.filter((key) => !accepted.has(key));
-   if (unknown.length > 0) {
-      return {
-         reason:
-            `#(materialize) does not accept ${unknown.map((k) => `\`${k}=\``).join(", ")}; ` +
-            `it reads ${[...CARRIED_KEYS, ...CARRIED_GROUPS, ...PLANNED_KEYS].join(", ")}`,
-      };
-   }
    const persist: Record<string, string> = {};
    for (const key of CARRIED_KEYS) {
       if (!declaration.keys.includes(key)) continue;
@@ -890,6 +918,18 @@ export function planModelMaterialize(
          });
          continue;
       }
+      // Before any other refusal: a key outside the closed set is malformed,
+      // refused at publish, whatever else the source would be refused for.
+      const unknownKey = unknownKeyRefusal(declaration);
+      if (unknownKey) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: unknownKey,
+            malformedCode: MATERIALIZE_UNKNOWN_KEY_CODE,
+         });
+         continue;
+      }
       if (declaresOwnPersist(def, contents)) {
          refused.push({
             sourceName: name,
@@ -1073,7 +1113,8 @@ export function planModelMaterialize(
 
 /**
  * A refused declaration as a package warning: the source is not materialized
- * and serves live, which is the `unservable` tier.
+ * and serves live, which is the `unservable` tier, or `malformed` (refused at
+ * publish) when the declaration cannot be read as written.
  */
 export function materializeRefusalFinding(
    refusal: MaterializeRefusal,
@@ -1081,8 +1122,8 @@ export function materializeRefusalFinding(
 ): PackageAnnotationFinding {
    return {
       route: MATERIALIZE_ROUTE,
-      tier: "unservable",
-      code: "materialize-not-built",
+      tier: refusal.malformedCode ? "malformed" : "unservable",
+      code: refusal.malformedCode ?? "materialize-not-built",
       message:
          `#(materialize) on source "${refusal.sourceName}" is not built, ` +
          `so the source is served live: ${refusal.reason}.`,

@@ -61,9 +61,11 @@ its extensions, views, joins, named queries and importing files are unchanged
   warning is `materialize-not-built`, and it names the reason.
 - **`#(materialize)` takes only these keys:** `name`, `storage`, `refresh`, `watermark`,
   `merge_key`, `partition`, `freshness.*`, `queryMetadata.*`, and `inline` (v2 only; [joins](#joins-reference-by-default-inline-to-store-a-join_one)).
-  Any other key, a misspelled
-  `name=` for example, is a `materialize-not-built` warning rather than a default table. v1's
-  `realization=` has no v2 form.
+  Any other key, a misspelled `name=` for example, is malformed rather than a default table: the
+  source is not built, the package warning is `materialize-unknown-key` at severity `error`, naming
+  the key it was likely meant to be, and a publish is refused. A package already published keeps
+  loading with the warning. v1's `realization=` has no v2 form. A misspelled route, such as
+  `#(materialise)`, is an `annotation-near-miss` warning.
 
 ## Form by form
 

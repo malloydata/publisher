@@ -13,6 +13,10 @@ import * as os from "os";
 import * as path from "path";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
 import {
+   PackageLoadPool,
+   __setPackageLoadPoolForTests,
+} from "../package_load/package_load_pool";
+import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
@@ -21,6 +25,7 @@ import { Environment } from "./environment";
 import { parsePackageName } from "./identity";
 import type { Package } from "./package";
 import { formatPublishRejections } from "./publish_checks";
+import { installSettings } from "../test_helpers/settings_env";
 
 let rootDir: string;
 let envPath: string;
@@ -249,6 +254,34 @@ describe("annotation findings on a loaded package", () => {
                /^(persist|preaggregate)-/.test(w.code ?? ""),
             ),
          ).toEqual([]);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "refuses an unknown #(materialize) key at publish, with the switch on",
+      async () => {
+         const { restore } = installSettings({
+            env: { PUBLISHER_MATERIALIZE: "true" },
+         });
+         // The load worker reads its settings when it starts.
+         await __setPackageLoadPoolForTests(new PackageLoadPool(1));
+         try {
+            const pkg = await loadPackage(
+               `${RAW}#(materialize) nmae="t"\nsource: orders is raw\n`,
+            );
+            const [warning] = coded(pkg, "materialize-unknown-key");
+            expect(warning).toMatchObject({
+               severity: "error",
+               subject: "orders",
+            });
+            expect(warning.message).toContain("did you mean `name=`?");
+            // A package already published keeps loading; publish refuses.
+            expect(formatPublishRejections(pkg)).toContain("`nmae=`");
+         } finally {
+            await __setPackageLoadPoolForTests(null);
+            restore();
+         }
       },
       { timeout: 30000 },
    );
