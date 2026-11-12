@@ -8,12 +8,19 @@ import * as os from "os";
 import * as path from "path";
 import {
    canonicalDuckDBFile,
+   dbDuckDBInternalsMatch,
    DuckDBInstanceSettingsChangedError,
    installDuckDBInstanceSharing,
    instanceKeyOf,
    openDuckDBFilesForTesting,
+   recordAttachments,
+   recordedAttachments,
+   serializeAttachRun,
+   withThreadCap,
 } from "./duckdb_instance_sharing";
+import { attachmentDigest } from "./connection";
 import { Environment } from "./environment";
+import { availableCpus, cgroupCpuLimit } from "../settings/registry/storage";
 import { installSettings } from "../test_helpers/settings_env";
 
 installDuckDBInstanceSharing();
@@ -163,6 +170,16 @@ describe("one DuckDB instance per file", () => {
       expect(openFilesHere()).toEqual([]);
    });
 
+   it("opens one instance when two connections to a file open at once", async () => {
+      const file = path.join(dir, "concurrent.duckdb");
+      const a = open({ databasePath: file, setupSQL: "SELECT 1" });
+      const b = open({ databasePath: file, setupSQL: "SELECT 2" });
+      // Neither open has finished when the other starts.
+      await Promise.all([a.runSQL("SELECT 1"), b.runSQL("SELECT 1")]);
+      expect(instanceOf(b)).toBe(instanceOf(a));
+      expect(openFilesHere()).toEqual([canonicalDuckDBFile(file)!]);
+   });
+
    it("does not share between different files", async () => {
       const a = open({ databasePath: path.join(dir, "a.duckdb") });
       const b = open({ databasePath: path.join(dir, "b.duckdb") });
@@ -185,6 +202,130 @@ describe("one DuckDB instance per file", () => {
       if (!canReopenAfterClose) return;
       const c = open({ databasePath: file, threads: 2 });
       expect((await c.runSQL("SELECT 1 AS one")).rows).toEqual([{ one: 1 }]);
+   });
+});
+
+describe("attach runs of one connection on one instance", () => {
+   it("run one at a time", async () => {
+      const a = open({ databasePath: path.join(dir, "runs.duckdb") });
+      await a.runSQL("SELECT 1");
+      const order: string[] = [];
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      const first = serializeAttachRun(a, "duck", async () => {
+         order.push("first started");
+         await held;
+         order.push("first done");
+      });
+      const second = serializeAttachRun(a, "duck", async () => {
+         order.push("second started");
+      });
+      await Promise.resolve();
+      release();
+      await Promise.all([first, second]);
+      expect(order).toEqual(["first started", "first done", "second started"]);
+   });
+
+   it("still runs the next after one fails", async () => {
+      const a = open({ databasePath: path.join(dir, "runs.duckdb") });
+      await a.runSQL("SELECT 1");
+      const first = serializeAttachRun(a, "duck", async () => {
+         throw new Error("unreachable host");
+      });
+      const second = serializeAttachRun(a, "duck", async () => "ran");
+      await expect(first).rejects.toThrow("unreachable host");
+      expect(await second).toBe("ran");
+   });
+});
+
+it("digests an attached database's settings whatever order its keys arrive in", () => {
+   const stored = {
+      name: "warehouse",
+      type: "postgres",
+      postgresConnection: { host: "h", password: "p", port: 5432 },
+   };
+   // As an echoed update arrives: the withheld password put back last.
+   const echoed = {
+      type: "postgres",
+      name: "warehouse",
+      postgresConnection: { port: 5432, host: "h", password: "p" },
+   };
+   expect(attachmentDigest(echoed as never)).toBe(
+      attachmentDigest(stored as never),
+   );
+   expect(
+      attachmentDigest({
+         ...stored,
+         postgresConnection: { ...stored.postgresConnection, host: "other" },
+      } as never),
+   ).not.toBe(attachmentDigest(stored as never));
+});
+
+it("finds the db-duckdb internals it patches", () => {
+   // False skips sharing and the thread cap with only a warning, so an
+   // upgrade that reshapes them must fail here instead.
+   expect(dbDuckDBInternalsMatch()).toBe(true);
+});
+
+describe("the per-instance thread cap", () => {
+   let restore: (() => void) | undefined;
+   afterEach(() => {
+      restore?.();
+      restore = undefined;
+   });
+
+   it("defaults each instance to four threads, or fewer on a smaller host", () => {
+      restore = installSettings({ env: {} }).restore;
+      expect(withThreadCap({})).toEqual({
+         threads: String(Math.min(4, availableCpus())),
+      });
+   });
+
+   it("reads a cgroup CPU quota as whole CPUs, and no quota as none", () => {
+      expect(cgroupCpuLimit("200000", "100000")).toBe(2);
+      expect(cgroupCpuLimit("50000", "100000")).toBe(1);
+      expect(cgroupCpuLimit("150000", "100000")).toBe(2);
+      // v2 and v1 spellings of "no quota", and a file that held nothing.
+      expect(cgroupCpuLimit("max", "100000")).toBeUndefined();
+      expect(cgroupCpuLimit("-1", "100000")).toBeUndefined();
+      expect(cgroupCpuLimit("", undefined)).toBeUndefined();
+      expect(availableCpus()).toBeGreaterThanOrEqual(1);
+   });
+
+   it("keeps a connection's own threads setting", () => {
+      restore = installSettings({
+         env: { PUBLISHER_DUCKDB_THREADS: "8" },
+      }).restore;
+      expect(withThreadCap({ threads: "1" })).toEqual({ threads: "1" });
+      expect(withThreadCap({})).toEqual({ threads: "8" });
+   });
+
+   it("leaves DuckDB's one-per-core default under off", () => {
+      restore = installSettings({
+         env: { PUBLISHER_DUCKDB_THREADS: "off" },
+      }).restore;
+      expect(withThreadCap({})).toEqual({});
+   });
+
+   it("caps an instance whose connection sets no threads", async () => {
+      // Through db-duckdb's own open: an upgrade that stops building instance
+      // options in buildInstanceOptions would drop the cap silently. The test
+      // preload's cap applies here, ahead of the production one.
+      const a = open({ databasePath: path.join(dir, "capped.duckdb") });
+      expect(
+         (await a.runSQL("SELECT current_setting('threads')::INTEGER AS n"))
+            .rows,
+      ).toEqual([
+         { n: Number(process.env.PUBLISHER_TEST_DUCKDB_THREADS ?? 2) },
+      ]);
+   });
+
+   it("opens an instance with the threads its connection asks for", async () => {
+      const a = open({ databasePath: path.join(dir, "t.duckdb"), threads: 1 });
+      expect(
+         (await a.runSQL("SELECT current_setting('threads')::INTEGER AS n"))
+            .rows,
+      ).toEqual([{ n: 1 }]);
    });
 });
 
@@ -239,6 +380,168 @@ describe("a connection edit to a file-backed DuckDB connection", () => {
          ]);
          expect(now.rows).toEqual([{ v: 7 }]);
          expect(draining.rows).toEqual([{ v: 7 }]);
+      } finally {
+         await env.closeAllConnections();
+      }
+   });
+
+   it("detaches a database an earlier generation attached and the edit removed", async () => {
+      const env = await Environment.create("testEnv", envPath, [
+         duck("SELECT 1"),
+      ]);
+      try {
+         const before = (await env.getMalloyConnection(
+            "duck",
+         )) as unknown as DuckDBConnection;
+         // Stands in for an attached warehouse: attachments belong to the
+         // instance, so they outlive the generation that made them.
+         await before.runSQL("ATTACH ':memory:' AS warehouse");
+         recordAttachments(before, "duck", {
+            generation: 0,
+            databases: new Map([
+               ["warehouse", { digest: "digest", type: "postgres" }],
+            ]),
+         });
+
+         await env.update({
+            name: "testEnv",
+            connections: [duck("SELECT 2")],
+         } as never);
+         const after = (await env.getMalloyConnection(
+            "duck",
+         )) as unknown as DuckDBConnection;
+
+         expect(instanceOf(after)).toBe(instanceOf(before));
+         const databases = await after.runSQL(
+            "SELECT database_name FROM duckdb_databases()",
+         );
+         expect(
+            databases.rows.map((row) => row["database_name"]),
+         ).not.toContain("warehouse");
+         expect(recordedAttachments(after, "duck")?.databases.size).toBe(0);
+      } finally {
+         await env.closeAllConnections();
+      }
+   });
+
+   it("drops the secret of a storage entry the edit removed", async () => {
+      const env = await Environment.create("testEnv", envPath, [
+         duck("SELECT 1"),
+      ]);
+      try {
+         const before = (await env.getMalloyConnection(
+            "duck",
+         )) as unknown as DuckDBConnection;
+         // A `gcs`, `s3` or `azure` entry creates only a secret, which is
+         // instance-wide: detaching a catalog by its name leaves it in force.
+         await before.runSQL(
+            "CREATE SECRET secret_s3_bucket (TYPE s3, KEY_ID 'k', SECRET 's')",
+         );
+         recordAttachments(before, "duck", {
+            generation: 0,
+            databases: new Map([["bucket", { digest: "digest", type: "s3" }]]),
+         });
+
+         await env.update({
+            name: "testEnv",
+            connections: [duck("SELECT 2")],
+         } as never);
+         const after = (await env.getMalloyConnection(
+            "duck",
+         )) as unknown as DuckDBConnection;
+
+         const secrets = await after.runSQL(
+            "SELECT name FROM duckdb_secrets()",
+         );
+         expect(secrets.rows.map((row) => row["name"])).not.toContain(
+            "secret_s3_bucket",
+         );
+      } finally {
+         await env.closeAllConnections();
+      }
+   });
+
+   it("leaves a newer generation's attachments to it", async () => {
+      const env = await Environment.create("testEnv", envPath, [
+         duck("SELECT 1"),
+      ]);
+      try {
+         const before = (await env.getMalloyConnection(
+            "duck",
+         )) as unknown as DuckDBConnection;
+         await before.runSQL("ATTACH ':memory:' AS warehouse");
+         // Written by a generation newer than any this test builds: a
+         // draining older one must not undo it.
+         recordAttachments(before, "duck", {
+            generation: Number.MAX_SAFE_INTEGER,
+            databases: new Map([
+               ["warehouse", { digest: "digest", type: "postgres" }],
+            ]),
+         });
+
+         await env.update({
+            name: "testEnv",
+            connections: [duck("SELECT 2")],
+         } as never);
+         const after = (await env.getMalloyConnection(
+            "duck",
+         )) as unknown as DuckDBConnection;
+
+         const databases = await after.runSQL(
+            "SELECT database_name FROM duckdb_databases()",
+         );
+         expect(databases.rows.map((row) => row["database_name"])).toContain(
+            "warehouse",
+         );
+         expect(
+            recordedAttachments(after, "duck")?.databases.has("warehouse"),
+         ).toBe(true);
+      } finally {
+         await env.closeAllConnections();
+      }
+   });
+
+   it("keeps the record of a database a failed run did not reach, so a retry replaces it", async () => {
+      const env = await Environment.create("testEnv", envPath, [
+         duck("SELECT 1"),
+      ]);
+      try {
+         const before = (await env.getMalloyConnection(
+            "duck",
+         )) as unknown as DuckDBConnection;
+         await before.runSQL("ATTACH ':memory:' AS first");
+         await before.runSQL("ATTACH ':memory:' AS second");
+         recordAttachments(before, "duck", {
+            generation: 0,
+            databases: new Map([
+               ["first", { digest: "old", type: "postgres" }],
+               ["second", { digest: "old", type: "postgres" }],
+            ]),
+         });
+
+         // Both changed; replacing `first` fails, so the run never reaches
+         // `second`, which still holds its old settings.
+         await env.update({
+            name: "testEnv",
+            connections: [
+               {
+                  name: "duck",
+                  type: "duckdb",
+                  duckdbConnection: {
+                     setupSQL: "SELECT 2",
+                     attachedDatabases: [
+                        { name: "first", type: "unsupported" },
+                        { name: "second", type: "postgres" },
+                     ],
+                  },
+               },
+            ],
+         } as never);
+         await env.getMalloyConnection("duck").catch(() => undefined);
+
+         const record = recordedAttachments(before, "duck");
+         expect(record?.databases.has("first")).toBe(false);
+         expect(record?.databases.get("second")?.digest).toBe("old");
       } finally {
          await env.closeAllConnections();
       }

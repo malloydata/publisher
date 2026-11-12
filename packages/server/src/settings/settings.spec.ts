@@ -82,6 +82,7 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    "packageLoad.schemaCacheBytes": "PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES",
    "duckdb.extensionFetchPolicy": "PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY",
    "duckdb.memoryLimit": "PUBLISHER_DUCKDB_MEMORY_LIMIT",
+   "duckdb.threads": "PUBLISHER_DUCKDB_THREADS",
    "duckdb.tempDirectory": "PUBLISHER_DUCKDB_TEMP_DIRECTORY",
    "duckdb.partitionedWriteFlushThreshold":
       "PUBLISHER_DUCKDB_PARTITIONED_WRITE_FLUSH_THRESHOLD",

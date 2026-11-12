@@ -44,6 +44,7 @@ import {
    type CorpusModel,
    fixtureModels,
    hammerModels,
+   releasingEach,
 } from "../test_helpers/persist_corpus";
 import { declaredStorage } from "./materialization/plan/persist_source_fields";
 import { installSettings } from "../test_helpers/settings_env";
@@ -160,7 +161,7 @@ describe("build-target addresses over the repo's persist corpus", () => {
          const moved: Moved[] = [];
          const uncompiled: string[] = [...skipped];
          let checked = 0;
-         for (const model of corpus) {
+         for await (const model of releasingEach(corpus)) {
             try {
                const result = await compare(model);
                if (!result) continue;
@@ -200,7 +201,7 @@ describe("build-target addresses over the repo's persist corpus", () => {
          const unexpected: string[] = [];
          let storageSources = 0;
          let colocatedSources = 0;
-         for (const model of corpus) {
+         for await (const model of releasingEach(corpus)) {
             let sources: PersistSource[];
             let digests: Record<string, string>;
             try {

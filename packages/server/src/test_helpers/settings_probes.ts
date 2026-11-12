@@ -10,6 +10,7 @@ import {
    assertDuckDBResourceConfig,
    getDefaultQueryRowLimit,
    getDuckDBMemoryLimit,
+   getDuckDBThreads,
    getDuckDBTempDirectory,
    getDuckLakeRowGroupSizeBytes,
    getDuckLakeTargetFileSizeBytes,
@@ -139,6 +140,10 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    "duckdb.memoryLimit": () => {
       assertDuckDBResourceConfig();
       return isDuckDBMemoryLimitDisabled() ? "off" : getDuckDBMemoryLimit();
+   },
+   "duckdb.threads": () => {
+      assertDuckDBResourceConfig();
+      return getDuckDBThreads();
    },
    "duckdb.tempDirectory": () => {
       assertDuckDBResourceConfig();

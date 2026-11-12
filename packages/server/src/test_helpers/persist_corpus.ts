@@ -41,6 +41,28 @@ export async function closeCorpus(): Promise<void> {
    scratch = undefined;
 }
 
+/**
+ * Each model of `corpus` in turn, its connections closed once the loop body
+ * is done with it. The corpus is a few hundred models with a DuckDB instance
+ * each; held open together until {@link closeCorpus}, they are most of the
+ * instances a serial unit run holds at its peak.
+ */
+export async function* releasingEach(
+   corpus: CorpusModel[],
+): AsyncGenerator<CorpusModel> {
+   for (const model of corpus) {
+      try {
+         yield model;
+      } finally {
+         for (const c of model.connections.values()) {
+            const at = opened.indexOf(c);
+            if (at >= 0) opened.splice(at, 1);
+            await c.close().catch(() => {});
+         }
+      }
+   }
+}
+
 /** One model to plan: its files, entry file, and connections. */
 export interface CorpusModel {
    label: string;
