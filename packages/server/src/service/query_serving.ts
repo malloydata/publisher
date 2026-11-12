@@ -589,6 +589,7 @@ export async function queryPathFor(
       if (
          (catalog?.planned.size ?? 0) === 0 &&
          host.storageServe.serveBindings.length === 0 &&
+         host.servedCopy.materializeBindings().length === 0 &&
          plans.length === 0 &&
          answer.considered.length === 0
       ) {
@@ -600,6 +601,7 @@ export async function queryPathFor(
             warnings: [],
          };
       }
+      const now = Date.now();
       const toTable = (b: ServeBinding): StorageTable => ({
          sourceName: b.sourceName,
          sourceIDs: b.sourceIDs,
@@ -616,11 +618,18 @@ export async function queryPathFor(
          freshColocated: args.freshManifest
             ? new Set(Object.keys(args.freshManifest.entries))
             : undefined,
+         // The serve shape's tables, and the `#(materialize)` tables only the
+         // served copy reads, so a table on the chain is named whichever
+         // candidate answered.
          storage: {
-            all: host.storageServe.serveBindings.map(toTable),
-            fresh: host.storageServe
-               .freshServeBindings(Date.now())
-               .map(toTable),
+            all: [
+               ...host.storageServe.serveBindings,
+               ...host.servedCopy.materializeBindings(),
+            ].map(toTable),
+            fresh: [
+               ...host.storageServe.freshServeBindings(now),
+               ...host.servedCopy.materializeBindings(now),
+            ].map(toTable),
          },
          rollups: plans.map((p) => ({
             rollupSourceName: p.rollupSourceName,

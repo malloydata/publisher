@@ -162,6 +162,20 @@ export class ServedCopyServe {
       this.invalidate();
    }
 
+   /**
+    * The bindings of `#(materialize)` tables, which only the served copy reads
+    * (the serve shape never takes one), keyed like every binding by the
+    * author's sourceID; with `now`, only the fresh ones. For the path report,
+    * which places them on the queried source's chain.
+    */
+   materializeBindings(now?: number): ServeBinding[] {
+      const bindings =
+         now === undefined ? this.bindings : this.freshBindings(now);
+      return bindings.filter((b) =>
+         (b.sourceIDs ?? []).some((id) => this.materializePlans[id]),
+      );
+   }
+
    /** Whether any binding could re-root a source (before compiling). */
    hasBindings(): boolean {
       return this.bindings.some((b) => b.origin !== "preaggregate");

@@ -225,9 +225,11 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    // The served copy on `virtual` reads the same stored tables as the serve
    // shape; when it answered, its decision is the storage tier's.
    const servedCopyAnswered = input.via === "served_copy";
+   // Otherwise the serve shape's decision, or, when only the served copy was
+   // tried (a `#(materialize)` table), the served copy's.
    const storageDecision = servedCopyAnswered
       ? decided.get("served")
-      : decided.get("storage");
+      : (decided.get("storage") ?? decided.get("served"));
    const rollupDecision = decided.get("rollup");
    // Computed once per report.
    const freshStorage = new Set(input.storage.fresh.map((b) => b.tablePath));

@@ -178,6 +178,30 @@ describe("R4: a stored timeframe truncation keeps its timeframe in the served co
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 
+   it("places the table on the queried source's chain in the path report, whether or not it answered", async () => {
+      fixture.setBindings(fixture.bindings);
+      const declined = await fixture.runAsIs(
+         "run: stored -> { timezone: 'America/New_York'; group_by: ts_day }",
+      );
+      const answered = await fixture.runAsIs(
+         "run: stored -> { group_by: ts_day }",
+      );
+      const tables = (path: typeof declined.path) =>
+         (path?.considered ?? []).map((c) => [c.kind, c.outcome]);
+      // Keyed by the author's sourceID, the table is found on the chain of
+      // `stored` (and of its extension) even when the served copy declined.
+      expect(tables(declined.path)).toEqual([["materialized", "skipped"]]);
+      expect(declined.path?.servedBy.kind).toBe("live");
+      expect(tables(answered.path)).toEqual([["materialized", "used"]]);
+      const ext = await fixture.runAsIs(
+         "run: stored_ext -> { timezone: 'UTC'; group_by: is_march }",
+      );
+      expect(tables(ext.path)).toEqual([["materialized", "skipped"]]);
+      expect(
+         JSON.stringify([declined.path, answered.path, ext.path]),
+      ).not.toContain("__mat");
+   });
+
    it("keeps the author's annotation on a field redefined in place", async () => {
       expect(await fixture.servedFieldNotes("stored", "order_month")).toContain(
          '#(doc) "The month of the order"',
