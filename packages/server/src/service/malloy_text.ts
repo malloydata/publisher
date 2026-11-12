@@ -168,6 +168,16 @@ export function stringLiteral(value: string): string {
 }
 
 /**
+ * A value as a double-quoted Malloy string literal, for the places Malloy's
+ * grammar writes one in double quotes (an `import` path). Same escaping as
+ * {@link stringLiteral}, with the double quote escaped instead of the single.
+ * An ordinary path reads exactly as `JSON.stringify` wrote it.
+ */
+export function doubleQuotedString(value: string): string {
+   return `"${escapeControl(value.replace(/\\/g, "\\\\").replace(/"/g, '\\"'))}"`;
+}
+
+/**
  * A value as a double-quoted annotation (MOTLY) property value, e.g.
  * `storage="my-lake"`. Quoted always: unquoted, the tag parser splits at the
  * first non-identifier character (`storage=my-lake` reads as `storage="my"`

@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { quotedIdentifier, quotedPath } from "./malloy_text";
+import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
 import * as fs from "fs/promises";
 import * as path from "path";
@@ -3653,10 +3653,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // in as a single-quoted SQL literal, which the check accepts and
       // canonicalizes to the same SQL a bare path gets.
       const tableLiteral = `'${sqlLiteral(normalizedPath, "duckdb")}'`;
-      // That literal sits in a Malloy double-quoted string, so `\` and `"` are
-      // escaped for it. Normalizing above left no backslash, but escaping it
-      // keeps this step correct on its own.
-      const malloyString = `"${tableLiteral.replace(/[\\"]/g, "\\$&")}"`;
+      // That literal sits in a Malloy string, so the module escapes it
+      // (quotes, backslashes and any control character a file name holds).
+      const malloyString = stringLiteral(tableLiteral);
       const model = runtime.loadModel(
          `source: temp is duckdb.table(${malloyString})`,
       );

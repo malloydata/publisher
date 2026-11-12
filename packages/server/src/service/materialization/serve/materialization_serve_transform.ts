@@ -16,7 +16,7 @@ import {
 } from "../../../materialization_metrics";
 import type { ManifestEntry } from "../types";
 import { quoteManifestTablePath } from "../../quoting";
-import { identifier, stringLiteral } from "../../malloy_text";
+import { annotationValue, identifier, stringLiteral } from "../../malloy_text";
 import { storageTablePath } from "../run/storage_table_path";
 import { pipelineReferences, structRefSourceId } from "../plan/source_map";
 
@@ -1061,8 +1061,8 @@ export interface RollupShapeGroup {
  */
 function rollupServeShapeFragment(group: RollupShapeGroup): string {
    const members = group.members.map(serveShapeFragment).join("\n");
-   const names = group.members.map((m) => m.sourceName).join(", ");
-   return `${members}\nsource: ${group.baseSourceName} is compose(${names})`;
+   const names = group.members.map((m) => identifier(m.sourceName)).join(", ");
+   return `${members}\nsource: ${identifier(group.baseSourceName)} is compose(${names})`;
 }
 
 /**
@@ -1126,7 +1126,7 @@ export function buildChainedStorageBuildModel(params: {
       givenBlock +
       `${upstreamFragments}\n` +
       (derived ? `${derived}\n` : "") +
-      `#@ persist storage=${params.destinationName}\n` +
+      `#@ persist storage=${annotationValue(params.destinationName)}\n` +
       `source: ${params.downstreamDefText}\n`
    );
 }

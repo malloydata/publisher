@@ -215,6 +215,22 @@ describe("serve transform end-to-end (generate -> compile -> bind -> run)", () =
    // A source, a refinement field and a stored column that each need
    // backticks: emitted bare, the shape fails to compile and every query on
    // the model serves live.
+   it("quotes a rollup group's base and member names", () => {
+      const member: ServeBinding = {
+         sourceName: "date",
+         destinationName: "duckdb",
+         virtualHandle: "h_date",
+         tablePath: "t",
+         schema: [{ name: "n", type: "INTEGER" }],
+         origin: "preaggregate",
+      };
+      const { modelText } = buildServeShapeModelForBindings(
+         [],
+         [{ baseSourceName: "order-facts", members: [member] }],
+      );
+      expect(modelText).toContain("source: `order-facts` is compose(`date`)");
+   });
+
    it("compiles and runs for names that need quoting, a read cast included", async () => {
       const binding: ServeBinding = {
          sourceName: "order-facts",
@@ -1254,7 +1270,7 @@ describe("buildChainedStorageBuildModel (stack-on-parent transient build model)"
       // The downstream is persist-annotated (so it surfaces in the transient
       // build plan) and re-declared over the rebound parent with `source: `
       // prepended to the lifted RHS.
-      expect(model).toContain("#@ persist storage=lake");
+      expect(model).toContain(`#@ persist storage="lake"`);
       expect(model).toContain("source: monthly_orders is daily_orders ->");
    });
 

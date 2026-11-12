@@ -50,7 +50,11 @@
 
 import { Annotations } from "@malloydata/malloy";
 import { parseRouteTag } from "../../motly";
-import { annotationValue, identifier } from "../../malloy_text";
+import {
+   annotationValue,
+   doubleQuotedString,
+   identifier,
+} from "../../malloy_text";
 import { createHash } from "node:crypto";
 import {
    readPreaggregateAnnotation,
@@ -481,8 +485,8 @@ export function synthesizePreaggregationModel(
          // A re-exported base is imported under the name its own file gives
          // it, which an `index.malloy` rename (`o is orders`) does not change.
          return fromDeclaring
-            ? `import { ${identifier(baseAlias(base))} is ${identifier(declared.name)} } from ${JSON.stringify(fromDeclaring)}`
-            : `import { ${identifier(baseAlias(base))} is ${identifier(base)} } from ${JSON.stringify(importPath)}`;
+            ? `import { ${identifier(baseAlias(base))} is ${identifier(declared.name)} } from ${doubleQuotedString(fromDeclaring)}`
+            : `import { ${identifier(baseAlias(base))} is ${identifier(base)} } from ${doubleQuotedString(importPath)}`;
       })
       .join("\n");
 

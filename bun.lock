@@ -233,6 +233,7 @@
         "eslint-plugin-storybook": "^0.11.4",
         "openapi-typescript": "^6.7.6",
         "supertest": "^7.0.0",
+        "typescript": "^5.9.3",
       },
     },
     "packages/skills": {

@@ -262,6 +262,23 @@ describe("the lookup query over a real model (gates are the query path's)", () =
       ]);
    });
 
+   // A stem is letters and digits from filterStem, but it is quoted like any
+   // value: a quote in one reads as a character, not the end of the string.
+   it("reads a stem holding a quote as text, never as the end of the string", async () => {
+      const filtered = await valueFetcherFor(new RetrievalRegistry())({
+         environmentStore: store,
+         environmentName: "env",
+         packageName: "pkg",
+         modelPath: "m.malloy",
+         source: "open_segments",
+         dimension: "segment",
+         limit: 100,
+         stem: "gard' or true or '",
+         timeoutMs: 10_000,
+      });
+      expect(filtered).toEqual({ values: [], truncated: false });
+   });
+
    it("reads the index's counted values through the same query, gates included", async () => {
       const indexRead = (source: string, dimension: string, limit: number) =>
          indexValueFetcherFor(new RetrievalRegistry())({

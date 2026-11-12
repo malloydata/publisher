@@ -11,6 +11,7 @@ import { afterAll, describe, expect, it } from "bun:test";
 import * as path from "path";
 import {
    annotationValue,
+   doubleQuotedString,
    escapeString,
    identifier,
    MALLOY_BARE_KEYWORDS,
@@ -154,6 +155,31 @@ describe("string literals", () => {
       expect(escapeString("o'brien")).toBe("o\\'brien");
       expect(stringLiteral("a\\b")).toBe("'a\\\\b'");
    });
+});
+
+describe("doubleQuotedString", () => {
+   it("reads exactly as JSON.stringify wrote an ordinary path", () => {
+      for (const p of [
+         "./model.malloy",
+         "../shared/orders.malloy",
+         "file:///p/a b.malloy",
+      ]) {
+         expect(doubleQuotedString(p)).toBe(JSON.stringify(p));
+      }
+   });
+
+   // Inside duckdb.sql("…"), the one place a double-quoted Malloy string can
+   // be read back at run time.
+   for (const value of ['a"b', "back\\slash", "line\nbreak"]) {
+      it(`round-trips ${JSON.stringify(value)}`, async () => {
+         const sql = `select '${value.replace(/'/g, "''")}' as v`;
+         const row = await runOne(
+            `source: s is duckdb.sql(${doubleQuotedString(sql)})`,
+            "run: s -> { select: v }",
+         );
+         expect(row.v).toBe(value);
+      });
+   }
 });
 
 describe("control characters", () => {

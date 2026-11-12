@@ -13,6 +13,7 @@ import type { PackageLookup } from "../../service/environment_ports";
 import { Package } from "../../service/package";
 import { referencedGivenNames } from "../../service/authorize";
 import { splitSourceId } from "../../service/source_id";
+import { identifier, MALLOY_BARE_KEYWORDS } from "../../service/malloy_text";
 import {
    findIrSource,
    isClassificationLine,
@@ -444,16 +445,7 @@ const PLAIN_MEMBER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * keyword list, so this is a copy of it; record_members.spec.ts checks it
  * against the list Malloy generates from its grammar.
  */
-export const MALLOY_RESERVED_WORDS: ReadonlySet<string> = new Set(
-   (
-      "all and as asc avg boolean by case cast compose count date day " +
-      "desc distinct else end exclude export extend false filter for from " +
-      "full has hour import in include inner internal is json left like " +
-      "max min minute month not now null number on or pick private public " +
-      "quarter right second source sql string sum table then this " +
-      "timestamp timestamptz to true virtual week when with year"
-   ).split(" "),
-);
+export const MALLOY_RESERVED_WORDS: ReadonlySet<string> = MALLOY_BARE_KEYWORDS;
 
 /**
  * A plain name as a segment of a record member's path, backticked when it is
@@ -461,7 +453,7 @@ export const MALLOY_RESERVED_WORDS: ReadonlySet<string> = new Set(
  * member under it.
  */
 export function memberSegment(name: string): string {
-   return MALLOY_RESERVED_WORDS.has(name.toLowerCase()) ? `\`${name}\`` : name;
+   return identifier(name);
 }
 
 /**
