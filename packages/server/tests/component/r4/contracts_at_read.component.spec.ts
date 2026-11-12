@@ -12,6 +12,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { AccessDeniedError } from "../../../src/errors";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
@@ -136,13 +137,14 @@ for (const gated of [true, false]) {
       }
 
       it("never answers a caller who supplies no group", async () => {
-         let refused = false;
+         // Denied as a gate denial (403), not failed for some other reason.
+         let refusal: unknown;
          try {
             await fixture.run({ name: "anonymous", malloy: byOrg });
-         } catch {
-            refused = true;
+         } catch (error) {
+            refusal = error;
          }
-         expect(refused).toBe(true);
+         expect(refusal).toBeInstanceOf(AccessDeniedError);
       });
    });
 }
