@@ -296,6 +296,105 @@ describe("computeServeVerdicts", () => {
       ]);
    });
 
+   // P13: a deployment the source cannot be written into is a publish
+   // warning, and the source serves live.
+   describe("deployment facts", () => {
+      it("a storage= destination the environment does not configure is live, with the destination and the fixes", () => {
+         const [v] = computeServeVerdicts(
+            facts([plan("orders", STORAGE)], {
+               destinationConfigured: (name) => name !== "lake",
+            }),
+         );
+         expect(v).toMatchObject({
+            tier: "storage",
+            verdict: "live",
+            reason: "destination_missing",
+         });
+         expect(v.message).toContain('storage="lake"');
+         expect(v.fixes?.join(" ")).toContain('named "lake"');
+      });
+
+      it("names the missing destination ahead of write-only, whose build would fail on it", () => {
+         const [v] = computeServeVerdicts(
+            facts([plan("orders", STORAGE)], {
+               storageMode: "write-only",
+               destinationConfigured: () => false,
+            }),
+         );
+         expect(v.reason).toBe("destination_missing");
+      });
+
+      it("never reads a destination while PERSIST_STORAGE_MODE=off ignores storage=", () => {
+         const [v] = computeServeVerdicts(
+            facts([plan("orders", STORAGE)], {
+               storageMode: "off",
+               destinationConfigured: () => false,
+            }),
+         );
+         expect(v.reason).toBe("storage_mode");
+      });
+
+      it("does not warn when the destination is configured, or the list is not known", () => {
+         for (const answer of [true, undefined]) {
+            const [v] = computeServeVerdicts(
+               facts([plan("orders", STORAGE)], {
+                  destinationConfigured: () => answer,
+               }),
+            );
+            expect(v.verdict).toBe("not_built");
+         }
+      });
+
+      it("never calls a bound table unbuildable: what serves is reported as serving", () => {
+         const [stored] = computeServeVerdicts(
+            facts([plan("orders", STORAGE)], {
+               boundStorageNames: new Set(["orders"]),
+               servedStorageNames: new Set(["orders"]),
+               destinationConfigured: () => false,
+            }),
+         );
+         expect(stored.verdict).toBe("serves");
+         const [colocated] = computeServeVerdicts(
+            facts([plan("orders")], {
+               boundEntityIds: new Set(["entity-orders"]),
+               connectionCanHoldTable: () => false,
+            }),
+         );
+         expect(colocated.verdict).toBe("serves");
+      });
+
+      it("a colocated source on a connection that cannot hold a table is live, naming the connection", () => {
+         const [v] = computeServeVerdicts(
+            facts([plan("orders")], {
+               connectionCanHoldTable: (name) => name !== "duckdb",
+            }),
+         );
+         expect(v).toMatchObject({
+            tier: "colocated",
+            verdict: "live",
+            reason: "connection_cannot_hold_table",
+         });
+         expect(v.message).toContain("'duckdb'");
+         expect(v.fixes?.[0]).toContain("storage=");
+      });
+
+      it("reads the connection's capability only for a colocated source, and never warns on an unknown one", () => {
+         // A storage= source only reads its own connection.
+         const [stored] = computeServeVerdicts(
+            facts([plan("orders", STORAGE)], {
+               connectionCanHoldTable: () => false,
+            }),
+         );
+         expect(stored.verdict).toBe("not_built");
+         const [unknown] = computeServeVerdicts(
+            facts([plan("orders")], {
+               connectionCanHoldTable: () => undefined,
+            }),
+         );
+         expect(unknown.verdict).toBe("not_built");
+      });
+   });
+
    it("is empty for a package that materializes nothing", () => {
       expect(computeServeVerdicts({ ...facts([]), plan: null })).toEqual([]);
    });

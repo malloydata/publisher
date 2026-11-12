@@ -61,6 +61,7 @@ import {
    physicalTargetKey,
    refusalRecord,
    reportRetainedStorageTables,
+   type WarehouseReach,
 } from "./materialization_run_support";
 import type { SourceBuilder } from "./source_build";
 
@@ -162,6 +163,8 @@ export class InstructedBuild {
       // entry at the wrong tier is refused, not recomputed (see
       // ChainedPlanFacts.hostInstructed).
       hostInstructed = false,
+      // What a strict build does with the warehouse recompute (#6756).
+      warehouseReach: WarehouseReach = "recompute",
    ): Promise<{
       entries: Record<string, ManifestEntry>;
       failures: Record<string, SourceFailure>;
@@ -201,6 +204,7 @@ export class InstructedBuild {
                   index.bySourceEntityId.get(sourceEntityId),
             ),
             hostInstructed,
+            warehouseReach,
          },
          ...this.seedInstructedRun(seedEntries, connections, strict),
          builtThisRun: [],

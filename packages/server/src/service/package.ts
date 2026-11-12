@@ -107,6 +107,7 @@ import type {
    SourceEligibility,
 } from "./materialization/plan/build_plan";
 import {
+   type DeploymentFacts,
    PackageMaterialization,
    toTableNameManifest,
 } from "./materialization/package_materialization";
@@ -1930,7 +1931,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.materialization.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),
          ...this.materialization.persistRefusalWarnings(),
-         ...this.materialization.unreachableMaterializationWarnings(),
+         // One verdict pass: unreachable, and the deployment facts (P13).
+         ...this.materialization.verdictWarnings(),
          // Not in exploresWarnings: an import-only file must not block publish.
          ...this.emptyDiscoveryWarnings(),
          ...deprecatedFormatWarnings(this.models),
@@ -2036,6 +2038,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       resolver: (destinationName: string) => string | undefined,
    ): void {
       this.materialization.setServeDestinationSchema(resolver);
+   }
+
+   /** See {@link PackageMaterialization.setDeploymentFacts}. */
+   public setDeploymentFacts(facts: DeploymentFacts): void {
+      this.materialization.setDeploymentFacts(facts);
    }
 
    /** See {@link PackageMaterialization.setServeDestinationConfig}. */

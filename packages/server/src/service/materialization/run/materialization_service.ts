@@ -61,6 +61,7 @@ import {
    BuildEnvironment,
    outcomeFor,
    tallySources,
+   type WarehouseReach,
 } from "./materialization_run_support";
 import { Reclaimer } from "./reclaimer";
 import { RunLifecycle } from "./run_lifecycle";
@@ -312,6 +313,11 @@ export class MaterializationService {
          referenceManifest?: ManifestReference[];
          strictUpstreams?: boolean;
          /**
+          * What a strict build does with a source whose only build recomputes
+          * a stored upstream from the warehouse (#6756). Orchestrated-only.
+          */
+         warehouseReach?: WarehouseReach;
+         /**
           * The caller-supplied incremental ledger (each entry a
           * `ManifestEntry.ledger` an earlier run reported). When present, even
           * empty, it replaces the local store for the whole run.
@@ -538,6 +544,9 @@ export class MaterializationService {
                            ledger: orchestrated ? options.ledger : undefined,
                            referenceManifest: options.referenceManifest,
                            strictUpstreams: options.strictUpstreams,
+                           warehouseReach: orchestrated
+                              ? options.warehouseReach
+                              : undefined,
                            trigger,
                            runContext: options.runContext ?? undefined,
                            version,
@@ -586,6 +595,7 @@ export class MaterializationService {
          ledger: LedgerEntry[] | undefined;
          referenceManifest: ManifestReference[] | undefined;
          strictUpstreams: boolean | undefined;
+         warehouseReach?: WarehouseReach;
          trigger: "ON_DEMAND" | "SCHEDULER";
          runContext?: components["schemas"]["RunContext"];
          /** The version createMaterialization resolved; null when unversioned. */
@@ -836,6 +846,7 @@ export class MaterializationService {
             Object.values(derivedRefused),
             clearedTiers,
             orchestrated,
+            opts.warehouseReach,
          );
 
          const { sourcesBuilt, sourcesFailed, sourcesReused } = tallySources(

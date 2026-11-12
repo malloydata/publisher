@@ -351,9 +351,11 @@ describe("executeInstructedBuild", () => {
             { code: "runtime-manifest-strict-miss" },
          );
 
-      async function runChain(upstreamError: string) {
+      async function runChain(upstreamError: string, thrown?: Error) {
          const runSQL = sinon.stub().callsFake(async (sql: string) => {
-            if (String(sql).includes("up_v1")) throw new Error(upstreamError);
+            if (String(sql).includes("up_v1")) {
+               throw thrown ?? new Error(upstreamError);
+            }
          });
          const connection = { runSQL } as unknown as MalloyConnection;
          const ok = fakeSource({
@@ -464,6 +466,25 @@ describe("executeInstructedBuild", () => {
          expect((memory as BuildRunFailedError).retryable).toBe(true);
          const odd = await runOnly("something odd happened");
          expect((odd as BuildRunFailedError).retryable).toBeUndefined();
+      });
+
+      // ms2data/service#6756: the instructions refused the only build there
+      // is, so the same instructions refuse it again.
+      it("marks a source refused under warehouseReach refuse deterministic, and its dependent too", async () => {
+         const { WarehouseRecomputeRefusedError } = await import(
+            "../../../errors"
+         );
+         const refused = new WarehouseRecomputeRefusedError(
+            "up",
+            "lake",
+            "'up' reads the source warehouse (regions) through 'via'",
+         );
+         const failures = await runChain(refused.message, refused);
+         expect(failures["bupupupupupupupu"].retryable).toBe(false);
+         expect(failures["bupupupupupupupu"].reason).toContain(
+            "warehouseReach: refuse",
+         );
+         expect(failures["bdowndowndowndow"].retryable).toBe(false);
       });
 
       it("omits the field when the failure is not recognized", async () => {

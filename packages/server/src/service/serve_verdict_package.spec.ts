@@ -276,7 +276,35 @@ describe("a serve verdict that cannot be computed", () => {
       } finally {
          warn.mockRestore();
       }
-      expect(materialization.unreachableMaterializationWarnings()).toEqual([]);
+      expect(materialization.verdictWarnings()).toEqual([]);
       expect(await materialization.previewServeVerdicts()).toEqual([]);
+   });
+});
+
+describe("the deployment facts (P13) on the memoized path-report verdicts", () => {
+   usePackageLoadPool();
+
+   it("re-reads a fact that changes under a loaded package, with no reload", async () => {
+      loaded = await loadTempPackage({ "orders.malloy": ORDERS });
+      let canHold: boolean | undefined = true;
+      loaded.pkg.setDeploymentFacts({
+         destinationNames: () => [],
+         connectionCanHoldTable: () => canHold,
+      });
+      const materialization = (
+         loaded.pkg as unknown as { materialization: PackageMaterialization }
+      ).materialization;
+      const reasons = () =>
+         [...(materialization.materializedTableCatalog().sourceVerdicts ?? [])]
+            .filter(([, v]) => v.sourceName === "orders")
+            .map(([, v]) => v.reason);
+
+      expect(reasons()).toEqual([]);
+      // The connection's type changes under the package: the memo must not
+      // keep answering from before.
+      canHold = false;
+      expect(reasons()).toEqual(["connection_cannot_hold_table"]);
+      canHold = true;
+      expect(reasons()).toEqual([]);
    });
 });

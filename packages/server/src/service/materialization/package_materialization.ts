@@ -72,7 +72,7 @@ import {
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import {
    computeServeVerdicts,
-   MATERIALIZATION_UNREACHABLE_CODE,
+   VERDICT_WARNING_CODES,
    type ServeVerdict,
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
@@ -111,6 +111,18 @@ export function toTableNameManifest(
       out[sourceEntityId] = { tableName: entry.tableName };
    }
    return out;
+}
+
+/**
+ * What the environment answers about where a package's tables can be written
+ * (P13), read live. `undefined` from either means "not known", which never
+ * warns.
+ */
+export interface DeploymentFacts {
+   /** The configured storage destinations, or undefined when the list is not authoritative. */
+   destinationNames(): readonly string[] | undefined;
+   /** Whether a connection's configured type can create a table. */
+   connectionCanHoldTable(connectionName: string): boolean | undefined;
 }
 
 /** What a {@link PackageMaterialization} reads of the package that holds it. */
@@ -168,6 +180,8 @@ interface LiveVerdicts {
 export class PackageMaterialization {
    /** The environment's storage destinations for a serve-shape compile; see {@link setServeDestinationConfig}. */
    private serveDestinationConfig?: () => MalloyConfig;
+   /** The environment's deployment facts, read live; see {@link setDeploymentFacts}. */
+   private deploymentFacts?: DeploymentFacts;
    /** A destination's schema by name, resolved live; see {@link setServeDestinationSchema}. */
    private serveDestinationSchema?: (
       destinationName: string,
@@ -553,7 +567,9 @@ export class PackageMaterialization {
     * it on that tier is `live`. Staleness is left out, since the
     * report decides it per query from the window it reads now, and every other
     * reason reads no clock, so this is memoized on the facts the verdicts read
-    * (each replaced wholesale) and costs a query only a key compare.
+    * (each replaced wholesale, except the deployment facts, which key it by
+    * what they answer for this plan) and costs a query a key compare plus one
+    * fact read per planned source.
     */
    private liveVerdictsByTable(): LiveVerdicts | undefined {
       const models = this.owner.models();
@@ -567,6 +583,9 @@ export class PackageMaterialization {
          this.rollupsOverStoredBase,
          getPersistStorageMode(),
          models,
+         // The deployment facts are read live, not replaced wholesale, so
+         // they key the memo by what they answer for this plan.
+         this.deploymentSignature(),
       ];
       const cached = this.liveVerdictCache;
       if (cached && cached.key.every((part, i) => part === key[i])) {
@@ -866,6 +885,17 @@ export class PackageMaterialization {
       resolver: (destinationName: string) => string | undefined,
    ): void {
       this.serveDestinationSchema = resolver;
+   }
+
+   /**
+    * Give the package the environment's deployment facts its publish warnings
+    * read (P13): which storage destinations exist, and which connections can
+    * hold a table. Read live on every package read, so a destination
+    * configured after the load clears its warning with no reload. Absent,
+    * nothing is warned.
+    */
+   setDeploymentFacts(facts: DeploymentFacts): void {
+      this.deploymentFacts = facts;
    }
 
    /**
@@ -1386,7 +1416,35 @@ export class PackageMaterialization {
          freshStorageNames,
          rollupsOverStoredBase: this.rollupsOverStoredBase,
          views,
+         destinationConfigured: (name) => this.destinationConfigured(name),
+         connectionCanHoldTable: (name) =>
+            this.deploymentFacts?.connectionCanHoldTable(name),
       });
+   }
+
+   /** See {@link ServeVerdictFacts.destinationConfigured}. */
+   private destinationConfigured(name: string): boolean | undefined {
+      const names = this.deploymentFacts?.destinationNames();
+      return names === undefined ? undefined : names.includes(name);
+   }
+
+   /**
+    * What the deployment facts answer for this plan's sources, as a string:
+    * the {@link liveVerdictsByTable} memo's key part for facts the
+    * environment can change under a loaded package.
+    */
+   private deploymentSignature(): string {
+      if (!this.deploymentFacts) return "";
+      const parts: string[] = [];
+      for (const source of Object.values(this.buildPlan?.sources ?? {})) {
+         const destination = source.annotationFields?.storage?.trim();
+         parts.push(
+            destination
+               ? `d:${destination}=${this.destinationConfigured(destination)}`
+               : `c:${source.connectionName}=${this.deploymentFacts.connectionCanHoldTable(source.connectionName)}`,
+         );
+      }
+      return parts.join("|");
    }
 
    /**
@@ -1499,22 +1557,34 @@ export class PackageMaterialization {
    }
 
    /**
-    * Warnings for materialized sources whose verdict is `unreachable`: nothing
-    * on the published surface reads them, so their tables are built for no
-    * query (ms2data/service#6277). The other live verdicts already carry a
-    * warning of their own (storage mode, refusals, rollups over a stored base).
+    * The publish warnings a serve verdict carries, from one verdict pass:
+    * `unreachable` (`materialization-unreachable`: nothing on the published
+    * surface reads the source, so its table is built for no query;
+    * ms2data/service#6277), and the deployment facts (P13): a `storage=`
+    * destination the environment does not configure
+    * (`materialization-destination-missing`), or a colocated source on a
+    * connection that cannot create tables
+    * (`materialization-connection-cannot-hold-table`). Unservable, not
+    * malformed: the package loads, the source serves live, and a deployment
+    * warning clears once the deployment changes, with no reload. The other
+    * live verdicts already carry a warning of their own (storage mode,
+    * refusals, rollups over a stored base).
     */
-   unreachableMaterializationWarnings(): ApiPackageWarning[] {
+   verdictWarnings(): ApiPackageWarning[] {
       // serveVerdicts degrades to none on a throw, so a package read never fails here.
-      return this.serveVerdicts()
-         .filter((v) => v.reason === "unreachable")
-         .map((v) => ({
-            model: v.modelPath ?? "",
-            subject: v.sourceName,
-            code: MATERIALIZATION_UNREACHABLE_CODE,
-            severity: "warn" as const,
-            message: v.message + " " + (v.fixes ?? []).join(" "),
-         }));
+      return this.serveVerdicts().flatMap((v) => {
+         const code = v.reason ? VERDICT_WARNING_CODES[v.reason] : undefined;
+         if (!code) return [];
+         return [
+            {
+               model: v.modelPath ?? "",
+               subject: v.sourceName,
+               code,
+               severity: "warn" as const,
+               message: v.message + " " + (v.fixes ?? []).join(" "),
+            },
+         ];
+      });
    }
 
    /** Memo for {@link entryPointIndex}, keyed on the models map it read. */

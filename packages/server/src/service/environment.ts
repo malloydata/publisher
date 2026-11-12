@@ -61,6 +61,7 @@ import {
    InternalConnection,
 } from "./connection";
 import {
+   getStaticConnectionAttributes,
    storageDestinationRoot,
    processStorageDestinations,
    processStorageDestinationsOrThrow,
@@ -859,6 +860,23 @@ export class Environment {
       _package.setServeDestinationConfig(() =>
          this.getStorageDestinationMalloyConfig(),
       );
+      // Live too: a destination configured after the load clears its
+      // publish warning (P13) with no reload.
+      _package.setDeploymentFacts({
+         destinationNames: () =>
+            this.destinationsAuthoritative
+               ? this.destinations.flatMap((d) => (d.name ? [d.name] : []))
+               : undefined,
+         connectionCanHoldTable: (connectionName) => {
+            if (!this.connectionsAuthoritative) return undefined;
+            const connection = this.apiConnections.find(
+               (c) => c.name === connectionName,
+            );
+            return connection
+               ? getStaticConnectionAttributes(connection.type)?.canPersist
+               : undefined;
+         },
+      });
       // Live, like the config: a destination list swap needs no reload.
       _package.setServeDestinationSchema((destinationName) =>
          destinationSchemaOf(

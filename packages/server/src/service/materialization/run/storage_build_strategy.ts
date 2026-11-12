@@ -6,6 +6,7 @@ import {
    ChainedShapeNotCarriedError,
    ChainedUpstreamMissingError,
    MaterializationEligibilityError,
+   WarehouseRecomputeRefusedError,
 } from "../../../errors";
 import { logger } from "../../../logger";
 import {
@@ -329,6 +330,22 @@ export class StorageBuildStrategy
                throw err instanceof ChainedUpstreamMissingError
                   ? new ChainedUpstreamMissingError(err.missing, message)
                   : new ChainedShapeNotCarriedError(message);
+            }
+            // The orchestrator may refuse the one recompute strict permits
+            // (ms2data/service#6756): the source fails with the reason the
+            // entry would have carried, and nothing reads the warehouse.
+            if (
+               manifest.strict &&
+               planFacts.warehouseReach === "refuse" &&
+               err instanceof MaterializationEligibilityError
+            ) {
+               recordChainedStorageBuild("strict_refused");
+               recordStorageBuildFailure(destinationName);
+               throw new WarehouseRecomputeRefusedError(
+                  persistSource.name,
+                  destinationName,
+                  safeDetail,
+               );
             }
             recordChainedStorageBuild(
                manifest.strict ? "strict_shape_fallback" : "inline_fallback",
