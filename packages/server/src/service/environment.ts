@@ -99,6 +99,10 @@ export {
    type CompileScope,
    type TaggedLogMessage,
 } from "./compile_source";
+import {
+   backoffAfter,
+   type ConfiguredPublishRetry,
+} from "./configured_publish_retry";
 import { VersionRegistry, VersionService } from "./versions/version_service";
 import { readManifestVersion, VersionStore } from "./versions/version_store";
 import {
@@ -325,7 +329,7 @@ export class Environment {
    /** See {@link setConfiguredPublishRetry}. */
    private readonly configuredPublishRetries = new Map<
       string,
-      () => Promise<unknown>
+      ConfiguredPublishRetry
    >();
    /** A retry in flight, per package, shared by the callers waiting on it. */
    private readonly configuredPublishRetriesRunning = new Map<
@@ -643,8 +647,11 @@ export class Environment {
                // See getPackage: a refused configured package is published
                // again before it compiles, outside the lock its first version
                // takes.
+               // Only the default resolution: a request naming a version
+               // that does not exist answers 404 without publishing.
                if (
                   !underLock &&
+                  version.requested() === undefined &&
                   !this.packages.has(name) &&
                   this.configuredPublishRetries.has(name)
                ) {
@@ -2382,8 +2389,11 @@ export class Environment {
             );
             if (versioned) return versioned.loaded;
             // A configured package whose boot publish was refused: publish it
-            // again now, which serves it or answers why it still cannot.
+            // again now, which serves it or answers why it still cannot. Only
+            // for the default resolution: a request naming a version that does
+            // not exist answers 404 without publishing anything.
             if (
+               requested === undefined &&
                !this.packages.has(packageName) &&
                this.configuredPublishRetries.has(packageName)
             ) {
@@ -3642,30 +3652,33 @@ export class Environment {
     * recover, and every request answered a misleading "manifest does not
     * exist". Its next access runs this instead: a publish that now succeeds
     * serves the version, and one that still fails answers its own error.
+    * `fingerprint` reads the location's model files cheaply, so a change to
+    * them retries at once whatever the backoff (configured_publish_retry.ts).
     */
    public setConfiguredPublishRetry(
       packageName: string,
-      retry: () => Promise<unknown>,
+      publish: () => Promise<unknown>,
+      fingerprint?: () => Promise<string | undefined>,
    ): void {
-      this.configuredPublishRetries.set(packageName, retry);
+      this.configuredPublishRetries.set(packageName, {
+         publish,
+         fingerprint,
+         failures: 0,
+         notBefore: 0,
+      });
    }
 
    /**
-    * Run a refused configured package's publish again (see
-    * {@link setConfiguredPublishRetry}). One run at a time per package; the
-    * callers waiting on it share its outcome. Holds no package lock: a
-    * package's first version takes that lock itself. Resolves when there is
-    * nothing to retry, or the retry published a version; rejects with the
-    * publish's own error otherwise.
-    */
-   /**
     * {@link retryConfiguredPublish} for callers that resolve a version before
     * they read the package (a materialization run). Resolves at once when the
-    * package is loaded, or has no refused publish to retry.
+    * package is loaded, has no refused publish to retry, or the caller names a
+    * version (only the default resolution publishes).
     */
    public async publishRefusedConfiguredPackage(
       packageName: string,
+      requestedVersion?: string,
    ): Promise<void> {
+      if (requestedVersion !== undefined) return;
       if (this.packages.has(packageName)) return;
       if (!this.configuredPublishRetries.has(packageName)) return;
       if (this.versionService) {
@@ -3675,31 +3688,74 @@ export class Environment {
       await this.retryConfiguredPublish(packageName);
    }
 
+   /**
+    * Run a refused configured package's publish again (see
+    * {@link setConfiguredPublishRetry}). One run at a time per package; the
+    * callers waiting on it share its outcome. Between failures it backs off
+    * (configured_publish_retry.ts), answering the last failure without
+    * publishing unless the package's files changed. Holds no package lock: a
+    * package's first version takes that lock itself, and a delete waits for a
+    * running retry before it takes the lock (see deletePackage). Resolves when
+    * there is nothing to retry or the retry published a version; rejects with
+    * the publish's own error otherwise.
+    */
    private async retryConfiguredPublish(packageName: string): Promise<void> {
-      const retry = this.configuredPublishRetries.get(packageName);
-      if (!retry) return;
+      const entry = this.configuredPublishRetries.get(packageName);
+      if (!entry) return;
       let running = this.configuredPublishRetriesRunning.get(packageName);
       if (!running) {
-         running = (async () => {
-            try {
-               await retry();
-               this.configuredPublishRetries.delete(packageName);
-               this.clearPackageLoadFailure(packageName);
-            } catch (error) {
-               this.setPackageMountError(
-                  packageName,
-                  redactPgSecrets(
-                     error instanceof Error ? error.message : String(error),
-                  ),
-               );
-               throw error;
-            } finally {
-               this.configuredPublishRetriesRunning.delete(packageName);
+         const fingerprint = await entry.fingerprint?.();
+         // Re-read after the await: another caller may have started one.
+         running = this.configuredPublishRetriesRunning.get(packageName);
+         if (!running) {
+            const changed =
+               fingerprint !== undefined &&
+               fingerprint !== entry.lastFingerprint;
+            if (Date.now() < entry.notBefore && !changed) {
+               throw entry.lastError;
             }
-         })();
-         this.configuredPublishRetriesRunning.set(packageName, running);
+            running = this.runConfiguredPublish(
+               packageName,
+               entry,
+               fingerprint,
+            );
+            this.configuredPublishRetriesRunning.set(packageName, running);
+         }
       }
       await running;
+   }
+
+   private async runConfiguredPublish(
+      packageName: string,
+      entry: ConfiguredPublishRetry,
+      fingerprint: string | undefined,
+   ): Promise<void> {
+      try {
+         await entry.publish();
+         if (this.configuredPublishRetries.get(packageName) === entry) {
+            this.configuredPublishRetries.delete(packageName);
+            this.transition(packageName, { type: "clearProblems" });
+         }
+      } catch (error) {
+         entry.failures += 1;
+         entry.notBefore = Date.now() + backoffAfter(entry.failures);
+         entry.lastError = error;
+         entry.lastFingerprint = fingerprint;
+         if (this.configuredPublishRetries.get(packageName) === entry) {
+            // The location mounted; its package did not load. A load error,
+            // so /status names the real cause, replacing the boot record.
+            this.transition(packageName, { type: "clearProblems" });
+            this.transition(packageName, {
+               type: "recordLoadError",
+               message: redactPgSecrets(
+                  error instanceof Error ? error.message : String(error),
+               ),
+            });
+         }
+         throw error;
+      } finally {
+         this.configuredPublishRetriesRunning.delete(packageName);
+      }
    }
 
    /**
@@ -3761,6 +3817,14 @@ export class Environment {
       } = {},
    ): Promise<void> {
       assertSafePackageName(packageName);
+      // A refused configured package's retry: forgotten first, so none starts
+      // from here on, then awaited, so one already publishing lands before
+      // this delete removes it rather than after (which would bring the
+      // package back). Outside the lock, which that publish takes itself.
+      this.configuredPublishRetries.delete(packageName);
+      await this.configuredPublishRetriesRunning
+         .get(packageName)
+         ?.catch(() => {});
       // The versions a delete of a versioned package removed. Each is then
       // cleaned up as deleting that version alone is: its own running
       // auto-runs stopped and its own tables reclaimed, in the background.

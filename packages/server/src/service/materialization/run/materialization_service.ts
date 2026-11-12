@@ -219,7 +219,10 @@ export class MaterializationService {
       // A configured package whose boot publish was refused is published
       // again first, so a run resolves the version that publish makes rather
       // than an unversioned slot that does not exist.
-      await environment.publishRefusedConfiguredPackage?.(packageName);
+      await environment.publishRefusedConfiguredPackage?.(
+         packageName,
+         versionId.requested(),
+      );
       return (
          (await versions.resolve(packageName, versionId.requested()))
             ?.versionId ?? null

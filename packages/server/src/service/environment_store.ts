@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { localPackageFingerprint } from "./configured_publish_retry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
 import * as fs from "fs";
@@ -679,6 +680,7 @@ export class EnvironmentStore
                      environment.setConfiguredPublishRetry(
                         configured.name,
                         publish,
+                        () => localPackageFingerprint(sourceLocation),
                      );
                   }
                   throw error;

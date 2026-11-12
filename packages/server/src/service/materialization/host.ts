@@ -64,7 +64,10 @@ export interface MaterializationEnvironment {
     * run resolves the version it makes (Environment.setConfiguredPublishRetry).
     * Optional: a test double need not implement it.
     */
-   publishRefusedConfiguredPackage?(packageName: string): Promise<void>;
+   publishRefusedConfiguredPackage?(
+      packageName: string,
+      requestedVersion?: string,
+   ): Promise<void>;
    getEnvironmentName(): string;
    getEnvironmentPath(): string;
    getApiConnection(connectionName: string): ApiConnection;
