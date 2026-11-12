@@ -1,0 +1,53 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+# Cancels runs that have waited more than STALE_AFTER_MINUTES for a runner.
+#
+# GitHub-hosted runners have no queue timeout: a queued job waits until the
+# 35-day workflow run limit. When the org's shared runners are saturated, runs
+# from superseded or abandoned work keep their place in the queue ahead of the
+# work people are waiting on. Which runs are cancelled, and which are only
+# reported, is decided in scripts/cancel-stale-queued-runs.mjs; in short, a run
+# that has already done part of a non-pull_request job (a release or publish)
+# is never cancelled, only reported.
+
+name: Cancel stale queued runs
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List what would be cancelled without cancelling it"
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+  contents: read
+
+# One sweep at a time. A sweep that arrives while another runs waits, and a
+# newer one replaces it, so a saturated queue never stacks sweeps up.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: Cancel stale queued runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/cancel-stale-queued-runs.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Cancel runs with a job queued too long
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STALE_AFTER_MINUTES: "60"
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        run: node scripts/cancel-stale-queued-runs.mjs

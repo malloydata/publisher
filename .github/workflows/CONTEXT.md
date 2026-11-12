@@ -22,6 +22,17 @@ grouped by its own run id so it is never cancelled. Do not add a `concurrency` b
 `workflow_call` workflow: there `github.workflow` is the caller's name, so it would share, and
 cancel, its caller's group.
 
+**`cancel-stale-queued-runs.yml` cancels runs stuck waiting for a runner.** GitHub-hosted runners
+have no queue timeout, so every 15 minutes it cancels any run with a job that has waited more than
+60 minutes for a runner (a job blocked on `needs:` is not listed until its dependency ends, so a
+listed `queued` job is waiting for a runner). A pull request run is cancelled even if other jobs
+already ran; any other event is cancelled only if none of its jobs has started, and otherwise
+gets a warning annotation, because cancelling a release or publish partway would leave it half
+done. A run held at an approval gate is never touched. Dispatch it with `dry_run` to see what it
+would cancel. A run GitHub created but never processed (zero jobs, `updated_at` equal to its
+creation time) refuses every cancel with a 409; it holds no runner, and the sweep records it as a
+notice rather than failing.
+
 `build.yml` is the entry point (every PR). It does not run the test suites itself: it holds
 `lint` (typecheck), `lint_format` (prettier, eslint, and the DuckDB/pg version-consistency guards),
 `runtime_test` (starts the built server bin under both `npx` with the Node shebang and a direct
