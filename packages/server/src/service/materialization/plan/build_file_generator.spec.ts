@@ -179,7 +179,7 @@ source: orders is orders_raw extend {
             { dimension: "big", column: "big", computed: true },
          ]);
          const [sourceID, source] = Object.entries(c.sources).find(
-            ([, s]) => s.name === "orders__mat",
+            ([, s]) => s.name === "orders",
          )!;
          expect(c.sourceModelPaths?.[sourceID]).toBe("m.malloy");
          // Addressed like any persist source.
@@ -206,7 +206,7 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
 `);
          const c = await compilePackageBuildPlan(pkg);
          const [sourceID, source] = Object.entries(c.sources).find(
-            ([, s]) => s.name === "orders__mat",
+            ([, s]) => s.name === "orders",
          )!;
          const sql = buildSQLOf(source, { entries: {} }, c.targets?.[sourceID]);
          const duckdb = await pkg.getMalloyConnection!("duckdb");
@@ -241,9 +241,9 @@ source: orders is orders_raw
             partition: "order_date",
             storage: "lake",
          });
-         expect(
-            Object.values(c.sources).some((s) => s.name === "orders__mat"),
-         ).toBe(true);
+         expect(Object.values(c.sources).some((s) => s.name === "orders")).toBe(
+            true,
+         );
       },
       { timeout: 30000 },
    );
@@ -286,7 +286,7 @@ source: o2 is o
          // index.malloy re-exports `orders` as `o`; the contents of index hold
          // `o`, which carries orders' sourceID and its #(materialize).
          const names = Object.values(c.sources).map((s) => s.name);
-         expect(names.filter((n) => n === "orders__mat").length).toBe(1);
+         expect(names.filter((n) => n === "orders").length).toBe(1);
       },
       { timeout: 30000 },
    );
@@ -301,7 +301,7 @@ source: orders is orders_raw
 `,
          });
          const [sourceID] = Object.entries(c.sources).find(
-            ([, s]) => s.name === "orders__mat",
+            ([, s]) => s.name === "orders",
          )!;
          expect(c.sourceModelPaths?.[sourceID]).toBe("sub/m.malloy");
          expect(generatedPlans(c).map((p) => p.sourceName)).toEqual(["orders"]);
@@ -412,9 +412,53 @@ source: orders is orders_raw
          });
          const outcome = deriveBuildPlanOutcome(c, null);
          const wire = Object.values(outcome.plan?.sources ?? {}).find(
-            (s) => s.name === "orders__mat",
+            (s) => s.name === "orders",
          );
          expect(wire?.freshness?.window).toBe("24h");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "presents the generated source under the author's name and sourceID, at the generated source's own address",
+      async () => {
+         const c = await compiled(`##! experimental.persistence
+${BASE}
+#@ persist name="by_region"
+source: by_region is orders_raw -> { group_by: region }
+
+#(materialize) name="orders_all"
+source: orders is orders_raw extend { dimension: big is amount > 10 }
+`);
+         const [p] = generatedPlans(c);
+         // Keyed by the author's declaration, never by the generated name.
+         const source = c.sources[p.sourceID];
+         expect(source.name).toBe("orders");
+         expect(source.sourceID).toBe(p.sourceID);
+         expect(p.sourceID.startsWith("orders@")).toBe(true);
+         expect(c.materializePlans?.[p.sourceID]).toBe(p);
+         // The generated source it presents: the companion's, at the same
+         // address and SQL, so no key the control plane holds moves.
+         const generated = Object.getPrototypeOf(source) as typeof source;
+         expect(generated.name).toBe("orders__mat");
+         const target = c.targets?.[p.sourceID];
+         expect(
+            computeSourceEntityId(source, c.connectionDigests, target),
+         ).toBe(computeSourceEntityId(generated, c.connectionDigests, target));
+         expect(addressSQL(source, target)).toBe(addressSQL(generated, target));
+         // The graph names the author's source too.
+         expect(c.builds.flatMap((b) => b.order)).toContain(p.sourceID);
+         // Every name in the plan is unique: a source that is both #@ persist
+         // and #(materialize) is refused, so the author's name is free.
+         const outcome = deriveBuildPlanOutcome(c, null);
+         const names = Object.values(outcome.plan?.sources ?? {}).map(
+            (s) => s.name,
+         );
+         expect(names.sort()).toEqual(["by_region", "orders"]);
+         expect(outcome.plan?.sources[p.sourceID]?.sourceEntityId).toBe(
+            computeSourceEntityId(generated, c.connectionDigests, target),
+         );
+         expect(JSON.stringify(outcome.plan)).not.toContain("__mat");
       },
       { timeout: 30000 },
    );
@@ -429,7 +473,13 @@ ${BASE}
 source: orders is orders_raw -> { select: * }
 `);
          expect(generatedPlans(c)).toEqual([]);
+         // One source of that name: the author's own #@ persist, not a second
+         // presented as the same name.
          expect(Object.values(c.sources).map((s) => s.name)).toEqual([
+            "orders",
+         ]);
+         const wire = deriveBuildPlanOutcome(c, null).plan;
+         expect(Object.values(wire?.sources ?? {}).map((s) => s.name)).toEqual([
             "orders",
          ]);
          expect(

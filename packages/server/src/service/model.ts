@@ -399,6 +399,8 @@ export class Model {
     * own files with each stored source re-rooted on its table. A router
     * candidate only when `materialize.enabled` (`PUBLISHER_MATERIALIZE`) is on.
     */
+   /** The author sourceIDs a `#(materialize)` build stores (see setServeBindings). */
+   private materializeSourceIDs: ReadonlySet<string> = new Set();
    private servedCopy = new ServedCopyServe({
       modelPath: () => this.modelPath,
       modelDef: () => this.modelDef,
@@ -2638,6 +2640,7 @@ export class Model {
       malloyConfig: ModelConnectionInput,
       materializePlans: Readonly<Record<string, MaterializePlan>> = {},
    ): void {
+      this.materializeSourceIDs = new Set(Object.keys(materializePlans));
       this.servedCopy.setContext(packagePath, malloyConfig, materializePlans);
    }
 
@@ -2676,7 +2679,17 @@ export class Model {
 
    /** See {@link StorageServeShape.setServeBindings}. */
    public setServeBindings(bindings: ServeBinding[]): void {
-      this.storageServe.setServeBindings(bindings);
+      // A `#(materialize)` table is presented under its author's source name,
+      // but only the served copy may read it: the serve shape would rebuild
+      // the source over a table that already applied its definition.
+      const materialized = this.materializeSourceIDs;
+      this.storageServe.setServeBindings(
+         materialized.size === 0
+            ? bindings
+            : bindings.filter(
+                 (b) => !(b.sourceIDs ?? []).some((id) => materialized.has(id)),
+              ),
+      );
       this.servedCopy.setBindings(bindings);
    }
 

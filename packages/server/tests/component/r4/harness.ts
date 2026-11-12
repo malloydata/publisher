@@ -37,6 +37,7 @@ import {
    buildSQLOf,
    plannedSources,
 } from "../../../src/service/materialization/plan/build_plan";
+import { presentAs } from "../../../src/service/materialization/plan/addressing";
 import {
    deriveServeBindings,
    groupAliasesByName,
@@ -234,7 +235,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
               }),
               importBaseURL: new URL(root),
            }),
-        })
+        }).then((c) => c.generated)
       : undefined;
    if (scenario.materialize && !companion) {
       throw new Error("the #(materialize) companion did not compile");
@@ -242,15 +243,21 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const materializeByName = new Map(
       (companion?.plans ?? []).map((p) => [p.buildSourceName, p]),
    );
+   // A generated build source is presented as the author's source, as the
+   // package's build plan presents it (collectGeneratedMaterialize).
    const sources = companion
       ? plannedSources(
            await companion.runtime.getBuildTargets(companion.model),
-        ).filter((s) => materializeByName.has(s.name))
+        ).flatMap((s) => {
+           const p = materializeByName.get(s.name);
+           return p
+              ? [presentAs(s, { name: p.sourceName, sourceID: p.sourceID })]
+              : [];
+        })
       : plannedSources(await runtime.getBuildTargets(compiled));
    const materializePlans: Record<string, MaterializePlan> = {};
-   for (const source of sources) {
-      const plan = materializeByName.get(source.name);
-      if (plan) materializePlans[source.sourceID] = plan;
+   for (const plan of companion?.plans ?? []) {
+      materializePlans[plan.sourceID] = plan;
    }
    sources.forEach((source, i) => {
       plan[source.sourceID] = { name: source.name, sourceEntityId: `h${i}` };

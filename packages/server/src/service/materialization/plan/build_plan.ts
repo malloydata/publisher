@@ -74,7 +74,9 @@ import {
    addressSQL,
    computeSourceEntityId,
    plannedSources,
+   presentAs,
    recordTarget,
+   renameBuildSourceIDs,
    sourceBuildsOf,
    type SourceBuild,
 } from "./addressing";
@@ -572,17 +574,6 @@ function sourceIDFileURL(sourceID: string): string | undefined {
 }
 
 /**
- * Add one compiled `.malloy` model's builds, persist sources, dropped
- * `#@ persist` sources, rollups and gate outcomes to `parts`. `materializer`
- * must be the one that compiled `malloyModel` (gate classification grafts
- * probes onto it), and `runtime` the one it compiled in, which plans the
- * build. `getRuntime` builds the runtime a synthesized pre-aggregation model
- * compiles in.
- *
- * Imports nothing from `./model`: the package-load worker runs this, and the
- * renderer `./model` loads must not enter that isolate.
- */
-/**
  * Add the generated `#(materialize)` build sources of one author model to
  * `parts`, as the rollup companion's are added: whole builds (so a generated
  * source orders after a persisted source it reads), and only the generated
@@ -607,9 +598,23 @@ async function collectGeneratedMaterialize(
    }
    if (!generated) return;
    const targets = await generated.runtime.getBuildTargets(generated.model);
-   parts.builds.push(...sourceBuildsOf(targets));
    const planByName = new Map(
       generated.plans.map((p) => [p.buildSourceName, p]),
+   );
+   // Each generated source is presented as the author's source it builds: its
+   // name and sourceID are the author's everywhere past this point, and
+   // `<src>__mat` stays inside the companion file. The author's sourceID is
+   // free: a source that is both `#@ persist` and `#(materialize)` is refused.
+   const generatedPlans = new Map<PersistSource, MaterializePlan>();
+   const rename = new Map<string, string>();
+   for (const source of plannedSources(targets)) {
+      const plan = planByName.get(source.name);
+      if (!plan) continue;
+      generatedPlans.set(source, plan);
+      rename.set(source.sourceID, plan.sourceID);
+   }
+   parts.builds.push(
+      ...sourceBuildsOf(targets).map((b) => renameBuildSourceIDs(b, rename)),
    );
    const givens = Array.from(
       generated.model.givens.values(),
@@ -618,16 +623,20 @@ async function collectGeneratedMaterialize(
       givens.map(malloyGivenToApi),
       `${args.modelPath}#materialize`,
    );
-   for (const source of plannedSources(targets)) {
-      const plan = planByName.get(source.name);
-      if (!plan) continue;
-      const sourceID = source.sourceID;
+   for (const [generatedSource, plan] of generatedPlans) {
+      const source = presentAs(generatedSource, {
+         name: plan.sourceName,
+         sourceID: plan.sourceID,
+      });
+      const sourceID = plan.sourceID;
       parts.sources[sourceID] = source;
       recordTarget(parts, sourceID, source);
       parts.sourceModelPaths[sourceID] = args.modelPath;
       parts.materializePlans[sourceID] = plan;
+      // Classified as compiled: the companion's model declares it by its own
+      // sourceID.
       parts.sourceGateOutcomes[sourceID] = await classifyPersistSourceGate(
-         source,
+         generatedSource,
          generated.model._modelDef,
          generated.materializer,
          deps,
@@ -636,6 +645,17 @@ async function collectGeneratedMaterialize(
    }
 }
 
+/**
+ * Add one compiled `.malloy` model's builds, persist sources, dropped
+ * `#@ persist` sources, rollups and gate outcomes to `parts`. `materializer`
+ * must be the one that compiled `malloyModel` (gate classification grafts
+ * probes onto it), and `runtime` the one it compiled in, which plans the
+ * build. `getRuntime` builds the runtime a synthesized pre-aggregation model
+ * compiles in.
+ *
+ * Imports nothing from `./model`: the package-load worker runs this, and the
+ * renderer `./model` loads must not enter that isolate.
+ */
 export async function collectModelBuildPlan(
    parts: BuildPlanParts,
    args: {
