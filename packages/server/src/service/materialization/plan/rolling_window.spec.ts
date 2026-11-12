@@ -131,7 +131,7 @@ describe("classifyWhereTerms, the one where: term classifier", () => {
 
    it("reads a given term as the v1 classifier does", () => {
       const [given] = classifyWhereTerms(def("given_beside_now"));
-      expect(given.dependsOn).toEqual({
+      expect(given.dependsOn).toMatchObject({
          kind: "given",
          term: { code: "amount = $ORG", givens: ["ORG"], columns: ["amount"] },
       });

@@ -14,6 +14,7 @@ import { compilePackageBuildPlan } from "./build_plan_compile";
 import { collectIncrementalDeclarations } from "./build_plan";
 import { incrementalLineage } from "../run/incremental_build";
 import { assertInlinedJoinsUnique } from "../run/inline_uniqueness";
+import { rollingWindowsOf } from "./rolling_window";
 import {
    buildSourceName,
    generateBuildFile,
@@ -202,7 +203,7 @@ source: recent is events_raw extend {
             c.materializePlans,
          )[p.sourceID];
          expect(declaration?.rollingWindow).toEqual([
-            p.readTimeTerms![0].window,
+            rollingWindowsOf(p.readTimeTerms)[0],
          ]);
          expect(
             incrementalLineage({
@@ -215,7 +216,7 @@ source: recent is events_raw extend {
                connectionName: "duckdb",
                sourceEntityId: "sid",
             })?.rollingWindow,
-         ).toEqual([p.readTimeTerms![0].window]);
+         ).toEqual([rollingWindowsOf(p.readTimeTerms)[0]]);
          // Built as written: the address reads the warehouse's own clock, never
          // a literal of Publisher's, so it does not move between builds.
          const sql = addressSQL(c.sources[p.sourceID], c.targets?.[p.sourceID]);
