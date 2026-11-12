@@ -176,6 +176,29 @@ There is no directory scan: a package on disk serves only once it is registered.
   the rest of the API this endpoint is unauthenticated, so keep the server on localhost or behind
   a gateway.
 
+### Annotations that do nothing
+
+Malloy decides which reader sees an annotation by its prefix, so a small slip makes one silently do
+nothing: `#(clasification) "phi"`, `# (doc) …` with a space before the bracket, `#@persist` with no
+space, `# persist` or `#(persist)` for `#@ persist`, or `#@ persits`. Each loaded model reports these
+in the package's `warnings`, at severity `warn`, with the line and the spelling it meant:
+
+- `annotation-near-miss`: an annotation that reads as an attempt at a route Publisher reads
+  (`#(doc)`, `#(markdown)`, `#(classification)`, `#(carries)`, `#(secure)`, `#(index)`,
+  `#(dbmeta)`, `#(authorize)`, `#(access_filter)`, `#@ persist`, `#@ preaggregate`) but does not
+  reach it. On a gate route it also says the source is not protected by it.
+- `annotation-malformed-route`: a prefix Malloy cannot route at all, such as `#percent` (write
+  `# percent` for a tag, or `#(name)` for an app route). Malloy warns about these when it compiles,
+  and the package now carries the warning.
+
+They are warnings, never refusals: a route that only looks like one of these may belong to another
+application, and a publish still succeeds. The gate spellings Publisher already refuses
+(`#(AUTHORIZE)`, `# (authorize)`, `#(access-filter)` and the like, see
+[authorize.md](authorize.md)) still fail the load. Each model reports only the annotations in its own
+file, so a file several models import is reported once. `compile_model` at `file` scope returns the
+near misses as `warn` diagnostics at their line, so an editor sees them before a save. They are
+counted in `publisher_annotation_findings_total` with the other annotation findings.
+
 ## Lifecycle: what is served
 
 When an environment is first created, Publisher publishes each configured package as the version

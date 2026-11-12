@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import type { QueryMaterializer } from "@malloydata/malloy";
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../test_helpers/metrics_harness";
 import { routeQuery, type Variant } from "./query_router";
 
 const runnable = (name: string) => ({ name }) as unknown as QueryMaterializer;
@@ -165,5 +170,54 @@ describe("routeQuery", () => {
             detail: "rollup cannot answer",
          },
       ]);
+   });
+});
+
+describe("routeQuery metrics", () => {
+   let harness: MetricsHarness;
+   beforeEach(async () => {
+      harness = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+   });
+   afterEach(async () => {
+      resetMaterializationTelemetryForTesting();
+      await harness.shutdown();
+   });
+
+   const count = (labels: Record<string, string>) =>
+      harness.collectCounter("publisher_query_variant_routing_total", labels);
+
+   it("counts each candidate by variant, outcome and reason", async () => {
+      await routeQuery(
+         [variant("storage", "misses", []), variant("rollup", "answers", [])],
+         async () => false,
+      );
+      expect(
+         await count({
+            variant: "storage",
+            outcome: "skipped",
+            reason: "does_not_answer",
+         }),
+      ).toBe(1);
+      expect(
+         await count({ variant: "rollup", outcome: "used", reason: "none" }),
+      ).toBe(1);
+   });
+
+   it("counts a gated skip, and nothing for a hypothetical route", async () => {
+      await routeQuery([variant("rollup", "answers", [])], async () => true);
+      await routeQuery([variant("rollup", "answers", [])], async () => false, {
+         recordMetrics: false,
+      });
+      expect(
+         await count({
+            variant: "rollup",
+            outcome: "skipped",
+            reason: "row_level_gate",
+         }),
+      ).toBe(1);
+      expect(
+         await count({ variant: "rollup", outcome: "used", reason: "none" }),
+      ).toBe(0);
    });
 });

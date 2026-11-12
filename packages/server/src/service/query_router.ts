@@ -23,6 +23,7 @@
  */
 
 import type { QueryMaterializer } from "@malloydata/malloy";
+import { recordQueryVariantRouting } from "../materialization_metrics";
 
 /** The kinds of candidate the router knows, in their usual catalog order. */
 export type VariantKind = "storage" | "rollup";
@@ -110,6 +111,27 @@ export type RouteDecision<Extra> =
  * its variant exists for this model, and marks it inapplicable for this request.
  */
 export async function routeQuery<Extra>(
+   variants: ReadonlyArray<Variant<Extra>>,
+   blockedByGate: () => Promise<boolean>,
+   /**
+    * Count each candidate in `publisher_query_variant_routing_total`. Off for
+    * a hypothetical route (what-if), which answers no caller.
+    */
+   { recordMetrics = true }: { recordMetrics?: boolean } = {},
+): Promise<RouteDecision<Extra>> {
+   const decision = await decideRoute(variants, blockedByGate);
+   if (recordMetrics) recordConsidered(decision.considered);
+   return decision;
+}
+
+/** One count per candidate the router considered. */
+function recordConsidered(considered: readonly ConsideredVariant[]): void {
+   for (const c of considered) {
+      recordQueryVariantRouting(c.kind, c.outcome, c.reason ?? "none");
+   }
+}
+
+async function decideRoute<Extra>(
    variants: ReadonlyArray<Variant<Extra>>,
    blockedByGate: () => Promise<boolean>,
 ): Promise<RouteDecision<Extra>> {

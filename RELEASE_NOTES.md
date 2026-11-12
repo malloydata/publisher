@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Annotations that do nothing are reported, and the router counts every variant
+
+Malloy routes an annotation by its prefix, so a small slip made one silently do nothing: `#(clasification) "phi"`, `# (doc) …`, `#@persist`, `# persist`, `#(persist)` or `#@ persits`. A misspelled `#@ persist` persisted nothing, and a misspelled `#(doc)` documented nothing, with no word from Publisher.
+
+Each loaded model now reports these in the package's `warnings`, at severity `warn`, naming the line and the spelling it meant. Code `annotation-near-miss` covers an annotation reaching for a route Publisher reads (`#(doc)`, `#(markdown)`, `#(classification)`, `#(carries)`, `#(secure)`, `#(index)`, `#(dbmeta)`, `#(authorize)`, `#(access_filter)`, `#@ persist`, `#@ preaggregate`), and on a gate route it says the source is not protected by it. Code `annotation-malformed-route` covers a prefix Malloy cannot route at all (`#percent`), which Malloy warned about at compile but the package never carried. Both are warnings, never refusals, so no package that loads today stops loading or publishing; the gate spellings Publisher already refuses still fail the load. `compile_model` at `file` scope returns the near misses as `warn` diagnostics at their line. Both codes are counted in `publisher_annotation_findings_total`.
+
+The variant router now counts each candidate it considers in a new metric, `publisher_query_variant_routing_total{variant, outcome, reason}`: `storage` or `rollup`; `used` or `skipped`; and why it was skipped (`row_level_gate`, `not_applicable`, `does_not_answer`). The colocated pre-aggregation rung had no routing metric before.
+
 ## [Unreleased] — Every query result says which materialized table answered, and why the others did not
 
 `QueryResult` gains an optional `path`, the path report. `servedFrom` reports the `storage=` tier only, so a null read the same for a live answer, an answer from a colocated `#@ persist` table and a `storage=` table the query could not use. `path` separates them, across `storage=`, colocated `#@ persist` and pre-aggregation rollups:

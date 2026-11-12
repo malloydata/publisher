@@ -228,6 +228,8 @@ import {
    type QueryBoundaryPolicy,
 } from "./model_policy";
 import { QueryPrivileges, type QueryRequest } from "./model_query_request";
+import { annotationNearMisses, authoredNotes } from "./annotation_near_miss";
+import { type AnnotationFinding } from "./annotation_reader";
 export { QueryPrivileges } from "./model_query_request";
 export type { QueryRequest } from "./model_query_request";
 
@@ -1365,6 +1367,23 @@ export class Model {
     */
    public getModelDef(): ModelDef | undefined {
       return this.modelDef;
+   }
+
+   /** Memo for {@link annotationNearMisses}; a model's IR never changes. */
+   private nearMissFindings: AnnotationFinding[] | undefined;
+
+   /**
+    * The annotations this model file wrote that do nothing: near misses of a
+    * route Publisher owns, and prefixes Malloy cannot route (see
+    * `annotation_near_miss.ts`). Empty when the model did not compile.
+    */
+   public annotationNearMisses(): AnnotationFinding[] {
+      if (this.nearMissFindings === undefined) {
+         this.nearMissFindings = this.modelDef
+            ? annotationNearMisses(authoredNotes(this.modelDef))
+            : [];
+      }
+      return this.nearMissFindings;
    }
 
    /** The compiled query of each notebook cell that runs one, with the model state its query compiled in. */

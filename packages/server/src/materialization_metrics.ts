@@ -201,6 +201,14 @@ const storageServeRoutingCounter = lazyCounter(
       "which QueryResult.servedFrom reports as null - that field's " +
       "'live_fallback' is this counter's 'runtime_live_fallback'.",
 );
+const queryVariantRoutingCounter = lazyCounter(
+   "publisher_query_variant_routing_total",
+   "The variant router's decision on each candidate it considered for a query, " +
+      "one count per candidate (materialization v2, #6272). Labels: variant " +
+      "('storage'|'rollup'), outcome ('used'|'skipped'), reason ('none' when used; " +
+      "'row_level_gate'|'not_applicable'|'does_not_answer' when skipped). A query " +
+      "with no candidate records nothing.",
+);
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
    "Tables a FAILED run left in a storage= destination and deliberately did not " +
@@ -611,6 +619,15 @@ export function recordStoredColumnTypeMismatch(
  * consumers generate strict clients from the outcome enum, where an unexpected
  * value throws; an added attribute breaks no consumer.
  */
+/** One candidate of a routed query: what the router did with it, and why. */
+export function recordQueryVariantRouting(
+   variant: "storage" | "rollup",
+   outcome: "used" | "skipped",
+   reason: "none" | "row_level_gate" | "not_applicable" | "does_not_answer",
+): void {
+   queryVariantRoutingCounter().add(1, { variant, outcome, reason });
+}
+
 export function recordStorageServeRouting(
    outcome:
       | "storage"

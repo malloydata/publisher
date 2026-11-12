@@ -7,6 +7,7 @@ import { pathToFileURL } from "url";
 
 import "@malloydata/db-duckdb/native";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { findingSeverity } from "./annotation_reader";
 import {
    Connection,
    ConnectionRuntime,
@@ -1887,6 +1888,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.materialization.droppedPersistWarnings(),
          ...this.materialization.rollupsOverStoredBaseWarnings(),
          ...this.materialization.annotationFindingWarnings(),
+         ...this.annotationNearMissWarnings(),
          ...this.materialization.persistRefusalWarnings(),
          // Not in exploresWarnings: an import-only file must not block publish.
          ...this.emptyDiscoveryWarnings(),
@@ -2189,7 +2191,35 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.materialization.annotationFindingWarnings(),
          ...this.materialization.rollupsOverStoredBaseWarnings(),
          ...this.preaggregateAccessWarnings(),
+         ...this.annotationNearMissWarnings(),
       ].filter((warning) => warning.code !== undefined);
+   }
+
+   /**
+    * Annotations the package's model files wrote that do nothing: a near miss
+    * of a route Publisher owns (`annotation-near-miss`), or a prefix Malloy
+    * cannot route (`annotation-malformed-route`). Warnings, never refusals.
+    * Each model reports only the notes in its own file, so a shared import
+    * is reported once.
+    */
+   public annotationNearMissWarnings(): ApiPackageWarning[] {
+      const warnings: ApiPackageWarning[] = [];
+      for (const [modelPath, model] of this.models) {
+         // Optional: a model a spec stands in for need not implement it.
+         for (const finding of model.annotationNearMisses?.() ?? []) {
+            const line = finding.at
+               ? ` (line ${finding.at.range.start.line + 1})`
+               : "";
+            warnings.push({
+               model: modelPath,
+               ...(finding.subject ? { subject: finding.subject } : {}),
+               message: `${finding.message}${line}; ${finding.rewrite}`,
+               code: finding.code,
+               severity: findingSeverity(finding),
+            });
+         }
+      }
+      return warnings;
    }
 
    /** See {@link PackageMaterialization.preaggregateAccessWarnings}. */

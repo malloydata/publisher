@@ -35,6 +35,11 @@ import {
 import { UNCODED_REPORT_FINDING } from "../report_metrics";
 import { lazyCounter } from "../telemetry";
 import { URL_READER } from "../utils";
+import {
+   ANNOTATION_NEAR_MISS_CODE,
+   annotationNearMisses,
+   authoredNotes,
+} from "./annotation_near_miss";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
 import type { CallerRegion } from "./caller_joins";
 import { compileDocument, type CompiledDocument } from "./compile_document";
@@ -980,11 +985,17 @@ async function compileVirtualFile(
          scope === "append"
             ? []
             : notebookLintProblems(modelName, fullSource, virtualUri);
+      // The near-miss scan, so the editor warns where the package will; for a
+      // whole file only, like the lint. Malloy's own `malformed-route` is
+      // already in `model.problems`.
+      const nearMissProblems: LogMessage[] =
+         scope === "append" ? [] : nearMissLogMessages(model._modelDef);
       return {
          problems: tagProblems([
             ...model.problems,
             ...(readerProblem ? [readerProblem] : []),
             ...lintProblems,
+            ...nearMissProblems,
          ]),
          sql,
       };
@@ -1269,4 +1280,16 @@ function warningAsProblem(
          : warning.message,
       code,
    } as LogMessage;
+}
+
+/** The near-miss scan's findings on a compiled file, as compile warnings. */
+export function nearMissLogMessages(modelDef: ModelDef): LogMessage[] {
+   return annotationNearMisses(authoredNotes(modelDef))
+      .filter((finding) => finding.code === ANNOTATION_NEAR_MISS_CODE)
+      .map((finding) => ({
+         message: `${finding.message}; ${finding.rewrite}`,
+         severity: "warn" as const,
+         code: finding.code,
+         ...(finding.at ? { at: finding.at } : {}),
+      }));
 }

@@ -27,6 +27,8 @@ source: order_summary is raw_orders -> {
 }
 ```
 
+A misspelled `#@ persist` persists nothing and the source serves live: `#@persist` (no space), `# persist` or `#(persist)` (another route), and `#@ persits` (a misspelled directive) are each reported in the package's `warnings` with code `annotation-near-miss`, naming the spelling it meant. See [packages.md](packages.md#annotations-that-do-nothing).
+
 `name=` is the physical table Publisher writes. Persist the sources that are expensive to compute and reused by many queries; leave cheap or rarely-read sources unpersisted. The [materialization tuning guide](../skills/malloy-materialization/reference/tuning.md) helps decide.
 
 `name=` may also name the container the table goes in — `name="analytics.order_summary"` writes `order_summary` into the `analytics` schema/dataset rather than the connection's default one. The container must already exist; Publisher does not create it. On BigQuery a dataset is required, since a table cannot live outside one.

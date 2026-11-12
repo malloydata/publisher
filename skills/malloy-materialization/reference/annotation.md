@@ -16,7 +16,7 @@ source: my_rollup is some_source -> { group_by: ...; aggregate: ... }
 
 **A parameterized source must have its argument bound.** `#@ persist` on `high_value(min_amount is 500) -> { ... }` builds one fixed relation; on the free template `high_value -> { ... }` it is refused (`free_parameter`), since there is no single relation to store. A `given` the persisted *query* reads is refused the same way (`given_in_persisted_query`); a given in the source's own `extend` block is applied per caller at read. `reference/storage.md` says where a given may sit.
 
-**A `#@` line that does not parse persists nothing.** Malloy drops the source from the build and it serves live. The package carries an `error` warning (code `persist-unparseable`) and a publish is refused; a package already published still loads. A key Publisher does not read (`merge_keys=` for `merge_key=`) is a `warn` (code `persist-unknown-key`) and changes nothing, so read the package warnings after every edit.
+**A `#@` line that does not parse persists nothing.** Malloy drops the source from the build and it serves live. The package carries an `error` warning (code `persist-unparseable`) and a publish is refused; a package already published still loads. A key Publisher does not read (`merge_keys=` for `merge_key=`) is a `warn` (code `persist-unknown-key`) and changes nothing, so read the package warnings after every edit. A `#@` line Malloy never routes to persistence (`#@persist` with no space, `# persist`, `#(persist)`, or a misspelled directive such as `#@ persits`) persists nothing either; the package carries a `warn` with code `annotation-near-miss` that names the spelling it meant.
 
 ## The name
 

@@ -37,7 +37,11 @@
  */
 
 import { createRequire } from "module";
-import { payloadOfNote, routeOfNote } from "./annotation_reader";
+import {
+   isRouteAttempt,
+   payloadOfNote,
+   routeOfNote,
+} from "./annotation_reader";
 import { BadRequestError, ModelCompilationError } from "../errors";
 import { logger } from "../logger";
 import { type AnnotationNote } from "./annotations";
@@ -83,7 +87,7 @@ export const AUTHORIZE_TAG_LIKE = String.raw`##?\|?[ \t]*(?:[([{<][ \t]*)?(?:(?:
 const AUTHORIZE_ANNOTATION_ANYWHERE = new RegExp(AUTHORIZE_TAG_LIKE, "iu");
 
 /**
- * Every spelling that reads as an author reaching for `route`, case-insensitive
+ * Every spelling that reads as an author reaching for a gate `route`, case-insensitive
  * — the exact route word, its ordinary hyphen/underscore/no-separator variants,
  * and (for a compound route name) the same set with its two words transposed.
  * Transposed spellings like `#(authorize-source)` are distinct Malloy routes,
@@ -146,19 +150,6 @@ function nearMissWordAlternation(route: string): string {
       );
    }
    return names.map((name) => name.replace(REGEXP_SPECIAL, "\\$&")).join("|");
-}
-
-/**
- * A MOTLY (route `""`) payload that is an author reaching for `route`: optional
- * space/tab, an opening bracket, the route word, a closing bracket. The
- * REQUIRED bracket keeps ordinary render tags (`# bar_chart`, `# size=lg`) and
- * an unbracketed MOTLY tag named `authorize` out.
- */
-function motlyAuthorizePayloadPattern(route: string): RegExp {
-   return new RegExp(
-      `^[ \\t]*[([{<][ \\t]*(?:${nearMissWordAlternation(route)})[ \\t]*[)\\]}>]`,
-      "iu",
-   );
 }
 
 /**
@@ -539,7 +530,7 @@ export function containsAuthorizeAnnotationTag(texts: string[]): boolean {
  * Keyed on Malloy's ROUTE, so it cannot refuse another app's namespace:
  *
  *  - `""` (MOTLY) — a near miss only if the payload is a bracketed route word
- *    ({@link motlyAuthorizePayloadPattern}); render tags pass through.
+ *    ({@link isRouteAttempt}); render tags pass through.
  *  - `undefined` (malformed prefix) — a near miss if the text was reaching for
  *    the route ({@link malformedAuthorizeAttemptPattern}).
  *  - any other NAME — somebody else's route (`#(authorize-v2)`,
@@ -553,26 +544,13 @@ export function collectAuthorizeNearMisses(
    texts: Iterable<string>,
    route: string,
 ): string[] {
-   const motlyPattern = motlyAuthorizePayloadPattern(route);
-   const malformedPattern = malformedAuthorizeAttemptPattern(route);
-   const nearMissNames = new Set(
-      nearMissRouteNames(route).map((name) => name.toLowerCase()),
-   );
+   const names = nearMissRouteNames(route);
    const found: string[] = [];
    for (const text of texts) {
-      const trimmed = text.trimStart();
-      const noted = routeOfNote(trimmed);
-      if (noted === route) continue; // a real gate
-      const nearMiss =
-         noted === undefined
-            ? malformedPattern.test(trimmed)
-            : noted === ""
-              ? motlyPattern.test(payloadOfNote(trimmed))
-              : nearMissNames.has(noted.toLowerCase());
-      if (!nearMiss) continue;
+      if (!isRouteAttempt(text, route, names)) continue;
       // The first line only — the part that decides routing — so the gate
       // expression stays out of the load error.
-      found.push(trimmed.split(/[\r\n]/, 1)[0]);
+      found.push(text.trimStart().split(/[\r\n]/, 1)[0]);
    }
    return found;
 }
