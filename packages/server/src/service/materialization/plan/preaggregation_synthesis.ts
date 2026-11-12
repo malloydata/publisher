@@ -50,6 +50,7 @@
 
 import { Annotations } from "@malloydata/malloy";
 import { parseRouteTag } from "../../motly";
+import { annotationValue, identifier } from "../../malloy_text";
 import { createHash } from "node:crypto";
 import {
    readPreaggregateAnnotation,
@@ -397,21 +398,19 @@ function splitSourceID(
    return match ? { name: match[1], url: match[2] } : undefined;
 }
 
-/** An identifier as Malloy text: backticked unless it is a plain name. */
-function malloyIdentifier(name: string): string {
-   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : `\`${name}\``;
-}
-
 /** One rollup's `#@ persist source: …` declaration. */
 function emitRollup(plan: RollupPlan): string {
-   const alias = baseAlias(plan.baseSourceName);
+   const alias = identifier(baseAlias(plan.baseSourceName));
    const partials = plan.measures
-      .map((m) => `    ${m.partialName} is ${m.name}`)
+      .map((m) => `    ${identifier(m.partialName)} is ${identifier(m.name)}`)
       .join("\n");
    // The re-declared measure keeps the base's NAME, so a query asking for
    // `total` finds it on the member; only the stored column is renamed.
    const merged = plan.measures
-      .map((m) => `    ${m.name} is ${m.partialName}.${m.reaggregate}()`)
+      .map(
+         (m) =>
+            `    ${identifier(m.name)} is ${identifier(m.partialName)}.${m.reaggregate}()`,
+      )
       .join("\n");
    // The destination is QUOTED: unquoted, the tag parser silently splits at
    // the first non-identifier character (`storage=my-lake` becomes
@@ -425,14 +424,14 @@ function emitRollup(plan: RollupPlan): string {
    // Colocated: `name=` only when a namespace was named or inherited;
    // otherwise the build self-assigns from the source name.
    const persist = plan.storage
-      ? `#@ persist storage=${JSON.stringify(plan.storage)}`
+      ? `#@ persist storage=${annotationValue(plan.storage)}`
       : plan.namespace
-        ? `#@ persist name="${plan.namespace}.${plan.rollupSourceName}"`
+        ? `#@ persist name=${annotationValue(`${plan.namespace}.${plan.rollupSourceName}`)}`
         : "#@ persist";
    return `${persist}
-source: ${plan.rollupSourceName} is ${alias} -> {
+source: ${identifier(plan.rollupSourceName)} is ${alias} -> {
   group_by:
-${plan.grainDimensions.map((d) => `    ${d}`).join("\n")}
+${plan.grainDimensions.map((d) => `    ${identifier(d)}`).join("\n")}
   aggregate:
 ${partials}
 } extend {
@@ -482,8 +481,8 @@ export function synthesizePreaggregationModel(
          // A re-exported base is imported under the name its own file gives
          // it, which an `index.malloy` rename (`o is orders`) does not change.
          return fromDeclaring
-            ? `import { ${baseAlias(base)} is ${malloyIdentifier(declared.name)} } from ${JSON.stringify(fromDeclaring)}`
-            : `import { ${baseAlias(base)} is ${base} } from ${JSON.stringify(importPath)}`;
+            ? `import { ${identifier(baseAlias(base))} is ${identifier(declared.name)} } from ${JSON.stringify(fromDeclaring)}`
+            : `import { ${identifier(baseAlias(base))} is ${identifier(base)} } from ${JSON.stringify(importPath)}`;
       })
       .join("\n");
 
@@ -500,8 +499,8 @@ export function synthesizePreaggregationModel(
       .map((base) => {
          const members = plans
             .filter((p) => p.baseSourceName === base && !p.storage)
-            .map((p) => p.rollupSourceName);
-         return `source: ${base} is compose(${[...members, baseAlias(base)].join(", ")})`;
+            .map((p) => identifier(p.rollupSourceName));
+         return `source: ${identifier(base)} is compose(${[...members, identifier(baseAlias(base))].join(", ")})`;
       })
       .join("\n");
 

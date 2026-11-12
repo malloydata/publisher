@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { quotedIdentifier, quotedPath } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
 import * as fs from "fs/promises";
 import * as path from "path";
@@ -3136,7 +3137,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             ? { queryName: suggest.query }
             : suggest.source && suggest.dimension
               ? {
-                   query: `run: ${suggest.source} -> { group_by: ${suggest.dimension} }`,
+                   query: `run: ${quotedIdentifier(suggest.source)} -> { group_by: ${quotedPath(suggest.dimension)} }`,
                 }
               : undefined;
          if (!request) continue;

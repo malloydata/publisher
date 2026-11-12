@@ -212,6 +212,50 @@ describe("serve transform end-to-end (generate -> compile -> bind -> run)", () =
       expect(out[0].total).toBe(60);
    });
 
+   // A source, a refinement field and a stored column that each need
+   // backticks: emitted bare, the shape fails to compile and every query on
+   // the model serves live.
+   it("compiles and runs for names that need quoting, a read cast included", async () => {
+      const binding: ServeBinding = {
+         sourceName: "order-facts",
+         destinationName: "duckdb",
+         virtualHandle: "of_handle",
+         tablePath: "mz_physical",
+         schema: [
+            { name: "amount", type: "INTEGER" },
+            { name: "region", type: "VARCHAR" },
+         ],
+         readCasts: [{ column: "amount", castTo: "DOUBLE" }],
+         refinements: [
+            { kind: "dimension", name: "date", code: "region" },
+            { kind: "measure", name: "count", code: "amount.sum()" },
+         ],
+      };
+      const { modelText } = buildServeShapeModelForBindings([binding]);
+      expect(modelText).toContain("source: `order-facts` is");
+      expect(modelText).toContain("dimension: `date` is region");
+      const root = "file:///quoting-e2e/";
+      const runtime = new Runtime({
+         urlReader: new InMemoryURLReader(
+            new Map([[`${root}m.malloy`, modelText]]),
+         ),
+         connections,
+      });
+      const query = runtime
+         .loadModel(new URL(`${root}m.malloy`), {
+            importBaseURL: new URL(root),
+         })
+         .loadQuery(
+            "run: `order-facts` -> { group_by: `date`; aggregate: `count` }",
+         );
+      const result = await query.run({
+         virtualMap: buildVirtualMap([binding]),
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+      const out = result.data.toObject() as { date: string; count: number }[];
+      expect(out.find((r) => r.date === "US")?.count).toBe(40);
+   });
+
    it("assertServesInDuckDB passes for a well-formed captured schema", async () => {
       const binding = await bindingFromLiveTable();
       await expect(

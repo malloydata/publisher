@@ -47,6 +47,7 @@ import {
 } from "./annotation_reader";
 import { BadRequestError, ModelCompilationError } from "../errors";
 import { logger } from "../logger";
+import { quotedIdentifier } from "./malloy_text";
 import { type AnnotationNote } from "./annotations";
 import {
    canonicalAuthorizeRoute,
@@ -881,17 +882,6 @@ interface AuthorizeProbeCompiler {
 }
 
 /**
- * Backtick-quote a Malloy identifier for safe interpolation into a `run:`
- * query string. Escapes backslashes and backticks (in that order) so a name
- * that needs Malloy quoting (hyphen, space, reserved word, leading digit) or
- * contains an embedded backtick cannot break out of the quotes. Mirrors
- * Malloy's unexported `identifierCode`/`escapeIdentifier`.
- */
-export function quoteMalloyIdentifier(name: string): string {
-   return "`" + name.replace(/\\/g, "\\\\").replace(/`/g, "\\`") + "`";
-}
-
-/**
  * Build the ROW-LEVEL probe query text: apply a source's effective authorize
  * expressions as a source-level `where:` directly on `sourceName`, so the
  * gate's field references resolve against THAT entry point's own field space
@@ -904,7 +894,7 @@ export function buildRowLevelProbe(
    graftTarget: string,
    filterText: string,
 ): string {
-   return `run: ${quoteMalloyIdentifier(graftTarget)} extend { where: ${filterText} } -> { select: __authorize_probe is 1; limit: 1 }`;
+   return `run: ${quotedIdentifier(graftTarget)} extend { where: ${filterText} } -> { select: __authorize_probe is 1; limit: 1 }`;
 }
 
 /**

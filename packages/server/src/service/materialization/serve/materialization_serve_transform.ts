@@ -16,6 +16,7 @@ import {
 } from "../../../materialization_metrics";
 import type { ManifestEntry } from "../types";
 import { quoteManifestTablePath } from "../../quoting";
+import { identifier, stringLiteral } from "../../malloy_text";
 import { storageTablePath } from "../run/storage_table_path";
 import { pipelineReferences, structRefSourceId } from "../plan/source_map";
 
@@ -442,14 +443,6 @@ export function duckdbTypeToMalloy(duckdbType: string): string {
    return "json";
 }
 
-/** A Malloy identifier that needs no quoting. */
-const BARE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-/** Emit a field name bare when it is a plain identifier, else backtick-quoted. */
-function emitFieldName(name: string): string {
-   return BARE_IDENTIFIER.test(name) ? name : `\`${name.replace(/`/g, "``")}\``;
-}
-
 /**
  * Generate the transient serve-shape model that rebinds a materialized source to
  * a virtual source on its storage connection.
@@ -484,7 +477,7 @@ export function buildServeShapeModel(
 function serveShapeGivenLine(given: ServeShapeGiven): string {
    const suffix =
       given.defaultText !== undefined ? ` is ${given.defaultText}` : "";
-   return `  ${given.name} :: ${given.type}${suffix}`;
+   return `  ${identifier(given.name)} :: ${given.type}${suffix}`;
 }
 
 /**
@@ -493,31 +486,32 @@ function serveShapeGivenLine(given: ServeShapeGiven): string {
  * once for the whole model).
  */
 function serveShapeFragment(binding: ServeBinding): string {
-   const shapeTypeName = `${binding.sourceName}__shape`;
+   const shapeTypeName = identifier(`${binding.sourceName}__shape`);
+   const sourceName = identifier(binding.sourceName);
    const fields = binding.schema
-      .map((c) => `   ${emitFieldName(c.name)}::${duckdbTypeToMalloy(c.type)}`)
+      .map((c) => `   ${identifier(c.name)}::${duckdbTypeToMalloy(c.type)}`)
       .join(",\n");
-   const virtual = `${binding.destinationName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`;
+   const virtual = `${identifier(binding.destinationName)}.virtual(${stringLiteral(binding.virtualHandle)})::${shapeTypeName}`;
    const casts = new Map(
       (binding.readCasts ?? []).map((c) => [c.column, c.castTo]),
    );
    let prelude = "";
    let source: string;
    if (casts.size === 0) {
-      source = `source: ${binding.sourceName} is ${virtual}`;
+      source = `source: ${sourceName} is ${virtual}`;
    } else {
       // The stored table under its own name, then the source as a query that
       // selects every column, the mistyped ones cast to their declared type.
-      const stored = `${binding.sourceName}__stored`;
+      const stored = identifier(`${binding.sourceName}__stored`);
       prelude = `source: ${stored} is ${virtual}\n`;
       const select = binding.schema
          .map((c) => {
-            const name = emitFieldName(c.name);
+            const name = identifier(c.name);
             const to = casts.get(c.name);
             return to ? `${name} is ${name}::${duckdbTypeToMalloy(to)}` : name;
          })
          .join(", ");
-      source = `source: ${binding.sourceName} is ${stored} -> { select: ${select} }`;
+      source = `source: ${sourceName} is ${stored} -> { select: ${select} }`;
    }
    // Anything a refinement references that the shape lacks fails the shape
    // compile, which safely falls back.
@@ -546,7 +540,7 @@ function refinementLines(refinements: readonly SourceRefinement[]): string[] {
    }
    for (const r of refinements) {
       if (r.kind === "dimension" || r.kind === "measure") {
-         lines.push(`   ${r.kind}: ${r.name} is ${r.code}`);
+         lines.push(`   ${r.kind}: ${identifier(r.name)} is ${r.code}`);
       }
    }
    for (const r of refinements) {
@@ -609,7 +603,7 @@ function derivedSourceFragment(lift: DerivedSourceLift): string {
    if (lift.text !== undefined) return `source: ${lift.text}`;
    const lines = refinementLines(lift.refinements);
    const body = lines.length > 0 ? ` extend {\n${lines.join("\n")}\n}` : "";
-   return `source: ${lift.sourceName} is ${lift.base}${body}`;
+   return `source: ${identifier(lift.sourceName)} is ${identifier(lift.base)}${body}`;
 }
 
 /** The compiled-model facts {@link liftDerivedSources} reads. */

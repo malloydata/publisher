@@ -200,9 +200,9 @@ import {
    compileErrorOf,
    multipleRunStatementsError,
    queryCompileError,
-   quoteMalloyIdentifier,
    runStatementCount,
 } from "./model_query_compile";
+import { quotedIdentifier } from "./malloy_text";
 import { runReadsPublished, scrubHiddenIds } from "./model_projection";
 import { compileOnlyDestinationConfig } from "./connection";
 import {
@@ -2090,7 +2090,7 @@ export class Model {
       const text =
          request.query ??
          (request.queryName
-            ? `run: ${quoteMalloyIdentifier(request.queryName)}`
+            ? `run: ${quotedIdentifier(request.queryName)}`
             : undefined);
       if (!text || !this.modelMaterializer) return undefined;
       let compiledSource: string | undefined;
@@ -2815,7 +2815,7 @@ export class Model {
          for (const view of views) {
             try {
                await shape.loadServeShapeQuery(
-                  `run: ${quoteMalloyIdentifier(binding.sourceName)} -> ${quoteMalloyIdentifier(view)}`,
+                  `run: ${quotedIdentifier(binding.sourceName)} -> ${quotedIdentifier(view)}`,
                   placeholders,
                );
                verdicts.push({ view, verdict: "serves" });
@@ -3025,8 +3025,8 @@ export class Model {
             // the LAST `run:`), and getFilters() would miss the raw name and
             // inject no filter.
             queryString = `\nrun: ${
-               sourceName ? `${quoteMalloyIdentifier(sourceName)} -> ` : ""
-            }${quoteMalloyIdentifier(queryName)}`;
+               sourceName ? `${quotedIdentifier(sourceName)} -> ` : ""
+            }${quotedIdentifier(queryName)}`;
          } else {
             const endTime = performance.now();
             const executionTime = endTime - startTime;

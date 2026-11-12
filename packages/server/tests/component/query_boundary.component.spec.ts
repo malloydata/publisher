@@ -1601,6 +1601,51 @@ query: dash is customers -> {
       }
    });
 
+   it("declared: warns for a filter suggest over a hidden source whose name needs quoting", async () => {
+      // Emitted bare, the check's probe query failed to compile, which reads
+      // as "loads fine", so a hidden source with such a name was never flagged.
+      fs.writeFileSync(
+         path.join(tempDir, "raw.malloy"),
+         `source: \`order-facts\` is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+}
+export { \`order-facts\` }`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `source: customers is duckdb.sql("select 1 as id") extend {
+  measure: k is count()
+}
+export { customers }`,
+      );
+      fs.mkdirSync(path.join(tempDir, "dashboards"));
+      fs.writeFileSync(
+         path.join(tempDir, "dashboards", "dash.malloy"),
+         `##! experimental.givens
+import "../raw.malloy"
+import { customers } from "../index.malloy"
+# label="Id" control=select suggest { source="order-facts" dimension=id }
+given: BY_SOURCE :: filter<number> is f''
+## artifact { layout=grid title="Dash" tiles=["dash"] }
+query: dash is customers -> {
+  where: id ~ $BY_SOURCE
+  group_by: id
+}`,
+      );
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         writeManifest({});
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const suggestWarnings = (pkg.getPackageMetadata().warnings ?? [])
+            .map((w) => w.message ?? "")
+            .filter((m) => m.includes("suggests from"));
+         expect(suggestWarnings).toHaveLength(1);
+         expect(suggestWarnings[0]).toContain("order-facts");
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    describe("declared: a grid report's own sources", () => {
       // index.malloy serves `flights`. The report declares `r` on top of it
       // (through `mid`, so the chain has two hops), `raw_r` on a source no
