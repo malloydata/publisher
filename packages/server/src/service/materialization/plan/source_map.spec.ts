@@ -153,6 +153,79 @@ describe("reachableSourceIDs", () => {
    });
 });
 
+describe("composites", () => {
+   const COMPOSITE = `##! experimental { persistence composite_sources }
+source: base is duckdb.table('orders')
+#@ persist name="by_region"
+source: by_region is base -> { group_by: region }
+source: plain is duckdb.table('orders')
+source: comp is compose(by_region, plain)
+source: over_comp is comp -> { group_by: region }
+`;
+
+   it("reaches every member of a published composite, as the scan before the map did", async () => {
+      const modelDef = await compile(
+         { "model.malloy": COMPOSITE },
+         "model.malloy",
+      );
+      const map = SourceMap.of(modelDef);
+      for (const root of ["comp", "over_comp"]) {
+         const def = modelDef.contents[root] as SourceDef;
+         const ids = reachableSourceIDs(
+            structsReachedFrom([def], modelDef),
+            modelDef,
+         );
+         for (const name of ["by_region", "plain", "base"]) {
+            expect(ids.has(map.sourceIDOf(name)!)).toBe(true);
+         }
+         // And never less than the legacy scan.
+         for (const id of legacyDeepScan([def])) expect(ids.has(id)).toBe(true);
+      }
+   });
+
+   it("records a composite as a composite with its members, and a query over one as a query", async () => {
+      const modelDef = await compile(
+         { "model.malloy": COMPOSITE },
+         "model.malloy",
+      );
+      const map = SourceMap.of(modelDef);
+      const comp = map.node(map.sourceIDOf("comp")!)!;
+      expect(comp.kind).toBe("composite");
+      expect(comp.base).toBeUndefined();
+      expect(comp.members).toEqual([
+         map.sourceIDOf("by_region")!,
+         map.sourceIDOf("plain")!,
+      ]);
+      const over = map.node(map.sourceIDOf("over_comp")!)!;
+      expect(over.kind).toBe("query");
+      expect(over.base?.hop).toBe("query");
+      expect(map.node(map.sourceIDOf("plain")!)!.members).toEqual([]);
+   });
+});
+
+describe("chain fall-through", () => {
+   it("continues past an extends the model cannot resolve, as the walk before the map did", () => {
+      // A definition whose `extends` names an id the registry lacks, with a
+      // rename that resolves: the walk still reaches the renamed source.
+      const target = { type: "table", sourceID: "target@m" };
+      const modelDef = {
+         contents: { target },
+         sourceRegistry: {
+            "target@m": {
+               entry: { type: "source_registry_reference", name: "target" },
+            },
+         },
+      };
+      const struct = {
+         type: "table",
+         sourceID: "child@m",
+         extends: "missing@m",
+         referenceID: "target@m",
+      };
+      expect(sourceChain(struct, modelDef)).toEqual(["child@m", "target@m"]);
+   });
+});
+
 /**
  * What the unreachable verdict used before the source map: every
  * `sourceID`/`referenceID`/`extends` string anywhere under the roots. The map's

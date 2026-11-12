@@ -20,6 +20,23 @@ It records structure. It computes no content address (that is the build
 plan's, phase 3 PR 2), writes no Malloy text (the rewriter's and generator's,
 PR 3 and PR 2), and edits nothing in the IR.
 
+## What this pull request builds, and what later ones add
+
+This note describes the map phase 3 needs. Phase 3's first pull request builds
+the part today's readers use; the rest lands with the pull request that first
+reads it.
+
+| Part | Status |
+| --- | --- |
+| Nodes by `sourceID`, a name index per model, kind, base edge (`extends`, rename, query base), a composite's members | Built (PR 1) |
+| The chain walk (path report), reachability (unreachable verdict), the build-side reach (chained builds) | Built (PR 1), replacing three hand-written walkers |
+| The keying rule for storage eligibility, the storage bind filter and the verdicts' bind check | Built (PR 1); the ratchet spec lists the name-keyed uses left to migrate |
+| Pipeline references on each node | Read on demand by the walks (`pipelineReferences`); stored on the node with PR 2's generator |
+| Joins (relationship, target, added or inherited, cross-connection mark) | PR 3 (rewriter) and PR 4 (joins) |
+| Annotations per segment, origin connection | PR 2 (generator) |
+| Links to stored tables by `(sourceEntityId, destination)`, and a package-wide union by `sourceID` | PR 3, with the router's catalog |
+| Hop readers moved into `governance/ir/source_graph.ts` | Not yet: the rename and pipeline readers live in `source_map.ts` until governance needs them |
+
 ## The keying rule
 
 Three identities, each used for one thing:
@@ -51,11 +68,16 @@ One node per declaration, keyed by `sourceID`:
   and, per model that can see it, the name it has there. Names are an index
   onto nodes (`name → sourceID` per model namespace), never the other way.
 - **Kind:** table, SQL, `extend`, rename, query-shaped (`x is y -> { … }`) or
-  composite.
+  composite (`compose(a, b)`, with its members in order; a composite has no
+  single base).
 - **Base edge:** the one source it is built from, with the hop that reaches
-  it: `extends` (an `extend`), `referenceID` (a rename), `query.structRef` (a
-  query-shaped segment), or `query.compositeResolvedSourceDef` (the composite
-  member Malloy resolved). A table or SQL source has none. A base the registry
+  it: `extends` (an `extend`), `referenceID` (a rename), or `query.structRef`
+  (a query-shaped segment, including a query over a composite, whose base is
+  the composite). A table, SQL source or composite has none; the member Malloy
+  resolves for a query over a composite (`query.compositeResolvedSourceDef`)
+  is read by reachability, not recorded as a base. When a hop does not
+  resolve in the model, the chain falls through to the next hop, as the walks
+  before the map did. A base the registry
   cannot resolve is recorded by its id as unresolved, never dropped.
 - **Pipeline references:** the other sources a query-shaped segment's pipeline
   reads, and whether the pipeline was too deep to read (which counts as

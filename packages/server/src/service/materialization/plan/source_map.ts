@@ -41,10 +41,16 @@ export interface MappedSourceDef {
       compositeResolvedSourceDef?: unknown;
    };
    fields?: unknown[];
+   /** A composite source's members (`compose(a, b)`), in order. */
+   sources?: unknown[];
 }
 
-/** How a source reaches the one it is built from. */
-export type BaseHop = "extends" | "rename" | "query" | "composite";
+/**
+ * How a source reaches the one it is built from. A composite has no single
+ * base; its members are on {@link SourceNode.members}. A query over a
+ * composite reaches the composite through `query.structRef`, like any query.
+ */
+export type BaseHop = "extends" | "rename" | "query";
 
 /** A source's base edge: the hop, the id it names, and the definition when it resolves. */
 export interface BaseEdge {
@@ -65,8 +71,10 @@ export interface SourceNode {
    /** The name it has in this model's namespace, when it has one; display only. */
    name: string | undefined;
    kind: SourceKind;
-   /** The source it is built from; undefined for a table or SQL source. */
+   /** The source it is built from; undefined for a table, SQL source or composite. */
    base: BaseEdge | undefined;
+   /** A composite's members' sourceIDs, in order; empty for any other kind. */
+   members: string[];
    def: MappedSourceDef;
 }
 
@@ -123,9 +131,10 @@ function queryBase(
 
 /**
  * The one source `def` is built from, and the hop that reaches it: `extends`
- * first, then a rename (`referenceID`), then a query-shaped source's base, then
- * a composite's resolved member. Persistence is inherited along the first two
- * hops only; a query-shaped source starts a new segment.
+ * first, then a rename (`referenceID`), then a query-shaped source's base.
+ * Persistence is inherited along the first two hops only; a query-shaped source
+ * starts a new segment. A composite has members, not a base (see
+ * {@link compositeMemberIds}).
  */
 export function baseEdgeOf(
    def: MappedSourceDef,
@@ -158,8 +167,38 @@ export function baseEdgeOf(
    return undefined;
 }
 
+/** A composite source's members' sourceIDs, in order. */
+export function compositeMemberIds(def: MappedSourceDef): string[] {
+   if (def.type !== "composite" || !Array.isArray(def.sources)) return [];
+   return def.sources.flatMap((member) => {
+      const id = structRefSourceId(member);
+      return id === undefined ? [] : [id];
+   });
+}
+
+/**
+ * The next definition up a chain, as the walkers before the source map read
+ * it: `extends`, else a rename, else a query-shaped base, each tried in turn
+ * when the one before does not resolve in this model.
+ */
+function nextInChain(
+   def: MappedSourceDef,
+   model: IrModel | undefined,
+): MappedSourceDef | undefined {
+   const id = typeof def.sourceID === "string" ? def.sourceID : undefined;
+   return (
+      (typeof def.extends === "string"
+         ? byId(model, def.extends)
+         : undefined) ??
+      (typeof def.referenceID === "string" && def.referenceID !== id
+         ? byId(model, def.referenceID)
+         : undefined) ??
+      queryBase(def, model)
+   );
+}
+
 function kindOf(def: MappedSourceDef, base: BaseEdge | undefined): SourceKind {
-   if (def.query?.compositeResolvedSourceDef !== undefined) return "composite";
+   if (def.type === "composite") return "composite";
    if (!base) return "table";
    if (base.hop === "extends") return "extend";
    if (base.hop === "rename") return "rename";
@@ -215,6 +254,7 @@ export class SourceMap {
          name,
          kind: kindOf(def, base),
          base,
+         members: compositeMemberIds(def),
          def,
       });
    }
@@ -250,8 +290,12 @@ export class SourceMap {
          seen.add(current);
          const id = current.sourceID;
          if (typeof id === "string" && !out.includes(id)) out.push(id);
-         const edge = baseEdgeOf(current, this.modelDef);
-         const next = edge?.def;
+         // Each hop falls through to the next when it does not resolve here,
+         // so an `extends` the registry lacks still reaches a rename or base.
+         const next = nextInChain(
+            current,
+            this.modelDef as IrModel | undefined,
+         );
          if (!next) {
             for (const ref of [current.extends, current.referenceID]) {
                if (typeof ref === "string" && !out.includes(ref)) out.push(ref);
@@ -406,6 +450,15 @@ export function reachableSourceIDs(
          }
          visit(def.query.compositeResolvedSourceDef);
          visitPipeline(def.query.pipeline);
+      }
+      // A composite's members: each one is read whenever the composite is.
+      for (const member of def.sources ?? []) {
+         add(structRefSourceId(member));
+         visit(
+            typeof member === "string"
+               ? byId(modelDef as IrModel | undefined, member)
+               : member,
+         );
       }
       if (modelDef !== undefined && isSourceDef(node as SourceDef)) {
          const struct = node as SourceDef;

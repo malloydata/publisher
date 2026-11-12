@@ -21,8 +21,20 @@ import * as path from "path";
 
 const ROOT = __dirname;
 
-const NAME_KEY =
-   /\.(?:set|get|has|delete|includes)\(\s*[A-Za-z_]*(?:[Ss]ource|[Bb]inding|[Pp]lan|[Rr]ollup|persist)[A-Za-z_]*\.(?:name|sourceName)\b|(?:[\w\])]|\?\.)\[\s*[A-Za-z_]*(?:[Ss]ource|[Bb]inding|[Pp]lan|[Rr]ollup)[A-Za-z_]*\.(?:name|sourceName)\s*\]/;
+/**
+ * `.sourceName` is a source's name on whatever carries it (a binding, a manifest
+ * entry, a lift), so any variable counts; `.name` is too common to scan on any
+ * variable, so it counts only on one whose name says it is a source, binding,
+ * plan or rollup.
+ */
+const NAME_KEY = new RegExp(
+   [
+      String.raw`\.(?:set|get|has|delete|includes)\(\s*[A-Za-z_][A-Za-z0-9_]*\.sourceName\b`,
+      String.raw`(?:[\w\])]|\?\.)\[\s*[A-Za-z_][A-Za-z0-9_]*\.sourceName\s*\]`,
+      String.raw`\.(?:set|get|has|delete|includes)\(\s*[A-Za-z_]*(?:[Ss]ource|[Bb]inding|[Pp]lan|[Rr]ollup|persist)[A-Za-z_]*\.name\b`,
+      String.raw`(?:[\w\])]|\?\.)\[\s*[A-Za-z_]*(?:[Ss]ource|[Bb]inding|[Pp]lan|[Rr]ollup)[A-Za-z_]*\.name\s*\]`,
+   ].join("|"),
+);
 
 /**
  * file → the trimmed lines allowed to key by name, and why. A name is a fine key
@@ -38,6 +50,10 @@ const ALLOWED: Record<string, Record<string, string>> = {
       "if (include && !include.has(source.name)) continue;":
          "a scoped run's sourceNames filter is a caller request by name",
    },
+   "run/storage_build_strategy.ts": {
+      "}).filter((d) => onPath.has(d.sourceName));":
+         "names on one downstream's path within one model's namespace (the lift is per model)",
+   },
    "run/run_instructions.ts": {
       "if (include && !include.has(persistSource.name)) continue;":
          "a scoped run's sourceNames filter is a caller request by name",
@@ -51,6 +67,22 @@ const ALLOWED: Record<string, Record<string, string>> = {
          "the model's own namespace, resolving a name to its sourceID",
       "else if (!group.includes(source.name)) group.push(source.name);":
          "aliases grouped per address for rebinding by name in Malloy text",
+      "...(aliasesBySourceName[entry.sourceName] ?? []).filter(":
+         "aliases grouped per address for rebinding by name in Malloy text",
+      "const url = ctx.contents[lift.sourceName]?.location?.url;":
+         "the model's own namespace",
+      "dependsOn.set(b.sourceName, set);":
+         "orders one serve shape's bindings by the Malloy names they declare",
+      "if (!remaining.has(b.sourceName)) continue;":
+         "orders one serve shape's bindings by the Malloy names they declare",
+      "const ready = [...dependsOn.get(b.sourceName)!].every((d) =>":
+         "orders one serve shape's bindings by the Malloy names they declare",
+      "remaining.delete(b.sourceName);":
+         "orders one serve shape's bindings by the Malloy names they declare",
+      "if (remaining.has(b.sourceName)) {":
+         "orders one serve shape's bindings by the Malloy names they declare",
+      "givenScopedJoinTargets(contents?.[b.sourceName]?.fields).every(":
+         "the model's own namespace",
    },
    "serve/serve_verdict.ts": {
       "if (!facts.boundStorageNames.has(source.name)) {":
@@ -109,6 +141,14 @@ describe("the keying rule: a source's name is never a map key", () => {
          true,
       );
       expect(NAME_KEY.test("namesByAddress.set(id, [source.name]);")).toBe(
+         false,
+      );
+      // `.sourceName` on any carrier, not only one named for a source.
+      expect(NAME_KEY.test("if (remaining.has(b.sourceName)) continue;")).toBe(
+         true,
+      );
+      expect(NAME_KEY.test("const x = byName[entry.sourceName];")).toBe(true);
+      expect(NAME_KEY.test("...(e.sourceName ? [e.sourceName] : []),")).toBe(
          false,
       );
    });

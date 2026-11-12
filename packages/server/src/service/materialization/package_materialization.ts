@@ -737,9 +737,21 @@ export class PackageMaterialization {
       // one of the plan sources it materializes was examined and found
       // eligible. A rollup passes under its own synthesized sourceID.
       const eligible = new Set(eligibility?.eligible ?? []);
-      const allowed = derived.filter((binding) => {
+      // A binding is kept for its ELIGIBLE sources only: two models may declare
+      // same-named sources with identical SQL (one table), one gated and
+      // refused. Narrowing the binding's sourceIDs keeps the refused one off
+      // the table in its own model, where admitting the binding whole would
+      // have served it (fails closed).
+      const allowed = derived.flatMap((binding) => {
          const ids = binding.sourceIDs ?? [];
-         if (ids.some((id) => eligible.has(id))) return true;
+         const admitted = ids.filter((id) => eligible.has(id));
+         if (admitted.length > 0) {
+            return [
+               admitted.length === ids.length
+                  ? binding
+                  : { ...binding, sourceIDs: admitted },
+            ];
+         }
          const refusal = ids
             .map((id) => eligibility?.refused[id])
             .find((reason) => reason !== undefined);
@@ -762,7 +774,7 @@ export class PackageMaterialization {
                reason,
             },
          );
-         return false;
+         return [];
       });
       this.storageServeBindings = allowed;
       this.pushStorageServeBindingsToModels();

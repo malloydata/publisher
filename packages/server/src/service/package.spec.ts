@@ -688,6 +688,65 @@ describe("service/package", () => {
          expect(boundSources(pkg)).toEqual(["all_rollup"]);
       });
 
+      it("keeps a binding only for its eligible source when two models' same-named sources share a table", () => {
+         // Two models declare `orders` with identical SQL (one address); one
+         // carries a gate the eligibility check refuses. The binding names both
+         // plan sources, and only the eligible one may keep it: admitting the
+         // binding whole would serve the refused model's source from the table.
+         const pkg = new Package(
+            "testProject",
+            "testPackage",
+            testPackageDirectory,
+            { name: "testPackage" },
+            [],
+            new Map(),
+         );
+         const open = "orders@file:///open.malloy";
+         const gated = "orders@file:///gated.malloy";
+         (
+            pkg as unknown as {
+               sourceEligibility: {
+                  eligible: string[];
+                  refused: Record<string, string>;
+               };
+            }
+         ).sourceEligibility = {
+            eligible: [open],
+            refused: { [gated]: "protected by a gate" },
+         };
+         (pkg as unknown as { buildPlan: unknown }).buildPlan = {
+            graphs: [],
+            sources: {
+               [open]: {
+                  name: "orders",
+                  sourceEntityId: "eid-orders",
+                  sourceID: open,
+               },
+               [gated]: {
+                  name: "orders",
+                  sourceEntityId: "eid-orders",
+                  sourceID: gated,
+               },
+            },
+         };
+
+         pkg.bindStorageServeBindings({ a: entry("orders", "t_orders") });
+
+         // The wire projection drops sourceIDs; read the bound set itself.
+         const bound = (
+            pkg as unknown as {
+               materialization: {
+                  storageServeBindings: {
+                     sourceName: string;
+                     sourceIDs?: string[];
+                  }[];
+               };
+            }
+         ).materialization.storageServeBindings;
+         expect(bound.map((b) => b.sourceName)).toEqual(["orders"]);
+         expect(bound[0].sourceIDs).toEqual([open]);
+      });
+
       it("refuses every binding when the build plan could not be computed", () => {
          // The plan compute does live schema RPCs, so a warehouse blip during load
          // is the ordinary way this happens — and the package still serves. An
