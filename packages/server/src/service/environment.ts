@@ -3814,6 +3814,25 @@ export class Environment {
    }
 
    /**
+    * Record a configured package whose boot publish was refused and that can
+    * NOT be published again: a remote location, whose mount is removed after
+    * boot. Its reads answer the boot publish's own error (as a local package's
+    * do after a failed retry) instead of "Package manifest … does not exist",
+    * and never publish; it waits for the next `--init`.
+    */
+   public setConfiguredPublishRefused(
+      packageName: string,
+      error: unknown,
+   ): void {
+      this.configuredPublishRetries.set(packageName, {
+         publish: () => Promise.reject(error),
+         failures: 1,
+         notBefore: Number.POSITIVE_INFINITY,
+         lastError: error,
+      });
+   }
+
+   /**
     * {@link retryConfiguredPublish} for callers that resolve a version before
     * they read the package (a materialization run). Resolves at once when the
     * package is loaded, has no refused publish to retry, or the caller names a

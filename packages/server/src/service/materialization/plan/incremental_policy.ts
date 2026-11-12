@@ -355,6 +355,8 @@ function sharedAddressAdvisories(
          warnings.push({
             model: source.modelPath ?? "",
             subject: source.sourceName,
+            code: INCREMENTAL_SHARED_ADDRESS_CODE,
+            severity: "warn",
             message:
                `compiles to the same SQL as ${quoteList(others)} on the same ` +
                `connection, so they share ONE content address — and therefore ` +
@@ -372,6 +374,13 @@ function sharedAddressAdvisories(
    }
    return warnings;
 }
+
+/** The code on the advisory for an incremental source with no `merge_key=`. */
+export const INCREMENTAL_NO_MERGE_KEY_CODE = "persist-incremental-no-merge-key";
+
+/** The code on the advisory for sources that share one content address. */
+export const INCREMENTAL_SHARED_ADDRESS_CODE =
+   "persist-incremental-shared-address";
 
 /**
  * Advisory findings: surfaced on the package's warnings array, never blocking.
@@ -402,6 +411,8 @@ export function incrementalPolicyAdvisories(
               `table on every run.`;
          warnings.push({
             ...at,
+            code: INCREMENTAL_NO_MERGE_KEY_CODE,
+            severity: "warn",
             message:
                `is ${MODE} with no merge_key=, so each refresh REPLACES the ` +
                `watermark range it just computed. Two consequences worth ` +

@@ -5880,7 +5880,18 @@ components:
                   key, `subject` the source; `warn`).
                   `persist-not-materializable`: a `#@ persist` source the build
                   walk did not recognize, served live (`subject` the source;
-                  `warn`). `preaggregate-hidden-field`: a `#@ preaggregate` on a
+                  `warn`). `persist-source-refused`: a `#@ persist` source a
+                  compile-time gate refused (a row-level gate, a free
+                  parameter, a given in the persisted query, or the `storage=`
+                  gate), served live, with the gate's message (`subject` the
+                  source, or a rollup's base; `warn`).
+                  `persist-incremental-no-merge-key`: an incremental source
+                  with no `merge_key=`, so each refresh replaces its watermark
+                  range (`subject` the source; `warn`).
+                  `persist-incremental-shared-address`: sources that compile to
+                  the same SQL on one connection, so they share one table and
+                  one boundary, where at least one is incremental (one per
+                  source; `warn`). `preaggregate-hidden-field`: a `#@ preaggregate` on a
                   private or internal field or grain dimension (`warn`).
                   `join-bypass`: an author join from a published source to one
                   with a stricter gate, which the join does not carry (one per
@@ -8566,7 +8577,10 @@ components:
         whether a materialized table answered, and if not, what would let one.
         Tables are named by `tableId`, the source's content address
         (`sourceEntityId` in the build plan and manifest), because a source name
-        alone is ambiguous across a package's models.
+        alone is ambiguous across a package's models. `warnings` is always
+        present (empty when there are none). The join paths the query crossed
+        (`joins`, in the v1 API's path report) arrive in a later release, with
+        reference and inline joins; until then the report carries none.
       required: [query, servedBy, considered, notConsidered]
       properties:
         query:

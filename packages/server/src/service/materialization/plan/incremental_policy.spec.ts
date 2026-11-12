@@ -24,6 +24,8 @@ import { BadRequestError, internalErrorToHttpError } from "../../../errors";
 import { Environment } from "../../environment";
 import type { IncrementalDeclaration } from "./incremental_declaration";
 import {
+   INCREMENTAL_NO_MERGE_KEY_CODE,
+   INCREMENTAL_SHARED_ADDRESS_CODE,
    incrementalPolicyAdvisories,
    incrementalPolicyRejections,
    type IncrementalPolicySource,
@@ -532,6 +534,10 @@ describe("incrementalPolicyAdvisories", () => {
          }),
       ]);
       expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatchObject({
+         code: INCREMENTAL_NO_MERGE_KEY_CODE,
+         severity: "warn",
+      });
       // (a) a restated row with an advanced watermark appears twice…
       expect(warnings[0].message).toContain("appears twice");
       // (b) …and an unpartitioned target may re-read the whole table.
@@ -623,8 +629,12 @@ describe("incrementalPolicyAdvisories", () => {
       /** Only the shared-address advisory, which is all these tests assert on. */
       function collisionMessages(sources: IncrementalPolicySource[]) {
          return incrementalPolicyAdvisories(sources)
-            .filter((w) => (w.message ?? "").includes("content address"))
-            .map((w) => ({ subject: w.subject, message: w.message ?? "" }));
+            .filter((w) => w.code === INCREMENTAL_SHARED_ADDRESS_CODE)
+            .map((w) => ({
+               subject: w.subject,
+               message: w.message ?? "",
+               code: w.code,
+            }));
       }
 
       it("warns BOTH sources when their declarations disagree", () => {
@@ -647,6 +657,7 @@ describe("incrementalPolicyAdvisories", () => {
          expect(warnings[1].subject).toBe("daily_b");
          expect(warnings[1].message).toContain('"daily_a"');
          for (const w of warnings) {
+            expect(w.code).toBe(INCREMENTAL_SHARED_ADDRESS_CODE);
             expect(w.message).toContain("DISAGREE");
             expect(w.message).toContain("rebuilds in full");
          }
