@@ -2045,6 +2045,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.materialization.invalidateServeShapes();
    }
 
+   /** See {@link PackageMaterialization.refreshBuildPlan}. */
+   public refreshBuildPlan(): Promise<void> {
+      return this.materialization.refreshBuildPlan();
+   }
+
+   /** See {@link PackageMaterialization.whenBuildPlanCurrent}. */
+   public whenBuildPlanCurrent(): Promise<void> {
+      return this.materialization.whenBuildPlanCurrent();
+   }
+
    /**
     * `explores` entries that don't resolve to a `.malloy` model, each with a
     * reason. Listing already fails safe (they hide); this says why, so load

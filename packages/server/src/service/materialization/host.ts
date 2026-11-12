@@ -25,6 +25,11 @@ export interface MaterializationPackage extends BuildPlanPackage {
    /** The published version this package is; undefined for an unversioned one. */
    getVersionId(): string | undefined;
    getBuildPlan(): BuildPlan | null;
+   /**
+    * Resolves once the plan reflects the current connections (a connection
+    * edit re-derives it). Optional: a stand-in package's plan never moves.
+    */
+   whenBuildPlanCurrent?(): Promise<void>;
    getPackageMetadata(): {
       scope?: string | null;
       manifestLocation?: string | null;

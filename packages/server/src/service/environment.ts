@@ -827,6 +827,30 @@ export class Environment {
       }
    }
 
+   /**
+    * Re-derive every loaded package's build plan against the connections just
+    * installed (see {@link Package.refreshBuildPlan}): a connection edit can
+    * move content addresses, and a plan computed at load would keep reporting
+    * the old ones. Loaded versions too. Readers of the plan wait for it.
+    */
+   private refreshBuildPlans(): void {
+      const loaded = [
+         ...this.packages.values(),
+         ...(this.versionService?.cache.entries() ?? []).map(([, , v]) => v),
+      ];
+      for (const _package of loaded) {
+         void _package.refreshBuildPlan().catch((err: unknown) => {
+            logger.warn(
+               "Could not re-derive a build plan after a connection change",
+               {
+                  environmentName: this.environmentName,
+                  error: err instanceof Error ? err.message : String(err),
+               },
+            );
+         });
+      }
+   }
+
    /** Drop every loaded model's memoized serve shape; the next query recompiles. */
    private invalidateServeShapes(): void {
       for (const _package of this.packages.values()) {
@@ -4005,6 +4029,9 @@ export class Environment {
       const previousMalloyConfig = this.malloyConfig;
       this.malloyConfig = malloyConfig;
       this.apiConnections = malloyConfig.apiConnections;
+      if (previousMalloyConfig !== malloyConfig) {
+         this.refreshBuildPlans();
+      }
       // Deliberately leaves connectionsAuthoritative alone: ConnectionService
       // calls this for a single-connection edit, which does not make a
       // fallback list the desired state. See {@link connectionsAuthoritative}.

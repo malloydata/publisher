@@ -169,6 +169,8 @@ export class PackageMaterialization {
    buildPlan: BuildPlan | null = null;
    /** The build plan could not be derived at load (see applyLoadBuildPlan). */
    private buildPlanFailed = false;
+   /** The plan re-derivation in flight after a connection edit, if any. */
+   private buildPlanRefresh: Promise<void> | undefined;
    // Keyed on the plan it came from, so a reload recomputes it.
    private preaggregateEntityIdCache:
       | { plan: BuildPlan | null; ids: ReadonlySet<string> }
@@ -755,6 +757,38 @@ export class PackageMaterialization {
       for (const model of this.owner.models().values()) {
          model.invalidateServeShapeCache();
       }
+   }
+
+   /**
+    * Re-derive the build plan from the connections as they are now. Every
+    * content address folds in its connection's digest, and the digest reads
+    * connection config (host, database, project, role, the setup SQL a
+    * statement timeout is applied through, …), so a connection edit can move
+    * the address of every source on it. The plan computed at load would keep
+    * handing out the old one: a host would echo ledger entries recorded under
+    * it, they would pass create-time validation against that same stale plan,
+    * and the run's own compile, made with the new connection, would refuse
+    * them as "measured under a different definition" (ms2data/service#6145).
+    *
+    * Serialized: an edit landing while a refresh runs re-derives again after
+    * it. Best-effort like the load: a failure marks the plan unavailable.
+    */
+   refreshBuildPlan(): Promise<void> {
+      const previous = this.buildPlanRefresh ?? Promise.resolve();
+      const run = previous.then(async () => {
+         await this.applyLoadBuildPlan(undefined);
+      });
+      const tracked = run.finally(() => {
+         if (this.buildPlanRefresh === tracked)
+            this.buildPlanRefresh = undefined;
+      });
+      this.buildPlanRefresh = tracked;
+      return tracked;
+   }
+
+   /** Resolves once no plan re-derivation is in flight (see refreshBuildPlan). */
+   whenBuildPlanCurrent(): Promise<void> {
+      return this.buildPlanRefresh ?? Promise.resolve();
    }
 
    /**
