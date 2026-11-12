@@ -45,6 +45,7 @@ import {
 import { registerStorageDestinationRoutes } from "./storage_destinations";
 import { reportWriteRoute } from "./report_write";
 import { registerVersionRoutes } from "./versions";
+import { WhatIfController } from "../controller/what_if.controller";
 import {
    parseEnvironmentName,
    parsePackageRef,
@@ -772,9 +773,11 @@ function registerQueryRoutes(
       queryController,
       databaseController,
       compileController,
+      environmentStore,
       querySlots,
    }: AppServices,
 ): void {
+   const whatIfController = new WhatIfController(environmentStore);
    const recordRefusal = (req: express.Request, error: Error) =>
       queryController.recordRefusal(
          req.params.environmentName,
@@ -887,6 +890,21 @@ function registerQueryRoutes(
             req.body.scope ?? "append",
             versionRefOf(req),
             req.body.files,
+         ),
+      ),
+   );
+
+   app.post(
+      `${pkg}/build-plan/what-if`,
+      // A throwaway package load plus a compile per query: admission-controlled
+      // like a compile.
+      querySlots.middleware,
+      apiRoute((req) =>
+         whatIfController.whatIf(
+            req.params.environmentName,
+            req.params.packageName,
+            req.body,
+            versionRefOf(req),
          ),
       ),
    );

@@ -103,6 +103,11 @@ export interface R4Fixture {
     * {@link runAsIs} so a benchmark can do it outside its stopwatch.
     */
    setBindings(bindings: ServeBinding[]): void;
+   /**
+    * One query under the bindings already set, routed compile-only
+    * ({@link Model.routeWithoutRunning}): the path report, with nothing run.
+    */
+   routeOnly(malloy: string): ReturnType<Model["routeWithoutRunning"]>;
    /** One query under the bindings already set, with nothing around it. */
    runAsIs(malloy: string): Promise<{
       rows: Row[];
@@ -283,6 +288,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          model.setServeBindings(next);
       },
       runAsIs: runOnce,
+      routeOnly: (malloy) => model.routeWithoutRunning({ query: malloy }),
       typeMismatches() {
          model.setServeBindings(bindings);
          return model.storedColumnTypeMismatches();

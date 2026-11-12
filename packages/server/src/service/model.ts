@@ -3712,6 +3712,130 @@ export class Model {
       }
    }
 
+   /**
+    * How this model would answer one query from the tables bound to it now,
+    * compiled only: nothing runs against any connection, and no routing
+    * metric or operator-facing serve log is recorded. For what-if
+    * (materialization v2, T3), on a throwaway package bound to the tables a
+    * proposal would build; never on a served package's query path.
+    *
+    * Routes exactly as {@link runQueryResults} does (the same candidates, the
+    * same row-level gate check, the same manifest substitution) and returns
+    * the path report the run would have carried. Governance is not applied:
+    * it decides whether a caller may read rows, which a what-if never does,
+    * and it does not change which table answers.
+    */
+   public async routeWithoutRunning(request: {
+      query?: string;
+      sourceName?: string;
+      queryName?: string;
+      givens?: Record<string, GivenValue>;
+   }): Promise<ApiQueryPath> {
+      if (this.compilationError) {
+         throw new BadRequestError(
+            `Model compilation failed: ${this.compilationError.message}`,
+         );
+      }
+      if (!this.modelMaterializer || !this.modelDef) {
+         throw new BadRequestError("Model has no queryable entities.");
+      }
+      const { query, sourceName, queryName, givens } = request;
+      let queryString: string;
+      if (query && !sourceName && !queryName) {
+         // The same caller-text guards a query gets.
+         assertNoCallerAuthorizeAnnotation(query);
+         assertNoCallerClassificationAnnotation(query);
+         queryString = "\n" + query;
+      } else if (queryName && !query) {
+         queryString = `\nrun: ${
+            sourceName ? `${quoteMalloyIdentifier(sourceName)} -> ` : ""
+         }${quoteMalloyIdentifier(queryName)}`;
+      } else {
+         throw new BadRequestError(
+            "A what-if query needs `query`, or `queryName` with an optional `sourceName`.",
+         );
+      }
+      await this.ensureSharedQueryModel(this.modelMaterializer);
+      const live = this.modelMaterializer.loadRestrictedQuery(queryString);
+      const compileError = await compileErrorOf(live);
+      if (compileError) throw queryCompileError(compileError, query ?? "");
+      const surfaceGivens = this.governor.filterGivensToModelSurface(
+         givens,
+         await this.governor.givenNamesReadByQuery(live, givens),
+      );
+      const callerRegion: CallerRegion | undefined =
+         query && !sourceName && !queryName
+            ? { kind: "query", text: query }
+            : undefined;
+      const buildManifest = this.resolveFreshBuildManifest();
+      const route = await routeQuery<RoutedExtra>(
+         this.routeCandidates({
+            queryString,
+            surfaceGivens,
+            buildManifest,
+            storageRoutingPossible:
+               getPersistStorageMode() === "on" &&
+               this.storageServe.serveBindings.length > 0 &&
+               !!this.storageServe.serveDestinationConfig,
+            preaggServeMaterializer: this.preaggregateServeMaterializer,
+            quiet: true,
+         }),
+         async () =>
+            this.governor.hasAnyAuthorizeNote() &&
+            (await this.governor.queryEntryPointHasRowLevelGate(
+               live,
+               callerRegion,
+            )),
+         { recordMetrics: false },
+      );
+      const chosen = route.served === "variant" ? route.runnable : live;
+      const storageRouted =
+         route.served === "variant" && route.extra.kind === "storage"
+            ? route.extra
+            : undefined;
+      const rollupRouted =
+         route.served === "variant" && route.extra.kind === "rollup"
+            ? route.extra
+            : undefined;
+      // Which manifest entries the answering compile reads, exactly as the run
+      // records them (see recordingManifest), by preparing it: no statement.
+      const colocatedRead = new Set<string>();
+      await chosen.getPreparedResult({
+         givens: surfaceGivens,
+         buildManifest: recordingManifest(
+            storageRouted
+               ? undefined
+               : rollupRouted
+                 ? buildManifest
+                 : this.withoutPreaggregateEntries(buildManifest),
+            colocatedRead,
+         ),
+         virtualMap: storageRouted?.virtualMap,
+      });
+      const compiledSource =
+         await this.governor.resolveAuthorizeSourceFromRunnable(live);
+      const path = await this.queryPathFor({
+         runnable: live,
+         sourceName: compiledSource ?? sourceName,
+         viewName: sourceName && queryName ? queryName : undefined,
+         considered: route.considered,
+         storageTablesRead: storageRouted?.tablesRead,
+         runFailed: false,
+         colocatedRead,
+         rollupMember: rollupRouted?.resolvedMember,
+         freshManifest: buildManifest,
+         // What-if is an authoring tool behind the gateway, like the build
+         // plan: it names every table, hidden or not.
+         includeHidden: true,
+      });
+      if (!path) {
+         throw new BadRequestError(
+            "The path report for this query could not be assembled.",
+         );
+      }
+      return path;
+   }
+
    /** Every source's `sourceID` chain in this model, for the path report's `notConsidered`. */
    private sourceChains(): ReadonlyMap<string, readonly string[]> {
       const modelDef = this.modelDef;
@@ -3740,6 +3864,8 @@ export class Model {
       buildManifest: BuildManifest | undefined;
       storageRoutingPossible: boolean;
       preaggServeMaterializer: ModelMaterializer | undefined;
+      /** A hypothetical route (what-if): skip the operator-facing skip log. */
+      quiet?: boolean;
    }): Variant<RoutedExtra>[] {
       const {
          queryString,
@@ -3747,6 +3873,7 @@ export class Model {
          buildManifest,
          storageRoutingPossible,
          preaggServeMaterializer,
+         quiet = false,
       } = args;
       const candidates: Variant<RoutedExtra>[] = [];
       // storage= serve routing: compile against the serve-shape model
@@ -3785,6 +3912,7 @@ export class Model {
             onSkip: (shapeErr) => {
                // A rollup refused for this query's aggregates is per-query and
                // expected, not a reason the package never serves from storage.
+               if (quiet) return;
                if (shapeErr instanceof RollupCoverageError) {
                   logger.debug(
                      "storage rollup cannot answer this query; serving live",

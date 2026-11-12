@@ -2947,6 +2947,76 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/{packageName}/build-plan/what-if:
+    post:
+      tags:
+        - packages
+      operationId: what-if-package-build-plan
+      summary: Route queries against a proposed change to a package's materialization annotations
+      description: |
+        What-if over a package's v1 materialization annotations (`#@ persist`,
+        `storage=`, `#@ preaggregate`). `files` is the proposal: each entry
+        replaces, or adds, one package file for this request only. For each
+        query in `queries`, the answer is the path report it would carry once
+        every table the proposal plans were built: which table answers it, and
+        why every other table is skipped.
+
+        Nothing is built, written or installed, and no query runs: the
+        proposal loads as a throwaway package (the load a dry-run publish
+        runs, refused with the publish's own 400 when a publish would refuse
+        it), is bound to the tables its build plan would build, and each query
+        is routed against that binding compiled only. Compiling reads each
+        source's schema from its connection, as a compile does; never rows.
+        The binding passes the package's own eligibility gates, so a source a
+        build would refuse is listed in `refused` and serves live. No routing
+        metric or serve log is recorded.
+
+        A `storage=` table is declared from its columns' Malloy types; a column
+        of another type is left off, so a query reading it is not answered
+        from storage. Givens in `givens` are passed to each compile, as a
+        query's are. Admission-controlled like a compile.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WhatIfRequest"
+      responses:
+        "200":
+          description: Each query's path report under the proposal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WhatIf"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /environments/{environmentName}/packages/{packageName}/embedding-index:
     get:
       tags:
@@ -8546,6 +8616,135 @@ components:
             Absent only when the report could not be assembled; the query's
             answer never depends on it.
 
+    WhatIfRequest:
+      type: object
+      description: A proposed change to a package's files, and the queries to route against it.
+      required: [queries]
+      properties:
+        files:
+          type: array
+          description: >-
+            The proposal: each entry replaces, or adds, one package model or
+            notebook file, for this request only. Absent or empty routes the
+            queries against the package's annotations as they stand, with every
+            planned table built.
+          items:
+            $ref: "#/components/schemas/OverlayFile"
+        queries:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/WhatIfQuery"
+        givens:
+          type: object
+          description: Given values passed to every query's compile, as a query's are.
+          additionalProperties: true
+    WhatIfQuery:
+      type: object
+      description: >-
+        One query to route: ad-hoc Malloy text in `query`, or a named view
+        (`sourceName` and `queryName`) or named query (`queryName` alone).
+      required: [modelPath]
+      properties:
+        modelPath:
+          type: string
+          description: The model the query runs against, relative to the package.
+        query:
+          type: string
+        sourceName:
+          type: string
+        queryName:
+          type: string
+    WhatIf:
+      type: object
+      description: How a proposal would serve each query, once built.
+      required: [plan, refused, answers]
+      properties:
+        plan:
+          type: object
+          description: The proposal's build plan against the plan served now, by sourceID.
+          required: [added, removed, changed, unchanged]
+          properties:
+            added:
+              type: array
+              items:
+                $ref: "#/components/schemas/WhatIfSource"
+            removed:
+              type: array
+              items:
+                $ref: "#/components/schemas/WhatIfSource"
+            changed:
+              type: array
+              description: Planned now and under the proposal, with a different content address or `storage=`.
+              items:
+                $ref: "#/components/schemas/WhatIfSource"
+            unchanged:
+              type: array
+              items:
+                $ref: "#/components/schemas/WhatIfSource"
+        refused:
+          type: array
+          description: >-
+            Sources the proposal plans that a build would refuse, or that
+            would not be bound to serve; each serves live.
+          items:
+            $ref: "#/components/schemas/WhatIfRefusal"
+        answers:
+          type: array
+          description: One per query, in request order.
+          items:
+            $ref: "#/components/schemas/WhatIfAnswer"
+    WhatIfSource:
+      type: object
+      required: [sourceID, name]
+      properties:
+        sourceID:
+          type: string
+        name:
+          type: string
+        origin:
+          type: string
+          description: "`persist` or `preaggregate`, as on `PersistSourcePlan`."
+        storage:
+          type: string
+          description: The storage destination it declares, when it declares one.
+    WhatIfRefusal:
+      type: object
+      required: [name, reason]
+      properties:
+        name:
+          type: string
+        sourceID:
+          type: string
+        reason:
+          type: string
+          description: >-
+            Why it serves live. The plan's own refusal reasons, or
+            `not_eligible` (the serve-binding gate refused it) or
+            `storage_mode_off` (PERSIST_STORAGE_MODE is off, so a `storage=`
+            source is not built). An open set.
+        message:
+          type: string
+    WhatIfAnswer:
+      type: object
+      required: [modelPath]
+      description: >-
+        One query's answer: its `path` under the proposal, or `error` when it
+        does not compile or cannot be routed. The query is echoed back.
+      properties:
+        modelPath:
+          type: string
+        query:
+          type: string
+        sourceName:
+          type: string
+        queryName:
+          type: string
+        path:
+          $ref: "#/components/schemas/QueryPath"
+        error:
+          type: string
     QueryPath:
       type: object
       description: >-

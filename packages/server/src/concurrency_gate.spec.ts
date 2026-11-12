@@ -193,6 +193,8 @@ describe("the concurrency gate guards exactly the routes that do database work",
             `PUT ${pkg}/models/*?`,
             `POST ${pkg}/models/*?/query`,
             `POST ${pkg}/models/*?/compile`,
+            // A throwaway package load plus a compile per query.
+            `POST ${pkg}/build-plan/what-if`,
             `GET ${pkg}/notebooks/*/cells/:cellIndex`,
             `GET ${project}/connections/:connectionName/queryData`,
             `GET ${projectPkg}/connections/:connectionName/queryData`,

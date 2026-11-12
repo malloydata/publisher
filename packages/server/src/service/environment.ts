@@ -2712,7 +2712,8 @@ export class Environment {
             { dryRun: true },
          );
          try {
-            // Awaited here: a preview compiles against the staged files.
+            // Awaited here: a preview compiles against the staged files, and an
+            // async describe finishes before the connections it reads are released.
             return await options.describe(pkg, versionId);
          } finally {
             // Never served, so nothing is in flight on its connections.

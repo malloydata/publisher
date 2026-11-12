@@ -698,6 +698,39 @@ Every query result carries `path`, the path report. It says which materialized t
 
 The report is assembled after the query runs and never changes which table answers. It is absent only if it could not be assembled.
 
+## Before you annotate: what-if
+
+`POST …/packages/{pkg}/build-plan/what-if` answers the question an annotation is for, before you build it: if this edit landed and was built, which table would answer each of these queries? Send the proposed files and the queries:
+
+```json
+{
+  "files": [{ "path": "orders.malloy", "content": "…the model with #@ persist added…" }],
+  "queries": [
+    { "modelPath": "orders.malloy", "query": "run: order_summary -> { aggregate: c is count() }" },
+    { "modelPath": "orders.malloy", "sourceName": "orders", "queryName": "by_region" }
+  ]
+}
+```
+
+The answer is each query's path report under the proposal (the same `path` a query result carries, above), what the proposal adds to, removes from and changes in the build plan, and every source it plans that a build would refuse, with why:
+
+```json
+{
+  "plan": { "added": [{ "sourceID": "order_summary@…", "name": "order_summary", "origin": "persist" }], "removed": [], "changed": [], "unchanged": [] },
+  "refused": [],
+  "answers": [
+    { "modelPath": "orders.malloy", "query": "run: order_summary -> …", "path": { "servedBy": { "kind": "materialized", "tableId": "9f1c…" }, "considered": […], … } }
+  ]
+}
+```
+
+- Nothing is built, written, installed or run. The proposal loads as a throwaway package, the same load a dry-run publish runs, and is refused the same way a publish would refuse it. It is then bound to the tables its build plan would build, and each query is routed against that binding exactly as a served query is, compiled only. Compiling reads each source's schema from its connection, as `compile_model` does, but never a row.
+- Every proposed table passes the same eligibility gates a real bind applies, so a source a build would refuse (a gated source on the storage tier, a `storage=` source while `PERSIST_STORAGE_MODE` is `off`) is listed in `refused` and its queries answer live, as they would.
+- A `storage=` table is declared from the build plan's column types. A column whose Malloy type has no DuckDB counterpart a build would store (`json`, a `sql native` type) is left off, so a query that reads it answers live.
+- `files` may be omitted to ask the same question of the annotations as they stand, with every planned table built.
+- No routing metric or serve log is recorded for these routes. It takes a query slot, like a compile, and at most 50 queries a request.
+- Covers the v1 annotations (`#@ persist`, `storage=`, `#@ preaggregate`). What-if over `#(materialize)` and `#(preaggregate)` comes with them.
+
 ## Standalone vs. hosted (control-plane) deployments
 
 The same package definition behaves differently depending on who drives materialization. Honest divergences to be aware of:
