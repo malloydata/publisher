@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A connection edit no longer leaves a stale build plan that fails incremental refreshes
+
+A materialized source's content address folds in its connection's digest, and the digest reads connection config: host, database, project, role, and the setup SQL a Postgres `statementTimeoutMilliseconds` is applied through. Editing a connection could therefore move every address on it, but a loaded package kept handing out the build plan it computed at load. A host that builds from that plan echoed incremental ledger entries recorded under the old address; they passed create-time validation against the same stale plan, and the run's own compile, made with the edited connection, refused them as "measured under a different definition of this source". Every refresh of the package's incremental sources failed until it reloaded (ms2data/service#6145).
+
+A connection edit now re-derives the build plan of every loaded package and version, and `GET …/build-plan` and a run's instruction validation wait for it. A host reading the plan after the edit sees the new address, finds no ledger entry under it, and the source seeds once, which is the designed outcome for a changed definition. A package's identical model text under a new version keeps its address.
+
 ## [Unreleased] — A chained build never sends a stored upstream's name to the warehouse
 
 A source moved to or from `storage=` keeps its content address, and a stored table's manifest entry names the source's warehouse connection. So a build whose upstream had moved to `storage=` could resolve that upstream through a reference the orchestrator sent, or through the warehouse table from before the move, and render the stored table's bare name into warehouse SQL. The warehouse then answered with an error such as `Dataset …:UNKNOWN` (ms2data/service#7087).

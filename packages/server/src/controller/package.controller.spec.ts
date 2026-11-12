@@ -1817,10 +1817,14 @@ describe("PackageController.getPackageBuildPlan", () => {
    function controllerServing(pkg: {
       getBuildPlan: () => unknown;
       isBuildPlanUnavailable: () => boolean;
+      whenBuildPlanCurrent?: () => Promise<void>;
    }): PackageController {
       const environmentStore = fakeOf<PackageAdmin>({
          getEnvironment: sinon.stub().resolves({
-            getPackage: sinon.stub().resolves(pkg),
+            getPackage: sinon.stub().resolves({
+               whenBuildPlanCurrent: () => Promise.resolve(),
+               ...pkg,
+            }),
          }),
       });
       return new PackageController(
@@ -1837,6 +1841,31 @@ describe("PackageController.getPackageBuildPlan", () => {
          isBuildPlanUnavailable: () => false,
       });
       expect(await controller.getPackageBuildPlan("env", "pkg")).toBe(plan);
+   });
+
+   it("waits for a re-derivation a connection edit started (ms2data/service#6145)", async () => {
+      // A connection edit can move content addresses; the route must never
+      // hand out the plan from before it.
+      const stale = { graphs: [], sources: { s: { sourceEntityId: "old" } } };
+      const fresh = { graphs: [], sources: { s: { sourceEntityId: "new" } } };
+      let current: unknown = stale;
+      let finish!: () => void;
+      const refreshed = new Promise<void>((resolve) => {
+         finish = () => {
+            current = fresh;
+            resolve();
+         };
+      });
+      const controller = controllerServing({
+         getBuildPlan: () => current,
+         isBuildPlanUnavailable: () => false,
+         whenBuildPlanCurrent: () => refreshed,
+      });
+      const read = controller.getPackageBuildPlan("env", "pkg");
+      // Let the route reach the plan read before the refresh lands.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      finish();
+      expect(await read).toBe(fresh);
    });
 
    it("is an empty plan when the package declares no persist source", async () => {

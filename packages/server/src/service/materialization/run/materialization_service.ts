@@ -378,6 +378,9 @@ export class MaterializationService {
          );
       }
       if (orchestrated) {
+         // Validate against the plan the run will build from: a connection
+         // edit re-derives it (ms2data/service#6145).
+         await pkg.whenBuildPlanCurrent?.();
          validateInstructions(
             pkg.getBuildPlan(),
             buildInstructions,
