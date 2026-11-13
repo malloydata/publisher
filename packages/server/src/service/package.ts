@@ -2026,6 +2026,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.materialization.bindColocatedServeManifest(entries);
    }
 
+   /** See {@link PackageMaterialization.forgetKeyUniqueness}. */
+   public forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
+      this.materialization.forgetKeyUniqueness(sourceEntityIds);
+   }
+
    /** See {@link PackageMaterialization.bindStorageServeBindings}. */
    public bindStorageServeBindings(
       entries: Record<string, ManifestEntry>,

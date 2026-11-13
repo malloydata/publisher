@@ -20,6 +20,12 @@
 import { loadLeavingOutCrossConnectionJoins } from "../../../src/service/materialization/plan/cross_connection_joins";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
 import { tryCompileRollupCompanion } from "../../../src/service/materialization/plan/rollup_compile";
+import {
+   joinOneKey,
+   joinOneKeysOf,
+} from "../../../src/service/materialization/plan/rollup_plan";
+import { SourceMap } from "../../../src/service/materialization/plan/source_map";
+import { runRollupKeyCheck } from "../../../src/service/materialization/run/inline_uniqueness";
 import { createModelRuntime } from "../../../src/service/model_runtime";
 import { tryCompilePersistedViewCompanion } from "../../../src/service/materialization/plan/persisted_view_compile";
 import {
@@ -66,7 +72,10 @@ import {
    persistSourceDeclaredColumns,
    persistSourceQueryTimezone,
 } from "../../../src/service/materialization/stored_column_types";
-import type { ManifestEntry } from "../../../src/service/materialization/types";
+import type {
+   KeyUniqueness,
+   ManifestEntry,
+} from "../../../src/service/materialization/types";
 import { Model } from "../../../src/service/model";
 import type { HydrationRuntime } from "../../../src/service/model_runtime";
 import { malloyGivenToApi, type MalloyGiven } from "../../../src/service/given";
@@ -137,6 +146,14 @@ export interface R4Scenario {
     * manifest, as a package with PUBLISHER_MATERIALIZE on does.
     */
    preaggregate?: boolean;
+   /**
+    * With {@link preaggregate}: run each colocated rollup's key check (known
+    * limitation 29) once its table is built, as an auto-run does, and bind
+    * what it found. `false` binds no check, as for a table a host's manifest
+    * binds or a build that could not check; `"unique"` binds a pass without
+    * running the check, as a check over earlier rows would have left it.
+    */
+   rollupKeyChecks?: boolean | "unique";
    /**
     * Also build the generated `#@ persist` view sources (`<src>__<view>__view`,
     * in the persisted-view companion), as a package with PUBLISHER_MATERIALIZE
@@ -464,7 +481,12 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    );
    // A colocated rollup: built into the scenario's database, read through the
    // build manifest keyed by its build id.
-   const colocatedEntries: Record<string, { tableName: string }> = {};
+   const colocatedEntries: Record<
+      string,
+      { tableName: string; keyUniqueness?: KeyUniqueness }
+   > = {};
+   // The join_ones a package's build reads the rollups' key checks for.
+   const joinOneKeys = joinOneKeysOf(SourceMap.of(authorDef));
    const rollupPlanned: [
       string,
       {
@@ -484,6 +506,24 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             `CREATE TABLE ${table} AS ${target.buildSQL({ entries: {} })}`,
          );
          colocatedEntries[target.buildId] = { tableName: table };
+         const check = plan.keyCheck;
+         const checks = scenario.rollupKeyChecks ?? true;
+         if (
+            check &&
+            checks !== false &&
+            joinOneKeys.has(joinOneKey(plan.baseSourceID, check.keyColumn))
+         ) {
+            const record =
+               checks === "unique"
+                  ? { keyColumn: check.keyColumn, unique: true }
+                  : await runRollupKeyCheck(check, duckdb, table);
+            if (record) {
+               colocatedEntries[target.buildId].keyUniqueness = {
+                  keyColumn: record.keyColumn,
+                  unique: record.unique,
+               };
+            }
+         }
          rollupPlanned.push([
             source.sourceID,
             {

@@ -109,6 +109,19 @@ export interface FreshnessAwareManifestEntry {
    dataAsOf?: string;
    freshnessWindowSeconds?: number;
    freshnessFallback?: "live" | "stale_ok" | "fail";
+   /**
+    * A `#(preaggregate)` rollup's key check (known limitation 29), as the
+    * auto-run that wrote or carried this table recorded it: whether the rows
+    * it grouped held its one grain dimension once per value. Internal, never
+    * on the wire; absent (unknown) on every entry a host's manifest binds.
+    */
+   keyUniqueness?: KeyUniqueness;
+}
+
+/** See {@link FreshnessAwareManifestEntry.keyUniqueness}. */
+export interface KeyUniqueness {
+   keyColumn: string;
+   unique: boolean;
 }
 
 /** Full (unfiltered) manifest map keyed by sourceEntityId. */

@@ -184,6 +184,21 @@ const SERVED = [
       "a count through a join_one (unmatched parents count zero live too)",
       "run: flights -> { group_by: carrier; aggregate: crew.crew_count }",
    ],
+   // Known limitation 29: `crew` holds each flight at most once, and its
+   // rollup's build checked it, so live's rows through the join_one are the
+   // variant's rows and the parent's own aggregates read them as live does.
+   [
+      "the parent's own aggregates beside a join_one checked unique",
+      "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, crew.crew_size }",
+   ],
+   [
+      "a having: on a parent aggregate beside a join_one checked unique",
+      "run: flights -> { group_by: carrier; aggregate: crew.crew_size; having: flight_count > 1 }",
+   ],
+   [
+      "a grand total of parent and joined aggregates through a join_one checked unique",
+      "run: flights -> { aggregate: flight_count, crew.crew_size, crew.most_hours, crew.crew_count }",
+   ],
 ] as const;
 
 const LIVE = [
@@ -594,12 +609,45 @@ source: flights_la is flights extend { timezone: 'America/Los_Angeles' }
          "run: flights -> { group_by: carrier; aggregate: crew_dup.crew_size; having: flight_count > 1 }",
          "COUNT_SEMANTICS",
       ],
+      // Known limitation 29: another join_one the query reads, its key found
+      // repeated by its rollup's build. Re-pointing `segments` changes how
+      // Malloy aggregates over the rows `crew_dup` repeats (15.5 live against
+      // 10.5 served, before the check).
+      [
+         "a joined measure beside a join_one whose key the data repeats",
+         "run: flights -> { group_by: carrier; aggregate: segments.seg_miles, crew_dup.crew_size }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "a joined measure grouped by a join_one whose key the data repeats",
+         "run: flights -> { group_by: crew_dup.size; aggregate: segments.seg_miles }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "a joined measure filtered on a join_one whose key the data repeats",
+         "run: flights -> { where: crew_dup.size > 2; aggregate: segments.seg_miles }",
+         "COUNT_SEMANTICS",
+      ],
    ] as const) {
       it(`answers ${name} live (${reason})`, async () => {
          expectLive(await fixture.run({ name, malloy }));
          expect(await reasonOf(malloy)).toContain(reason);
       });
    }
+
+   it("says the key was found repeated, not merely unchecked", async () => {
+      fixture.setBindings(fixture.bindings);
+      for (const malloy of [
+         "run: flights -> { group_by: carrier; aggregate: flight_count, crew_dup.crew_size }",
+         "run: flights -> { group_by: carrier; aggregate: segments.seg_miles, crew_dup.crew_size }",
+      ]) {
+         const { path } = await fixture.runAsIs(malloy);
+         const details = (path?.considered ?? [])
+            .filter((c) => c.kind === "rollup")
+            .map((c) => (c as { detail?: string }).detail ?? "");
+         expect(details.some((d) => d.includes("more than once"))).toBe(true);
+      }
+   });
 
    for (const [name, malloy] of [
       [
@@ -615,4 +663,131 @@ source: flights_la is flights extend { timezone: 'America/Los_Angeles' }
          expectServedFromRollup(await fixture.run({ name, malloy }));
       });
    }
+});
+
+/** The fixture's crew, a declared join_one, with flight 1 held twice. */
+const CREW_DUP_MODEL = `source: segments is duckdb.table('segs_raw') extend {
+  primary_key: seg_id
+  #(preaggregate) grain=["flight_id"]
+  measure: seg_miles is miles.sum()
+}
+source: crew_dup is duckdb.table('crew_dup_raw') extend {
+  #(preaggregate) grain=["flight_id"]
+  measure: crew_size is size.sum()
+}
+source: flights is duckdb.table('flights_raw') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  join_one: crew_dup on crew_dup.flight_id = id
+  measure: flight_count is count()
+}
+`;
+const CREW_DUP_SEED = [
+   ...seedSql,
+   `CREATE TABLE crew_dup_raw AS SELECT * FROM (VALUES
+      (1, 3), (1, 4), (3, 2), (5, 7)
+    ) AS t(flight_id, size)`,
+];
+
+describe("R4: join-to-rollup (A7) where no build checked the join_one's key (known limitation 29)", () => {
+   let restore: () => void;
+   let unique: R4Fixture;
+   let repeated: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      // As for a table a host's manifest binds, or a build whose check
+      // could not run: unknown.
+      unique = await buildScenario({
+         files: { "m.malloy": model("") },
+         seedSql,
+         preaggregate: true,
+         rollupKeyChecks: false,
+      });
+      repeated = await buildScenario({
+         files: { "m.malloy": CREW_DUP_MODEL },
+         seedSql: CREW_DUP_SEED,
+         preaggregate: true,
+         rollupKeyChecks: false,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   const reasonsOf = async (fixture: R4Fixture, malloy: string) => {
+      fixture.setBindings(fixture.bindings);
+      const { path } = await fixture.runAsIs(malloy);
+      return (path?.considered ?? []).filter((c) => c.kind === "rollup");
+   };
+
+   it("answers the parent's own aggregates beside a join_one live, as before the check (COUNT_SEMANTICS)", async () => {
+      const malloy =
+         "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, crew.crew_size }";
+      expectLive(await unique.run({ name: "unchecked", malloy }));
+      const considered = await reasonsOf(unique, malloy);
+      expect(considered.map((c) => c.reason)).toContain("COUNT_SEMANTICS");
+      expect(
+         considered.some((c) =>
+            ((c as { detail?: string }).detail ?? "").includes(
+               "not checked unique",
+            ),
+         ),
+      ).toBe(true);
+   });
+
+   it("still serves a join_one's own measures, which live sums once per joined row too", async () => {
+      expectServedFromRollup(
+         await repeated.run({
+            name: "own measure",
+            malloy:
+               "run: flights -> { group_by: carrier, id; aggregate: crew_dup.crew_size }",
+         }),
+      );
+   });
+
+   it("answers a parent aggregate beside the unchecked join_one live (COUNT_SEMANTICS)", async () => {
+      const malloy =
+         "run: flights -> { group_by: carrier; aggregate: flight_count, crew_dup.crew_size }";
+      expectLive(await repeated.run({ name: "unchecked repeat", malloy }));
+      expect(
+         (await reasonsOf(repeated, malloy)).map((c) => c.reason),
+      ).toContain("COUNT_SEMANTICS");
+   });
+});
+
+describe("R4: join-to-rollup (A7) and a key check that no longer describes the table (known limitation 29)", () => {
+   let restore: () => void;
+   let stale: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      // A pass bound over a table whose rows now repeat the key: what a
+      // check over an earlier generation would say. A run never binds one
+      // (a rebuild checks again, and a run forgets the bound check of every
+      // table it is about to write: rollup_key_check.spec.ts); this is why.
+      stale = await buildScenario({
+         files: { "m.malloy": CREW_DUP_MODEL },
+         seedSql: CREW_DUP_SEED,
+         preaggregate: true,
+         rollupKeyChecks: "unique",
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("would serve an answer live does not give, so only a current check is bound", async () => {
+      const run = await stale.run({
+         name: "stale pass",
+         malloy:
+            "run: flights -> { group_by: carrier; aggregate: flight_count, crew_dup.crew_size }",
+      });
+      expect(run.servedBy?.kind).toBe("rollup");
+      expect(rowDifference(run.live, run.served)).toBeDefined();
+   });
 });
