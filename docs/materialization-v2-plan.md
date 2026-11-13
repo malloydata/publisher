@@ -492,7 +492,7 @@ The current implementation's significant limitations, in one place (as of 2026-1
 | 17 | Rewriting is text-based: the served copy, build copies, `#@`-line blanking, the cross-connection build view | Fragile across Malloy upgrades | Phase 5 simplification; a lossless syntax tree and printer | Malloy core |
 | 18 | Colocated tables are served through Malloy's build manifest, not the served copy; colocated `#(materialize)` is not built | Colocated gaps (#6643, #6983) answer live; no phase 3 features on colocated | Phase 3 pull request 6 (decided 2026-11-12) | — |
 | 19 | `#@ -persist` is honoured, not ignored | v2 readers that opt out recompute | Phase 3 pull request 6 (question 5) | — |
-| 20 | An author's gate cannot read a `private` field (the graft is a caller-level `extend`) | A gate over a `private` column denies every caller | The gate evaluated in the source's own scope (pull request in progress) | — |
+| 20 | An author's gate cannot read a `private` field: the gate's condition is compiled as a caller-level `extend`, where Malloy refuses `private` (decided 2026-11-12: wait for Malloy core) | A gate over a `private` column refuses the model's load (own gate) or denies every caller (inherited gate); fails closed. Authors make a gate's column `internal` instead | Filtered sources in Malloy core (a filter bound at declaration, in the source's own scope). #1669 does it now by compiling the gate check against a copy of the compiled model with the modifier removed; held as a draft because it edits Malloy's IR (the plan's rule is Malloy text, never `_modelDef`) | Malloy core |
 
 ## Appendix: traceability
 
