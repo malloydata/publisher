@@ -948,6 +948,13 @@ export async function queryPathFor(
          storageWarned: getPersistStorageMode() !== "on",
          considered: answer.considered,
          storageTablesRead: answer.storageTablesRead?.map(toTable),
+         ...(answer.tier === "rollup"
+            ? {
+                 rollupTablesRead: answer.serveShapeBindings
+                    .filter((b) => b.origin !== "preaggregate")
+                    .map(toTable),
+              }
+            : {}),
          ...(answer.via ? { via: answer.via } : {}),
          servedCopyTables: new Set(
             host.servedCopy.materializeBindings().map((b) => b.tablePath),

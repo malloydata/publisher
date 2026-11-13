@@ -325,6 +325,12 @@ for (const [kind, model, materialize] of [
          );
          expect(servedFrom).toBe("storage");
          expect(path?.servedBy.kind).toBe("rollup");
+         // The query source's table was read too, so the report names it.
+         expect(path?.considered).toContainEqual({
+            tableId: fixture.tableIds.flights,
+            kind: "materialized",
+            outcome: "used",
+         });
       });
 
       it("declines while the query source's table is stale (CROSS_CONNECTION)", async () => {
