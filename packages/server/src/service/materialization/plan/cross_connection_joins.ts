@@ -71,6 +71,19 @@ const FOLLOWS_FROM_LEFT_OUT: ReadonlySet<string> = new Set([
    "ungroup-of-non-aggregate",
 ]);
 
+/** Whether a problem's code is Malloy refusing a join across connections. */
+export function isJoinConnectionMismatch(code: string | undefined): boolean {
+   return code === JOIN_CONNECTION_MISMATCH;
+}
+
+/**
+ * Whether a problem's code is one a join left out across connections can
+ * cause in what reads it ({@link FOLLOWS_FROM_LEFT_OUT}).
+ */
+export function mayFollowFromLeftOut(code: string | undefined): boolean {
+   return code !== undefined && FOLLOWS_FROM_LEFT_OUT.has(code);
+}
+
 /** The statements a definition can be left out of. */
 const DEFINITION_KEYWORDS = new Set([
    "dimension",
@@ -127,7 +140,7 @@ function problemKey(p: ProblemLike): string {
    return `${p.at?.url}\u0000${start?.line}:${start?.character}\u0000${p.code}`;
 }
 
-interface ProblemLike {
+export interface ProblemLike {
    code?: string;
    severity?: string;
    at?: {
@@ -137,7 +150,7 @@ interface ProblemLike {
 }
 
 /** A compile failure's error-severity problems, or undefined for a non-Malloy error. */
-function errorProblems(error: unknown): ProblemLike[] | undefined {
+export function errorProblems(error: unknown): ProblemLike[] | undefined {
    if (!(error instanceof MalloyError)) return undefined;
    return (error.problems as ProblemLike[]).filter(
       (p) => (p.severity ?? "error") === "error",
