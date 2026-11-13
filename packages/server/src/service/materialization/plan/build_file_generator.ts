@@ -2442,7 +2442,6 @@ function pairKeyChecks(
 function emitUniquenessCheck(check: InlineUniquenessCheck): string {
    const key = identifier(check.keyColumn);
    if (check.pairLevel !== undefined) {
-      // malloy-text: every name through identifier
       return `query: ${identifier(check.queryName)} is ${identifier(checkAlias(check))} -> {
   group_by: ${key}
   aggregate: matches is count()
