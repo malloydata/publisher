@@ -492,6 +492,10 @@ export class ServedCopyServe {
       };
       const virtualMap = buildVirtualMap(compiled.aliased);
       const runnable = compiled.materializer.loadRestrictedQuery(queryString);
+      // The prepared query, read once, when a check below needs it. No check
+      // mutates it.
+      let preparedRead: ReturnType<typeof readPreparedQuery> | undefined;
+      const prepared = () => (preparedRead ??= readPreparedQuery(runnable));
       // `#@ -persist` means recompute rather than read the pre-built table. In
       // the served copy every name reads its re-rooted base, so a query whose
       // source is an opted-out reader, or derives from one, is declined here
@@ -502,9 +506,9 @@ export class ServedCopyServe {
          (compiled.optOutIDs && compiled.optOutIDs.size > 0) ||
          (compiled.unsafeIDs && compiled.unsafeIDs.size > 0)
       ) {
-         const prepared = await compiling(() => readPreparedQuery(runnable));
+         const { structRef } = await compiling(prepared);
          const struct = resolveStructRefSource<unknown>(
-            prepared.structRef,
+            structRef,
             compiled.modelDef as never,
          );
          const chain = SourceMap.of(compiled.modelDef).chainOf(struct);
@@ -544,9 +548,6 @@ export class ServedCopyServe {
       // be computed per row of the source instead of per joined row. Malloy
       // marks each such aggregate where it needs a symmetric one; live's
       // join answers those.
-      // Read once, when a check below needs it.
-      let preparedRead: ReturnType<typeof readPreparedQuery> | undefined;
-      const prepared = () => (preparedRead ??= readPreparedQuery(runnable));
       const inlined = new Set<string>();
       // Each join the copy answers from a record of stored columns (an
       // inlined join_one, or the inlined join_many of a pair table read
@@ -895,6 +896,7 @@ export class ServedCopyServe {
             new Map(binding.schema.map((c) => [c.name, c.type])),
             map,
             [...reservedNames, ...plan.columns.map((c) => c.column)],
+            readSourceClassifications(def.fields as IrField[] | undefined),
          );
          if (!pair) {
             problems.push({ sourceName, reason: "column_types" });
@@ -1304,9 +1306,7 @@ export class ServedCopyServe {
                              parentRowField: c.reroot.pair.parentRowField,
                           },
                           annotatedChildFields: new Set(
-                             c.reroot.pair.childColumns
-                                .filter((col) => (col.notes ?? []).length > 0)
-                                .map((col) => col.name),
+                             c.reroot.pair.annotatedFields,
                           ),
                        },
                     ]
@@ -1395,6 +1395,7 @@ function pairRerootOf(
    stored: ReadonlyMap<string, string>,
    map: SourceMap,
    taken: readonly string[],
+   lineage: ReadonlyMap<string, FieldClassification>,
 ): PairReroot | undefined {
    const parentRow = stored.get(pair.parentRowColumn);
    if (!parentRow) return undefined;
@@ -1418,12 +1419,17 @@ function pairRerootOf(
    );
    const childColumns: PairReroot["childColumns"][number][] = [];
    const childStoredDimensions: string[] = [];
+   const annotatedFields: string[] = [];
    for (const c of plan.columns) {
       if (c.join !== pair.join) continue;
       const type = stored.get(c.column);
       if (type === undefined) return undefined;
       const field = childFields.get(c.dimension);
-      const notes = fieldNotes(field);
+      const { notes, annotated } = joinedColumnNotes(
+         field,
+         lineage.get(`${pair.join}.${c.dimension}`),
+      );
+      if (annotated) annotatedFields.push(c.dimension);
       childColumns.push({
          name: c.dimension,
          column: c.column,
@@ -1469,6 +1475,7 @@ function pairRerootOf(
       parentRowColumn: { name: pair.parentRowColumn, type: parentRow },
       parentRowField,
       childColumns,
+      annotatedFields,
       parentMeasures,
       childStoredDimensions,
    };
@@ -1569,6 +1576,27 @@ export function storedColumnNotes(
    }
    const classes = classified.classifications.map(annotationValue).join(", ");
    return [...notes, `#(classification) [${classes}]`];
+}
+
+/**
+ * A joined field's stored column, as both records of stored columns read it
+ * (an inlined join_one's and a pair table's child columns): `notes` go on
+ * the column in the `type:` ({@link storedColumnNotes}, an inferred class
+ * included), so the record's field, which reads it, keeps its class; and
+ * `annotated` says the author's field carries notes of its own (inherited
+ * ones included), which a result column of the record's field cannot carry,
+ * so a query returning it is answered live (`joined_annotations`). An
+ * inferred class is not a note on the result either way, so it alone does
+ * not make the field annotated.
+ */
+function joinedColumnNotes(
+   field: unknown,
+   classified: FieldClassification | undefined,
+): { notes: string[]; annotated: boolean } {
+   return {
+      notes: storedColumnNotes(field, classified),
+      annotated: fieldNotes(field).length > 0,
+   };
 }
 
 /**
@@ -1719,14 +1747,12 @@ function inlinedJoinsOf(
          const type = stored.get(c.column);
          if (type === undefined) return undefined;
          const field = joinedFields.get(c.dimension);
-         if (fieldNotes(field).length > 0) annotatedFields.push(c.dimension);
          const timeframe = field?.timeframe;
-         // The joined field's own notes go on its stored column in the
-         // `type:`, so the record's field, which reads it, keeps its class.
-         const notes = storedColumnNotes(
+         const { notes, annotated } = joinedColumnNotes(
             field,
             lineage.get(`${join}.${c.dimension}`),
          );
+         if (annotated) annotatedFields.push(c.dimension);
          columns.push({
             name: c.dimension,
             column: c.column,
