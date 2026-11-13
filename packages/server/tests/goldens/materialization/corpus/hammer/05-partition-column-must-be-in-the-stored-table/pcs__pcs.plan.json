@@ -42,6 +42,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {
       "orders@<hammer>/pcs/pcs.malloy": {
         "message": "Source 'orders' cannot be materialized into a storage destination: 'partition=' names 'region', which is not a column of the source (a column removed with 'except:' is not one either). Partition by a column the source projects.",

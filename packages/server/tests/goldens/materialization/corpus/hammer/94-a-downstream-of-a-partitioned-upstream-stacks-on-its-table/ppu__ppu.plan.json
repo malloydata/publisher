@@ -57,6 +57,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "orders_all@<hammer>/ppu/ppu.malloy": {

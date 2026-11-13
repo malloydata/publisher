@@ -97,6 +97,7 @@ import {
    type SynthesizedPreaggregation,
    type SynthesizedRuntimeFactory,
 } from "../service/materialization/plan/preaggregation_compile";
+import type { Omission } from "../service/materialization/plan/omitted_sources";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
@@ -1214,6 +1215,8 @@ async function prepareForMainThread(
    // One compile serves both the main thread and the plan, since a build
    // manifest is read only at query prepare. Undefined when not wanted or
    // left to the main thread; null when there is no usable rollup.
+   // The rollups a failed compile left out, for the plan's `omittedSources`.
+   const companionOmitted: Omission[] = [];
    const companion: SynthesizedPreaggregation | null | undefined =
       (job.withPreaggregateCompanions || wantsPlan) &&
       !load.failed &&
@@ -1222,15 +1225,18 @@ async function prepareForMainThread(
            // no composite is compiled; null, so the plan is still made here.
            getV1ServedCopyMode() === "on"
             ? null
-            : ((await tryCompileSynthesizedPreaggregation({
-                 packagePath: job.packagePath,
-                 modelPath,
-                 contents: model.model._modelDef.contents as Record<
-                    string,
-                    unknown
-                 >,
-                 getRuntime: companionRuntime,
-              })) ?? null)
+            : ((await tryCompileSynthesizedPreaggregation(
+                 {
+                    packagePath: job.packagePath,
+                    modelPath,
+                    contents: model.model._modelDef.contents as Record<
+                       string,
+                       unknown
+                    >,
+                    getRuntime: companionRuntime,
+                 },
+                 (omitted) => companionOmitted.push(...omitted),
+              )) ?? null)
          : undefined;
 
    // Rechecked, since another model may have left the plan to the main
@@ -1252,6 +1258,7 @@ async function prepareForMainThread(
             runtime: model.runtime,
             getRuntime: companionRuntime,
             synthesized: companion,
+            synthesizedOmitted: companionOmitted,
          });
          load.planParts?.set(modelPath, parts);
       } catch (error) {

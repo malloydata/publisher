@@ -57,6 +57,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "daily_orders@<pkg>/persist_advisory_test.malloy": {

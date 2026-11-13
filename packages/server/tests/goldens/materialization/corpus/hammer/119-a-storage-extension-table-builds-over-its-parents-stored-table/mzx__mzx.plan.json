@@ -350,6 +350,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "orders@<hammer>/mzx/mzx.malloy": {
