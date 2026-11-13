@@ -491,6 +491,38 @@ export function givenScopedJoinTargets(
 }
 
 /**
+ * The names of the joins in a field list whose rows or fields read a given
+ * anywhere: the joined source's own `where:`, its `on`, its fields, or a join
+ * of its own. Fails closed: a join the walk cannot finish is listed. A join
+ * like this cannot be inlined into a stored table (`inline=`), since the
+ * columns stored through it would hold one caller's values.
+ */
+export function givenReadingJoins(fields: unknown): Set<string> {
+   const out = new Set<string>();
+   if (!Array.isArray(fields)) return out;
+   for (const field of fields) {
+      if (field === null || typeof field !== "object") continue;
+      const f = field as Record<string, unknown>;
+      if (f.join === undefined) continue;
+      const name =
+         typeof f.as === "string"
+            ? f.as
+            : typeof f.name === "string"
+              ? f.name
+              : undefined;
+      if (name === undefined) continue;
+      let reads: boolean;
+      try {
+         reads = readsAGiven(f, new WeakSet());
+      } catch {
+         reads = true;
+      }
+      if (reads) out.add(name);
+   }
+   return out;
+}
+
+/**
  * The single-segment field paths a filter entry reads, from its `refSummary`.
  * Any joined path (`["vis","user_id"]`, not a stored column) yields `[]`:
  * scoping a merge by a subset of a term's columns would match rows the term
