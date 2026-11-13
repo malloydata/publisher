@@ -1,0 +1,169 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/cir/cir.malloy": [],
+          "daily_regional@<hammer>/cir/cir.malloy": [],
+          "rollup@<hammer>/cir/cir.malloy": [
+            "daily@<hammer>/cir/cir.malloy",
+            "daily_regional@<hammer>/cir/cir.malloy"
+          ]
+        },
+        "order": [
+          "daily@<hammer>/cir/cir.malloy",
+          "daily_regional@<hammer>/cir/cir.malloy",
+          "rollup@<hammer>/cir/cir.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/cir/cir.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "daily_regional@<hammer>/cir/cir.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollup@<hammer>/cir/cir.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/cir/cir.malloy": "cir.malloy",
+      "daily_regional@<hammer>/cir/cir.malloy": "cir.malloy",
+      "rollup@<hammer>/cir/cir.malloy": "cir.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/cir/cir.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "daily_regional@<hammer>/cir/cir.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/cir/cir.malloy",
+                "daily_regional@<hammer>/cir/cir.malloy"
+              ],
+              "sourceID": "rollup@<hammer>/cir/cir.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/cir/cir.malloy": {
+        "annotationFields": {
+          "name": "cir_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "region_id",
+            "type": "number"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cir.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "33320394f8188366ea042c3ac0534847d382e4269c7996535f2af388271ab36c",
+        "sourceID": "daily@<hammer>/cir/cir.malloy",
+        "sql": "sha256:79e05e76a35210d4"
+      },
+      "daily_regional@<hammer>/cir/cir.malloy": {
+        "annotationFields": {
+          "name": "cir_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "region_id",
+            "type": "number"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cir.malloy",
+        "name": "daily_regional",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "33320394f8188366ea042c3ac0534847d382e4269c7996535f2af388271ab36c",
+        "sourceID": "daily_regional@<hammer>/cir/cir.malloy",
+        "sql": "sha256:79e05e76a35210d4"
+      },
+      "rollup@<hammer>/cir/cir.malloy": {
+        "annotationFields": {
+          "name": "cir_rollup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "grand_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cir.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "312f51bb638530683f77aa76d1c15d5fcdc1bc5c8edd43393d9a3615109c9831",
+        "sourceID": "rollup@<hammer>/cir/cir.malloy",
+        "sql": "sha256:61d990cd05f59186"
+      }
+    }
+  }
+}

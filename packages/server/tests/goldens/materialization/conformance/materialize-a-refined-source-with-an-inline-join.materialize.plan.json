@@ -1,0 +1,228 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "enriched@<pkg>/m.malloy": []
+        },
+        "order": [
+          "enriched@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "enriched@<pkg>/m.malloy": {
+        "buildSourceName": "enriched__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          },
+          {
+            "column": "order_month",
+            "computed": true,
+            "dimension": "order_month",
+            "zoneFree": true
+          },
+          {
+            "column": "big",
+            "computed": true,
+            "dimension": "big",
+            "zoneFree": true
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "enriched",
+          "storage": "lake"
+        },
+        "sourceID": "enriched@<pkg>/m.malloy",
+        "sourceName": "enriched",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_month",
+            "type": "DATE"
+          },
+          {
+            "name": "big",
+            "type": "BOOLEAN"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "enriched@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "enriched@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "enriched@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "enriched@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "enriched",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          },
+          {
+            "name": "order_month",
+            "type": "date"
+          },
+          {
+            "name": "big",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "enriched",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909",
+        "sourceID": "enriched@<pkg>/m.malloy",
+        "sql": "sha256:21f6be2b9884c488"
+      }
+    }
+  }
+}

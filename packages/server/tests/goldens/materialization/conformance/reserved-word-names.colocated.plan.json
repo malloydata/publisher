@@ -1,0 +1,82 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "order@<pkg>/m.malloy": []
+        },
+        "order": [
+          "order@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "order@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "order@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "order@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "order@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "order"
+        },
+        "columns": [
+          {
+            "name": "order",
+            "type": "number"
+          },
+          {
+            "name": "select",
+            "type": "string"
+          },
+          {
+            "name": "count",
+            "type": "number"
+          },
+          {
+            "name": "amt",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "order",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "ddeab0253bd9657798b023c29fabb35badff349b5ffe3f3fd2e14f144ba0e635",
+        "sourceID": "order@<pkg>/m.malloy",
+        "sql": "sha256:7b560bfe94acbf3f"
+      }
+    }
+  }
+}

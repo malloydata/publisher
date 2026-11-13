@@ -1,0 +1,370 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "base_daily@<pkg>/m.malloy": [],
+          "ext1@<pkg>/m.malloy": [],
+          "ext2@<pkg>/m.malloy": [],
+          "ext_joined@<pkg>/joined.malloy": []
+        },
+        "order": [
+          "base_daily@<pkg>/m.malloy",
+          "ext1@<pkg>/m.malloy",
+          "ext2@<pkg>/m.malloy",
+          "ext_joined@<pkg>/joined.malloy"
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "base_daily@<pkg>/m.malloy": [],
+          "ext1@<pkg>/m.malloy": [],
+          "ext2@<pkg>/m.malloy": []
+        },
+        "order": [
+          "base_daily@<pkg>/m.malloy",
+          "ext1@<pkg>/m.malloy",
+          "ext2@<pkg>/m.malloy"
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "base_daily@<pkg>/m.malloy": [],
+          "ext1@<pkg>/m.malloy": [],
+          "ext2@<pkg>/m.malloy": [],
+          "ext_other@<pkg>/other.malloy": []
+        },
+        "order": [
+          "base_daily@<pkg>/m.malloy",
+          "ext1@<pkg>/m.malloy",
+          "ext2@<pkg>/m.malloy",
+          "ext_other@<pkg>/other.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "base_daily@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "ext1@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "ext2@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "ext_joined@<pkg>/joined.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "ext_other@<pkg>/other.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "base_daily@<pkg>/m.malloy": "other.malloy",
+      "ext1@<pkg>/m.malloy": "other.malloy",
+      "ext2@<pkg>/m.malloy": "other.malloy",
+      "ext_joined@<pkg>/joined.malloy": "joined.malloy",
+      "ext_other@<pkg>/other.malloy": "other.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "base_daily@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "ext1@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "ext2@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "ext_joined@<pkg>/joined.malloy"
+            }
+          ]
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "base_daily@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "ext1@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "ext2@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "base_daily@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "ext1@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "ext2@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "ext_other@<pkg>/other.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "base_daily@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "base_daily"
+        },
+        "columns": [
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "other.malloy",
+        "name": "base_daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+        "sourceID": "base_daily@<pkg>/m.malloy",
+        "sql": "sha256:669c9a1159c0ee2c"
+      },
+      "ext1@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "base_daily"
+        },
+        "columns": [
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "other.malloy",
+        "name": "ext1",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+        "sourceID": "ext1@<pkg>/m.malloy",
+        "sql": "sha256:669c9a1159c0ee2c"
+      },
+      "ext2@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "base_daily"
+        },
+        "columns": [
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "other.malloy",
+        "name": "ext2",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+        "sourceID": "ext2@<pkg>/m.malloy",
+        "sql": "sha256:669c9a1159c0ee2c"
+      },
+      "ext_joined@<pkg>/joined.malloy": {
+        "annotationFields": {
+          "name": "base_daily"
+        },
+        "columns": [
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "joined.malloy",
+        "name": "ext_joined",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+        "sourceID": "ext_joined@<pkg>/joined.malloy",
+        "sql": "sha256:669c9a1159c0ee2c"
+      },
+      "ext_other@<pkg>/other.malloy": {
+        "annotationFields": {
+          "name": "base_daily"
+        },
+        "columns": [
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "other.malloy",
+        "name": "ext_other",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+        "sourceID": "ext_other@<pkg>/other.malloy",
+        "sql": "sha256:669c9a1159c0ee2c"
+      }
+    }
+  }
+}

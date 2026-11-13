@@ -1,0 +1,116 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "by_date@<hammer>/mspb/mspb.malloy": [],
+          "by_region@<hammer>/mspb/mspb.malloy": []
+        },
+        "order": [
+          "by_date@<hammer>/mspb/mspb.malloy",
+          "by_region@<hammer>/mspb/mspb.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "by_date@<hammer>/mspb/mspb.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "by_region@<hammer>/mspb/mspb.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "by_date@<hammer>/mspb/mspb.malloy": "mspb.malloy",
+      "by_region@<hammer>/mspb/mspb.malloy": "mspb.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "by_date@<hammer>/mspb/mspb.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "by_region@<hammer>/mspb/mspb.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "by_date@<hammer>/mspb/mspb.malloy": {
+        "annotationFields": {
+          "name": "mspb_by_date",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "mspb.malloy",
+        "name": "by_date",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "d6c37c29fc8baee87b8667aba9d2fe320ea110412a4194593beccb99eed305ab",
+        "sourceID": "by_date@<hammer>/mspb/mspb.malloy",
+        "sql": "sha256:22ddbd3cfff63c48"
+      },
+      "by_region@<hammer>/mspb/mspb.malloy": {
+        "annotationFields": {
+          "name": "mspb_by_region",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "mspb.malloy",
+        "name": "by_region",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "31ac7d7e8c691c6f853b19046ea61497134e547f19351399492dabd7fe693df7",
+        "sourceID": "by_region@<hammer>/mspb/mspb.malloy",
+        "sql": "sha256:f51b256b08417b90"
+      }
+    }
+  }
+}

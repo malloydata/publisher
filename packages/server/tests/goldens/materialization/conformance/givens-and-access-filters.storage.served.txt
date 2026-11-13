@@ -1,0 +1,34 @@
+// conformance: givens and access filters [storage]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence givens }
+##! experimental { virtual_source }
+type: scoped__served is {
+   id::number,
+   region::string,
+   status::string,
+   amount::number,
+   order_date::date
+}
+
+import "raw.malloy"
+
+given: REGION :: string is 'north'
+given: REGIONS :: string[]
+
+#@ persist name="scoped" storage="lake"
+source: scoped is __served_copy_alias_of_lake.virtual('439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9')::scoped__served extend {
+  where: region = $REGION
+  measure: total is amount.sum()
+}
+
+#(access_filter) region in $REGIONS
+source: gated_ext is scoped extend {}
+
+#(access_filter) region in $REGIONS
+#@ persist name="gated" storage="lake"
+source: gated is orders_raw -> {
+  select: id, region, status, amount
+} extend {
+  measure: total is amount.sum()
+}

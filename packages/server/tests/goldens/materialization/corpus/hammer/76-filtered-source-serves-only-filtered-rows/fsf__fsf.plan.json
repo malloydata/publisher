@@ -1,0 +1,77 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "high_value@<hammer>/fsf/fsf.malloy": []
+        },
+        "order": [
+          "high_value@<hammer>/fsf/fsf.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "high_value@<hammer>/fsf/fsf.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "high_value@<hammer>/fsf/fsf.malloy": "fsf.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "high_value@<hammer>/fsf/fsf.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "high_value@<hammer>/fsf/fsf.malloy": {
+        "annotationFields": {
+          "name": "fsf_high_value",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "fsf.malloy",
+        "name": "high_value",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "a857cf0513a16b2d1083c6517064006c7128c790446b80d301d9d2bac7eb8fcd",
+        "sourceID": "high_value@<hammer>/fsf/fsf.malloy",
+        "sql": "sha256:3d2ee3e3236e45eb"
+      }
+    }
+  }
+}

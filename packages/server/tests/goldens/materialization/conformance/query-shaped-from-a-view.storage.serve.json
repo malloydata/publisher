@@ -1,0 +1,434 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "from_view",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "from_view:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "10cc15a6b2b6882b",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(n)"
+          ],
+          "source": "from_view",
+          "stages": 1
+        },
+        "source": "from_view"
+      },
+      "equalToLive": true,
+      "malloy": "run: from_view -> { group_by: status; aggregate: n2 is n.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "from_view"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
+        },
+        "warnings": []
+      },
+      "query": "the view's output",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "total2"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "13b0e18d7f1d0451",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total2)"
+          ],
+          "source": "from_view_rollup",
+          "stages": 1
+        },
+        "source": "from_view_rollup"
+      },
+      "equalToLive": true,
+      "malloy": "run: from_view_rollup -> { group_by: status; aggregate: t is total2.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "total2"
+          ],
+          "sourceName": "from_view_rollup"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
+        },
+        "warnings": []
+      },
+      "query": "a query-shaped reader",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "2c845a7c5bcebf0a",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "from_view",
+          "stages": 1
+        },
+        "source": "from_view"
+      },
+      "equalToLive": true,
+      "malloy": "run: top_regions",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "MISSING_FIELD",
+            "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "from_view"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a named query",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "10cc15a6b2b6882b",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(n)"
+          ],
+          "source": "from_view",
+          "stages": 1
+        },
+        "source": "from_view"
+      },
+      "equalToLive": true,
+      "malloy": "run: from_view -> { group_by: status; aggregate: n2 is n.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "from_view"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the view's output",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "total2"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "13b0e18d7f1d0451",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total2)"
+          ],
+          "source": "from_view_rollup",
+          "stages": 1
+        },
+        "source": "from_view_rollup"
+      },
+      "equalToLive": true,
+      "malloy": "run: from_view_rollup -> { group_by: status; aggregate: t is total2.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "total2"
+          ],
+          "sourceName": "from_view_rollup"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a query-shaped reader",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "2c845a7c5bcebf0a",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "from_view",
+          "stages": 1
+        },
+        "source": "from_view"
+      },
+      "equalToLive": true,
+      "malloy": "run: top_regions",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "from_view"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a named query",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

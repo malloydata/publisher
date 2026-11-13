@@ -1,0 +1,173 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "order",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "order:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "count"
+          },
+          {
+            "classifications": [],
+            "path": "group"
+          },
+          {
+            "classifications": [],
+            "path": "order"
+          },
+          {
+            "classifications": [],
+            "path": "select"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "order",
+            "select"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "8b4b7d98270a9d71",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(count)",
+            "group"
+          ],
+          "source": "order",
+          "stages": 1
+        },
+        "source": "order"
+      },
+      "equalToLive": true,
+      "malloy": "run: `order` -> { group_by: `select`, `order`; aggregate: c is `count`.sum(), `group` }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "select",
+            "order"
+          ],
+          "measures": [
+            "count",
+            "group"
+          ],
+          "sourceName": "order"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "reserved-word fields",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "count"
+          },
+          {
+            "classifications": [],
+            "path": "group"
+          },
+          {
+            "classifications": [],
+            "path": "order"
+          },
+          {
+            "classifications": [],
+            "path": "select"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "order",
+            "select"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "8b4b7d98270a9d71",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(count)",
+            "group"
+          ],
+          "source": "order",
+          "stages": 1
+        },
+        "source": "order"
+      },
+      "equalToLive": true,
+      "malloy": "run: `order` -> { group_by: `select`, `order`; aggregate: c is `count`.sum(), `group` }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "f4c625d477b98206d172cedd4c593f384037d09cbe230405a47b44a43fa84627"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "select",
+            "order"
+          ],
+          "measures": [
+            "count",
+            "group"
+          ],
+          "sourceName": "order"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "f4c625d477b98206d172cedd4c593f384037d09cbe230405a47b44a43fa84627",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "reserved-word fields",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

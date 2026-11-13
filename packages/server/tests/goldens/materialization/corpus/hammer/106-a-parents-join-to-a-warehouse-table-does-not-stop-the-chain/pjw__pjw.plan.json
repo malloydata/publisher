@@ -1,0 +1,163 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "by_name@<hammer>/pjw/pjw.malloy": [
+            "daily@<hammer>/pjw/pjw.malloy"
+          ],
+          "daily@<hammer>/pjw/pjw.malloy": [],
+          "rollup@<hammer>/pjw/pjw.malloy": [
+            "daily@<hammer>/pjw/pjw.malloy"
+          ]
+        },
+        "order": [
+          "daily@<hammer>/pjw/pjw.malloy",
+          "rollup@<hammer>/pjw/pjw.malloy",
+          "by_name@<hammer>/pjw/pjw.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "by_name@<hammer>/pjw/pjw.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "daily@<hammer>/pjw/pjw.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollup@<hammer>/pjw/pjw.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "by_name@<hammer>/pjw/pjw.malloy": "pjw.malloy",
+      "daily@<hammer>/pjw/pjw.malloy": "pjw.malloy",
+      "rollup@<hammer>/pjw/pjw.malloy": "pjw.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/pjw/pjw.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/pjw/pjw.malloy"
+              ],
+              "sourceID": "rollup@<hammer>/pjw/pjw.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/pjw/pjw.malloy"
+              ],
+              "sourceID": "by_name@<hammer>/pjw/pjw.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "by_name@<hammer>/pjw/pjw.malloy": {
+        "annotationFields": {
+          "name": "pjw_by_name",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region_name",
+            "type": "string"
+          },
+          {
+            "name": "grand",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pjw.malloy",
+        "name": "by_name",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "836b355aa6de60d51d0a748ae7491a845b9b6d41a908a1c64449f4497ad563d4",
+        "sourceID": "by_name@<hammer>/pjw/pjw.malloy",
+        "sql": "sha256:d4175ace4855a5ee"
+      },
+      "daily@<hammer>/pjw/pjw.malloy": {
+        "annotationFields": {
+          "name": "pjw_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "region_id",
+            "type": "number"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pjw.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "b4a5b0b921ff3cb12606008c0032f7e74c65840ec9a66f9566bdb79d0734cd09",
+        "sourceID": "daily@<hammer>/pjw/pjw.malloy",
+        "sql": "sha256:09f9a8fd6627af13"
+      },
+      "rollup@<hammer>/pjw/pjw.malloy": {
+        "annotationFields": {
+          "name": "pjw_rollup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "grand",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pjw.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "500818b9ebdb35cf6ebcfe1f8fa516748e0b1fff5571e337b78d8626ba86253a",
+        "sourceID": "rollup@<hammer>/pjw/pjw.malloy",
+        "sql": "sha256:2324d56a42afc0e8"
+      }
+    }
+  }
+}

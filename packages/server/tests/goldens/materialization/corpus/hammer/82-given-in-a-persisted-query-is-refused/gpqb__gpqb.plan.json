@@ -1,0 +1,84 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "outside@<hammer>/gpqb/gpqb.malloy": []
+        },
+        "order": [
+          "outside@<hammer>/gpqb/gpqb.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "outside@<hammer>/gpqb/gpqb.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "outside@<hammer>/gpqb/gpqb.malloy": "gpqb.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "outside@<hammer>/gpqb/gpqb.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "outside@<hammer>/gpqb/gpqb.malloy": {
+        "annotationFields": {
+          "name": "gpqb_outside"
+        },
+        "columns": [
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "org_id",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "gpqb.malloy",
+        "name": "outside",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "942f2859572fa2acb5ad81db6a9b1b5b23d38353818b53407289545b4e2fe3fc",
+        "sourceID": "outside@<hammer>/gpqb/gpqb.malloy",
+        "sql": "sha256:072cc90a3a0d7ee8",
+        "strippedTerms": [
+          {
+            "code": "org_id = $ORG_ID",
+            "givens": [
+              "ORG_ID"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

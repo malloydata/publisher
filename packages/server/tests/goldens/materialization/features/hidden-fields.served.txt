@@ -1,0 +1,49 @@
+// feature: hidden fields: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { givens access_modifiers }
+##! experimental { virtual_source access_modifiers }
+type: wide__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number
+}
+type: orders__served is {
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number,
+   region_code::string,
+   north::boolean
+}
+
+given: GROUPS :: string[]
+
+source: base is duckdb.table('data/orders.csv') include { private: id; internal: customer_id; public: * } extend {
+  internal dimension: region_code is upper(region)
+}
+
+#(access_filter) region in $GROUPS
+#(materialize) storage="lake"
+source: orders is __served_copy_alias_of_lake.virtual('c215bd26b05cb26ff0cc5d7d83a4ed555895a01a0516d9ce4abfe890ba3be71c')::orders__served include { public: *; internal: customer_id, region_code } extend {
+  private dimension: secret is amount * 2
+  measure:
+    total is amount.sum()
+    n is count()
+    secret_total is secret.sum()
+}
+
+#(materialize) storage="lake"
+source: wide is __served_copy_alias_of_lake.virtual('2f6d3e57f13e9e62faf8122e60768b040c87df9c415fd3890f48c5d3915609ce')::wide__served include { public: *; private: amount } extend {
+  measure: amt is amount.sum()
+}

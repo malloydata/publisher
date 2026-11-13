@@ -1,0 +1,100 @@
+{
+  "internal": {
+    "annotationFindings": [
+      {
+        "code": "persist-unknown-key",
+        "message": "#@ persist source \"daily_orders\": `mergekey=` is not a key `#@` reads, so it does nothing (did you mean `merge_key=`?)",
+        "model": "persist_advisory_test.malloy",
+        "route": "@",
+        "subject": "daily_orders",
+        "tier": "unservable"
+      }
+    ],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "daily_orders@<pkg>/persist_advisory_test.malloy": []
+        },
+        "order": [
+          "daily_orders@<pkg>/persist_advisory_test.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily_orders@<pkg>/persist_advisory_test.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily_orders@<pkg>/persist_advisory_test.malloy": "persist_advisory_test.malloy"
+    }
+  },
+  "loadWarnings": [
+    {
+      "code": "persist-unknown-key",
+      "message": "#@ persist source \"daily_orders\": `mergekey=` is not a key `#@` reads, so it does nothing (did you mean `merge_key=`?)",
+      "model": "persist_advisory_test.malloy",
+      "severity": "warn",
+      "subject": "daily_orders"
+    }
+  ],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily_orders@<pkg>/persist_advisory_test.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "daily_orders@<pkg>/persist_advisory_test.malloy": {
+        "annotationFields": {
+          "mergekey": "order_id",
+          "name": "daily_orders"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "category",
+            "type": "string"
+          },
+          {
+            "name": "total_orders",
+            "type": "number"
+          },
+          {
+            "name": "total_revenue",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "persist_advisory_test.malloy",
+        "name": "daily_orders",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "3e2e0d29260223019303fa0c3cbb3679421f9c8a7dd2c9ff514138e9b30592bc",
+        "sourceID": "daily_orders@<pkg>/persist_advisory_test.malloy",
+        "sql": "sha256:d35246e0b696c857"
+      }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+// conformance: extensions of persisted sources [materialize]: files generated while serving
+
+// ==== <pkg>/joined.malloy
+##! experimental { persistence }
+import "raw.malloy"
+import "m.malloy"
+
+source: ext_joined is ext2 extend {
+                                                    
+}
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: base_daily__served is {
+   customer_id::number,
+   region::string,
+   status::string,
+   order_date::date,
+   total::number,
+   n::number
+}
+
+import "raw.malloy"
+
+#(materialize) storage="lake"
+source: base_daily is __served_copy_alias_of_lake.virtual('4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f')::base_daily__served
+
+source: ext1 is base_daily extend {
+  where: status != 'returned'
+  measure: grand is total.sum()
+}
+
+source: ext2 is ext1 extend {
+  dimension: winter is order_date.month = @2025-01 or order_date.month = @2024-12
+}
+
+source: ext2_rollup is ext2 -> {
+  group_by: region, winter
+  aggregate: g is grand
+}
