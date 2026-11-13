@@ -814,6 +814,14 @@ Everything below lands on `/api/v1`, never on v0; the one exception to the v0 fr
 - [ ] `/api-doc.yaml` serves v1 and `/api-doc.v0.yaml` serves v0; the route-parity test asserts every route is in exactly one spec. v1's `GET /status` has the v1 shape. v0's keeps its shape and gains only additive fields (`hostname`, the warm-start telemetry), the single exception to the v0 freeze, because the v1 shape is not a superset of v0's and Credible's control plane parses v0's.
 - [ ] Every v0 operation answers with `Deprecation: true` and a `Link` to the migration guide, and counts in `v0_route`. Today the dashboards and notebooks routes, among others, set no header.
 - [ ] `docs/api-migration.md`: every v0 operation, field and query parameter mapped to its v1 form, or to "removed, use …". Built from #1562's usage matrix.
+- [ ] Materialization v2's requests, below: the path report on `/api/v1` before step 4 ships, and the agent tools' routes once its phase 6 has built the tools.
+
+#### Requested by materialization v2: the path report and the agent tools' routes
+
+_Moved here from the materialization v2 plan (`docs/materialization-v2-plan.md`) on 2026-11-13, at that plan's request._ Both are `/api/v1` work, so they need step 4, and so step 3 under it, and nothing from track B. Materialization v2 keeps the behaviour on v0 and on MCP, so its phases 1 and 6 finish without waiting for v1.
+
+- **The path report on `/api/v1`** (materialization v2's D1). `QueryResultMetadata.path`, a `QueryPath` carrying `servedBy` (decision A52), goes into `api-doc.v1.yaml` before step 4 ships. `servedFrom` stays on the frozen v0 until the 1.0.0 release. On v0, D1 already works today: `servedFrom`, with the path report beside it on the query result (materialization v2's phase 1). Its fields must be settled here before v1 ships, since after 1.0 the API changes only additively (materialization v2's decision 7: camelCase fields, `servedBy` and `notConsidered`, and the `SkipReason` values in SCREAMING_CASE with `RUN_FAILED`).
+- **The agent tools' REST routes** (materialization v2's T7). `workload`, `table_stats`, `explain`, `what_if` and `compare` become `/api/v1` routes in the materialization cluster (decision A12); v0 gets none. Materialization v2 builds the tools on the MCP endpoint in its phase 6, and the routes land here once those tools exist, over the same use cases (from the composition root, never a controller). Credible serves the same tools over its own store.
 
 ### Step 5: resources through the API, and restart in place
 
