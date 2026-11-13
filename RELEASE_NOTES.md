@@ -25,6 +25,27 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — In development: integers past 2^53 served from storage come back exact
+
+A wrong answer is fixed. A query answered from a stored table (`storage=`, colocated
+`#(materialize)`, a v1 colocated table under `PUBLISHER_V1_SERVED_COPY=on`, and the storage serve
+shape) read a big-integer column through the table's plain
+`number` declaration, so a value above 2^53 came back rounded: 9007199254740993 as
+9007199254740992, where live on DuckDB, BigQuery or Snowflake gives every digit (materialization v2
+known limitation 12, which said answers were equal and only metadata differed).
+
+A column whose field Malloy types as a big integer (`BIGINT`, `HUGEINT`, `UBIGINT`, `INT64`,
+`NUMBER(p,0)`, a sum or max over one) is now read through a native cast (`::"HUGEINT"` in a
+`storage=` table, the warehouse's own big-integer type in a colocated one), so it stays served from
+storage and comes back exact, with live's `bigint` subtype. Selecting, grouping, filtering and
+aggregating it, a `primary_key:` and the author's own measures over it all keep serving. A column
+no cast reads exactly (stored as a float) is left out per query and answered live. On Postgres,
+whose live answer itself rounds such values (its rows come back through JSON), served equals live,
+never more precise. `count()`, 32-bit integers and decimals are unchanged.
+
+No API change. See docs/materialization.md, "Stored column types follow the model, not the
+warehouse".
+
 ## [Unreleased] — In development: join-to-rollup checks the querying source's primary key, and declines a count beside a re-pointed join
 
 Behind `PUBLISHER_MATERIALIZE` (off by default). Two wrong answers from a joined source's `#(preaggregate)` rollup read through a join are fixed; each now answers live (`COUNT_SEMANTICS`) and equals live.

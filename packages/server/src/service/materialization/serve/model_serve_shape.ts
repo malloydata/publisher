@@ -49,6 +49,8 @@ import {
 } from "../plan/preaggregation_coverage";
 import { rollupServeBindings } from "./preaggregation_serve_bindings";
 import {
+   bigIntegerReads,
+   type BigIntegerRead,
    declaredColumnsOf,
    queryTimezoneOf,
    type ReadCast,
@@ -82,6 +84,13 @@ interface BindingTypePlan {
    casts: ReadCast[];
    unservable: StoredColumnTypeMismatch[];
    mismatches: StoredColumnTypeMismatch[];
+   /**
+    * Columns live answers above 2^53 that the shape's `::number` would round
+    * ({@link bigIntegerReads}, known limitation 12): each read through a
+    * native cast that keeps every digit, or, with none exact, left off like an
+    * unservable one. Not a type mismatch, so not reported as one.
+    */
+   bigIntegers: BigIntegerRead[];
 }
 
 /** What the storage serve shape reads from the model it serves. */
@@ -315,6 +324,9 @@ export class StorageServeShape {
          casts,
          unservable,
          mismatches,
+         bigIntegers: bigIntegerReads(publicSchema, fields, {
+            dialect: (def as { dialect?: unknown } | undefined)?.dialect,
+         }),
       };
       this.typePlans.set(binding, plan);
       return plan;
@@ -1062,7 +1074,10 @@ export class StorageServeShape {
       // faithful is left off when nothing on the shape names it, so only a
       // query reading it is answered live; when a refinement does name it,
       // dropping it would fail the whole shape, so that one binding is
-      // withheld instead and every other source keeps serving.
+      // withheld instead and every other source keeps serving. A column live
+      // answers above 2^53 (a BIGINT, known limitation 12) is read through a
+      // native cast that keeps every digit (`::"HUGEINT"`), or, when no cast
+      // can be exact, left off the same way: the shape's `::number` rounds it.
       const planned = bindings
          .map((b) => ({ b, plan: this.typePlanFor(b, contents) }))
          .filter(({ plan }) => plan.schema.length > 0);
@@ -1078,7 +1093,24 @@ export class StorageServeShape {
       );
       const typeWithheld: string[] = [];
       const onShape = planned.flatMap(({ b, plan }) => {
-         const live = plan.unservable.map((m) => m.column);
+         const live = [
+            ...plan.unservable.map((m) => m.column),
+            ...plan.bigIntegers.filter((r) => !r.castTo).map((r) => r.column),
+         ];
+         const casts: ReadCast[] = [
+            ...plan.casts,
+            ...plan.bigIntegers.flatMap((r) =>
+               r.castTo
+                  ? [
+                       {
+                          column: r.column,
+                          castTo: r.castTo,
+                          native: true as const,
+                       },
+                    ]
+                  : [],
+            ),
+         ];
          if (live.some((column) => namesColumn(named, column))) {
             typeWithheld.push(b.sourceName);
             return [];
@@ -1090,7 +1122,7 @@ export class StorageServeShape {
             {
                ...b,
                schema,
-               ...(plan.casts.length > 0 ? { readCasts: plan.casts } : {}),
+               ...(casts.length > 0 ? { readCasts: casts } : {}),
             },
          ];
       });

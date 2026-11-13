@@ -581,7 +581,7 @@ are in the plan's [known limitations](materialization-v2-plan.md#known-limitatio
 | A query through a join that fans out across a grain dimension it neither groups nor fixes, against the joined source's rollup | Answered live (`GRAIN_TOO_COARSE`), as for the rollup's own source | — |
 | A query through a join read as a join_many that is not keyed on the querying source's primary key, against the joined source's rollup | Answered live (`COUNT_SEMANTICS`) | — |
 | A query through a join_one that also aggregates the querying source's own rows, against the joined source's rollup, when no build of the rollup checked the join's key unique (a table a control plane's manifest binds, a check that could not run) or the check found it repeated | Answered live (`COUNT_SEMANTICS`) | Row 29 |
-| A stored number column (`storage=` or colocated `#(materialize)`) | Answers equal live; the integer or decimal subtype reads back as `number` | Row 12 |
+| A stored number column (`storage=` or colocated `#(materialize)`) | Answers equal live. A big integer (Malloy's `bigint` subtype) is read through a native cast and served exact, values above 2^53 included; one no cast reads exactly is answered live per query. Other numbers' integer or decimal subtype reads back as `number` | Row 12 |
 | An annotated field of an inlined join returned as a column | Answered live, so the result keeps the field's annotations | Row 10 |
 
 One case can differ from live, and it is the data's doing: a query through a `join_one` to a rollup

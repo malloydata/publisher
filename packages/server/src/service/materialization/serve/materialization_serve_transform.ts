@@ -16,7 +16,12 @@ import {
 } from "../../../materialization_metrics";
 import type { ManifestEntry } from "../types";
 import { quoteManifestTablePath } from "../../quoting";
-import { annotationValue, identifier, stringLiteral } from "../../malloy_text";
+import {
+   annotationValue,
+   doubleQuotedString,
+   identifier,
+   stringLiteral,
+} from "../../malloy_text";
 import { storageTablePath } from "../run/storage_table_path";
 import { pipelineReferences, structRefSourceId } from "../plan/source_map";
 import { documentFlagLines } from "../declaration_text";
@@ -177,9 +182,11 @@ export interface ServeBinding {
     * then declares the stored table as `<name>__stored` and the source as a
     * query over it selecting every column, these cast (`::date`), so
     * everything built on them still compiles. `schema` keeps the STORED
-    * types. Absent reads the table as stored.
+    * types. Absent reads the table as stored. A `native` cast reads a
+    * big-integer column as its SQL type (`::"HUGEINT"`) so it keeps every
+    * digit (known limitation 12).
     */
-   readCasts?: { column: string; castTo: string }[];
+   readCasts?: { column: string; castTo: string; native?: true }[];
    /**
     * The author source's refinements, re-emitted as an `extend {}` on the
     * virtual base. Attached at serve time from the compiled model. Analytic
@@ -539,7 +546,7 @@ function serveShapeFragment(binding: ServeBinding): string {
       .join(",\n");
    const virtual = `${identifier(binding.destinationName)}.virtual(${stringLiteral(binding.virtualHandle)})::${shapeTypeName}`;
    const casts = new Map(
-      (binding.readCasts ?? []).map((c) => [c.column, c.castTo]),
+      (binding.readCasts ?? []).map((c) => [c.column, c] as const),
    );
    let prelude = "";
    let source: string;
@@ -553,8 +560,13 @@ function serveShapeFragment(binding: ServeBinding): string {
       const select = binding.schema
          .map((c) => {
             const name = identifier(c.name);
-            const to = casts.get(c.name);
-            return to ? `${name} is ${name}::${duckdbTypeToMalloy(to)}` : name;
+            const cast = casts.get(c.name);
+            if (!cast) return name;
+            // A big-integer column is read as its native SQL type, which
+            // Malloy types as a `bigint` number and so keeps every digit.
+            return cast.native
+               ? `${name} is ${name}::${doubleQuotedString(cast.castTo)}`
+               : `${name} is ${name}::${duckdbTypeToMalloy(cast.castTo)}`;
          })
          .join(", ");
       source = `source: ${sourceName} is ${stored} -> { select: ${select} }`;

@@ -13,7 +13,12 @@ type: by_customer__served is {
 import "raw.malloy"
 
 #(materialize) storage="lake"
-source: by_customer is __served_copy_alias_of_lake.virtual('71f8495dea14f21de55246d492a02ed7d2988d3cf10cf50157d9c94d37d2eb99')::by_customer__served
+source: by_customer is __served_copy_alias_of_lake.virtual('71f8495dea14f21de55246d492a02ed7d2988d3cf10cf50157d9c94d37d2eb99')::by_customer__served extend {
+  internal rename:
+    customer_id__stored is customer_id
+  dimension:
+    customer_id is customer_id__stored::"HUGEINT"
+}
 
 // ==== <pkg>/plus.malloy
 ##! experimental { persistence }

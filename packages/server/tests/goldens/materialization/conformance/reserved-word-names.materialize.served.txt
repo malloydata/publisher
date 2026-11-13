@@ -14,5 +14,9 @@ import "raw.malloy"
 
 #(materialize) storage="lake"
 source: `order` is __served_copy_alias_of_lake.virtual('f4c625d477b98206d172cedd4c593f384037d09cbe230405a47b44a43fa84627')::order__served extend {
+  internal rename:
+    order__stored is order
+  dimension:
+    order is order__stored::"HUGEINT"
   measure: `group` is amt.sum()
 }

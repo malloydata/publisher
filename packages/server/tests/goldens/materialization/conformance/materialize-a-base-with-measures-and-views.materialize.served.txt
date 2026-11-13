@@ -27,6 +27,14 @@ source: orders_base is orders_raw extend {
 
 #(materialize) storage="lake"
 source: orders_m is __served_copy_alias_of_lake.virtual('3f4562aa4a00b1792d2a380e8e007d40f57d6d24f3a52d472b1298cd7a48742c')::orders_m__served extend {
+  internal rename:
+    id__stored is id
+    customer_id__stored is customer_id
+    order__stored is order
+  dimension:
+    id is id__stored::"HUGEINT"
+    customer_id is customer_id__stored::"HUGEINT"
+    order is order__stored::"HUGEINT"
   # currency
   measure: total is amount.sum()
   measure: n is count()
