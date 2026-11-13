@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   getDialect,
    isSourceDef,
    type MalloyConfig,
    type SourceDef,
@@ -17,6 +18,7 @@ import {
    getPersistCollisionEnforce,
    getMaterializeEnabled,
    getPersistStorageMode,
+   getV1ServedCopyMode,
 } from "../../config";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
 import { BuildPlanRefreshingError } from "../../errors";
@@ -71,6 +73,11 @@ import {
    SERVED_COPY_WARNING_CODE,
    type ServedCopyProblem,
 } from "./serve/served_copy_serve";
+import {
+   deriveColocatedServeBindings,
+   v1StoredColumnsOf,
+} from "./serve/colocated_bindings";
+import { namesServedCopyAlias } from "./serve/served_copy_config";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import {
    computeServeVerdicts,
@@ -168,6 +175,13 @@ export const BUILD_PLAN_REFRESH_WAIT_MS = 10_000;
  */
 export const PERSIST_SOURCE_REFUSED_CODE = "persist-source-refused";
 
+/**
+ * The code on the warning for a rollup whose build found its join_one key
+ * repeated ({@link PackageMaterialization.repeatedJoinOneKeyWarnings}).
+ */
+export const PREAGGREGATE_JOIN_ONE_KEY_REPEATED_CODE =
+   "preaggregate-join-one-key-repeated";
+
 /** The live serve verdicts the path report reads, by table and by source. */
 interface LiveVerdicts {
    byTable: ReadonlyMap<string, LiveTableVerdict>;
@@ -258,6 +272,8 @@ export class PackageMaterialization {
    // `#@ persist` sources Malloy's build walk did not plan, which
    // would silently serve live. Warned, and refused at build.
    private droppedPersistSources: { name: string; modelPath: string }[] = [];
+   /** Rollups over a gated base whose gates are grafted at read (row 1). */
+   private rollupsKeepingGates = new Set<string>();
    private rollupsOverStoredBase: { baseName: string; modelPath?: string }[] =
       [];
    private annotationFindings: PackageAnnotationFinding[] = [];
@@ -392,11 +408,13 @@ export class PackageMaterialization {
             incrementalDeclarations,
             buildConnectionNames,
             materializePlans,
+            rollupsKeepingGates,
          } = workerPlan
             ? workerPlan.outcome
             : await computePackageBuildPlan(this.owner.buildPlanPackage);
          this.buildPlan = plan;
          this.materializePlans = materializePlans ?? {};
+         this.rollupsKeepingGates = new Set(rollupsKeepingGates ?? []);
          this.buildPlanFailed = false;
          this.servingPlanWhileUnavailable = null;
          this.droppedPersistSources = droppedPersistSources;
@@ -437,6 +455,7 @@ export class PackageMaterialization {
          this.colocatedSourceEligibility = undefined;
          this.incrementalPolicySources = [];
          this.rollupsOverStoredBase = [];
+         this.rollupsKeepingGates = new Set();
          recordBuildPlanComputeFailed();
          logger.warn(
             `Failed to compute build plan for package ${this.owner.packageName()}`,
@@ -543,6 +562,9 @@ export class PackageMaterialization {
          bound[sourceEntityId] = {
             tableName: entry.tableName,
             ...(entry.dataAsOf ? { dataAsOf: entry.dataAsOf } : {}),
+            ...(entry.keyUniqueness
+               ? { keyUniqueness: entry.keyUniqueness }
+               : {}),
          };
       }
       const catalog: MaterializedTableCatalog = {
@@ -691,6 +713,44 @@ export class PackageMaterialization {
       if (count === 0) {
          this.boundManifestUri = null;
       }
+      this.refreshColocatedServeBindings();
+   }
+
+   /**
+    * Drop the rollup key checks (known limitation 29) bound for these content
+    * addresses: a run is about to write their tables, so what a check found
+    * over the rows before no longer describes them. The routing itself is
+    * kept; the join-to-rollup leg reads the table as unknown until a run
+    * binds a new check.
+    */
+   forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
+      const ids = new Set(sourceEntityIds);
+      // A stored table's own primary key check, on its storage binding.
+      if (
+         this.storageServeBindings.some(
+            (b) => b.primaryKeys && ids.has(b.virtualHandle),
+         )
+      ) {
+         this.storageServeBindings = this.storageServeBindings.map((b) => {
+            if (!b.primaryKeys || !ids.has(b.virtualHandle)) return b;
+            const { primaryKeys: _forgotten, ...rest } = b;
+            return rest;
+         });
+         this.pushStorageServeBindingsToModels();
+      }
+      const entries = this.freshnessEntries;
+      if (!entries) return;
+      let next: FreshnessManifest | undefined;
+      for (const id of ids) {
+         const entry = entries[id];
+         if (!entry?.keyUniqueness) continue;
+         next ??= { ...entries };
+         const { keyUniqueness: _forgotten, ...rest } = entry;
+         next[id] = rest;
+      }
+      if (!next) return;
+      this.freshnessEntries = next;
+      this.tableCatalogCache = undefined;
    }
 
    /**
@@ -905,8 +965,76 @@ export class PackageMaterialization {
       return undefined;
    }
 
-   /** Push the current storage serve bindings onto every loaded model. */
+   /**
+    * The served copy's bindings for the colocated `#(materialize)` tables the
+    * bound manifest holds (colocated_bindings.ts), admitted by the colocated
+    * tier's positive eligibility, keyed by content address as that tier is.
+    */
+   private colocatedServeBindings(): ServeBinding[] {
+      const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
+      const sources = plan?.sources ?? {};
+      const eligible = this.colocatedSourceEligibility?.eligibleEntityIds;
+      // The v1 cutover (G1): v1 colocated `#@ persist` tables too, once the
+      // switch is past `off` (under `shadow` the model keeps them off its own
+      // served copy; Model.setServeBindings).
+      const v1 = getV1ServedCopyMode() !== "off";
+      const viewBuilds = v1 ? this.persistedViewBuildIDs() : undefined;
+      return deriveColocatedServeBindings({
+         entries: this.freshnessEntries,
+         planSources: sources,
+         materializePlans: this.materializePlans,
+         eligible: (sourceID) =>
+            !!eligible?.has(sources[sourceID]?.sourceEntityId ?? ""),
+         ...(v1
+            ? {
+                 v1Schema: (sourceID: string) =>
+                    v1StoredColumnsOf(this.declarationOf(sourceID)),
+                 notV1: (sourceID: string) => !!viewBuilds?.has(sourceID),
+              }
+            : {}),
+      });
+   }
+
+   /** Every model's persisted views' generated build sources, by sourceID. */
+   private persistedViewBuildIDs(): Set<string> {
+      const ids = new Set<string>();
+      for (const model of this.owner.models().values()) {
+         // Optional: a model a spec stands in for need not implement it.
+         for (const b of model.persistedViewBuilds?.() ?? []) {
+            ids.add(b.buildSourceID);
+         }
+      }
+      return ids;
+   }
+
+   /** What {@link pushStorageServeBindingsToModels} last pushed, colocated. */
+   private colocatedBindingsSignature = "";
+
+   /**
+    * Push the bindings again when the colocated `#(materialize)` tables the
+    * served copy would read changed (a manifest bind, a re-derived plan).
+    */
+   private refreshColocatedServeBindings(): void {
+      if (
+         colocatedSignature(this.colocatedServeBindings()) !==
+         this.colocatedBindingsSignature
+      ) {
+         this.pushStorageServeBindingsToModels();
+      }
+   }
+
+   /**
+    * Push the current serve bindings onto every loaded model: the storage
+    * tier's, and the colocated `#(materialize)` tables only the served copy
+    * reads.
+    */
    pushStorageServeBindingsToModels(): void {
+      const colocated = this.colocatedServeBindings();
+      this.colocatedBindingsSignature = colocatedSignature(colocated);
+      const bindings =
+         colocated.length === 0
+            ? this.storageServeBindings
+            : [...this.storageServeBindings, ...colocated];
       for (const model of this.owner.models().values()) {
          // Optional: a model a spec stands in for need not implement them.
          model.setServedCopyContext?.(
@@ -915,7 +1043,7 @@ export class PackageMaterialization {
             this.materializePlans,
             (sourceID) => this.declarationOf(sourceID),
          );
-         model.setServeBindings(this.storageServeBindings);
+         model.setServeBindings(bindings);
          // Compiled at bind so a served copy that does not compile is a
          // package warning before any query; never throws.
          void model.prepareServedCopy?.();
@@ -1070,6 +1198,9 @@ export class PackageMaterialization {
             this.buildPlanStale.resolve();
             this.buildPlanStale = undefined;
          }
+         // The plan's addresses and eligibility decide the colocated tables
+         // the served copy reads.
+         this.refreshColocatedServeBindings();
          return derived;
       });
       this.buildPlanRefreshChain = run.catch(() => false);
@@ -1188,6 +1319,52 @@ export class PackageMaterialization {
          code: finding.code,
          severity: findingSeverity(finding),
       }));
+   }
+
+   /**
+    * One warning per bound `#(preaggregate)` rollup whose last build found its
+    * join_one key repeated (known limitation 29's check, `keyUniqueness`
+    * false): the data breaks a `join_one` declared on that key, so queries
+    * that read it beside other aggregates are answered live, and live itself
+    * counts each parent once per repeated row. Recomputed from what is bound,
+    * so it clears once a build finds the key unique, or forgets the check.
+    */
+   repeatedJoinOneKeyWarnings(): ApiPackageWarning[] {
+      const warnings: ApiPackageWarning[] = [];
+      const bySourceEntity = new Map(
+         Object.values(this.buildPlan?.sources ?? {}).flatMap((source) =>
+            source.sourceEntityId ? [[source.sourceEntityId, source]] : [],
+         ),
+      );
+      for (const [sourceEntityId, entry] of Object.entries(
+         this.freshnessEntries ?? {},
+      )) {
+         // The rollup's own key check only: an entry may carry just the
+         // query sources' primary key checks (`parentKeys`), which say
+         // nothing of a join_one keyed on the rollup's grain.
+         const check = entry.keyUniqueness;
+         if (check?.unique !== false || check.keyColumn === undefined) {
+            continue;
+         }
+         const rollup = bySourceEntity.get(sourceEntityId)?.preaggregate;
+         if (!rollup) continue;
+         const source = bySourceEntity.get(sourceEntityId);
+         warnings.push({
+            ...(source?.modelPath ? { model: source.modelPath } : {}),
+            subject: rollup.baseSourceName,
+            code: PREAGGREGATE_JOIN_ONE_KEY_REPEATED_CODE,
+            severity: "warn",
+            message:
+               `holds \`${check.keyColumn}\` more than once, found by its ` +
+               `#(preaggregate) rollup's last build (grain ` +
+               `${rollup.grainDimensions.join(", ")}): a join_one keyed on it ` +
+               `is not unique in the data, so live repeats each joining row ` +
+               `once per match. Queries that read that join_one beside other ` +
+               `aggregates are answered live. Fix the data or declare the ` +
+               `join as join_many.`,
+         });
+      }
+      return warnings;
    }
 
    /**
@@ -1475,6 +1652,7 @@ export class PackageMaterialization {
             return reaching.length > 0 && reaching.every((root) => root.gated);
          },
          servedCopyKeepsGates: getMaterializeGatedSources(),
+         rollupKeepsGates: (sourceID) => this.rollupsKeepingGates.has(sourceID),
          refusedAtBind: (sourceID, source, tier) =>
             this.refusedAtBind(sourceID, source, tier),
          boundEntityIds: new Set(Object.keys(this.buildManifestEntries ?? {})),
@@ -1626,7 +1804,109 @@ export class PackageMaterialization {
             }
          }
       }
-      return this.serveVerdicts(views);
+      const verdicts = this.serveVerdicts(views);
+      if (getV1ServedCopyMode() === "off") return verdicts;
+      try {
+         return await this.withCutoverPaths(verdicts);
+      } catch (error) {
+         logger.warn("Could not preview the v1 cutover's serve paths", {
+            packageName: this.owner.packageName(),
+            error: errMessage(error),
+         });
+         return verdicts;
+      }
+   }
+
+   /**
+    * The v1 cutover's serve path on each verdict (6e, plan question 15): the
+    * served copy compiled over bindings declared from the plan's output
+    * columns, `storage=` ones as {@link previewServeBindings} declares them
+    * and colocated ones as the cutover binds them, names the sources it
+    * re-roots; a rollup is the rollup leg's. Nothing is built or read.
+    */
+   private async withCutoverPaths(
+      verdicts: ServeVerdict[],
+   ): Promise<ServeVerdict[]> {
+      const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
+      const sources = plan?.sources ?? {};
+      const eligible = this.colocatedSourceEligibility?.eligibleEntityIds;
+      const viewBuilds = this.persistedViewBuildIDs();
+      const entries: FreshnessManifest = {};
+      for (const source of Object.values(sources)) {
+         if (source.annotationFields?.storage?.trim()) continue;
+         entries[source.sourceEntityId] = {
+            tableName: `preview_${source.sourceEntityId}`,
+            connectionName: source.connectionName,
+         };
+      }
+      // A v1 `storage=` table stores the persisted query's own output (before
+      // an extend block's `rename:` or `except:`, nests included), as the
+      // bind will read it; a `#(materialize)` plan's columns are its own.
+      const bindings = [
+         ...this.previewServeBindings().map((b) => {
+            const sourceID = b.sourceIDs?.[0];
+            if (!sourceID || this.materializePlans?.[sourceID]) return b;
+            const schema = v1StoredColumnsOf(this.declarationOf(sourceID));
+            return schema?.length ? { ...b, schema } : b;
+         }),
+         ...deriveColocatedServeBindings({
+            entries,
+            planSources: sources,
+            materializePlans: this.materializePlans,
+            eligible: (sourceID) =>
+               !!eligible?.has(sources[sourceID]?.sourceEntityId ?? ""),
+            v1Schema: (sourceID) =>
+               v1StoredColumnsOf(this.declarationOf(sourceID)),
+            notV1: (sourceID) => viewBuilds.has(sourceID),
+         }).map((b) => previewNativeSchema(b, sources)),
+      ];
+      const rerooted = new Set<string>();
+      const throughBase = new Set<string>();
+      const gateDeclined = new Set<string>();
+      const problems = new Map<string, string>();
+      for (const model of this.owner.models().values()) {
+         const preview = await model.previewServedCopy?.(bindings);
+         for (const id of preview?.rerooted ?? []) rerooted.add(id);
+         for (const id of preview?.throughBase ?? []) throughBase.add(id);
+         for (const id of preview?.gateDeclined ?? []) gateDeclined.add(id);
+         for (const p of preview?.problems ?? []) {
+            if (p.sourceID && !problems.has(p.sourceID)) {
+               problems.set(p.sourceID, p.reason);
+            }
+         }
+      }
+      return verdicts.map((v) => {
+         if (v.origin === "preaggregate") {
+            return { ...v, cutoverPath: "rollup" };
+         }
+         // A row-level gate declared on a base the re-root replaces cannot
+         // be grafted on the served copy: its queries are answered live.
+         if (gateDeclined.has(v.sourceID)) {
+            return {
+               ...v,
+               cutoverPath: "live",
+               cutoverReason: "inherited_gate",
+            };
+         }
+         if (rerooted.has(v.sourceID)) {
+            return { ...v, cutoverPath: "served_copy" };
+         }
+         // An extension of a re-rooted source, left as written: it reads
+         // that source's table by name.
+         if (throughBase.has(v.sourceID) && !problems.has(v.sourceID)) {
+            return {
+               ...v,
+               cutoverPath: "served_copy",
+               cutoverReason: "through_base",
+            };
+         }
+         return {
+            ...v,
+            cutoverPath: "live",
+            cutoverReason:
+               problems.get(v.sourceID) ?? v.reason ?? "not_rerooted",
+         };
+      });
    }
 
    /**
@@ -2126,12 +2406,14 @@ function withoutChangedConnections(
 /**
  * The compiler's own reasons in a compile error, as `: <reason>; <reason>.`:
  * each diagnostic's message without its file and source excerpt, so a package
- * warning names why without the server's paths. `.` when there are none.
+ * warning names why without the server's paths. A reason that names a
+ * served-copy alias (a join refused across connections) is left out: the
+ * alias stays in the server log. `.` when there are none.
  */
 function compilerReasons(detail: string | undefined): string {
-   const reasons = [...(detail ?? "").matchAll(/^line \d+: (.+)$/gm)].map((m) =>
-      m[1].trim(),
-   );
+   const reasons = [...(detail ?? "").matchAll(/^line \d+: (.+)$/gm)]
+      .map((m) => m[1].trim())
+      .filter((reason) => !namesServedCopyAlias(reason));
    return reasons.length > 0 ? `: ${reasons.join("; ")}.` : ".";
 }
 
@@ -2156,6 +2438,11 @@ function servedCopyProblemMessage(
          return "This source inlines a join_many that is not declared on its own in its own trailing `extend` (a source it is built from declares it, or its `join_many:` statement declares other joins too), so its pair table cannot be read with the join as a record and the served copy leaves it as written.";
       case "pair_not_compiled":
          return "This source's pair table (an inlined join_many) could not be read as the source with its join as a record (its text reads a measure or view of the joined source through the join, which the record does not carry), so the served copy leaves it as written.";
+      case "reroot_not_compiled":
+         return (
+            "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message)." +
+            " The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it."
+         );
       case "read_terms_not_kept":
          return "This source filters by a given in a place its stored table cannot keep, or is filtered and reached here only through a join, so the served copy leaves it as written rather than answer every caller alike.";
       case "fields_not_carried":
@@ -2189,4 +2476,44 @@ function servedCopyProblemMessage(
             [...(problem.leaks ?? []), ...(problem.coverage ?? [])].join(" ")
          );
    }
+}
+
+/** The colocated bindings' identity, to push only when they change. */
+function colocatedSignature(bindings: readonly ServeBinding[]): string {
+   return bindings
+      .map(
+         (b) =>
+            `${b.sourceIDs?.join(",")}@${b.destinationName}/${b.virtualHandle}/${b.tablePath}/${b.freshAsOf ?? ""}/${b.freshnessWindowSeconds ?? ""}/${b.freshnessFallback ?? ""}`,
+      )
+      .sort()
+      .join("|");
+}
+
+/**
+ * A dry run's colocated binding with the warehouse types a build would
+ * capture (`ManifestEntry.nativeSchema`), so it predicts the cast a big-integer
+ * column is read through: each column as the dialect's own type for a
+ * `bigint` number. A preview has no table to read; the real build's capture
+ * can only be as wide or wider, and a type Malloy does not read as `bigint`
+ * answers that column live, which no dry run can foresee.
+ */
+function previewNativeSchema(
+   binding: ServeBinding,
+   sources: Readonly<Record<string, { dialect?: string }>>,
+): ServeBinding {
+   const dialect = sources[binding.sourceIDs?.[0] ?? ""]?.dialect;
+   if (!binding.colocated || !dialect) return binding;
+   let type: string;
+   try {
+      type = getDialect(dialect).malloyTypeToSQLType({
+         type: "number",
+         numberType: "bigint",
+      });
+   } catch {
+      return binding;
+   }
+   return {
+      ...binding,
+      nativeSchema: binding.schema.map((c) => ({ name: c.name, type })),
+   };
 }

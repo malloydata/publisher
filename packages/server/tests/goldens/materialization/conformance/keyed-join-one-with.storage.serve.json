@@ -1,0 +1,319 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "cust",
+        "tier": "storage"
+      },
+      {
+        "name": "order_facts",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "cust:serves",
+      "order_facts:serves"
+    ],
+    "warnings": [
+      {
+        "code": "served-copy-not-served",
+        "message": "This source is stored in a destination its join `c` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or keep this source colocated.",
+        "subject": "orders_k"
+      }
+    ]
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "amount"
+          },
+          {
+            "classifications": [],
+            "path": "c.segment"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "c.segment",
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3abfe2a12c187c65",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(amount)"
+          ],
+          "source": "order_facts",
+          "stages": 1
+        },
+        "source": "order_facts"
+      },
+      "equalToLive": true,
+      "malloy": "run: order_facts -> { group_by: c.segment, region; aggregate: t is amount.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "MISSING_FIELD",
+            "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "c.segment",
+            "region"
+          ],
+          "measures": [
+            "amount"
+          ],
+          "sourceName": "order_facts"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a persisted source joining it with `with`",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "amount"
+          },
+          {
+            "classifications": [],
+            "path": "c.segment"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "c.segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "05547dd501991330",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(amount)"
+          ],
+          "source": "orders_k",
+          "stages": 1
+        },
+        "source": "orders_k"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_k -> { group_by: c.segment; aggregate: t is amount.sum() }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "order_facts",
+            "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "c.segment"
+          ],
+          "measures": [
+            "amount"
+          ],
+          "sourceName": "orders_k"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a warehouse source joining it with `with`",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "amount"
+          },
+          {
+            "classifications": [],
+            "path": "c.segment"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "c.segment",
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3abfe2a12c187c65",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(amount)"
+          ],
+          "source": "order_facts",
+          "stages": 1
+        },
+        "source": "order_facts"
+      },
+      "equalToLive": true,
+      "malloy": "run: order_facts -> { group_by: c.segment, region; aggregate: t is amount.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "c.segment",
+            "region"
+          ],
+          "measures": [
+            "amount"
+          ],
+          "sourceName": "order_facts"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a persisted source joining it with `with`",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "amount"
+          },
+          {
+            "classifications": [],
+            "path": "c.segment"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "c.segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "05547dd501991330",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(amount)"
+          ],
+          "source": "orders_k",
+          "stages": 1
+        },
+        "source": "orders_k"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_k -> { group_by: c.segment; aggregate: t is amount.sum() }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "order_facts",
+            "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "c.segment"
+          ],
+          "measures": [
+            "amount"
+          ],
+          "sourceName": "orders_k"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a warehouse source joining it with `with`",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

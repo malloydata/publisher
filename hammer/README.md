@@ -13,10 +13,9 @@ a local DuckLake), builds and boots the actual server, runs the steps, prints a
 check report, and tears everything down. No cloud creds; nothing to hand-wire.
 
 It runs **separately** from the `bun test` unit/integration suites: one command,
-real infrastructure, production-shaped confidence. Today you run it by hand.
-Wiring it into CI is an accepted follow-up — reviewers have asked more than once —
-and the harness is built for it: the whole suite is ~50s, self-contained apart from
-Docker, order-independent, and exits nonzero on failure.
+real infrastructure, production-shaped confidence. Run it by hand while you work;
+CI runs the whole suite nightly (see [In CI](#in-ci)), not on pull requests. It is
+self-contained apart from Docker, order-independent, and exits nonzero on failure.
 
 The step vocabulary lives in **[GRAMMAR.md](GRAMMAR.md)**. This file is about
 what a scenario is _for_.
@@ -203,9 +202,18 @@ bun hammer/run.ts --workers 2              # scenarios in parallel (default 6)
 bun hammer/run.ts --rebuild                # force a fresh server build first
 bun hammer/run.ts --keep                   # leave the pg container + workdir up to inspect
 bun hammer/run.ts --reuse-pg               # reuse a hammer pg container a --keep run left (fast iteration)
+bun hammer/run.ts --list                   # parse and list the selection, then exit (no Docker, no build)
 ```
 
 `--scenarios` and `--tags` narrow together (a scenario must match both).
+
+`--list` is a dry parse: it prints each selected scenario's id, tags and title
+and exits nonzero when one does not load (malformed, or colliding with another).
+
+Each scenario's directory number is unique within its suite (`bun run
+test:hammer` checks it): a new scenario takes the next free number. The number
+only names a scenario for people; `--scenarios` and the report use the id from
+its front matter.
 
 Flags: `--pg-port` (default: a free port Docker assigns), `--pg-container`
 (default `publisher-hammer-pg-<run id>`), `--port` and `--mcp-port`
@@ -298,6 +306,21 @@ both find no build start building at once and collide.
 bun hammer/run.ts --tags security &
 bun hammer/run.ts --tags orchestration
 ```
+
+## In CI
+
+[`.github/workflows/hammer-nightly.yml`](../.github/workflows/hammer-nightly.yml)
+runs the whole suite every night and on demand (`workflow_dispatch`, which takes
+an optional `scenarios` filter). It is not a pull-request check. Two legs run
+side by side, one with `PUBLISHER_MATERIALIZE=true` and one with `false`; the
+harness passes the variable through to every publisher it starts. Each leg uses
+the runner's own Docker for the Postgres container, builds the server in a step
+of its own (`build:server-only`), checks every scenario parses with `--list`,
+then runs with `--workers 4` (a hosted runner has 4 cores).
+
+Set `HAMMER_LOG_DIR` to keep every publisher's log after the run removes its
+workdir; CI sets it and uploads that directory, with the run's own output as
+`hammer.log`, as the `hammer-logs-materialize-<value>` artifact.
 
 ## Each scenario is a clean room
 

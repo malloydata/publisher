@@ -7,19 +7,29 @@
  * type for any of this, so every node is duck-typed here, once.
  *
  * A pair table stores one row per row of live's LEFT JOIN through an inlined
- * join_many, and the served copy reads it as the source itself: the join's
- * name is a record of the child's columns on the same row, and one flag marks
- * one row per parent. On those rows:
+ * path of join_manys (one hop, `segments`, or several, `items.options`), and
+ * the served copy reads it as the source itself: the path's first join is a
+ * record of the stored columns on the same row (a nested record per further
+ * hop), and one flag per level above the last marks one row per distinct
+ * row of that level (`__parent_row`: one per parent). Levels count from the
+ * source (0) to the last hop (the leaf, `depth`). On those rows:
  *
- *  - an aggregate through the join (`j.x.sum()`, `j.count()`) reads every
- *    row, which are the rows live aggregates through the join, so it is exact
- *    as it stands, live's count of a childless parent (malloydata/malloy#1762)
- *    included;
- *  - an aggregate over the source's own fields is exact only under the
- *    parent-row flag (one row per parent), and only where nothing it is
- *    grouped or filtered by reads the child: a parent's flagged row is one of
- *    its rows, so a child value would place the parent in that row's group
- *    alone, where live places it in every group one of its children is in.
+ *  - an aggregate at the leaf (`j.x.sum()`, `j.count()`, `items.options.x
+ *    .sum()`) reads every row, which are the rows live aggregates there, so it
+ *    is exact as it stands, live's count of a childless parent
+ *    (malloydata/malloy#1762) included;
+ *  - an aggregate at a level above the leaf is exact only under that level's
+ *    flag, and only where nothing it is grouped or filtered by reads a deeper
+ *    level: a flagged row is one of its level's rows, so a deeper value would
+ *    place it in that row's group alone, where live places it in every group
+ *    one of its rows is in;
+ *  - an aggregate at a level between the source and the leaf is exact when
+ *    the query reads nothing deeper: live then joins down to that level and
+ *    aggregates its rows plainly, which the flag marks. Once the query reads
+ *    deeper live aggregates that level symmetrically, keyed by its primary key
+ *    (a childless parent then counts as no row): the flag reproduces that only
+ *    for a sum or average of a stored column, where each row of the level has
+ *    one parent row ({@link FlatPair.oneParentLevels}).
  *
  * {@link pairMeasureLevels} says which measures the served copy re-declares
  * under the flag; {@link flatPairQueryRefusal} says whether one compiled query
@@ -36,14 +46,88 @@
 
 /** The pair table a query is checked against. */
 export interface FlatPair {
-   /** The inlined join_many's name: on the served source, the record. */
+   /** The inlined path's first join_many: on the served source, the record. */
    join: string;
    /** The parent-row flag's (internal) field on the served source. */
    parentRowField: string;
+   /**
+    * For a path of more than one hop: the joins past the first, in order,
+    * each a record nested in the one before (`["options"]` for
+    * `items.options`). Absent: one hop.
+    */
+   hops?: readonly string[];
+   /**
+    * For a path of more than one hop: the row flag of each level between the
+    * source and the leaf (level 1 first), its (internal) field on the served
+    * source.
+    */
+   levelRowFields?: readonly string[];
+   /**
+    * For a table that stores more than one path (one block each): the other
+    * blocks' records on the served source, which read nulls on this block's
+    * rows, so a query that reads one is never answered from this block.
+    */
+   otherRecords?: readonly string[];
+   /**
+    * For a path of more than one hop: the levels between the source and the
+    * leaf each of whose rows has exactly one row of every level above it
+    * (each join down to it keyed on its parent level's primary key, which the
+    * build checks unique and never null). Under that level's flag such a row
+    * is flagged once whichever parent groups it, so a sum or average of one
+    * of its stored columns there equals live's symmetric aggregate by its key
+    * beside deeper fields.
+    */
+   oneParentLevels?: readonly number[];
+   /**
+    * The path's computed fields the pair table stores (`items.flag`), whose
+    * value on a childless row's null-extended row need not be null.
+    */
+   computedFields?: readonly string[];
 }
 
-/** Where an aggregate (or a value it reads) lives. */
-export type PairLevel = "parent" | "child";
+/**
+ * Where an aggregate (or a value it reads) lives: 0 for the source's own
+ * fields, 1 for the path's first join, and so on to the leaf.
+ */
+export type PairLevel = number;
+
+/** The number of levels below the source: the leaf's level. */
+function depthOf(pair: Pick<FlatPair, "hops">): number {
+   return 1 + (pair.hops?.length ?? 0);
+}
+
+/**
+ * The level an aggregate's `structPath` aggregates at along `pair`'s path
+ * (`items` is level 1 however deep the path goes), or 0 when off it.
+ */
+function levelOfStruct(
+   names: readonly unknown[],
+   pair: Pick<FlatPair, "join" | "hops">,
+): number {
+   if (names[0] !== pair.join) return 0;
+   const hops = pair.hops ?? [];
+   let level = 1;
+   while (level - 1 < hops.length && names[level] === hops[level - 1]) {
+      level++;
+   }
+   return level;
+}
+
+/** The level a path of names reads along `pair`'s path, or 0 when off it. */
+function levelOfNames(
+   names: readonly unknown[],
+   pair: Pick<FlatPair, "join" | "hops">,
+): number {
+   if (names[0] !== pair.join) return 0;
+   const hops = pair.hops ?? [];
+   let level = 1;
+   while (level - 1 < hops.length && names[level] === hops[level - 1]) {
+      level++;
+   }
+   // A path that ends at a record (`items`, or `items.options` above a
+   // deeper hop) reads that record whole, every level below it included.
+   return names.length === level ? depthOf(pair) : level;
+}
 
 interface Node {
    node?: unknown;
@@ -111,26 +195,68 @@ function children(n: Node): Node[] {
    return out;
 }
 
-/** What walking one expression found. */
-interface Reads {
-   parent: boolean;
-   child: boolean;
+/** The levels one expression reads: 0 for the source's own fields. */
+type Reads = Set<number>;
+
+/** The deepest level in `reads`, or 0. */
+function deepest(reads: Iterable<number>): number {
+   let out = 0;
+   for (const l of reads) if (l > out) out = l;
+   return out;
+}
+
+/** What an aggregate's context says: the flag it sits under, and its filters. */
+interface AggregateContext {
+   /** The level whose row flag filters it, when one does. */
+   flagged: number | undefined;
+   /** The deepest level its other filters read (0: none below the source). */
+   filterLevel: number;
+   inAggregate: boolean;
 }
 
 /**
- * The walker over one source's fields: `join` is the inlined join_many (a
- * join in the author's compile, a record in the served copy).
+ * The walker over one source's fields: `pair` names the inlined path (a join
+ * in the author's compile, a record in the served copy).
  */
 class Walker {
+   private readonly flags: Map<string, number>;
+
    constructor(
       private readonly fields: Map<string, Field>,
-      private readonly join: string,
-      private readonly parentRowField: string | undefined,
-   ) {}
+      private readonly pair: Pick<
+         FlatPair,
+         "join" | "hops" | "otherRecords"
+      > & {
+         parentRowField?: string;
+         levelRowFields?: readonly string[];
+      },
+   ) {
+      this.flags = new Map();
+      if (pair.parentRowField !== undefined) {
+         this.flags.set(pair.parentRowField, 0);
+      }
+      (pair.levelRowFields ?? []).forEach((f, i) => this.flags.set(f, i + 1));
+   }
+
+   get join(): string {
+      return this.pair.join;
+   }
+
+   /** The leaf's level. */
+   get depth(): number {
+      return depthOf(this.pair);
+   }
+
+   /** The level of the row flag a field names, when it names one. */
+   flagLevel(path: readonly string[] | undefined): number | undefined {
+      return path?.length === 1 ? this.flags.get(path[0]) : undefined;
+   }
 
    /**
     * Refuse a path through a join other than the inlined one that names an
-    * aggregate or a view of the joined source.
+    * aggregate or a view of the joined source, or that steps through a
+    * join_many or cross join past its first join (a join_one's own join_many
+    * fans out the pair rows as much as one on the source).
     */
    throughJoin(path: string[]): void {
       let fields = this.fields;
@@ -140,6 +266,15 @@ class Walker {
             throw new Refusal(
                `the query reads \`${path.join(".")}\`, unresolved`,
             );
+         if (
+            i > 0 &&
+            i < path.length - 1 &&
+            (f.join === "many" || f.join === "cross")
+         ) {
+            throw new Refusal(
+               `the query reads \`${path.join(".")}\`, through a join that fans out a pair table's rows`,
+            );
+         }
          if (i === path.length - 1) {
             if (isAggregateField(f) || f.type === "turtle") {
                throw new Refusal(
@@ -152,16 +287,22 @@ class Walker {
       }
    }
 
-   /** Which side a field path reads, resolving dimensions through definitions. */
+   /** Which levels a field path reads, resolving dimensions through definitions. */
    readsOfPath(path: string[], depth: number): Reads {
       if (depth > MAX_DEPTH) throw new Refusal("an expression nests too deep");
-      if (path[0] === this.join) return { parent: false, child: true };
+      if (path[0] === this.join)
+         return new Set([levelOfNames(path, this.pair)]);
+      if (this.pair.otherRecords?.includes(path[0])) {
+         throw new Refusal(
+            `the query reads \`${path[0]}\`, another inlined join_many, which this pair table's rows do not hold`,
+         );
+      }
       const f = this.fields.get(path[0]);
       if (!f) throw new Refusal(`the query reads \`${path[0]}\`, unresolved`);
       if (path.length > 1) {
          this.throughJoin(path);
          if (f.join === "one" || f.type === "record") {
-            return { parent: true, child: false };
+            return new Set([0]);
          }
          throw new Refusal(
             `the query reads \`${path[0]}\`, a join that fans out a pair table's rows`,
@@ -170,13 +311,13 @@ class Walker {
       if (f.e && typeof f.e === "object") {
          return this.readsOf(f.e as Node, depth + 1);
       }
-      return { parent: true, child: false };
+      return new Set([0]);
    }
 
-   /** Which sides a scalar expression reads (no aggregate may be in it). */
+   /** Which levels a scalar expression reads (no aggregate may be in it). */
    readsOf(n: Node, depth: number): Reads {
       if (depth > MAX_DEPTH) throw new Refusal("an expression nests too deep");
-      const out: Reads = { parent: false, child: false };
+      const out: Reads = new Set();
       if (n.node === "aggregate") {
          throw new Refusal("an aggregate where a value was expected");
       }
@@ -186,25 +327,20 @@ class Walker {
          return this.readsOfPath(p, depth + 1);
       }
       for (const k of children(n)) {
-         const r = this.readsOf(k, depth + 1);
-         out.parent ||= r.parent;
-         out.child ||= r.child;
+         for (const l of this.readsOf(k, depth + 1)) out.add(l);
       }
       return out;
    }
 
    /**
     * Every aggregate an aggregate-valued expression reaches, through the
-    * measures it reads by name, with whether it sits under the parent-row
-    * flag and whether a filter on it reads the child.
+    * measures it reads by name, with the level it aggregates at, the flag it
+    * sits under and how deep a filter on it reads.
     */
    aggregates(
       n: Node,
-      ctx: { flagged: boolean; childFilter: boolean; inAggregate: boolean },
-      visit: (
-         level: PairLevel,
-         ctx: { flagged: boolean; childFilter: boolean },
-      ) => void,
+      ctx: AggregateContext,
+      visit: (level: PairLevel, ctx: AggregateContext, aggregate: Node) => void,
       depth: number,
    ): void {
       if (depth > MAX_DEPTH) throw new Refusal("an expression nests too deep");
@@ -224,49 +360,80 @@ class Walker {
             const reads = this.readsOf(arg, depth + 1);
             let level: PairLevel;
             if (sp.length > 0) {
+               if (
+                  typeof sp[0] === "string" &&
+                  this.pair.otherRecords?.includes(sp[0])
+               ) {
+                  throw new Refusal(
+                     `an aggregate through \`${sp[0]}\`, another inlined join_many, which this pair table's rows do not hold`,
+                  );
+               }
                if (sp[0] !== this.join) {
                   throw new Refusal(
                      `an aggregate through \`${String(sp[0])}\`, another join than the inlined one`,
                   );
                }
-               level = "child";
-            } else if (reads.child && reads.parent) {
+               level = levelOfStruct(sp, this.pair);
+               if (sp.length > level) {
+                  throw new Refusal(
+                     `an aggregate through \`${sp.map(String).join(".")}\`, past the inlined path`,
+                  );
+               }
+               if (deepest(reads) > level) {
+                  throw new Refusal(
+                     "an aggregate over a level below the one it aggregates at",
+                  );
+               }
+            } else if (reads.has(0) && deepest(reads) > 0) {
                throw new Refusal(
                   "an aggregate that reads both the source's own fields and the inlined join's",
                );
             } else {
                // Malloy places no aggregate that ignores duplicates (`max`,
                // `min`, a distinct count) at a join: one over the join's
-               // fields alone reads every row, as live's does.
-               level = reads.child ? "child" : "parent";
+               // fields alone is placed at the deepest level it reads, which
+               // reads every row at the leaf, as live's does.
+               const below = [...reads].filter((l) => l > 0);
+               if (new Set(below).size > 1) {
+                  throw new Refusal(
+                     "an aggregate that reads more than one level of the inlined path",
+                  );
+               }
+               level = deepest(reads);
             }
-            visit(level, ctx);
+            visit(level, ctx, n);
             return;
          }
          case "filteredExpr": {
             const kids = (n.kids ?? {}) as { e?: Node; filterList?: unknown };
             let flagged = ctx.flagged;
-            let childFilter = ctx.childFilter;
+            let filterLevel = ctx.filterLevel;
             for (const c of Array.isArray(kids.filterList)
                ? (kids.filterList as Node[])
                : []) {
                const e = (c.e ?? {}) as Node;
-               const p = e.node === "field" ? pathOf(e) : undefined;
-               if (
-                  this.parentRowField !== undefined &&
-                  p?.length === 1 &&
-                  p[0] === this.parentRowField
-               ) {
-                  flagged = true;
+               const flag = this.flagLevel(
+                  e.node === "field" ? pathOf(e) : undefined,
+               );
+               if (flag !== undefined) {
+                  if (flagged !== undefined && flagged !== flag) {
+                     throw new Refusal(
+                        "an aggregate under the row flags of two levels",
+                     );
+                  }
+                  flagged = flag;
                   continue;
                }
-               if (this.readsOf(e, depth + 1).child) childFilter = true;
+               filterLevel = Math.max(
+                  filterLevel,
+                  deepest(this.readsOf(e, depth + 1)),
+               );
             }
             if (!kids.e)
                throw new Refusal("a filtered aggregate with no value");
             this.aggregates(
                kids.e,
-               { ...ctx, flagged, childFilter },
+               { ...ctx, flagged, filterLevel },
                visit,
                depth + 1,
             );
@@ -284,7 +451,14 @@ class Walker {
             }
             // A record field is a value; a measure through another join is
             // an aggregate this walk cannot place.
-            if (p[0] !== this.join) this.throughJoin(p);
+            if (p[0] !== this.join) {
+               if (this.pair.otherRecords?.includes(p[0])) {
+                  throw new Refusal(
+                     `the query reads \`${p[0]}\`, another inlined join_many, which this pair table's rows do not hold`,
+                  );
+               }
+               this.throughJoin(p);
+            }
             return;
          }
          case "function_call": {
@@ -309,17 +483,22 @@ function isAggregateField(f: Field): boolean {
 }
 
 /**
- * For each measure of a source (its compiled fields; `join` is the inlined
- * join_many), the levels its aggregates read, through the measures it reads
- * by name; a measure that cannot be read at all (an ungrouped or windowed
- * aggregate, one through another join, one reading both sides) is absent.
+ * For each measure of a source (its compiled fields; `pair` names the inlined
+ * path, as {@link FlatPair} does but with no flags), the levels its
+ * aggregates read, through the measures it reads by name; a measure that
+ * cannot be read at all (an ungrouped or windowed aggregate, one through
+ * another join, one reading two levels in one aggregate, one above the leaf
+ * filtered by a deeper level) is absent. `pair` may be a join's name, for a
+ * one-hop path.
  */
 export function pairMeasureLevels(
    sourceFields: unknown,
-   join: string,
+   pair: string | Pick<FlatPair, "join" | "hops">,
 ): Map<string, Set<PairLevel>> {
+   const path = typeof pair === "string" ? { join: pair } : pair;
    const fields = fieldsByName(sourceFields);
-   const walker = new Walker(fields, join, undefined);
+   const walker = new Walker(fields, path);
+   const leaf = depthOf(path);
    const out = new Map<string, Set<PairLevel>>();
    for (const [name, f] of fields) {
       if (!isAggregateField(f) || !f.e || typeof f.e !== "object") continue;
@@ -327,13 +506,15 @@ export function pairMeasureLevels(
       try {
          walker.aggregates(
             f.e as Node,
-            { flagged: false, childFilter: false, inAggregate: false },
+            { flagged: undefined, filterLevel: 0, inAggregate: false },
             (level, ctx) => {
                levels.add(level);
-               // A filter reading the child on a parent-level aggregate keeps
-               // the parent on its flagged row alone.
-               if (level === "parent" && ctx.childFilter) {
-                  throw new Refusal("a parent aggregate filtered by the child");
+               // A filter reading a deeper level on an aggregate above the
+               // leaf keeps each of its rows on its flagged row alone.
+               if (level < leaf && ctx.filterLevel > level) {
+                  throw new Refusal(
+                     "an aggregate above the leaf filtered by a deeper level",
+                  );
                }
             },
             0,
@@ -358,11 +539,13 @@ export function flatPairQueryRefusal(
    source: { fields?: unknown; filterList?: unknown } | undefined,
    pair: FlatPair,
    /**
-    * A filter applied to the source outside the query reads the child (a
-    * row-level gate grafted at read, {@link pairConditionReadsChild}): parent
-    * aggregates are then refused as under a source `where:` on the child.
+    * A filter applied to the source outside the query (a row-level gate
+    * grafted at read, {@link pairConditionReads}): the deepest level it reads
+    * (`true` reads the leaf, as a gate through the join did before paths of
+    * more than one hop), so aggregates above it are refused as under a source
+    * `where:` that reads it.
     */
-   childScoped = false,
+   scoped: boolean | number = false,
 ): string | undefined {
    try {
       const fields = fieldsByName(source?.fields);
@@ -376,10 +559,21 @@ export function flatPairQueryRefusal(
          ? (query?.pipeline as Segment[])
          : [];
       if (pipeline.length === 0) throw new Refusal("a query with no stage");
-      const walker = new Walker(fields, pair.join, pair.parentRowField);
-      const sourceFilter =
-         childScoped || filtersReadChild(walker, source?.filterList, 0);
-      checkSegment(walker, fields, pipeline[0], pair, sourceFilter, 0);
+      const walker = new Walker(fields, pair);
+      const scopedLevel =
+         scoped === true ? walker.depth : scoped === false ? 0 : scoped;
+      const sourceFilter = Math.max(
+         scopedLevel,
+         filtersLevel(walker, source?.filterList, 0),
+      );
+      // How deep the whole query reads: a level between the source and the
+      // leaf aggregates as live does only when nothing reads below it.
+      const read = pairQueryReadLevel(query, source, pair);
+      if (read === undefined) {
+         throw new Refusal("the query could not be read");
+      }
+      const reach = Math.max(read, sourceFilter);
+      checkSegment(walker, fields, pipeline[0], pair, sourceFilter, reach, 0);
       return undefined;
    } catch (e) {
       if (e instanceof Refusal) return e.message;
@@ -387,33 +581,38 @@ export function flatPairQueryRefusal(
    }
 }
 
-function filtersReadChild(
+function filtersLevel(
    walker: Walker,
    filterList: unknown,
    depth: number,
-): boolean {
-   let child = false;
+): number {
+   let level = 0;
    for (const c of Array.isArray(filterList) ? (filterList as Node[]) : []) {
       const f = c as Node & { expressionType?: unknown };
       if (f.expressionType !== undefined && f.expressionType !== "scalar") {
          continue;
       }
-      if (walker.readsOf((c.e ?? {}) as Node, depth + 1).child) child = true;
+      level = Math.max(
+         level,
+         deepest(walker.readsOf((c.e ?? {}) as Node, depth + 1)),
+      );
    }
-   return child;
+   return level;
 }
 
 /**
  * One stage of a query (or of a nest in it): every value it groups by, every
  * filter, then every aggregate, under what its enclosing stages group and
- * filter by.
+ * filter by (`scoped`, the deepest level they read). `reach` is the deepest
+ * level the whole query reads.
  */
 function checkSegment(
    outer: Walker,
    sourceFields: Map<string, Field>,
    segment: Segment,
    pair: FlatPair,
-   childScoped: boolean,
+   scoped: number,
+   reach: number,
    depth: number,
 ): void {
    if (depth > MAX_DEPTH) throw new Refusal("a query nests too deep");
@@ -437,13 +636,11 @@ function checkSegment(
    const ext = (segment.extendSource ?? []) as Field[];
    for (const [n, f] of fieldsByName(ext)) local.set(n, f);
    const walker =
-      local.size === sourceFields.size
-         ? outer
-         : new Walker(local, pair.join, pair.parentRowField);
+      local.size === sourceFields.size ? outer : new Walker(local, pair);
    const queryFields = Array.isArray(segment.queryFields)
       ? (segment.queryFields as (Field & { path?: unknown })[])
       : [];
-   let childGrouped = childScoped;
+   let grouped = scoped;
    const aggregates: Node[] = [];
    const nests: Segment[][] = [];
    for (const qf of queryFields) {
@@ -451,8 +648,13 @@ function checkSegment(
          const p = pathOf(qf as Node);
          if (!p) throw new Refusal("a field reference that cannot be read");
          if (p[0] === pair.join) {
-            childGrouped = true;
+            grouped = Math.max(grouped, levelOfNames(p, pair));
             continue;
+         }
+         if (pair.otherRecords?.includes(p[0])) {
+            throw new Refusal(
+               `the query reads \`${p[0]}\`, another inlined join_many, which this pair table's rows do not hold`,
+            );
          }
          if (p.length > 1) walker.throughJoin(p);
          const f = p.length === 1 ? local.get(p[0]) : undefined;
@@ -473,7 +675,7 @@ function checkSegment(
                "a window function, whose value a pair table does not reproduce",
             );
          }
-         if (walker.readsOfPath(p, depth + 1).child) childGrouped = true;
+         grouped = Math.max(grouped, deepest(walker.readsOfPath(p, depth + 1)));
          continue;
       }
       if (qf.type === "turtle") {
@@ -493,39 +695,59 @@ function checkSegment(
          aggregates.push(qf.e as Node);
          continue;
       }
-      if (walker.readsOf(qf.e as Node, depth + 1).child) childGrouped = true;
+      grouped = Math.max(
+         grouped,
+         deepest(walker.readsOf(qf.e as Node, depth + 1)),
+      );
    }
-   let childFiltered = childGrouped;
+   let filtered = grouped;
    for (const c of Array.isArray(segment.filterList)
       ? (segment.filterList as (Node & { expressionType?: unknown })[])
       : []) {
       if (c.expressionType === "aggregate") {
          aggregates.push((c.e ?? {}) as Node);
-      } else if (walker.readsOf((c.e ?? {}) as Node, depth + 1).child) {
-         childFiltered = true;
+      } else {
+         filtered = Math.max(
+            filtered,
+            deepest(walker.readsOf((c.e ?? {}) as Node, depth + 1)),
+         );
       }
    }
+   const leaf = walker.depth;
    for (const a of aggregates) {
       walker.aggregates(
          a,
-         { flagged: false, childFilter: false, inAggregate: false },
-         (level, ctx) => {
-            if (level === "child") {
-               if (ctx.flagged) {
+         { flagged: undefined, filterLevel: 0, inAggregate: false },
+         (level, ctx, aggregate) => {
+            if (level === leaf) {
+               if (ctx.flagged !== undefined) {
                   throw new Refusal(
-                     "an aggregate through the inlined join under the parent-row filter",
+                     "an aggregate through the inlined join under a row flag",
                   );
                }
                return;
             }
-            if (!ctx.flagged) {
+            if (ctx.flagged !== level) {
                throw new Refusal(
-                  "an aggregate over the source's own fields that is not one of its measures, which a pair table stores once per child",
+                  level === 0
+                     ? "an aggregate over the source's own fields that is not one of its measures, which a pair table stores once per child"
+                     : "an aggregate above the inlined path's last join that is not one of the source's measures, which a pair table stores once per row below it",
                );
             }
-            if (childFiltered || ctx.childFilter) {
+            if (Math.max(filtered, ctx.filterLevel) > level) {
                throw new Refusal(
-                  "an aggregate over the source's own fields, grouped or filtered by the inlined join's fields",
+                  level === 0
+                     ? "an aggregate over the source's own fields, grouped or filtered by the inlined join's fields"
+                     : "an aggregate above the inlined path's last join, grouped or filtered by a level below it",
+               );
+            }
+            if (
+               level > 0 &&
+               reach > level &&
+               !besideDeeperExact(pair, level, aggregate)
+            ) {
+               throw new Refusal(
+                  "an aggregate above the inlined path's last join beside fields below it, which live aggregates by that join's key",
                );
             }
          },
@@ -534,8 +756,47 @@ function checkSegment(
    }
    for (const pipeline of nests) {
       if (pipeline.length === 0) throw new Refusal("a nest with no stage");
-      checkSegment(walker, local, pipeline[0], pair, childFiltered, depth + 1);
+      checkSegment(
+         walker,
+         local,
+         pipeline[0],
+         pair,
+         filtered,
+         reach,
+         depth + 1,
+      );
    }
+}
+
+/**
+ * Whether a middle level's aggregate (under its flag, grouped and filtered by
+ * nothing below it) equals live's beside fields below it, where live
+ * aggregates that level symmetrically by its primary key: the level and
+ * every level above it is one whose rows have one parent row each
+ * ({@link FlatPair.oneParentLevels}), so its flag marks one row per row of
+ * the level in any group; and the aggregate is a sum or an average of one of
+ * the level's stored columns (not a computed one), which is null on a
+ * childless row's null-extended row, so it reads nothing there under the
+ * flag or live. A count is not: the flag marks that null row, which live's
+ * count by key skips. Nor is a computed column, which need not be null on
+ * that row, where whether live's symmetric aggregate reads a null key's row
+ * depends on the dialect (DuckDB's hash of a null key is not null).
+ */
+function besideDeeperExact(
+   pair: FlatPair,
+   level: number,
+   aggregate: Node,
+): boolean {
+   const proven = pair.oneParentLevels ?? [];
+   for (let l = 1; l <= level; l++) if (!proven.includes(l)) return false;
+   // The aggregates Malloy places at a join are sums, averages and counts;
+   // a count reads no field (`items.count()`), so the argument check below
+   // refuses it.
+   const arg = (aggregate.e ?? {}) as Node;
+   const path = arg.node === "field" ? pathOf(arg) : undefined;
+   if (!path || path.length !== level + 1) return false;
+   if (levelOfNames(path, pair) !== level) return false;
+   return !(pair.computedFields ?? []).includes(path.join("."));
 }
 
 function pipelineOf(f: Field): Segment[] {
@@ -543,32 +804,37 @@ function pipelineOf(f: Field): Segment[] {
 }
 
 /**
- * Whether a compiled query reads anything through the inlined join: a field,
- * an aggregate, a filter, a group-by or a nest through it, directly or through
- * the definitions it reads by name (a dimension, a measure, a view), in its
- * first stage, a nest's, or the source's own `where:`. Undefined when the query
- * cannot be read (a reference that does not resolve, a node of no known
- * shape): the caller then treats it as not answerable from the pair table.
- * `query` and `source` are as {@link flatPairQueryRefusal} takes them.
+ * The deepest level of the inlined path a compiled query reads: a field, an
+ * aggregate, a filter, a group-by or a nest along it, directly or through the
+ * definitions it reads by name (a dimension, a measure, a view), in its first
+ * stage, a nest's, or the source's own `where:`; 0 when it reads nothing
+ * through the path. Undefined when the query cannot be read (a reference that
+ * does not resolve, a node of no known shape): the caller then treats it as
+ * not answerable from the pair table. `query` and `source` are as
+ * {@link flatPairQueryRefusal} takes them; `pair` may be a join's name, for a
+ * one-hop path. Names alone decide, so it reads a join of that name the same
+ * way it reads a record.
  */
-export function pairQueryReadsChild(
+export function pairQueryReadLevel(
    query: { pipeline?: unknown } | undefined,
    source: { fields?: unknown; filterList?: unknown } | undefined,
-   join: string,
-): boolean | undefined {
+   pair: string | Pick<FlatPair, "join" | "hops">,
+): number | undefined {
+   const path = typeof pair === "string" ? { join: pair } : pair;
    try {
       const fields = fieldsByName(source?.fields);
       const pipeline = Array.isArray(query?.pipeline)
          ? (query?.pipeline as Segment[])
          : [];
       if (pipeline.length === 0) return undefined;
-      const scan = new ChildScan(join);
+      const scan = new LevelScan(path);
+      let level = 0;
       for (const c of Array.isArray(source?.filterList)
          ? (source?.filterList as unknown[])
          : []) {
-         if (scan.value(c, fields, 0)) return true;
+         level = Math.max(level, scan.value(c, fields, 0));
       }
-      return scan.stage(pipeline[0], fields, 0);
+      return Math.max(level, scan.stage(pipeline[0], fields, 0));
    } catch (e) {
       if (e instanceof Refusal) return undefined;
       throw e;
@@ -576,41 +842,75 @@ export function pairQueryReadsChild(
 }
 
 /**
- * Whether a compiled filter condition (a row-level gate's, lifted from its
- * probe) on `source` reads anything through the inlined join. Undefined when
- * it cannot be read; the caller then counts it as reading the child.
+ * Whether a compiled query reads anything through the inlined join (see
+ * {@link pairQueryReadLevel}); undefined when it cannot be read.
+ */
+export function pairQueryReadsChild(
+   query: { pipeline?: unknown } | undefined,
+   source: { fields?: unknown; filterList?: unknown } | undefined,
+   join: string,
+): boolean | undefined {
+   const level = pairQueryReadLevel(query, source, join);
+   return level === undefined ? undefined : level > 0;
+}
+
+/**
+ * What a compiled filter condition (a row-level gate's, lifted from its
+ * probe) on `source` reads of a pair table: the deepest level of the inlined
+ * path, and whether it reads through a join that fans out the pair rows (a
+ * join_many other than the path, or another block's record), which no
+ * aggregate over the flat rows survives. Undefined when it cannot be read;
+ * the caller then counts it as reading through such a join.
+ */
+export function pairConditionReads(
+   condition: unknown,
+   source: { fields?: unknown } | undefined,
+   pair: string | Pick<FlatPair, "join" | "hops" | "otherRecords">,
+): { level: number; fansOut: boolean } | undefined {
+   const path = typeof pair === "string" ? { join: pair } : pair;
+   try {
+      const scan = new LevelScan(path);
+      const level = scan.value(condition, fieldsByName(source?.fields), 0);
+      return { level, fansOut: scan.fansOut };
+   } catch (e) {
+      if (e instanceof Refusal) return undefined;
+      throw e;
+   }
+}
+
+/**
+ * Whether a compiled filter condition on `source` reads anything through the
+ * inlined join; undefined when it cannot be read.
  */
 export function pairConditionReadsChild(
    condition: unknown,
    source: { fields?: unknown } | undefined,
    join: string,
 ): boolean | undefined {
-   try {
-      return new ChildScan(join).value(
-         condition,
-         fieldsByName(source?.fields),
-         0,
-      );
-   } catch (e) {
-      if (e instanceof Refusal) return undefined;
-      throw e;
-   }
+   const reads = pairConditionReads(condition, source, join);
+   return reads === undefined ? undefined : reads.level > 0;
 }
 
 /**
- * The walk behind {@link pairQueryReadsChild}: every node of a stage, each
+ * The walk behind {@link pairQueryReadLevel}: every node of a stage, each
  * field reference resolved by name through its definition, each nest by its
  * first stage. Later stages read the first stage's output, not the source.
+ * It also notes a read through a join that fans out the pair rows
+ * ({@link pairConditionReads}).
  */
-class ChildScan {
+class LevelScan {
    /** Each definition's answer, read once however often it is named. */
-   private readonly resolved = new WeakMap<object, boolean>();
+   private readonly resolved = new WeakMap<object, number>();
    /** The joins whose condition is being read, which read their own fields. */
    private readonly joining = new Set<string>();
+   /** Whether a read went through a join that fans out the pair rows. */
+   fansOut = false;
 
-   constructor(private readonly join: string) {}
+   constructor(
+      private readonly pair: Pick<FlatPair, "join" | "hops" | "otherRecords">,
+   ) {}
 
-   stage(segment: unknown, fields: Map<string, Field>, depth: number): boolean {
+   stage(segment: unknown, fields: Map<string, Field>, depth: number): number {
       if (depth > MAX_DEPTH) throw new Refusal("a query nests too deep");
       if (!segment || typeof segment !== "object") {
          throw new Refusal("a stage that cannot be read");
@@ -618,53 +918,94 @@ class ChildScan {
       const s = segment as Segment;
       const local = new Map(fields);
       for (const [n, f] of fieldsByName(s.extendSource)) local.set(n, f);
+      let level = 0;
       for (const [k, v] of Object.entries(s)) {
          // A stage's own `extend:` is read where the stage names it; its
          // output schema is what it produces, not what it reads.
          if (k === "extendSource" || k === "outputStruct") continue;
-         if (this.value(v, local, depth + 1)) return true;
+         level = Math.max(level, this.value(v, local, depth + 1));
       }
-      return false;
+      return level;
    }
 
-   value(v: unknown, fields: Map<string, Field>, depth: number): boolean {
+   value(v: unknown, fields: Map<string, Field>, depth: number): number {
       if (depth > MAX_DEPTH) throw new Refusal("an expression nests too deep");
       if (Array.isArray(v)) {
-         return v.some((x) => this.value(x, fields, depth + 1));
+         let level = 0;
+         for (const x of v) {
+            level = Math.max(level, this.value(x, fields, depth + 1));
+         }
+         return level;
       }
-      if (!v || typeof v !== "object") return false;
+      if (!v || typeof v !== "object") return 0;
       const n = v as Node & Field & { type?: unknown };
-      if (Array.isArray(n.structPath) && n.structPath[0] === this.join) {
-         return true;
+      let level = 0;
+      if (Array.isArray(n.structPath) && n.structPath.length > 0) {
+         if (n.structPath[0] === this.pair.join) {
+            level = levelOfStruct(n.structPath, this.pair);
+         } else {
+            this.notePath(n.structPath, fields);
+         }
       }
       if (n.node === "field" || n.type === "fieldref") {
          const p = pathOf(n);
          if (!p) throw new Refusal("a field reference that cannot be read");
-         return this.path(p, fields, depth + 1);
+         return Math.max(level, this.path(p, fields, depth + 1));
       }
       if (n.type === "turtle" && n.pipeline !== undefined) {
          const nest = pipelineOf(n);
          if (nest.length === 0) throw new Refusal("a nest with no stage");
-         return this.stage(nest[0], fields, depth + 1);
+         return Math.max(level, this.stage(nest[0], fields, depth + 1));
       }
-      return Object.values(v).some((x) => this.value(x, fields, depth + 1));
+      for (const x of Object.values(v)) {
+         level = Math.max(level, this.value(x, fields, depth + 1));
+      }
+      return level;
+   }
+
+   /**
+    * Note a path through a join that fans out the pair rows: another block's
+    * record at its head, or a join_many or cross join at any step of it,
+    * stepped through from the queried source (a join_many reached through a
+    * join_one fans out as much as one on the source). `p` names joins only,
+    * or ends at a field, which is no join.
+    */
+   private notePath(p: readonly unknown[], fields: Map<string, Field>): void {
+      if (typeof p[0] === "string" && this.pair.otherRecords?.includes(p[0])) {
+         this.fansOut = true;
+         return;
+      }
+      let scope = fields;
+      for (const name of p) {
+         if (typeof name !== "string") return;
+         const f = scope.get(name) as
+            | (Field & { fields?: unknown })
+            | undefined;
+         if (!f) return;
+         if (f.join === "many" || f.join === "cross") {
+            this.fansOut = true;
+            return;
+         }
+         scope = fieldsByName(f.fields);
+      }
    }
 
    private path(
       p: string[],
       fields: Map<string, Field>,
       depth: number,
-   ): boolean {
-      if (p[0] === this.join) return true;
+   ): number {
+      if (p[0] === this.pair.join) return levelOfNames(p, this.pair);
       const f = fields.get(p[0]);
       if (!f) throw new Refusal(`the query reads \`${p[0]}\`, unresolved`);
       if (p.length > 1) {
+         this.notePath(p.slice(0, -1), fields);
          // Through another join: the joined source's own field, reached by
          // that join's condition, which may read the inlined join (its reads
          // of the join's own fields are the join's, not the parent's).
-         if (this.joining.has(p[0])) return false;
+         if (this.joining.has(p[0])) return 0;
          const on = (f as { onExpression?: unknown }).onExpression;
-         if (on === undefined) return false;
+         if (on === undefined) return 0;
          this.joining.add(p[0]);
          try {
             return this.value(on, fields, depth + 1);
@@ -677,7 +1018,7 @@ class ChildScan {
          if (nest.length === 0) throw new Refusal("a view with no stage");
          return this.stage(nest[0], fields, depth + 1);
       }
-      if (f.e === undefined) return false;
+      if (f.e === undefined) return 0;
       const known = this.resolved.get(f);
       if (known !== undefined) return known;
       const reads = this.value(f.e, fields, depth + 1);
@@ -708,18 +1049,18 @@ export function flatPairQueryVerdict(
    source: { fields?: unknown; filterList?: unknown } | undefined,
    pair: FlatPair,
    /** As {@link flatPairQueryRefusal} takes it. */
-   childScoped = false,
+   scoped: boolean | number = false,
 ): FlatPairVerdict {
-   const child = pairQueryReadsChild(query, source, pair.join);
-   if (child === undefined) {
+   const level = pairQueryReadLevel(query, source, pair);
+   if (level === undefined) {
       return {
          kind: "refused",
          reason:
             "the query could not be read to tell whether it reads the inlined join",
       };
    }
-   if (!child) return { kind: "parent_only" };
-   const reason = flatPairQueryRefusal(query, source, pair, childScoped);
+   if (level === 0) return { kind: "parent_only" };
+   const reason = flatPairQueryRefusal(query, source, pair, scoped);
    return reason === undefined
       ? { kind: "served" }
       : { kind: "refused", reason };

@@ -37,6 +37,7 @@ import type {
 import {
    getMaterializeEnabled,
    getMaterializeGatedSources,
+   getV1ServedCopyMode,
    getPersistStorageMode,
 } from "../config";
 import type { GraftScope } from "./gate_classification";
@@ -70,7 +71,6 @@ import {
    RollupSkip,
    type RollupVariantServe,
 } from "./materialization/serve/rollup_variants";
-import { rollupsReadUnderGates } from "./materialization/plan/rollup_plan";
 import {
    type PersistedViewServe,
    type ViewTable,
@@ -138,7 +138,38 @@ export type RoutedExtra =
         virtualMap?: VirtualMap;
         /** A `#(preaggregate) storage=` rollup: its binding. */
         binding?: ServeBinding;
+        /**
+         * Every stored table the answer reads, when that is more than the
+         * rollup's (a join leg answered in a storage destination reads the
+         * query source's table there too): together they decide whether a
+         * failed run may be retried live.
+         */
+        bindings?: ServeBinding[];
+        /**
+         * A `#(preaggregate)` rollup's graft scope, for `govern()` (R3): the
+         * variant that redeclares the run target over the rollup, gates
+         * included. Absent for a v1 `#@ preaggregate` rollup, which no gated
+         * entry point reaches.
+         */
+        graftScope?: GraftScope;
+        /** Set when the v1 `#@ preaggregate` composite answered. */
+        v1Composite?: true;
      };
+
+/**
+ * Whether a served-copy answer reads stored tables, every one of them
+ * colocated (the source's own warehouse): the v1 cutover's contracts at read
+ * (G3) apply to it. A `storage=` table waits for the managed-tier review
+ * (`materialize.gatedSources`), so an answer reading one, or none, does not.
+ */
+export function readsOnlyColocatedTables(extra: RoutedExtra): boolean {
+   return (
+      extra.kind === "storage" &&
+      extra.via === "served_copy" &&
+      extra.tablesRead.length > 0 &&
+      extra.tablesRead.every((b) => b.colocated === true)
+   );
+}
 
 /**
  * One query's serving, as the router decided it and the run carried it out.
@@ -162,7 +193,7 @@ export interface Answer {
    readonly storageTablesRead: readonly ServeBinding[] | undefined;
    /** For a storage answer: `served_copy` when the served copy on `virtual` answered rather than the serve shape. */
    readonly via: "served_copy" | undefined;
-   /** For a served-copy answer: where `govern()` grafts a row-level gate (R3). */
+   /** For a served-copy, persisted-view or rollup answer: where `govern()` grafts a row-level gate (R3). */
    readonly graftScope: GraftScope | undefined;
    /**
     * The answering variant was let past an entry-point gate because it keeps
@@ -175,6 +206,8 @@ export interface Answer {
    readonly runFailed: boolean;
    /** The colocated manifest entries the answering run read. */
    readonly colocatedRead: ReadonlySet<string>;
+   /** A rollup answer from the v1 `#@ preaggregate` composite. */
+   readonly v1Composite: boolean;
 }
 
 /** The answer before routing, and when nothing could route. */
@@ -192,6 +225,7 @@ export const LIVE_ANSWER: Answer = Object.freeze({
    viewTable: undefined,
    runFailed: false,
    colocatedRead: new Set<string>(),
+   v1Composite: false,
 });
 
 /** The answer the router's decision describes, before anything runs. */
@@ -236,18 +270,35 @@ export function routedAnswer(route: RouteDecision<RoutedExtra>): Answer {
       tier: "rollup",
       routedRunnable: route.runnable,
       rollupMember: route.extra.resolvedMember,
+      v1Composite: route.extra.v1Composite === true,
+      graftScope: route.extra.graftScope,
       // A stored rollup reads through `virtual()`; a run failure on it may
       // degrade to live, since a rollup only accelerates (its binding's
       // `preaggregate` origin never vetoes).
       ...(route.extra.virtualMap
          ? {
               virtualMap: route.extra.virtualMap,
-              serveShapeBindings: route.extra.binding
-                 ? [route.extra.binding]
-                 : [],
+              serveShapeBindings:
+                 route.extra.bindings ??
+                 (route.extra.binding ? [route.extra.binding] : []),
            }
          : {}),
    });
+}
+
+/**
+ * Whether a path the v1 cutover retires answered: the storage serve shape,
+ * the v1 `#@ preaggregate` composite, or Malloy's build manifest on the live
+ * compile (a colocated `#@ persist` table). Under `shadow`, these answers are
+ * compared with the cutover's.
+ */
+export function answeredByV1Path(answer: Answer): boolean {
+   if (answer.runFailed) return false;
+   return (
+      (answer.tier === "storage" && answer.via === undefined) ||
+      answer.v1Composite ||
+      answer.colocatedRead.size > 0
+   );
 }
 
 /** The same answer after its storage run failed and the live retry ran. */
@@ -270,6 +321,17 @@ export function answeredWith(
  */
 export function servedFromOf(answer: Answer): ServedFrom | undefined {
    if (answer.runFailed) return "live_fallback";
+   // A served-copy answer that read only colocated `#(materialize)` tables
+   // read the source's own warehouse, as a colocated `#@ persist` answer
+   // does, which reports no storage hit; its path report names the table.
+   if (
+      answer.tier === "storage" &&
+      answer.storageTablesRead !== undefined &&
+      answer.storageTablesRead.length > 0 &&
+      answer.storageTablesRead.every((b) => b.colocated)
+   ) {
+      return undefined;
+   }
    // A `storage=` persisted view or `#(preaggregate)` rollup reads the
    // storage tier too, through `virtual()`.
    return answer.tier === "storage" ||
@@ -491,6 +553,13 @@ export function routeCandidates(
       buildManifest: BuildManifest | undefined;
       storageRoutingPossible: boolean;
       servedCopyPossible: boolean;
+      /**
+       * The v1 cutover's contracts at read for colocated tables (G3): the
+       * served copy goes past an entry-point gate when every table it reads
+       * is colocated, even with `materialize.gatedSources` off, since a
+       * colocated table never leaves the author's warehouse.
+       */
+      colocatedKeepsContracts?: boolean;
       preaggServeMaterializer: ModelMaterializer | undefined;
       /**
        * The caller's own compile, for the `#(preaggregate)` leg; absent when
@@ -569,10 +638,12 @@ export function routeCandidates(
       candidates.push({
          kind: "rollup",
          applicable: true,
-         // Not yet past an entry-point gate (CONTRACT, known limitation 1):
-         // the one switch the planner also reads, so a rollup over a gated
-         // source is neither built nor read until it flips.
-         keepsContracts: rollupsReadUnderGates(),
+         // R3 for rollups, behind the served copy's switch: the run target is
+         // redeclared over the rollup with its gates, proven exact on the
+         // rollup before it is used (RollupVariantServe), then grafted and
+         // re-proven by `govern()`. A `storage=` rollup over a gated base
+         // waits for question 14's review (rollupsServeGatedBases).
+         keepsContracts: getMaterializeGatedSources(),
          attempt: async () => {
             const answer = await host.rollupVariants.attempt({
                queryString,
@@ -585,10 +656,14 @@ export function routeCandidates(
                extra: {
                   kind: "rollup",
                   resolvedMember: answer.rollupSourceName,
+                  ...(answer.graftScope
+                     ? { graftScope: answer.graftScope }
+                     : {}),
                   ...(answer.virtualMap
                      ? { virtualMap: answer.virtualMap }
                      : {}),
                   ...(answer.binding ? { binding: answer.binding } : {}),
+                  ...(answer.bindings ? { bindings: answer.bindings } : {}),
                },
             };
          },
@@ -608,12 +683,21 @@ export function routeCandidates(
    // files with each stored source re-rooted on its table. Tried first when
    // enabled; a query it cannot answer falls through to the serve shape.
    if (servedCopyPossible) {
+      const gatedSources = getMaterializeGatedSources();
       candidates.push({
          kind: "served",
          applicable: true,
          // R3, behind its own switch until the managed-tier review (plan,
          // question 14): a row-level gate is grafted on the served copy.
-         keepsContracts: getMaterializeGatedSources(),
+         // Under the v1 cutover, also for an answer reading only colocated
+         // tables (decided per answer, below).
+         keepsContracts: gatedSources || !!args.colocatedKeepsContracts,
+         ...(gatedSources || !args.colocatedKeepsContracts
+            ? {}
+            : {
+                 keepsContractsFor: (extra: RoutedExtra) =>
+                    readsOnlyColocatedTables(extra),
+              }),
          attempt: async () => {
             const served = await host.servedCopy.loadQuery(
                queryString,
@@ -773,6 +857,7 @@ export function routeCandidates(
                runnable: candidate,
                extra: {
                   kind: "rollup",
+                  v1Composite: true,
                   ...(typeof resolvedMember === "string"
                      ? { resolvedMember }
                      : {}),
@@ -836,10 +921,11 @@ export async function queryPathFor(
       });
       const catalog = host.materializedTables();
       const plans = host.rollupPlans();
-      // The `#(preaggregate)` leg exists only with the switch on; off, its
-      // plans are never read.
+      // The rollup leg exists only with the materialize switch or the v1
+      // cutover on; off, its plans are never read.
       const variantRollups =
-         getMaterializeEnabled() && host.rollupVariants.hasRollups()
+         (getMaterializeEnabled() || getV1ServedCopyMode() === "on") &&
+         host.rollupVariants.hasRollups()
             ? host.rollupVariants.rollups()
             : [];
       // The persisted view the query calls, if any: its table is the first
@@ -878,6 +964,7 @@ export async function queryPathFor(
          origin: b.origin,
          tablePath: b.tablePath,
          freshAsOf: b.freshAsOf,
+         ...(b.colocated ? { colocated: true as const } : {}),
       });
       const published = args.includeHidden ? undefined : host.publishedNames();
       return buildQueryPath({
@@ -916,6 +1003,13 @@ export async function queryPathFor(
          storageWarned: getPersistStorageMode() !== "on",
          considered: answer.considered,
          storageTablesRead: answer.storageTablesRead?.map(toTable),
+         ...(answer.tier === "rollup"
+            ? {
+                 rollupTablesRead: answer.serveShapeBindings
+                    .filter((b) => b.origin !== "preaggregate")
+                    .map(toTable),
+              }
+            : {}),
          ...(answer.via ? { via: answer.via } : {}),
          servedCopyTables: new Set(
             host.servedCopy.materializeBindings().map((b) => b.tablePath),

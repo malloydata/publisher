@@ -1,0 +1,498 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "orders",
+        "tier": "storage"
+      },
+      {
+        "name": "wide",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "orders:serves",
+      "wide:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "filtered",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "secret_total"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [
+          "GROUPS"
+        ],
+        "gates": {
+          "accessFilter": [
+            "region in $GROUPS"
+          ],
+          "authorize": []
+        },
+        "givenNames": [
+          "GROUPS"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "f213e2851b51f9e2",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "secret_total",
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "givens": [
+        "GROUPS"
+      ],
+      "malloy": "run: orders -> { group_by: region; aggregate: total, n, secret_total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total",
+            "n",
+            "secret_total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a private dimension's measure under a row filter",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "filtered",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "north"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [
+          "GROUPS"
+        ],
+        "gates": {
+          "accessFilter": [
+            "region in $GROUPS"
+          ],
+          "authorize": []
+        },
+        "givenNames": [
+          "GROUPS"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "north"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "95296e3e65b35709",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "givens": [
+        "GROUPS"
+      ],
+      "malloy": "run: orders -> { group_by: north; aggregate: n }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "north"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an internal dimension",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {},
+      "error": "line 1:26 'customer_id' is internal",
+      "givens": [
+        "GROUPS"
+      ],
+      "malloy": "run: orders -> { select: customer_id; order_by: 1 }",
+      "query": "an internal raw column",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "amt"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "abee2bf9e13c07dd",
+          "kind": "reduce",
+          "measures": [
+            "amt"
+          ],
+          "source": "wide",
+          "stages": 1
+        },
+        "source": "wide"
+      },
+      "equalToLive": true,
+      "malloy": "run: wide -> { group_by: status; aggregate: amt }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "amt"
+          ],
+          "sourceName": "wide"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a measure over a private column",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "filtered",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "secret_total"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [
+          "GROUPS"
+        ],
+        "gates": {
+          "accessFilter": [
+            "region in $GROUPS"
+          ],
+          "authorize": []
+        },
+        "givenNames": [
+          "GROUPS"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "f213e2851b51f9e2",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "secret_total",
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "givens": [
+        "GROUPS"
+      ],
+      "malloy": "run: orders -> { group_by: region; aggregate: total, n, secret_total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "c215bd26b05cb26ff0cc5d7d83a4ed555895a01a0516d9ce4abfe890ba3be71c"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total",
+            "n",
+            "secret_total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "c215bd26b05cb26ff0cc5d7d83a4ed555895a01a0516d9ce4abfe890ba3be71c",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a private dimension's measure under a row filter",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "filtered",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "north"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [
+          "GROUPS"
+        ],
+        "gates": {
+          "accessFilter": [
+            "region in $GROUPS"
+          ],
+          "authorize": []
+        },
+        "givenNames": [
+          "GROUPS"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "north"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "95296e3e65b35709",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "givens": [
+        "GROUPS"
+      ],
+      "malloy": "run: orders -> { group_by: north; aggregate: n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "c215bd26b05cb26ff0cc5d7d83a4ed555895a01a0516d9ce4abfe890ba3be71c"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "north"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "c215bd26b05cb26ff0cc5d7d83a4ed555895a01a0516d9ce4abfe890ba3be71c",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "an internal dimension",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {},
+      "error": "line 1:26 'customer_id' is internal",
+      "givens": [
+        "GROUPS"
+      ],
+      "malloy": "run: orders -> { select: customer_id; order_by: 1 }",
+      "query": "an internal raw column",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "amt"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "abee2bf9e13c07dd",
+          "kind": "reduce",
+          "measures": [
+            "amt"
+          ],
+          "source": "wide",
+          "stages": 1
+        },
+        "source": "wide"
+      },
+      "equalToLive": true,
+      "malloy": "run: wide -> { group_by: status; aggregate: amt }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "2f6d3e57f13e9e62faf8122e60768b040c87df9c415fd3890f48c5d3915609ce"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "amt"
+          ],
+          "sourceName": "wide"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "2f6d3e57f13e9e62faf8122e60768b040c87df9c415fd3890f48c5d3915609ce",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a measure over a private column",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

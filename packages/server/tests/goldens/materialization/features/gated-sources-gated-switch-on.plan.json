@@ -1,0 +1,578 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "gated_mat@<pkg>/m.malloy": [],
+          "locked_mat@<pkg>/m.malloy": []
+        },
+        "order": [
+          "gated_mat@<pkg>/m.malloy",
+          "locked_mat@<pkg>/m.malloy"
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": [],
+          "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": []
+        },
+        "order": [
+          "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy",
+          "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "gated_mat@<pkg>/m.malloy": {
+        "buildSourceName": "gated_mat__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "gated_mat",
+          "storage": "lake"
+        },
+        "sourceID": "gated_mat@<pkg>/m.malloy",
+        "sourceName": "gated_mat",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "locked_mat@<pkg>/m.malloy": {
+        "buildSourceName": "locked_mat__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "locked_mat",
+          "storage": "lake"
+        },
+        "sourceID": "locked_mat@<pkg>/m.malloy",
+        "sourceName": "locked_mat",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {
+      "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "by_column",
+        "baseGated": true,
+        "baseSourceID": "by_column@<pkg>/m.malloy",
+        "baseSourceName": "by_column",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "region",
+          "status"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "total",
+            "partialName": "total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "total__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "total",
+            "partials": [
+              {
+                "column": "total__partial",
+                "leaf": {
+                  "aggregate": "sum",
+                  "expr": {
+                    "args": [],
+                    "fn": "sum",
+                    "kind": "method",
+                    "path": [
+                      "amount"
+                    ]
+                  },
+                  "joinPath": [],
+                  "reads": [
+                    [
+                      "amount"
+                    ]
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "by_column__rollup__region_status__5f704d70",
+        "variant": true
+      },
+      "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "by_lock",
+        "baseGated": true,
+        "baseSourceID": "by_lock@<pkg>/m.malloy",
+        "baseSourceName": "by_lock",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "status"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "total",
+            "partialName": "total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "total__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "total",
+            "partials": [
+              {
+                "column": "total__partial",
+                "leaf": {
+                  "aggregate": "sum",
+                  "expr": {
+                    "args": [],
+                    "fn": "sum",
+                    "kind": "method",
+                    "path": [
+                      "amount"
+                    ]
+                  },
+                  "joinPath": [],
+                  "reads": [
+                    [
+                      "amount"
+                    ]
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "by_lock__rollup__status__eb4380b4",
+        "variant": true
+      }
+    },
+    "sourceGateOutcomes": {
+      "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "rejected"
+      },
+      "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "rejected"
+      },
+      "gated_mat@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "locked_mat@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": "m.malloy",
+      "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": "m.malloy",
+      "gated_mat@<pkg>/m.malloy": "m.malloy",
+      "locked_mat@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "gated_mat@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "locked_mat@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": {
+        "annotationFields": {},
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "by_column__rollup__region_status__5f704d70",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "by_column",
+          "grainDimensions": [
+            "region",
+            "status"
+          ],
+          "measures": [
+            "total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60",
+        "sourceID": "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy",
+        "sql": "sha256:ae685f4462c80fbb"
+      },
+      "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": {
+        "annotationFields": {},
+        "columns": [
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "by_lock__rollup__status__eb4380b4",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "by_lock",
+          "grainDimensions": [
+            "status"
+          ],
+          "measures": [
+            "total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20",
+        "sourceID": "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy",
+        "sql": "sha256:7409a02ee325a1aa"
+      },
+      "gated_mat@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "gated_mat",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "gated_mat",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+        "sourceID": "gated_mat@<pkg>/m.malloy",
+        "sql": "sha256:d7205aaa5763e7e3"
+      },
+      "locked_mat@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "locked_mat",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "locked_mat",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+        "sourceID": "locked_mat@<pkg>/m.malloy",
+        "sql": "sha256:d7205aaa5763e7e3"
+      }
+    }
+  }
+}

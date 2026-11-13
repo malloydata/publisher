@@ -131,6 +131,32 @@ describe("routeQuery", () => {
       }
    });
 
+   it("narrows keeping the contracts per answer: an answer the candidate does not keep them for is skipped past an entry-point gate", async () => {
+      const narrowed = (keeps: boolean) => ({
+         ...variant("served", "answers", []),
+         keepsContracts: true,
+         keepsContractsFor: (extra: string) =>
+            keeps && extra === "served-extra",
+      });
+      const skipped = await routeQuery(
+         [narrowed(false), variant("rollup", "answers", [])],
+         async () => "entry_point",
+      );
+      expect(skipped.served).toBe("live");
+      expect(skipped.considered).toEqual([
+         { kind: "served", outcome: "skipped", reason: "row_level_gate" },
+         { kind: "rollup", outcome: "skipped", reason: "row_level_gate" },
+      ]);
+      const kept = await routeQuery(
+         [narrowed(true)],
+         async () => "entry_point",
+      );
+      expect(kept.served === "variant" && kept.pastEntryPointGate).toBe(true);
+      // Ungated, the narrowing is never asked: every answer is used.
+      const ungated = await routeQuery([narrowed(false)], async () => false);
+      expect(ungated.served).toBe("variant");
+   });
+
    it("marks an answer let past an entry-point gate, so governing it re-proves the gate", async () => {
       const served = {
          ...variant("served", "answers", []),

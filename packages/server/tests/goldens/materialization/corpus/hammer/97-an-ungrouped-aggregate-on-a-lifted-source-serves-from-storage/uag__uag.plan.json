@@ -1,0 +1,116 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/uag/uag.malloy": [],
+          "shares@<hammer>/uag/uag.malloy": []
+        },
+        "order": [
+          "daily@<hammer>/uag/uag.malloy",
+          "shares@<hammer>/uag/uag.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/uag/uag.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "shares@<hammer>/uag/uag.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/uag/uag.malloy": "uag.malloy",
+      "shares@<hammer>/uag/uag.malloy": "uag.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/uag/uag.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "shares@<hammer>/uag/uag.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/uag/uag.malloy": {
+        "annotationFields": {
+          "name": "uag_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "uag.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "0b24a07d9e9b13815d748b6717a3aa1477876823bbe8f801afa6f706e6a9e233",
+        "sourceID": "daily@<hammer>/uag/uag.malloy",
+        "sql": "sha256:d2dfc346e7b2873f"
+      },
+      "shares@<hammer>/uag/uag.malloy": {
+        "annotationFields": {
+          "name": "uag_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "uag.malloy",
+        "name": "shares",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "0b24a07d9e9b13815d748b6717a3aa1477876823bbe8f801afa6f706e6a9e233",
+        "sourceID": "shares@<hammer>/uag/uag.malloy",
+        "sql": "sha256:d2dfc346e7b2873f"
+      }
+    }
+  }
+}

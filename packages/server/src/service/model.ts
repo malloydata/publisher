@@ -15,10 +15,19 @@ import {
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { DataStyles } from "@malloydata/render";
-import { lazyCounter, lazyHistogram, withSpan } from "../telemetry";
-import { recordStorageServeRouting } from "../materialization_metrics";
+import {
+   lazyCounter,
+   lazyHistogram,
+   withoutMetrics,
+   withSpan,
+} from "../telemetry";
+import {
+   recordStorageServeRouting,
+   recordV1ServedCopyShadow,
+} from "../materialization_metrics";
 import { recordVariantRouting, routeQuery } from "./query_router";
 import {
+   answeredByV1Path,
    answeredWith,
    type Answer,
    buildManifestFor,
@@ -60,8 +69,14 @@ import {
    NotQueryableError,
    OffSurfaceError,
    PayloadTooLargeError,
+   errorKind,
 } from "../errors";
-import { getMaterializeEnabled, getPersistStorageMode } from "../config";
+import {
+   getMaterializeEnabled,
+   getPersistStorageMode,
+   getV1ServedCopyMode,
+   type V1ServedCopyMode,
+} from "../config";
 import { keyedOverlay } from "./overlay_key";
 import {
    compiledFileText,
@@ -78,6 +93,7 @@ import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
 import {
    accessPathOf,
+   shadowRunAudit,
    summarizeQueryAccess,
    type QueryAudit,
 } from "./access_record";
@@ -231,6 +247,11 @@ import {
 } from "./materialization/serve/served_copy_serve";
 import { type ApiQueryPath } from "./materialization/serve/query_path";
 import { PersistedViewServe } from "./materialization/serve/view_variants";
+import {
+   shadowBudgetMs,
+   shadowOutcome,
+   ShadowScheduler,
+} from "./materialization/serve/v1_shadow";
 import { sourceChain } from "./materialization/plan/source_map";
 import type { ViewServeVerdict } from "./materialization/serve/serve_verdict";
 
@@ -439,11 +460,20 @@ export class Model {
       serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
       catalog: () => this.policy.materializedTables(),
    });
-   private servedCopy = new ServedCopyServe({
-      modelPath: () => this.modelPath,
-      modelDef: () => this.modelDef,
-      serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
-   });
+   private servedCopy = this.newServedCopy();
+   /**
+    * Under `PUBLISHER_V1_SERVED_COPY=shadow` only: the served copy as the v1
+    * cutover would compile it (the v1 colocated tables re-rooted, and v1
+    * columns an older build typed cast on read), for the shadow comparison.
+    * Created at the first bind; undefined in every other mode.
+    */
+   private shadowServedCopy: ServedCopyServe | undefined;
+   /** What {@link setServedCopyContext} last set, for a shadow copy made later. */
+   private servedCopyContext:
+      | Parameters<ServedCopyServe["setContext"]>
+      | undefined;
+   /** The shadow comparisons this model starts (see scheduleShadowCompare). */
+   private shadowScheduler = new ShadowScheduler();
    /**
     * The `#(preaggregate)` rollup leg (materialization v2, phase 4): a router
     * candidate only when `materialize.enabled` is on and a source this model
@@ -454,6 +484,12 @@ export class Model {
       modelDef: () => this.modelDef,
       serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
       catalog: () => this.policy.materializedTables(),
+      // A joined source's `storage=` rollup is read through a join only from
+      // a query source the served copy reads in the same destination.
+      joinRollupBasis: async () =>
+         this.servedCopyEnabled()
+            ? this.servedCopy.joinRollupBasis()
+            : undefined,
    });
    /**
     * The synthesized pre-aggregation model for this model, compiled once per load
@@ -2440,6 +2476,12 @@ export class Model {
          this.modelDef.contents as Record<string, unknown>,
       );
       this.preaggregatePlansVersion += 1;
+      // Under the v1 cutover nothing routes to the composite (G4), so it is
+      // not compiled.
+      if (getV1ServedCopyMode() === "on") {
+         this.preparedPreaggregateCompanion = undefined;
+         return;
+      }
       // The first build after hydration loads the worker-compiled companion
       // (the manifest is read only at prepare time, so this is equivalent).
       // Taken once; later rebuilds compile here.
@@ -2803,10 +2845,30 @@ export class Model {
       }
    }
 
+   /**
+    * A served copy reading this model's state (one per mode it serves in):
+    * the model's own, with the v1 cutover's per-column types under `on`, or
+    * the shadow comparison's, with them always (`cutover`).
+    */
+   private newServedCopy(cutover = false): ServedCopyServe {
+      return new ServedCopyServe({
+         perColumnTypes: () => cutover || getV1ServedCopyMode() === "on",
+         modelPath: () => this.modelPath,
+         modelDef: () => this.modelDef,
+         // Storage tables only while the storage tier serves; colocated tables
+         // (on the source's own connection) need no destination.
+         serveDestinationConfig: () =>
+            getPersistStorageMode() === "on"
+               ? this.storageServe.serveDestinationConfig
+               : undefined,
+      });
+   }
+
    /** See {@link StorageServeShape.setServeDestinationConfig}. */
    public setServeDestinationConfig(provider: () => MalloyConfig): void {
       this.storageServe.setServeDestinationConfig(provider);
       this.servedCopy.invalidate();
+      this.shadowServedCopy?.invalidate();
       this.rollupVariants.invalidate();
       this.persistedViews.invalidate();
    }
@@ -2822,12 +2884,14 @@ export class Model {
       declarationOf?: (sourceID: string) => unknown,
    ): void {
       this.materializeSourceIDs = new Set(Object.keys(materializePlans));
-      this.servedCopy.setContext(
+      this.servedCopyContext = [
          packagePath,
          malloyConfig,
          materializePlans,
          declarationOf,
-      );
+      ];
+      this.servedCopy.setContext(...this.servedCopyContext);
+      this.shadowServedCopy?.setContext(...this.servedCopyContext);
       this.persistedViews.setContext(packagePath, malloyConfig);
       this.rollupVariants.setContext(packagePath, malloyConfig);
    }
@@ -2867,28 +2931,46 @@ export class Model {
 
    /**
     * Whether the router may try the served copy: a model file, with the
-    * materialize switch and the storage tier both on. Warnings and the compile at bind follow the
-    * same rule, so a package never warns about a copy that is not routed.
+    * materialize switch on or the v1 cutover on (`mode`, by default the
+    * configured one; a shadow comparison asks for `on`). It reads a colocated
+    * table on the source's own connection, and a storage table only while
+    * `PERSIST_STORAGE_MODE=on` (its host withholds the destinations
+    * otherwise). Warnings and the compile at bind follow the same rule, so a
+    * package never warns about a copy that is not routed.
     */
-   private servedCopyEnabled(): boolean {
+   private servedCopyEnabled(
+      mode: V1ServedCopyMode = getV1ServedCopyMode(),
+   ): boolean {
       // A notebook or report is not a model file the served copy can load.
       return (
          this.modelType === "model" &&
          !this.isNotebook() &&
-         getMaterializeEnabled() &&
-         getPersistStorageMode() === "on"
+         (getMaterializeEnabled() || mode === "on")
       );
+   }
+
+   /**
+    * The served copy a run in `mode` reads: the shadow copy for a shadow
+    * comparison while one exists, else the model's own.
+    */
+   private servedCopyFor(mode: V1ServedCopyMode): ServedCopyServe {
+      return mode === "on"
+         ? (this.shadowServedCopy ?? this.servedCopy)
+         : this.servedCopy;
    }
 
    /**
     * Whether the router may try the `#(preaggregate)` rollup leg: a model file,
     * the materialize switch on, and a rollup declared on a source it sees.
     */
-   private rollupVariantsEnabled(): boolean {
+   private rollupVariantsEnabled(
+      mode: V1ServedCopyMode = getV1ServedCopyMode(),
+   ): boolean {
       return (
          this.modelType === "model" &&
          !this.isNotebook() &&
-         getMaterializeEnabled() &&
+         // The v1 cutover reads v1 `#@ preaggregate` rollups here too (G4).
+         (getMaterializeEnabled() || mode === "on") &&
          this.rollupVariants.hasRollups()
       );
    }
@@ -2927,6 +3009,7 @@ export class Model {
    public invalidateServeShapeCache(): void {
       this.storageServe.invalidateServeShapeCache();
       this.servedCopy.invalidate();
+      this.shadowServedCopy?.invalidate();
       this.rollupVariants.invalidate();
       this.persistedViews.invalidate();
    }
@@ -2942,10 +3025,17 @@ export class Model {
       // their own legs read them.
       const views = this.persistedViews.buildSourceIDs();
       const rollups = this.rollupVariants.buildSourceIDs(bindings);
+      // A colocated `#(materialize)` table is read on its own connection by
+      // the served copy alone; no other leg reads one.
+      const colocated = bindings.filter((b) => b.colocated);
+      const stored =
+         colocated.length === 0
+            ? bindings
+            : bindings.filter((b) => !b.colocated);
       const others =
          views.size === 0 && rollups.size === 0
-            ? bindings
-            : bindings.filter(
+            ? stored
+            : stored.filter(
                  (b) =>
                     !(b.sourceIDs ?? []).some(
                        (id) => views.has(id) || rollups.has(id),
@@ -2958,9 +3048,32 @@ export class Model {
                  (b) => !(b.sourceIDs ?? []).some((id) => materialized.has(id)),
               ),
       );
-      this.servedCopy.setBindings(others);
-      this.rollupVariants.setBindings(bindings);
-      this.persistedViews.setBindings(bindings);
+      // A v1 colocated `#@ persist` table (no `#(materialize)` plan) is bound
+      // only with the v1 cutover past `off` (package_materialization.ts). It
+      // joins the served copy only under `on`; under `shadow` the model's own
+      // copy stays as today's and a second copy carries it (with the
+      // cutover's per-column types), for the comparison alone.
+      const mode = getV1ServedCopyMode();
+      const isV1 = (b: ServeBinding) =>
+         !(b.sourceIDs ?? []).some((id) => materialized.has(id));
+      const today =
+         mode === "on" ? colocated : colocated.filter((b) => !isV1(b));
+      this.servedCopy.setBindings(
+         today.length === 0 ? others : [...others, ...today],
+      );
+      if (mode === "shadow") {
+         if (!this.shadowServedCopy) {
+            this.shadowServedCopy = this.newServedCopy(true);
+            if (this.servedCopyContext) {
+               this.shadowServedCopy.setContext(...this.servedCopyContext);
+            }
+         }
+         this.shadowServedCopy.setBindings([...others, ...colocated]);
+      } else {
+         this.shadowServedCopy = undefined;
+      }
+      this.rollupVariants.setBindings(stored);
+      this.persistedViews.setBindings(stored);
    }
 
    /** See {@link StorageServeShape.storedColumnTypeMismatches}. */
@@ -3004,6 +3117,54 @@ export class Model {
     * virtual source declares its columns. Empty when no destination is
     * configured, since then nothing serves from storage either way.
     */
+   /**
+    * The v1 cutover's preview (dry run): the sources this model's served copy
+    * would re-root over `bindings` (declared from the plan's output columns,
+    * so no table is read), and why it leaves the others as written. Compiled
+    * in a served copy of its own, with the cutover's per-column types, and
+    * discarded. Undefined when this model has no served copy to compile.
+    */
+   public async previewServedCopy(bindings: ServeBinding[]): Promise<
+      | {
+           rerooted: ReadonlySet<string>;
+           throughBase: ReadonlySet<string>;
+           gateDeclined: ReadonlySet<string>;
+           problems: readonly ServedCopyProblem[];
+        }
+      | undefined
+   > {
+      if (
+         this.modelType !== "model" ||
+         this.isNotebook() ||
+         !this.modelDef ||
+         !this.servedCopyContext ||
+         bindings.length === 0
+      ) {
+         return undefined;
+      }
+      const destinations = this.storageServe.serveDestinationConfig;
+      const copy = new ServedCopyServe({
+         modelPath: () => this.modelPath,
+         modelDef: () => this.modelDef,
+         perColumnTypes: () => true,
+         // Compile-only, as the view preview: a destination's catalog need
+         // not exist before the first build.
+         serveDestinationConfig: () =>
+            destinations && getPersistStorageMode() === "on"
+               ? () => compileOnlyDestinationConfig(destinations())
+               : undefined,
+      });
+      copy.setContext(...this.servedCopyContext);
+      copy.setBindings(bindings);
+      await copy.prepare();
+      return {
+         rerooted: copy.rerootedSourceIDs() ?? new Set<string>(),
+         throughBase: copy.servedThroughBaseSourceIDs(),
+         gateDeclined: copy.gateDeclinedSourceIDs(),
+         problems: copy.problems(),
+      };
+   }
+
    public async previewStorageViews(
       bindings: ServeBinding[],
    ): Promise<Map<string, ViewServeVerdict[]>> {
@@ -3122,7 +3283,20 @@ export class Model {
       audit: QueryAudit,
       request: QueryRequest,
       privileges: QueryPrivileges,
+      /**
+       * `v1Mode`: how v1 tables serve for this run (default the configured
+       * `PUBLISHER_V1_SERVED_COPY`); `shadowRun`: this run is a shadow
+       * comparison (see shadowCompare, which runs it with no metrics), so it
+       * schedules no comparison of its own.
+       */
+      options: { v1Mode?: V1ServedCopyMode; shadowRun?: boolean } = {},
    ): Promise<ModelQueryResults> {
+      const v1Mode = options.v1Mode ?? getV1ServedCopyMode();
+      // The v1 cutover: no storage serve shape and no build manifest on the
+      // live compile, so a stored table is read only by a candidate that
+      // reports it in the path report.
+      const cutover = v1Mode === "on";
+      const servedCopy = this.servedCopyFor(v1Mode);
       const {
          sourceName,
          queryName,
@@ -3170,9 +3344,11 @@ export class Model {
       const viewBuildManifest = this.withoutPreaggregateEntries(buildManifest);
       // Without persisted-view entries too: only the view leg's variant
       // imports a view's build source (it carries the persistence flag).
-      const liveBuildManifest = this.manifestIfPersistent(
-         this.withoutPersistedViewEntries(viewBuildManifest),
-      );
+      const liveBuildManifest = cutover
+         ? undefined
+         : this.manifestIfPersistent(
+              this.withoutPersistedViewEntries(viewBuildManifest),
+           );
       // See filterGivensToModelSurface. Resolved from the caller's own compiled
       // query, before routing or any graft replaces it.
       let querySurfaceGivens: Record<string, GivenValue> | undefined;
@@ -3332,26 +3508,33 @@ export class Model {
          // from ingress) and when no candidate exists, since it costs an
          // entry-point walk and possibly a probe compile (see routeQuery).
          const storageRoutingPossible =
+            !cutover &&
             getPersistStorageMode() === "on" &&
             this.storageServe.serveBindings.length > 0 &&
             !!this.storageServe.serveDestinationConfig;
          // The served copy holds bindings the serve shape drops (a
          // `#(materialize)` build source is no source of this model by name).
+         // `hasBindings` counts a storage table only while the storage tier
+         // serves, and a colocated table always.
          const servedCopyPossible =
-            this.servedCopyEnabled() &&
-            this.servedCopy.hasBindings() &&
-            !!this.storageServe.serveDestinationConfig;
+            this.servedCopyEnabled(v1Mode) && servedCopy.hasBindings();
          // Captured once so the guard and the use below see the same companion.
-         const preaggServeMaterializer = this.preaggregateServeMaterializer;
+         // None under the cutover: a v1 rollup is the rollup leg's (G4).
+         const preaggServeMaterializer = cutover
+            ? undefined
+            : this.preaggregateServeMaterializer;
          const route = await routeQuery<RoutedExtra>(
-            routeCandidates(this.servingHost(), {
+            routeCandidates(this.servingHost(servedCopy), {
                queryString,
                surfaceGivens: querySurfaceGivens,
                buildManifest,
                storageRoutingPossible,
                servedCopyPossible,
+               // G3: under the cutover, a colocated table is read past a
+               // row-level gate (it never leaves the author's warehouse).
+               colocatedKeepsContracts: cutover,
                preaggServeMaterializer,
-               ...(this.rollupVariantsEnabled()
+               ...(this.rollupVariantsEnabled(v1Mode)
                   ? { rollupVariantsFor: runnable }
                   : {}),
                ...(this.persistedViewsEnabled()
@@ -3510,11 +3693,13 @@ export class Model {
                ? { answeredBy: "served_copy" as const }
                : {}),
          },
-         // The served copy is the author's text, gates included: a row-level
-         // gate is grafted and proven on its own compile, so the routed answer
-         // keeps it (R3), and an answer let past an entry-point gate is
-         // re-proven there. Any other routed shape carries no annotations and
-         // is never reached past a row-level gate (the router's veto).
+         // The served copy is the author's text, gates included, as are a
+         // persisted view's and a `#(preaggregate)` rollup's variants: a
+         // row-level gate is grafted and proven on its own compile, so the
+         // routed answer keeps it (R3), and an answer let past an entry-point
+         // gate is re-proven there. Any other routed shape carries no
+         // annotations and is never reached past a row-level gate (the
+         // router's veto).
          graftScope: answer.graftScope,
          routedPastEntryPointGate: answer.pastEntryPointGate,
       };
@@ -3549,11 +3734,13 @@ export class Model {
       // After the gate, so a denied caller gets its 403 rather than a 400 about
       // a value; before prepare, which is where Malloy would parse it.
       this.assertFilterGivens(givens);
-      // No post-hoc gate check is possible on a serve-shape or rollup
-      // runnable (it carries no annotations): their correctness rests
-      // entirely on `queryEntryPointHasRowLevelGate`. The served copy is the
-      // exception (R3): it keeps the author's gates, and `govern()` above
-      // grafted and proved them on its own compile.
+      // No post-hoc gate check is possible on a serve-shape or v1
+      // `#@ preaggregate` runnable (it carries no annotations): their
+      // correctness rests entirely on `queryEntryPointHasRowLevelGate`. The
+      // served copy, a persisted view and a `#(preaggregate)` rollup are the
+      // exceptions (R3): each keeps the author's gates on the run target's
+      // own `sourceID`, and `govern()` above grafted and proved them on its
+      // own compile.
 
       const maxRows = getMaxQueryRows();
       const maxBytes = getMaxResponseBytes();
@@ -3831,7 +4018,7 @@ export class Model {
       // Counted once the run answered, so a variant whose run failed and fell
       // back live counts as skipped (`run_failed`), not used.
       recordVariantRouting(answer.considered, answer.runFailed);
-      const path = await queryPathFor(this.servingHost(), answer, {
+      const path = await queryPathFor(this.servingHost(servedCopy), answer, {
          // The author's own compile: its names, and no grafted gate filter.
          runnable: liveRunnable ?? runnable,
          sourceName: compiledSource ?? sourceName,
@@ -3849,6 +4036,18 @@ export class Model {
       // No report at all (it could not be assembled), as against a report
       // that says live with nothing considered, which records no `path`.
       if (!path) audit.pathUnavailable = true;
+      // The v1 cutover's shadow: an answer a retiring path gave is compared,
+      // off the request path, with the one the cutover would give.
+      if (
+         v1Mode === "shadow" &&
+         !options.shadowRun &&
+         answeredByV1Path(answer)
+      ) {
+         this.scheduleShadowCompare(request, privileges, {
+            rows: queryResults.data.value,
+            fields: wrappedResult?.schema?.fields ?? [],
+         });
+      }
       return {
          result: wrappedResult,
          serializedResult,
@@ -3874,15 +4073,104 @@ export class Model {
    }
 
    /**
+    * Compare a query a retiring v1 path answered with the v1 cutover's answer
+    * (`PUBLISHER_V1_SERVED_COPY=shadow`), once per query text and model, at
+    * most a few at once per server ({@link ShadowScheduler}), after the
+    * caller has its answer. The second run is governed exactly as the first, writes no
+    * access record and records no query metrics; its outcome is logged, with
+    * the first difference's place and never a value, and counted
+    * (`publisher_v1_served_copy_shadow_total`). Never throws.
+    */
+   private scheduleShadowCompare(
+      request: QueryRequest,
+      privileges: QueryPrivileges,
+      today: { rows: unknown; fields: readonly unknown[] },
+   ): void {
+      const key = JSON.stringify([
+         request.sourceName ?? null,
+         request.queryName ?? null,
+         request.query ?? null,
+      ]);
+      const scheduled = this.shadowScheduler.schedule(key, () =>
+         this.shadowCompare(request, privileges, today),
+      );
+      if (scheduled === "skipped") recordV1ServedCopyShadow("skipped");
+   }
+
+   private async shadowCompare(
+      request: QueryRequest,
+      privileges: QueryPrivileges,
+      today: { rows: unknown; fields: readonly unknown[] },
+   ): Promise<void> {
+      const where = {
+         packageName: this.packageName,
+         modelPath: this.modelPath,
+         sourceName: request.sourceName,
+         queryName: request.queryName,
+      };
+      try {
+         // No metric of the caller's query is counted again (its security,
+         // governance, routing and query metrics belong to the run that
+         // answered), and the run is bounded by its own budget, at most the
+         // query timeout.
+         const cut = await withoutMetrics(() =>
+            this.runQueryResults(
+               shadowRunAudit(),
+               {
+                  ...request,
+                  abortSignal: AbortSignal.timeout(shadowBudgetMs()),
+               },
+               privileges,
+               { v1Mode: "on", shadowRun: true },
+            ),
+         );
+         const outcome = shadowOutcome(today, {
+            rows: cut.compactResult,
+            fields: cut.result?.schema?.fields ?? [],
+            servedBy: cut.path?.servedBy?.kind,
+         });
+         recordV1ServedCopyShadow(outcome.outcome);
+         if (outcome.outcome === "equal") {
+            logger.debug("v1 served copy shadow: equal", where);
+            return;
+         }
+         logger.info(`v1 served copy shadow: ${outcome.outcome}`, {
+            ...where,
+            ...(outcome.detail ? { detail: outcome.detail } : {}),
+            ...(outcome.outcome === "live"
+               ? {
+                    skipped: (cut.path?.considered ?? []).map((c) => ({
+                       kind: c.kind,
+                       outcome: c.outcome,
+                       reason: c.reason,
+                       code: c.code,
+                    })),
+                 }
+               : {}),
+         });
+      } catch (err) {
+         recordV1ServedCopyShadow("error");
+         // The kind only: an error's text can quote the statement, givens
+         // included, back.
+         logger.info("v1 served copy shadow: error", {
+            ...where,
+            errorKind: errorKind(err),
+         });
+      }
+   }
+
+   /**
     * What serving (query_serving.ts) reads from this model: its storage serve
     * shape, rollup plans, catalog and discovery surface. Built per call so it
     * always reads the current state.
     */
-   private servingHost(): QueryServingHost {
+   private servingHost(
+      servedCopy: ServedCopyServe = this.servedCopy,
+   ): QueryServingHost {
       return {
          modelPath: this.modelPath,
          storageServe: this.storageServe,
-         servedCopy: this.servedCopy,
+         servedCopy,
          rollupVariants: this.rollupVariants,
          persistedViews: this.persistedViews,
          rollupPlans: () => this.preaggregateRollupPlans,

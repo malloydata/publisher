@@ -1,0 +1,116 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "alpha@<hammer>/col/col.malloy": [],
+          "beta@<hammer>/col/col.malloy": []
+        },
+        "order": [
+          "alpha@<hammer>/col/col.malloy",
+          "beta@<hammer>/col/col.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "alpha@<hammer>/col/col.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "beta@<hammer>/col/col.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "alpha@<hammer>/col/col.malloy": "col.malloy",
+      "beta@<hammer>/col/col.malloy": "col.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "alpha@<hammer>/col/col.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "beta@<hammer>/col/col.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "alpha@<hammer>/col/col.malloy": {
+        "annotationFields": {
+          "name": "col_dup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "col.malloy",
+        "name": "alpha",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "5505bfa86d8c9f25c8acd06c20a0931446a33a11629597f6168699002eaff5f7",
+        "sourceID": "alpha@<hammer>/col/col.malloy",
+        "sql": "sha256:86b761cd853e7a82"
+      },
+      "beta@<hammer>/col/col.malloy": {
+        "annotationFields": {
+          "name": "col_dup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "col.malloy",
+        "name": "beta",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "eeb4c6ada4d7c933abb4b997bc3e91c9a9965e3b9d2faaa46459373027038d07",
+        "sourceID": "beta@<hammer>/col/col.malloy",
+        "sql": "sha256:e25c427591db697f"
+      }
+    }
+  }
+}

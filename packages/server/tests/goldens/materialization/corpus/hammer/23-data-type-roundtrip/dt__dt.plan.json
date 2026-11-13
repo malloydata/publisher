@@ -1,0 +1,89 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "all_rows@<hammer>/dt/dt.malloy": []
+        },
+        "order": [
+          "all_rows@<hammer>/dt/dt.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "all_rows@<hammer>/dt/dt.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "all_rows@<hammer>/dt/dt.malloy": "dt.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "all_rows@<hammer>/dt/dt.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "all_rows@<hammer>/dt/dt.malloy": {
+        "annotationFields": {
+          "name": "dt_all",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "d",
+            "type": "date"
+          },
+          {
+            "name": "amt",
+            "type": "number"
+          },
+          {
+            "name": "flag",
+            "type": "boolean"
+          },
+          {
+            "name": "label",
+            "type": "string"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "dt.malloy",
+        "name": "all_rows",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "0ccb468450fecdc2757aaa1cb779eb3180105131ee5266496fdca0ce066db65a",
+        "sourceID": "all_rows@<hammer>/dt/dt.malloy",
+        "sql": "sha256:176ab277706ed837"
+      }
+    }
+  }
+}

@@ -26,6 +26,7 @@ import type {
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
+import { queryGivenUsageIds } from "../../governance/ir/prepared_query";
 import { overlayKey } from "../../overlay_key";
 import { persistBlankedFiles } from "../persist_blanking";
 import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
@@ -33,6 +34,11 @@ import {
    generateRollupBuildFile,
    planModelRollups,
    ROLLUP_COMPANION_SUFFIX,
+   parentKeyCheckQuery,
+   readsAsJoinMany,
+   rollupKeyCheckQuery,
+   type ParentKeyCheck,
+   type ParentKeyNeed,
    type RollupRefusal,
    type RollupVariantPlan,
 } from "./rollup_plan";
@@ -156,6 +162,7 @@ export async function tryCompileRollupCompanion(args: {
       const { runtime, importBaseURL } = await args.getRuntime(overlay);
       const materializer = runtime.loadModel(url, { importBaseURL });
       const model = await materializer.getModel();
+      await compileRollupKeyChecks(planned.plans, materializer, args.modelPath);
       return {
          generated: {
             plans: planned.plans,
@@ -175,5 +182,120 @@ export async function tryCompileRollupCompanion(args: {
          },
       );
       return { refused };
+   }
+}
+
+/**
+ * The `compile` {@link compileParentKeyChecks} takes, over the author's model
+ * `materializer`: the check's SQL, refused when the check reads a given (as
+ * Malloy records it, `givenUsage`: a `where:` that reads one, say). Compiled
+ * once at plan time, such a check reads the rows of the given's default (or
+ * does not compile without one), not the rows each caller's query reads, so a
+ * key it finds unique may repeat for another caller; refused, the leg reads
+ * that source's key as unknown and declines.
+ */
+export function parentKeyCheckCompiler(materializer: {
+   loadQuery(text: string): {
+      getPreparedQuery(): Promise<unknown>;
+      getSQL(): Promise<string>;
+   };
+}): (text: string) => Promise<string> {
+   return async (text) => {
+      const query = materializer.loadQuery(text);
+      const givens = queryGivenUsageIds(await query.getPreparedQuery());
+      if (givens === undefined || givens.length > 0) {
+         throw new Error(
+            givens === undefined
+               ? "the check's given usage could not be read"
+               : "the check reads a given, so it would describe one caller's rows, not each caller's",
+         );
+      }
+      return query.getSQL();
+   };
+}
+
+/**
+ * Attach to each colocated rollup in `plans` the primary key checks of the
+ * query sources that read it through a join read as a join_many
+ * (`readsAsJoinMany`), each compiled once by its `compile` (the author's
+ * model that names the source). A check that does not compile is left off,
+ * logged: the leg then reads that source's key as unknown and declines.
+ */
+export async function compileParentKeyChecks(
+   plans: Iterable<RollupVariantPlan>,
+   needs: readonly {
+      need: ParentKeyNeed;
+      compile: (text: string) => Promise<string>;
+   }[],
+): Promise<void> {
+   const compiled = new Map<string, Promise<string | undefined>>();
+   for (const plan of plans) {
+      // A `#@ preaggregate` (v1) plan is never read through a join.
+      if (plan.variant !== true || plan.storage !== undefined) continue;
+      const checks: ParentKeyCheck[] = [];
+      const seen = new Set<string>();
+      for (const { need, compile } of needs) {
+         if (seen.has(need.sourceID) || !readsAsJoinMany(plan, need)) continue;
+         seen.add(need.sourceID);
+         let sql = compiled.get(need.sourceID);
+         if (sql === undefined) {
+            sql = compile(parentKeyCheckQuery(need.name, need.keyColumn)).catch(
+               (error) => {
+                  logger.warn(
+                     "A query source's primary key check did not compile; queries it answers through a #(preaggregate) rollup read as a join_many are answered live",
+                     {
+                        source: need.name,
+                        keyColumn: need.keyColumn,
+                        error:
+                           error instanceof Error
+                              ? error.message
+                              : String(error),
+                     },
+                  );
+                  return undefined;
+               },
+            );
+            compiled.set(need.sourceID, sql);
+         }
+         const text = await sql;
+         if (text === undefined) continue;
+         checks.push({
+            sourceID: need.sourceID,
+            keyColumn: need.keyColumn,
+            connectionName: need.connectionName,
+            sql: text,
+         });
+      }
+      if (checks.length > 0) plan.parentKeyChecks = checks;
+      else delete plan.parentKeyChecks;
+   }
+}
+
+/**
+ * Compile each rollup's key check (known limitation 29, see
+ * `rollupKeyCheckQuery`) against the companion, onto its plan. A check that
+ * does not compile is left off, logged: its rollup's join_one is then never
+ * known unique, and the join-to-rollup leg keeps declining what it declined
+ * before.
+ */
+async function compileRollupKeyChecks(
+   plans: RollupVariantPlan[],
+   materializer: ModelMaterializer,
+   modelPath: string,
+): Promise<void> {
+   for (const plan of plans) {
+      const text = rollupKeyCheckQuery(plan);
+      const keyColumn = plan.grainDimensions[0];
+      if (text === undefined || keyColumn === undefined) continue;
+      try {
+         const sql = await materializer.loadQuery(text).getSQL();
+         plan.keyCheck = { keyColumn, sql };
+      } catch (error) {
+         logger.warn("A #(preaggregate) rollup's key check did not compile", {
+            modelPath,
+            rollup: plan.rollupSourceName,
+            error: error instanceof Error ? error.message : String(error),
+         });
+      }
    }
 }

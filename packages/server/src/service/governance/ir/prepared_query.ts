@@ -77,6 +77,22 @@ export async function readPreparedQuery(runnable: {
 }
 
 /**
+ * `_query.givenUsage` of a prepared query: the ids of the givens the query
+ * reads, through the fields and joins it uses and their defaults, and not
+ * through a field it leaves unread. Undefined when the prepared query carries
+ * no such list (a caller decides what that means; every caller today fails
+ * closed). The one reader of this slot: the governor's surface filter, report
+ * tiles and the probe compiler (`../../probe_compiler.ts`) all read it here.
+ */
+export function queryGivenUsageIds(prepared: unknown): string[] | undefined {
+   const usage = preparedQueryView(prepared).query?.givenUsage;
+   if (!Array.isArray(usage)) return undefined;
+   return usage
+      .map((g) => (g as { id?: unknown } | null)?.id)
+      .filter((id): id is string => typeof id === "string");
+}
+
+/**
  * A `structRef` resolved to its struct: a string names a `contents` entry
  * (not checked to be a source); an object is the struct itself. Anything that
  * is not an object after resolution is `undefined`.
@@ -210,6 +226,12 @@ export interface QueryLevelField {
    computesAggregate: boolean;
    /** Whether its expression is ungrouped (`all(…)`, `exclude(…)`). */
    ungrouped: boolean;
+   /**
+    * For a field the query defines: every field path its expression reads
+    * (`segments.seg_miles` reads `["segments", "seg_miles"]`), undefined when
+    * one is not a list of names. Empty for a field it names as is (`ref`).
+    */
+   reads?: string[][];
    /** For a `nest:` with its own stages: the nest's first stage. */
    nest?: QueryLevelFacts;
    /** Whether it is a `nest:` at all (with or without a readable stage). */
@@ -231,6 +253,11 @@ export interface QueryLevelFacts {
     * `field = literal` (either way round) or `field = null`, by name.
     */
    fixedByWhere: Set<string>;
+   /**
+    * The same conjuncts by path, a joined field's included
+    * (`segments.kind = 'p'` fixes `["segments", "kind"]`).
+    */
+   fixedPathsByWhere: string[][];
    /** Its `having:` filters (filters on an aggregate). */
    havings: { computesAggregate: boolean }[];
 }
@@ -298,19 +325,19 @@ function computesAggregate(e: unknown): boolean {
 
 const LITERALS = new Set(["numberLiteral", "stringLiteral", "true", "false"]);
 
-/** The single-name field a node reads, if it is exactly one. */
-function fieldOf(e: unknown): string | undefined {
+/** The field path a node reads, if it is exactly a field. */
+function fieldPathOf(e: unknown): string[] | undefined {
    const n = e as IrExprLike | undefined;
    return n?.node === "field" &&
       Array.isArray(n.path) &&
-      n.path.length === 1 &&
-      typeof n.path[0] === "string"
-      ? n.path[0]
+      n.path.length > 0 &&
+      n.path.every((p) => typeof p === "string")
+      ? (n.path as string[])
       : undefined;
 }
 
-/** The fields a `where:` condition fixes to one value, by its conjuncts. */
-function fixedFields(e: unknown, out: Set<string>, depth = 0): void {
+/** The fields a `where:` condition fixes to one value, by its conjuncts, by path. */
+function fixedFields(e: unknown, out: string[][], depth = 0): void {
    const n = e as IrExprLike | undefined;
    if (!n || depth > 64) return;
    if (n.node === "and") {
@@ -319,8 +346,8 @@ function fixedFields(e: unknown, out: Set<string>, depth = 0): void {
       return;
    }
    if (n.node === "is-null") {
-      const f = fieldOf(n.e);
-      if (f !== undefined) out.add(f);
+      const f = fieldPathOf(n.e);
+      if (f !== undefined) out.push(f);
       return;
    }
    if (n.node !== "=") return;
@@ -329,11 +356,42 @@ function fixedFields(e: unknown, out: Set<string>, depth = 0): void {
    const isLiteral = (x: IrExprLike | undefined) =>
       typeof x?.node === "string" && LITERALS.has(x.node);
    const f = isLiteral(right)
-      ? fieldOf(left)
+      ? fieldPathOf(left)
       : isLiteral(left)
-        ? fieldOf(right)
+        ? fieldPathOf(right)
         : undefined;
-   if (f !== undefined) out.add(f);
+   if (f !== undefined) out.push(f);
+}
+
+/**
+ * Every field path `e` reads, or undefined when one is not a list of names or
+ * the expression is too deep to read whole.
+ */
+function fieldPathsRead(e: unknown): string[][] | undefined {
+   const out: string[][] = [];
+   let unreadable = false;
+   const walk = (x: unknown, depth: number): void => {
+      if (unreadable || !x || typeof x !== "object") return;
+      if (depth > 256) {
+         unreadable = true;
+         return;
+      }
+      if (Array.isArray(x)) {
+         for (const k of x) walk(k, depth + 1);
+         return;
+      }
+      const n = x as IrExprLike;
+      if (n.node === "field") {
+         const p = fieldPathOf(n);
+         if (p) out.push(p);
+         else unreadable = true;
+      }
+      for (const [key, v] of Object.entries(n)) {
+         if (!NOT_EXPRESSIONS.has(key)) walk(v, depth + 1);
+      }
+   };
+   walk(e, 0);
+   return unreadable ? undefined : out;
 }
 
 /**
@@ -351,12 +409,16 @@ export function queryLevelFacts(
          kind: typeof stage.type === "string" ? stage.type : "unknown",
          fields: [],
          fixedByWhere: new Set(),
+         fixedPathsByWhere: [],
          havings: [],
       };
       for (const f of stage.filterList ?? []) {
          if (f.expressionType === "scalar")
-            fixedFields(f.e, facts.fixedByWhere);
+            fixedFields(f.e, facts.fixedPathsByWhere);
          else facts.havings.push({ computesAggregate: computesAggregate(f.e) });
+      }
+      for (const p of facts.fixedPathsByWhere) {
+         if (p.length === 1) facts.fixedByWhere.add(p[0] as string);
       }
       for (const field of stage.queryFields ?? []) {
          const path = Array.isArray(field.path)
@@ -385,6 +447,12 @@ export function queryLevelFacts(
                field.e,
                (n) => n.node === "all" || n.node === "exclude",
             ),
+            ...(field.type === "fieldref"
+               ? { reads: [] }
+               : (() => {
+                    const reads = fieldPathsRead(field.e);
+                    return reads ? { reads } : {};
+                 })()),
             isNest,
             ...(first && depth < 64 ? { nest: read(first, depth + 1) } : {}),
          });
@@ -549,6 +617,44 @@ export function queryFieldUsagePaths(
             continue;
          }
          out.push(u.path as string[]);
+      }
+   });
+   return unreadable ? undefined : out;
+}
+
+/**
+ * Every aggregate the compiler records it needs a unique key for, anywhere in
+ * a prepared query (nests included), as the join path it is taken at: a
+ * `count()` (`isCount`), or a `sum` or `avg`, written in the query or read
+ * through a measure by name (`expandedFieldUsage` follows measures into their
+ * definitions). `min` and `max` need no key and are not recorded. The empty
+ * path is the source's own grain. Undefined when an entry is not readable, so
+ * a caller fails closed.
+ */
+export function uniqueKeyAggregatePaths(
+   view: PreparedQueryView,
+): { path: string[]; isCount: boolean }[] | undefined {
+   const out: { path: string[]; isCount: boolean }[] = [];
+   let unreadable = false;
+   eachQueryNode(view.pipeline, (n) => {
+      const usage = n.expandedFieldUsage;
+      if (!Array.isArray(usage)) return;
+      for (const u of usage as {
+         path?: unknown;
+         uniqueKeyRequirement?: { isCount?: unknown };
+      }[]) {
+         if (!u || u.uniqueKeyRequirement === undefined) continue;
+         if (
+            !Array.isArray(u.path) ||
+            u.path.some((p) => typeof p !== "string")
+         ) {
+            unreadable = true;
+            continue;
+         }
+         out.push({
+            path: u.path as string[],
+            isCount: u.uniqueKeyRequirement?.isCount === true,
+         });
       }
    });
    return unreadable ? undefined : out;
@@ -752,4 +858,62 @@ function firstAggregateWhere(
       if (path.length === 1 && head !== undefined && offends(head)) return head;
    }
    return undefined;
+}
+
+/**
+ * How each field of `sourceDef` reads `join`, by name: `none` when its value
+ * reads nothing through the join, directly or through the source's other
+ * fields; else `scalar` for a dimension and `aggregate` for anything else (a
+ * measure, an analytic, an unrecorded type). A name the source does not
+ * declare, or a definition too deep or unreadable, is `aggregate`, so a
+ * caller fails closed.
+ */
+export function sourceFieldJoinReads(
+   sourceDef: unknown,
+   join: string,
+): (name: string) => "none" | "scalar" | "aggregate" {
+   const fields = ((sourceDef as { fields?: unknown[] } | undefined)?.fields ??
+      []) as {
+      name?: unknown;
+      as?: unknown;
+      e?: unknown;
+      join?: unknown;
+      expressionType?: unknown;
+   }[];
+   const byName = new Map<string, (typeof fields)[number]>();
+   for (const f of fields) {
+      const name =
+         typeof f.as === "string"
+            ? f.as
+            : typeof f.name === "string"
+              ? f.name
+              : undefined;
+      if (name !== undefined) byName.set(name, f);
+   }
+   const memo = new Map<string, boolean>();
+   const readsJoin = (name: string, depth: number): boolean => {
+      const known = memo.get(name);
+      if (known !== undefined) return known;
+      const f = byName.get(name);
+      if (f === undefined || depth > 64) return true;
+      if (f.join !== undefined) return name === join;
+      // Guards a cycle; a field that reads itself does not compile.
+      memo.set(name, false);
+      const paths = f.e === undefined ? [] : fieldPathsRead(f.e);
+      const result =
+         paths === undefined ||
+         paths.some((p) =>
+            p.length > 1
+               ? p[0] === join
+               : p[0] !== name && readsJoin(p[0] as string, depth + 1),
+         );
+      memo.set(name, result);
+      return result;
+   };
+   return (name) => {
+      const f = byName.get(name);
+      if (f === undefined) return "aggregate";
+      if (!readsJoin(name, 0)) return "none";
+      return f.expressionType === "scalar" ? "scalar" : "aggregate";
+   };
 }

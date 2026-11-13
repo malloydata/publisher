@@ -1,0 +1,442 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "lines__rollup__order_id__906dde44@<pkg>/m.malloy.preaggregate.malloy": [],
+          "lines__rollup__order_id_sku__c5895963@<pkg>/m.malloy.preaggregate.malloy": [],
+          "orders__rollup__m_region__7877d8b1@<pkg>/m.malloy.preaggregate.malloy": [],
+          "orders__rollup__region__409e9efb@<pkg>/m.malloy.preaggregate.malloy": []
+        },
+        "order": [
+          "lines__rollup__order_id__906dde44@<pkg>/m.malloy.preaggregate.malloy",
+          "lines__rollup__order_id_sku__c5895963@<pkg>/m.malloy.preaggregate.malloy",
+          "orders__rollup__region__409e9efb@<pkg>/m.malloy.preaggregate.malloy",
+          "orders__rollup__m_region__7877d8b1@<pkg>/m.malloy.preaggregate.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {
+      "lines__rollup__order_id__906dde44@<pkg>/m.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "lines",
+        "baseGated": false,
+        "baseSourceID": "lines@<pkg>/m.malloy",
+        "baseSourceName": "lines",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "order_id"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "qty_total",
+            "partialName": "qty_total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "parentKeyChecks": [
+          {
+            "connectionName": "duckdb",
+            "keyColumn": "id",
+            "sourceID": "orders@<pkg>/m.malloy",
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"key__check\",\n     COUNT(1) as \"key_rows__check\"\n  FROM (\n    SELECT CAST(id AS BIGINT) AS id, CAST(customer_id AS BIGINT) AS customer_id,\n           region, status,\n           CAST(amount AS DOUBLE) AS amount, CAST(discount AS DOUBLE) AS discount,\n           CAST(order_date AS DATE) AS order_date,\n           CAST(created_at AS TIMESTAMP) AS created_at,\n           CAST(\"order\" AS BIGINT) AS \"order\"\n    FROM read_csv('data/orders.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"key__check\" as \"key__check\"\nFROM __stage0 as base\nWHERE (base.\"key_rows__check\">1) or base.\"key__check\" IS NULL\nLIMIT 1\n"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "qty_total__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "qty_total",
+            "partials": [
+              {
+                "column": "qty_total__partial",
+                "leaf": {
+                  "aggregate": "sum",
+                  "expr": {
+                    "args": [],
+                    "fn": "sum",
+                    "kind": "method",
+                    "path": [
+                      "qty"
+                    ]
+                  },
+                  "joinPath": [],
+                  "reads": [
+                    [
+                      "qty"
+                    ]
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "lines__rollup__order_id__906dde44",
+        "variant": true
+      },
+      "lines__rollup__order_id_sku__c5895963@<pkg>/m.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "lines",
+        "baseGated": false,
+        "baseSourceID": "lines@<pkg>/m.malloy",
+        "baseSourceName": "lines",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "order_id",
+          "sku"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "line_n",
+            "partialName": "line_n__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "parentKeyChecks": [
+          {
+            "connectionName": "duckdb",
+            "keyColumn": "id",
+            "sourceID": "orders@<pkg>/m.malloy",
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"key__check\",\n     COUNT(1) as \"key_rows__check\"\n  FROM (\n    SELECT CAST(id AS BIGINT) AS id, CAST(customer_id AS BIGINT) AS customer_id,\n           region, status,\n           CAST(amount AS DOUBLE) AS amount, CAST(discount AS DOUBLE) AS discount,\n           CAST(order_date AS DATE) AS order_date,\n           CAST(created_at AS TIMESTAMP) AS created_at,\n           CAST(\"order\" AS BIGINT) AS \"order\"\n    FROM read_csv('data/orders.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"key__check\" as \"key__check\"\nFROM __stage0 as base\nWHERE (base.\"key_rows__check\">1) or base.\"key__check\" IS NULL\nLIMIT 1\n"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "line_n__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "line_n",
+            "partials": [
+              {
+                "column": "line_n__partial",
+                "leaf": {
+                  "aggregate": "count",
+                  "expr": {
+                    "args": [],
+                    "kind": "call",
+                    "name": "count"
+                  },
+                  "joinPath": [],
+                  "reads": []
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "lines__rollup__order_id_sku__c5895963",
+        "variant": true
+      },
+      "orders__rollup__m_region__7877d8b1@<pkg>/m.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "orders",
+        "baseGated": false,
+        "baseSourceID": "orders@<pkg>/m.malloy",
+        "baseSourceName": "orders",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "m",
+          "region"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "n",
+            "partialName": "n__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "n__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "n",
+            "partials": [
+              {
+                "column": "n__partial",
+                "leaf": {
+                  "aggregate": "count",
+                  "expr": {
+                    "args": [],
+                    "kind": "call",
+                    "name": "count"
+                  },
+                  "joinPath": [],
+                  "reads": []
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "orders__rollup__m_region__7877d8b1",
+        "storage": "lake",
+        "variant": true
+      },
+      "orders__rollup__region__409e9efb@<pkg>/m.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "orders",
+        "baseGated": false,
+        "baseSourceID": "orders@<pkg>/m.malloy",
+        "baseSourceName": "orders",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "region"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "total",
+            "partialName": "total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "total__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "total",
+            "partials": [
+              {
+                "column": "total__partial",
+                "leaf": {
+                  "aggregate": "sum",
+                  "expr": {
+                    "args": [],
+                    "fn": "sum",
+                    "kind": "method",
+                    "path": [
+                      "amount"
+                    ]
+                  },
+                  "joinPath": [],
+                  "reads": [
+                    [
+                      "amount"
+                    ]
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "orders__rollup__region__409e9efb",
+        "variant": true
+      }
+    },
+    "sourceGateOutcomes": {
+      "lines__rollup__order_id__906dde44@<pkg>/m.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "lines__rollup__order_id_sku__c5895963@<pkg>/m.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "orders__rollup__m_region__7877d8b1@<pkg>/m.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "orders__rollup__region__409e9efb@<pkg>/m.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "lines__rollup__order_id__906dde44@<pkg>/m.malloy.preaggregate.malloy": "m.malloy",
+      "lines__rollup__order_id_sku__c5895963@<pkg>/m.malloy.preaggregate.malloy": "m.malloy",
+      "orders__rollup__m_region__7877d8b1@<pkg>/m.malloy.preaggregate.malloy": "m.malloy",
+      "orders__rollup__region__409e9efb@<pkg>/m.malloy.preaggregate.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "lines__rollup__order_id__906dde44@<pkg>/m.malloy.preaggregate.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "lines__rollup__order_id_sku__c5895963@<pkg>/m.malloy.preaggregate.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "orders__rollup__region__409e9efb@<pkg>/m.malloy.preaggregate.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "orders__rollup__m_region__7877d8b1@<pkg>/m.malloy.preaggregate.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "lines__rollup__order_id__906dde44@<pkg>/m.malloy.preaggregate.malloy": {
+        "annotationFields": {},
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "qty_total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "lines__rollup__order_id__906dde44",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "lines",
+          "grainDimensions": [
+            "order_id"
+          ],
+          "measures": [
+            "qty_total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "ea7a32eb791f5d5e237d80571b0bd0dbde9460cd58ea650ba82d2045d4fabc91",
+        "sourceID": "lines__rollup__order_id__906dde44@<pkg>/m.malloy.preaggregate.malloy",
+        "sql": "sha256:fe69180d79e5b9a9"
+      },
+      "lines__rollup__order_id_sku__c5895963@<pkg>/m.malloy.preaggregate.malloy": {
+        "annotationFields": {},
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "sku",
+            "type": "string"
+          },
+          {
+            "name": "line_n__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "lines__rollup__order_id_sku__c5895963",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "lines",
+          "grainDimensions": [
+            "order_id",
+            "sku"
+          ],
+          "measures": [
+            "line_n"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "f07ea8bc9c40274198d8c7f091d311ec84a30c92a625d6aded00c4abb951ad0c",
+        "sourceID": "lines__rollup__order_id_sku__c5895963@<pkg>/m.malloy.preaggregate.malloy",
+        "sql": "sha256:a1e968aaf8ed2380"
+      },
+      "orders__rollup__m_region__7877d8b1@<pkg>/m.malloy.preaggregate.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "m",
+            "type": "timestamp"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "n__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "orders__rollup__m_region__7877d8b1",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "orders",
+          "grainDimensions": [
+            "m",
+            "region"
+          ],
+          "measures": [
+            "n"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "14db554405415a132affe4fd532e2a9bb42a117547176c6284f76a93f28d2356",
+        "sourceID": "orders__rollup__m_region__7877d8b1@<pkg>/m.malloy.preaggregate.malloy",
+        "sql": "sha256:e20d6bb57c11e01d"
+      },
+      "orders__rollup__region__409e9efb@<pkg>/m.malloy.preaggregate.malloy": {
+        "annotationFields": {},
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "orders__rollup__region__409e9efb",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "orders",
+          "grainDimensions": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "8ee590c7caa5a8e27b612492f2abec261baa65e65ea067328c7af3a037c1effc",
+        "sourceID": "orders__rollup__region__409e9efb@<pkg>/m.malloy.preaggregate.malloy",
+        "sql": "sha256:53580c7920197643"
+      }
+    }
+  }
+}

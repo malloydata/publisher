@@ -18,6 +18,17 @@ env:
 permissions:
   contents: read
 
+# One run per pull request: a new push to a PR cancels that PR's run still in
+# flight, since only its newest commit can merge. Every other event (a push to
+# main, workflow_run, schedule, workflow_dispatch) gets a group of its own
+# keyed on the run id, so it is never cancelled and never replaced while it
+# waits: every merged commit is tested. (Keying those on github.ref with
+# cancel-in-progress off would still drop runs, because a group holds only one
+# pending run and a newer one cancels it.)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     name: Typecheck

@@ -82,6 +82,15 @@ export interface Variant<Extra = unknown> {
     * one is tried. Any other veto skips it too.
     */
    keepsContracts?: boolean;
+   /**
+    * With {@link keepsContracts}, narrows it per answer: called with an
+    * answer the attempt produced past an `entry_point` veto, and `false`
+    * skips that answer (`row_level_gate`) as if the candidate did not keep
+    * the contracts. For a candidate that keeps them only for some of the
+    * tables it may read (the served copy's colocated tables under the v1
+    * cutover). Absent: every answer keeps them.
+    */
+   keepsContractsFor?(extra: Extra): boolean;
 }
 
 /** A candidate's own account of why it did not answer (see {@link Variant.explain}). */
@@ -200,6 +209,18 @@ async function decideRoute<Extra>(
       }
       try {
          const answer = await variant.attempt();
+         if (
+            veto === "entry_point" &&
+            variant.keepsContractsFor &&
+            !variant.keepsContractsFor(answer.extra)
+         ) {
+            considered.push({
+               kind: variant.kind,
+               outcome: "skipped",
+               reason: "row_level_gate",
+            });
+            continue;
+         }
          considered.push({ kind: variant.kind, outcome: "used" });
          return {
             served: "variant",

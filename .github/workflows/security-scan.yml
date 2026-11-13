@@ -49,9 +49,18 @@ permissions:
   security-events: write
   actions: read
 
+# One run per pull request: a new push to a PR cancels that PR's run still in
+# flight, since only its newest commit can merge. Every other event (a push to
+# main, workflow_run, schedule, workflow_dispatch) gets a group of its own
+# keyed on the run id, so it is never cancelled and never replaced while it
+# waits: every merged commit is tested. (Keying those on github.ref with
+# cancel-in-progress off would still drop runs, because a group holds only one
+# pending run and a newer one cancels it.) The previous group, keyed on the
+# ref with cancel-in-progress always on, let a push to main cancel the weekly
+# scheduled run and the previous push's scan.
 concurrency:
-  group: security-scan-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   vulns:

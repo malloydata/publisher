@@ -877,7 +877,7 @@ describe("hidden stored columns (P3)", () => {
       );
    });
 
-   it("refuses a re-root whose include would come just before the inverse renames (known limitation 25)", () => {
+   it("refuses a re-root whose include would come just before the inverse renames (known limitation 30)", () => {
       // Malloy refuses a rename just after an include: written, the whole
       // served copy would not compile. Refused, only this source is live.
       expect(
@@ -1186,6 +1186,88 @@ describe("rerootDeclaration (pair tables, P5)", () => {
     #(doc) "Flights"
     flight_count is flight_count__pair { where: __parent_row__pair }
 }`);
+   });
+});
+
+describe("rerootDeclaration (a hidden join_many, known limitation 24)", () => {
+   const child = (name: string, column: string) => ({
+      name,
+      column,
+      internalName: `${column}__pair`,
+      type: "VARCHAR",
+   });
+   const reroot = (text: string, access: "private" | "internal") =>
+      rerootDeclaration(text, {
+         sourceName: "flights",
+         connectionAlias: "a",
+         virtualHandle: "h",
+         typeName: "flights__served",
+         columns: [{ name: "id", type: "BIGINT" }],
+         pair: {
+            join: "segments",
+            parentRowColumn: { name: "__parent_row", type: "BOOLEAN" },
+            parentRowField: "__parent_row__pair",
+            childColumns: [child("tag", "segments__tag")],
+            parentMeasures: [],
+            childStoredDimensions: [],
+            access,
+            block: {
+               lane: 0,
+               laneColumn: { name: "__pair_lane", type: "INTEGER" },
+               laneField: "__pair_lane__pair",
+               others: [
+                  {
+                     join: "crew",
+                     childColumns: [child("crew_name", "crew__crew_name")],
+                  },
+               ],
+            },
+         },
+      });
+
+   it("declares the record under the join's compiled modifier, its stored columns renamed private in the record's block", () => {
+      const text = `flights is duckdb.table('flights') extend {
+  primary_key: id
+  # doc
+  public join_many: segments on segments.flight_id = id
+  join_many: crew on crew.flight_id = id
+  measure: tags is count(segments.tag)
+}`;
+      expect(reroot(text, "private"))
+         .toBe(`flights is a.virtual('h')::flights__served extend {
+  internal rename:
+    __parent_row__pair is __parent_row
+    __pair_lane__pair is __pair_lane
+    crew__crew_name__pair is crew__crew_name
+  where: __pair_lane__pair = 0
+} extend {
+  primary_key: id
+  # doc
+  private dimension: segments is {
+    tag is segments__tag__pair
+  }
+  private rename:
+    segments__tag__pair is segments__tag
+  dimension: crew is {
+    crew_name is crew__crew_name__pair
+  }
+  measure: tags is count(segments.tag)
+}`);
+   });
+
+   it("writes the modifier the compiled source gives, not the label in the text", () => {
+      const out = reroot(
+         `flights is duckdb.table('flights') extend {
+  private join_many: segments on segments.flight_id = id
+  join_many: crew on crew.flight_id = id
+}`,
+         "internal",
+      );
+      expect(out).toContain(
+         "  internal dimension: segments is {\n    tag is segments__tag__pair\n  }\n  private rename:\n    segments__tag__pair is segments__tag\n",
+      );
+      expect(out).not.toContain("private internal");
+      expect(out).not.toContain("private dimension");
    });
 });
 

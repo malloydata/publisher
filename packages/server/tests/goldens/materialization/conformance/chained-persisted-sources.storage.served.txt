@@ -1,0 +1,21 @@
+// conformance: chained persisted sources [storage]: files generated while serving
+
+// ==== <pkg>/base.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: orders_base__served is {
+   region::string,
+   status::string,
+   total_amount::number
+}
+
+import "raw.malloy"
+
+#@ persist name="orders_base" storage="lake"
+source: orders_base is __served_copy_alias_of_lake.virtual('97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef')::orders_base__served
+
+#@ persist name="orders_rollup" storage="lake"
+source: orders_rollup is orders_base -> {
+  group_by: status
+  aggregate: regions is count(), t is total_amount.sum()
+}

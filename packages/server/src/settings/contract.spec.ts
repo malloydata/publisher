@@ -1643,6 +1643,29 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PUBLISHER_MATERIALIZE_GATED_SOURCES"),
       },
    ],
+   "materialize.v1ServedCopy": [
+      { name: "unset", expect: value("off") },
+      {
+         name: "PUBLISHER_V1_SERVED_COPY",
+         env: { PUBLISHER_V1_SERVED_COPY: "on" },
+         expect: value("on"),
+      },
+      {
+         name: "any case",
+         env: { PUBLISHER_V1_SERVED_COPY: "Shadow" },
+         expect: value("shadow"),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_V1_SERVED_COPY: "" },
+         expect: value("off"),
+      },
+      {
+         name: "an unknown mode",
+         env: { PUBLISHER_V1_SERVED_COPY: "true" },
+         expect: fails("PUBLISHER_V1_SERVED_COPY"),
+      },
+   ],
    "persist.collisionEnforcementEnabled": [
       { name: "unset", expect: value(true) },
       {

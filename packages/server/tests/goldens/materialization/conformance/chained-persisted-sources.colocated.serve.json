@@ -1,0 +1,511 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "orders_base",
+        "tier": "colocated"
+      },
+      {
+        "name": "orders_rollup",
+        "tier": "colocated"
+      },
+      {
+        "name": "orders_rollup_x",
+        "tier": "colocated"
+      }
+    ],
+    "verdicts": [
+      "orders_base:serves",
+      "orders_rollup:serves",
+      "orders_rollup_x:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "regions"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "t"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "d24f0dcabd2a3fb7",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(regions)",
+            "aggregate:sum(t)"
+          ],
+          "source": "orders_rollup",
+          "stages": 1
+        },
+        "source": "orders_rollup"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_rollup -> { group_by: status; aggregate: r is regions.sum(), t2 is t.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "regions",
+            "t"
+          ],
+          "sourceName": "orders_rollup"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
+        },
+        "warnings": []
+      },
+      "query": "the downstream source in the same file",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "statuses"
+          },
+          {
+            "classifications": [],
+            "path": "t"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b072f11e98ad9ecb",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(statuses)",
+            "aggregate:sum(t)"
+          ],
+          "source": "orders_rollup_x",
+          "stages": 1
+        },
+        "source": "orders_rollup_x"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_rollup_x -> { group_by: region; aggregate: s is statuses.sum(), t2 is t.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "orders_rollup",
+            "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "statuses",
+            "t"
+          ],
+          "sourceName": "orders_rollup_x"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd"
+        },
+        "warnings": []
+      },
+      "query": "the downstream source in another file",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "total_amount"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "d34c6dd6ba807123",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total_amount)"
+          ],
+          "source": "orders_base",
+          "stages": 1
+        },
+        "source": "orders_base"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_base -> { group_by: status; aggregate: t is total_amount.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "below",
+            "sourceName": "orders_rollup",
+            "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "below",
+            "sourceName": "orders_rollup_x",
+            "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "total_amount"
+          ],
+          "sourceName": "orders_base"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef"
+        },
+        "warnings": []
+      },
+      "query": "the upstream source through the importer",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "regions"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "t"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "d24f0dcabd2a3fb7",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(regions)",
+            "aggregate:sum(t)"
+          ],
+          "source": "orders_rollup",
+          "stages": 1
+        },
+        "source": "orders_rollup"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_rollup -> { group_by: status; aggregate: r is regions.sum(), t2 is t.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "regions",
+            "t"
+          ],
+          "sourceName": "orders_rollup"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
+        },
+        "warnings": []
+      },
+      "query": "the downstream source in the same file",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "statuses"
+          },
+          {
+            "classifications": [],
+            "path": "t"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b072f11e98ad9ecb",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(statuses)",
+            "aggregate:sum(t)"
+          ],
+          "source": "orders_rollup_x",
+          "stages": 1
+        },
+        "source": "orders_rollup_x"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_rollup_x -> { group_by: region; aggregate: s is statuses.sum(), t2 is t.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "orders_rollup",
+            "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "statuses",
+            "t"
+          ],
+          "sourceName": "orders_rollup_x"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd"
+        },
+        "warnings": []
+      },
+      "query": "the downstream source in another file",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "total_amount"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "d34c6dd6ba807123",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total_amount)"
+          ],
+          "source": "orders_base",
+          "stages": 1
+        },
+        "source": "orders_base"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_base -> { group_by: status; aggregate: t is total_amount.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "below",
+            "sourceName": "orders_rollup",
+            "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "below",
+            "sourceName": "orders_rollup_x",
+            "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "total_amount"
+          ],
+          "sourceName": "orders_base"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef"
+        },
+        "warnings": []
+      },
+      "query": "the upstream source through the importer",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

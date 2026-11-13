@@ -35,7 +35,17 @@ interface DeclarationRange {
  * `extend { … }` blocks begins, if any. Undefined when no top-level `is`
  * follows the name.
  */
-export function declarationSpans(declaration: string):
+export function declarationSpans(
+   declaration: string,
+   options: {
+      /**
+       * Walk back over trailing `include { … }` blocks too, so the run is
+       * everything after the base (a v1 query-shaped source's re-root under
+       * the cutover keeps its author's `include`, review F3).
+       */
+      throughIncludes?: boolean;
+   } = {},
+):
    | {
         nameEnd: number;
         extendStart?: number;
@@ -67,7 +77,8 @@ export function declarationSpans(declaration: string):
       if (
          open?.kind !== "open" ||
          kw?.kind !== "word" ||
-         kw.text !== "extend" ||
+         (kw.text !== "extend" &&
+            !(options.throughIncludes && kw.text === "include")) ||
          j - 2 <= isIndex
       ) {
          break;
@@ -433,6 +444,27 @@ export function renamesIn(text: string): RenameDefinition[] | undefined {
          k += 3;
          if (body[k]?.text === ",") k++;
       }
+   }
+   return out;
+}
+
+/**
+ * The stored names {@link inverseRenameBlocks} gives an old name back, so no
+ * statement placed after those blocks can read them under the stored name.
+ */
+export function inverselyRenamedColumns(
+   text: string,
+   stored: ReadonlySet<string>,
+): Set<string> {
+   const out = new Set<string>();
+   const renames = renamesIn(text);
+   if (!renames) return out;
+   const live = new Set(stored);
+   for (const r of [...renames].reverse()) {
+      if (!live.has(r.name) || live.has(r.from)) continue;
+      if (stored.has(r.name)) out.add(r.name);
+      live.delete(r.name);
+      live.add(r.from);
    }
    return out;
 }

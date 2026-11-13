@@ -75,7 +75,8 @@
   },
   "materialize": {
     "enabled": false,
-    "gatedSources": false
+    "gatedSources": false,
+    "v1ServedCopy": "off"
   },
   "materialization": {
     "schedulerEnabled": false,

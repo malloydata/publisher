@@ -1,0 +1,132 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "deals@<hammer>/fch/fch.malloy": [],
+          "pipeline_now@<hammer>/fch/fch.malloy": []
+        },
+        "order": [
+          "deals@<hammer>/fch/fch.malloy",
+          "pipeline_now@<hammer>/fch/fch.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "deals@<hammer>/fch/fch.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "pipeline_now@<hammer>/fch/fch.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "deals@<hammer>/fch/fch.malloy": "fch.malloy",
+      "pipeline_now@<hammer>/fch/fch.malloy": "fch.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "deals@<hammer>/fch/fch.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "pipeline_now@<hammer>/fch/fch.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "deals@<hammer>/fch/fch.malloy": {
+        "annotationFields": {
+          "name": "fch_deals_tbl",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "deal_id",
+            "type": "number"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "is_deleted",
+            "type": "boolean"
+          },
+          {
+            "name": "is_open",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "fch.malloy",
+        "name": "deals",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "0661ea6f1ff1c4b38c274b4742f96bac1ebcf1b6b2ef0dfe34c114274b6ff586",
+        "sourceID": "deals@<hammer>/fch/fch.malloy",
+        "sql": "sha256:becc8d0f65a9021d"
+      },
+      "pipeline_now@<hammer>/fch/fch.malloy": {
+        "annotationFields": {
+          "name": "fch_open_tbl",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "deal_id",
+            "type": "number"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "is_deleted",
+            "type": "boolean"
+          },
+          {
+            "name": "is_open",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "fch.malloy",
+        "name": "pipeline_now",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "0661ea6f1ff1c4b38c274b4742f96bac1ebcf1b6b2ef0dfe34c114274b6ff586",
+        "sourceID": "pipeline_now@<hammer>/fch/fch.malloy",
+        "sql": "sha256:becc8d0f65a9021d"
+      }
+    }
+  }
+}

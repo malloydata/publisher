@@ -959,6 +959,22 @@ export const getMaterializeGatedSources = (): boolean =>
    getMaterializeEnabled() && settings.get("materialize.gatedSources");
 
 /**
+ * How v1 `#@ persist` tables are served (materialization v2's v1 cutover),
+ * from `PUBLISHER_V1_SERVED_COPY` (default `off`):
+ *
+ *  - `off`: today's storage serve shape, `#@ preaggregate` composite and
+ *    colocated build manifest, unchanged;
+ *  - `shadow`: served as `off`, with the `on` answer computed beside it and
+ *    any difference logged;
+ *  - `on`: the served copy, the rollup and persisted-view legs, or live.
+ */
+export type V1ServedCopyMode = "off" | "shadow" | "on";
+
+/** See {@link V1ServedCopyMode}. Case-insensitive; throws on an unknown value. */
+export const getV1ServedCopyMode = (): V1ServedCopyMode =>
+   settings.get("materialize.v1ServedCopy");
+
+/**
  * Whether a within-package persist-target COLLISION (two distinct persist
  * sources resolving to the same physical table in the same destination) is a
  * hard publish (and build) rejection, from `PERSIST_COLLISION_ENFORCE`

@@ -1,0 +1,601 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "monthly",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "monthly:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "order_month"
+          },
+          {
+            "classifications": [],
+            "path": "share"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "order_month"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "09b97ba49e097879",
+          "kind": "reduce",
+          "measures": [
+            "share"
+          ],
+          "source": "monthly",
+          "stages": 1
+        },
+        "source": "monthly"
+      },
+      "equalToLive": true,
+      "malloy": "run: monthly -> { group_by: order_month; aggregate: share }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "order_month"
+          ],
+          "measures": [
+            "share"
+          ],
+          "sourceName": "monthly"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+        },
+        "warnings": []
+      },
+      "query": "a stored month, with its doc",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "created_hour"
+          },
+          {
+            "classifications": [],
+            "path": "order_week"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "created_hour",
+            "order_week"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "ed77df2de76e8aa6",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "monthly",
+          "stages": 1
+        },
+        "source": "monthly"
+      },
+      "equalToLive": true,
+      "malloy": "run: monthly -> { group_by: created_hour, order_week; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "created_hour",
+            "order_week"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "monthly"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+        },
+        "warnings": []
+      },
+      "query": "a stored hour and week",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "order_month"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [
+            "order_month"
+          ],
+          "filters": [
+            "and(>=(order_month,?),<(order_month,?))"
+          ],
+          "key": "bdeec9110982da85",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "monthly",
+          "stages": 1
+        },
+        "source": "monthly"
+      },
+      "equalToLive": true,
+      "malloy": "run: monthly -> { where: order_month = @2025-01; group_by: region; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [
+            "order_month"
+          ],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "monthly"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+        },
+        "warnings": []
+      },
+      "query": "a filter on a stored timeframe",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "discount_rate"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "discount_rate",
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "5fe5d479283bcd0d",
+          "kind": "project",
+          "measures": [],
+          "source": "monthly",
+          "stages": 1
+        },
+        "source": "monthly"
+      },
+      "equalToLive": true,
+      "malloy": "run: monthly -> { select: region, discount_rate; order_by: region, discount_rate }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region",
+            "discount_rate"
+          ],
+          "measures": [],
+          "sourceName": "monthly"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+        },
+        "warnings": []
+      },
+      "query": "a percent column selected",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "order_month"
+          },
+          {
+            "classifications": [],
+            "path": "share"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "order_month"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "09b97ba49e097879",
+          "kind": "reduce",
+          "measures": [
+            "share"
+          ],
+          "source": "monthly",
+          "stages": 1
+        },
+        "source": "monthly"
+      },
+      "equalToLive": true,
+      "malloy": "run: monthly -> { group_by: order_month; aggregate: share }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "order_month"
+          ],
+          "measures": [
+            "share"
+          ],
+          "sourceName": "monthly"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a stored month, with its doc",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "created_hour"
+          },
+          {
+            "classifications": [],
+            "path": "order_week"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "created_hour",
+            "order_week"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "ed77df2de76e8aa6",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "monthly",
+          "stages": 1
+        },
+        "source": "monthly"
+      },
+      "equalToLive": true,
+      "malloy": "run: monthly -> { group_by: created_hour, order_week; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "created_hour",
+            "order_week"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "monthly"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a stored hour and week",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "order_month"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [
+            "order_month"
+          ],
+          "filters": [
+            "and(>=(order_month,?),<(order_month,?))"
+          ],
+          "key": "bdeec9110982da85",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "monthly",
+          "stages": 1
+        },
+        "source": "monthly"
+      },
+      "equalToLive": true,
+      "malloy": "run: monthly -> { where: order_month = @2025-01; group_by: region; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [
+            "order_month"
+          ],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "monthly"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a filter on a stored timeframe",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "discount_rate"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "discount_rate",
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "5fe5d479283bcd0d",
+          "kind": "project",
+          "measures": [],
+          "source": "monthly",
+          "stages": 1
+        },
+        "source": "monthly"
+      },
+      "equalToLive": true,
+      "malloy": "run: monthly -> { select: region, discount_rate; order_by: region, discount_rate }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region",
+            "discount_rate"
+          ],
+          "measures": [],
+          "sourceName": "monthly"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a percent column selected",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

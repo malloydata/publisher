@@ -1,0 +1,310 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "dropped",
+        "tier": "colocated"
+      },
+      {
+        "name": "rehidden",
+        "tier": "colocated"
+      }
+    ],
+    "verdicts": [
+      "dropped:serves",
+      "rehidden:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b9d4ec521533db45",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "dropped",
+          "stages": 1
+        },
+        "source": "dropped"
+      },
+      "equalToLive": true,
+      "malloy": "run: dropped -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "dropped"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
+        },
+        "warnings": []
+      },
+      "query": "a measure beside the excepted column",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "segment"
+          },
+          {
+            "classifications": [],
+            "path": "west_n"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "a722b1370ee80257",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "west_n"
+          ],
+          "source": "rehidden",
+          "stages": 1
+        },
+        "source": "rehidden"
+      },
+      "equalToLive": true,
+      "malloy": "run: rehidden -> { group_by: segment; aggregate: n, west_n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "n",
+            "west_n"
+          ],
+          "sourceName": "rehidden"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e"
+        },
+        "warnings": []
+      },
+      "query": "a measure over the re-hidden column",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b9d4ec521533db45",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "dropped",
+          "stages": 1
+        },
+        "source": "dropped"
+      },
+      "equalToLive": true,
+      "malloy": "run: dropped -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "dropped"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
+        },
+        "warnings": []
+      },
+      "query": "a measure beside the excepted column",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "segment"
+          },
+          {
+            "classifications": [],
+            "path": "west_n"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "a722b1370ee80257",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "west_n"
+          ],
+          "source": "rehidden",
+          "stages": 1
+        },
+        "source": "rehidden"
+      },
+      "equalToLive": true,
+      "malloy": "run: rehidden -> { group_by: segment; aggregate: n, west_n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "n",
+            "west_n"
+          ],
+          "sourceName": "rehidden"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e"
+        },
+        "warnings": []
+      },
+      "query": "a measure over the re-hidden column",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

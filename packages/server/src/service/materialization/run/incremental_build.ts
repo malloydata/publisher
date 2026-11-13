@@ -11,10 +11,7 @@ import {
 } from "../stored_column_types";
 import type { PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
-import {
-   recordIncrementalStep,
-   recordSourceBuildDuration,
-} from "../../../materialization_metrics";
+import { recordIncrementalStep } from "../../../materialization_metrics";
 import type {
    IncrementalLedgerEntry,
    LedgerTableIdentity,
@@ -53,6 +50,7 @@ import {
    type SqlRunner,
    type WatermarkBound,
 } from "./incremental_apply";
+import { capturedNativeSchema } from "./colocated_native_types";
 import type { IncrementalDeclaration } from "../plan/incremental_declaration";
 
 /**
@@ -249,8 +247,10 @@ export function incrementalLineage(params: {
    // resolved must never be ISSUED. No lineage means a seed: slower, but correct.
    if (mergeKeys.length > 0 && d.scopeIncomplete) return undefined;
    // A pair table's delta replaces whole parents by its key, in DuckDB, the
-   // target of every `storage=` table (pairDeltaStatements). Anything else
-   // seeds: a pair whose merge key is not its parent key was planned wrong.
+   // target of every `storage=` table and of a colocated table in a DuckDB
+   // warehouse (pairDeltaStatements). Anything else seeds: a colocated pair
+   // table in another warehouse, or a pair whose merge key is not its parent
+   // key, which was planned wrong.
    if (
       d.pair &&
       (params.targetDialect !== "duckdb" ||
@@ -781,9 +781,6 @@ export async function refreshOneSourceIncrementally(params: {
       sourceName: persistSource.name,
    });
    if (!outcome.applied) return undefined;
-   if (outcome.durationMs !== undefined) {
-      recordSourceBuildDuration(outcome.durationMs, "delta");
-   }
 
    // A delta or skip leaves the existing table serving; it must still enter the
    // build manifest, or a downstream source in this run would recompute it from
@@ -791,6 +788,18 @@ export async function refreshOneSourceIncrementally(params: {
    params.manifest.update(sourceEntityId, {
       tableName: target.quotedTablePath,
    });
+   // A colocated table's warehouse column types, read again as a full build
+   // reads them (colocated_native_types.ts): the entry replaces the last
+   // build's, and without them its big-integer columns would answer live.
+   const nativeSchema =
+      lineage.storageDestinationName === undefined
+         ? await capturedNativeSchema({
+              run: target.runner,
+              physicalTableName: target.logicalTablePath,
+              dialect: target.dialect,
+              sourceName: persistSource.name,
+           })
+         : undefined;
    return {
       sourceEntityId,
       sourceName: persistSource.name,
@@ -806,6 +815,7 @@ export async function refreshOneSourceIncrementally(params: {
       // A delta reports where it advanced to; a skip, the boundary in force.
       ...ledgerFields(lineage, outcome.coveredThrough),
       ...refreshFields(outcome.refresh),
+      ...(nativeSchema?.length ? { nativeSchema } : {}),
    };
 }
 

@@ -1,0 +1,411 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "ov__by_region__view",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "ov__by_region__view:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "63bbaa53175750e3",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "ov",
+          "stages": 1
+        },
+        "source": "ov"
+      },
+      "equalToLive": true,
+      "malloy": "run: ov -> by_region",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "ov"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the view called",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "66f068d645053eb3",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "ov",
+          "stages": 2
+        },
+        "source": "ov"
+      },
+      "equalToLive": true,
+      "malloy": "run: ov -> by_region -> { select: region, total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "ov"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a later stage after the view",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "63bbaa53175750e3",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "ov",
+          "stages": 1
+        },
+        "source": "ov"
+      },
+      "equalToLive": true,
+      "malloy": "run: ov -> by_region + { limit: 2 }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "ov"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a refinement (live)",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "63bbaa53175750e3",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "ov",
+          "stages": 1
+        },
+        "source": "ov"
+      },
+      "equalToLive": true,
+      "malloy": "run: ov -> by_region",
+      "path": {
+        "considered": [
+          {
+            "kind": "view",
+            "outcome": "used",
+            "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "ov"
+        },
+        "servedBy": {
+          "kind": "view",
+          "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533"
+        },
+        "warnings": []
+      },
+      "query": "the view called",
+      "servedBy": "view",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "66f068d645053eb3",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "ov",
+          "stages": 2
+        },
+        "source": "ov"
+      },
+      "equalToLive": true,
+      "malloy": "run: ov -> by_region -> { select: region, total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "view",
+            "outcome": "used",
+            "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "ov"
+        },
+        "servedBy": {
+          "kind": "view",
+          "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533"
+        },
+        "warnings": []
+      },
+      "query": "a later stage after the view",
+      "servedBy": "view",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "63bbaa53175750e3",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "ov",
+          "stages": 1
+        },
+        "source": "ov"
+      },
+      "equalToLive": true,
+      "malloy": "run: ov -> by_region + { limit: 2 }",
+      "path": {
+        "considered": [
+          {
+            "detail": "the query refines `by_region` (`+ { … }`), and the stored result holds only the view as written",
+            "kind": "view",
+            "outcome": "skipped",
+            "reason": "MISSING_FIELD",
+            "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "ov"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a refinement (live)",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

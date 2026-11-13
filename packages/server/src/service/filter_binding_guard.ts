@@ -852,6 +852,20 @@ function findAnnotationDeclaringSource(
    return findCompositeMemberDeclaringSource(struct, modelDef);
 }
 
+/**
+ * Whether the struct that declared `struct`'s gate can be resolved in
+ * `modelDef`, without a sibling compile: the check
+ * {@link assertGraftedGateBindsToDeclaringSource} makes before it grafts, so a
+ * candidate compile (the served copy) can decline a query whose gate would
+ * deny there, and the next candidate answers it.
+ */
+export function gateDeclaringSourceResolves(
+   struct: SourceDef,
+   modelDef: ModelDef,
+): boolean {
+   return findAnnotationDeclaringSource(struct, modelDef) !== undefined;
+}
+
 /** Whether `struct` itself, not an ancestor, carries a gate note. */
 function ownsGateNote(struct: SourceDef): boolean {
    return ownLevelNotes(struct.annotations).some(isGateNote);

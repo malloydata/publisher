@@ -1,0 +1,734 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "base_daily",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "base_daily:serves",
+      "ext1:serves",
+      "ext2:serves",
+      "ext_joined:serves",
+      "ext_other:serves"
+    ],
+    "warnings": [
+      {
+        "code": "served-copy-not-served",
+        "message": "This source is stored in a destination its join `c` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or keep this source colocated.",
+        "subject": "ext_joined"
+      }
+    ]
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "9ebe94b54a36dcb4",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "ext1",
+          "stages": 1
+        },
+        "source": "ext1"
+      },
+      "equalToLive": true,
+      "malloy": "run: ext1 -> { group_by: region; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "ext1"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+        },
+        "warnings": []
+      },
+      "query": "an extension with a where:",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "winter"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "winter"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "f00dfdca32171c10",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "ext2",
+          "stages": 1
+        },
+        "source": "ext2"
+      },
+      "equalToLive": true,
+      "malloy": "run: ext2 -> { group_by: winter; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "winter"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "ext2"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+        },
+        "warnings": []
+      },
+      "query": "an extension of an extension",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "g"
+          },
+          {
+            "classifications": [],
+            "path": "winter"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "winter"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3b67167f590a6dca",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(g)"
+          ],
+          "source": "ext2_rollup",
+          "stages": 1
+        },
+        "source": "ext2_rollup"
+      },
+      "equalToLive": true,
+      "malloy": "run: ext2_rollup -> { group_by: winter; aggregate: t is g.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "winter"
+          ],
+          "measures": [
+            "g"
+          ],
+          "sourceName": "ext2_rollup"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+        },
+        "warnings": []
+      },
+      "query": "a query-shaped source over an extension",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "orders"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "c33dc82b4aac121e",
+          "kind": "reduce",
+          "measures": [
+            "grand",
+            "orders"
+          ],
+          "source": "ext_other",
+          "stages": 1
+        },
+        "source": "ext_other"
+      },
+      "equalToLive": true,
+      "malloy": "run: ext_other -> { group_by: status; aggregate: orders, grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "orders",
+            "grand"
+          ],
+          "sourceName": "ext_other"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+        },
+        "warnings": []
+      },
+      "query": "an extension in another file",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "c.segment"
+          },
+          {
+            "classifications": [],
+            "path": "grand"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "c.segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "71d4fd13d7f2d5bd",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "ext_joined",
+          "stages": 1
+        },
+        "source": "ext_joined"
+      },
+      "equalToLive": true,
+      "malloy": "run: ext_joined -> { group_by: c.segment; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "MISSING_FIELD",
+            "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "c.segment"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "ext_joined"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an extension joining a warehouse source",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "9ebe94b54a36dcb4",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "ext1",
+          "stages": 1
+        },
+        "source": "ext1"
+      },
+      "equalToLive": true,
+      "malloy": "run: ext1 -> { group_by: region; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "ext1"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "an extension with a where:",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "winter"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "winter"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "f00dfdca32171c10",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "ext2",
+          "stages": 1
+        },
+        "source": "ext2"
+      },
+      "equalToLive": true,
+      "malloy": "run: ext2 -> { group_by: winter; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "winter"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "ext2"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "an extension of an extension",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "g"
+          },
+          {
+            "classifications": [],
+            "path": "winter"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "winter"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3b67167f590a6dca",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(g)"
+          ],
+          "source": "ext2_rollup",
+          "stages": 1
+        },
+        "source": "ext2_rollup"
+      },
+      "equalToLive": true,
+      "malloy": "run: ext2_rollup -> { group_by: winter; aggregate: t is g.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "winter"
+          ],
+          "measures": [
+            "g"
+          ],
+          "sourceName": "ext2_rollup"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a query-shaped source over an extension",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "orders"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "c33dc82b4aac121e",
+          "kind": "reduce",
+          "measures": [
+            "grand",
+            "orders"
+          ],
+          "source": "ext_other",
+          "stages": 1
+        },
+        "source": "ext_other"
+      },
+      "equalToLive": true,
+      "malloy": "run: ext_other -> { group_by: status; aggregate: orders, grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "orders",
+            "grand"
+          ],
+          "sourceName": "ext_other"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "an extension in another file",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "c.segment"
+          },
+          {
+            "classifications": [],
+            "path": "grand"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "c.segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "71d4fd13d7f2d5bd",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "ext_joined",
+          "stages": 1
+        },
+        "source": "ext_joined"
+      },
+      "equalToLive": true,
+      "malloy": "run: ext_joined -> { group_by: c.segment; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "CROSS_CONNECTION",
+            "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "c.segment"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "ext_joined"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an extension joining a warehouse source",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

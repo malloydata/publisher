@@ -1,0 +1,425 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "east_west",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "east_west:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "order_month"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "order_month"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "a0882d512bbadc16",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "east_west",
+          "stages": 1
+        },
+        "source": "east_west"
+      },
+      "equalToLive": true,
+      "malloy": "run: east_west -> { group_by: order_month; aggregate: total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "order_month"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "east_west"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a computed timeframe dimension",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "big"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "big"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b6cab5c92190d061",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "east_west",
+          "stages": 1
+        },
+        "source": "east_west"
+      },
+      "equalToLive": true,
+      "malloy": "run: east_west -> { group_by: big; aggregate: total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "big"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "east_west"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a computed boolean dimension",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "9875636b15195db6",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "total"
+          ],
+          "source": "east_west_ext",
+          "stages": 1
+        },
+        "source": "east_west_ext"
+      },
+      "equalToLive": true,
+      "malloy": "run: east_west_ext -> { group_by: region; aggregate: n, total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n",
+            "total"
+          ],
+          "sourceName": "east_west_ext"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an extension",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "order_month"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "order_month"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "a0882d512bbadc16",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "east_west",
+          "stages": 1
+        },
+        "source": "east_west"
+      },
+      "equalToLive": true,
+      "malloy": "run: east_west -> { group_by: order_month; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "66844921999eecf1f00874459a3b65a47e4947dad08dbb52d961e11f2951bbf8"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "order_month"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "east_west"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "66844921999eecf1f00874459a3b65a47e4947dad08dbb52d961e11f2951bbf8",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a computed timeframe dimension",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "big"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "big"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b6cab5c92190d061",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "east_west",
+          "stages": 1
+        },
+        "source": "east_west"
+      },
+      "equalToLive": true,
+      "malloy": "run: east_west -> { group_by: big; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "66844921999eecf1f00874459a3b65a47e4947dad08dbb52d961e11f2951bbf8"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "big"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "east_west"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "66844921999eecf1f00874459a3b65a47e4947dad08dbb52d961e11f2951bbf8",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a computed boolean dimension",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "9875636b15195db6",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "total"
+          ],
+          "source": "east_west_ext",
+          "stages": 1
+        },
+        "source": "east_west_ext"
+      },
+      "equalToLive": true,
+      "malloy": "run: east_west_ext -> { group_by: region; aggregate: n, total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "66844921999eecf1f00874459a3b65a47e4947dad08dbb52d961e11f2951bbf8"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n",
+            "total"
+          ],
+          "sourceName": "east_west_ext"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "66844921999eecf1f00874459a3b65a47e4947dad08dbb52d961e11f2951bbf8",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "an extension",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

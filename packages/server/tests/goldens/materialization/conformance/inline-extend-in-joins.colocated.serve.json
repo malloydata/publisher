@@ -1,0 +1,434 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "by_customer",
+        "tier": "colocated"
+      }
+    ],
+    "verdicts": [
+      "by_customer:serves",
+      "by_customer_plus:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "seg_up"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "seg_up"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "d7f49ce71429ac96",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "by_customer",
+          "stages": 1
+        },
+        "source": "by_customer"
+      },
+      "equalToLive": true,
+      "malloy": "run: by_customer -> { group_by: seg_up; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "seg_up"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "by_customer"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+        },
+        "warnings": []
+      },
+      "query": "a stored column computed through the inline join",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "cust.home"
+          },
+          {
+            "classifications": [],
+            "path": "grand"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "cust.home"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "c2794c2bf3ee8541",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "by_customer_plus",
+          "stages": 1
+        },
+        "source": "by_customer_plus"
+      },
+      "equalToLive": true,
+      "malloy": "run: by_customer_plus -> { group_by: cust.home; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "cust.home"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "by_customer_plus"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+        },
+        "warnings": []
+      },
+      "query": "a join's inline dimension on the extension",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "seg_up"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "seg_up"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "afb6593aff9f0fdb",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()",
+            "grand"
+          ],
+          "source": "by_customer_plus",
+          "stages": 1
+        },
+        "source": "by_customer_plus"
+      },
+      "equalToLive": true,
+      "malloy": "run: by_customer_plus -> { group_by: seg_up; aggregate: grand, customers is cust.count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "seg_up"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "by_customer_plus"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+        },
+        "warnings": []
+      },
+      "query": "a join-level aggregate on the extension",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "seg_up"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "seg_up"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "d7f49ce71429ac96",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "by_customer",
+          "stages": 1
+        },
+        "source": "by_customer"
+      },
+      "equalToLive": true,
+      "malloy": "run: by_customer -> { group_by: seg_up; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "seg_up"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "by_customer"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+        },
+        "warnings": []
+      },
+      "query": "a stored column computed through the inline join",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "cust.home"
+          },
+          {
+            "classifications": [],
+            "path": "grand"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "cust.home"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "c2794c2bf3ee8541",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "by_customer_plus",
+          "stages": 1
+        },
+        "source": "by_customer_plus"
+      },
+      "equalToLive": true,
+      "malloy": "run: by_customer_plus -> { group_by: cust.home; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "cust.home"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "by_customer_plus"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+        },
+        "warnings": []
+      },
+      "query": "a join's inline dimension on the extension",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "seg_up"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "seg_up"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "afb6593aff9f0fdb",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()",
+            "grand"
+          ],
+          "source": "by_customer_plus",
+          "stages": 1
+        },
+        "source": "by_customer_plus"
+      },
+      "equalToLive": true,
+      "malloy": "run: by_customer_plus -> { group_by: seg_up; aggregate: grand, customers is cust.count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "seg_up"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "by_customer_plus"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+        },
+        "warnings": []
+      },
+      "query": "a join-level aggregate on the extension",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

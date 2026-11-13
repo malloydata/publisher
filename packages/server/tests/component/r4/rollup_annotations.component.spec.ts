@@ -81,6 +81,9 @@ source: orders is duckdb.table('orders_raw') include {
   #(classification) "none"
   #(doc) "Order revenue"
   # currency
+  #|
+    # description="Net of refunds"
+  |#
   #(preaggregate) grain=["region"]${placement}
   #(preaggregate) grain=["region", "buyer", "region_tag", "order_month"]${placement}
   measure: revenue is amount.sum()
@@ -137,7 +140,7 @@ describe.each([
          malloy: string,
          served: boolean,
          bypassAuthorize = false,
-      ) => {
+      ): Promise<Answer> => {
          fixture.setBindings(served ? fixture.bindings : []);
          const audit = unrecordedAudit();
          try {
@@ -184,6 +187,8 @@ describe.each([
                '#(classification) "none"',
                '#(doc) "Order revenue"',
                "# currency",
+               // A multi-line note, held without its closer.
+               '#|\n# description="Net of refunds"',
             ],
          ],
          [

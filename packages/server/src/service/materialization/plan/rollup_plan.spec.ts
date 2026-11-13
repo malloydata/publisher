@@ -1,7 +1,15 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterAll, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
+import { installSettings } from "../../../test_helpers/settings_env";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { InMemoryURLReader, SingleConnectionRuntime } from "@malloydata/malloy";
 import { persistBlankedFiles } from "../persist_blanking";
@@ -9,7 +17,9 @@ import {
    generateRollupBuildFile,
    planModelRollups,
    rollupName,
-   rollupsReadUnderGates,
+   allowGatedStorageRollupsForTests,
+   rollupGateEnforcedAtRead,
+   rollupsServeGatedBases,
    type RollupRefusal,
    type RollupVariantPlan,
 } from "./rollup_plan";
@@ -271,9 +281,9 @@ describe("#(preaggregate) access filters (A4)", () => {
    });
 });
 
-describe("#(preaggregate) over a gated source, while gated entry points skip rollups (row 21)", () => {
+describe("#(preaggregate) over a gated source with gated sources off (row 21)", () => {
    it("plans no rollup over a gated source, even one whose grain keeps the gate's field", async () => {
-      expect(rollupsReadUnderGates()).toBe(false);
+      expect(rollupsServeGatedBases({})).toBe(false);
       const { plans, refused } = await plan(GATED);
       expect(plans).toEqual([]);
       expect(refused.map((r) => [r.tier, r.code])).toEqual([
@@ -281,7 +291,7 @@ describe("#(preaggregate) over a gated source, while gated entry points skip rol
          ["unservable", "preaggregate-access-filter"],
       ]);
       expect(refused[0]?.message).toContain(
-         "a query on a gated source is not read from a rollup yet",
+         "PUBLISHER_MATERIALIZE_GATED_SOURCES",
       );
    });
 
@@ -485,6 +495,66 @@ source: orders is ${ROWS} extend {
    });
 });
 
+describe("a source that sets its own time zone (#1686)", () => {
+   it("plans its rollup only where the join leg reads it: joined from a source in the same zone", async () => {
+      const zoned = (
+         name: string,
+         storage = "",
+      ) => `source: ${name} is ${ROWS} extend {
+  timezone: 'America/New_York'
+  primary_key: id
+  dimension: order_day is order_time.day
+  #(preaggregate) grain=["id", "order_day"]${storage}
+  measure: total is amount.sum()
+}`;
+      const { plans, refused } = await plan({
+         "m.malloy": `${zoned("lonely")}
+${zoned("joined")}
+${zoned("joined_stored", ' storage="lake"')}
+${zoned("joined_elsewhere")}
+source: inherits is lonely extend {
+  #(preaggregate) grain=["category"]
+  measure: total2 is amount.sum()
+}
+source: plain is ${ROWS} extend {
+  #(preaggregate) grain=["category"]
+  measure: total is amount.sum()
+}
+source: parent is ${ROWS} extend {
+  timezone: 'America/New_York'
+  join_one: j is joined on j.id = id
+  join_one: js is joined_stored on js.id = id
+}
+source: parent_utc is ${ROWS} extend {
+  join_one: je is joined_elsewhere on je.id = id
+}`,
+      });
+      // A storage= rollup joined from the same zone is planned too: the join
+      // leg reads it when the joining source is stored in that destination
+      // (#1704), and declines at read when it is not.
+      expect(plans.map((p) => p.baseSourceID.split("@")[0]).sort()).toEqual([
+         "joined",
+         "joined_stored",
+         "plain",
+      ]);
+      expect(
+         refused
+            .filter((r) => r.code === "preaggregate-time-zone")
+            .map((r) => [r.sourceName, r.measure])
+            .sort(),
+      ).toEqual([
+         ["inherits", "total2"],
+         ["joined_elsewhere", "total"],
+         ["lonely", "total"],
+      ]);
+      const message = refused.find((r) => r.sourceName === "lonely")?.message;
+      expect(message).toContain("timezone: 'America/New_York'");
+      expect(refused.find((r) => r.sourceName === "lonely")?.tier).toBe(
+         "unservable",
+      );
+   });
+});
+
 describe("the rollup build file", () => {
    it("declares one persisted rollup per grain over the imported base", async () => {
       const { plans } = await plan({
@@ -541,5 +611,242 @@ source: daily is ${ROWS} -> { group_by: category; aggregate: n is count() }
       expect(
          await persistBlankedFiles(modelDef, () => undefined),
       ).toBeUndefined();
+   });
+});
+
+describe("#(preaggregate) over a gated source with gated sources on (row 1)", () => {
+   let restore: () => void;
+   beforeEach(() => {
+      restore = installSettings({
+         env: {
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+         },
+      }).restore;
+   });
+   afterEach(() => restore());
+
+   const placed = (placement: string) => ({
+      "orders.malloy": `##! experimental { givens access_modifiers }
+given: REGION :: string is 'x'
+#(access_filter) region = $REGION
+source: orders is ${ROWS} extend {
+  #(preaggregate) grain=["category", "region"]${placement}
+  measure: total is amount.sum()
+}`,
+   });
+
+   it("plans a colocated rollup whose grain keeps the gate's field, read at its gate", async () => {
+      const { plans, refused } = await plan(placed(""));
+      expect(refused).toEqual([]);
+      expect(plans).toHaveLength(1);
+      expect(plans[0]?.baseGated).toBe(true);
+      expect(rollupGateEnforcedAtRead(plans[0])).toBe(true);
+   });
+
+   it("leaves out a storage= rollup over a gated base until the managed-tier review (question 14)", async () => {
+      const { plans, refused } = await plan(placed(' storage="lake"'));
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => r.code)).toEqual([
+         "preaggregate-access-filter",
+      ]);
+      expect(refused[0]?.message).toContain("storage destination");
+      const allow = allowGatedStorageRollupsForTests();
+      try {
+         const reviewed = await plan(placed(' storage="lake"'));
+         expect(reviewed.plans).toHaveLength(1);
+         expect(rollupGateEnforcedAtRead(reviewed.plans[0])).toBe(true);
+      } finally {
+         allow();
+      }
+   });
+
+   it("never reads a v1 plan or an ungated rollup past a gate", async () => {
+      expect(rollupGateEnforcedAtRead({ baseGated: true })).toBe(false);
+      const { plans } = await plan({
+         "orders.malloy": `source: orders is ${ROWS} extend {
+  #(preaggregate) grain=["category"]
+  measure: total is amount.sum()
+}`,
+      });
+      expect(rollupGateEnforcedAtRead(plans[0])).toBe(false);
+   });
+
+   it("stores an internal gate field in the grain, and no other hidden field (A4)", async () => {
+      const { plans, refused } = await plan({
+         "orders.malloy": `##! experimental { givens access_modifiers }
+given: TENANT :: string is 'x'
+#(access_filter) tenant = $TENANT
+source: orders is ${ROWS} extend {
+  internal dimension: tenant is region
+  private dimension: secret is carrier
+  #(preaggregate) grain=["category", "tenant"]
+  #(preaggregate) grain=["category", "tenant", "secret"]
+  measure: total is amount.sum()
+}`,
+      });
+      expect(plans.map((p) => [p.grainDimensions, p.internalGrain])).toEqual([
+         [["category", "tenant"], ["tenant"]],
+      ]);
+      expect(refused.map((r) => r.code)).toEqual(["preaggregate-hidden-field"]);
+      const text = generateRollupBuildFile(plans, "orders.malloy") ?? "";
+      expect(text).toContain("include { public: * } -> {");
+   });
+
+   it("walks an inherited gate as the governor does, on an extension's own rollup", async () => {
+      const { plans, refused } = await plan({
+         "orders.malloy": `##! experimental.givens
+given: REGION :: string is 'x'
+#(access_filter) region = $REGION
+source: gated is ${ROWS}
+source: orders is gated extend {
+  #(preaggregate) grain=["category", "region"]
+  #(preaggregate) grain=["category"]
+  measure: total is amount.sum()
+}`,
+      });
+      expect(plans.map((p) => p.grainDimensions)).toEqual([
+         ["category", "region"],
+      ]);
+      expect(refused.map((r) => r.code)).toEqual([
+         "preaggregate-access-filter",
+      ]);
+   });
+
+   it("leaves out a rollup whose gate field reads through a join, even in the grain", async () => {
+      const { plans, refused } = await plan({
+         "orders.malloy": `##! experimental.givens
+given: FLEET :: number is 5
+source: carriers is ${CARRIERS} extend { primary_key: code }
+#(access_filter) fleet = $FLEET
+source: orders is ${ROWS} extend {
+  join_one: carriers with carrier
+  dimension: fleet is carriers.fleet
+  #(preaggregate) grain=["category", "fleet"]
+  measure: total is amount.sum()
+}`,
+      });
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => r.code)).toEqual([
+         "preaggregate-access-filter",
+      ]);
+   });
+
+   it("leaves out a gated base's rollup when a source it joins is gated too", async () => {
+      const { plans, refused } = await plan({
+         "orders.malloy": `##! experimental.givens
+given: REGION :: string is 'x'
+given: FLEET :: number is 5
+#(access_filter) fleet = $FLEET
+source: carriers is ${CARRIERS} extend { primary_key: code }
+#(access_filter) region = $REGION
+source: orders is ${ROWS} extend {
+  join_one: carriers with carrier
+  #(preaggregate) grain=["category", "region"]
+  measure: total is amount.sum()
+}`,
+      });
+      expect(plans).toEqual([]);
+      expect(refused[0]?.message).toContain("a source it joins");
+   });
+
+   it("plans a lock that reads no field at any grain", async () => {
+      const { plans, refused } = await plan({
+         "orders.malloy": `##! experimental.givens
+given: ROLE :: string is 'viewer'
+#(authorize) 'admin' = $ROLE
+source: orders is ${ROWS} extend {
+  #(preaggregate) grain=["category"]
+  measure: total is amount.sum()
+}`,
+      });
+      expect(refused).toEqual([]);
+      expect(plans).toHaveLength(1);
+   });
+});
+
+describe("v1 #@ preaggregate read as the rollup leg's declarations (the v1 cutover's G4)", () => {
+   const V1 = `##! experimental.persistence
+source: orders is ${ROWS} extend {
+  dimension: order_day is order_time.day
+  #@ preaggregate grain="category" storage="lake"
+  #@ preaggregate grain="order_day, category"
+  measure: total is amount.sum()
+  #@ preaggregate grain="category"
+  #@ -preaggregate
+  measure: n is count()
+}`;
+
+   async function planV1(readsV1: boolean) {
+      const modelDef = await compile({ "orders.malloy": V1 });
+      return planModelRollups(SourceMap.of(modelDef), {
+         packageRelativeSourceID: (id) => id.replace("file:///pkg/", ""),
+         readsV1,
+      });
+   }
+
+   it("plans each v1 grain as a rollup, with its own line's placement, negation applied", async () => {
+      const { plans, refused } = await planV1(true);
+      expect(refused).toEqual([]);
+      expect(
+         plans.map((p) => [
+            p.grainDimensions,
+            p.storage ?? null,
+            p.measures.map((m) => m.name),
+         ]),
+      ).toEqual([
+         [["category"], "lake", ["total"]],
+         [["category", "order_day"], null, ["total"]],
+      ]);
+      // Under the v2 rollup's name: a v1 rollup rebuilds once (decision 3).
+      expect(plans[0]?.rollupSourceName).toBe(
+         rollupName("orders", "orders@orders.malloy", ["category"], {
+            storage: "lake",
+         }),
+      );
+   });
+
+   it("reads no v1 line before the cutover", async () => {
+      expect((await planV1(false)).plans).toEqual([]);
+   });
+});
+
+describe("a v1 rollup's namespace under the v1 cutover", () => {
+   it("inherits its base's #@ persist name= namespace when its line names none, as v1 places it", async () => {
+      const modelDef = await compile({
+         "orders.malloy": `##! experimental.persistence
+#@ persist name="analytics.orders_tbl"
+source: orders is ${ROWS} -> {
+  select: category, region, amount
+} extend {
+  measure:
+    #@ preaggregate grain="region" namespace="rollups"
+    regional is amount.sum()
+  measure:
+    #@ preaggregate grain="category"
+    total is amount.sum()
+  measure:
+    #@ preaggregate grain="category, region" storage="lake"
+    both is amount.sum()
+}`,
+      });
+      const { plans, refused } = planModelRollups(SourceMap.of(modelDef), {
+         packageRelativeSourceID: (id) => id.replace("file:///pkg/", ""),
+         readsV1: true,
+      });
+      expect(refused).toEqual([]);
+      expect(
+         plans
+            .map((p) => [
+               p.grainDimensions.join(","),
+               p.namespace ?? null,
+               p.storage ?? null,
+            ])
+            .sort(),
+      ).toEqual([
+         ["category", "analytics", null],
+         ["category,region", null, "lake"],
+         ["region", "rollups", null],
+      ]);
    });
 });

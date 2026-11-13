@@ -10,10 +10,7 @@ import {
    PackageVersionError,
 } from "../../../errors";
 import { logger } from "../../../logger";
-import {
-   MaterializationMode,
-   recordSourcesOutcome,
-} from "../../../materialization_metrics";
+import { MaterializationMode } from "../../../materialization_metrics";
 import {
    Materialization,
    MaterializationUpdate,
@@ -34,6 +31,7 @@ import {
    ServingReader,
    tableIdentity,
    tableNamesIn,
+   packageTableSuffix,
    versionTableSuffix,
    WRITES_TABLES_KEY,
 } from "../../versions/materialization_scope";
@@ -54,10 +52,11 @@ import {
 } from "./incremental_build";
 import {
    INLINE_UNIQUENESS_KEY,
+   rollupKeyRecordsIn,
+   uncontestedAutoRun,
    UniquenessLedger,
    uniquenessPassesIn,
    withoutUniquenessPasses,
-   type UniquenessPass,
 } from "./inline_uniqueness";
 import { InstructedBuild, nameViewContext } from "./instructed_build";
 import {
@@ -77,8 +76,19 @@ import {
    restoreNameViews,
    type NameViewRecord,
 } from "./name_view";
+import { nameViewOwner } from "./name_view_sql";
 import { Reclaimer } from "./reclaimer";
 import { RunLifecycle } from "./run_lifecycle";
+import {
+   buildKindOf,
+   buildKindsByAddress,
+   markRunFailureReported,
+   reportSourceRefused,
+   reportSourceReused,
+   RunTelemetry,
+   runTriggerOf,
+   withRunTelemetry,
+} from "./run_telemetry";
 import {
    deriveSelfInstructions,
    validateInstructions,
@@ -90,13 +100,7 @@ import {
    type StorageBuildRequest,
 } from "./storage_build_strategy";
 import { TableClaims } from "./table_claims";
-
-/** A run that can write nothing more. */
-const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
-   "MANIFEST_FILE_READY",
-   "FAILED",
-   "CANCELLED",
-]);
+import { uncarryUnownedTables } from "./table_ownership";
 
 /**
  * Orchestrates single-call materialization builds: the facade the controller,
@@ -604,7 +608,29 @@ export class MaterializationService {
     * loads the fresh manifest into the package models; orchestrated leaves
     * distribution to the caller.
     */
-   private async runBuild(
+   private runBuild(
+      ...args: Parameters<MaterializationService["buildRun"]> extends [
+         RunTelemetry,
+         ...infer Rest,
+      ]
+         ? Rest
+         : never
+   ): Promise<void> {
+      const [id, , packageName, opts] = args;
+      const telemetry = new RunTelemetry(
+         id,
+         opts.buildInstructions !== undefined ? "orchestrated" : "auto",
+         packageName,
+      );
+      // Every source event of the run, however deep, belongs to this run.
+      return withRunTelemetry(telemetry, () =>
+         this.buildRun(telemetry, ...args),
+      );
+   }
+
+   /** {@link runBuild}'s body, inside the run's telemetry. */
+   private async buildRun(
+      telemetry: RunTelemetry,
       id: string,
       environmentName: string,
       packageName: string,
@@ -628,12 +654,7 @@ export class MaterializationService {
       // Set once this run has recorded the shared tables it rebuilds: from
       // then on, a failure must rebind the other loaded versions too.
       let markedShared = false;
-      const mode: MaterializationMode = orchestrated ? "orchestrated" : "auto";
-      logger.info("Materialization build started", {
-         materializationId: id,
-         packageName,
-         mode,
-      });
+      const mode: MaterializationMode = telemetry.mode;
       const startedAt = Date.now();
 
       try {
@@ -750,24 +771,44 @@ export class MaterializationService {
                     id,
                     reader,
                  );
+            let recheck: Record<string, BuildInstruction>;
             ({
                instructions,
                carried,
                refused: derivedRefused,
                cleared: clearedTiers,
+               recheck = {},
             } = this.deriveSelfInstructions(
                compiled,
                opts.sourceNames,
                priorEntries,
                incremental,
                owned !== undefined
-                  ? versionTableSuffix({
-                       environmentName,
-                       packageName,
-                       version: owned,
-                    })
-                  : "",
+                  ? {
+                       versionSuffix: versionTableSuffix({
+                          environmentName,
+                          packageName,
+                          version: owned,
+                       }),
+                    }
+                  : {
+                       packageSuffix: packageTableSuffix({
+                          environmentName,
+                          packageName,
+                       }),
+                    },
             ));
+            // A carried table at the author's `name=` is reused only while
+            // it is still marked as this package's (table_ownership.ts).
+            if (Object.keys(recheck).length > 0) {
+               await uncarryUnownedTables(
+                  recheck,
+                  carried,
+                  instructions,
+                  nameViewOwner(environmentName, packageName),
+                  nameViewContext({ compiled, environment }),
+               );
+            }
          }
 
          // An auto-run of a version of a `scope: package` package rebuilds,
@@ -831,13 +872,36 @@ export class MaterializationService {
             );
          }
 
+         telemetry.started(
+            runTriggerOf({
+               trigger: opts.trigger,
+               runContextTrigger: opts.runContext?.trigger,
+               orchestrated,
+            }),
+            instructions.length,
+         );
+         // Auto-run's refusals never reach the build loop, which counts the
+         // rest of the run's sources.
+         for (const refusal of Object.values(derivedRefused)) {
+            reportSourceRefused(
+               buildKindOf(compiled, refusal.sourceID),
+               refusal.tier === "storage" ? "storage" : "colocated",
+            );
+         }
+
+         // A rollup this run may rewrite in place no longer holds what its
+         // bound key check said (known limitation 29): forget it before any
+         // table is written, so a run that fails part-way never leaves a
+         // check bound over rows it did not read. This run's own commit binds
+         // what it checks.
+         pkg.forgetKeyUniqueness?.(
+            instructions.map((instruction) => instruction.sourceEntityId),
+         );
+
          const {
             entries,
             failures,
             sourcesRefused: instructedRefused,
-            // Defaults keep a seam that predates the split meaning "every
-            // refusal is in failures".
-            refusalsInFailures = instructedRefused,
             refusedBesideBuilt = {},
             nameViews = [],
             uniquenessChecks,
@@ -875,16 +939,20 @@ export class MaterializationService {
             // passed. A host's tables are its own.
             orchestrated
                ? undefined
-               : new UniquenessLedger(
-                    opts.forceRefresh
+               : await (async () => {
+                    const prior = opts.forceRefresh
                        ? undefined
-                       : await this.priorUniquenessPasses(
+                       : await this.priorUniquenessMetadata(
                             environmentId,
                             packageName,
                             id,
-                         ),
-                    id,
-                 ),
+                         );
+                    return new UniquenessLedger(
+                       prior ? uniquenessPassesIn(prior) : undefined,
+                       id,
+                       prior ? rollupKeyRecordsIn(prior) : undefined,
+                    );
+                 })(),
          );
 
          const { sourcesBuilt, sourcesFailed, sourcesReused } = tallySources(
@@ -1010,6 +1078,7 @@ export class MaterializationService {
                packageName,
                entries,
                versionId,
+               uniquenessChecks?.rollupKeys,
             );
          }
          if (markedShared && versionId !== undefined) {
@@ -1024,15 +1093,23 @@ export class MaterializationService {
             );
          }
 
-         recordSourcesOutcome("built", sourcesBuilt, mode);
-         recordSourcesOutcome("reused", sourcesReused, mode);
-         // An instructed refusal in `failures` is metered once, as refused.
-         recordSourcesOutcome(
-            "failed",
-            sourcesFailed - refusalsInFailures,
-            mode,
+         // Carried forward, so never in the build loop: counted once the run
+         // has committed them. A host's reference to an address this run
+         // rebuilt was counted as built.
+         const kindByAddress = buildKindsByAddress(
+            compiled,
+            pkg.getBuildPlan(),
          );
-         recordSourcesOutcome("refused", sourcesRefused, mode);
+         for (const [address, entry] of Object.entries(carried)) {
+            if (failures[address] || telemetry.builtAddresses.has(address)) {
+               continue;
+            }
+            reportSourceReused(
+               kindByAddress.get(address) ??
+                  (entry.origin === "preaggregate" ? "rollup" : "persist"),
+               entry.storageDestinationName ? "storage" : "colocated",
+            );
+         }
          // A run that lost sources is partial: its manifest is missing tables a
          // consumer expected. An auto-run refusal is not a loss: it is a property
          // of the model, and counting it would make every run partial.
@@ -1042,25 +1119,12 @@ export class MaterializationService {
             partial ? "partial" : "success",
             startedAt,
          );
-         logger[partial || sourcesRefused > 0 ? "warn" : "info"](
-            sourcesFailed > 0
-               ? "Materialization build complete with failed sources"
-               : sourcesRefused > 0
-                 ? "Materialization build complete with refused sources"
-                 : "Materialization build complete",
-            {
-               materializationId: id,
-               packageName,
-               mode,
-               sourcesBuilt,
-               sourcesReused,
-               sourcesFailed,
-               sourcesRefused,
-               durationMs,
-            },
-         );
+         telemetry.finished(partial ? "partial" : "success", durationMs);
       } catch (err) {
-         this.lifecycle.recordRun(mode, outcomeFor(err, signal), startedAt);
+         const outcome = outcomeFor(err, signal);
+         this.lifecycle.recordRun(mode, outcome, startedAt);
+         telemetry.finished(outcome, Date.now() - startedAt, err);
+         markRunFailureReported(err);
          if (markedShared && opts.version !== null) {
             // The run may have rebuilt some shared tables before it failed.
             // Its record stays, so rebinding now leaves those tables unbound
@@ -1144,6 +1208,18 @@ export class MaterializationService {
                await this.resolveEnvironmentId(environmentName),
                packageName,
             )) ?? [],
+         tableNotOwned: async (environmentName, packageName, target) => {
+            await this.claims.markHeldElsewhere(
+               await this.resolveEnvironmentId(environmentName),
+               packageName,
+               "",
+               target,
+            );
+            await this.committer.rebindLoadedVersions(
+               environmentName,
+               packageName,
+            );
+         },
       }).run(...args);
    }
 
@@ -1219,11 +1295,11 @@ export class MaterializationService {
     * over. An orchestrated run before, or any doubt (a run still active, one
     * that overlapped, an unreadable listing), relies on nothing.
     */
-   private async priorUniquenessPasses(
+   private async priorUniquenessMetadata(
       environmentId: string,
       packageName: string,
       excludeId: string,
-   ): Promise<Record<string, UniquenessPass> | undefined> {
+   ): Promise<Record<string, unknown> | undefined> {
       let runs: Materialization[];
       try {
          runs = (
@@ -1239,26 +1315,7 @@ export class MaterializationService {
          );
          return undefined;
       }
-      if (runs.length === 0) return undefined;
-      const at = (d: Date | string | null | undefined) =>
-         d ? new Date(d).getTime() : NaN;
-      const previous = runs.reduce((a, b) =>
-         at(b.createdAt) > at(a.createdAt) ? b : a,
-      );
-      if (
-         previous.status !== "MANIFEST_FILE_READY" ||
-         previous.metadata?.mode !== "auto"
-      ) {
-         return undefined;
-      }
-      const began = at(previous.startedAt ?? previous.createdAt);
-      for (const other of runs) {
-         if (other === previous) continue;
-         if (!TERMINAL_STATUSES.has(other.status)) return undefined;
-         const ended = at(other.completedAt ?? other.updatedAt);
-         if (!(ended <= began)) return undefined;
-      }
-      return uniquenessPassesIn(previous.metadata);
+      return uncontestedAutoRun(runs)?.metadata ?? undefined;
    }
 
    /**

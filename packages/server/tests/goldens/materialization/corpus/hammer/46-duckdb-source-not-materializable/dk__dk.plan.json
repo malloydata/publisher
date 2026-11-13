@@ -1,0 +1,77 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "dk",
+        "dependsOn": {
+          "dk_daily@<hammer>/dk/dk.malloy": []
+        },
+        "order": [
+          "dk_daily@<hammer>/dk/dk.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "dk_daily@<hammer>/dk/dk.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "dk_daily@<hammer>/dk/dk.malloy": "dk.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "dk",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "dk_daily@<hammer>/dk/dk.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "dk_daily@<hammer>/dk/dk.malloy": {
+        "annotationFields": {
+          "name": "dk_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "dk",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "dk.malloy",
+        "name": "dk_daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "5eafafa08ff015626e724d9ea84360e554828288845cf50f0b6dac000f6a2e60",
+        "sourceID": "dk_daily@<hammer>/dk/dk.malloy",
+        "sql": "sha256:c1e78b2b35ceb602"
+      }
+    }
+  }
+}

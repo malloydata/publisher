@@ -1,0 +1,124 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/erb/erb.malloy": [],
+          "daily_with_avg@<hammer>/erb/erb.malloy": []
+        },
+        "order": [
+          "daily@<hammer>/erb/erb.malloy",
+          "daily_with_avg@<hammer>/erb/erb.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/erb/erb.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "daily_with_avg@<hammer>/erb/erb.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/erb/erb.malloy": "erb.malloy",
+      "daily_with_avg@<hammer>/erb/erb.malloy": "erb.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/erb/erb.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "daily_with_avg@<hammer>/erb/erb.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/erb/erb.malloy": {
+        "annotationFields": {
+          "name": "erb_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          },
+          {
+            "name": "num_orders",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "erb.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "4879af40cfeb86fb6982ff4b648b86b327244fbd980ca03f4ec5e4ea788251f1",
+        "sourceID": "daily@<hammer>/erb/erb.malloy",
+        "sql": "sha256:10d1c15b934a168e"
+      },
+      "daily_with_avg@<hammer>/erb/erb.malloy": {
+        "annotationFields": {
+          "name": "erb_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          },
+          {
+            "name": "num_orders",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "erb.malloy",
+        "name": "daily_with_avg",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "4879af40cfeb86fb6982ff4b648b86b327244fbd980ca03f4ec5e4ea788251f1",
+        "sourceID": "daily_with_avg@<hammer>/erb/erb.malloy",
+        "sql": "sha256:10d1c15b934a168e"
+      }
+    }
+  }
+}

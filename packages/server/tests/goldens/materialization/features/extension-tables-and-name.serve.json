@@ -1,0 +1,1214 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "colocated_ext",
+        "tier": "colocated"
+      },
+      {
+        "name": "stored",
+        "tier": "storage"
+      },
+      {
+        "name": "by_given",
+        "tier": "storage"
+      },
+      {
+        "name": "east",
+        "tier": "storage"
+      },
+      {
+        "name": "renamed",
+        "tier": "storage"
+      },
+      {
+        "name": "east_big",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "colocated_ext:serves",
+      "stored:serves",
+      "by_given:serves",
+      "east:serves",
+      "renamed:serves",
+      "east_big:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "is_big"
+          },
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "is_big"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "92d49a986d757c6d",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "total"
+          ],
+          "source": "stored",
+          "stages": 1
+        },
+        "source": "stored"
+      },
+      "equalToLive": true,
+      "malloy": "run: stored -> { group_by: is_big; aggregate: n, total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "below",
+            "sourceName": "by_given",
+            "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "below",
+            "sourceName": "east",
+            "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "below",
+            "sourceName": "renamed",
+            "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "colocated_ext",
+            "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "below",
+            "sourceName": "east_big",
+            "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "is_big"
+          ],
+          "measures": [
+            "n",
+            "total"
+          ],
+          "sourceName": "stored"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the parent",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "c268e5bcb434584c",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "east",
+          "stages": 1
+        },
+        "source": "east"
+      },
+      "equalToLive": true,
+      "malloy": "run: east -> { group_by: status; aggregate: n }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "below",
+            "sourceName": "east_big",
+            "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "by_given",
+            "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "renamed",
+            "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "colocated_ext",
+            "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "east"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an extension with a fixed where:",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "e8b2597c649ecd0b",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "total"
+          ],
+          "source": "east_big",
+          "stages": 1
+        },
+        "source": "east_big"
+      },
+      "equalToLive": true,
+      "malloy": "run: east_big -> { aggregate: n, total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "by_given",
+            "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "renamed",
+            "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "colocated_ext",
+            "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [],
+          "measures": [
+            "n",
+            "total"
+          ],
+          "sourceName": "east_big"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "two deep",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [
+          "REGION"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "0c51906936e58abe",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "by_given",
+          "stages": 1
+        },
+        "source": "by_given"
+      },
+      "equalToLive": true,
+      "givens": [
+        "REGION"
+      ],
+      "malloy": "run: by_given -> { group_by: status; aggregate: n }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "east",
+            "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "renamed",
+            "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "colocated_ext",
+            "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "east_big",
+            "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "by_given"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a given-reading extension",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "id_total"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "4c5837f8cd2af5de",
+          "kind": "reduce",
+          "measures": [
+            "id_total"
+          ],
+          "source": "renamed",
+          "stages": 1
+        },
+        "source": "renamed"
+      },
+      "equalToLive": true,
+      "malloy": "run: renamed -> { group_by: region; aggregate: id_total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "by_given",
+            "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "east",
+            "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "colocated_ext",
+            "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "east_big",
+            "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "id_total"
+          ],
+          "sourceName": "renamed"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a rename",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "2c68f147647c8966",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "colocated_ext",
+          "stages": 1
+        },
+        "source": "colocated_ext"
+      },
+      "equalToLive": true,
+      "malloy": "run: colocated_ext -> { group_by: region; aggregate: n }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "stored",
+            "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "by_given",
+            "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "east",
+            "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "renamed",
+            "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "east_big",
+            "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "colocated_ext"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a colocated extension",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "is_big"
+          },
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "is_big"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "92d49a986d757c6d",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "total"
+          ],
+          "source": "stored",
+          "stages": 1
+        },
+        "source": "stored"
+      },
+      "equalToLive": true,
+      "malloy": "run: stored -> { group_by: is_big; aggregate: n, total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "below",
+            "sourceName": "by_given",
+            "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "below",
+            "sourceName": "east",
+            "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "below",
+            "sourceName": "renamed",
+            "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "colocated_ext",
+            "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "below",
+            "sourceName": "east_big",
+            "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "is_big"
+          ],
+          "measures": [
+            "n",
+            "total"
+          ],
+          "sourceName": "stored"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the parent",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "c268e5bcb434584c",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "east",
+          "stages": 1
+        },
+        "source": "east"
+      },
+      "equalToLive": true,
+      "malloy": "run: east -> { group_by: status; aggregate: n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "below",
+            "sourceName": "east_big",
+            "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "by_given",
+            "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "renamed",
+            "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "colocated_ext",
+            "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "east"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "an extension with a fixed where:",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "e8b2597c649ecd0b",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "total"
+          ],
+          "source": "east_big",
+          "stages": 1
+        },
+        "source": "east_big"
+      },
+      "equalToLive": true,
+      "malloy": "run: east_big -> { aggregate: n, total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "by_given",
+            "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "renamed",
+            "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "colocated_ext",
+            "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [],
+          "measures": [
+            "n",
+            "total"
+          ],
+          "sourceName": "east_big"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "two deep",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [
+          "REGION"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "0c51906936e58abe",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "by_given",
+          "stages": 1
+        },
+        "source": "by_given"
+      },
+      "equalToLive": true,
+      "givens": [
+        "REGION"
+      ],
+      "malloy": "run: by_given -> { group_by: status; aggregate: n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "east",
+            "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "renamed",
+            "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "colocated_ext",
+            "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "east_big",
+            "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "by_given"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a given-reading extension",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "id_total"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "4c5837f8cd2af5de",
+          "kind": "reduce",
+          "measures": [
+            "id_total"
+          ],
+          "source": "renamed",
+          "stages": 1
+        },
+        "source": "renamed"
+      },
+      "equalToLive": true,
+      "malloy": "run: renamed -> { group_by: region; aggregate: id_total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "by_given",
+            "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "east",
+            "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "colocated_ext",
+            "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "east_big",
+            "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "id_total"
+          ],
+          "sourceName": "renamed"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a rename",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "2c68f147647c8966",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "colocated_ext",
+          "stages": 1
+        },
+        "source": "colocated_ext"
+      },
+      "equalToLive": true,
+      "malloy": "run: colocated_ext -> { group_by: region; aggregate: n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "stored",
+            "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "by_given",
+            "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "east",
+            "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "renamed",
+            "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "east_big",
+            "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "colocated_ext"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a colocated extension",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

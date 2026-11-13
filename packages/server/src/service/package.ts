@@ -1928,6 +1928,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.materialization.servedCopyWarnings(),
          ...this.materialization.droppedPersistWarnings(),
          ...this.materialization.rollupsOverStoredBaseWarnings(),
+         ...this.materialization.repeatedJoinOneKeyWarnings(),
          ...this.materialization.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),
          ...this.materialization.persistRefusalWarnings(),
@@ -2024,6 +2025,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /** See {@link PackageMaterialization.bindColocatedServeManifest}. */
    public bindColocatedServeManifest(entries: FreshnessManifest): void {
       this.materialization.bindColocatedServeManifest(entries);
+   }
+
+   /** See {@link PackageMaterialization.forgetKeyUniqueness}. */
+   public forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
+      this.materialization.forgetKeyUniqueness(sourceEntityIds);
    }
 
    /** See {@link PackageMaterialization.bindStorageServeBindings}. */
