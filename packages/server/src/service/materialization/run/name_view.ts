@@ -151,9 +151,9 @@ export function nameViewName(name: string, physicalTableName: string): string {
 
 /**
  * The `name=` view a source's build calls for, or undefined: only a
- * `#(materialize)` source, only with `PUBLISHER_MATERIALIZE` on, and only
- * when its table is not already called `name=` (a self-instructed,
- * unversioned build names the table itself).
+ * `#(materialize)` source that declares `name=`, only with
+ * `PUBLISHER_MATERIALIZE` on, and only when its table is not already called
+ * `name=` (a self-instructed, unversioned build names the table itself).
  */
 export function nameViewIntentFor(
    compiled: Pick<CompiledBuildPlan, "materializePlans">,
@@ -163,8 +163,7 @@ export function nameViewIntentFor(
    owner: string,
 ): NameViewIntent | undefined {
    if (!getMaterializeEnabled()) return undefined;
-   const name =
-      compiled.materializePlans?.[persistSource.sourceID]?.persist.name;
+   const name = declaredName(compiled, persistSource.sourceID);
    if (!name) return undefined;
    const viewName = nameViewName(name, instruction.physicalTableName);
    if (viewName === instruction.physicalTableName) return undefined;
@@ -179,6 +178,22 @@ export function nameViewIntentFor(
          ? { storageDestinationName: instruction.destination }
          : {}),
    };
+}
+
+/**
+ * The `name=` a `#(materialize)` declaration states, or undefined. A table
+ * that only defaults to its source's name gets no view: that name is
+ * Publisher's, not the author's, so no outside reader was promised it, and
+ * the table itself is named for its package or version (packageTableSuffix,
+ * versionTableSuffix), which two packages declaring a source of the same
+ * name would otherwise each claim a view at.
+ */
+function declaredName(
+   compiled: Pick<CompiledBuildPlan, "materializePlans">,
+   sourceID: string,
+): string | undefined {
+   const plan = compiled.materializePlans?.[sourceID];
+   return plan && !plan.nameDefaulted ? plan.persist.name : undefined;
 }
 
 /** The views a run's metadata records, or empty. */
@@ -788,8 +803,7 @@ export function tableAtNameIntentFor(
    owner: string,
 ): NameViewIntent | undefined {
    if (!getMaterializeEnabled()) return undefined;
-   const name =
-      compiled.materializePlans?.[persistSource.sourceID]?.persist.name;
+   const name = declaredName(compiled, persistSource.sourceID);
    if (!name) return undefined;
    if (
       nameViewName(name, instruction.physicalTableName) !==

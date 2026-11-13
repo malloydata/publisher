@@ -21,6 +21,18 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Persisted tables are named for their package, so packages sharing a schema no longer serve each other's rows
+
+Auto-run (Publisher's own builds) used to name a persisted table after its source, or its `name=`. Two packages, or two environments, whose models point at the same warehouse schema or storage destination and persist a source of the same name wrote the **same** table: each build overwrote the other's rows, and every package served whichever built last. Nothing reported it: wrong answers, and possibly one tenant's rows served to another.
+
+- **Default names now carry the package.** A table whose name the author did not choose (a `#@ persist` source with no `name=`, a `#(materialize) storage=` source with no `name=`, a rollup) is named `<source>__p<8 hex>`, the hex a hash of the environment and package, so no two packages on one server share it. `scope: version` tables keep their version suffix (`__v1_2_0_<hex>`), which already hashed both.
+- **An explicit `name=` keeps its name** and is checked before every build. The table is marked with a comment, `malloy-publisher:table owner=<environment>/<package>`. A `name=` held by a table another package marked, another package's view, or anything Publisher did not make, is refused for that source, coded `table-owned-elsewhere` in the run's failures, before anything is written, and the source answers live. A holder Publisher cannot read is refused too (`table-ownership-unverified`). Give one of the sources another `name=`.
+- **Deleting a run with `dropTables=true` never drops a table another package has marked since.**
+- **Upgrading rebuilds, it never deletes.** The first auto-run after the upgrade rebuilds each default-named source under its new name (a one-time rebuild per package); the old table is left where it is, named by the old runs, and dropped when those runs are deleted with `dropTables=true`. Until that first build a package serves its old tables as before, so build each package once after upgrading. An existing `name=` table without a mark is claimed by the first package whose own records name it, and marked; any other package whose records also name it is then refused it and answers live.
+- A `#(materialize)` source with no `name=` no longer gets a `name=` view at its source's name: that name was Publisher's default, not the author's (behind `PUBLISHER_MATERIALIZE`).
+
+Host-orchestrated builds are unchanged: the host chooses those names. The hash keeps tables apart within one server; two servers whose environments and packages have the same names must still not share a schema. See [docs/materialization.md](docs/materialization.md#whose-table-it-is).
+
 ## [Unreleased] — In development: the inline uniqueness check skips an unchanged table, and `#(carries)` reads the served copy
 
 Two materialization v2 limitations lifted, both behind `PUBLISHER_MATERIALIZE` (off by default).
