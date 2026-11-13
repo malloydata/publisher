@@ -169,7 +169,11 @@ import { sameGateSet } from "../../governance/query_governor";
 import { fieldNotes, noteSource } from "../field_notes";
 import { timeframeRestatements, typeDeclaration } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
-import { getMaterializeEnabled } from "../../../config";
+import {
+   getMaterializeEnabled,
+   getMaterializeGatedSources,
+   getV1ServedCopyMode,
+} from "../../../config";
 import {
    boundTablePath,
    buildVirtualMap,
@@ -344,6 +348,11 @@ export class RollupVariantServe {
    private compiled = new Map<string, Promise<CompiledVariant>>();
    private planMemo?: {
       modelDef: unknown;
+      /**
+       * The switches the plans were read under ({@link planSwitches}): a
+       * plan read with one is not the plan with the other.
+       */
+      switches: string;
       byBase: Map<string, RollupVariantPlan[]>;
       /** A7: each source's join legs, by its `sourceID`. */
       joinLegs?: Map<string, ReturnType<typeof joinRollupLegs>>;
@@ -390,8 +399,11 @@ export class RollupVariantServe {
    /** Every rollup a source this model can see declares, by base `sourceID`. */
    private plansByBase(): Map<string, RollupVariantPlan[]> {
       const modelDef = this.host.modelDef();
+      const switches = planSwitches();
       const memo = this.planMemo;
-      if (memo && memo.modelDef === modelDef) return memo.byBase;
+      if (memo && memo.modelDef === modelDef && memo.switches === switches) {
+         return memo.byBase;
+      }
       const byBase = new Map<string, RollupVariantPlan[]>();
       const packagePath = this.packagePath;
       if (modelDef && packagePath) {
@@ -407,7 +419,7 @@ export class RollupVariantServe {
             if (plans.length > 0) byBase.set(node.sourceID, plans);
          }
       }
-      this.planMemo = { modelDef, byBase };
+      this.planMemo = { modelDef, switches, byBase };
       return byBase;
    }
 
@@ -2512,6 +2524,19 @@ export function checkCoverage(
       }
    };
    visit(levels, new Set());
+}
+
+/**
+ * The switches {@link planSourceRollups} reads, as a memo key: `#(preaggregate)`
+ * with `PUBLISHER_MATERIALIZE` (`readsV2`), v1 `#@ preaggregate` with the v1
+ * cutover on (`readsV1`), and whether a gated base's rollup is read.
+ */
+function planSwitches(): string {
+   return [
+      getMaterializeEnabled(),
+      getV1ServedCopyMode(),
+      getMaterializeGatedSources(),
+   ].join("/");
 }
 
 /**
