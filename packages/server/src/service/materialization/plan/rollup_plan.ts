@@ -42,7 +42,8 @@
  *   share a table, and every model that imports the base plans the same name.
  * - **A4, access filters.** A row-level gate whose fields the grain does not
  *   keep cannot be re-applied to the rollup's rows: a publish warning, and the
- *   rollup is not built.
+ *   rollup is not built. While a gated entry point skips every rollup
+ *   ({@link rollupsReadUnderGates}), no rollup over a gated source is built.
  * - **A6, fan-out grains.** A grain dimension read through a join_many or
  *   join_cross is recorded as a fan-out dimension; the serve side reads the
  *   rollup only for a query that fixes it at every aggregating level.
@@ -153,6 +154,24 @@ export interface RollupVariantPlan extends RollupPlan {
     * reads the rollup only when each is fixed at every aggregating level.
     */
    fanOutDimensions: string[];
+   /**
+    * Whether the base declares a row-level gate (`#(access_filter)` or
+    * `#(authorize)`): the join-to-rollup leg (A7) reads the rollup through a
+    * join, where no gate is grafted, so it declines such a base.
+    */
+   baseGated: boolean;
+}
+
+/**
+ * Whether a rollup is read for a query whose entry point carries a row-level
+ * gate. Not yet (known limitation 1): the router's rollup leg does not keep
+ * the domain's contracts, so a gated entry point skips every rollup
+ * (`CONTRACT`), and the planner leaves out a rollup over a gated source,
+ * which no query could read. The one switch both read: lifting row 1 (the
+ * gate proved on the rollup variant, R3 for rollups) flips it here.
+ */
+export function rollupsReadUnderGates(): boolean {
+   return false;
 }
 
 /** Why a declaration was not planned. */
@@ -384,6 +403,8 @@ export function rollupName(
 export interface RollupPlanContext {
    /** The base's `sourceID` relative to the package (`orders@models/o.malloy`). */
    packageRelativeSourceID(sourceID: string): string;
+   /** For tests of what lifting row 1 plans: {@link rollupsReadUnderGates}. */
+   readUnderGates?: boolean;
 }
 
 /**
@@ -563,6 +584,18 @@ export function planSourceRollups(
          );
          continue;
       }
+      // Row 1 (CONTRACT): a query on a gated source is never read from a
+      // rollup, so a rollup of one would be built for nothing.
+      if (gate.declared && !(ctx.readUnderGates ?? rollupsReadUnderGates())) {
+         refused.push(
+            unservable(
+               "preaggregate-access-filter",
+               decl.measure,
+               "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup yet, so its table would cost a build no query reads",
+            ),
+         );
+         continue;
+      }
       // A4: a gate's fields must be in the grain for its rows to be filtered;
       // a gate that reads through a join (or anything but a dimension) can
       // never be re-applied to a rollup's rows.
@@ -716,6 +749,7 @@ export function planSourceRollups(
                reaggregate: reaggregateOf(m.partials[0]?.leaf),
             })),
             rollupMeasures: sorted,
+            baseGated: gate.declared,
             fanOutDimensions: decl.grain.filter((g) => {
                const usage = joinUsage.get(g);
                if (usage === undefined) return joinUsage.has(g);
@@ -752,7 +786,13 @@ export function checkedAgainstIR(
    compiled: readonly MeasureAggregate[] | undefined,
 ): DecomposedMeasure | MeasureRefusal {
    if (isMeasureRefusal(d)) return d;
-   const key = (fn: string, at: readonly string[]) => `${fn}@${at.join(".")}`;
+   // A `min` or `max` is the same over duplicated rows, so the compiler
+   // records no join for one (`carriers.fleet.max()` compiles as
+   // `max(carriers.fleet)`): it is compared by kind alone. The joins its
+   // argument reads are still the grammar's, and each must be keyed in the
+   // grain (planSourceRollups).
+   const key = (fn: string, at: readonly string[]) =>
+      fn === "min" || fn === "max" ? fn : `${fn}@${at.join(".")}`;
    const fromText = d.leaves.map((l) => key(l.aggregate, l.joinPath)).sort();
    const fromIR = (compiled ?? []).map((a) => key(a.fn, a.structPath)).sort();
    if (
@@ -786,12 +826,14 @@ function reaggregateOf(leaf: AggregateLeaf | undefined): Reaggregate {
 function gateFieldNames(
    def: SourceLike,
    byName: ReadonlyMap<string, FieldLike>,
-): { dimensions: string[]; unkeepable: string[] } {
+): { dimensions: string[]; unkeepable: string[]; declared: boolean } {
    const texts = annotationTexts(def.annotations) ?? [];
    const dimensions = new Set<string>();
    const unkeepable = new Set<string>();
+   let declared = false;
    for (const route of ["access_filter", "authorize"]) {
       for (const payload of payloadsOnRoute(texts, route)) {
+         declared = true;
          for (const id of malloyIdentifiers(payload)) {
             const f = byName.get(id);
             if (!f) continue;
@@ -803,6 +845,7 @@ function gateFieldNames(
    return {
       dimensions: [...dimensions].sort(byCodepoint),
       unkeepable: [...unkeepable].sort(byCodepoint),
+      declared,
    };
 }
 

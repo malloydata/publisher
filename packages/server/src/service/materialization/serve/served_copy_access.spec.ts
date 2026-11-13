@@ -69,6 +69,58 @@ describe("keepsAccess", () => {
       );
    });
 
+   it("never serves a hidden field's stored column less hidden than the field", () => {
+      // A private timeframe field's stored column renamed `internal` would
+      // let a caller's own `extend` read it; likewise a private join's.
+      const priv = def(["order_month", "private"], ["carriers", "private"]);
+      expect(
+         keepsAccess(
+            priv,
+            def(
+               ["order_month", "private"],
+               ["order_month__stored", "private"],
+               ["carriers", "private"],
+               ["carriers__name__stored", "private"],
+            ),
+         ),
+      ).toBe(true);
+      expect(
+         keepsAccess(
+            priv,
+            def(
+               ["order_month", "private"],
+               ["order_month__stored", "internal"],
+            ),
+         ),
+      ).toBe(false);
+      expect(
+         keepsAccess(
+            priv,
+            def(
+               ["carriers", "private"],
+               ["carriers__name__stored", "internal"],
+            ),
+         ),
+      ).toBe(false);
+      // An internal one's may be internal or private, never public.
+      const internal = def(["order_month", "internal"]);
+      for (const [access, ok] of [
+         ["internal", true],
+         ["private", true],
+         ["public", false],
+      ] as const) {
+         expect(
+            keepsAccess(
+               internal,
+               def(
+                  ["order_month", "internal"],
+                  ["order_month__stored", access],
+               ),
+            ),
+         ).toBe(ok);
+      }
+   });
+
    it("fails closed on an unreadable source", () => {
       expect(keepsAccess(undefined, def(["a"]))).toBe(false);
       expect(keepsAccess(def(["a"]), {})).toBe(false);
