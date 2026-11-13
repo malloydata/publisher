@@ -19,7 +19,10 @@ import {
    decodeTablePathSegments,
    deltaScript,
    deltaStatements,
+   isPairGuardFailure,
    ledgerLineageMismatch,
+   PAIR_GUARD_MESSAGE,
+   pairStagingTable,
    deltaSelect,
    planIncrementalStep,
    probeMaxWatermark,
@@ -740,6 +743,80 @@ const LEDGER = {
    advancedAt: new Date("2024-06-01T00:00:00Z"),
    createdAt: new Date("2024-05-01T00:00:00Z"),
 };
+
+describe("deltaStatements: a pair table", () => {
+   const pair = (dialect = "duckdb", windowDeletes = false) =>
+      deltaStatements({
+         dialect,
+         quotedTablePath: `lake."orders_all"`,
+         deltaSQL: "SELECT 1",
+         columns: ["id", "lines__line_id", "__parent_row", "__pair_watermark"],
+         mergeKeys: ["id"],
+         watermarkName: "__pair_watermark",
+         ...RANGE,
+         ...(windowDeletes
+            ? {
+                 windowDeletes: [
+                    {
+                       column: "order_ts",
+                       before: {
+                          malloyType: "timestamp",
+                          value: "2024-01-01T00:00:00",
+                       },
+                    },
+                 ],
+              }
+            : {}),
+         pair: {
+            parentKey: "id",
+            parentRow: "__parent_row",
+            stagingTable: pairStagingTable("lake.orders_all"),
+         },
+      });
+
+   it("stages the delta once, then replaces whole parents by key and checks the flag, in one transaction", () => {
+      expect(pair()).toEqual([
+         `CREATE OR REPLACE TEMP TABLE "__pair_delta_lake_orders_all" AS SELECT 1`,
+         "BEGIN",
+         `DELETE FROM lake."orders_all" AS __t WHERE EXISTS (SELECT 1 FROM "__pair_delta_lake_orders_all" AS __s WHERE (__t."id" = __s."id" OR (__t."id" IS NULL AND __s."id" IS NULL)))`,
+         `INSERT INTO lake."orders_all" ("id", "lines__line_id", "__parent_row", "__pair_watermark") SELECT "id", "lines__line_id", "__parent_row", "__pair_watermark" FROM "__pair_delta_lake_orders_all"`,
+         `SELECT error('${PAIR_GUARD_MESSAGE}') FROM (SELECT "id" FROM lake."orders_all" GROUP BY "id" HAVING count(*) FILTER (WHERE "__parent_row") <> 1) AS __g LIMIT 1`,
+         "COMMIT",
+         `DROP TABLE IF EXISTS "__pair_delta_lake_orders_all"`,
+      ]);
+   });
+
+   it("never merges row by row, and deletes the rolling window before the check", () => {
+      const statements = pair("duckdb", true);
+      expect(statements.join("\n")).not.toContain("MERGE");
+      const at = (prefix: string) =>
+         statements.findIndex((s) => s.startsWith(prefix));
+      expect(
+         at(`DELETE FROM lake."orders_all" WHERE "order_ts" <`),
+      ).toBeGreaterThan(at("INSERT INTO"));
+      expect(at("SELECT error(")).toBeGreaterThan(
+         at(`DELETE FROM lake."orders_all" WHERE "order_ts" <`),
+      );
+   });
+
+   it("refuses any target but DuckDB, the only one a pair table is built in", () => {
+      expect(() => pair("postgres")).toThrow(/DuckDB only/);
+   });
+
+   it("tells its own check's failure from any other error", () => {
+      expect(
+         isPairGuardFailure(
+            new Error(`Invalid Input Error: ${PAIR_GUARD_MESSAGE}`),
+         ),
+      ).toBe(true);
+      expect(isPairGuardFailure(new Error("connection reset"))).toBe(false);
+   });
+
+   it("names one staging table per stored table", () => {
+      expect(pairStagingTable(`lake."a b"`)).toBe("__pair_delta_lake__a_b_");
+      expect(pairStagingTable("lake.x")).not.toBe(pairStagingTable("lake.y"));
+   });
+});
 
 describe("ledgerLineageMismatch", () => {
    it("accepts a boundary that describes the same thing", () => {
