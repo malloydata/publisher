@@ -921,8 +921,10 @@ export async function queryPathFor(
          ...(answer.rollupMember ? { rollupMember: answer.rollupMember } : {}),
          ...(variantRollups.length > 0
             ? {
-                 joinedRollupBases:
-                    host.rollupVariants.joinedRollupBaseIDs(struct),
+                 joinedRollupBases: host.rollupVariants.joinedRollupBaseIDs(
+                    struct,
+                    prepared,
+                 ),
               }
             : {}),
          chains: host.sourceChains(),

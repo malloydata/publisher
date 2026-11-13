@@ -72,6 +72,7 @@ import {
    stringLiteral,
 } from "../../malloy_text";
 import {
+   aggregateOutsideJoin,
    aggregateWrittenThroughJoin,
    queryFieldUsagePaths,
    queryLevelFacts,
@@ -395,11 +396,25 @@ export class RollupVariantServe {
     * The base `sourceID`s of the rollups a query on `struct` could read
     * through one of its joins (A7), for the path report.
     */
-   joinedRollupBaseIDs(struct: unknown): Set<string> {
+   joinedRollupBaseIDs(
+      struct: unknown,
+      prepared: Parameters<typeof queryFieldUsagePaths>[0],
+   ): Set<string> {
       const sourceID = (struct as { sourceID?: unknown } | undefined)?.sourceID;
       if (typeof sourceID !== "string" || !this.hasRollups()) return new Set();
+      const legs = this.joinLegsOf(sourceID);
+      if (legs.length === 0) return new Set();
+      // Only the joins the query reads (every one, when its reads are
+      // unreadable): the leg never tries a join the query does not read.
+      const usage = queryFieldUsagePaths(prepared);
       return new Set(
-         this.joinLegsOf(sourceID).map(({ leg }) => leg.plan.baseSourceID),
+         legs
+            .filter(
+               ({ leg }) =>
+                  usage === undefined ||
+                  usage.some((p) => p[0] === leg.join.name),
+            )
+            .map(({ leg }) => leg.plan.baseSourceID),
       );
    }
 
@@ -435,6 +450,30 @@ export class RollupVariantServe {
          throw new RollupSkip(
             "rollup_cross_connection",
             `the rollup of \`${name}\` is in a storage destination, and the query's source reads its own connection`,
+            true,
+         );
+      }
+      // The build truncated and filtered times in the joined source's time
+      // zone; live reads the joined rows in the query source's.
+      const childDef = SourceMap.of(this.host.modelDef()).node(
+         plan.baseSourceID,
+      )?.def as
+         | {
+              queryTimezone?: unknown;
+              fields?: {
+                 name?: unknown;
+                 as?: unknown;
+                 e?: unknown;
+                 join?: unknown;
+              }[];
+           }
+         | undefined;
+      const parentZone = (q.struct as { queryTimezone?: unknown } | undefined)
+         ?.queryTimezone;
+      if ((childDef?.queryTimezone ?? "") !== (parentZone ?? "")) {
+         throw new RollupSkip(
+            "rollup_time_zone",
+            `\`${name}\` is read in the query source's time zone, and its rollup was built in its own`,
             true,
          );
       }
@@ -495,22 +534,20 @@ export class RollupVariantServe {
             .filter((p) => p[0] === name && p.length === 2)
             .map((p) => p[1] as string),
       );
+      // A join_one the data does not keep unique repeats each parent row
+      // once per joined row live, and every aggregate not taken at the join
+      // counts the repeats; the rollup holds one row per key.
+      if (join.relationship === "one") {
+         const outside = aggregateOutsideJoin(q.prepared, q.struct, name);
+         if (outside !== undefined) {
+            throw new RollupSkip(
+               "rollup_count_semantics",
+               `${outside} aggregates rows outside the join_one \`${name}\`, which live repeats for each of its rows; its rollup holds one row per key`,
+            );
+         }
+      }
       const childFields = new Map(
-         (
-            (
-               SourceMap.of(this.host.modelDef()).node(plan.baseSourceID)
-                  ?.def as
-                  | {
-                       fields?: {
-                          name?: unknown;
-                          as?: unknown;
-                          e?: unknown;
-                          join?: unknown;
-                       }[];
-                    }
-                  | undefined
-            )?.fields ?? []
-         ).map((f) => [String(f.as ?? f.name), f]),
+         (childDef?.fields ?? []).map((f) => [String(f.as ?? f.name), f]),
       );
       const problem = unmatchedRowProblem(leg, read, (field) => {
          const f = childFields.get(field);

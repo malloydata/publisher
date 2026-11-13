@@ -9,6 +9,7 @@
 import { describe, expect, it } from "bun:test";
 import type { ModelDef } from "@malloydata/malloy";
 import {
+   aggregateOutsideJoin,
    aggregateWrittenThroughJoin,
    joinGrainAggregatePaths,
    preparedQueryView,
@@ -285,6 +286,165 @@ describe("join-to-rollup readers (A7)", () => {
       });
       expect(
          aggregateWrittenThroughJoin(named, parent, "segments"),
+      ).toBeUndefined();
+   });
+
+   it("aggregateOutsideJoin finds an aggregate not taken at the join, written or by name", () => {
+      const crew = {
+         fields: [
+            {
+               name: "total",
+               expressionType: "aggregate",
+               e: { node: "aggregate", function: "sum", e: field("distance") },
+            },
+            {
+               name: "via",
+               expressionType: "aggregate",
+               e: field("crew", "crew_size"),
+            },
+         ],
+      };
+      // Only the join's own measures: none outside.
+      expect(
+         aggregateOutsideJoin(
+            view({
+               queryFields: [{ type: "fieldref", path: ["crew", "crew_size"] }],
+               expandedFieldUsage: [
+                  { path: ["crew", "crew_size"] },
+                  { path: ["crew"], uniqueKeyRequirement: { isCount: false } },
+               ],
+            }),
+            crew,
+            "crew",
+         ),
+      ).toBeUndefined();
+      // A source measure that reads the join's measure by name is at the join.
+      expect(
+         aggregateOutsideJoin(
+            view({
+               queryFields: [{ type: "fieldref", path: ["via"] }],
+               expandedFieldUsage: [{ path: ["via"] }],
+            }),
+            crew,
+            "crew",
+         ),
+      ).toBeUndefined();
+      // A count at the source's grain, as the compiler records it.
+      expect(
+         aggregateOutsideJoin(
+            view({
+               queryFields: [],
+               expandedFieldUsage: [
+                  { path: [], uniqueKeyRequirement: { isCount: true } },
+               ],
+            }),
+            crew,
+            "crew",
+         ),
+      ).toBe("count()");
+      // Another join's measure.
+      expect(
+         aggregateOutsideJoin(
+            view({
+               queryFields: [],
+               expandedFieldUsage: [
+                  { path: ["segs"], uniqueKeyRequirement: { isCount: false } },
+               ],
+            }),
+            crew,
+            "crew",
+         ),
+      ).toBe("an aggregate of `segs`");
+      // A sum over the source's own rows, written or read by name.
+      expect(
+         aggregateOutsideJoin(
+            view({
+               queryFields: [
+                  {
+                     name: "d",
+                     e: {
+                        node: "aggregate",
+                        function: "max",
+                        e: field("distance"),
+                     },
+                  },
+               ],
+               expandedFieldUsage: [{ path: ["distance"] }],
+            }),
+            crew,
+            "crew",
+         ),
+      ).toBe("d");
+      expect(
+         aggregateOutsideJoin(
+            view({
+               queryFields: [{ type: "fieldref", path: ["total"] }],
+               expandedFieldUsage: [{ path: ["total"] }],
+            }),
+            crew,
+            "crew",
+         ),
+      ).toBe("total");
+      // Taken at the join, by its path or by what it reads.
+      expect(
+         aggregateOutsideJoin(
+            view({
+               queryFields: [
+                  {
+                     name: "s",
+                     e: {
+                        node: "aggregate",
+                        function: "sum",
+                        e: field("crew", "size"),
+                        structPath: ["crew"],
+                     },
+                  },
+                  {
+                     name: "t",
+                     e: {
+                        node: "aggregate",
+                        function: "sum",
+                        e: field("crew", "size"),
+                     },
+                  },
+               ],
+               expandedFieldUsage: [],
+            }),
+            crew,
+            "crew",
+         ),
+      ).toBeUndefined();
+      // A later stage reads the first stage's rows, not the source's.
+      expect(
+         aggregateOutsideJoin(
+            preparedQueryView({
+               _query: {
+                  pipeline: [
+                     { queryFields: [], expandedFieldUsage: [] },
+                     {
+                        queryFields: [
+                           {
+                              name: "n",
+                              e: {
+                                 node: "aggregate",
+                                 function: "count",
+                                 e: {},
+                              },
+                           },
+                        ],
+                        expandedFieldUsage: [
+                           {
+                              path: [],
+                              uniqueKeyRequirement: { isCount: true },
+                           },
+                        ],
+                     },
+                  ],
+               },
+            }),
+            crew,
+            "crew",
+         ),
       ).toBeUndefined();
    });
 });
