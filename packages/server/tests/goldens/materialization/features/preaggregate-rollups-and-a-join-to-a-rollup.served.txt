@@ -1,6 +1,6 @@
 // feature: preaggregate rollups and a join to a rollup: files generated while serving
 
-// ==== <pkg>/m.malloy (text 1 of 2)
+// ==== <pkg>/m.malloy (text 1 of 3)
 ##! experimental { access_modifiers persistence virtual_source }
 import { lines } from "m.malloy.rollup-author.malloy"
 
@@ -12,7 +12,27 @@ source: orders__rollup__region__409e9efb__served is orders__rollup__region__409e
 }
 source: orders is orders__rollup__region__409e9efb__served include { internal: total__partial public: * }
 
-// ==== <pkg>/m.malloy (text 2 of 2)
+// ==== <pkg>/m.malloy (text 2 of 3)
+##! experimental { access_modifiers persistence virtual_source }
+import { lines } from "m.malloy.rollup-author.malloy"
+
+type: orders__rollup__m_region__7877d8b1__type is {
+   m::timestamp,
+   region::string,
+   n__partial::number
+}
+source: orders__rollup__m_region__7877d8b1__served is __served_copy_alias_of_lake.virtual('14db554405415a132affe4fd532e2a9bb42a117547176c6284f76a93f28d2356')::orders__rollup__m_region__7877d8b1__type extend {
+  internal rename:
+    m__tf is m
+  dimension:
+    m is m__tf.month
+  measure:
+    #(preaggregate) grain=["region", "m"] storage="lake"
+    n is n__partial.sum()
+}
+source: orders is orders__rollup__m_region__7877d8b1__served include { internal: n__partial public: * }
+
+// ==== <pkg>/m.malloy (text 3 of 3)
 ##! experimental { access_modifiers persistence virtual_source }
 import { lines } from "m.malloy.rollup-author.malloy"
 
@@ -26,7 +46,7 @@ source: orders is orders__rollup__region__409e9efb__served include { internal: t
   view: by_region is { group_by: region; aggregate: total }
 }
 
-// ==== <pkg>/m.malloy.preaggregate.malloy (text 1 of 2)
+// ==== <pkg>/m.malloy.preaggregate.malloy
 ##! experimental.persistence
 import { orders__rollup_base is orders } from "m.malloy.rollup-author.malloy"
 
@@ -36,18 +56,6 @@ source: orders__rollup__region__409e9efb is orders__rollup_base -> {
     region
   aggregate:
     total__partial is amount.sum()
-}
-
-// ==== <pkg>/m.malloy.preaggregate.malloy (text 2 of 2)
-##! experimental.persistence
-import { lines__rollup_base is lines } from "m.malloy"
-
-#@ persist
-source: lines__rollup__order_id__906dde44 is lines__rollup_base -> {
-  group_by:
-    order_id
-  aggregate:
-    qty_total__partial is qty.sum()
 }
 
 // ==== <pkg>/m.malloy.rollup-author.malloy
@@ -70,24 +78,8 @@ source: orders is orders_raw extend {
   view: by_region is { group_by: region; aggregate: total }
 }
 
-// ==== <pkg>/m.malloy.rollup.malloy (text 1 of 2)
+// ==== <pkg>/m.malloy.rollup.malloy
 ##! experimental { access_modifiers persistence virtual_source }
 import { orders_raw, customers_raw, lines_raw } from "raw.malloy"
 import { lines } from "m.malloy.rollup-author.malloy"
 import { orders } from "m.malloy"
-
-// ==== <pkg>/m.malloy.rollup.malloy (text 2 of 2)
-##! experimental { access_modifiers persistence virtual_source }
-import { orders_raw, customers_raw, lines_raw } from "raw.malloy"
-import { lines, lines__rollup__order_id__906dde44__parent is orders } from "m.malloy"
-
-import { lines__rollup__order_id__906dde44__built is lines__rollup__order_id__906dde44 } from "m.malloy.preaggregate.malloy"
-source: lines__rollup__order_id__906dde44__served is lines__rollup__order_id__906dde44__built extend {
-  measure:
-    #(preaggregate) grain=["order_id"]
-    qty_total is qty_total__partial.sum()
-}
-source: lines__rollup__order_id__906dde44__joined is lines__rollup__order_id__906dde44__served include { internal: qty_total__partial public: * }
-source: orders is lines__rollup__order_id__906dde44__parent include { *; except: lines } extend {
-  join_one: lines is lines__rollup__order_id__906dde44__joined on lines.order_id = id
-}

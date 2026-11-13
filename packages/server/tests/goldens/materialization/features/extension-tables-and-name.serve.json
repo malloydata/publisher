@@ -28,25 +28,14 @@
       }
     ],
     "verdicts": [
-      "colocated_ext:live:served_copy",
-      "stored:live:served_copy",
+      "colocated_ext:serves",
+      "stored:serves",
       "by_given:serves",
       "east:serves",
       "renamed:serves",
       "east_big:serves"
     ],
-    "warnings": [
-      {
-        "code": "served-copy-not-served",
-        "message": "This source inherits fields (a measure, view or join declared on the source it is built from) that its stored table does not carry, so the served copy leaves it as written.",
-        "subject": "stored"
-      },
-      {
-        "code": "served-copy-not-served",
-        "message": "This source inherits fields (a measure, view or join declared on the source it is built from) that its stored table does not carry, so the served copy leaves it as written.",
-        "subject": "colocated_ext"
-      }
-    ]
+    "warnings": []
   },
   "queries": [
     {
@@ -658,10 +647,8 @@
       "path": {
         "considered": [
           {
-            "code": "served_copy",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "WARNED",
+            "outcome": "used",
             "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7"
           }
         ],
@@ -714,20 +701,15 @@
           "sourceName": "stored"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7",
+          "via": "served_copy"
         },
-        "warnings": [
-          {
-            "code": "served_copy",
-            "message": "Only the served copy reads this table, and it does not answer from it here, so its queries are answered live.",
-            "sourceName": "stored",
-            "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7"
-          }
-        ]
+        "warnings": []
       },
       "query": "the parent",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -1164,10 +1146,8 @@
       "path": {
         "considered": [
           {
-            "code": "served_copy",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "WARNED",
+            "outcome": "used",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           }
         ],
@@ -1219,19 +1199,14 @@
           "sourceName": "colocated_ext"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1",
+          "via": "served_copy"
         },
-        "warnings": [
-          {
-            "code": "served_copy",
-            "message": "Only the served copy reads this table, and it does not answer from it here, so its queries are answered live.",
-            "sourceName": "colocated_ext",
-            "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
-          }
-        ]
+        "warnings": []
       },
       "query": "a colocated extension",
-      "servedBy": "live",
+      "servedBy": "materialized",
       "servedFrom": null,
       "switch": "on"
     }

@@ -38,6 +38,14 @@
             "reaggregate": "sum"
           }
         ],
+        "parentKeyChecks": [
+          {
+            "connectionName": "duckdb",
+            "keyColumn": "id",
+            "sourceID": "orders@<pkg>/m.malloy",
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"key__check\",\n     COUNT(1) as \"key_rows__check\"\n  FROM (\n    SELECT CAST(id AS BIGINT) AS id, CAST(customer_id AS BIGINT) AS customer_id,\n           region, status,\n           CAST(amount AS DOUBLE) AS amount, CAST(discount AS DOUBLE) AS discount,\n           CAST(order_date AS DATE) AS order_date,\n           CAST(created_at AS TIMESTAMP) AS created_at,\n           CAST(\"order\" AS BIGINT) AS \"order\"\n    FROM read_csv('data/orders.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"key__check\" as \"key__check\"\nFROM __stage0 as base\nWHERE (base.\"key_rows__check\">1) or base.\"key__check\" IS NULL\nLIMIT 1\n"
+          }
+        ],
         "rollupMeasures": [
           {
             "fanOutDimensions": [],
@@ -90,6 +98,14 @@
             "name": "line_n",
             "partialName": "line_n__partial",
             "reaggregate": "sum"
+          }
+        ],
+        "parentKeyChecks": [
+          {
+            "connectionName": "duckdb",
+            "keyColumn": "id",
+            "sourceID": "orders@<pkg>/m.malloy",
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"key__check\",\n     COUNT(1) as \"key_rows__check\"\n  FROM (\n    SELECT CAST(id AS BIGINT) AS id, CAST(customer_id AS BIGINT) AS customer_id,\n           region, status,\n           CAST(amount AS DOUBLE) AS amount, CAST(discount AS DOUBLE) AS discount,\n           CAST(order_date AS DATE) AS order_date,\n           CAST(created_at AS TIMESTAMP) AS created_at,\n           CAST(\"order\" AS BIGINT) AS \"order\"\n    FROM read_csv('data/orders.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"key__check\" as \"key__check\"\nFROM __stage0 as base\nWHERE (base.\"key_rows__check\">1) or base.\"key__check\" IS NULL\nLIMIT 1\n"
           }
         ],
         "rollupMeasures": [

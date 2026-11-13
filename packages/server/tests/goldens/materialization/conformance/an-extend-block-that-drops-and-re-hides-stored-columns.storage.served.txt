@@ -1,0 +1,28 @@
+// conformance: an extend block that drops and re-hides stored columns [storage]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence access_modifiers }
+##! experimental { virtual_source }
+type: rehidden__served is {
+   id::number,
+   segment::string
+}
+type: dropped__served is {
+   id::number,
+   region::string,
+   amount::number
+}
+
+import "raw.malloy"
+
+#@ persist name="dropped" storage="lake"
+source: dropped is __served_copy_alias_of_lake.virtual('8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792')::dropped__served extend {
+  except: status
+  measure: total is amount.sum()
+}
+
+#@ persist name="rehidden" storage="lake"
+source: rehidden is __served_copy_alias_of_lake.virtual('d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e')::rehidden__served extend {
+  measure: n is count()
+  measure: west_n is count() { where: region_raw = 'west' }
+}

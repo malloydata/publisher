@@ -308,6 +308,158 @@
     },
     {
       "access": {
+        "decision": "filtered",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [
+          "REGIONS"
+        ],
+        "gates": {
+          "accessFilter": [
+            "region in $REGIONS"
+          ],
+          "authorize": []
+        },
+        "givenNames": [
+          "REGIONS"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "d3da535df38e83b0",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "gated",
+          "stages": 1
+        },
+        "source": "gated"
+      },
+      "equalToLive": true,
+      "givens": [
+        "REGIONS"
+      ],
+      "malloy": "run: gated -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "scoped",
+            "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "gated"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an access-filtered persisted source, another caller",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "filtered",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [
+          "REGIONS"
+        ],
+        "gates": {
+          "accessFilter": [
+            "region in $REGIONS"
+          ],
+          "authorize": []
+        },
+        "givenNames": [
+          "REGION",
+          "REGIONS"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "4700fefa91be54ec",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "gated_ext",
+          "stages": 1
+        },
+        "source": "gated_ext"
+      },
+      "equalToLive": true,
+      "givens": [
+        "REGION",
+        "REGIONS"
+      ],
+      "malloy": "run: gated_ext -> { group_by: status; aggregate: total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "gated_ext"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an access-filtered extension, another caller",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
         "decision": "open",
         "fieldsRead": [
           {
@@ -611,6 +763,165 @@
         "warnings": []
       },
       "query": "an access-filtered persisted source",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "filtered",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [
+          "REGIONS"
+        ],
+        "gates": {
+          "accessFilter": [
+            "region in $REGIONS"
+          ],
+          "authorize": []
+        },
+        "givenNames": [
+          "REGIONS"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "d3da535df38e83b0",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "gated",
+          "stages": 1
+        },
+        "source": "gated"
+      },
+      "equalToLive": true,
+      "givens": [
+        "REGIONS"
+      ],
+      "malloy": "run: gated -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "scoped",
+            "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "gated"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an access-filtered persisted source, another caller",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "filtered",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [
+          "REGIONS"
+        ],
+        "gates": {
+          "accessFilter": [
+            "region in $REGIONS"
+          ],
+          "authorize": []
+        },
+        "givenNames": [
+          "REGION",
+          "REGIONS"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "4700fefa91be54ec",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "gated_ext",
+          "stages": 1
+        },
+        "source": "gated_ext"
+      },
+      "equalToLive": true,
+      "givens": [
+        "REGION",
+        "REGIONS"
+      ],
+      "malloy": "run: gated_ext -> { group_by: status; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "CONTRACT",
+            "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "gated_ext"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an access-filtered extension, another caller",
       "servedBy": "live",
       "servedFrom": null,
       "switch": "on"
