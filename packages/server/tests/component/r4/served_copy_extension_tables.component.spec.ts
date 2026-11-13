@@ -4,8 +4,9 @@
 /**
  * R4 for extension tables (materialization v2, P10): an extension that
  * declares its own `#(materialize)` has a table of its own, built over its
- * parent's build source when the two are in one `storage=` destination (so
- * Malloy's planner orders the builds), and served from its own re-root, which keeps the blocks between
+ * parent's build source when the two are on one tier, colocated or one
+ * `storage=` destination (so Malloy's planner orders the builds), and served
+ * from its own re-root, which keeps the blocks between
  * it and its parent so it inherits every measure, join and view it had. Every
  * answer equals live: over a materialized parent, through a chain of them, an
  * extension adding a `where:` (fixed, reading a given, or the current time),
@@ -15,15 +16,16 @@
  * extension's tables on the queried source's chain, whether the served copy
  * answered or declined.
  *
- * Every scenario is `storage=`: a colocated `#(materialize)` is not built
- * (`COLOCATED_NOT_SERVED`, #1666), so no colocated chain exists to serve; the
- * refusal of a colocated chain is covered in build_file_generator.spec.ts.
+ * Each scenario runs on both tiers: colocated (the chain's tables in the
+ * source's own warehouse, read by the served copy there, phase 3 pull request
+ * 6) and `storage=`.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
+   colocatedFiles,
    disposeScenarios,
    rowDifference,
    type R4Fixture,
@@ -39,7 +41,10 @@ const seedSql = [
     ) AS t(id, region, amt, d)`,
 ];
 
-/** One chain of extension tables, `storage` on each declaration. */
+/**
+ * One chain of extension tables, `storage` on each declaration (or none,
+ * colocated, each named after its source).
+ */
 function chainModel(storage: string): string {
    return `##! experimental.givens
 given: REGION :: string is 'east'
@@ -159,11 +164,17 @@ function considered(
 
 describe("R4: extension tables answer equal to live", () => {
    let restore: () => void;
+   let colocated: R4Fixture;
    let storage: R4Fixture;
    beforeAll(async () => {
       restore = installSettings({
          env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       }).restore;
+      colocated = await buildScenario({
+         files: colocatedFiles({ "m.malloy": chainModel("") }),
+         seedSql,
+         materialize: true,
+      });
       storage = await buildScenario({
          files: { "m.malloy": chainModel('storage="lake" ') },
          seedSql,
@@ -173,6 +184,13 @@ describe("R4: extension tables answer equal to live", () => {
    afterAll(async () => {
       restore();
       await disposeScenarios();
+   });
+
+   it("builds each colocated extension over its parent's build source, in the order a storage= chain has", () => {
+      expect(colocated.buildReads).toEqual(storage.buildReads);
+      expect(Object.keys(colocated.buildReads).length).toBeGreaterThan(1);
+      // In its own warehouse: nothing is compiled over a stored table.
+      expect(colocated.storedBuildSQL).toEqual({});
    });
 
    it("builds a storage= extension over its parent's stored table, each after its parent", () => {
@@ -203,7 +221,10 @@ describe("R4: extension tables answer equal to live", () => {
       }
    });
 
-   for (const [label, fixture] of [["storage=", () => storage]] as const) {
+   for (const [label, fixture] of [
+      ["colocated", () => colocated],
+      ["storage=", () => storage],
+   ] as const) {
       describe(label, () => {
          it("leaves no served-copy problem", async () => {
             expect(await fixture().servedCopyProblems()).toEqual([]);
@@ -213,7 +234,10 @@ describe("R4: extension tables answer equal to live", () => {
             it(name, async () => {
                const run = await fixture().run({ name, malloy });
                expect(run.servedVia).toBe("served_copy");
-               expect(run.servedFrom).toBe("storage");
+               // A colocated table is the source's own warehouse: no storage hit.
+               expect(run.servedFrom).toBe(
+                  label === "colocated" ? null : "storage",
+               );
                expect(run.live.length).toBeGreaterThan(0);
                expect(rowDifference(run.live, run.served)).toBeUndefined();
             });
@@ -322,9 +346,13 @@ source: ev_week is ev_recent extend {
       restore = installSettings({
          env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       }).restore;
-      for (const [label, storage] of [["storage=", 'storage="lake" ']]) {
+      for (const [label, storage] of [
+         ["colocated", ""],
+         ["storage=", 'storage="lake" '],
+      ]) {
+         const files = { "m.malloy": windowModel(storage) };
          fixtures[label] = await buildScenario({
-            files: { "m.malloy": windowModel(storage) },
+            files: storage ? files : colocatedFiles(files),
             seedSql: [
                `CREATE TABLE events AS
                   SELECT ts, row_number() OVER (ORDER BY ts) AS amount,
@@ -341,7 +369,7 @@ source: ev_week is ev_recent extend {
       await disposeScenarios();
    });
 
-   for (const label of ["storage="]) {
+   for (const label of ["colocated", "storage="]) {
       describe(label, () => {
          it("builds each window's extension over its parent's table", () => {
             const f = fixtures[label];

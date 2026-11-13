@@ -7,11 +7,15 @@
  * (materialization v2, phase 3).
  *
  * Behind `materialize.enabled` (`PUBLISHER_MATERIALIZE`, default off), the one switch for `#(materialize)` build and serve. With it off nothing here
- * runs and serving goes through today's storage serve shape, unchanged.
+ * runs and serving goes through today's storage serve shape and the colocated
+ * build manifest, unchanged.
  *
  * The served copy compiles in a runtime whose connections are the package's
  * own plus each storage destination under a per-process alias
- * (served_copy_config.ts), so the author's text never names a destination.
+ * (served_copy_config.ts), so the author's text never names a destination. A
+ * colocated `#(materialize)` table (colocated_bindings.ts) is read through the
+ * source's own connection, which the package's connections already hold, so a
+ * copy of colocated tables alone needs no storage tier.
  * A compile failure leaves the model's sources serving through the next
  * candidate (today's serve shape, then live) and is reported as a coded
  * package warning.
@@ -21,7 +25,7 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import {
    MalloyError,
-   type MalloyConfig,
+   MalloyConfig,
    type ModelDef,
    type ModelMaterializer,
    type QueryMaterializer,
@@ -36,7 +40,6 @@ import {
    gateFilterText,
    liftProbeFilterCondition,
 } from "../../authorize";
-import { quoteManifestTablePath } from "../../quoting";
 import { keyedOverlay, overlayKey } from "../../overlay_key";
 import {
    createModelRuntime,
@@ -72,6 +75,8 @@ import {
 } from "../../governance/ir/pair_flat_query";
 import {
    authorModelLiftContext,
+   boundTablePath,
+   sqlReadsTable,
    buildVirtualMap,
    narrowSchemaToPublic,
    optsOutOfPersist,
@@ -110,6 +115,20 @@ import {
 } from "../plan/cross_connection_joins";
 
 type VirtualMap = Map<string, Map<string, string>>;
+
+/**
+ * The connection a binding's table is read through in the served copy: a
+ * storage destination under its server-only alias, a colocated table on the
+ * source's own connection (colocated_bindings.ts), which the package's
+ * connections already hold.
+ */
+function servedConnectionOf(b: ServeBinding): string {
+   return b.colocated ? b.destinationName : servedCopyAlias(b.destinationName);
+}
+
+/** No storage destination: a served copy of colocated tables alone. */
+const NO_DESTINATIONS = (): MalloyConfig =>
+   new MalloyConfig({ connections: {} });
 
 /**
  * Why the served copy declined a query, for the path report: `time_zone`, the
@@ -251,6 +270,11 @@ export interface ServedCopyProblem {
 export interface ServedCopyHost {
    modelPath(): string;
    modelDef(): unknown;
+   /**
+    * The storage destinations, while the storage tier serves
+    * (`PERSIST_STORAGE_MODE=on`); undefined otherwise, when only colocated
+    * tables are read.
+    */
    serveDestinationConfig(): (() => MalloyConfig) | undefined;
 }
 
@@ -430,9 +454,23 @@ export class ServedCopyServe {
       );
    }
 
-   /** Whether any binding could re-root a source (before compiling). */
+   /**
+    * Whether any binding could re-root a source (before compiling): a
+    * colocated table, or a storage table while the storage tier serves.
+    */
    hasBindings(): boolean {
-      return this.bindings.some((b) => b.origin !== "preaggregate");
+      return this.bindings.some((b) => this.usable(b));
+   }
+
+   /**
+    * Whether the served copy may read a binding: never a rollup's; a storage
+    * table only while the host has storage destinations to serve from
+    * (`PERSIST_STORAGE_MODE=on`); a colocated table always, on its own
+    * connection.
+    */
+   private usable(b: ServeBinding): boolean {
+      if (b.origin === "preaggregate") return false;
+      return b.colocated === true || !!this.host.serveDestinationConfig();
    }
 
    /** Drop the compiled copy (bindings, destinations or the model changed). */
@@ -589,7 +627,7 @@ export class ServedCopyServe {
          }),
       );
       const tablesRead = compiled.rerooted.filter((b) =>
-         sql.includes(quoteManifestTablePath(b.tablePath, "duckdb")),
+         sqlReadsTable(sql, boundTablePath(b)),
       );
       if (tablesRead.length === 0) {
          // The query reads no stored table: the served copy would only add
@@ -806,7 +844,7 @@ export class ServedCopyServe {
       const at = new Date(now);
       return this.bindings.filter(
          (b) =>
-            b.origin !== "preaggregate" &&
+            this.usable(b) &&
             evaluateManifestFreshness(
                {
                   tableName: b.tablePath,
@@ -832,7 +870,7 @@ export class ServedCopyServe {
          ...bindings
             .map(
                (b) =>
-                  `${b.sourceName}@${b.destinationName}/${b.virtualHandle}/${b.freshnessFallback ?? ""}`,
+                  `${b.sourceName}@${b.colocated ? "colocated:" : ""}${b.destinationName}/${b.virtualHandle}/${b.tablePath}/${b.freshnessFallback ?? ""}`,
             )
             .sort(),
       ].join("|");
@@ -1028,7 +1066,7 @@ export class ServedCopyServe {
          range,
          sourceName,
          ...(pair ? { pair } : {}),
-         connectionAlias: servedCopyAlias(binding.destinationName),
+         connectionAlias: servedConnectionOf(binding),
          virtualHandle: binding.virtualHandle,
          typeName: `${sourceName}__served`,
          columns,
@@ -1145,8 +1183,11 @@ export class ServedCopyServe {
       lane = 0,
    ): Promise<Compiled> {
       const problems: ServedCopyProblem[] = [];
-      const destinations = this.host.serveDestinationConfig();
-      if (!destinations || !this.packagePath || !this.packageConfig) {
+      // Storage bindings reach here only with destinations (`usable`); a
+      // copy of colocated tables alone needs none.
+      const destinations =
+         this.host.serveDestinationConfig() ?? NO_DESTINATIONS;
+      if (!this.packagePath || !this.packageConfig) {
          return { key, generation, lane, rerooted: [], aliased: [], problems };
       }
       const modelDef = this.host.modelDef();
@@ -1262,7 +1303,7 @@ export class ServedCopyServe {
          const rerooted = candidates.map((c) => c.binding);
          const aliased = rerooted.map((b) => ({
             ...b,
-            destinationName: servedCopyAlias(b.destinationName),
+            destinationName: servedConnectionOf(b),
          }));
          const overlay = new Map<string, string>();
          for (const [url, text] of copy.files) {
@@ -1272,7 +1313,11 @@ export class ServedCopyServe {
          const config = servedCopyConfig(
             this.packageConfig,
             destinations(),
-            new Set(rerooted.map((b) => b.destinationName)),
+            new Set(
+               rerooted
+                  .filter((b) => !b.colocated)
+                  .map((b) => b.destinationName),
+            ),
          );
          const load = async (files: ReadonlyMap<string, string>) => {
             const { runtime, modelURL, importBaseURL } =
