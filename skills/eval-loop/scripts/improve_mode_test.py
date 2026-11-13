@@ -155,10 +155,21 @@ class Mode(unittest.TestCase):
     def test_an_edit_the_improve_step_stopped_is_dropped_and_not_measured(self):
         r, R = self.go(improve_exit=2)
         self.assertEqual(r["edits"][0]["outcome"], "skipped")
-        self.assertIn("state an answer", r["edits"][0]["why"])
+        self.assertIn("check of the answer key failed", r["edits"][0]["why"])
         self.assertEqual(sh(self.repo, "status", "--porcelain"), "")
         self.assertEqual(sh(self.repo, "show", "HEAD:pkg/m.malloy"), "source: orders is t")
         self.assertNotIn("run", [n.split()[0] for n, _ in R.ran])
+
+    def test_why_an_edit_was_not_measured_names_the_most_specific_reason(self):
+        f = im.stopped_because
+        self.assertIsNone(f(0, {}, True))
+        self.assertIn("doubts the answer key on q1, so it made no edit",
+                      f(2, {"goldenSuspect": [{"qid": "q1"}], "disagreement": "both bases"}, False))
+        self.assertIn("states a case's answer (q2)", f(2, {"goldenLeak": [{"qid": "q2"}]}, True))
+        self.assertIn("same as one rejected on 2026-11-01",
+                      f(2, {"duplicateOf": {"at": "2026-11-01"}}, True))
+        self.assertIn("made no edit: not a model fault", f(0, {"disagreement": "not a model fault"}, False))
+        self.assertIn("failed (exit 1)", f(1, {}, False))
 
     def test_uncommitted_work_anywhere_in_the_repository_means_no_edit_is_tried(self):
         (self.repo / "evals" / "notes.md").write_text("mine\n")

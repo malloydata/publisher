@@ -660,7 +660,7 @@ def run(argv: list[str] | None, started: dict[str, Any]) -> int:
     art.mkdir(parents=True, exist_ok=True)
     print(f"{len(issues)} model/package-skill clusters, agent {a.model}, "
           f"{'isolated' if a.isolate else 'cumulative'}, "
-          f"{'watch mode' if a.watch_mode else 'snapshot sync'}")
+          f"{'served as an experiment' if a.experiment else 'watch mode' if a.watch_mode else 'snapshot sync'}")
 
     results = []
     for n, issue in enumerate(issues, 1):

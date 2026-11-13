@@ -87,6 +87,33 @@ def newest_acceptance(workdir: pathlib.Path) -> dict[str, Any]:
     return json.loads(files[-1].read_text()) if files else {}
 
 
+def stopped_because(code: int, result: dict[str, Any], edited: bool) -> str | None:
+    """Why an improve step's result is not put to the acceptance check, or None
+    when it is. The most specific reason first: a reader acts differently on a
+    doubted answer key than on an edit that repeats a rejected one."""
+    doubted = [g.get("qid") for g in result.get("goldenSuspect") or [] if g.get("qid")]
+    said = (result.get("disagreement") or "")[:300]
+    if doubted:
+        return (f"the agent doubts the answer key on {', '.join(doubted)}, so "
+                + ("its edit was not measured" if edited else "it made no edit")
+                + ". Settle each through the golden side door first"
+                + (f". It said: {said}" if said else ""))
+    if result.get("goldenLeak"):
+        return ("the edit states a case's answer ("
+                + ", ".join(sorted({x["qid"] for x in result["goldenLeak"]})) + "), so it was not measured")
+    if result.get("duplicateOf"):
+        return (f"the edit is the same as one rejected on {result['duplicateOf'].get('at')}, "
+                f"so it was not measured again")
+    if code == 2:
+        return ("the improve step stopped it: its check of the answer key failed or could "
+                "not run. Read the improve step's output")
+    if code != 0:
+        return f"the improve step failed (exit {code})"
+    if not edited:
+        return f"the agent made no edit: {said or result.get('agentError') or 'it gave no reason'}"
+    return None
+
+
 def one_edit(R: Any, repo: pathlib.Path, issue: dict[str, Any], k: int) -> dict[str, Any]:
     """Improve, commit, measure, accept, keep or drop. Returns what happened."""
     import accept
@@ -103,11 +130,7 @@ def one_edit(R: Any, repo: pathlib.Path, issue: dict[str, Any], k: int) -> dict[
         cluster / "result.json").exists() else {}
     out["what"] = what = (result.get("edit") or f"close {iid}")[:200]
     dirty = git(repo, "status", "--porcelain", "--", ".").stdout.strip()
-    stop = (f"the improve step stopped it (exit {code}): it may invalidate a golden, state "
-            f"an answer, or repeat a rejected edit" if code == 2 else
-            f"the improve step failed (exit {code})" if code != 0 else
-            f"no edit: {(result.get('disagreement') or result.get('agentError') or 'the agent made none')}"[:300]
-            if not dirty else None)
+    stop = stopped_because(code, result, bool(dirty))
     if stop:
         git(repo, "checkout", "--", ".")
         git(repo, "clean", "-fdq", "--", ".")
@@ -193,4 +216,5 @@ def improve_quality(R: Any) -> dict[str, Any]:
         if not moved:
             git(repo, "branch", "-q", "-D", branch)
     return {"branch": branch if moved else None, "base": base, "edits": edits,
-            "accepted": sum(e["outcome"] == "accepted" for e in edits)}
+            "accepted": sum(e["outcome"] == "accepted" for e in edits),
+            "measured": sum(e["outcome"] in ("accepted", "rejected") for e in edits)}

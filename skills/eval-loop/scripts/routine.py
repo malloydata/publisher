@@ -131,8 +131,13 @@ def improve_said(imp: dict[str, Any]) -> str:
     if imp.get("branch") and n:
         return (f"{n} of {tried} edit(s) accepted, on the branch {imp['branch']}. Nothing is "
                 f"pushed or published: open a pull request from it")
-    return (f"{tried} edit(s) tried and none accepted"
-            + (f"; the attempt is recorded on the branch {imp['branch']}" if imp.get("branch") else ""))
+    if imp.get("measured"):
+        return (f"{imp['measured']} edit(s) measured and none accepted"
+                + (f"; the attempt is recorded on the branch {imp['branch']}"
+                   if imp.get("branch") else ""))
+    # Nothing reached the acceptance check. Say why, for the first: it is
+    # usually the thing a person has to do next.
+    return f"No edit was measured: {imp['edits'][0].get('why')}"
 
 
 def speed_number(run: pathlib.Path) -> dict[str, Any]:
