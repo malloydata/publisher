@@ -1198,3 +1198,134 @@ describe("R4: a block table keeps each column's own type across the union", () =
       });
    }
 });
+
+// A join_many reached through a join_one fans out the pair rows as much as
+// one on the source: a gate through it, or a query that groups or filters
+// through it, is answered live. Both joins are to sources stored in the same
+// destination, so the served copy keeps them over the pair rows.
+const fanOutModel = `##! experimental.givens
+given: G :: string
+
+source: opts is duckdb.table('opts') extend { primary_key: opt_id }
+source: items is duckdb.table('items') extend {
+  primary_key: item_id
+  join_many: opts on opts.item_id = item_id
+}
+
+#(materialize) storage="lake"
+source: gates_stored is duckdb.table('gates') extend { primary_key: gate_id }
+
+#(materialize) storage="lake"
+source: hubs_stored is duckdb.table('hubs') extend {
+  primary_key: code
+  join_many: gs is gates_stored on gs.code = code
+}
+
+#(access_filter) hub.gs.gate = $G
+#(materialize) storage="lake" inline=["items.opts"]
+source: by_gate is duckdb.table('orders') extend {
+  primary_key: id
+  join_many: items on items.order_id = id
+  join_one: hub is hubs_stored on hub.code = cat
+  measure:
+    order_n is count()
+    opt_n is items.opts.count()
+    extra_sum is items.opts.extra.sum()
+}
+
+#(materialize) storage="lake" inline=["items.opts"]
+source: by_hub is duckdb.table('orders') extend {
+  primary_key: id
+  join_many: items on items.order_id = id
+  join_one: hub is hubs_stored on hub.code = cat
+  dimension: hub_gate is hub.gs.gate
+  measure:
+    order_n is count()
+    item_n is items.count()
+    opt_n is items.opts.count()
+    extra_sum is items.opts.extra.sum()
+}
+`;
+
+describe("R4: a join_many reached through a join_one, beside a pair table", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: {
+            PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+         },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": fanOutModel },
+         seedSql: [
+            ...seedSql.filter((sql) => !/TABLE (orders|pays) /.test(sql)),
+            // Hub `a` has two gates of one name, `b` one.
+            `CREATE TABLE orders AS SELECT * FROM (VALUES
+      (1, 'a', 10.0), (2, 'a', 20.0), (3, 'b', 30.0), (5, 'b', 5.0)
+    ) AS t(id, cat, amt)`,
+            `CREATE TABLE hubs AS SELECT * FROM (VALUES ('a'), ('b')) AS t(code)`,
+            `CREATE TABLE gates AS SELECT * FROM (VALUES
+      (1, 'a', 'A1'), (2, 'a', 'A1'), (3, 'b', 'A1')
+    ) AS t(gate_id, code, gate)`,
+         ],
+         materialize: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("leaves no problem on the served copy", async () => {
+      expect(await fixture.servedCopyProblems()).toEqual([]);
+   });
+
+   const cases = [
+      [
+         "a gate through it, leaf measures",
+         "run: by_gate -> { group_by: cat; aggregate: opt_n, extra_sum }",
+         false,
+      ],
+      [
+         "a filter through it",
+         "run: by_hub -> { where: hub.gs.gate = 'A1'; group_by: cat; aggregate: opt_n, extra_sum }",
+         false,
+      ],
+      [
+         "a group-by through it",
+         "run: by_hub -> { group_by: hub.gs.gate; aggregate: opt_n, extra_sum }",
+         false,
+      ],
+      [
+         "a group-by on a dimension through it",
+         "run: by_hub -> { group_by: hub_gate; aggregate: opt_n, item_n }",
+         false,
+      ],
+      [
+         "a filtered measure reading through it",
+         "run: by_hub -> { group_by: cat; aggregate: r is opt_n { where: hub.gs.gate = 'A1' } }",
+         false,
+      ],
+      [
+         "the join_one's own field",
+         "run: by_hub -> { group_by: hub.code; aggregate: order_n, opt_n }",
+         true,
+      ],
+   ] as const;
+   for (const [name, malloy, servedHere] of cases) {
+      it(`${servedHere ? "serves" : "answers live"}: ${name}`, async () => {
+         const run = await fixture.run({
+            name,
+            malloy,
+            givens: { G: "A1" },
+            ...(servedHere ? {} : { expectLive: true }),
+         });
+         expect(run.servedVia).toBe(servedHere ? "served_copy" : undefined);
+         expect(run.live.length).toBeGreaterThan(0);
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+      });
+   }
+});
