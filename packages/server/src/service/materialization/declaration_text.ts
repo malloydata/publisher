@@ -449,17 +449,6 @@ export function renamesIn(text: string): RenameDefinition[] | undefined {
 }
 
 /**
- * The `extend { rename: … }` blocks that undo the renames in a run of `extend`
- * blocks, for a re-root onto a table that stores each renamed field under its
- * new name: written between the new base and the kept blocks, they give each
- * stored column back the name the kept blocks read it by before they rename
- * it again, so every definition in them reads the field as written. Undone
- * last rename first, and only for a field the table stores (`stored`); a
- * rename of any other field is the kept text's own. Each in a block of its
- * own, so they apply in order. Undefined when the renames cannot be read
- * ({@link renamesIn}).
- */
-/**
  * The stored names {@link inverseRenameBlocks} gives an old name back, so no
  * statement placed after those blocks can read them under the stored name.
  */
@@ -480,6 +469,17 @@ export function inverselyRenamedColumns(
    return out;
 }
 
+/**
+ * The `extend { rename: … }` blocks that undo the renames in a run of `extend`
+ * blocks, for a re-root onto a table that stores each renamed field under its
+ * new name: written between the new base and the kept blocks, they give each
+ * stored column back the name the kept blocks read it by before they rename
+ * it again, so every definition in them reads the field as written. Undone
+ * last rename first, and only for a field the table stores (`stored`); a
+ * rename of any other field is the kept text's own. Each in a block of its
+ * own, so they apply in order. Undefined when the renames cannot be read
+ * ({@link renamesIn}).
+ */
 export function inverseRenameBlocks(
    text: string,
    stored: ReadonlySet<string>,

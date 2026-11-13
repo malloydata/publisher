@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   getDialect,
    isSourceDef,
    type MalloyConfig,
    type SourceDef,
@@ -1857,7 +1858,7 @@ export class PackageMaterialization {
             v1Schema: (sourceID) =>
                v1StoredColumnsOf(this.declarationOf(sourceID)),
             notV1: (sourceID) => viewBuilds.has(sourceID),
-         }),
+         }).map((b) => previewNativeSchema(b, sources)),
       ];
       const rerooted = new Set<string>();
       const throughBase = new Set<string>();
@@ -2486,4 +2487,33 @@ function colocatedSignature(bindings: readonly ServeBinding[]): string {
       )
       .sort()
       .join("|");
+}
+
+/**
+ * A dry run's colocated binding with the warehouse types a build would
+ * capture (`ManifestEntry.nativeSchema`), so it predicts the cast a big-integer
+ * column is read through: each column as the dialect's own type for a
+ * `bigint` number. A preview has no table to read; the real build's capture
+ * can only be as wide or wider, and a type Malloy does not read as `bigint`
+ * answers that column live, which no dry run can foresee.
+ */
+function previewNativeSchema(
+   binding: ServeBinding,
+   sources: Readonly<Record<string, { dialect?: string }>>,
+): ServeBinding {
+   const dialect = sources[binding.sourceIDs?.[0] ?? ""]?.dialect;
+   if (!binding.colocated || !dialect) return binding;
+   let type: string;
+   try {
+      type = getDialect(dialect).malloyTypeToSQLType({
+         type: "number",
+         numberType: "bigint",
+      });
+   } catch {
+      return binding;
+   }
+   return {
+      ...binding,
+      nativeSchema: binding.schema.map((c) => ({ name: c.name, type })),
+   };
 }
