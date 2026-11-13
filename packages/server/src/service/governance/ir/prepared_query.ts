@@ -604,11 +604,101 @@ export function aggregateWrittenThroughJoin(
    sourceDef: unknown,
    join: string,
 ): string | undefined {
+   return firstAggregateWhere(view.pipeline, view, sourceDef, (e) =>
+      aggregatesThrough(e, join),
+   );
+}
+
+/**
+ * Whether `e` computes an aggregate at a grain other than `join`'s: one not
+ * taken at the join (`count()`, `distance.sum()`, `other.x.sum()`). An
+ * aggregate taken at the join (`j.x.sum()`, `sum(j.x)`) is not one.
+ */
+function aggregatesOutside(e: unknown, join: string): boolean {
+   return holds(e, (n) => {
+      if (!isAggregateNode(n)) return false;
+      const at = (n as { structPath?: unknown }).structPath;
+      if (Array.isArray(at) && at.length > 0) return at[0] !== join;
+      const { node: _node, ...rest } = n as Record<string, unknown>;
+      let reads = false;
+      const outside = holds(rest, (k) => {
+         if (k.node !== "field" || !Array.isArray(k.path)) return false;
+         if (k.path.length > 1 && k.path[0] === join) {
+            reads = true;
+            return false;
+         }
+         return true;
+      });
+      return outside || !reads;
+   });
+}
+
+/**
+ * The first field (by name) the FIRST stage of a prepared query reads that
+ * computes an aggregate at a grain other than `join`'s: a `count()` or a sum
+ * over the source's own rows, or a measure of another join, written in the
+ * query (in a field, a filter, a `having:` or a nest) or read by name, from
+ * `sourceDef`'s measures or Malloy's own record of the aggregates it needs a
+ * key for. Undefined when every aggregate is taken at `join`. Through a
+ * join_one that is not unique on its key, live repeats each parent row once
+ * per joined row, so such an aggregate counts the repeats; a table with one
+ * row per key does not. Later stages read the first stage's output rows and
+ * are not read.
+ */
+export function aggregateOutsideJoin(
+   view: PreparedQueryView,
+   sourceDef: unknown,
+   join: string,
+): string | undefined {
+   const first = (view.pipeline as unknown[] | undefined)?.[0];
+   if (first === undefined) return undefined;
+   // A count at the source's grain or any aggregate at another join's, as
+   // the compiler recorded it.
+   let unreadable = false;
+   let keyed: string | undefined;
+   eachQueryNode(first, (n) => {
+      const usage = n.expandedFieldUsage;
+      if (!Array.isArray(usage)) return;
+      for (const u of usage as {
+         path?: unknown;
+         uniqueKeyRequirement?: unknown;
+      }[]) {
+         if (!u || u.uniqueKeyRequirement === undefined) continue;
+         if (!Array.isArray(u.path)) {
+            unreadable = true;
+            continue;
+         }
+         if (u.path.length !== 1 || u.path[0] !== join) {
+            keyed ??=
+               u.path.length === 0
+                  ? "count()"
+                  : `an aggregate of \`${u.path.join(".")}\``;
+         }
+      }
+   });
+   if (unreadable) return "a field the compiler did not record";
+   if (keyed !== undefined) return keyed;
+   return firstAggregateWhere(first, view, sourceDef, (e) =>
+      aggregatesOutside(e, join),
+   );
+}
+
+/**
+ * The first field (by name) under `pipeline` whose expression `offends`, or
+ * a measure of `sourceDef` the query reads (directly or through another of
+ * its measures) whose definition does.
+ */
+function firstAggregateWhere(
+   pipeline: unknown,
+   view: PreparedQueryView,
+   sourceDef: unknown,
+   offendsExpr: (e: unknown) => boolean,
+): string | undefined {
    let found: string | undefined;
-   eachQueryNode(view.pipeline, (n) => {
+   eachQueryNode(pipeline, (n) => {
       if (found !== undefined) return;
       const e = (n as { e?: unknown }).e;
-      if (e !== undefined && aggregatesThrough(e, join)) {
+      if (e !== undefined && offendsExpr(e)) {
          found =
             typeof n.as === "string"
                ? n.as
@@ -641,7 +731,7 @@ export function aggregateWrittenThroughJoin(
       if (e === undefined || depth > 64) return depth > 64;
       memo.set(name, false);
       const result =
-         aggregatesThrough(e, join) ||
+         offendsExpr(e) ||
          holds(
             e,
             (k) =>
