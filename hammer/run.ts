@@ -12,7 +12,14 @@
 //   bun hammer/run.ts --keep              # leave pg + workdir up for inspection
 //   bun hammer/run.ts --rebuild           # force a fresh server build
 
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "fs";
+import {
+   copyFileSync,
+   existsSync,
+   mkdirSync,
+   mkdtempSync,
+   readdirSync,
+   rmSync,
+} from "fs";
 import os from "os";
 import path from "path";
 import {
@@ -72,6 +79,8 @@ interface Args {
     * measured default.
     */
    workers: number;
+   /** `--list`: print the selected scenarios and exit, without Docker or a build. */
+   list: boolean;
 }
 
 /** A `--port`-style value, refused here rather than at the first boot. */
@@ -104,6 +113,7 @@ function parseArgs(argv: string[]): Args {
       // lazy and cost nothing) — so the run's 76 boots are ~125 of those CPU
       // seconds and the scenarios' own work is the rest.
       workers: 6,
+      list: false,
    };
    for (let i = 0; i < argv.length; i++) {
       const arg = argv[i];
@@ -123,6 +133,7 @@ function parseArgs(argv: string[]): Args {
       else if (arg === "--rebuild") a.rebuild = true;
       else if (arg === "--reuse-pg") a.reusePg = true;
       else if (arg === "--quiet") a.quiet = true;
+      else if (arg === "--list") a.list = true;
       else if (arg === "--pg-port") a.pgPort = Number(next());
       else if (arg === "--pg-container") a.pgContainer = next();
       else if (arg === "--port") a.port = portArg(arg, next());
@@ -130,7 +141,7 @@ function parseArgs(argv: string[]): Args {
       else if (arg === "--workers") a.workers = Math.max(1, Number(next()));
       else if (arg === "--help" || arg === "-h") {
          console.log(
-            "Usage: bun hammer/run.ts [--scenarios a,b] [--tags security,orchestration] [--attention-older-than DAYS] [--keep] [--rebuild] [--reuse-pg] [--pg-port N] [--pg-container NAME] [--port N] [--mcp-port N] [--workers N] [--quiet]",
+            "Usage: bun hammer/run.ts [--scenarios a,b] [--tags security,orchestration] [--attention-older-than DAYS] [--keep] [--rebuild] [--reuse-pg] [--pg-port N] [--pg-container NAME] [--port N] [--mcp-port N] [--workers N] [--quiet] [--list]",
          );
          process.exit(0);
       }
@@ -436,6 +447,25 @@ async function main(): Promise<void> {
    const args = parseArgs(process.argv.slice(2));
    setQuiet(args.quiet);
 
+   if (args.list) {
+      // Parse every scenario and print the selection: a dry run that needs no
+      // Docker and no server build. A scenario that fails to load (malformed,
+      // or colliding with another) is listed with its tag and fails the exit.
+      const listed = await loadScenarios(args.scenarios, args.tags);
+      for (const s of listed) {
+         console.log(`${s.id}\t[${s.tags.join(",")}]\t${s.title}`);
+         // The reason, or a CI step that stops here would say only that it failed.
+         if (s.loadError) console.log(`\t${s.loadError}`);
+      }
+      const broken = listed.filter((s) =>
+         s.tags.some((t) => t === "malformed" || t === "collision"),
+      );
+      console.log(
+         `${listed.length} scenarios${broken.length ? `, ${broken.length} that do not load` : ""}`,
+      );
+      process.exit(broken.length ? 1 : 0);
+   }
+
    const repoRoot = path.resolve(import.meta.dir, "..");
    const workdir = mkdtempSync(path.join(os.tmpdir(), "publisher-hammer-"));
    const PRIMARY = "default";
@@ -503,6 +533,17 @@ async function main(): Promise<void> {
    let tearingDown: Promise<void> | undefined;
    const tearDownOnce = async (): Promise<void> => {
       for (const cluster of activeClusters) await cluster.stop(args.keep);
+      // HAMMER_LOG_DIR (CI sets it): keep every publisher's log past the
+      // workdir's removal, so a failed nightly run can be read afterwards.
+      const logDir = process.env.HAMMER_LOG_DIR;
+      if (logDir) {
+         mkdirSync(logDir, { recursive: true });
+         for (const f of readdirSync(workdir)) {
+            if (f.endsWith(".log")) {
+               copyFileSync(path.join(workdir, f), path.join(logDir, f));
+            }
+         }
+      }
       if (!args.keep) {
          await pg.stop();
          rmSync(workdir, { recursive: true, force: true });

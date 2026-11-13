@@ -1,4 +1,4 @@
--- hammer/70-storage-never-falls-back-to-the-warehouse/nw/nw.malloy: build plan
+-- hammer/121-storage-never-falls-back-to-the-warehouse/nw/nw.malloy: build plan
 -- Addresses are computed with a fixed connection digest (golden-digest:<connection>),
 -- so they move exactly when the SQL or the folded layout moves.
 

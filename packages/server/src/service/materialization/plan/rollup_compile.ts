@@ -26,6 +26,7 @@ import type {
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
+import { queryGivenUsageIds } from "../../governance/ir/prepared_query";
 import { overlayKey } from "../../overlay_key";
 import { persistBlankedFiles } from "../persist_blanking";
 import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
@@ -182,6 +183,35 @@ export async function tryCompileRollupCompanion(args: {
       );
       return { refused };
    }
+}
+
+/**
+ * The `compile` {@link compileParentKeyChecks} takes, over the author's model
+ * `materializer`: the check's SQL, refused when the check reads a given (as
+ * Malloy records it, `givenUsage`: a `where:` that reads one, say). Compiled
+ * once at plan time, such a check reads the rows of the given's default (or
+ * does not compile without one), not the rows each caller's query reads, so a
+ * key it finds unique may repeat for another caller; refused, the leg reads
+ * that source's key as unknown and declines.
+ */
+export function parentKeyCheckCompiler(materializer: {
+   loadQuery(text: string): {
+      getPreparedQuery(): Promise<unknown>;
+      getSQL(): Promise<string>;
+   };
+}): (text: string) => Promise<string> {
+   return async (text) => {
+      const query = materializer.loadQuery(text);
+      const givens = queryGivenUsageIds(await query.getPreparedQuery());
+      if (givens === undefined || givens.length > 0) {
+         throw new Error(
+            givens === undefined
+               ? "the check's given usage could not be read"
+               : "the check reads a given, so it would describe one caller's rows, not each caller's",
+         );
+      }
+      return query.getSQL();
+   };
 }
 
 /**

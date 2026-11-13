@@ -1,4 +1,4 @@
--- hammer/05-a-merge-key-must-not-match-rows-outside-the-callers-scope/xt/xt.malloy: build plan
+-- hammer/08-a-merge-key-must-not-match-rows-outside-the-callers-scope/xt/xt.malloy: build plan
 -- Addresses are computed with a fixed connection digest (golden-digest:<connection>),
 -- so they move exactly when the SQL or the folded layout moves.
 

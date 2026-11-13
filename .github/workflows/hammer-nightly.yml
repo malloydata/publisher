@@ -1,0 +1,86 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+# The hammer scenario suite (hammer/README.md), nightly and on demand. It runs
+# a real Publisher against a throwaway Postgres (Docker) and a local DuckLake,
+# so it is too slow for every pull request; it is not a PR check, and nothing
+# else depends on it. Each leg runs the whole suite under one setting of
+# PUBLISHER_MATERIALIZE, the switch the materialization paths branch on.
+
+name: hammer-nightly
+
+on:
+  schedule:
+    # 07:17 UTC: off the hour, when scheduled runs queue longest.
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: "Scenario ids to run (substring, comma-separated); empty runs all"
+        required: false
+        default: ""
+
+env:
+  BUN_VERSION: 1.3.13
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+# One hammer run at a time per ref, never cancelled: a dispatch while the
+# nightly runs waits for it (and a later one replaces that waiting run), so two
+# full suites never run at once and a finished run's logs are never cut short.
+concurrency:
+  group: hammer-nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  hammer:
+    name: hammer (PUBLISHER_MATERIALIZE=${{ matrix.materialize }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        materialize: ["true", "false"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      # The harness would build on first use; building here keeps the build's
+      # time and any failure in a step of its own.
+      - name: Build the server
+        run: bun run build:server-only
+        working-directory: packages/server
+      - name: Check every scenario parses
+        run: bun hammer/run.ts --list
+      - name: Run the hammer
+        env:
+          PUBLISHER_MATERIALIZE: ${{ matrix.materialize }}
+          HAMMER_LOG_DIR: ${{ runner.temp }}/hammer-logs
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          set -o pipefail
+          mkdir -p "$HAMMER_LOG_DIR"
+          args=(--workers 4)
+          if [ -n "$SCENARIOS" ]; then args+=(--scenarios "$SCENARIOS"); fi
+          bun hammer/run.ts "${args[@]}" 2>&1 | tee "$HAMMER_LOG_DIR/hammer.log"
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hammer-logs-materialize-${{ matrix.materialize }}
+          path: ${{ runner.temp }}/hammer-logs
+          if-no-files-found: warn
+          retention-days: 14
