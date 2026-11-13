@@ -32,7 +32,7 @@ const RACE_LOST =
 
 /**
  * A session whose DuckLake ATTACHes fail with `failures` in turn and then
- * succeed. `attached` lists what SHOW DATABASES reports.
+ * succeed. `attached` lists the databases attached, by stored name.
  */
 function stub(
    failures: string[],
@@ -46,11 +46,17 @@ function stub(
             const failure = failures.shift();
             if (failure !== undefined) throw new Error(failure);
          }
-         if (q === "SHOW DATABASES") {
-            return {
-               rows: attached.map((database_name) => ({ database_name })),
-               totalRows: attached.length,
-            };
+         const lookup =
+            /^SELECT 1 FROM duckdb_databases\(\) WHERE lower\(database_name\) = lower\('((?:[^']|'')*)'\)$/.exec(
+               q,
+            );
+         if (lookup) {
+            // As DuckDB resolves it: case-insensitively.
+            const alias = lookup[1].replaceAll("''", "'").toLowerCase();
+            const rows = attached
+               .filter((name) => name.toLowerCase() === alias)
+               .map(() => ({ "1": 1 }));
+            return { rows, totalRows: rows.length };
          }
          return { rows: [], totalRows: 0 };
       },
@@ -116,6 +122,19 @@ describe("an attach failing 'already exists'", () => {
    it("is skipped when the alias is attached", async () => {
       const s = stub(['Catalog "lake" already exists'], ["lake"]);
       await attachDuckLakeReadWrite(s.conn, "lake", config());
+      expect(s.attaches()).toBe(1);
+   });
+
+   it("is skipped when the alias is attached under another case", async () => {
+      // DuckDB names are case-insensitive, and a replace keeps the stored name.
+      const s = stub(['Catalog "lake" already exists'], ["Lake"]);
+      await attachDuckLakeReadWrite(s.conn, "lake", config());
+      expect(s.attaches()).toBe(1);
+   });
+
+   it("looks the alias up as a quoted literal", async () => {
+      const s = stub(["it already exists"], ["o'lake"]);
+      await attachDuckLakeReadWrite(s.conn, "o'lake", config());
       expect(s.attaches()).toBe(1);
    });
 

@@ -1099,6 +1099,27 @@ export function isDuckLakeInitRace(error: unknown): boolean {
 }
 
 /**
+ * Whether a database is attached under `alias`, compared as DuckDB resolves
+ * it: case-insensitively. An `ATTACH OR REPLACE … AS "lake"` over `"Lake"`
+ * keeps the stored name `Lake`, so an exact match would miss it.
+ */
+async function isAliasAttached(
+   connection: DuckDBConnection,
+   alias: string,
+): Promise<boolean> {
+   try {
+      const rows = runSQLRows(
+         await connection.runSQL(
+            `SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('${escapeSQL(alias)}')`,
+         ),
+      );
+      return rows.length > 0;
+   } catch {
+      return false;
+   }
+}
+
+/**
  * Run a DuckLake ATTACH, trying again when it lost a race to create the
  * catalog. Postgres reports the duplicate only once the other create has
  * committed, so the catalog exists by then and the next attach opens it as any
@@ -1298,7 +1319,7 @@ async function attachDuckLakeWithMode(
          (error.message.includes("already exists") ||
             error.message.includes("already attached")) &&
          !isDuckLakeInitRace(error) &&
-         (await isDatabaseAttached(connection, dbName))
+         (await isAliasAttached(connection, dbName))
       ) {
          logger.info(
             `DuckLake database ${dbName} is already attached, skipping`,
