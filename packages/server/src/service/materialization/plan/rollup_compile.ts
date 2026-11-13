@@ -36,6 +36,7 @@ import {
    type RollupRefusal,
    type RollupVariantPlan,
 } from "./rollup_plan";
+import { splitSourceID } from "./persisted_view";
 import { SourceMap } from "./source_map";
 
 export interface GeneratedRollups {
@@ -80,15 +81,15 @@ export function packageRelativeSourceID(
    packagePath: string,
    sourceID: string,
 ): string {
-   const at = /^(.+)@([a-z][a-z0-9+.-]*:.*)$/i.exec(sourceID);
+   const at = splitSourceID(sourceID);
    if (!at) return sourceID;
    try {
-      const file = fileURLToPath(at[2] as string);
+      const file = fileURLToPath(at.url);
       const relative = path
          .relative(path.resolve(packagePath), file)
          .split(path.sep)
          .join("/");
-      return `${at[1]}@${relative}`;
+      return `${at.name}@${relative}`;
    } catch {
       return sourceID;
    }

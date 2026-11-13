@@ -861,10 +861,12 @@ export function emitMeasureExpr(e: MeasureExpr): string {
          return `${pathText(e.path)}.${aggregateMethodText(e.fn)}(${e.args.map((a) => emitMeasureExpr(a)).join(", ")})`;
       case "filtered":
          return `${emitMeasureExpr(e.expr)} { where: ${e.where.map((w) => emitMeasureExpr(w)).join(", ")} }`;
-      case "unary":
-         return e.op === "not"
-            ? `not ${emitMeasureExpr(e.expr)}`
-            : `-${emitMeasureExpr(e.expr)}`;
+      case "unary": {
+         const operand = emitMeasureExpr(e.expr);
+         if (e.op === "not") return `not ${operand}`;
+         // `--` starts a Malloy comment: keep two minus signs apart.
+         return operand.startsWith("-") ? `- ${operand}` : `-${operand}`;
+      }
       case "binary":
          return `${emitMeasureExpr(e.left)} ${binaryOpText(e.op)} ${emitMeasureExpr(e.right)}`;
       case "paren":

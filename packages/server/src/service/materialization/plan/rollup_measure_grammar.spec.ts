@@ -155,4 +155,11 @@ describe("the #(preaggregate) measure grammar", () => {
             ),
       ).toBe("x.sum() { where: s = 'o\\'brien' }");
    });
+
+   it("never emits two minus signs together, which Malloy reads as a comment", () => {
+      expect(render({ m: "- -amount.sum()" })).toEqual({
+         partials: ["sum: amount.sum()"],
+         merged: "- -p0.sum()",
+      });
+   });
 });
