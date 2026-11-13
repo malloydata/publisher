@@ -89,6 +89,10 @@ const attachRuns = new WeakMap<ActiveDB, Map<string, Promise<unknown>>>();
 const namesWithAttachments = new Set<string>();
 let installed = false;
 
+/** How long a close waits for its connection's open before closing anyway. */
+const CLOSE_WAIT_MS = 10_000;
+let closeWaitMs = CLOSE_WAIT_MS;
+
 /**
  * Raised instead of opening a second instance of a file an open instance holds
  * with different open-time settings.
@@ -264,11 +268,24 @@ export function installDuckDBInstanceSharing(): void {
    // wait for it, so a connection closed before its first query would detach
    // nothing, and the instance its `init()` then registers would stay open
    // with a connection nobody detaches: a leaked instance, and a file lock
-   // held until the process exits.
+   // held until the process exits. The wait is bounded: a connect that hangs
+   // (a remote database that never answers) must not hold an environment
+   // delete or a shutdown with it. Past the bound the connection closes now,
+   // and closes again once its connect settles, to detach what it registered.
    proto.close = async function (
       this: DuckDBConnectionInternals,
    ): Promise<void> {
-      await this.connecting;
+      const connecting = this.connecting;
+      if (connecting && !(await settlesWithin(connecting, closeWaitMs))) {
+         logger.warn(
+            "Closing a DuckDB connection whose open has not settled; its instance is released when it does",
+            { waitedMs: closeWaitMs },
+         );
+         void connecting.then(
+            () => close.call(this),
+            () => close.call(this),
+         );
+      }
       return close.call(this);
    };
 
@@ -477,4 +494,28 @@ export function openDuckDBFilesForTesting(): string[] {
       if (!isLive(open)) openFiles.delete(file);
    }
    return [...openFiles.keys()];
+}
+
+/** Test seam: shorten how long a close waits for an open; undefined resets. */
+export function setDuckDBCloseWaitMsForTesting(ms: number | undefined): void {
+   closeWaitMs = ms ?? CLOSE_WAIT_MS;
+}
+
+/** Whether `promise` settles, either way, within `ms`. */
+function settlesWithin(
+   promise: Promise<unknown>,
+   ms: number,
+): Promise<boolean> {
+   let timer: ReturnType<typeof setTimeout> | undefined;
+   const timeout = new Promise<boolean>((resolve) => {
+      timer = setTimeout(resolve, ms, false);
+      (timer as { unref?: () => void }).unref?.();
+   });
+   return Promise.race([
+      promise.then(
+         () => true,
+         () => true,
+      ),
+      timeout,
+   ]).finally(() => clearTimeout(timer));
 }

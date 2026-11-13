@@ -16,6 +16,7 @@ import {
    recordAttachments,
    recordedAttachments,
    serializeAttachRun,
+   setDuckDBCloseWaitMsForTesting,
    withThreadCap,
 } from "./duckdb_instance_sharing";
 import { attachmentDigest } from "./connection";
@@ -51,6 +52,48 @@ function open(options: Record<string, unknown>): DuckDBConnection {
    const connection = new DuckDBConnection({ name: "duck", ...options });
    opened.push(connection);
    return connection;
+}
+
+/**
+ * Hold every later `connect()` to `connection`'s shared instance until the
+ * test releases or fails it, and report whether the instance was closed. A
+ * held connect never reaches DuckDB once the instance is closed, so a
+ * regression fails an assertion instead of crashing the process.
+ */
+function holdConnects(connection: DuckDBConnection) {
+   const instance = instanceOf(connection)! as unknown as {
+      connect(): Promise<unknown>;
+      closeSync(): void;
+   };
+   const connect = instance.connect.bind(instance);
+   const closeSync = instance.closeSync.bind(instance);
+   let closed = false;
+   instance.closeSync = () => {
+      closed = true;
+      closeSync();
+   };
+   let settle!: (error?: Error) => void;
+   const gate = new Promise<Error | undefined>((resolve) => {
+      settle = resolve;
+   });
+   instance.connect = async () => {
+      const error = await gate;
+      if (error) throw error;
+      if (closed) throw new Error("connect on a closed instance");
+      return connect();
+   };
+   return {
+      closed: () => closed,
+      release: () => settle(),
+      fail: (error: Error) => settle(error),
+   };
+}
+
+async function waitFor(condition: () => boolean): Promise<void> {
+   for (let i = 0; i < 100 && !condition(); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+   }
+   expect(condition()).toBe(true);
 }
 
 beforeEach(() => {
@@ -234,6 +277,111 @@ describe("one shared in-memory DuckDB instance", () => {
       expect(
          DuckDBConnection.activeDBs[shareKeyOf(connection)],
       ).toBeUndefined();
+   });
+
+   it("never closes the instance under a pending connect", async () => {
+      const a = open({ databasePath: ":memory:", workingDirectory: dir });
+      await a.runSQL("SELECT 1");
+      const held = holdConnects(a);
+      const b = open({ databasePath: ":memory:", workingDirectory: dir });
+      await a.close();
+      // Deterministic, unlike the round loop above: b's connect is held open
+      // in JavaScript, so a premature close fails this assertion rather than
+      // segfaulting the whole test process.
+      expect(held.closed()).toBe(false);
+      held.release();
+      expect((await b.runSQL("SELECT 42 AS v")).rows).toEqual([{ v: 42 }]);
+      await b.close();
+      expect(held.closed()).toBe(true);
+      expect(DuckDBConnection.activeDBs[shareKeyOf(b)]).toBeUndefined();
+   });
+
+   it("releases the instance when a join's connect fails after the last other connection closed", async () => {
+      const a = open({ databasePath: ":memory:", workingDirectory: dir });
+      await a.runSQL("SELECT 1");
+      const held = holdConnects(a);
+      const b = open({ databasePath: ":memory:", workingDirectory: dir });
+      await a.close();
+      held.fail(new Error("connect failed"));
+      await expect(b.runSQL("SELECT 1")).rejects.toThrow("connect failed");
+      expect(held.closed()).toBe(true);
+      expect(DuckDBConnection.activeDBs[shareKeyOf(b)]).toBeUndefined();
+      await b.close();
+   });
+
+   it("leaves no placeholder behind when a join's connect fails while another connection holds the instance", async () => {
+      const a = open({ databasePath: ":memory:", workingDirectory: dir });
+      await a.runSQL("SELECT 1");
+      const held = holdConnects(a);
+      const b = open({ databasePath: ":memory:", workingDirectory: dir });
+      // b closes during its own failing connect.
+      const closing = b.close();
+      held.fail(new Error("connect failed"));
+      await closing;
+      expect(
+         DuckDBConnection.activeDBs[shareKeyOf(a)]!.connections,
+      ).toHaveLength(1);
+      expect(held.closed()).toBe(false);
+      // No pin is left, so a's close is the last and closes the instance.
+      await a.close();
+      expect(held.closed()).toBe(true);
+      expect(DuckDBConnection.activeDBs[shareKeyOf(a)]).toBeUndefined();
+   });
+
+   it("closes once when closed twice before its first query", async () => {
+      const connection = open({
+         databasePath: ":memory:",
+         workingDirectory: dir,
+      });
+      await Promise.all([connection.close(), connection.close()]);
+      await connection.close();
+      expect(
+         DuckDBConnection.activeDBs[shareKeyOf(connection)],
+      ).toBeUndefined();
+      await expect(connection.runSQL("SELECT 1")).rejects.toThrow(/closed/);
+   });
+
+   it("finishes closing a connection whose connect never settles, and releases the instance once it does", async () => {
+      setDuckDBCloseWaitMsForTesting(50);
+      try {
+         const a = open({ databasePath: ":memory:", workingDirectory: dir });
+         await a.runSQL("SELECT 1");
+         const held = holdConnects(a);
+         const b = open({ databasePath: ":memory:", workingDirectory: dir });
+         await a.close();
+         // A connect that hangs (a remote database that never answers) must
+         // not hold an environment delete or a shutdown forever.
+         const outcome = await Promise.race([
+            b.close().then(() => "closed"),
+            new Promise((resolve) => setTimeout(resolve, 2_000, "hung")),
+         ]);
+         expect(outcome).toBe("closed");
+         // The pending connect is still using the instance: it stays open.
+         expect(held.closed()).toBe(false);
+         held.release();
+         await b.connecting;
+         await waitFor(() => held.closed());
+         expect(DuckDBConnection.activeDBs[shareKeyOf(b)]).toBeUndefined();
+      } finally {
+         setDuckDBCloseWaitMsForTesting(undefined);
+      }
+   });
+});
+
+describe("a file-backed connection closed before its first query", () => {
+   it("closes its instance and releases the file", async () => {
+      const file = path.join(dir, "early.duckdb");
+      const connection = open({ databasePath: file });
+      await connection.close();
+      await connection.connecting;
+      expect(
+         DuckDBConnection.activeDBs[shareKeyOf(connection)],
+      ).toBeUndefined();
+      expect(openFilesHere()).toEqual([]);
+      if (canReopenAfterClose) {
+         const again = open({ databasePath: file });
+         expect((await again.runSQL("SELECT 1 AS v")).rows).toEqual([{ v: 1 }]);
+      }
    });
 });
 
