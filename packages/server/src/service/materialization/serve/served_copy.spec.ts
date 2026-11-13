@@ -7,6 +7,7 @@ import {
    declarationSpans,
    declaredBaseName,
    dropDimensions,
+   dropJoinDefinition,
    dropRenames,
    rerootDeclaration,
    rewriteDimensions,
@@ -645,6 +646,106 @@ describe("a stored timeframe truncation (decision 3)", () => {
       expect(out?.text).toBe("extend { dimension: m is m__stored.month }");
       expect([...(out?.rewritten ?? [])]).toEqual(["m"]);
       expect([...(out?.dropped ?? [])].sort()).toEqual(["a", "b"]);
+   });
+});
+
+describe("an inlined join_one, answered from its stored columns", () => {
+   const inlinedJoins = [
+      {
+         join: "carriers",
+         columns: [
+            { name: "nickname", column: "carriers__nickname", type: "VARCHAR" },
+            {
+               name: "since_month",
+               column: "carriers__since_month",
+               type: "DATE",
+               timeframe: "month",
+            },
+         ],
+      },
+   ];
+   const base = {
+      sourceName: "flights",
+      connectionAlias: "x",
+      virtualHandle: "h",
+      typeName: "flights__served",
+      columns: [{ name: "carrier_region", type: "VARCHAR" }],
+      storedDimensions: ["carrier_region"],
+      inlinedJoins,
+   };
+
+   it("replaces the join with a record of the stored columns under its name", () => {
+      const out = rerootDeclaration(
+         "flights is duckdb.table('flights') extend {\n" +
+            "  primary_key: id\n" +
+            "  join_one: carriers with carrier\n" +
+            "  dimension: carrier_region is carriers.region\n" +
+            "  measure: n is count()\n" +
+            "}",
+         base,
+      );
+      expect(out).toBe(
+         "flights is x.virtual('h')::flights__served extend {\n" +
+            "  internal rename:\n" +
+            "    carriers__nickname__stored is carriers__nickname\n" +
+            "    carriers__since_month__stored is carriers__since_month\n" +
+            "  dimension:\n" +
+            "    carriers is {\n" +
+            "      nickname is carriers__nickname__stored,\n" +
+            "      since_month is carriers__since_month__stored.month\n" +
+            "    }\n" +
+            "  primary_key: id\n" +
+            "\n" +
+            "  measure: n is count()\n" +
+            "}",
+      );
+   });
+
+   it("adds the record when the join is inherited from the base it replaces", () => {
+      const out = rerootDeclaration("flights is flights_base", base);
+      expect(out).toContain("carriers is {");
+      expect(
+         out?.startsWith("flights is x.virtual('h')::flights__served extend {"),
+      ).toBe(true);
+   });
+
+   it("declares the stored columns on the type", () => {
+      expect(typeDeclaration({ ...base, columns: base.columns })).toBe(
+         "type: flights__served is {\n" +
+            "   carrier_region::string,\n" +
+            "   carriers__nickname::string,\n" +
+            "   carriers__since_month::date\n" +
+            "}",
+      );
+   });
+
+   it("drops one join_one of several, and leaves other kinds and mentions alone", () => {
+      expect(
+         dropJoinDefinition(
+            "extend {\n  join_one:\n    a with x\n    carriers is c on carriers.code = carrier\n}",
+            "carriers",
+         ),
+      ).toBe("extend {\n  join_one:\n    a with x\n}");
+      expect(
+         dropJoinDefinition(
+            "extend { dimension: k is carriers.code }",
+            "carriers",
+         ),
+      ).toBe("extend { dimension: k is carriers.code }");
+      expect(
+         dropJoinDefinition(
+            "extend { join_many: carriers with c }",
+            "carriers",
+         ),
+      ).toBeUndefined();
+      // A hidden join keeps its access: the record would be public, and the
+      // modifier would be left on the next statement.
+      expect(
+         dropJoinDefinition(
+            "extend {\n  internal join_one: carriers with carrier\n  measure: n is count()\n}",
+            "carriers",
+         ),
+      ).toBeUndefined();
    });
 });
 
