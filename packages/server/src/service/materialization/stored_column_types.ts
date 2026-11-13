@@ -439,6 +439,12 @@ export function storedColumnsOfOutput(
        * plan's compiled output).
        */
       bigint?: boolean;
+      /**
+       * Store a `timestamptz` as TIMESTAMP WITH TIME ZONE rather than leaving
+       * the column out: for a v1 table's schema under the v1 cutover, whose
+       * every column the served copy must declare. Off, as before.
+       */
+      timestamptz?: boolean;
    },
 ): StoredColumn[] {
    const out: StoredColumn[] = [];
@@ -447,7 +453,13 @@ export function storedColumnsOfOutput(
          (f as { as?: unknown; name?: unknown })?.as ??
          (f as { name?: unknown })?.name;
       if (typeof name !== "string") continue;
-      const type = storedTypeOfField(f, options.nested, 0, options.bigint);
+      const type = storedTypeOfField(
+         f,
+         options.nested,
+         0,
+         options.bigint,
+         options.timestamptz,
+      );
       if (type !== undefined) out.push({ name, type });
    }
    return out;
@@ -459,6 +471,7 @@ function storedTypeOfField(
    nested: boolean,
    depth: number,
    bigint = false,
+   timestamptz = false,
 ): string | undefined {
    if (depth > 16 || field === null || typeof field !== "object") {
       return undefined;
@@ -484,8 +497,12 @@ function storedTypeOfField(
          return "DATE";
       case "timestamp":
          return "TIMESTAMP";
+      case "timestamptz":
+         return timestamptz ? "TIMESTAMP WITH TIME ZONE" : undefined;
       case "record":
-         return nested ? structOf(f.fields, depth, bigint) : undefined;
+         return nested
+            ? structOf(f.fields, depth, bigint, timestamptz)
+            : undefined;
       case "array": {
          if (!nested) return undefined;
          const element = f.elementTypeDef as { type?: unknown } | undefined;
@@ -493,8 +510,14 @@ function storedTypeOfField(
          // array; an array of a scalar names the scalar's type.
          const inner =
             element?.type === "record_element"
-               ? structOf(f.fields, depth, bigint)
-               : storedTypeOfField(element, nested, depth + 1, bigint);
+               ? structOf(f.fields, depth, bigint, timestamptz)
+               : storedTypeOfField(
+                    element,
+                    nested,
+                    depth + 1,
+                    bigint,
+                    timestamptz,
+                 );
          return inner === undefined ? undefined : `${inner}[]`;
       }
       default:
@@ -506,6 +529,7 @@ function structOf(
    fields: unknown[] | undefined,
    depth: number,
    bigint = false,
+   timestamptz = false,
 ): string | undefined {
    const parts: string[] = [];
    for (const f of fields ?? []) {
@@ -513,7 +537,7 @@ function structOf(
          (f as { as?: unknown; name?: unknown })?.as ??
          (f as { name?: unknown })?.name;
       if (typeof name !== "string") return undefined;
-      const type = storedTypeOfField(f, true, depth + 1, bigint);
+      const type = storedTypeOfField(f, true, depth + 1, bigint, timestamptz);
       if (type === undefined) return undefined;
       parts.push(`"${name.replace(/"/g, '""')}" ${type}`);
    }

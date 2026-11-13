@@ -197,5 +197,6 @@ export function v1StoredColumnsOf(def: unknown): StoredColumn[] | undefined {
    return storedColumnsOfOutput(outputs, {
       nested: d?.dialect === "duckdb",
       bigint: true,
+      timestamptz: true,
    });
 }

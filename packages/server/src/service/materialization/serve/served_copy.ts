@@ -372,6 +372,12 @@ export interface ServedColumn {
     * (a date as `::"DATE"`, see `timeframeExpression`).
     */
    castTo?: "boolean" | "date";
+   /**
+    * Declared `timestamptz` rather than the stored type's `timestamp`: a
+    * TIMESTAMP WITH TIME ZONE column whose author field is a `timestamptz`,
+    * so the field reads back as one (the v1 cutover).
+    */
+   timestamptz?: true;
 }
 
 /** A timeframe in {@link TIMEFRAMES}, as Malloy text. */
@@ -1385,7 +1391,7 @@ export function typeDeclaration(
             )
                .map((note) => noteSource(note, "   "))
                .join("") +
-            `   ${identifier(c.name)}::${storedTypeText(c.type)}`,
+            `   ${identifier(c.name)}::${c.timestamptz ? "timestamptz" : storedTypeText(c.type)}`,
       )
       .join(",\n");
    return `type: ${identifier(r.typeName)} is {\n${fields}\n}`;

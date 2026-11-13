@@ -1365,11 +1365,20 @@ export class ServedCopyServe {
             .map((c) => {
                const notes = fieldNotes(fieldsByName.get(c.name));
                const cast = castTo.get(c.name);
+               const field = fieldsByName.get(c.name) as
+                  | { type?: unknown }
+                  | undefined;
                return {
                   ...c,
                   ...(notes.length > 0 ? { notes } : {}),
                   ...timeframeOf(c.name),
                   ...(cast ? { castTo: cast } : {}),
+                  ...(field?.type === "timestamptz" &&
+                  /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/i.test(
+                     c.type.trim(),
+                  )
+                     ? { timestamptz: true as const }
+                     : {}),
                };
             });
          if (columns.length === 0) {
