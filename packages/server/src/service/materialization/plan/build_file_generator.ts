@@ -191,6 +191,7 @@ import {
 } from "./persist_dynamic_terms";
 import {
    buildQueryWindows,
+   leftOutTermReadElsewhere,
    leftOutWindowTerms,
    rollingWindowTerms,
    type CurrentTimeReadTerm,
@@ -1375,6 +1376,28 @@ export function planModelMaterialize(
             sourceName: name,
             sourceID: def.sourceID,
             reason: window.detail,
+         });
+         continue;
+      }
+      // Only an inlined join's columns are stored; any other join is read
+      // through the served join, over its own source, at read.
+      const joinedWindow = leftOutTermReadElsewhere(
+         (def.fields ?? []).filter((raw) =>
+            inline.includes(
+               String((raw as FieldLike).as ?? (raw as FieldLike).name),
+            ),
+         ),
+         window.terms,
+      );
+      if (joinedWindow !== undefined) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason:
+               `the \`where:\` term \`${joinedWindow}\` keeps rows older than a ` +
+               "moving cut-off and is also applied by a join `inline=` names, so " +
+               "leaving it out of the build would store joined rows the read " +
+               "cannot take back out",
          });
          continue;
       }

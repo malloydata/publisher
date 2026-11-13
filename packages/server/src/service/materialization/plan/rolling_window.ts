@@ -236,6 +236,51 @@ export function buildQueryWindows(
    });
 }
 
+/**
+ * A term the build leaves out that the source also reads somewhere other than
+ * its own `where:`, or undefined. The build copy takes the term's text out of
+ * the declaration that writes it, which for an inherited term is a base: a
+ * join in the source that reads that base (or anything built over it) would
+ * lose the term too, and the columns the build stores through it would hold
+ * rows the read never puts back. Found by the places the term reads its
+ * fields: a join that applies the same written term carries the same ones.
+ */
+export function leftOutTermReadElsewhere(
+   fields: unknown,
+   terms: readonly { kind: string }[],
+): string | undefined {
+   const places = new Map<string, string>();
+   for (const term of leftOutWindowTerms(terms)) {
+      for (const use of term.at) places.set(placeKey(use), term.code);
+   }
+   if (places.size === 0) return undefined;
+   const seen = new Set<object>();
+   const stack: unknown[] = [fields];
+   while (stack.length > 0) {
+      const node = stack.pop();
+      if (node === null || typeof node !== "object" || seen.has(node)) continue;
+      seen.add(node);
+      const at = node as Partial<TermUse>;
+      if (typeof at.url === "string" && at.range) {
+         const code = places.get(placeKey(at as TermUse));
+         if (code !== undefined) return code;
+      }
+      stack.push(...Object.values(node));
+   }
+   return undefined;
+}
+
+function placeKey(use: TermUse): string {
+   const { start, end } = use.range ?? {};
+   return JSON.stringify([
+      use.url,
+      start?.line,
+      start?.character,
+      end?.line,
+      end?.character,
+   ]);
+}
+
 const DAY_MS = 86_400_000;
 
 /**

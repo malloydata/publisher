@@ -306,6 +306,41 @@ source: older is older_base extend { where: amount > 1 }
    );
 
    it(
+      "refuses an inherited upper bound that an inlined join also applies, and keeps one a join reads at read",
+      async () => {
+         const { c } =
+            await compiled(`source: ev is duckdb.table('rwu_ev') extend {
+  primary_key: amount
+  where: ts < now - 30 days
+}
+#(materialize) storage="lake" inline=["nxt"]
+source: inlined is ev extend {
+  dimension: next_key is amount + 1
+  join_one: nxt is ev with next_key
+}
+#(materialize) storage="lake"
+source: served_join is ev extend {
+  dimension: next_key is amount + 1
+  join_one: nxt is ev with next_key
+}
+`);
+         const planned = Object.values(c.materializePlans ?? {}).map(
+            (p) => p.sourceName,
+         );
+         // The build copy takes the term out of \`ev\`, which the inlined
+         // join reads too: its stored columns would hold newer rows.
+         expect(planned).not.toContain("inlined");
+         expect(planned).toContain("served_join");
+         const reason = (c.annotationFindings ?? []).find(
+            (f) =>
+               f.code === "materialize-not-built" && f.subject === "inlined",
+         )?.message;
+         expect(reason).toContain("also applied by a join `inline=` names");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
       "refuses any other now-reading shape, and now through a dimension",
       async () => {
          const { c } = await compiled(`source: ev is duckdb.table('rwu_ev')
