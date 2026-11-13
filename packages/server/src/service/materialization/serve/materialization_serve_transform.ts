@@ -142,8 +142,20 @@ export interface ServeBinding {
     * author-model lookups (see {@link rollupServeBindings}).
     */
    origin?: "persist" | "preaggregate";
-   /** The storage destination the physical table lives in. */
+   /**
+    * The storage destination the physical table lives in; for a
+    * {@link colocated} table, the source's own connection.
+    */
    destinationName: string;
+   /**
+    * A colocated `#(materialize)` table (colocated_bindings.ts): built into
+    * the source's own warehouse, on the connection {@link destinationName}
+    * names, which the served copy reads it through (never a server-only
+    * alias); its {@link tablePath} is already canonical for that
+    * connection's dialect, and its {@link schema} is the build's compiled
+    * output. Only the served copy reads one. Absent on a `storage=` binding.
+    */
+   colocated?: true;
    /** The virtualMap handle for this source (its build-posture identity). */
    virtualHandle: string;
    /** Logical (unquoted) physical table path; quoted for DuckDB at bind time. */
@@ -1638,6 +1650,31 @@ export function extractViews(
 }
 
 /**
+ * A binding's table path as the SQL reads it: a storage table's quoted for
+ * DuckDB (the destination), a colocated table's as bound, already canonical
+ * for its own connection's dialect.
+ */
+export function boundTablePath(b: ServeBinding): string {
+   return b.colocated
+      ? b.tablePath
+      : quoteManifestTablePath(b.tablePath, "duckdb");
+}
+
+/**
+ * Whether `sql` reads the table at `tablePath` (as {@link boundTablePath}
+ * spells it): the path right after a `FROM` or `JOIN`, and not followed by
+ * more of a name. A bare substring test is not enough: a colocated table's
+ * path is often one quoted name (`"orders"`), which a result column of the
+ * same name (`AS "orders"`) also spells.
+ */
+export function sqlReadsTable(sql: string, tablePath: string): boolean {
+   const path = tablePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   return new RegExp(`\\b(?:FROM|JOIN)\\s+${path}(?![\\w$".\x60])`, "i").test(
+      sql,
+   );
+}
+
+/**
  * Assemble the per-call `virtualMap` (`destinationName -> handle -> table
  * path`). Core pastes each path verbatim, so it must be quoted canonical
  * DuckDB SQL. {@link quoteManifestTablePath} is the same quoting authority the
@@ -1653,7 +1690,7 @@ export function buildVirtualMap(
          inner = new Map<string, string>();
          map.set(b.destinationName, inner);
       }
-      inner.set(b.virtualHandle, quoteManifestTablePath(b.tablePath, "duckdb"));
+      inner.set(b.virtualHandle, boundTablePath(b));
    }
    return map;
 }

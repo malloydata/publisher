@@ -249,8 +249,10 @@ export function incrementalLineage(params: {
    // resolved must never be ISSUED. No lineage means a seed: slower, but correct.
    if (mergeKeys.length > 0 && d.scopeIncomplete) return undefined;
    // A pair table's delta replaces whole parents by its key, in DuckDB, the
-   // target of every `storage=` table (pairDeltaStatements). Anything else
-   // seeds: a pair whose merge key is not its parent key was planned wrong.
+   // target of every `storage=` table and of a colocated table in a DuckDB
+   // warehouse (pairDeltaStatements). Anything else seeds: a colocated pair
+   // table in another warehouse, or a pair whose merge key is not its parent
+   // key, which was planned wrong.
    if (
       d.pair &&
       (params.targetDialect !== "duckdb" ||

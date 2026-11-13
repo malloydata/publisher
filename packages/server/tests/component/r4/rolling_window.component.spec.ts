@@ -196,14 +196,16 @@ describe("R4: a rolling window served at a pinned clock answers equal to live", 
       });
    }
 
-   it("does not store an upper-bound window, which answers live", async () => {
+   it("stores an upper-bound window, left out of the build and re-applied at read", async () => {
+      // Option A (question 2): rolling_window_upper.component.spec.ts reads
+      // it across the serving window and well past any interval.
       fixture.setClock(READS[1]);
       const run = await fixture.run({
          name: "older",
          malloy: "run: older -> { aggregate: n }",
       });
-      expect(run.servedVia).toBeUndefined();
-      expect(run.servedFrom).not.toBe("storage");
+      expect(run.servedVia).toBe("served_copy");
+      expect(run.servedFrom).toBe("storage");
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 });

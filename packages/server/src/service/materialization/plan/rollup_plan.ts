@@ -40,10 +40,17 @@
  *   rollup's name carries its declaring model: a digest of the base's
  *   package-relative `sourceID`, so same-named bases in two models never
  *   share a table, and every model that imports the base plans the same name.
- * - **A4, access filters.** A row-level gate whose fields the grain does not
- *   keep cannot be re-applied to the rollup's rows: a publish warning, and the
- *   rollup is not built. While a gated entry point skips every rollup
- *   ({@link rollupsReadUnderGates}), no rollup over a gated source is built.
+ * - **A4, access filters.** The base's entry-point gates, as the governor
+ *   walks them (`collectEntryPointGates`: own, inherited, a derivation's
+ *   base), so the build and the read-time proof never disagree about which
+ *   gates a rollup covers. A gate is exact on a rollup only when every field
+ *   it reads is a grain dimension the base reads through no join: a gate whose
+ *   fields the grain does not keep, that reads through a join, or a base that
+ *   joins a gated source, is a publish warning and the rollup is not built.
+ *   A gated base's rollups are built only when a query can read them past
+ *   their gate ({@link rollupGateEnforcedAtRead}); otherwise none is (row 21).
+ *   An `internal` grain dimension a gate reads is the one hidden field a
+ *   rollup stores, redeclared `internal` on the variant.
  * - **A6, fan-out grains.** A grain dimension read through a join_many or
  *   join_cross is recorded as a fan-out dimension; the serve side reads the
  *   rollup only for a query that fixes it at every aggregating level.
@@ -58,20 +65,17 @@
  * readers are `governance/ir/source_graph.ts`'s single walk).
  */
 
-import { Annotations } from "@malloydata/malloy";
+import { Annotations, type ModelDef, type SourceDef } from "@malloydata/malloy";
+import { getMaterializeGatedSources } from "../../../config";
+import { collectEntryPointGates } from "../../gate_classification";
 import { createHash } from "node:crypto";
-import {
-   annotationTexts,
-   ownLevelNotes,
-   type AnnotationNote,
-} from "../../annotations";
+import { ownLevelNotes, type AnnotationNote } from "../../annotations";
 import {
    declaredFieldNotes,
    type NotedSourceDef,
    type SourceScope,
 } from "../../governance/ir/declared_notes";
 import {
-   payloadsOnRoute,
    PREAGGREGATE_ROUTE_KEYS,
    routeOfNote,
    type PackageAnnotationFinding,
@@ -160,18 +164,76 @@ export interface RollupVariantPlan extends RollupPlan {
     * join, where no gate is grafted, so it declines such a base.
     */
    baseGated: boolean;
+   /**
+    * Grain dimensions the base declares `internal` (A4: only a field a gate
+    * reads), stored, and redeclared `internal` on the variant.
+    */
+   internalGrain: string[];
 }
 
 /**
- * Whether a rollup is read for a query whose entry point carries a row-level
- * gate. Not yet (known limitation 1): the router's rollup leg does not keep
- * the domain's contracts, so a gated entry point skips every rollup
- * (`CONTRACT`), and the planner leaves out a rollup over a gated source,
- * which no query could read. The one switch both read: lifting row 1 (the
- * gate proved on the rollup variant, R3 for rollups) flips it here.
+ * Whether a `storage=` rollup over a gated base may be built and read. Not
+ * until question 14's managed-tier review: a stored rollup puts tenant-keyed
+ * aggregates (the gate's field and each tenant's partials) in a storage
+ * destination, which the review covers for `#(materialize)` tables and is
+ * proposed to cover for rollups too. A colocated rollup stays in the author's
+ * warehouse, so it is read past its gate under `materialize.gatedSources`
+ * alone; this keeps the two apart. Only a test turns it on
+ * ({@link allowGatedStorageRollupsForTests}).
  */
-export function rollupsReadUnderGates(): boolean {
-   return false;
+let gatedStorageRollupsReviewed = false;
+
+/**
+ * For tests only: let `storage=` rollups over gated bases be built and read
+ * (behind `materialize.gatedSources`), as they will be once question 14's
+ * review passes. Returns the restore.
+ */
+export function allowGatedStorageRollupsForTests(on = true): () => void {
+   const before = gatedStorageRollupsReviewed;
+   gatedStorageRollupsReviewed = on;
+   return () => {
+      gatedStorageRollupsReviewed = before;
+   };
+}
+
+/**
+ * Whether a rollup at `placement` over a gated base may be read past its
+ * base's gate (and so is worth building): `materialize.gatedSources` is on,
+ * and the rollup is colocated, or in a storage destination once the
+ * managed-tier review allows it.
+ */
+export function rollupsServeGatedBases(placement: {
+   storage?: string;
+}): boolean {
+   if (!getMaterializeGatedSources()) return false;
+   return placement.storage === undefined || gatedStorageRollupsReviewed;
+}
+
+/** A `#(preaggregate)` rollup's plan, never a v1 `#@ preaggregate` one. */
+export function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
+   return (
+      typeof plan === "object" &&
+      plan !== null &&
+      (plan as { variant?: unknown }).variant === true
+   );
+}
+
+/**
+ * Whether a planned rollup's base gate is enforced when it is read (R3 for
+ * rollups): `govern()` grafts and proves the base's gates on the rollup
+ * variant, so the tier checks that refuse a gated build (the colocated and
+ * storage `authorize` refusals) do not apply to it. True only for a
+ * `#(preaggregate)` rollup (a v1 `#@ preaggregate` rollup's serve shape keeps
+ * no gates) over a gated base, whose every gate the planner proved exact on
+ * the rollup (table 1: each field a grain dimension, no gated join), at a
+ * placement {@link rollupsServeGatedBases} allows. The build plan, the
+ * host-instructed build and the serve bind all ask this one question, through
+ * `gateEnforcedAtRead`, so a rollup is never built that cannot be read, nor
+ * read because it was built.
+ */
+export function rollupGateEnforcedAtRead(plan: unknown): boolean {
+   if (!isRollupVariantPlan(plan)) return false;
+   return plan.baseGated && rollupsServeGatedBases(plan);
 }
 
 /** Why a declaration was not planned. */
@@ -403,7 +465,10 @@ export function rollupName(
 export interface RollupPlanContext {
    /** The base's `sourceID` relative to the package (`orders@models/o.malloy`). */
    packageRelativeSourceID(sourceID: string): string;
-   /** For tests of what lifting row 1 plans: {@link rollupsReadUnderGates}. */
+   /**
+    * For tests: whether a gated base's rollups are read past its gate,
+    * standing in for {@link rollupsServeGatedBases} at every placement.
+    */
    readUnderGates?: boolean;
 }
 
@@ -467,7 +532,7 @@ export function planSourceRollups(
    const joinUsage = map.fieldJoinsOf(node.sourceID);
    const relativeID = ctx.packageRelativeSourceID(node.sourceID);
    const declaredName = splitSourceID(node.sourceID)?.name ?? sourceName;
-   const gate = gateFieldNames(def, byName);
+   const gate = gateFieldNames(def, byName, map.model(), joinUsage);
    // S25b: what reads the current time. A rollup stores what its build saw,
    // and a live query re-reads `now` every time, so anything here that reads
    // it (a rolling window on the source or a query-shaped base, a grain
@@ -573,7 +638,17 @@ export function planSourceRollups(
          );
          continue;
       }
-      const hiddenGrain = decl.grain.find((g) => isHidden(byName.get(g)));
+      // An `internal` grain dimension a gate reads is stored (A4): the gate
+      // needs it on the rollup's rows, and the variant redeclares it
+      // `internal`, so no query selects it. Any other hidden field is not.
+      const hiddenGrain = decl.grain.find(
+         (g) =>
+            isHidden(byName.get(g)) &&
+            !(
+               byName.get(g)?.accessModifier === "internal" &&
+               gate.dimensions.includes(g)
+            ),
+      );
       if (hiddenGrain) {
          refused.push(
             unservable(
@@ -584,14 +659,32 @@ export function planSourceRollups(
          );
          continue;
       }
-      // Row 1 (CONTRACT): a query on a gated source is never read from a
-      // rollup, so a rollup of one would be built for nothing.
-      if (gate.declared && !(ctx.readUnderGates ?? rollupsReadUnderGates())) {
+      // Row 21: a gated base's rollup is built only where a query can read
+      // it past the gate; elsewhere its table would cost a build no query
+      // reads.
+      if (
+         gate.declared &&
+         !(ctx.readUnderGates ?? rollupsServeGatedBases(decl))
+      ) {
          refused.push(
             unservable(
                "preaggregate-access-filter",
                decl.measure,
-               "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup yet, so its table would cost a build no query reads",
+               decl.storage !== undefined && getMaterializeGatedSources()
+                  ? "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a rollup in a storage destination is not read past a gate yet, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse"
+                  : "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads",
+            ),
+         );
+         continue;
+      }
+      // A gate on a source the base joins is not the base's to graft: the
+      // rollup is not built (A4, fail closed).
+      if (gate.declared && gate.joinGated) {
+         refused.push(
+            unservable(
+               "preaggregate-access-filter",
+               decl.measure,
+               "a source it joins has a row-level gate, which a rollup cannot re-apply to its rows",
             ),
          );
          continue;
@@ -750,6 +843,9 @@ export function planSourceRollups(
             })),
             rollupMeasures: sorted,
             baseGated: gate.declared,
+            internalGrain: decl.grain.filter(
+               (g) => byName.get(g)?.accessModifier === "internal",
+            ),
             fanOutDimensions: decl.grain.filter((g) => {
                const usage = joinUsage.get(g);
                if (usage === undefined) return joinUsage.has(g);
@@ -817,36 +913,87 @@ function reaggregateOf(leaf: AggregateLeaf | undefined): Reaggregate {
 }
 
 /**
- * The source's own field names a row-level gate on it reads
- * (`#(access_filter)`, `#(authorize)`), its inherited gates included, and the
- * names it reads that a grain can never keep (a join, a measure, a view): a
- * rollup whose gate reads one of those is not built, since its rows could not
- * be filtered per caller.
+ * The base's field names its row-level gates read, as the governor walks
+ * them (`collectEntryPointGates`: own, inherited, a derivation's base), so
+ * the build and the read-time proof walk the same gates. `unkeepable` holds
+ * what a grain can never keep: a join, a measure, a view, a dimension read
+ * through a join (a fan-out grain is not fixed by a grafted filter, A6), or a
+ * gate the walk could not read. `joinGated`: a source the base joins carries
+ * a gate, which is not the base's to graft.
  */
 function gateFieldNames(
    def: SourceLike,
    byName: ReadonlyMap<string, FieldLike>,
-): { dimensions: string[]; unkeepable: string[]; declared: boolean } {
-   const texts = annotationTexts(def.annotations) ?? [];
+   modelDef: unknown,
+   joinUsage: ReturnType<SourceMap["fieldJoinsOf"]>,
+): {
+   dimensions: string[];
+   unkeepable: string[];
+   declared: boolean;
+   joinGated: boolean;
+} {
    const dimensions = new Set<string>();
    const unkeepable = new Set<string>();
-   let declared = false;
-   for (const route of ["access_filter", "authorize"]) {
-      for (const payload of payloadsOnRoute(texts, route)) {
-         declared = true;
-         for (const id of malloyIdentifiers(payload)) {
+   let entries: ReturnType<typeof collectEntryPointGates>;
+   try {
+      entries = collectEntryPointGates(
+         def as unknown as SourceDef,
+         modelDef as ModelDef,
+         new Set(),
+         true,
+      );
+   } catch {
+      entries = [
+         {
+            label: "",
+            exprs: ["false"],
+            route: "authorize",
+            selfContained: true,
+         },
+      ];
+      unkeepable.add("(an unreadable gate)");
+   }
+   for (const entry of entries) {
+      // The walk's fail-closed deny: no entry point to graft on.
+      if (!entry.struct) unkeepable.add("(an unreadable gate)");
+      for (const expr of entry.exprs) {
+         for (const id of malloyIdentifiers(expr)) {
             const f = byName.get(id);
             if (!f) continue;
-            if (isDimension(f)) dimensions.add(id);
+            const usage = joinUsage.get(id);
+            const throughJoin =
+               joinUsage.has(id) &&
+               (usage === undefined || usage.nested || usage.joins.size > 0);
+            if (isDimension(f) && !throughJoin) dimensions.add(id);
             else unkeepable.add(id);
          }
       }
    }
+   const joinGated = ((def.fields ?? []) as FieldLike[]).some(
+      (f) => f.join !== undefined && gatedJoin(f, modelDef),
+   );
    return {
       dimensions: [...dimensions].sort(byCodepoint),
       unkeepable: [...unkeepable].sort(byCodepoint),
-      declared,
+      declared: entries.length > 0,
+      joinGated,
    };
+}
+
+/** Whether a joined source carries a row-level gate (fails closed). */
+function gatedJoin(join: FieldLike, modelDef: unknown): boolean {
+   try {
+      return (
+         collectEntryPointGates(
+            join as unknown as SourceDef,
+            modelDef as ModelDef,
+            new Set(),
+            true,
+         ).length > 0
+      );
+   } catch {
+      return true;
+   }
 }
 
 /**
@@ -926,8 +1073,16 @@ function emitRollupBuildSource(plan: RollupVariantPlan): string {
             `    ${identifier(p.column)} is ${emitMeasureExpr(p.leaf.expr)}`,
       )
       .join("\n");
+   // A grain an `internal` gate field is in reads it through
+   // `include { public: * }`, which lifts the fields the base hides from a
+   // query (A4); the SQL, and so the table's address, is the same.
+   const base = identifier(rollupBaseAlias(plan.baseDeclaredName));
+   const from =
+      (plan.internalGrain ?? []).length > 0
+         ? `${base} include { public: * }`
+         : base;
    return `${persistLine(plan)}
-source: ${identifier(plan.rollupSourceName)} is ${identifier(rollupBaseAlias(plan.baseDeclaredName))} -> {
+source: ${identifier(plan.rollupSourceName)} is ${from} -> {
   group_by:
 ${grain}
   aggregate:
@@ -955,7 +1110,12 @@ export function generateRollupBuildFile(
             `import { ${identifier(rollupBaseAlias(base))} is ${identifier(base)} } from ${doubleQuotedString(importPath)}`,
       )
       .join("\n");
-   return `##! experimental.persistence
+   // `include { public: * }` (an internal gate field in a grain) needs the
+   // access-modifier flag; the SQL, and so every table's address, is the same.
+   const flags = plans.some((p) => (p.internalGrain ?? []).length > 0)
+      ? "##! experimental { access_modifiers persistence }"
+      : "##! experimental.persistence";
+   return `${flags}
 ${imports}
 
 ${plans.map((p) => emitRollupBuildSource(p)).join("\n\n")}
