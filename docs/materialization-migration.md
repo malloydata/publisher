@@ -10,8 +10,8 @@ SPDX-License-Identifier: MIT
 > and they are still being built ([the plan](materialization-v2-plan.md)). With the switch off,
 > Publisher ignores both and answers the source live: a `#(materialize)` source gets no warning and
 > no serve verdict, and a `#(preaggregate)` line is an `annotation-near-miss` warning. A `#(materialize)`
-> source is served only from a `storage=` destination today, which also needs
-> `PERSIST_STORAGE_MODE=on`. Nothing on this page is required: every v1 annotation keeps working as
+> source is served from its own warehouse (it then needs `name=`) or from a `storage=` destination,
+> which also needs `PERSIST_STORAGE_MODE=on`. Nothing on this page is required: every v1 annotation keeps working as
 > [materialization.md](materialization.md) describes it, with the switch on or off.
 
 This page is the recipe for moving a package from v1 materialization (`#@ persist`,
@@ -19,15 +19,16 @@ This page is the recipe for moving a package from v1 materialization (`#@ persis
 and says what changes, what stays the same, and how to check the result. Each section says whether
 the v2 form works on `main` today. "Works" means it was checked against `main` with both switches
 on: a package loaded, built into a DuckLake destination from a Postgres warehouse, and queried, with
-each answer compared to live.
+each answer compared to live. The colocated form, which landed after that check, was checked on a
+DuckDB warehouse: built, served with `via: "served_copy"`, and compared to live.
 
 ## At a glance
 
 | v1 spelling | v2 spelling | On `main` today |
 | --- | --- | --- |
 | `#@ persist storage="lake"` on a source | [`#(materialize) storage="lake"`](#storage-build-into-a-destination-and-serve-from-it) | Works. Watch for [a base with measures, views or joins](#a-base-with-measures-views-or-joins) |
-| `#@ persist name="t"` with no `storage=` (colocated) | [`#(materialize) name="t"`](#colocated-build-into-the-sources-own-warehouse) | Not built. Keep `#@ persist` |
-| `#@ persist … refresh="incremental" watermark="col"` | [the same keys on `#(materialize)`](#incremental-refresh) | Works with `storage=` |
+| `#@ persist name="t"` with no `storage=` (colocated) | [`#(materialize) name="t"`](#colocated-build-into-the-sources-own-warehouse) | Works; `name=` is required |
+| `#@ persist … refresh="incremental" watermark="col"` | [the same keys on `#(materialize)`](#incremental-refresh) | Works |
 | `#@ preaggregate grain="a, b"` on a measure | [`#(preaggregate) grain=["a", "b"]`](#preaggregate), one line per grain | Works |
 | `#@ persist` on a view | [unchanged](#persist-on-a-view) | Works; built only with the switch on |
 | `#@ -persist` on a reader | [unchanged](#persist-opt-out) | Works |
@@ -55,10 +56,11 @@ still build and serve.
 
 ## The recipe
 
-1. **Run a server with both switches on**, somewhere other than production:
-   `PUBLISHER_MATERIALIZE=true` and `PERSIST_STORAGE_MODE=on`, with the storage destination your
-   `storage=` names configured ([storage destinations](connections.md#storage-destinations)). Both
-   are read at startup. A server with the switch off ignores every v2 annotation, and says nothing
+1. **Run a server with the switch on**, somewhere other than production:
+   `PUBLISHER_MATERIALIZE=true`, and for a `storage=` source also `PERSIST_STORAGE_MODE=on` with the
+   storage destination it names configured
+   ([storage destinations](connections.md#storage-destinations)). A colocated `#(materialize)`
+   needs no storage tier. Both are read at startup. A server with the switch off ignores every v2 annotation, and says nothing
    about a `#(materialize)` it ignores, so check this first: the server's startup log lists
    `materialize.enabled=true from PUBLISHER_MATERIALIZE` among the settings it was given.
 2. **Find the v1 annotations.** `grep -rn -e '#@ *persist' -e '#@ *preaggregate' --include='*.malloy' .`
@@ -75,7 +77,9 @@ still build and serve.
    `malloy-pub materialize --environment <env> --package <pkg> --wait`, or
    `POST …/packages/{pkg}/materializations`. Expect every migrated source to build once, even with
    `name=` unchanged ([addresses](#addresses-what-moves-once)). An incremental source starts again
-   from a full build.
+   from a full build. A source whose build cannot be generated or compiled is refused on its own
+   (`materialize-not-built`), and the rest of the package still builds; an extension whose build
+   does not compile over its parent's table builds over the chain from the warehouse instead.
 6. **Read the serve verdicts.** `GET …/packages/{pkg}/status` reports `serveVerdicts`. Each migrated
    source should read `serves`. `live` with reason `served_copy` means its table is built but no
    query will read it; the package's `served-copy-not-served` warning names why.
@@ -106,13 +110,19 @@ still build and serve.
 
 | Code | What it means | What to do |
 | --- | --- | --- |
-| `materialize-not-built` | Publisher cannot build this `#(materialize)` source; the message names why (colocated, a refused `inline=`, a name another source's table holds, and so on). It serves live. | Fix what it names, or keep the v1 form. |
+| `materialize-not-built` | Publisher cannot build this `#(materialize)` source; the message names why (a colocated source with no `name=`, a refused `inline=`, a name another source's table holds, and so on). It serves live. | Fix what it names, or keep the v1 form. |
 | `materialize-unknown-key`, `materialize-unparseable` | The line cannot be read as written. Severity `error`: a publish is refused. | Fix the key or the quoting. |
 | `annotation-near-miss` | A misspelled route, such as `#(materialise)`. Nothing is built. | Fix the spelling. |
 | `served-copy-not-served` | The table is built, but the served copy cannot answer from it; the message names why. | See [a base with measures, views or joins](#a-base-with-measures-views-or-joins) and [known limitations](#known-limitations-you-may-hit). |
 | `materialize-pair-full-refresh` | An incremental pair table rebuilds in full; the message names why. | Name a watermark field on each side of the join. |
 | `persist-view-not-built` | A persisted view cannot be built. | See [persisted views](materialization.md#persisted-views-in-development-publisher_materialize). |
 | `deprecated-preaggregate-annotation` | A measure still uses `#@ preaggregate`. | Rewrite it as `#(preaggregate)`. |
+
+A run can also refuse one source before writing anything, in the run's `failures` rather than as a
+package warning: `table-owned-elsewhere` when its `name=` holds a table another package marked, or
+one no run of this package wrote, and `table-ownership-unverified` when the holder cannot be read
+([whose table it is](materialization.md#whose-table-it-is)). The source answers live; give it
+another `name=`, or drop the other table if nothing needs it.
 
 ## What changes when you move
 
@@ -125,11 +135,14 @@ unchanged ([the served copy](materialization.md#the-served-copy-in-development-p
 - **No `##! experimental.persistence` in your file** for a `#(materialize)` source. The flag lives
   in the build source Publisher generates. A file that also has v1 `#@ persist` sources still needs
   it: a v1 file without the flag is skipped by the build, as before. Removing that requirement for
-  v1 files (D3) is part of the v1 cutover, which has not landed.
+  v1 files (D3) is part of the v1 cutover, which has not landed
+  (proposed in the plan's [phased plan](materialization-v2-plan.md#phased-plan), "v1 cutover
+  design").
 - **It is served by the served copy, never the build manifest.** A colocated v1 table is served
   through Malloy's build manifest, and a v1 `storage=` table through the storage serve shape (or,
   with the switch on, through the served copy when the source is query-shaped). A `#(materialize)`
-  table is served only through the served copy, which is why a colocated one is not built yet.
+  table is served only through the served copy: colocated, on the source's own connection; with
+  `storage=`, in its destination.
 - **An extension does not inherit `#(materialize)`.** Only the source whose own statement carries it
   is built. A source that extends or renames it is not a second table: it reads the materialized
   source's table through the served copy, as its own text says. To give an extension a table of its
@@ -161,7 +174,11 @@ unchanged ([the served copy](materialization.md#the-served-copy-in-development-p
   under your source name; the generated build source never does.
 - **Names.** `name=` follows the v1 rules: a plain identifier path, which may name a container
   (`name="analytics.order_summary"`). Keep the same `name=` when you move, and the first build after
-  the move replaces the old table under the same name. Two sources may not resolve to one table.
+  the move replaces the old table under the same name, since this package's own runs wrote it. Two
+  sources may not resolve to one table, and a `name=` another package holds is refused
+  ([whose table it is](materialization.md#whose-table-it-is)). Without `name=`, Publisher's own
+  builds name the table after the source plus a hash of the environment and package
+  (`east_orders__p3f9c2a1b`), for v1 and v2 alike.
 - **Freshness, `partition=` and `queryMetadata`** are copied onto the generated build source as
   written.
 
@@ -187,8 +204,9 @@ source: east_orders is orders extend {
 }
 ```
 
-`name=` is optional with `storage=`. Without one, the table takes the source's name. The destination
-is Publisher's, and the existing checks refuse two sources that land on one table.
+`name=` is optional with `storage=`. Without one, the table takes the source's name, with its
+package's suffix in Publisher's own builds ([whose table it is](materialization.md#whose-table-it-is)).
+The destination is Publisher's, and the existing checks refuse two sources that land on one table.
 
 A v1 `#@ persist` on a source declared only by refinement (`source: x is orders extend { … }`)
 stores its root table's rows. `#(materialize)` on the same source stores the source's own rows, with
@@ -233,14 +251,13 @@ measures, views and joins, and has a table of its own
 
 ### Colocated: build into the source's own warehouse
 
-**Not built yet. Keep `#@ persist`.** A `#(materialize)` source without `storage=` is not built
-until the served copy can serve a table on the source's own connection, which is part of phase 3's
-v1 cutover (plan row [18](materialization-v2-plan.md#known-limitations-to-revisit)). Until then it
-gets a `materialize-not-built` warning ("colocated #(materialize) is not served yet; use storage= or
-#@ persist") and its queries are answered live from its warehouse. Keep the v1 form, or use
-`storage=`, for anything that needs a table now.
-
-The v2 spelling, for when it lands, needs `name=`:
+**Works**, with `PUBLISHER_MATERIALIZE` only: no storage tier. A `#(materialize)` source without
+`storage=` is built into its own warehouse, and the served copy answers it from that table on the
+source's own connection, with everything it does for `storage=` (stored computed dimensions,
+`inline=`, private and internal fields, terms re-applied at read, extension tables, gates). A column
+whose type the served copy cannot declare as stored (a `timestamptz`, a `json` or driver-specific
+type, or a nest outside DuckDB) leaves that source answered live. A v1 colocated `#@ persist` keeps
+being served through Malloy's build manifest, as before.
 
 ```malloy
 // v1
@@ -251,7 +268,7 @@ source: order_summary is orders -> {
   aggregate: total_revenue is amount.sum()
 }
 
-// v2: not built on main yet
+// v2
 #(materialize) name="order_summary"
 source: order_summary is orders -> {
   group_by: category
@@ -259,12 +276,16 @@ source: order_summary is orders -> {
 }
 ```
 
-A colocated `#(materialize)` must name its table. Its default would be the source's own name, which
-for a source over `conn.table('orders')` is often the very table it reads.
+A colocated `#(materialize)` must name its table: without `name=` it is not built
+(`materialize-not-built`), since its default would be the source's own name, which for a source over
+`conn.table('orders')` is often the very table it reads. Its build writes only where nothing else
+stands: a `name=` that holds a table no run of the package wrote (one of your own tables, or the one
+the source reads) fails that source's build before anything is written. Keeping the v1 `name=` is
+fine, since the package's own v1 runs wrote that table.
 
 ### A query-shaped source
 
-**Works** with `storage=`. v2 stores the query's output rows, plus any dimension that the `extend`
+**Works.** v2 stores the query's output rows, plus any dimension that the `extend`
 after the query adds.
 
 ```malloy
@@ -294,7 +315,7 @@ storage=` source is also served through the served copy, as written.
 
 ### `refresh="incremental"`, `watermark=`, `merge_key=`
 
-**Works** with `storage=`. The keys are copied onto the generated build source and checked by the
+**Works**, colocated or with `storage=`. The keys are copied onto the generated build source and checked by the
 [same rules](materialization.md#incremental-refresh), including the dialect rule: the origin must be
 Postgres, BigQuery or Snowflake, so a DuckDB source must say `refresh="full"`. A
 [rolling window](#a-rolling-window-a-current-time-where) adds a delete below the moving cut-off to
@@ -318,8 +339,7 @@ source: daily_orders is orders -> {
 ```
 
 The first build after the move starts the table again from a full build. The address moved (see
-[Addresses](#addresses-what-moves-once)), so the recorded boundary no longer applies. A colocated
-incremental source stays on `#@ persist` for now, as every colocated source does.
+[Addresses](#addresses-what-moves-once)), so the recorded boundary no longer applies.
 
 v2 adds one form v1 has no equivalent for: a source that inlines a join_many (a pair table) names a
 watermark on each side of the join as a list, `watermark=["updated_at", "lines.updated_at"]`, and
@@ -340,7 +360,7 @@ appears in the build plan, and the served copy drops a stale table per query, as
 
 ### A `where:` that reads a given
 
-**Works**, with `storage=`. The given-reading term is left out of the build and applied at read
+**Works.** The given-reading term is left out of the build and applied at read
 with each caller's value, as a v1 `#@ persist storage=` source does when the term is in its
 `extend`. v2 needs no query shape for it.
 
@@ -358,17 +378,25 @@ given: ORG_ID :: number is 1
 source: scoped is orders extend { where: org_id = $ORG_ID }
 ```
 
-The gates v1 applies to a given still apply, because the generated build source is judged like any
-`#@ persist` source: a given in a declared `dimension:` or `measure:`, or in a join's `on:`, is
-refused, and the source serves live (plan row [5](materialization-v2-plan.md#known-limitations-to-revisit)).
+v2 goes further than v1 in two places. A dimension that reads a given is left out of the build and
+computed at read, and a given-reading `where:` on a base the source extends or renames in the same
+file is left out of the build and re-applied at read too, where v1 refuses a given. Both need the
+served copy to keep the definition: a given-reading dimension or base `where:` declared in another
+file, in a parenthesised head, or on a base whose fields the source renames, redefines, drops or
+hides refuses the source (`materialize-not-built`), and it serves live (plan rows
+[5](materialization-v2-plan.md#known-limitations-to-revisit) and
+[32](materialization-v2-plan.md#known-limitations-to-revisit);
+[materialization.md](materialization.md#the-served-copy-in-development-publisher_materialize)). A
+`where:` that reads its given through a dimension (`where: is_mine`) is refused, as in v1.
 
 ### A rolling window: a current-time `where:`
 
 **Works**, v2 only. A `where:` that keeps the last stretch of time (`ts >= now - 30 days`, on a timestamp) builds as
 of the build and is re-applied at every read at the read's own clock. A window that keeps rows older
-than a moving cut-off (`ts < now - 30 days`), and other shapes that read `now`, leave the source
-unbuilt, and it serves live (plan row [6](materialization-v2-plan.md#known-limitations-to-revisit)).
-The rules are in
+than a moving cut-off (`ts < now - 30 days`) is left out of the build, so the table holds every row,
+and is re-applied at every read; a two-sided window builds its lower bound and leaves its upper bound
+out. Other shapes that read `now` (an `or`, a bound `and`ed with another condition) leave the source
+unbuilt, and it serves live. The rules are in
 [materialization.md](materialization.md#the-served-copy-in-development-publisher_materialize).
 
 ```malloy
@@ -381,16 +409,18 @@ source: recent_orders is orders extend {
 ### Joins: reference by default, `inline=` to store them
 
 **Works**, v2 only. A `#(materialize)` table holds the source's own rows, and its joins read the
-joined source at query time, from that source's table when it is materialized in the same
-destination. A joined source that is not stored in the destination is left out of the served copy,
-so a query that reaches it is answered live (`CROSS_CONNECTION`); inline the join, or materialize
-the joined source into the same destination.
+joined source at query time, from that source's table when it is materialized there. A colocated
+table shares its source's connection, so a join to another source on that connection stays one
+query. With `storage=`, a joined source that is not stored in the destination is left out of the
+served copy, so a query that reaches it is answered live (`CROSS_CONNECTION`); inline the join, or
+materialize the joined source into the same destination.
 
 `inline=["j"]` on a join_one stores what reads through `j` as `j__<field>` columns, after checking
 the join key is unique, and the served copy answers `j.<field>` from those columns with no join at
 read. On a join_many it stores a pair table, one row per row of live's LEFT JOIN, and the served
 copy answers child and mixed queries from it; a query that reads no field of the join skips it
-(`COUNT_SEMANTICS`).
+(`COUNT_SEMANTICS`). A path of join_manys (`inline=["items.options"]`) stores one pair table, and
+more than one join_many (`inline=["items", "payments"]`) stores one table in blocks.
 
 ```malloy
 #(materialize) storage="lake" inline=["regions"]
@@ -406,17 +436,23 @@ source: orders_lines is orders extend {
 }
 ```
 
-v1 has no equivalent of `inline=`, so there is nothing to migrate here; the limits are in
+`inline=` may name a `private` or `internal` join; the stored columns behind it stay hidden. A join
+through which a given is read (its joined source's `where:`, `on`, fields or own joins read one) is
+refused for that source (`materialize-not-built`), since its stored columns would hold one caller's
+rows; reference it instead. v1 has no equivalent of `inline=`, so there is nothing to migrate here; the limits are in
 [materialization.md](materialization.md#the-served-copy-in-development-publisher_materialize) and
 the [known limitations](#known-limitations-you-may-hit) below.
 
 ### A source with a row-level gate
 
 **Behind its own switch, off by default.** With `PUBLISHER_MATERIALIZE_GATED_SOURCES` on as well, a
-`#(materialize) storage=` source whose own `#(authorize)` or `#(access_filter)` compiles to a row
-filter is built and served from the served copy with the gate grafted on. Off, it is refused as a
-gated `#@ persist storage=` source is, and serves live. It stays off until a security review of
-storing gated sources' columns in the managed tier. A gate holds only behind the gateway that sets
+`#(materialize)` source, colocated or `storage=`, whose own `#(authorize)` or `#(access_filter)`
+compiles to a row filter is built and served from the served copy with the gate grafted on. Off, it
+is not built and serves live: a `storage=` one is refused as a gated `#@ persist storage=` source is,
+and a colocated one too, because its table is read only through the served copy. A colocated gated
+source that must have a table with the switch off stays on `#@ persist`, whose colocated table keeps
+the gate through Malloy's build manifest. The switch stays off until a security review of storing
+gated sources' columns in the managed tier. A gate holds only behind the gateway that sets
 the givens from a verified identity
 ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)).
 
@@ -505,7 +541,9 @@ answers reports `servedBy.kind: "rollup"`. What differs from `#@ preaggregate`:
 - **It belongs to the source that writes it.** An extension or an import does not repeat it.
 - **It answers more.** A `#(preaggregate)` rollup answers named views, extensions of its source,
   queries that reach its source through a join (colocated rollups only), and join-level
-  `max`/`min`, and it builds over a `#@ persist storage=` base, which a v1 rollup does not.
+  `max`/`min`, and it builds over a `#@ persist storage=` base, which a v1 rollup does not. With
+  `PUBLISHER_MATERIALIZE_GATED_SOURCES` on as well, a colocated one also answers a gated entry point
+  whose gates read only grain dimensions, the gate grafted and proven on the rollup.
 - **A new table.** A v2 rollup's table is not the v1 rollup's, so it builds once after the move.
 
 [preaggregation.md](preaggregation.md#preaggregate-materialization-v2-behind-publisher_materialize)
@@ -513,9 +551,8 @@ has the full list.
 
 ## What is not migrated
 
-- **Colocated `#@ persist`** (no `storage=`), incremental or not: keep it until colocated
-  `#(materialize)` is served (row [18](materialization-v2-plan.md#known-limitations-to-revisit)).
-  Its file keeps `##! experimental.persistence`.
+- **A colocated gated source** with `PUBLISHER_MATERIALIZE_GATED_SOURCES` off: keep `#@ persist`
+  ([above](#a-source-with-a-row-level-gate)).
 - **`#@ persist` on a view** and **`#@ -persist`**: these are the v2 spellings already.
 - **`realization=`** has no v2 form; on `#(materialize)` it is `materialize-unknown-key`.
 - **A gated source** with `storage=`: refused unless `PUBLISHER_MATERIALIZE_GATED_SOURCES` is on,
@@ -530,20 +567,27 @@ are in the plan's [known limitations](materialization-v2-plan.md#known-limitatio
 | What you wrote | What happens | Plan |
 | --- | --- | --- |
 | `#(materialize)` over a base that declares a measure, view or join | Built, never read: `served-copy-not-served`, answered live. See [above](#a-base-with-measures-views-or-joins). | The served copy's call 2 |
-| `#(materialize)` with no `storage=` | Not built: `materialize-not-built` | Row 18 |
+| A colocated `#(materialize)` with no `name=` | Not built: `materialize-not-built` | — |
 | An extension table whose parent is in another file | Served, but built from the warehouse rather than over the parent's table, so its build scans the warehouse | P10 (same-file only) |
-| `inline=` naming a `private` or `internal` join_many | Not built: `materialize-not-built` | Row 24 |
-| `inline=` on a second join_many, a join_many more than one hop away, or a joined source with joins of its own | Not built: `materialize-not-built` | Row 9 |
+| `inline=` on a path through a join_one | Not built: `materialize-not-built` | Row 9 |
+| A pair-table query that reads two blocks, or aggregates a middle level beside the leaf; an incremental refresh of a path or a multi-block table | Answered live; the table rebuilds in full (`materialize-pair-full-refresh`) | Row 9 |
 | `inline=` on a join_cross | Not built: `materialize-not-built` | — |
-| A dimension, or an inherited `where:` term, that reads a given | The source is refused and serves live | Row 5 |
-| An upper-bound rolling window (`ts < now - 30 days`) | Not built; serves live | Row 6 |
+| A dimension, or an inherited `where:` term, that reads a given, declared where the served copy cannot keep it (another file, a parenthesised head, a base the source renames past) | The source is refused and serves live | Rows 5 and 32 |
 | A query with its own `timezone:` over a stored truncation or rolling window | Answered live | Row 7 |
-| A hidden stored column beside your own `rename:` of a stored column, or a pair table's renames | Answered live (in the second case, the whole model's served copy) | Row 25 |
-| A query on a gated entry point, over a rollup | Answered live (`CONTRACT`); a rollup over a gated base is not built | Row 1 |
-| A query through a join to a joined source's `#(preaggregate) storage=` rollup | Answered live (`CROSS_CONNECTION`) | Join-to-rollup (A7) |
-| A `count()` through a join_many, against a joined source's rollup | Answered live (`COUNT_SEMANTICS`) until Publisher's Malloy carries the fix | Question 12 |
-| A `storage=` number column | Answers equal live; the integer or decimal subtype reads back as `number` | Row 12 |
+| A hidden stored column beside your own `rename:` of a stored column, or a pair table's renames | Answered live (in the second case, the whole model's served copy) | Row 30 |
+| A query on a gated entry point, over a rollup, without `PUBLISHER_MATERIALIZE_GATED_SOURCES`, over a `storage=` rollup, or through a gate that reads a field outside the grain or through a join | Answered live (`CONTRACT`); a rollup no gated query could read is not built (`preaggregate-access-filter`) | Row 1 |
+| A query through a join to a joined source's `#(preaggregate) storage=` rollup | Answered live (`CROSS_CONNECTION`) | Row 26 |
+| A `count()` through a join_many, against a joined source's rollup | Answered live (`COUNT_SEMANTICS`) until Publisher's Malloy carries the fix | Row 25 |
+| A query through a join that fans out across a grain dimension it neither groups nor fixes, against the joined source's rollup | Answered live (`GRAIN_TOO_COARSE`), as for the rollup's own source | — |
+| A query through a join read as a join_many that is not keyed on the querying source's primary key, against the joined source's rollup | Answered live (`COUNT_SEMANTICS`) | — |
+| A query through a join_one that also aggregates the querying source's own rows, against the joined source's rollup, when no build of the rollup checked the join's key unique (a table a control plane's manifest binds, a check that could not run) or the check found it repeated | Answered live (`COUNT_SEMANTICS`) | Row 29 |
+| A stored number column (`storage=` or colocated `#(materialize)`) | Answers equal live; the integer or decimal subtype reads back as `number` | Row 12 |
 | An annotated field of an inlined join returned as a column | Answered live, so the result keeps the field's annotations | Row 10 |
+
+One case can differ from live, and it is the data's doing: a query through a `join_one` to a rollup
+that also reads another `join_one` whose key no build checked is served as before, so when the data
+breaks that declared `join_one`, live's inflated answer and the served one differ (row 29). A key a
+build checked and found repeated sends the query live.
 
 ## Addresses: what moves once
 
@@ -568,8 +612,9 @@ it. The build plan, the manifest and reuse all key on it.
   its companion model never reach the plan, a run's `sourceNames`, the manifest, warnings or the path
   report. Anchors keyed on (version, source name, model path) stay put.
 - **Expect one rebuild per migrated source.** Its `sourceEntityId` changes, so reuse misses and an
-  incremental source re-seeds. A table Publisher names itself (`name=`, or the source's name) is
-  rebuilt in place. A table the host instructed under a generational name is the host's to reclaim.
+  incremental source re-seeds. A table at a `name=` is rebuilt in place, and so is a default-named
+  table (`<source>__p<hash>` in Publisher's own builds). Host-orchestrated builds are not checked or
+  renamed: a table the host instructed under a generational name is the host's to reclaim.
 - **Set the switch the same on every worker.** `PUBLISHER_MATERIALIZE` and
   `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` are read at startup. Workers that disagree plan
   different sources or compute different addresses for one source.
