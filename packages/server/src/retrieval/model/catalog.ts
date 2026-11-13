@@ -21,7 +21,7 @@
  */
 
 import type { ModelDef } from "@malloydata/malloy";
-import { isOnRoute } from "../../service/annotation_reader";
+import { isOnRoute, marksAgentHidden } from "../../service/annotation_reader";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import { compareText as comparePaths } from "../../compare_text";
 import { splitSourceId } from "../../service/source_id";
@@ -603,10 +603,6 @@ function ownNoteTexts(
    return own.map((n) => n.text ?? "").filter(Boolean);
 }
 
-/** `#(agent-hidden)` on a source; any bracket pair Malloy routes, as hosted reads it. */
-const AGENT_HIDDEN_SOURCE = /^#\|?\s*[([{<]?\s*agent-hidden\b/;
-/** `##(agent-hidden)` on a model file: hides the sources served through that file. */
-const AGENT_HIDDEN_FILE = /^##\|?\s*[([{<]?\s*agent-hidden\b/;
 /** An access gate a source writes itself: it changes which rows a caller sees. */
 const OWN_GATE = /^#\|?\s*[([{<]?\s*(access_filter|authorize)\b/;
 
@@ -623,7 +619,7 @@ function isAgentHidden(
 ): boolean {
    if (!compiled) return false;
    return ownNoteTexts(models, compiled).some((t) =>
-      AGENT_HIDDEN_SOURCE.test(t),
+      marksAgentHidden(t, "source"),
    );
 }
 
@@ -653,7 +649,7 @@ function agentHiddenFiles(
          if (modelPathOfUrl(url, modelPaths) !== model.modelPath) continue;
          if (
             (entry.ownNotes?.notes ?? []).some((n) =>
-               AGENT_HIDDEN_FILE.test(n.text ?? ""),
+               marksAgentHidden(n.text ?? "", "file"),
             )
          ) {
             files.add(model.modelPath);

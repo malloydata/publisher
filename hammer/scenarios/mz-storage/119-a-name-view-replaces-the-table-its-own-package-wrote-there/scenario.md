@@ -25,7 +25,8 @@ Proves, against a real DuckLake destination:
 - the orchestrated build succeeds, and `nvt_daily` is now a view reading the
   generation the host named, so a reader outside Malloy sees the new rows;
 - the destination's table listing no longer holds the old table, nor its
-  aside copy, once the run has committed;
+  aside copy, once the run has committed and dropped that copy (just after
+  the commit);
 - a forced self-instructed build puts a table back at `nvt_daily`.
 
 ## Publisher
@@ -79,10 +80,14 @@ own, so the view replaces it instead of refusing the build.
 
 - daily_orders -> nvt_daily__g001 @ lake
 
-## Destination tables
+## Destination tables (within=10s)
 
 The old table is gone, and so is the copy kept aside until the commit; a view
-is never listed as a table.
+is never listed as a table. The run drops the aside copy just after its commit,
+and the commit is what reports the run finished, so a listing taken the moment
+the run reads finished can still hold the copy for a few milliseconds. The
+listing is re-read until it settles, within a bound: a copy that is never
+dropped still fails here.
 
 Expect:
 

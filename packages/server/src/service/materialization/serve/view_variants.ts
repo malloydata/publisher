@@ -55,7 +55,6 @@ import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import type { GraftRuntime, GraftScope } from "../../gate_classification";
-import { collectEntryPointGates } from "../../gate_classification";
 import {
    readPreparedQuery,
    resolveStructRefSource,
@@ -65,11 +64,7 @@ import {
    identifier,
    stringLiteral,
 } from "../../malloy_text";
-import {
-   createModelRuntime,
-   type ModelConnectionInput,
-} from "../../model_runtime";
-import { overlayKey } from "../../overlay_key";
+import type { ModelConnectionInput } from "../../model_runtime";
 import { extractRunViewCall, type RunViewCall } from "../../query_text";
 import { quoteManifestTablePath } from "../../quoting";
 import { evaluateManifestFreshness } from "../run/freshness";
@@ -81,10 +76,9 @@ import {
    splitSourceID,
    type PersistedViewPlan,
 } from "../plan/persisted_view";
-import { persistBlankedFiles } from "../persist_blanking";
 import { viewNoteTexts } from "../plan/persisted_view_compile";
 import { SourceMap } from "../plan/source_map";
-import { authorNameImports } from "./author_imports";
+import { compileDeclaringFileVariant } from "./declaring_file_variant";
 import type { ServeBinding } from "./materialization_serve_transform";
 import type { MaterializedTableCatalog } from "./query_path";
 import {
@@ -483,121 +477,9 @@ export class PersistedViewServe {
       if (!packagePath || !packageConfig || !modelDef || !author || !declared) {
          return { error: "no context" };
       }
-      let declaringFile: string;
-      try {
-         declaringFile = fileURLToPath(declared.url);
-      } catch {
-         return { error: "not a local file" };
-      }
       const shape = await viewShape(author, modelDef, plan, localName);
       const modelPath = this.host.modelPath();
       const modelFile = path.join(packagePath, modelPath);
-      const queryModelURL = pathToFileURL(`${modelFile}.view.malloy`);
-      const declaringURL = pathToFileURL(declaringFile);
-      const copyURL = pathToFileURL(`${declaringFile}.view-author.malloy`);
-      const copyName = path.basename(fileURLToPath(copyURL));
-      const { runtime: reader } = await createModelRuntime(
-         packagePath,
-         modelPath,
-         packageConfig,
-      );
-      const readText = async (url: string) => {
-         try {
-            const read = await reader.urlReader.readURL(new URL(url));
-            return typeof read === "string" ? read : read.contents;
-         } catch {
-            return undefined;
-         }
-      };
-      // The author's files with source-level `#@` lines blanked (a view never
-      // chains onto its source's table), the declaring file's under the copy.
-      const blanked = await persistBlankedFiles(modelDef, readText);
-      if (!blanked) return { error: "a source-level #@ line not set aside" };
-      const overlay = new Map<string, string>();
-      for (const [url, text] of blanked) {
-         if (url !== overlayKey(declaringURL)) overlay.set(url, text);
-      }
-      const declaringText =
-         blanked.get(overlayKey(declaringURL)) ??
-         (await readText(declaringURL.href));
-      if (declaringText === undefined) return { error: "unreadable source" };
-      overlay.set(overlayKey(copyURL), declaringText);
-      // The copy's own names, to import into the declaring file's overlay.
-      const copyNames = await namesDeclaredIn(
-         packagePath,
-         modelPath,
-         packageConfig,
-         overlay,
-         copyURL,
-      );
-      // malloy-text: the source's own gate expressions, as the author wrote them, one per line (see gateLines)
-      const gates = gateLines(modelDef, plan.sourceID);
-      const viewBody = viewDeclaration(plan.viewName, shape);
-      const source = declared.name;
-      let declaration: string;
-      if (table.binding) {
-         const typeName = `${plan.buildSourceName}__type`;
-         const stored = `${plan.buildSourceName}__stored`;
-         const columns = table.binding.schema.map((c) => ({
-            name: c.name,
-            type: c.type,
-         }));
-         // malloy-text: the served copy's timeframe emitter, names through identifier
-         const timeframes = timeframeRestatements(shape.columns);
-         // malloy-text: the type emitter, the author's gate and view notes (single lines), and names through identifier
-         declaration = `${typeDeclaration({ typeName, columns })}
-source: ${identifier(stored)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)}
-${gates}source: ${identifier(source)} is ${identifier(stored)} extend {${timeframes}
-${viewBody}
-}`;
-      } else {
-         // The companion over the copy, so its build SQL (and so its address)
-         // is the one the build plan computed.
-         const siblings = planModelPersistedViews(modelDef).plans.filter(
-            (p) => p.declaringURL === declared.url,
-         );
-         const text = generatePersistedViewFile(siblings, copyName);
-         if (!text) return { error: "no companion" };
-         const companion = persistedViewCompanionHref(declaringURL.href);
-         overlay.set(overlayKey(companion), text);
-         const built = `${plan.buildSourceName}__built`;
-         declaration = `import { ${identifier(built)} is ${identifier(plan.buildSourceName)} } from ${doubleQuotedString(path.basename(fileURLToPath(companion)))}
-${gates}source: ${identifier(source)} is ${identifier(built)} extend {
-${viewBody}
-}`;
-      }
-      const others = copyNames.filter((n) => n !== source);
-      const importOthers =
-         others.length > 0
-            ? `import { ${others.map((n) => identifier(n)).join(", ")} } from ${doubleQuotedString(copyName)}\n`
-            : "";
-      overlay.set(
-         overlayKey(declaringURL),
-         `${VARIANT_FLAGS}
-${importOthers}
-${declaration}
-`,
-      );
-      // The query model: the author's model's names, each from the file that
-      // declares it (the view's source from its declaring file's overlay).
-      const imports = authorNameImports(
-         modelDef,
-         queryModelURL,
-         pathToFileURL(modelFile).href,
-         {
-            redirect: {
-               from: overlayKey(declaringURL),
-               to: copyURL.href,
-               keep: source,
-            },
-         },
-      );
-      overlay.set(
-         overlayKey(queryModelURL.href),
-         `${VARIANT_FLAGS}
-${imports}
-`,
-      );
       const destinations = this.host.serveDestinationConfig();
       const config =
          table.binding && destinations
@@ -607,56 +489,64 @@ ${imports}
                  new Set([table.binding.destinationName]),
               )
             : packageConfig;
-      const { runtime, importBaseURL } = await createModelRuntime(
+      const viewBody = viewDeclaration(plan.viewName, shape);
+      return compileDeclaringFileVariant({
          packagePath,
          modelPath,
+         packageConfig,
          config,
-         { overlay },
-      );
-      const materializer = runtime.loadModel(queryModelURL, { importBaseURL });
-      const model = await materializer.getModel();
-      return {
-         materializer,
-         modelDef: (model as unknown as { _modelDef: ModelDef })._modelDef,
-         runtime: runtime as unknown as GraftRuntime,
-      };
+         modelDef,
+         sourceID: plan.sourceID,
+         copySuffix: ".view-author.malloy",
+         queryModelURL: pathToFileURL(`${modelFile}.view.malloy`),
+         flags: VARIANT_FLAGS,
+         declare: ({
+            gates: authorGates,
+            sourceName: source,
+            copyName,
+            declaringURL,
+            addFile,
+         }) => {
+            // malloy-text: the source's own gate expressions, as the author wrote them, one per line (see gateLines)
+            const gates = authorGates;
+            if (table.binding) {
+               const typeName = `${plan.buildSourceName}__type`;
+               const stored = `${plan.buildSourceName}__stored`;
+               const columns = table.binding.schema.map((c) => ({
+                  name: c.name,
+                  type: c.type,
+               }));
+               // malloy-text: the served copy's timeframe emitter, names through identifier
+               const timeframes = timeframeRestatements(shape.columns);
+               // malloy-text: the type emitter, the author's gate and view notes (single lines), and names through identifier
+               return `${typeDeclaration({ typeName, columns })}
+source: ${identifier(stored)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)}
+${gates}source: ${identifier(source)} is ${identifier(stored)} extend {${timeframes}
+${viewBody}
+}`;
+            }
+            // The companion over the copy, so its build SQL (and so its
+            // address) is the one the build plan computed.
+            const siblings = planModelPersistedViews(modelDef).plans.filter(
+               (p) => p.declaringURL === declared.url,
+            );
+            const text = generatePersistedViewFile(siblings, copyName);
+            if (!text) return { error: "no companion" };
+            const companion = persistedViewCompanionHref(declaringURL.href);
+            addFile(new URL(companion), text);
+            const built = `${plan.buildSourceName}__built`;
+            return `import { ${identifier(built)} is ${identifier(plan.buildSourceName)} } from ${doubleQuotedString(path.basename(fileURLToPath(companion)))}
+${gates}source: ${identifier(source)} is ${identifier(built)} extend {
+${viewBody}
+}`;
+         },
+      });
    }
 }
 
 /** The flags every generated variant file declares. */
 const VARIANT_FLAGS =
    "##! experimental { access_modifiers givens persistence virtual_source }";
-
-/** The names a file declares (its sources, queries and givens), compiled on its own. */
-async function namesDeclaredIn(
-   packagePath: string,
-   modelPath: string,
-   config: ModelConnectionInput,
-   overlay: ReadonlyMap<string, string>,
-   url: URL,
-): Promise<string[]> {
-   const { runtime, importBaseURL } = await createModelRuntime(
-      packagePath,
-      modelPath,
-      config,
-      { overlay },
-   );
-   const model = await runtime.loadModel(url, { importBaseURL }).getModel();
-   const def = (model as unknown as { _modelDef: ModelDef })._modelDef;
-   const names = new Set<string>();
-   for (const [name, entry] of Object.entries(def.contents ?? {})) {
-      const located = entry as { location?: { url?: unknown } };
-      // Declared in the file itself, not imported into it.
-      if (located.location?.url === url.href) names.add(name);
-   }
-   for (const given of Object.values(def.givens ?? {})) {
-      const g = given as { name?: unknown; location?: { url?: unknown } };
-      if (typeof g.name === "string" && g.location?.url === url.href) {
-         names.add(g.name);
-      }
-   }
-   return [...names].sort();
-}
 
 /** Whether a binding is inside its freshness window at `now`. */
 function isFresh(b: ServeBinding, now: Date): boolean {
@@ -755,32 +645,4 @@ function viewDeclaration(viewName: string, shape: ViewShape): string {
    // malloy-text: the author's own view notes (single lines, no `#@`), names through identifier
    const notes = shape.notes.map((n) => `  ${n}\n`).join("");
    return `${notes}  view: ${identifier(viewName)} is { select: ${select}${order} }`;
-}
-
-/** The routes a row-level gate is written on. */
-const GATE_ROUTES = new Set(["authorize", "access_filter"]);
-
-/**
- * The view's source's gates, as note lines for the variant's source, so
- * `govern()` finds them there (R3). Throws when one cannot be written as a
- * single line: the variant is then not compiled and the view not served.
- */
-function gateLines(modelDef: ModelDef, sourceID: string): string {
-   const def = SourceMap.of(modelDef).node(sourceID)?.def;
-   if (!def) return "";
-   const lines: string[] = [];
-   for (const entry of collectEntryPointGates(def as never, modelDef)) {
-      if (!GATE_ROUTES.has(entry.route)) {
-         throw new Error(`unknown gate route ${entry.route}`);
-      }
-      for (const expr of entry.exprs) {
-         if (expr.includes("\n")) throw new Error("a multi-line gate");
-         lines.push(
-            entry.route === "authorize"
-               ? `#(authorize) ${expr}`
-               : `#(access_filter) ${expr}`,
-         );
-      }
-   }
-   return lines.map((l) => `${l}\n`).join("");
 }

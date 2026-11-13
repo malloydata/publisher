@@ -157,6 +157,30 @@ describe("computeServeVerdicts", () => {
       });
    });
 
+   it("does not call a gated #(preaggregate) rollup gated out when its variant keeps the gates (row 1)", () => {
+      const rollup = plan("orders_rollup_1", {
+         origin: "preaggregate",
+         preaggregate: {
+            baseSourceName: "orders",
+            grainDimensions: ["region"],
+            measures: [],
+         } as unknown as PersistSourcePlan["preaggregate"],
+      });
+      const keeping = (keeps: boolean) =>
+         computeServeVerdicts(
+            facts([rollup], {
+               gated: () => true,
+               servedCopyKeepsGates: true,
+               rollupKeepsGates: () => keeps,
+            }),
+         )[0];
+      expect(keeping(true)?.reason).not.toBe("row_level_gate");
+      expect(keeping(false)).toMatchObject({
+         verdict: "live",
+         reason: "row_level_gate",
+      });
+   });
+
    it("reads a rollup's reach and gate through its base, by name", () => {
       const asked: [string | undefined, string, string | undefined][] = [];
       const rollup = plan("orders_rollup_1", {
@@ -444,15 +468,35 @@ describe("reachableSourceIDs", () => {
          verdict: "live",
          reason: "served_copy",
       });
-      // Colocated #(materialize) is built but not served yet.
-      expect(
+      // A colocated #(materialize) table is served by the served copy too,
+      // on the source's own connection (phase 3 pull request 6).
+      const colocatedWith = (
+         state: "serves" | "off" | "not_served",
+         bound = new Set(["entity-orders"]),
+      ) =>
          computeServeVerdicts(
             facts([plan("orders")], {
-               boundEntityIds: new Set(["entity-orders"]),
-               materialize: () => "serves",
+               boundEntityIds: bound,
+               materialize: () => state,
             }),
-         )[0],
-      ).toMatchObject({ verdict: "live", reason: "served_copy" });
+         )[0];
+      expect(colocatedWith("serves")).toMatchObject({ verdict: "serves" });
+      expect(colocatedWith("serves").message).toContain("served copy");
+      expect(colocatedWith("not_served")).toMatchObject({
+         verdict: "live",
+         reason: "served_copy",
+      });
+      expect(colocatedWith("serves", new Set())).toMatchObject({
+         verdict: "not_built",
+      });
+      // Off: the fix names only the materialize switch, not the storage tier.
+      expect(colocatedWith("off")).toMatchObject({
+         verdict: "live",
+         reason: "served_copy",
+      });
+      expect(JSON.stringify(colocatedWith("off"))).not.toContain(
+         "PERSIST_STORAGE_MODE",
+      );
       // A #@ persist source keeps today's serve-shape rule.
       expect(
          computeServeVerdicts(

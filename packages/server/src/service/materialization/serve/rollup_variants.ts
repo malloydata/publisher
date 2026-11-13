@@ -57,8 +57,21 @@
  *   found through the source map's base edges), the extension's dimensions
  *   over the grain alone. One that adds a `where:` (`GRAIN_TOO_COARSE`), a
  *   `timezone:` (`TIME_ZONE`), or binds a base field's name to another field
- *   (`MISSING_FIELD`) declines; one that adds a gate is the router's
- *   `CONTRACT`.
+ *   (`MISSING_FIELD`) declines.
+ *
+ * Route, then govern (R3 for rollups, known limitation 1): a base variant
+ * redeclares the run target over the rollup IN AN OVERLAY OF ITS OWN
+ * DECLARING FILE (`declaring_file_variant.ts`), so it keeps the author's
+ * `sourceID` and carries the run target's entry-point gates as note lines.
+ * With `materialize.gatedSources` on, the router lets the leg past a gated
+ * entry point; a rollup then answers only when it was built for its gate
+ * (`rollupGateEnforcedAtRead`) and the pre-proof holds (`proveGates`): the
+ * variant's run target is the author's `sourceID`, its gates equal the live
+ * entry point's (`sameGateSet`, the rule `govern()` re-proves with) and each
+ * field they read is a grain dimension. Else it is skipped `CONTRACT`, with a
+ * detail that never names the gate. `govern()` then grafts the gates on the
+ * variant's own scope; a denial there is a defect, not a routing outcome. A
+ * join leg (A7) carries no gate, so it declines past one.
  *
  * Rollups are offered coarsest first; the first that answers is used. Behind
  * `materialize.enabled`.
@@ -66,6 +79,8 @@
 
 import type {
    MalloyConfig,
+   ModelDef,
+   SourceDef,
    ModelMaterializer,
    QueryMaterializer,
 } from "@malloydata/malloy";
@@ -95,6 +110,7 @@ import {
 import {
    definitionTextAt,
    extractRunViewCall,
+   malloyIdentifiers,
    type TextRange,
 } from "../../query_text";
 import { viewNoteTexts } from "../plan/persisted_view_compile";
@@ -122,6 +138,7 @@ import { splitSourceID } from "../plan/persisted_view";
 import {
    generateRollupBuildFile,
    planSourceRollups,
+   rollupGateEnforcedAtRead,
    type RollupVariantPlan,
 } from "../plan/rollup_plan";
 import { SourceMap } from "../plan/source_map";
@@ -135,6 +152,14 @@ import {
    unmatchedRowProblem,
    type JoinRollupLeg,
 } from "./join_rollup";
+import { compileDeclaringFileVariant } from "./declaring_file_variant";
+import {
+   collectEntryPointGates,
+   type GraftRuntime,
+   type GraftScope,
+} from "../../gate_classification";
+import { enforcedGatesOf, type EnforcedGates } from "../../access_record";
+import { sameGateSet } from "../../governance/query_governor";
 import {
    fieldNotes,
    timeframeRestatements,
@@ -191,6 +216,12 @@ export interface RollupAnswer {
    virtualMap?: VirtualMap;
    /** For a `storage=` rollup: its binding. */
    binding?: ServeBinding;
+   /**
+    * Where `govern()` grafts the run target's gates on the variant (R3): set
+    * for every base variant, and the one an answer past an entry-point gate
+    * is governed on.
+    */
+   graftScope?: GraftScope;
 }
 
 /**
@@ -207,6 +238,12 @@ class JoinNotRead extends Error {}
 
 interface CompiledVariant {
    materializer?: ModelMaterializer;
+   /** A base variant's compiled model, where `govern()` grafts (R3). */
+   modelDef?: ModelDef;
+   /** The runtime a base variant compiled in, which a graft reloads through. */
+   runtime?: GraftRuntime;
+   /** The compile's cache key and generation: its graft cache scope. */
+   cacheScope?: string;
    error?: string;
 }
 
@@ -214,6 +251,15 @@ interface CompiledVariant {
 interface RollupQuery {
    /** The run target's name in the author's model. */
    localName: string;
+   /** The run target's `sourceID`. */
+   sourceID: string;
+   /**
+    * The live entry point's gates (the governor's walk), when it has any:
+    * the router let the rollup leg past them (R3), so a rollup answers only
+    * when the same gates are written on its variant and each field they read
+    * is a grain column (`proveGates`).
+    */
+   gates?: EnforcedGates;
    /** The run target's compiled definition. */
    struct: object;
    shape: ReturnType<typeof queryShapeOf>;
@@ -243,6 +289,8 @@ interface ExtensionDimension {
 /** What a variant declares for the queried source beyond the rollup's fields. */
 interface VariantTarget {
    localName: string;
+   /** The run target's `sourceID`: the variant redeclares it in its declaring file. */
+   sourceID: string;
    struct: object;
    views: readonly string[];
    dimensions: readonly ExtensionDimension[];
@@ -391,6 +439,12 @@ export class RollupVariantServe {
       }
       const plans = target?.plans ?? [];
       const extension = target?.extension;
+      // The live entry point's gates, as the governor walks them: a query
+      // reaches here past them only when the router let the leg through.
+      const gates = liveEntryPointGates(
+         struct,
+         prepared.modelDef ?? (modelDef as never),
+      );
       const shape = queryShapeOf(prepared.query, struct, {
          sourceName: localName,
       });
@@ -430,10 +484,12 @@ export class RollupVariantServe {
       );
       const query: RollupQuery = {
          localName,
+         sourceID,
          struct,
          shape,
          views,
          rawSql: readsRawSql(prepared.query),
+         ...(gates ? { gates } : {}),
          ...(extension ? { extension } : {}),
       };
       for (const plan of ownPlans) {
@@ -449,6 +505,13 @@ export class RollupVariantServe {
       // join legs, inside the rollup step.
       const usage = legs.length > 0 ? queryFieldUsagePaths(prepared) : [];
       for (const { leg, refusal } of legs) {
+         // A join leg redeclares the author's source around the join, not
+         // over its declaring file, so it carries no gate to prove: past an
+         // entry-point gate it declines (CONTRACT).
+         if (gates) {
+            first ??= contractSkip();
+            continue;
+         }
          try {
             return await this.attemptJoin(leg, refusal, {
                localName,
@@ -764,6 +827,25 @@ export class RollupVariantServe {
       args: Parameters<RollupVariantServe["attempt"]>[0],
    ): Promise<RollupAnswer> {
       const { localName, shape } = query;
+      // Past an entry-point gate, only a rollup whose base gate is enforced
+      // at read (built for it: rows 1 and 21) is offered.
+      if (query.gates && !rollupGateEnforcedAtRead(plan)) {
+         throw contractSkip();
+      }
+      // A source with its own `timezone:` truncated and compared its times in
+      // that zone when the rollup was built; the variant redeclares it over
+      // the rollup without one, so a time grain dimension would be read, and
+      // a grafted gate or a caller's filter on it compared, in another zone:
+      // live's answer would differ, and a truncation gate would admit groups
+      // live refuses.
+      const zone = (query.struct as { queryTimezone?: unknown }).queryTimezone;
+      if (typeof zone === "string" && zone !== "") {
+         throw new RollupSkip(
+            "rollup_time_zone",
+            "the query's source sets its own time zone, which the rollup's stored times are not read in",
+            true,
+         );
+      }
       // A view's `where: sql_boolean("${TABLE}.region = …")` reads a column
       // no field reference names, so no grain check sees it.
       if (query.rawSql) {
@@ -815,6 +897,7 @@ export class RollupVariantServe {
          {
             kind: "base",
             localName,
+            sourceID: query.sourceID,
             struct: query.struct,
             views: query.views,
             dimensions,
@@ -861,7 +944,12 @@ export class RollupVariantServe {
             "the query does not compile against the rollup",
          );
       }
-      checkCoverage(plan, queryLevelFacts(await readPreparedQuery(runnable)));
+      const routed = await readPreparedQuery(runnable);
+      checkCoverage(plan, queryLevelFacts(routed));
+      // Route, then govern: past an entry-point gate, the gate must be
+      // provable on this rollup before it is used, so `govern()`'s re-proof
+      // (graft, bind guard, gate-set equality) denies only on a defect.
+      if (query.gates) proveGates(plan, query, routed, variant.modelDef);
       // The compiled SQL must read the table, never recompute the rollup.
       const readsTable = result.sql.includes(
          (table.virtualMap ? table.quotedPath : colocatedTable) ?? "\u0000",
@@ -877,6 +965,16 @@ export class RollupVariantServe {
          rollupSourceName: plan.rollupSourceName,
          ...(table.virtualMap ? { virtualMap: table.virtualMap } : {}),
          ...(table.binding ? { binding: table.binding } : {}),
+         ...(variant.modelDef && variant.cacheScope
+            ? {
+                 graftScope: {
+                    modelDef: variant.modelDef,
+                    materializer: variant.materializer,
+                    cacheScope: variant.cacheScope,
+                    ...(variant.runtime ? { runtime: variant.runtime } : {}),
+                 },
+              }
+            : {}),
       };
    }
 
@@ -941,9 +1039,16 @@ export class RollupVariantServe {
       ].join("\u0000");
       let compiled = this.compiled.get(key);
       if (!compiled) {
-         compiled = this.compile(plan, use, table).catch((error) => ({
-            error: error instanceof Error ? error.message : String(error),
-         }));
+         // One graft cache scope per compiled variant: two variants naming
+         // the same source (other views, another rollup, a reload) never
+         // share a grafted materializer.
+         const cacheScope = `rollup\u0000${this.generation}\u0000${key}`;
+         compiled = this.compile(plan, use, table).then(
+            (v) => ({ ...v, cacheScope }),
+            (error) => ({
+               error: error instanceof Error ? error.message : String(error),
+            }),
+         );
          this.compiled.set(key, compiled);
       }
       return compiled;
@@ -954,7 +1059,6 @@ export class RollupVariantServe {
       use: VariantUse,
       table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
    ): Promise<CompiledVariant> {
-      const { localName } = use;
       // A join leg reads a colocated rollup only (attemptJoin).
       if (use.kind === "join" && table.binding) {
          return { error: "a join leg reads a colocated rollup only" };
@@ -963,6 +1067,27 @@ export class RollupVariantServe {
       const packageConfig = this.packageConfig;
       if (!packagePath || !packageConfig) return { error: "no context" };
       const modelPath = this.host.modelPath();
+      const modelFile = path.join(packagePath, modelPath);
+      const queryModelURL = pathToFileURL(`${modelFile}.rollup.malloy`);
+      const destinations = this.host.serveDestinationConfig();
+      const config =
+         table.binding && destinations
+            ? servedCopyConfig(
+                 packageConfig,
+                 destinations(),
+                 new Set([table.binding.destinationName]),
+              )
+            : packageConfig;
+      if (use.kind === "base") {
+         return this.compileBase(plan, use, table, {
+            packagePath,
+            packageConfig,
+            config,
+            modelPath,
+            queryModelURL,
+         });
+      }
+      const { localName } = use;
       // The package's own reader, made once and only when a file is read.
       let reader: ReturnType<typeof createModelRuntime> | undefined;
       const readText = async (url: string) => {
@@ -979,95 +1104,46 @@ export class RollupVariantServe {
             return undefined;
          }
       };
-      // What the queried source adds over the rollup's fields: an
-      // extension's dimensions over the grain, and the views the query reads.
-      const additions =
-         use.kind === "base" ? await variantAdditions(use, readText) : "";
-      if (typeof additions !== "string") return additions;
-      const modelFile = path.join(packagePath, modelPath);
-      const queryModelURL = pathToFileURL(`${modelFile}.rollup.malloy`);
       const overlay = new Map<string, string>();
-      // The rollup with its merged measures, then the base's name over it with
-      // the partial columns internal: readable by the measures, by no query.
+      // The rollup with its merged measures, then the author's source with
+      // the join re-pointed at it (A7).
       const servedName = `${plan.rollupSourceName}__served`;
-      let declaration: string;
-      if (table.binding) {
-         const typeName = `${plan.rollupSourceName}__type`;
-         const grain = grainColumns(plan, this.host.modelDef());
-         // A grain column carries its dimension's notes, as the served copy's
-         // stored columns do: a `type:` field keeps its annotations, so a
-         // result column reads them as live's does. A timeframe column's go
-         // on its redefined field (timeframeRestatements) instead.
-         const grainNotes = new Map(
-            grain.map((g) => [g.name, g.timeframe ? [] : g.notes]),
-         );
-         const columns = table.binding.schema.map((c) => {
-            const notes = grainNotes.get(c.name);
-            return {
-               name: c.name,
-               type: c.type,
-               ...(notes && notes.length > 0 ? { notes } : {}),
-            };
-         });
-         // malloy-text: the served copy's timeframe emitter, names through identifier
-         const timeframes = timeframeRestatements(grain);
-         // malloy-text: the served copy's type emitter; rollupStatements re-emits the grammar's parse through malloy_text
-         declaration = `${typeDeclaration({ typeName, columns })}
-source: ${identifier(servedName)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)} extend {${timeframes}${rollupStatements(plan, this.host.modelDef())}
-}
-${sourceOverRollup(plan, use, servedName, additions)}`;
-      } else {
-         // Colocated: import the build source from the declaring model's
-         // companion, so the build manifest substitutes its table.
-         const declared = splitSourceID(plan.baseSourceID);
-         const companion = declared
-            ? rollupCompanionURLOf(declared.url)
+      // Colocated: import the build source from the declaring model's
+      // companion, so the build manifest substitutes its table.
+      const declared = splitSourceID(plan.baseSourceID);
+      const companion = declared
+         ? rollupCompanionURLOf(declared.url)
+         : undefined;
+      let declaringFile: string | undefined;
+      try {
+         declaringFile = declared ? fileURLToPath(declared.url) : undefined;
+      } catch {
+         declaringFile = undefined;
+      }
+      const text =
+         companion && declaringFile
+            ? generateRollupBuildFile([plan], path.basename(declaringFile))
             : undefined;
-         let declaringFile: string | undefined;
-         try {
-            declaringFile = declared ? fileURLToPath(declared.url) : undefined;
-         } catch {
-            declaringFile = undefined;
-         }
-         const text =
-            companion && declaringFile
-               ? generateRollupBuildFile([plan], path.basename(declaringFile))
-               : undefined;
-         if (!companion || !text) return { error: "no companion" };
-         overlay.set(overlayKey(companion.href), text);
-         // The shared, checked blanking (persist_blanking.ts), read through
-         // the package's own reader, as the build companion reads them.
-         const blanked = await persistBlankedFiles(
-            this.host.modelDef(),
-            readText,
-         );
-         if (!blanked) return { error: "a `#@` line could not be left out" };
-         for (const [url, file] of blanked) overlay.set(url, file);
-         const built = `${plan.rollupSourceName}__built`;
-         declaration = `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(relativeImport(queryModelURL, companion.href) ?? "")}
+      if (!companion || !text) return { error: "no companion" };
+      overlay.set(overlayKey(companion.href), text);
+      // The shared, checked blanking (persist_blanking.ts), read through
+      // the package's own reader, as the build companion reads them.
+      const blanked = await persistBlankedFiles(this.host.modelDef(), readText);
+      if (!blanked) return { error: "a `#@` line could not be left out" };
+      for (const [url, file] of blanked) overlay.set(url, file);
+      const built = `${plan.rollupSourceName}__built`;
+      const declaration = `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(relativeImport(queryModelURL, companion.href) ?? "")}
 source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan, this.host.modelDef())}
 }
-${sourceOverRollup(plan, use, servedName, additions)}`;
-      }
-      const text = queryModelText(
+${sourceOverRollup(plan, use, servedName, "")}`;
+      const modelText = queryModelText(
          this.host.modelDef(),
          queryModelURL,
          pathToFileURL(modelFile).href,
-         use.kind === "join"
-            ? { alias: new Map([[localName, parentAlias(plan)]]) }
-            : { skip: new Set([localName]) },
+         { alias: new Map([[localName, parentAlias(plan)]]) },
          declaration,
       );
-      overlay.set(overlayKey(queryModelURL.href), text);
-      const destinations = this.host.serveDestinationConfig();
-      const config =
-         table.binding && destinations
-            ? servedCopyConfig(
-                 packageConfig,
-                 destinations(),
-                 new Set([table.binding.destinationName]),
-              )
-            : packageConfig;
+      overlay.set(overlayKey(queryModelURL.href), modelText);
       const { runtime, importBaseURL } = await createModelRuntime(
          packagePath,
          modelPath,
@@ -1075,31 +1151,163 @@ ${sourceOverRollup(plan, use, servedName, additions)}`;
          { overlay },
       );
       const materializer = runtime.loadModel(queryModelURL, { importBaseURL });
-      const compiled = await materializer.getModel();
+      await materializer.getModel();
+      return { materializer };
+   }
+
+   /**
+    * Compile a base variant: the query's run target redeclared over the
+    * rollup in an overlay of ITS OWN DECLARING FILE
+    * (`declaring_file_variant.ts`), so it keeps the author's `sourceID` and
+    * carries the run target's gates as note lines, which `govern()` grafts
+    * and proves on the variant (R3) when the router lets it past an
+    * entry-point gate. A colocated rollup's build source is imported from
+    * the companion beside its base's declaring file, generated over the copy
+    * of that file when it is the overlaid one, so its build SQL (and so its
+    * address) is the build plan's.
+    */
+   private async compileBase(
+      plan: RollupVariantPlan,
+      use: Extract<VariantUse, { kind: "base" }>,
+      table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
+      ctx: {
+         packagePath: string;
+         packageConfig: ModelConnectionInput;
+         config: ModelConnectionInput;
+         modelPath: string;
+         queryModelURL: URL;
+      },
+   ): Promise<CompiledVariant> {
+      const modelDef = this.host.modelDef() as ModelDef | undefined;
+      if (!modelDef) return { error: "no model" };
+      const servedName = `${plan.rollupSourceName}__served`;
+      const base = splitSourceID(plan.baseSourceID);
+      const companion = base ? rollupCompanionURLOf(base.url) : undefined;
+      const variant = await compileDeclaringFileVariant({
+         packagePath: ctx.packagePath,
+         modelPath: ctx.modelPath,
+         packageConfig: ctx.packageConfig,
+         config: ctx.config,
+         modelDef,
+         sourceID: use.sourceID,
+         copySuffix: ".rollup-author.malloy",
+         queryModelURL: ctx.queryModelURL,
+         flags: flagLine(modelDef),
+         declare: async ({
+            gates: authorGates,
+            sourceName,
+            copyName,
+            declaringURL,
+            addFile,
+         }) => {
+            // malloy-text: the source's own gate expressions, as the author wrote them, one per line (see gateLines)
+            const gates = authorGates;
+            // What the run target adds over the rollup's fields: an
+            // extension's dimensions over the grain, and the views the
+            // query reads, as the author wrote them.
+            const additions = await variantAdditions(use, (url) =>
+               this.readAuthorText(ctx, url),
+            );
+            if (typeof additions !== "string") return additions;
+            const over = sourceOverRollup(
+               plan,
+               { ...use, localName: sourceName },
+               servedName,
+               additions,
+            );
+            if (table.binding) {
+               const typeName = `${plan.rollupSourceName}__type`;
+               const grain = grainColumns(plan, modelDef);
+               // A grain column carries its dimension's notes, as the served
+               // copy's stored columns do: a `type:` field keeps its
+               // annotations, so a result column reads them as live's does.
+               // A timeframe column's go on its redefined field
+               // (timeframeRestatements) instead.
+               const grainNotes = new Map(
+                  grain.map((g) => [g.name, g.timeframe ? [] : g.notes]),
+               );
+               const columns = table.binding.schema.map((c) => {
+                  const notes = grainNotes.get(c.name);
+                  return {
+                     name: c.name,
+                     type: c.type,
+                     ...(notes && notes.length > 0 ? { notes } : {}),
+                  };
+               });
+               // malloy-text: the served copy's timeframe emitter, names through identifier
+               const timeframes = timeframeRestatements(grain);
+               // malloy-text: the served copy's type emitter; rollupStatements re-emits the grammar's parse through malloy_text
+               return `${typeDeclaration({ typeName, columns })}
+source: ${identifier(servedName)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)} extend {${timeframes}${rollupStatements(plan, modelDef)}
+}
+${gates}${over}`;
+            }
+            // Colocated: the build source from the base's companion, so the
+            // build manifest substitutes its table.
+            let baseFile: string | undefined;
+            try {
+               baseFile = base ? fileURLToPath(base.url) : undefined;
+            } catch {
+               baseFile = undefined;
+            }
+            if (!companion || !baseFile) return { error: "no companion" };
+            const overlaid =
+               overlayKey(pathToFileURL(baseFile)) === overlayKey(declaringURL);
+            const text = generateRollupBuildFile(
+               [plan],
+               overlaid ? copyName : path.basename(baseFile),
+            );
+            if (!text) return { error: "no companion" };
+            addFile(companion, text);
+            const built = `${plan.rollupSourceName}__built`;
+            return `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(relativeImport(declaringURL, companion.href) ?? "")}
+source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan, modelDef)}
+}
+${gates}${over}`;
+         },
+      });
       // Each view read back from the author's file must compile to the view
       // the author's model holds: the file may have changed since it
       // compiled (an edit not yet reloaded), and the variant would then
       // answer a query the caller did not run.
-      if (use.kind === "base") {
-         const variantDef = (
-            compiled as { _modelDef?: { contents?: Record<string, unknown> } }
-         )._modelDef?.contents?.[localName];
-         for (const view of use.views) {
-            const theirs = turtleNamed(use.struct, view);
-            const ours = turtleNamed(variantDef, view);
-            if (
-               !theirs ||
-               !ours ||
-               pipelineSignature(theirs.pipeline) !==
-                  pipelineSignature(ours.pipeline)
-            ) {
-               return {
-                  error: `view \`${view}\` does not read back as the model compiled it`,
-               };
-            }
+      const variantDef = variant.modelDef?.contents?.[use.localName];
+      for (const view of use.views) {
+         const theirs = turtleNamed(use.struct, view);
+         const ours = turtleNamed(variantDef, view);
+         if (
+            !theirs ||
+            !ours ||
+            pipelineSignature(theirs.pipeline) !==
+               pipelineSignature(ours.pipeline)
+         ) {
+            return {
+               error: `view \`${view}\` does not read back as the model compiled it`,
+            };
          }
       }
-      return { materializer };
+      return variant;
+   }
+
+   /** A file of the author's package, read through the package's own reader. */
+   private async readAuthorText(
+      ctx: {
+         packagePath: string;
+         packageConfig: ModelConnectionInput;
+         modelPath: string;
+      },
+      url: string,
+   ): Promise<string | undefined> {
+      try {
+         const { runtime } = await createModelRuntime(
+            ctx.packagePath,
+            ctx.modelPath,
+            ctx.packageConfig,
+         );
+         const read = await runtime.urlReader.readURL(new URL(url));
+         return typeof read === "string" ? read : read.contents;
+      } catch {
+         return undefined;
+      }
    }
 }
 
@@ -1408,13 +1616,18 @@ function baseFieldNotes(
 
 /**
  * ` include { internal: … public: * }`: the partial columns, readable by the
- * merged measures and by no query, so a caller cannot aggregate them.
+ * merged measures and by no query, so a caller cannot aggregate them; and an
+ * `internal` grain dimension a gate reads (A4), redeclared with the author's
+ * modifier, readable by the grafted gate and by no query, as on live.
  */
 function internalPartials(plan: RollupVariantPlan): string {
-   const partials = plan.rollupMeasures
-      .flatMap((m) => m.partials.map((p) => identifier(p.column)))
+   const hidden = [
+      ...plan.rollupMeasures.flatMap((m) => m.partials.map((p) => p.column)),
+      ...(plan.internalGrain ?? []),
+   ]
+      .map((n) => identifier(n))
       .join(", ");
-   return ` include { internal: ${partials} public: * }`;
+   return ` include { internal: ${hidden} public: * }`;
 }
 
 /**
@@ -1493,6 +1706,97 @@ function flagLine(modelDef: unknown): string {
       .sort()
       .map((f) => identifier(f))
       .join(" ")} }`;
+}
+
+/**
+ * A rollup skipped for the query's gate (`CONTRACT`). Its detail never names
+ * the gate's field or text: a caller may not learn a gate's shape from why
+ * its query was answered live.
+ */
+function contractSkip(): RollupSkip {
+   return new RollupSkip(
+      "rollup_contract",
+      "the query's source has an access rule this rollup cannot apply",
+      true,
+   );
+}
+
+/**
+ * The gates the live entry point carries (the governor's walk: own,
+ * inherited, a derivation's base), or undefined when it has none. A walk
+ * that cannot be read counts as a gate no rollup proves.
+ */
+function liveEntryPointGates(
+   struct: unknown,
+   modelDef: unknown,
+): EnforcedGates | undefined {
+   try {
+      const gates = enforcedGatesOf(
+         collectEntryPointGates(
+            struct as SourceDef,
+            modelDef as ModelDef,
+            new Set(),
+            true,
+         ),
+      );
+      return gates.authorize.length + gates.accessFilter.length > 0
+         ? gates
+         : undefined;
+   } catch {
+      return { authorize: ["false"], accessFilter: [] };
+   }
+}
+
+/**
+ * The pre-proof for a query let past an entry-point gate (R3 for rollups):
+ * throw `CONTRACT` unless the variant's run target is the author's source (its
+ * `sourceID`), the gates written on it are exactly the live entry point's
+ * (by route and expression, `sameGateSet`: one rule with `govern()`'s
+ * re-proof), and every field those gates read is one of the rollup's grain
+ * dimensions, so filtering its groups equals filtering the base's rows
+ * (table 1).
+ */
+export function proveGates(
+   plan: RollupVariantPlan,
+   query: Pick<RollupQuery, "gates" | "sourceID" | "struct">,
+   routed: Awaited<ReturnType<typeof readPreparedQuery>>,
+   variantModelDef: ModelDef | undefined,
+): void {
+   const live = query.gates;
+   if (!live) return;
+   const model = routed.modelDef ?? variantModelDef;
+   const struct = model
+      ? resolveStructRefSource<{ sourceID?: unknown }>(routed.structRef, model)
+      : undefined;
+   if (!struct || struct.sourceID !== query.sourceID) throw contractSkip();
+   let written: EnforcedGates;
+   try {
+      written = enforcedGatesOf(
+         collectEntryPointGates(
+            struct as unknown as SourceDef,
+            model as ModelDef,
+            new Set(),
+            true,
+         ),
+      );
+   } catch {
+      throw contractSkip();
+   }
+   if (!sameGateSet(live, written)) throw contractSkip();
+   const fields = new Map(
+      (
+         ((query.struct as { fields?: unknown[] }).fields ?? []) as {
+            name?: unknown;
+            as?: unknown;
+         }[]
+      ).map((f) => [String(f.as ?? f.name), f]),
+   );
+   const grain = new Set(plan.grainDimensions);
+   for (const expr of [...written.authorize, ...written.accessFilter]) {
+      for (const id of malloyIdentifiers(expr)) {
+         if (fields.has(id) && !grain.has(id)) throw contractSkip();
+      }
+   }
 }
 
 /**

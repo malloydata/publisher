@@ -60,8 +60,9 @@ import {
 import { tryCompileMaterializeCompanion } from "./materialize_compile";
 import { persistedViewRefusalFinding } from "./persisted_view";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
-import { rollingWindowsOf } from "./rolling_window";
+import { deletingWindowsOf } from "./rolling_window";
 import { tryCompileRollupCompanion } from "./rollup_compile";
+import { rollupGateEnforcedAtRead } from "./rollup_plan";
 import { rollupRefusalFinding } from "./rollup_plan";
 import { getMaterializeEnabled } from "../../../config";
 import { admitGivenPositions, type DynamicTerm } from "./persist_dynamic_terms";
@@ -601,6 +602,8 @@ async function collectGeneratedMaterialize(
       ...args,
       contents: authorDef.contents ?? {},
       givens: authorDef.givens ?? {},
+      // P9's probes compile against the author's model, never run.
+      probe: args.materializer,
    });
    for (const refusal of refused) {
       addAnnotationFinding(
@@ -1241,18 +1244,24 @@ export function deriveBuildPlan(
             // otherwise treat it as materialized/buildable.
             let storageRefused = false;
             try {
+               // A `#(preaggregate)` rollup over a gated base whose gates
+               // the variant grafts at read (rows 1 and 21) is not refused
+               // for them; a v1 rollup always is.
+               const keepsGate = rollupGateEnforcedAtRead(rollup);
                assertColocatedPersistNotAuthorizeGated(
                   source,
                   source.name,
                   "preaggregate",
                   options?.sourceGateOutcomes?.[sourceID],
                   annotationFields,
+                  { gateEnforcedAtRead: keepsGate },
                );
                if (declaresStorage) {
                   storageRefused = true;
                   assertMaterializationEligible(
                      source,
                      deriveAnnotationFields(source),
+                     { gateEnforcedAtRead: keepsGate },
                   );
                   storageRefused = false;
                }
@@ -1343,6 +1352,13 @@ export interface BuildPlanOutcome {
     * worker that predates it sends none.
     */
    materializePlans?: Record<string, MaterializePlan>;
+   /**
+    * The `#(preaggregate)` rollups over a gated base whose gates are grafted
+    * on their variant at read ({@link rollupGateEnforcedAtRead}), by their
+    * sourceID, so the serve verdict does not call them gated out. Optional:
+    * a worker that predates it sends none.
+    */
+   rollupsKeepingGates?: string[];
 }
 
 /**
@@ -1404,6 +1420,10 @@ export function deriveBuildPlanOutcome(
          ...new Set(compiled.builds.map((b) => b.connectionName)),
       ].sort(),
       materializePlans: compiled.materializePlans ?? {},
+      rollupsKeepingGates: Object.entries(compiled.preaggregatePlans ?? {})
+         .filter(([, rollup]) => rollupGateEnforcedAtRead(rollup))
+         .map(([sourceID]) => sourceID)
+         .sort(),
    };
 }
 
@@ -1451,7 +1471,9 @@ export function collectIncrementalDeclarations(
             deriveAnnotationFields(source),
          );
          const plan = materializePlans[sourceID];
-         const window = rollingWindowsOf(plan?.readTimeTerms);
+         // Only a lower bound deletes; an upper bound is left out of the
+         // build, so every refresh appends and keeps every row.
+         const window = deletingWindowsOf(plan?.readTimeTerms);
          declarations[sourceID] = {
             ...declaration,
             ...(window.length ? { rollingWindow: window } : {}),

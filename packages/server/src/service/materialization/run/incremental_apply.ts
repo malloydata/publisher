@@ -770,8 +770,9 @@ export function isPairGuardFailure(err: unknown): boolean {
  * left in the table has exactly one flagged row. A failed check rolls back
  * and the source is rebuilt in full (see applyIncrementalStep).
  *
- * DuckDB only: the target of every `storage=` table, the only place a pair
- * table is built (a colocated `#(materialize)` is not built). Its `error()`
+ * DuckDB only: the target of every `storage=` table, and a colocated pair
+ * table's own warehouse when that is DuckDB (a colocated one elsewhere has no
+ * pair lineage, see incrementalLineage, and is rebuilt in full). Its `error()`
  * raises the check; the staging table is a session temporary created before
  * the transaction, so the transaction writes one database. Another target
  * dialect has no lineage (see incrementalLineage), so it is never reached.

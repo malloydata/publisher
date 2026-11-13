@@ -34,6 +34,7 @@ import {
    ServingReader,
    tableIdentity,
    tableNamesIn,
+   packageTableSuffix,
    versionTableSuffix,
    WRITES_TABLES_KEY,
 } from "../../versions/materialization_scope";
@@ -77,6 +78,7 @@ import {
    restoreNameViews,
    type NameViewRecord,
 } from "./name_view";
+import { nameViewOwner } from "./name_view_sql";
 import { Reclaimer } from "./reclaimer";
 import { RunLifecycle } from "./run_lifecycle";
 import {
@@ -90,6 +92,7 @@ import {
    type StorageBuildRequest,
 } from "./storage_build_strategy";
 import { TableClaims } from "./table_claims";
+import { uncarryUnownedTables } from "./table_ownership";
 
 /** A run that can write nothing more. */
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
@@ -750,24 +753,44 @@ export class MaterializationService {
                     id,
                     reader,
                  );
+            let recheck: Record<string, BuildInstruction>;
             ({
                instructions,
                carried,
                refused: derivedRefused,
                cleared: clearedTiers,
+               recheck = {},
             } = this.deriveSelfInstructions(
                compiled,
                opts.sourceNames,
                priorEntries,
                incremental,
                owned !== undefined
-                  ? versionTableSuffix({
-                       environmentName,
-                       packageName,
-                       version: owned,
-                    })
-                  : "",
+                  ? {
+                       versionSuffix: versionTableSuffix({
+                          environmentName,
+                          packageName,
+                          version: owned,
+                       }),
+                    }
+                  : {
+                       packageSuffix: packageTableSuffix({
+                          environmentName,
+                          packageName,
+                       }),
+                    },
             ));
+            // A carried table at the author's `name=` is reused only while
+            // it is still marked as this package's (table_ownership.ts).
+            if (Object.keys(recheck).length > 0) {
+               await uncarryUnownedTables(
+                  recheck,
+                  carried,
+                  instructions,
+                  nameViewOwner(environmentName, packageName),
+                  nameViewContext({ compiled, environment }),
+               );
+            }
          }
 
          // An auto-run of a version of a `scope: package` package rebuilds,
@@ -1144,6 +1167,18 @@ export class MaterializationService {
                await this.resolveEnvironmentId(environmentName),
                packageName,
             )) ?? [],
+         tableNotOwned: async (environmentName, packageName, target) => {
+            await this.claims.markHeldElsewhere(
+               await this.resolveEnvironmentId(environmentName),
+               packageName,
+               "",
+               target,
+            );
+            await this.committer.rebindLoadedVersions(
+               environmentName,
+               packageName,
+            );
+         },
       }).run(...args);
    }
 
