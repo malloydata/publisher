@@ -57,6 +57,8 @@ describe("the kept walk over a table-backed base", () => {
    let model: ModelDef;
    const names = (chain: { sourceID: string }[]) =>
       chain.map((a) => a.sourceID.split("@")[0]);
+   const idOf = (name: string) =>
+      (model.contents[name] as unknown as { sourceID: string }).sourceID;
    const own = (name: string) =>
       (model.contents[name] as unknown as { location: { range: never } })
          .location.range;
@@ -71,11 +73,7 @@ describe("the kept walk over a table-backed base", () => {
    ] as const) {
       it(`walks through renames and past an own where or join, reading ${label}`, () => {
          const map = SourceMap.of(read() as never);
-         const chain = keptAncestorChain(
-            map,
-            model.contents["renamed_ext"].sourceID as string,
-            URL_,
-         );
+         const chain = keptAncestorChain(map, idOf("renamed_ext"), URL_);
          expect(names(chain)).toEqual(["base", "ev"]);
          expect(chain[0].aliases?.map((a) => a.sourceID.split("@")[0])).toEqual(
             ["b2", "b3"],
@@ -83,11 +81,7 @@ describe("the kept walk over a table-backed base", () => {
          expect(
             names(confirmedAncestors(TEXT, own("renamed_ext"), chain)),
          ).toEqual(["base", "ev"]);
-         const mid = keptAncestorChain(
-            map,
-            model.contents["mid_ext"].sourceID as string,
-            URL_,
-         );
+         const mid = keptAncestorChain(map, idOf("mid_ext"), URL_);
          expect(names(mid)).toEqual(["mid", "base", "ev"]);
          expect(names(confirmedAncestors(TEXT, own("mid_ext"), mid))).toEqual([
             "mid",
@@ -99,15 +93,11 @@ describe("the kept walk over a table-backed base", () => {
 
    it("confirms a rename only where the text declares it bare, naming the next", () => {
       const map = SourceMap.of({ contents: model.contents } as never);
-      const chain = keptAncestorChain(
-         map,
-         model.contents["renamed_ext"].sourceID as string,
-         URL_,
-      );
+      const chain = keptAncestorChain(map, idOf("renamed_ext"), URL_);
       // An alias whose declaration is not a bare rename (it extends): never
       // confirmed, though it names the next alias.
       const at = (name: string) => ({
-         sourceID: model.contents[name].sourceID as string,
+         sourceID: idOf(name),
          range: own(name),
       });
       const forged = [

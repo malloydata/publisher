@@ -474,4 +474,46 @@ describe("the rollup key record, bound for serving", () => {
       expect(bound.a).toEqual({ tableName: "r_t" });
       expect(bound.b?.keyUniqueness?.unique).toBe(false);
    });
+
+   it("warns the package of a rollup whose build found its join_one key repeated, while that is bound", () => {
+      const materialization = new PackageMaterialization({
+         models: () => new Map(),
+         packageName: () => "pkg",
+      } as unknown as PackageMaterializationOwner);
+      const rollup = (id: string, base: string) => ({
+         name: `${base}__rollup`,
+         sourceEntityId: id,
+         modelPath: "m.malloy",
+         preaggregate: {
+            baseSourceName: base,
+            grainDimensions: ["flight_id"],
+            measures: ["crew_size"],
+         },
+      });
+      materialization.buildPlan = {
+         sources: {
+            "r1@m": rollup("a", "crew"),
+            "r2@m": rollup("b", "crew_ok"),
+            "p@m": { name: "plain", sourceEntityId: "c", preaggregate: null },
+         },
+      } as never;
+      const repeated = { keyColumn: "flight_id", unique: false };
+      materialization.recordManifestBinding({
+         a: { tableName: "r_t", keyUniqueness: repeated },
+         b: {
+            tableName: "s_t",
+            keyUniqueness: { keyColumn: "flight_id", unique: true },
+         },
+         // Not a rollup: no warning, whatever it carries.
+         c: { tableName: "p_t", keyUniqueness: repeated },
+      });
+      const warnings = materialization.repeatedJoinOneKeyWarnings();
+      expect(warnings.map((w) => [w.subject, w.code, w.model])).toEqual([
+         ["crew", "preaggregate-join-one-key-repeated", "m.malloy"],
+      ]);
+      expect(warnings[0].message).toContain("`flight_id` more than once");
+      // A run about to rewrite the table forgets the check, and the warning.
+      materialization.forgetKeyUniqueness(["a"]);
+      expect(materialization.repeatedJoinOneKeyWarnings()).toEqual([]);
+   });
 });
