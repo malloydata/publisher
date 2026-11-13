@@ -1149,7 +1149,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       async servedCopyProblems() {
          model.setServeBindings(bindings);
          await model.prepareServedCopy();
-         return model.servedCopyProblems();
+         // By name and reason: a problem's sourceID (what a caller keys on)
+         // carries the scenario's temporary path.
+         return model
+            .servedCopyProblems()
+            .map(({ sourceID: _sourceID, ...problem }) => problem);
       },
       typeMismatches() {
          model.setServeBindings(bindings);

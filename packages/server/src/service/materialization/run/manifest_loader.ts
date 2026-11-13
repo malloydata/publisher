@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 import { components } from "../../../api";
 import { logger } from "../../../logger";
 import {
+   boundSchemaOf,
    FreshnessManifest,
    isLegacyFailedEntry,
    type KeyUniqueness,
@@ -152,6 +153,7 @@ export function splitManifestEntries(
          dataAsOf: entry.dataAsOf,
          freshnessWindowSeconds: entry.freshnessWindowSeconds,
          freshnessFallback: entry.freshnessFallback,
+         ...boundSchemaOf(entry.schema),
          // Set only by a bind from the local store (withRollupKeyRecords);
          // a host's manifest never carries it.
          ...(readKeyUniqueness && keyUniquenessOnEntry(entry)

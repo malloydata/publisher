@@ -19,13 +19,25 @@
  * address (`virtualHandle`) on its connection (`destinationName`), with
  * `colocated` set: the served copy reaches it through the package's own
  * connection of that name, never a server-only alias, since an author can
- * already read their own warehouse. v1's colocated `#@ persist` is not bound
- * here; it is still served through Malloy's build manifest.
+ * already read their own warehouse.
+ *
+ * v1's colocated `#@ persist` is bound here only under the v1 cutover
+ * (`PUBLISHER_V1_SERVED_COPY` past `off`, gap G1): the caller passes
+ * `v1Schema`, and each planned v1 source without `storage=` whose table the
+ * manifest names is bound with the schema its build captured
+ * ({@link FreshnessAwareManifestEntry.schema}), or, for a table built before
+ * the capture, the schema derived from its compiled output
+ * ({@link v1StoredColumnsOf}). With the switch `off` it is still served
+ * through Malloy's build manifest.
  */
 
 import { quoteManifestTablePath } from "../../quoting";
 import type { MaterializePlan } from "../plan/build_file_generator";
-import type { FreshnessManifest } from "../types";
+import {
+   type StoredColumn,
+   storedColumnsOfOutput,
+} from "../stored_column_types";
+import type { FreshnessAwareManifestEntry, FreshnessManifest } from "../types";
 import type { ServeBinding } from "./materialization_serve_transform";
 
 /** What a binding reads of a build-plan source. */
@@ -56,22 +68,38 @@ export function deriveColocatedServeBindings(args: {
    materializePlans: Readonly<Record<string, MaterializePlan>>;
    /** Whether the bind admits a planned source (positive eligibility). */
    eligible: (sourceID: string) => boolean;
+   /**
+    * The v1 cutover (G1): a v1 `#@ persist` source's stored columns derived
+    * from its compiled output, for a table whose build captured no schema;
+    * undefined when it cannot be derived. Absent, no v1 source is bound.
+    */
+   v1Schema?: (sourceID: string) => StoredColumn[] | undefined;
+   /**
+    * Planned sources that are not v1 `#@ persist` sources of the author's
+    * (a persisted view's generated build source), never bound as v1.
+    */
+   notV1?: (sourceID: string) => boolean;
 }): ServeBinding[] {
    const { entries, planSources, materializePlans } = args;
    if (!entries) return [];
    const bindings: ServeBinding[] = [];
    for (const [sourceID, source] of Object.entries(planSources)) {
       const plan = materializePlans[sourceID];
-      if (!plan || source.origin === "preaggregate") continue;
+      if (source.origin === "preaggregate") continue;
+      if (!plan && (!args.v1Schema || args.notV1?.(sourceID))) continue;
       // A `storage=` table is bound from the storage manifest, never here.
       if (
-         plan.persist.storage !== undefined ||
+         plan?.persist.storage !== undefined ||
          source.annotationFields?.storage?.trim()
       ) {
          continue;
       }
       const entry = entries[source.sourceEntityId];
-      if (!entry?.tableName || !plan.storedColumns?.length) continue;
+      if (!entry?.tableName) continue;
+      const schema = plan
+         ? plan.storedColumns
+         : v1ColumnsOf(entry, () => args.v1Schema?.(sourceID));
+      if (!schema?.length) continue;
       // Built on another connection than the plan names (a manifest from
       // another configuration): not this source's table.
       if (
@@ -93,7 +121,7 @@ export function deriveColocatedServeBindings(args: {
          tablePath: source.dialect
             ? quoteManifestTablePath(entry.tableName, source.dialect)
             : entry.tableName,
-         schema: plan.storedColumns.map((c) => ({ ...c })),
+         schema: schema.map((c) => ({ ...c })),
          ...(entry.dataAsOf !== undefined ? { freshAsOf: entry.dataAsOf } : {}),
          ...(entry.freshnessWindowSeconds !== undefined
             ? { freshnessWindowSeconds: entry.freshnessWindowSeconds }
@@ -104,4 +132,71 @@ export function deriveColocatedServeBindings(args: {
       });
    }
    return bindings;
+}
+
+/**
+ * A v1 colocated table's columns: what its build captured, else what its
+ * compiled output derives (a table built before the capture).
+ */
+function v1ColumnsOf(
+   entry: FreshnessAwareManifestEntry,
+   derive: () => StoredColumn[] | undefined,
+): StoredColumn[] | undefined {
+   return entry.schema?.length ? entry.schema : derive();
+}
+
+/**
+ * The columns a v1 colocated `#@ persist` build wrote, derived from the
+ * source's compiled definition (the v1 cutover's G1, for a table built before
+ * its build captured a schema). A v1 build source is query-shaped, so its
+ * stored columns are the query's output fields. They are read from the
+ * persisted query's output struct when the compiled source records it (what
+ * the `extend` block drops with `except:` or `accept:` is still a column);
+ * otherwise from the source's fields with no expression, minus views, with
+ * two corrections that make the compiled field list read as the table:
+ *
+ * - a stored column is the field's name before any `rename:` (`as`), since
+ *   the rename is applied in the source's `extend` block, after the build;
+ * - a nest is a column (an array or record), though Malloy gives it a
+ *   `join`, while every other joined field is not stored.
+ *
+ * A computed dimension in the `extend` block has an expression, so it is not
+ * a column (the served copy keeps its definition). A field whose type has no
+ * faithful stored spelling is left out ({@link storedColumnsOfOutput}), so
+ * the served copy finds it missing and that source serves live.
+ */
+export function v1StoredColumnsOf(def: unknown): StoredColumn[] | undefined {
+   const d = def as
+      | {
+           fields?: unknown[];
+           dialect?: unknown;
+           query?: { pipeline?: { outputStruct?: { fields?: unknown[] } }[] };
+        }
+      | undefined;
+   // The persisted query's own output, when the compiled source records it:
+   // exactly the build's columns, before the `extend` block renames, drops
+   // (`except:`, `accept:`) or re-hides any (review F3).
+   const output = d?.query?.pipeline?.at(-1)?.outputStruct?.fields;
+   const fields = Array.isArray(output) ? output : d?.fields;
+   if (!Array.isArray(fields)) return undefined;
+   const outputs = fields
+      .filter((f) => {
+         const x = f as Record<string, unknown>;
+         return (
+            x !== null &&
+            typeof x === "object" &&
+            !("e" in x) &&
+            x.type !== "turtle" &&
+            (!("join" in x) || x.type === "array" || x.type === "record")
+         );
+      })
+      .map((f) => {
+         const { as: _as, ...rest } = f as Record<string, unknown>;
+         return rest;
+      });
+   return storedColumnsOfOutput(outputs, {
+      nested: d?.dialect === "duckdb",
+      bigint: true,
+      timestamptz: true,
+   });
 }

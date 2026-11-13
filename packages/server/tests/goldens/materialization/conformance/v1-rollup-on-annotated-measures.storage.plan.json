@@ -1,0 +1,131 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "orders__preagg__region__c697d298@<pkg>/m.malloy.preagg.malloy": []
+        },
+        "order": [
+          "orders__preagg__region__c697d298@<pkg>/m.malloy.preagg.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {
+      "orders__preagg__region__c697d298@<pkg>/m.malloy.preagg.malloy": {
+        "baseSourceID": "orders@<pkg>/m.malloy",
+        "baseSourceName": "orders",
+        "grainDimensions": [
+          "region"
+        ],
+        "measures": [
+          {
+            "name": "n",
+            "notes": [
+              "#(doc) \"Orders\"\n"
+            ],
+            "partialName": "n__partial",
+            "reaggregate": "sum"
+          },
+          {
+            "name": "total",
+            "notes": [
+              "# currency\n",
+              "#(doc) \"Revenue\"\n"
+            ],
+            "partialName": "total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupSourceName": "orders__preagg__region__c697d298",
+        "storage": "lake"
+      }
+    },
+    "sourceGateOutcomes": {
+      "orders__preagg__region__c697d298@<pkg>/m.malloy.preagg.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders__preagg__region__c697d298@<pkg>/m.malloy.preagg.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [
+    {
+      "code": "deprecated-preaggregate-annotation",
+      "message": "Measure total on source orders uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "orders"
+    },
+    {
+      "code": "deprecated-preaggregate-annotation",
+      "message": "Measure n on source orders uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "orders"
+    }
+  ],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders__preagg__region__c697d298@<pkg>/m.malloy.preagg.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "orders__preagg__region__c697d298@<pkg>/m.malloy.preagg.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "n__partial",
+            "type": "number"
+          },
+          {
+            "name": "total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "orders__preagg__region__c697d298",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "orders",
+          "grainDimensions": [
+            "region"
+          ],
+          "measures": [
+            "n",
+            "total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "c7034313cf1cf3de0f065239fc65bad7f748a4cfc3c779bc5b3a1c355ad335ee",
+        "sourceID": "orders__preagg__region__c697d298@<pkg>/m.malloy.preagg.malloy",
+        "sql": "sha256:8ff9087dd7fb623d"
+      }
+    }
+  }
+}

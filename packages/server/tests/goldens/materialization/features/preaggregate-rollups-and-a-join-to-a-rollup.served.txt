@@ -1,6 +1,6 @@
 // feature: preaggregate rollups and a join to a rollup: files generated while serving
 
-// ==== <pkg>/m.malloy (text 1 of 2)
+// ==== <pkg>/m.malloy (text 1 of 3)
 ##! experimental { access_modifiers persistence virtual_source }
 import { lines } from "m.malloy.rollup-author.malloy"
 
@@ -12,7 +12,27 @@ source: orders__rollup__region__409e9efb__served is orders__rollup__region__409e
 }
 source: orders is orders__rollup__region__409e9efb__served include { internal: total__partial public: * }
 
-// ==== <pkg>/m.malloy (text 2 of 2)
+// ==== <pkg>/m.malloy (text 2 of 3)
+##! experimental { access_modifiers persistence virtual_source }
+import { lines } from "m.malloy.rollup-author.malloy"
+
+type: orders__rollup__m_region__7877d8b1__type is {
+   m::timestamp,
+   region::string,
+   n__partial::number
+}
+source: orders__rollup__m_region__7877d8b1__served is __served_copy_alias_of_lake.virtual('14db554405415a132affe4fd532e2a9bb42a117547176c6284f76a93f28d2356')::orders__rollup__m_region__7877d8b1__type extend {
+  internal rename:
+    m__tf is m
+  dimension:
+    m is m__tf.month
+  measure:
+    #(preaggregate) grain=["region", "m"] storage="lake"
+    n is n__partial.sum()
+}
+source: orders is orders__rollup__m_region__7877d8b1__served include { internal: n__partial public: * }
+
+// ==== <pkg>/m.malloy (text 3 of 3)
 ##! experimental { access_modifiers persistence virtual_source }
 import { lines } from "m.malloy.rollup-author.malloy"
 
