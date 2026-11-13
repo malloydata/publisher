@@ -640,6 +640,11 @@ export function rerootDeclaration(
       pairHead = ` ${pairRenames(r.pair)}`;
       extend = `${replaced}${pairMeasures(r.pair)}`;
    }
+   // The inverse renames just after the include are refused by Malloy,
+   // which would fail the whole served copy and send every source in the
+   // model live: refuse this source's re-root alone instead (known
+   // limitation 25; a pair table's renames there still fail the copy).
+   if (ahead && renames !== "") return undefined;
    const terms = (r.readTimeTerms ?? [])
       .map(readTimeTermText)
       .filter((t) => t !== undefined);

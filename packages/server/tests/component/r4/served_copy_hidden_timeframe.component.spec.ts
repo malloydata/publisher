@@ -448,9 +448,11 @@ for (const gated of [true, false]) {
  * in its first block, not an `include`, since Malloy refuses a `rename:` in
  * the block just after an include and the served copy (every source in the
  * model) would not compile. Each source answers from storage with live's
- * rows, a source beside them too, and every refusal holds.
+ * rows, a source beside them too, and every refusal holds. A hidden column
+ * kept under its own name still needs the include, so that source alone is
+ * left live (known limitation 25).
  */
-describe("R4: hidden timeframe fields and hidden joins beside an author's rename", () => {
+describe("R4: hidden stored columns beside an author's rename", () => {
    const renameSeed = [
       ...seedSql,
       `CREATE TABLE regions AS SELECT * FROM (VALUES
@@ -464,6 +466,8 @@ source: regions is duckdb.table('regions') extend { primary_key: code }
 source: tbase is duckdb.table('orders') extend {
   internal dimension: order_month is ordered_at.month
 }
+
+source: cbase is duckdb.table('orders') include { internal: org_id; public: * }
 `;
    const renameModel = `##! experimental { access_modifiers }
 import "base.malloy"
@@ -487,6 +491,12 @@ source: renamed_join is duckdb.table('orders') extend {
 source: beside is duckdb.table('orders') extend {
   measure: total is amount.sum()
 }
+
+#(materialize) storage="lake"
+source: renamed_hidden is cbase extend {
+  rename: amt is amount
+  measure: total is amt.sum()
+}
 `;
    let restore: () => void;
    let fixture: R4Fixture;
@@ -505,8 +515,23 @@ source: beside is duckdb.table('orders') extend {
       await disposeScenarios();
    });
 
-   it("compiles the served copy with every source re-rooted", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
+   // A hidden column kept under its own name needs the include, and the
+   // inverse rename block would follow it, which Malloy refuses (known
+   // limitation 25): that source alone is left live, never the whole copy.
+   it("compiles the served copy with every other source re-rooted", async () => {
+      expect(await fixture.servedCopyProblems()).toEqual([
+         { sourceName: "renamed_hidden", reason: "definition_not_parsed" },
+      ]);
+   });
+
+   it("answers the source it could not re-root live, with live's rows", async () => {
+      const run = await fixture.run({
+         name: "renamed_hidden",
+         malloy:
+            "run: renamed_hidden -> { group_by: region; aggregate: total }",
+      });
+      expect(run.servedFrom).not.toBe("storage");
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 
    for (const [name, malloy] of [

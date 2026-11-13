@@ -877,6 +877,27 @@ describe("hidden stored columns (P3)", () => {
       );
    });
 
+   it("refuses a re-root whose include would come just before the inverse renames (known limitation 25)", () => {
+      // Malloy refuses a rename just after an include: written, the whole
+      // served copy would not compile. Refused, only this source is live.
+      expect(
+         rerootDeclaration(
+            "orders is base extend {\n  rename: amt is amount\n  measure: n is amt.sum()\n}",
+            {
+               sourceName: "orders",
+               connectionAlias: "x",
+               virtualHandle: "h",
+               typeName: "orders__served",
+               storedDimensions: [],
+               columns: [
+                  { name: "amt", type: "DOUBLE" },
+                  { name: "org_id", type: "VARCHAR", access: "internal" },
+               ],
+            },
+         ),
+      ).toBeUndefined();
+   });
+
    it("keeps a hidden timeframe field its own extend defines, computed at read, with no stored stand-in", () => {
       const text = `source: orders is base extend {
   private dimension: order_month is d.month
