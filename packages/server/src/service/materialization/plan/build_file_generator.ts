@@ -40,8 +40,11 @@
  * the companion model. Without a `name=`, a `storage=` source's table defaults
  * to the source's own name (the destination is Publisher's, and the existing
  * collision checks refuse two sources on one table). A colocated source (no
- * `storage=`) is not built at all until the served copy can serve it
- * ({@link COLOCATED_NOT_SERVED}); v1's colocated `#@ persist` is unchanged.
+ * `storage=`) is built into its own warehouse and needs a `name=`
+ * ({@link COLOCATED_NEEDS_NAME}): its default could be the very table it
+ * reads. The served copy re-roots it on that table, on its own connection,
+ * as it re-roots a `storage=` source on its destination; v1's colocated
+ * `#@ persist` is still served through Malloy's build manifest.
  *
  * Joins (phase 3 PR 4). A join is a reference by default: it is not stored,
  * the served copy keeps it as written, and it reads the joined source (its own
@@ -134,9 +137,10 @@
  * sources then sit in level files (`<model>.<n>.materialize-level.malloy`),
  * one per depth of the chain, which the companion imports, since a build
  * copy imports its parent's level and the companion cannot be imported by
- * what it imports. Only a pair in one `storage=` destination with no
- * incremental keys chains (a colocated `#(materialize)` is not built at all,
- * {@link COLOCATED_NOT_SERVED}, so no colocated pair is planned). A `storage=`
+ * what it imports. Only a pair on one tier (both colocated, or both in one
+ * `storage=` destination) with no incremental keys chains. A colocated
+ * extension's build reads its parent's build source, which Malloy's planner
+ * resolves to the parent's table through the build manifest. A `storage=`
  * extension's warehouse cannot read its parent's stored table, so its build
  * runs in the destination from a text of its own ({@link storedChainText},
  * {@link extensionOverStoredModel}): the parent's build source declared as
@@ -174,6 +178,7 @@ import {
    inverseRenameBlocks,
    type TextEdit,
 } from "../declaration_text";
+import type { StoredColumn } from "../stored_column_types";
 import { offsetOf } from "../malloy_lexer";
 import {
    classifyWhereTerms,
@@ -234,12 +239,17 @@ const CARRIED_GROUPS = ["freshness", "queryMetadata"] as const;
 const PLAIN_PROPERTY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
- * Why a colocated `#(materialize)` (one with no `storage=`) is not built: the
- * served copy reads only a storage destination, so the table would be built
- * and never served.
+ * Why a colocated `#(materialize)` (one with no `storage=`) and no `name=` is
+ * not built: its table would default to the source's own name, in the very
+ * warehouse it reads, so it could be the table it is built from.
  */
-export const COLOCATED_NOT_SERVED =
-   "colocated #(materialize) is not served yet; use storage= or #@ persist";
+export function colocatedNeedsName(tableName: string): string {
+   return (
+      "a #(materialize) source built into its own warehouse needs name=: " +
+      `without one its table would be \`${tableName}\`, which may be the very ` +
+      "table it reads"
+   );
+}
 
 /** A table name `#@ persist name=` accepts (see persist_annotation_validation.ts). */
 const PLAIN_TABLE_NAME = /^[A-Za-z0-9_-]+$/;
@@ -395,6 +405,13 @@ export interface MaterializePlan {
    /** The stored columns, in the source's field order. */
    columns: MaterializeColumn[];
    /**
+    * The build source's compiled output, each column in DuckDB's type
+    * spelling (`storedColumnsOfOutput`), read off the compiled companion.
+    * A colocated table's schema is not captured at build, so its serve
+    * binding declares these. Absent before the companion compiles.
+    */
+   storedColumns?: StoredColumn[];
+   /**
     * The `#@ persist` keys carried from the declaration, by key path: `name`,
     * or `freshness.window` for a property of a carried group.
     */
@@ -450,8 +467,8 @@ export interface MaterializeParent {
     * For a `storage=` pair, set with the build copy: the text the extension's
     * build compiles in its destination over the parent's stored table
     * ({@link extensionOverStoredModel}). Absent until the build copy is
-    * written; every chained pair is a `storage=` pair, since a colocated
-    * `#(materialize)` is not built ({@link COLOCATED_NOT_SERVED}).
+    * written; absent for a colocated pair, whose build reads the parent's
+    * build source in its own warehouse.
     */
    overStored?: StoredChain;
 }
@@ -1383,22 +1400,20 @@ export function planModelMaterialize(
          continue;
       }
       const { persist } = carried;
-      // Colocated (no `storage=`): the served copy reads only a storage
-      // destination, so a table built into the source's own warehouse would
-      // be built and never read. Not built until it can be served; a v1
-      // `#@ persist` is colocated as before.
-      if (persist.storage === undefined) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: COLOCATED_NOT_SERVED,
-         });
-         continue;
-      }
       // A source is planned in the model that declares it (see `declaredHere`),
       // so its name here is the name its author gave it.
       const tableName = name;
       if (persist.name === undefined) {
+         // Colocated (no `storage=`): built into the warehouse it reads,
+         // where its own name could be the table it is built from.
+         if (persist.storage === undefined) {
+            refused.push({
+               sourceName: name,
+               sourceID: def.sourceID,
+               reason: colocatedNeedsName(tableName),
+            });
+            continue;
+         }
          if (!PLAIN_TABLE_NAME.test(tableName)) {
             refused.push({
                sourceName: name,
@@ -1483,9 +1498,8 @@ const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key", "partition"];
  * the chain, reached through `extend` and renames only (a query-shaped hop
  * starts a new segment, which the build cannot re-root on a table), declared
  * in the same file (the build copy re-roots it in that file's text), as is
- * every declaration between them (`path`). Both must be `storage=` the same
- * destination (a colocated `#(materialize)` is refused before this, and a
- * colocated pair never chains), carry no incremental
+ * every declaration between them (`path`). Both must be on one tier (both
+ * colocated, or both `storage=` the same destination), carry no incremental
  * key, and the parent no given-reading `where:` (its build source's own
  * `extend` re-applies that term, which would scope the extension's build to
  * one caller). A plan that does not qualify builds over the raw chain, as
@@ -1518,10 +1532,9 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
       ) {
          continue;
       }
-      // One storage destination on both sides, whose build reads the
-      // parent's table there (see `overStored`). A colocated plan is refused
-      // before this (COLOCATED_NOT_SERVED); never chained should one reach it.
-      if (plan.persist.storage === undefined) continue;
+      // One tier on both sides: colocated, whose build reads the parent's
+      // build source in its own warehouse, or one storage destination, whose
+      // build reads the parent's table there (see `overStored`).
       if (plan.persist.storage !== parent.persist.storage) continue;
       const incremental = (p: MaterializePlan) =>
          Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));

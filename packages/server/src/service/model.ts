@@ -442,7 +442,12 @@ export class Model {
    private servedCopy = new ServedCopyServe({
       modelPath: () => this.modelPath,
       modelDef: () => this.modelDef,
-      serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
+      // Storage tables only while the storage tier serves; colocated tables
+      // (on the source's own connection) need no destination.
+      serveDestinationConfig: () =>
+         getPersistStorageMode() === "on"
+            ? this.storageServe.serveDestinationConfig
+            : undefined,
    });
    /**
     * The `#(preaggregate)` rollup leg (materialization v2, phase 4): a router
@@ -2867,16 +2872,18 @@ export class Model {
 
    /**
     * Whether the router may try the served copy: a model file, with the
-    * materialize switch and the storage tier both on. Warnings and the compile at bind follow the
-    * same rule, so a package never warns about a copy that is not routed.
+    * materialize switch on. It reads a colocated table on the source's own
+    * connection, and a storage table only while `PERSIST_STORAGE_MODE=on`
+    * (its host withholds the destinations otherwise). Warnings and the
+    * compile at bind follow the same rule, so a package never warns about a
+    * copy that is not routed.
     */
    private servedCopyEnabled(): boolean {
       // A notebook or report is not a model file the served copy can load.
       return (
          this.modelType === "model" &&
          !this.isNotebook() &&
-         getMaterializeEnabled() &&
-         getPersistStorageMode() === "on"
+         getMaterializeEnabled()
       );
    }
 
@@ -2942,10 +2949,15 @@ export class Model {
       // their own legs read them.
       const views = this.persistedViews.buildSourceIDs();
       const rollups = this.rollupVariants.buildSourceIDs(bindings);
+      // A colocated `#(materialize)` table is read on its own connection by
+      // the served copy alone; no other leg reads one.
+      const colocated = bindings.filter((b) => b.colocated);
+      const stored =
+         colocated.length === 0 ? bindings : bindings.filter((b) => !b.colocated);
       const others =
          views.size === 0 && rollups.size === 0
-            ? bindings
-            : bindings.filter(
+            ? stored
+            : stored.filter(
                  (b) =>
                     !(b.sourceIDs ?? []).some(
                        (id) => views.has(id) || rollups.has(id),
@@ -2958,9 +2970,11 @@ export class Model {
                  (b) => !(b.sourceIDs ?? []).some((id) => materialized.has(id)),
               ),
       );
-      this.servedCopy.setBindings(others);
-      this.rollupVariants.setBindings(bindings);
-      this.persistedViews.setBindings(bindings);
+      this.servedCopy.setBindings(
+         colocated.length === 0 ? others : [...others, ...colocated],
+      );
+      this.rollupVariants.setBindings(stored);
+      this.persistedViews.setBindings(stored);
    }
 
    /** See {@link StorageServeShape.storedColumnTypeMismatches}. */
@@ -3337,10 +3351,10 @@ export class Model {
             !!this.storageServe.serveDestinationConfig;
          // The served copy holds bindings the serve shape drops (a
          // `#(materialize)` build source is no source of this model by name).
+         // `hasBindings` counts a storage table only while the storage tier
+         // serves, and a colocated table always.
          const servedCopyPossible =
-            this.servedCopyEnabled() &&
-            this.servedCopy.hasBindings() &&
-            !!this.storageServe.serveDestinationConfig;
+            this.servedCopyEnabled() && this.servedCopy.hasBindings();
          // Captured once so the guard and the use below see the same companion.
          const preaggServeMaterializer = this.preaggregateServeMaterializer;
          const route = await routeQuery<RoutedExtra>(

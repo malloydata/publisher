@@ -29,6 +29,7 @@ import {
 import { planChainedDownstream } from "../../../src/service/materialization/run/materialization_build_session";
 import { storageTablePath } from "../../../src/service/materialization/run/storage_table_path";
 import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
+import { deriveColocatedServeBindings } from "../../../src/service/materialization/serve/colocated_bindings";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
 import * as os from "os";
@@ -290,10 +291,44 @@ export async function disposeScenarios(): Promise<void> {
 }
 
 /**
+ * The scenario's files with every `#(materialize)` made colocated: its
+ * `storage=` removed, and a `name=` added where it has none (a colocated one
+ * needs one), so the same scenario runs against tables in the source's own
+ * warehouse (phase 3 pull request 6).
+ */
+export function colocatedFiles(
+   files: Record<string, string>,
+): Record<string, string> {
+   let n = 0;
+   return Object.fromEntries(
+      Object.entries(files).map(([file, text]) => [
+         file,
+         text.replace(/^(\s*#\(materialize\))([^\n]*)$/gm, (_m, head, rest) => {
+            let keys = (rest as string)
+               .replace(/\s*\bstorage\s*=\s*("[^"]*"|\S+)/g, "")
+               .trimEnd();
+            if (!/\bname\s*=/.test(keys)) keys = ` name="r4c_${n++}"${keys}`;
+            return `${head}${keys}`;
+         }),
+      ]),
+   );
+}
+
+/**
  * Build every persist source of `scenario` and return a fixture that runs
- * queries live and served.
+ * queries live and served. With `R4_MATERIALIZE_TIER=colocated` in the
+ * environment, a `#(materialize)` scenario runs colocated instead
+ * ({@link colocatedFiles}): an exploratory switch for running the whole R4
+ * suite against colocated tables; the checked-in colocated parity lives in
+ * served_copy_colocated.component.spec.ts.
  */
 export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
+   if (
+      process.env.R4_MATERIALIZE_TIER === "colocated" &&
+      scenario.materialize
+   ) {
+      scenario = { ...scenario, files: colocatedFiles(scenario.files) };
+   }
    const dir = scratchDir();
    let duckdb: DuckDBConnection;
    let pinned: PinnedClockDuckDB | undefined;
@@ -573,9 +608,16 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    for (const plan of companion?.plans ?? []) {
       materializePlans[plan.sourceID] = plan;
    }
+   // A colocated `#(materialize)` source (no `storage=`): built into the
+   // scenario's own database, the source's connection, and read by the
+   // served copy there (phase 3 pull request 6).
+   const colocatedMaterialize = (source: (typeof sources)[number]) => {
+      const p = materializePlans[source.sourceID];
+      return p !== undefined && p.persist.storage === undefined;
+   };
    // A colocated table is looked up by the compiler under its own build id.
    const entityIdOf = (source: (typeof sources)[number], i: number) =>
-      scenario.colocated?.includes(source.name)
+      scenario.colocated?.includes(source.name) || colocatedMaterialize(source)
          ? compilerBuildId(source, {})
          : `h${i}`;
    sources.forEach((source, i) => {
@@ -588,8 +630,25 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // its parent's stored table.
    const entryBySourceID = new Map<string, ManifestEntry>();
    const storedBuildSQL: Record<string, string> = {};
+   const colocatedMaterializeEntries: Record<string, { tableName: string }> =
+      {};
    for (const [i, source] of sources.entries()) {
       if (scenario.unbuilt?.includes(source.name)) continue;
+      if (colocatedMaterialize(source)) {
+         // As a colocated build builds it: its own SQL, in its warehouse,
+         // reading a colocated parent's table through the build manifest.
+         const table = `r4_${source.name}_${i}`;
+         await duckdb.runSQL(
+            `CREATE TABLE ${table} AS ${buildSQLOf(source, {
+               entries: { ...colocatedEntries },
+            })}`,
+         );
+         colocatedEntries[entityIdOf(source, i)] = { tableName: table };
+         colocatedMaterializeEntries[entityIdOf(source, i)] = {
+            tableName: table,
+         };
+         continue;
+      }
       if (scenario.colocated?.includes(source.name)) {
          const table = `r4_${source.name}_${i}`;
          await duckdb.runSQL(
@@ -690,12 +749,32 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       } as ManifestEntry;
       entryBySourceID.set(source.sourceID, entries[`h${i}`]);
    }
-   const bindings = deriveServeBindings(
-      entries,
-      groupAliasesByName(Object.values(plan)),
-      undefined,
-      planSourceIds(plan),
-   );
+   const bindings = [
+      ...deriveServeBindings(
+         entries,
+         groupAliasesByName(Object.values(plan)),
+         undefined,
+         planSourceIds(plan),
+      ),
+      // The colocated `#(materialize)` tables, through the package's own
+      // derivation.
+      ...deriveColocatedServeBindings({
+         entries: colocatedMaterializeEntries,
+         planSources: Object.fromEntries(
+            sources.map((source) => [
+               source.sourceID,
+               {
+                  name: source.name,
+                  sourceEntityId: plan[source.sourceID].sourceEntityId,
+                  connectionName: source.connectionName,
+                  dialect: "duckdb",
+               },
+            ]),
+         ),
+         materializePlans,
+         eligible: () => true,
+      }),
+   ];
 
    const modelDef = authorDef;
    // The plan's catalog, as a package hands it to its models, so the path
@@ -781,9 +860,14 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       };
    };
 
-   const physicalNames = new Map(
-      Object.values(entries).map((e) => [e.sourceName, e.physicalTableName]),
-   );
+   const physicalNames = new Map([
+      ...Object.values(entries).map(
+         (e) => [e.sourceName, e.physicalTableName] as const,
+      ),
+      ...bindings
+         .filter((b) => b.colocated)
+         .map((b) => [b.sourceName, b.tablePath] as const),
+   ]);
    return {
       bindings,
       tableIds: Object.fromEntries(

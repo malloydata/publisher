@@ -18,7 +18,7 @@ import { rollingWindowsOf } from "./rolling_window";
 import {
    buildCopyText,
    buildSourceName,
-   COLOCATED_NOT_SERVED,
+   colocatedNeedsName,
    generateBuildFile,
    generateBuildFiles,
    materializeRefusalFinding,
@@ -1243,7 +1243,7 @@ source: orders is orders_raw
    );
 
    it(
-      "builds no colocated extension table: a colocated chain is refused on both sides, and a storage= extension of a colocated parent builds over the raw chain (P10 with #1666)",
+      "chains a colocated extension over its colocated parent, and builds a storage= extension of a colocated parent over the raw chain (P10, phase 3 pull request 6)",
       async () => {
          const c = await compiled(`${BASE}
 #(materialize) name="orders_all"
@@ -1256,13 +1256,23 @@ source: orders_ext is orders extend { where: region = 'east' }
 source: stored_ext is orders extend { dimension: east is region = 'east' }
 `);
          expect(
-            generatedPlans(c).map((p) => [p.sourceName, p.buildsOver]),
-         ).toEqual([["stored_ext", undefined]]);
-         const refused = (c.annotationFindings ?? [])
-            .filter((f) => f.code === "materialize-not-built")
-            .map((f) => f.subject)
-            .sort();
-         expect(refused).toEqual(["orders", "orders_ext"]);
+            generatedPlans(c).map((p) => [
+               p.sourceName,
+               p.buildsOver?.sourceName,
+               p.buildsOver?.overStored === undefined,
+            ]),
+         ).toEqual([
+            ["orders", undefined, true],
+            ["stored_ext", undefined, true],
+            // Colocated: its build reads the parent's build source in the
+            // warehouse, so nothing is compiled over a stored table.
+            ["orders_ext", "orders", true],
+         ]);
+         expect(
+            (c.annotationFindings ?? []).filter(
+               (f) => f.code === "materialize-not-built",
+            ),
+         ).toEqual([]);
       },
       { timeout: 30000 },
    );
@@ -1297,7 +1307,7 @@ source: orders is orders_raw
          expect(findings[0].message).toContain("`nmae=`");
          expect(findings[0].message).toContain("did you mean `name=`?");
          expect(findings[1].message).toContain(
-            "colocated #(materialize) is not served yet",
+            "a #(materialize) source built into its own warehouse needs name=",
          );
       },
       { timeout: 30000 },
@@ -1398,7 +1408,7 @@ source: orders is orders_raw -> { select: * }
       { timeout: 30000 },
    );
 
-   it("refuses a colocated source, named or not, since the served copy does not serve it yet", () => {
+   it("builds a named colocated source, and refuses one with no name=, since its default could be the table it reads", () => {
       const notes = (text: string) => ({
          notes: [
             {
@@ -1431,18 +1441,21 @@ source: orders is orders_raw -> { select: * }
             fields: [field],
          },
       });
+      // A named colocated source is built (and served by the served copy on
+      // its own connection, phase 3 pull request 6); an unnamed one is not,
+      // since its default table could be the one it reads.
       expect(plans.map((p) => p.persist)).toEqual([
+         { name: "orders_all" },
          { name: "stored", storage: "lake" },
       ]);
       expect(refused.map((r) => [r.sourceName, r.reason])).toEqual([
-         ["named", COLOCATED_NOT_SERVED],
-         ["orders", COLOCATED_NOT_SERVED],
+         ["orders", colocatedNeedsName("orders")],
       ]);
       expect(materializeRefusalFinding(refused[0], "m.malloy")).toMatchObject({
          code: "materialize-not-built",
          tier: "unservable",
          message: expect.stringContaining(
-            "colocated #(materialize) is not served yet; use storage= or #@ persist",
+            "a #(materialize) source built into its own warehouse needs name=: without one its table would be `orders`",
          ),
       });
    });

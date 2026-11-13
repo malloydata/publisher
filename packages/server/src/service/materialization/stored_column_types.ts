@@ -405,3 +405,100 @@ export function serveTypePlan(
    }
    return { casts, unservable };
 }
+
+/** A stored column's name and type, in DuckDB's spelling (`DESCRIBE`'s). */
+export interface StoredColumn {
+   name: string;
+   type: string;
+}
+
+/**
+ * The stored columns a build source's compiled output declares, each in the
+ * DuckDB spelling a serve binding's schema carries (`VARCHAR`, `BIGINT`,
+ * `STRUCT(a VARCHAR)[]`), which the served copy reads back as Malloy types.
+ *
+ * For a colocated `#(materialize)` table (no `storage=`), whose build writes
+ * into the source's own warehouse and captures no schema: its columns are the
+ * build source's output, a table at one content address holds exactly that
+ * build's columns, and Malloy reads each back as the basic type it built
+ * (decided for the colocated served copy, phase 3 pull request 6).
+ *
+ * A field whose type has no faithful spelling here (`timestamptz`, `json`, a
+ * `sql native` type, a nested type off DuckDB) is left out, so the served copy
+ * finds the column missing and the source serves live: never declared as a
+ * type its table does not hold.
+ */
+export function storedColumnsOfOutput(
+   fields: readonly unknown[] | undefined,
+   options: { nested: boolean },
+): StoredColumn[] {
+   const out: StoredColumn[] = [];
+   for (const f of fields ?? []) {
+      const name = (f as { as?: unknown; name?: unknown })?.as ??
+         (f as { name?: unknown })?.name;
+      if (typeof name !== "string") continue;
+      const type = storedTypeOfField(f, options.nested, 0);
+      if (type !== undefined) out.push({ name, type });
+   }
+   return out;
+}
+
+/** One output field's type in DuckDB's spelling, or undefined (see above). */
+function storedTypeOfField(
+   field: unknown,
+   nested: boolean,
+   depth: number,
+): string | undefined {
+   if (depth > 16 || field === null || typeof field !== "object") {
+      return undefined;
+   }
+   const f = field as {
+      type?: unknown;
+      numberType?: unknown;
+      elementTypeDef?: unknown;
+      fields?: unknown[];
+   };
+   switch (f.type) {
+      case "string":
+         return "VARCHAR";
+      case "number":
+         return f.numberType === "integer" ? "BIGINT" : "DOUBLE";
+      case "boolean":
+         return "BOOLEAN";
+      case "date":
+         return "DATE";
+      case "timestamp":
+         return "TIMESTAMP";
+      case "record":
+         return nested ? structOf(f.fields, depth) : undefined;
+      case "array": {
+         if (!nested) return undefined;
+         const element = f.elementTypeDef as { type?: unknown } | undefined;
+         // An array of records (a repeated record) lists its fields on the
+         // array; an array of a scalar names the scalar's type.
+         const inner =
+            element?.type === "record_element"
+               ? structOf(f.fields, depth)
+               : storedTypeOfField(element, nested, depth + 1);
+         return inner === undefined ? undefined : `${inner}[]`;
+      }
+      default:
+         return undefined;
+   }
+}
+
+function structOf(
+   fields: unknown[] | undefined,
+   depth: number,
+): string | undefined {
+   const parts: string[] = [];
+   for (const f of fields ?? []) {
+      const name = (f as { as?: unknown; name?: unknown })?.as ??
+         (f as { name?: unknown })?.name;
+      if (typeof name !== "string") return undefined;
+      const type = storedTypeOfField(f, true, depth + 1);
+      if (type === undefined) return undefined;
+      parts.push(`"${name.replace(/"/g, '""')}" ${type}`);
+   }
+   return parts.length === 0 ? undefined : `STRUCT(${parts.join(", ")})`;
+}

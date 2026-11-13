@@ -41,6 +41,7 @@ import {
    type StoredColumnType,
 } from "./build_file_generator";
 import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
+import { storedColumnsOfOutput } from "../stored_column_types";
 
 export interface GeneratedMaterialize {
    /** The sources the generator planned. Never empty. */
@@ -268,7 +269,9 @@ export async function tryCompileMaterializeCompanion(args: {
          ));
          generated = await compileCompanion(args, plans, copies);
       }
-      return generated ? { generated, refused } : { refused };
+      return generated
+         ? { generated: withStoredColumns(generated), refused }
+         : { refused };
    } catch (error) {
       logger.error(
          "Failed to plan or compile the generated #(materialize) companion",
@@ -279,6 +282,39 @@ export async function tryCompileMaterializeCompanion(args: {
       );
       return { refused };
    }
+}
+
+/**
+ * Each plan with its build source's compiled output columns
+ * ({@link MaterializePlan.storedColumns}): what a colocated build writes,
+ * which its serve binding declares. A nested column is kept only on DuckDB,
+ * whose tables hold nests natively; elsewhere a nest is stored as JSON, which
+ * the served copy cannot declare, so the column is left out and the source
+ * serves live.
+ */
+function withStoredColumns(
+   generated: GeneratedMaterialize,
+): GeneratedMaterialize {
+   const contents = (
+      generated.model as unknown as {
+         _modelDef?: { contents?: Record<string, unknown> };
+      }
+   )._modelDef?.contents;
+   return {
+      ...generated,
+      plans: generated.plans.map((plan) => {
+         const def = contents?.[plan.buildSourceName] as
+            | { fields?: unknown[]; dialect?: unknown }
+            | undefined;
+         if (!def?.fields) return plan;
+         return {
+            ...plan,
+            storedColumns: storedColumnsOfOutput(def.fields, {
+               nested: def.dialect === "duckdb",
+            }),
+         };
+      }),
+   };
 }
 
 /** A planned source's build copy: its file name beside the model, and text. */
