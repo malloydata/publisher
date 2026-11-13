@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
-import { getV1ServedCopyMode } from "../../../config";
 import { logger } from "../../../logger";
 import { recordSourceBuildDuration } from "../../../materialization_metrics";
 import { errMessage } from "../../../utils";
@@ -116,18 +115,15 @@ export class ColocatedCtasStrategy
          durationMs,
       });
 
-      // The v1 cutover binds a colocated `#@ persist` table on the served
-      // copy with the columns its build wrote, captured here as a `storage=`
-      // build captures them (G1). Off, nothing is read, as before.
-      const schema =
-         getV1ServedCopyMode() === "off"
-            ? undefined
-            : await capturedColocatedSchema({
-                 connection,
-                 physicalTableName,
-                 dialect,
-                 sourceName: persistSource.name,
-              });
+      // A colocated `#@ persist` table is bound on the served copy with the
+      // columns its build wrote, captured here as a `storage=` build captures
+      // them (the v1 cutover's G1).
+      const schema = await capturedColocatedSchema({
+         connection,
+         physicalTableName,
+         dialect,
+         sourceName: persistSource.name,
+      });
 
       // The table now holds a full snapshot; its boundary turns the NEXT
       // refresh into a delta.

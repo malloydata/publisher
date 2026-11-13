@@ -91,9 +91,7 @@ import {
    type EligibilityRefusalReason,
 } from "../materialization_metrics";
 import { logger } from "../logger";
-import { getV1ServedCopyMode } from "../config";
 import {
-   tryCompileSynthesizedPreaggregation,
    type SynthesizedPreaggregation,
    type SynthesizedRuntimeFactory,
 } from "../service/materialization/plan/preaggregation_compile";
@@ -1211,26 +1209,14 @@ async function prepareForMainThread(
          importBaseURL,
       };
    };
-   // One compile serves both the main thread and the plan, since a build
-   // manifest is read only at query prepare. Undefined when not wanted or
-   // left to the main thread; null when there is no usable rollup.
+   // A v1 rollup is the rollup leg's (G4), so no composite companion is
+   // compiled: null ("no usable rollup") whenever the plan or the main
+   // thread would have asked for one, so the plan is still made here.
    const companion: SynthesizedPreaggregation | null | undefined =
       (job.withPreaggregateCompanions || wantsPlan) &&
       !load.failed &&
       !pastDeadline()
-         ? // Under the v1 cutover a v1 rollup is the rollup leg's (G4), so
-           // no composite is compiled; null, so the plan is still made here.
-           getV1ServedCopyMode() === "on"
-            ? null
-            : ((await tryCompileSynthesizedPreaggregation({
-                 packagePath: job.packagePath,
-                 modelPath,
-                 contents: model.model._modelDef.contents as Record<
-                    string,
-                    unknown
-                 >,
-                 getRuntime: companionRuntime,
-              })) ?? null)
+         ? null
          : undefined;
 
    // Rechecked, since another model may have left the plan to the main
@@ -1269,12 +1255,11 @@ async function prepareForMainThread(
 
    return {
       renderTagResults,
+      // No composite companion is compiled any more (G4): `{}` says so.
       preaggregateCompanion:
          !job.withPreaggregateCompanions || companion === undefined
             ? undefined
-            : companion
-              ? { modelDef: companion.model._modelDef }
-              : {},
+            : {},
    };
 }
 

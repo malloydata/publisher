@@ -132,17 +132,14 @@ whatever the `#@ persist` source's own query produces. The served copy then read
 the source's own name, so its extensions, views, joins, named queries and importing files are
 unchanged ([the served copy](materialization.md#the-served-copy-in-development-publisher_materialize)).
 
-- **No `##! experimental.persistence` in your file** for a `#(materialize)` source. The flag lives
-  in the build source Publisher generates. A file that also has v1 `#@ persist` sources still needs
-  it: a v1 file without the flag is skipped by the build, as before. Removing that requirement for
-  v1 files (D3) is part of the v1 cutover, which has not landed
-  (proposed in the plan's [phased plan](materialization-v2-plan.md#phased-plan), "v1 cutover
-  design").
-- **It is served by the served copy, never the build manifest.** A colocated v1 table is served
-  through Malloy's build manifest, and a v1 `storage=` table through the storage serve shape (or,
-  with the switch on, through the served copy when the source is query-shaped). A `#(materialize)`
-  table is served only through the served copy: colocated, on the source's own connection; with
-  `storage=`, in its destination.
+- **No `##! experimental.persistence` in your file**, for either spelling. A `#(materialize)`
+  source's flag lives in the build source Publisher generates; since the v1 cutover a v1 file
+  without the flag is planned from a build copy that carries it, with every address unchanged.
+- **Both are served by the served copy.** Since the v1 cutover, a v1 `#@ persist` table, colocated
+  or `storage=`, is read by the served copy, and a v1 `#@ preaggregate` rollup by the rollup leg,
+  exactly as their v2 spellings are; the storage serve shape, the pre-aggregation composite and the
+  build manifest on the live compile are retired. Moving to v2 changes what you write, not how
+  the table is read.
 - **An extension does not inherit `#(materialize)`.** Only the source whose own statement carries it
   is built. A source that extends or renames it is not a second table: it reads the materialized
   source's table through the served copy, as its own text says. To give an extension a table of its

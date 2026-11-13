@@ -217,20 +217,6 @@ const tiers: Tier[] = [
       }),
    },
    {
-      label: "#@ persist storage=, the storage serve shape",
-      // The serve shape answers only with the v1 cutover off.
-      env: {
-         PERSIST_STORAGE_MODE: "on",
-         PUBLISHER_MATERIALIZE: "false",
-         PUBLISHER_V1_SERVED_COPY: "off",
-      },
-      cases: duckdbCases,
-      scenario: async () => ({
-         files: { "m.malloy": models("duckdb", "").persist },
-         seedSql: seed("", true),
-      }),
-   },
-   {
       label: "#(materialize) storage=",
       env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       cases: [...duckdbCases, ...JOIN_CASES],
@@ -316,11 +302,9 @@ for (const tier of tiers) {
          await cleanup?.();
       });
 
-      if (!tier.label.includes("serve shape")) {
-         it("compiles the served copy with no problem", async () => {
-            expect(await fixture.servedCopyProblems()).toEqual([]);
-         });
-      }
+      it("compiles the served copy with no problem", async () => {
+         expect(await fixture.servedCopyProblems()).toEqual([]);
+      });
 
       for (const c of tier.cases) {
          it(c.name, async () => {
@@ -354,12 +338,7 @@ for (const tier of tiers) {
                expect(run.servedVia).toBeUndefined();
                return;
             }
-            if (tier.label.includes("serve shape")) {
-               expect(run.servedVia).toBeUndefined();
-               expect(run.servedFrom).toBe("storage");
-            } else {
-               expect(run.servedVia).toBe("served_copy");
-            }
+            expect(run.servedVia).toBe("served_copy");
          });
       }
    });
@@ -372,16 +351,15 @@ for (const tier of tiers) {
  * every other query still reads the table, and a source whose own text names
  * it is left as written.
  */
-for (const shape of [false, true]) {
-   describe(`R4: a big-integer column no cast reads exactly is left out per query (${shape ? "serve shape" : "served copy"})`, () => {
+{
+   describe("R4: a big-integer column no cast reads exactly is left out per query (served copy)", () => {
       let restore: () => void;
       let fixture: R4Fixture;
       beforeAll(async () => {
          restore = installSettings({
             env: {
                PERSIST_STORAGE_MODE: "on",
-               PUBLISHER_MATERIALIZE: shape ? "false" : "true",
-               ...(shape ? { PUBLISHER_V1_SERVED_COPY: "off" } : {}),
+               PUBLISHER_MATERIALIZE: "true",
             },
          }).restore;
          fixture = await buildScenario({
@@ -391,19 +369,12 @@ source: base is duckdb.table('big')
 
 #@ persist name="plain" storage="lake"
 source: plain is base -> { select: * }
-${
-   // The serve shape withholds every binding once any refinement on it
-   // names such a column (its existing rule for an unservable one), so the
-   // source that names it is checked on the served copy alone.
-   shape
-      ? ""
-      : `
+${`
 #@ persist name="sp" storage="lake"
 source: s is base -> { select: * } extend {
   measure: id_total is id.sum()
 }
-`
-}`,
+`}`,
             },
             seedSql: seed("", true),
          });
@@ -448,22 +419,19 @@ source: s is base -> { select: * } extend {
          expect(rowDifference(live.rows, served.rows)).toBeUndefined();
       });
 
-      it.skipIf(shape)(
-         "leaves a source whose own text names it as written, and answers live",
-         async () => {
-            const { live, served } = await answer(
-               "run: s -> { group_by: g; aggregate: n is count(), id_total }",
-            );
-            expect(served.path?.servedBy.kind).toBe("live");
-            expect(rowDifference(live.rows, served.rows)).toBeUndefined();
-            expect(
-               (await fixture.servedCopyProblems()).map((p) => [
-                  p.sourceName,
-                  p.reason,
-               ]),
-            ).toEqual([["s", "column_types"]]);
-         },
-      );
+      it("leaves a source whose own text names it as written, and answers live", async () => {
+         const { live, served } = await answer(
+            "run: s -> { group_by: g; aggregate: n is count(), id_total }",
+         );
+         expect(served.path?.servedBy.kind).toBe("live");
+         expect(rowDifference(live.rows, served.rows)).toBeUndefined();
+         expect(
+            (await fixture.servedCopyProblems()).map((p) => [
+               p.sourceName,
+               p.reason,
+            ]),
+         ).toEqual([["s", "column_types"]]);
+      });
    });
 }
 

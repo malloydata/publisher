@@ -10,7 +10,6 @@ import type { RouteDecision } from "./query_router";
 import { installSettings } from "../test_helpers/settings_env";
 import {
    answeredWith,
-   buildManifestFor,
    canDegradeToLive,
    LIVE_ANSWER,
    liveFallbackAnswer,
@@ -168,34 +167,6 @@ describe("Answer", () => {
    });
 });
 
-describe("buildManifestFor", () => {
-   const full = manifest(["persist", "rollup"]);
-   const withoutRollups = manifest(["persist"]);
-
-   it("hands the serve shape no manifest (it resolves through virtualMap)", () => {
-      const answer = routedAnswer(storageRoute([binding("daily")]));
-      expect(buildManifestFor(answer, full, withoutRollups)).toBeUndefined();
-   });
-
-   it("hands only the pre-aggregation companion the full manifest", () => {
-      expect(
-         buildManifestFor(routedAnswer(rollupRoute), full, withoutRollups),
-      ).toBe(full);
-      expect(buildManifestFor(LIVE_ANSWER, full, withoutRollups)).toBe(
-         withoutRollups,
-      );
-   });
-
-   it("hands a live retry the manifest without rollups", () => {
-      const answer = liveFallbackAnswer(
-         routedAnswer(storageRoute([binding("daily")])),
-      );
-      expect(buildManifestFor(answer, full, withoutRollups)).toBe(
-         withoutRollups,
-      );
-   });
-});
-
 describe("canDegradeToLive", () => {
    const open = { hasLiveRunnable: true, aborted: false };
    const storage = (fallback?: string) =>
@@ -304,9 +275,7 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
          queryString: "run: orders -> { aggregate: total }",
          surfaceGivens: undefined,
          buildManifest: undefined,
-         storageRoutingPossible: false,
          servedCopyPossible: false,
-         preaggServeMaterializer: undefined,
          rollupVariantsFor: runnable,
       }).find((c) => c.kind === "rollup");
 
@@ -345,9 +314,7 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
          queryString: "run: flights -> { aggregate: segments.seg_miles }",
          surfaceGivens: undefined,
          buildManifest: undefined,
-         storageRoutingPossible: false,
          servedCopyPossible: false,
-         preaggServeMaterializer: undefined,
          rollupVariantsFor: runnable,
       }).find((c) => c.kind === "rollup");
       const routed = await candidate?.attempt();

@@ -172,7 +172,6 @@ import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import {
    getMaterializeEnabled,
    getMaterializeGatedSources,
-   getV1ServedCopyMode,
 } from "../../../config";
 import {
    boundTablePath,
@@ -2528,15 +2527,11 @@ export function checkCoverage(
 
 /**
  * The switches {@link planSourceRollups} reads, as a memo key: `#(preaggregate)`
- * with `PUBLISHER_MATERIALIZE` (`readsV2`), v1 `#@ preaggregate` with the v1
- * cutover on (`readsV1`), and whether a gated base's rollup is read.
+ * with `PUBLISHER_MATERIALIZE` (`readsV2`), and whether a gated base's rollup
+ * is read.
  */
 function planSwitches(): string {
-   return [
-      getMaterializeEnabled(),
-      getV1ServedCopyMode(),
-      getMaterializeGatedSources(),
-   ].join("/");
+   return [getMaterializeEnabled(), getMaterializeGatedSources()].join("/");
 }
 
 /**

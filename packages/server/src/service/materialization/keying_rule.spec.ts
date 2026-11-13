@@ -43,10 +43,6 @@ const NAME_KEY = new RegExp(
  */
 const ALLOWED: Record<string, Record<string, string>> = {
    "plan/build_plan.ts": {
-      "if (!planByName.has(source.name)) continue;":
-         "phase 3 (PR 1 follow-up): rollup plans by name within one model; migrate to sourceID",
-      "const rollup = planByName.get(source.name);":
-         "phase 3 (PR 1 follow-up): rollup plans by name within one model; migrate to sourceID",
       "const plan = planByName.get(source.name);":
          "generated #(materialize) build sources by name within one generated companion, where each name is unique; migrate with the rollup plans",
       "if (include && !include.has(source.name)) continue;":

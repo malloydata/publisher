@@ -200,20 +200,14 @@ const GOVERNED_QS: Q[] = [
    })),
 ];
 
-for (const sw of ["cutover", "off"] as const) {
+for (const sw of ["cutover"] as const) {
    describe(`[${sw}] colocated gates, givens and hidden columns`, () => {
       let r: Awaited<ReturnType<typeof probe>>;
       it("loads", async () => {
          r = await probe(sw, { "g.malloy": GOVERNED }, GOVERNED_QS);
       }, 300_000);
       for (const q of GOVERNED_QS) {
-         // Today a query joining the gated source through the persisted
-         // fact is answered live (rows equal); after the cutover, served.
-         const asked =
-            sw === "off" && q.name.startsWith("gated join")
-               ? { ...q, stored: false }
-               : q;
-         it(q.name, () => check(r, asked));
+         it(q.name, () => check(r, q));
       }
    });
 }
@@ -249,7 +243,7 @@ const WIDE_QS: Q[] = [
          "run: wide_tz -> { timezone: 'America/Los_Angeles'; group_by: d is tz.day; aggregate: n is count() }",
    },
 ];
-for (const sw of ["cutover", "off"] as const) {
+for (const sw of ["cutover"] as const) {
    describe(`[${sw}] colocated wide types`, () => {
       let r: Awaited<ReturnType<typeof probe>>;
       it("loads", async () => {

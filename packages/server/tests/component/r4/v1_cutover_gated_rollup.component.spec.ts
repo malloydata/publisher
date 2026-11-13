@@ -325,7 +325,6 @@ for (const placement of ["colocated", "storage"] as const) {
             env: {
                PERSIST_STORAGE_MODE: "on",
                PUBLISHER_MATERIALIZE: "true",
-               PUBLISHER_V1_SERVED_COPY: "on",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
             },
          }).restore;
@@ -702,7 +701,6 @@ describe("v1 cutover R4: gated queries on rollups with gated sources off", () =>
          env: {
             PERSIST_STORAGE_MODE: "on",
             PUBLISHER_MATERIALIZE: "true",
-            PUBLISHER_V1_SERVED_COPY: "on",
             PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
          },
       }).restore;
@@ -751,7 +749,6 @@ describe("v1 cutover: storage= rollups over gated bases without the review seam"
          env: {
             PERSIST_STORAGE_MODE: "on",
             PUBLISHER_MATERIALIZE: "true",
-            PUBLISHER_V1_SERVED_COPY: "on",
             PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
          },
       }).restore;

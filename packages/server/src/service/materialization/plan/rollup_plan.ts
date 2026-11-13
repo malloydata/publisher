@@ -66,10 +66,7 @@
  */
 
 import { Annotations, type ModelDef, type SourceDef } from "@malloydata/malloy";
-import {
-   getMaterializeGatedSources,
-   getV1ServedCopyMode,
-} from "../../../config";
+import { getMaterializeGatedSources } from "../../../config";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
 import { basePersistNamespace } from "./preaggregation_synthesis";
 import { collectEntryPointGates } from "../../gate_classification";
@@ -618,7 +615,7 @@ export function planSourceRollups(
    // rollup's table name, so it rebuilds once) and served here, and the v1
    // composite is not. A line v1 reports as unusable is left to v1's own
    // validation.
-   if (ctx.readsV1 ?? getV1ServedCopyMode() === "on") {
+   if (ctx.readsV1 ?? true) {
       // As v1 places it: a grain naming no namespace (and no storage=) is
       // created beside its base's own `#@ persist name=`.
       const inheritedNamespace = basePersistNamespace({

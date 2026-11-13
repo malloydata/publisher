@@ -1441,9 +1441,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          const entitiesStarted = performance.now();
          await pkg.computeEntities(Package.entityPlansOf(outcome));
          entitiesMs = performance.now() - entitiesStarted;
-         // After the gates, so a bad declaration is rejected before a companion is
-         // compiled. Unbound, the companion recomputes from the base until a bind.
-         await pkg.materialization.pushPreaggregateServeModels();
          pkg.logEmptyDiscoveryWarnings();
       } catch (err) {
          if (!dryRun) {
@@ -2652,8 +2649,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // New models start with no serve routing; re-apply it.
       this.materialization.pushStorageServeBindingsToModels();
       this.materialization.pushServeDestinationConfigToModels();
-      // Also where a manifest bind lands, so the companion compiles against it.
-      await this.materialization.pushPreaggregateServeModels();
       // Read against the reports installed above.
       this.renderTagWarnings =
          this.surfacedRenderTagWarnings(renderTagWarnings);

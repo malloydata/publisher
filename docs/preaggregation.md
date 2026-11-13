@@ -11,7 +11,7 @@ Queries do not change. They name the source they always named, ask for the measu
 
 This is the same machinery as [materialization](materialization.md) with a different trigger. `#@ persist` stores a source you wrote; `#@ preaggregate` stores a rollup Publisher derives from a measure you annotated. Both build through the same plan, manifest, and scheduler.
 
-Materialization v2 renames `#@ preaggregate` to `#(preaggregate)`; [materialization-migration.md](materialization-migration.md#preaggregate) maps one to the other. Which to write depends on the server: with `PUBLISHER_MATERIALIZE` on, write `#(preaggregate)` (below), and `#@ preaggregate` carries a deprecation warning; with it off (the default), `#(preaggregate)` is not read (an `annotation-near-miss` warning) and its measure serves live, so `#@ preaggregate` is the spelling that builds.
+Since the v1 cutover, a `#@ preaggregate` line is read as a `#(preaggregate)` declaration: planned once in its base's model, built under the v2 rollup's table name (`<base>__rollup__<grain>__<hash>`; a rollup built before the cutover under `__preagg__` is built again once), and served by the same rollup leg, so the limits below are the rollup leg's for both spellings. Materialization v2 renames `#@ preaggregate` to `#(preaggregate)`; [materialization-migration.md](materialization-migration.md#preaggregate) maps one to the other. Which to write depends on the server: with `PUBLISHER_MATERIALIZE` on, write `#(preaggregate)` (below), and `#@ preaggregate` carries a deprecation warning; with it off (the default), `#(preaggregate)` is not read (an `annotation-near-miss` warning) and its measure serves live, so `#@ preaggregate` is the spelling that builds.
 
 ## `#(preaggregate)` (materialization v2, behind `PUBLISHER_MATERIALIZE`)
 
@@ -164,13 +164,13 @@ This rule is wider than it sounds: it disqualifies the whole source, not just th
 
 ## What does not route
 
-Four limits are worth knowing before you decide pre-aggregation will help your workload. None affects correctness — an uncovered query is answered from the base, with the answer it always had — but each means no acceleration.
+Three limits are worth knowing before you decide pre-aggregation will help your workload. None affects correctness — an uncovered query is answered from the base, with the answer it always had — but each means no acceleration.
 
 **A query with an aggregate the rollup does not store does not route.** A rollup holds one row per grain group and a stored partial for each annotated measure, so it answers a query only when every aggregate in it is one of those measures, or an expression over them (`revenue / order_count`, `revenue { where: category = 'books' }`, `all(revenue)`). An aggregate written in the query itself — `count()`, `qty.sum()`, `count(category)`, `stddev(amount)`, including one in a `nest:`, a `having:`, or a measure an inline `extend` defines — would be computed over the rollup's rows rather than the base's, so the query is answered from the base. To accelerate a count, declare it as a measure and annotate it (`#@ preaggregate grain="category"` on `order_count is count()`), and ask for `order_count`. For the same reason a `select:` or `index:` stage over the source, including one in a `nest:`, is answered from the base: a rollup has one row per grain group, not one per source row.
 
-**A query that names a `view:` does not route.** Rollups are offered to a query through a composite source, and a composite carries its members' fields but not their views, so a view defined on your source is not visible on it. Given `view: by_category is { group_by: category; aggregate: revenue }`, `run: orders -> by_category` serves live, while the same query written out — `run: orders -> { group_by: category; aggregate: revenue }` — reads the rollup. This affects the REST API's `{"queryName": …, "sourceName": …}` form and Console dashboards, since both run named views. If your traffic is mostly named views, expect little benefit today.
+**A named view routes when its own query does.** The rollup is read in a copy of your source's own file, so a view it declares is carried onto it and checked for coverage like a written-out query: `run: orders -> by_category` reads the rollup when `by_category`'s query is one the rollup covers.
 
-**A query that supplies a [given](givens.md) does not route.** A model-level `given:` does not cross into the model Publisher synthesizes, so a query passing one cannot be compiled against the rollup and is served live. This is not merely a technicality to be lifted: a rollup is built with the givens in force at build time, so serving a query at a different given value from the stored rows would be wrong. A filter-driven data app, whose every query supplies a given, gets no benefit today.
+**A rollup over rows that read a [given](givens.md) is not built.** A rollup holds the rows its build saw, one given value's, so a source whose rows depend on a given gets no rollup, with a `preaggregate-reads-given` warning, and its queries are answered from the base. A given the rows do not read changes nothing.
 
 **A query grouping by an expression rather than a dimension does not route.** `group_by: order_time.month` is an expression, and the rollup has no such field. Group by the declared dimension (`order_day`) or a coarser truncation of it (`order_day.month`) instead.
 
@@ -326,22 +326,15 @@ share its one table, so two of them naming different destinations is refused at 
 derived, not authored: a freshly provisioned catalog has no schema to create the table
 in. Writing both on one `#@ preaggregate` line is refused.
 
-**Two grains on one base must agree on the destination.** Unlike `namespace=`, which may
-legitimately send two grains to two schemas, two grains bound to two different
-destinations cannot both be served: the rollups are offered to a query through one
-composite, and every member of a composite must live on a single connection. Such a base
-serves from its rollups not at all, and its queries are answered from the base.
-
 **The tier's switch applies.** With `PERSIST_STORAGE_MODE` off, a `storage=` rollup is
 not built — and not built anywhere else either. Falling back to a build alongside the
 base would put a table in your warehouse under a generated name you never wrote, so
 nothing is built, queries are answered from the base, and the package reports the
 degraded state as a warning. Under `write-only` the rollup builds but does not serve.
 
-**An uncovered query is answered from the base.** Rollups in the store are offered
-through a composite of themselves alone, with no base member — the base lives on the
-source warehouse, and a composite cannot span connections. So a query no rollup covers
-does not resolve against them and is answered live, with the answer it always had.
+**An uncovered query is answered from the base.** A query no rollup covers, in the store
+or alongside the base, is answered live, with the answer it always had; the path report
+names each rollup it considered and why it was skipped.
 
 ## Build and refresh
 

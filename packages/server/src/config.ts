@@ -927,29 +927,11 @@ export const getMaterializeEnabled = (): boolean =>
 /**
  * Whether the served copy may answer a query through a row-level gate, with
  * the gate grafted on it (materialization v2's R3), from
- * `PUBLISHER_MATERIALIZE_GATED_SOURCES` (default `false`). Only with
- * {@link getMaterializeEnabled} or the v1 cutover on, so a gated v1 table
- * needs this switch alone.
+ * `PUBLISHER_MATERIALIZE_GATED_SOURCES` (default `false`). The served copy
+ * reads every v1 table (the v1 cutover), so this switch alone decides.
  */
 export const getMaterializeGatedSources = (): boolean =>
-   (getMaterializeEnabled() || getV1ServedCopyMode() === "on") &&
    settings.get("materialize.gatedSources");
-
-/**
- * How v1 `#@ persist` tables are served (materialization v2's v1 cutover),
- * from `PUBLISHER_V1_SERVED_COPY` (default `on`):
- *
- *  - `on`: the served copy, the rollup and persisted-view legs, or live;
- *  - `off`: the storage serve shape, `#@ preaggregate` composite and
- *    colocated build manifest, as before the cutover;
- *  - `shadow`: served as `off`, with the `on` answer computed beside it and
- *    any difference logged.
- */
-export type V1ServedCopyMode = "off" | "shadow" | "on";
-
-/** See {@link V1ServedCopyMode}. Case-insensitive; throws on an unknown value. */
-export const getV1ServedCopyMode = (): V1ServedCopyMode =>
-   settings.get("materialize.v1ServedCopy");
 
 /**
  * Whether a within-package persist-target COLLISION (two distinct persist

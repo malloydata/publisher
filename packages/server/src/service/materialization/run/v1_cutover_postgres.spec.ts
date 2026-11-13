@@ -224,7 +224,6 @@ for (const flag of [true, false])
                env: {
                   PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
                   PUBLISHER_MATERIALIZE: "true",
-                  PUBLISHER_V1_SERVED_COPY: "on",
                },
             }).restore;
             await __setPackageLoadPoolForTests(null);

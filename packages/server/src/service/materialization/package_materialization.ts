@@ -17,7 +17,6 @@ import {
    getPersistCollisionEnforce,
    getMaterializeEnabled,
    getPersistStorageMode,
-   getV1ServedCopyMode,
 } from "../../config";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
 import { BuildPlanRefreshingError } from "../../errors";
@@ -935,21 +934,6 @@ export class PackageMaterialization {
    }
 
    /**
-    * Compile each model's pre-aggregation companion so the serve path can route
-    * to a rollup. Re-run after a manifest bind, since the companion compiles
-    * against the manifest. A no-op for a model with no `#@ preaggregate`.
-    */
-   async pushPreaggregateServeModels(): Promise<void> {
-      for (const model of this.owner.models().values()) {
-         await model.buildPreaggregateServeModel(
-            this.owner.packagePath(),
-            this.owner.malloyConfig(),
-            this.buildManifestEntries,
-         );
-      }
-   }
-
-   /**
     * A declaration's compiled definition, from the package model that holds it
     * as a node of its own (the model that declares or imports it). A model
     * that reaches a source only through a join (an index importing the file
@@ -973,11 +957,9 @@ export class PackageMaterialization {
       const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
       const sources = plan?.sources ?? {};
       const eligible = this.colocatedSourceEligibility?.eligibleEntityIds;
-      // The v1 cutover (G1): v1 colocated `#@ persist` tables too, once the
-      // switch is past `off` (under `shadow` the model keeps them off its own
-      // served copy; Model.setServeBindings).
-      const v1 = getV1ServedCopyMode() !== "off";
-      const viewBuilds = v1 ? this.persistedViewBuildIDs() : undefined;
+      // v1 colocated `#@ persist` tables too (the v1 cutover's G1).
+      const v1 = true;
+      const viewBuilds = this.persistedViewBuildIDs();
       return deriveColocatedServeBindings({
          entries: this.freshnessEntries,
          planSources: sources,
@@ -1822,7 +1804,6 @@ export class PackageMaterialization {
          }
       }
       const verdicts = this.serveVerdicts(views);
-      if (getV1ServedCopyMode() === "off") return verdicts;
       try {
          return await this.withCutoverPaths(verdicts);
       } catch (error) {

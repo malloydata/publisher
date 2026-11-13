@@ -93,7 +93,7 @@ source: orders is _orders_fact -> { select: * }
 source: totals is _orders_fact -> { group_by: org_id; aggregate: n is count() }
 ```
 
-On a storage destination the wrapper is carried onto the serve shape verbatim, over the rebound fact, when everything it reads is itself on the shape. A wrapper whose query or joins reach a source that is not materialized there — a warehouse table, or a persisted source whose table is stale past its window — is served live instead.
+On a storage destination the wrapper is read by the served copy as written, over the re-rooted fact, when everything it reads is itself stored there. A wrapper whose query or joins reach a source that is not materialized there — a warehouse table, or a persisted source whose table is stale past its window — is served live instead.
 
 ### `#(access_filter)`-gated sources and materialization
 
@@ -199,7 +199,7 @@ value is substituted just the same.
 Two positions carry a given that is refused even though the build leaves them out: a declared
 `dimension:` or `measure:` that reads a given itself (`dynamic_projection`), and a join's `on:`
 condition (`dynamic_join`). Neither is in the artifact, so neither is a leak; they are refused
-because the serve shape has nothing that binds the given per caller in that position.
+because the served copy has nothing that binds the given per caller in that position.
 
 #### Per-user visibility through a joined grant table
 
@@ -225,8 +225,8 @@ source: opps is raw_opps -> { select: * } extend {
 ```
 
 Neither artifact is filtered by user: a persisted source's joins and dimensions are not in its
-build, and `grants` leaves its `where:` out like any other. At read, the serve shape re-emits
-`grants` with its terms bound to the caller's values and re-emits the join against that binding,
+build, and `grants` leaves its `where:` out like any other. At read, the served copy reads
+`grants` with its terms bound to the caller's values and the join against that binding,
 so `visible` is evaluated over exactly the grant rows the live query would join. The build plan
 reports the join under `joinedTerms`, beside the source's own `strippedTerms`, naming the joined
 source whose binding the per-caller answer depends on. The rule is transitive: a grant table that
@@ -481,8 +481,7 @@ reads through a JavaScript number, so 9007199254740993 would come back as 900719
 column whose field Malloy types as a big integer (a DuckDB `BIGINT`, `HUGEINT` or `UBIGINT`, a
 BigQuery `INT64`, a Snowflake `NUMBER(p,0)`, or a sum or max over one) is therefore read through a
 native cast: `::"HUGEINT"` in a `storage=` table, and the warehouse's own big-integer type in a
-colocated one (a colocated `#(materialize)` table, or a v1 `#@ persist` one under
-`PUBLISHER_V1_SERVED_COPY=on`). Malloy types the cast as a big integer, so the value comes back with every digit and
+colocated one (a colocated `#(materialize)` table, or a v1 `#@ persist` one). Malloy types the cast as a big integer, so the value comes back with every digit and
 the field keeps live's `bigint` subtype; selecting, grouping, filtering and aggregating it all stay
 served from storage, and a `primary_key:`, dimension or measure over it keeps compiling. A
 `count()` or a sum of 32-bit integers is an ordinary integer live too, and is not touched. A column

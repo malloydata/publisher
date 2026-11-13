@@ -5154,8 +5154,8 @@ components:
         cutoverPath:
           type: string
           description: >-
-            On a dry run while `PUBLISHER_V1_SERVED_COPY` is not `off`: the path
-            that will answer queries on this source after the v1 cutover,
+            On a dry run: the path that will answer queries on this source
+            (the v1 cutover's, now the only one),
             judged by compiling the package's served copy over bindings declared
             from the plan's output columns (no table is built): `served_copy`
             (the served copy re-roots it on its table), `rollup` (a rollup the

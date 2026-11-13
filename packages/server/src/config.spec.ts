@@ -1688,23 +1688,8 @@ describe("EMBEDDING_MIN_SIMILARITY", () => {
 
 describe("getMaterializeGatedSources", () => {
    const cases: [Record<string, string>, boolean][] = [
-      // A gated v1 table needs the gated switch alone under the cutover.
+      // The gated switch alone decides.
       [{ PUBLISHER_MATERIALIZE_GATED_SOURCES: "true" }, true],
-      [
-         {
-            PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
-            PUBLISHER_V1_SERVED_COPY: "off",
-         },
-         false,
-      ],
-      [
-         {
-            PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
-            PUBLISHER_V1_SERVED_COPY: "off",
-            PUBLISHER_MATERIALIZE: "true",
-         },
-         true,
-      ],
       [{}, false],
    ];
    for (const [env, expected] of cases) {

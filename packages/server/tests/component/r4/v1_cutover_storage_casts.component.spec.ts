@@ -22,7 +22,6 @@ beforeAll(() => {
       env: {
          PERSIST_STORAGE_MODE: "on",
          PUBLISHER_MATERIALIZE: "true",
-         PUBLISHER_V1_SERVED_COPY: "on",
       },
    }).restore;
 });

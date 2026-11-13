@@ -697,7 +697,6 @@ source: by_category is orders -> {
             {
                PUBLISHER_MATERIALIZE: "false",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
-               PUBLISHER_V1_SERVED_COPY: "off",
             },
          ];
          for (const env of envs) {

@@ -51,15 +51,15 @@ A query against a package with bound `storage=` tables is compiled over a transi
 Routing is decided per query, not per source, so one source can serve some queries from its table and others live:
 
 - **A join to a non-persisted source** serves live for the queries that traverse it; queries on the fact's own fields still route to the table. A join between two persisted sources routes both legs.
-- **A nested column** (`nest:`, a repeated record) is stored, but the serve shape carries it as opaque JSON, so every query that traverses it pays the live cost while the scalar columns serve from storage. The source looks fully materialized and is, for its flat fields.
-- **A refinement the shape cannot reproduce is thinned** (a view, then a join, then a dimension or measure reading a join); a **filter is never thinned** - a source whose filter the shape cannot reproduce loses the tier itself, and only itself.
+- **A nested column** (`nest:`, a repeated record) a destination cannot hold as one is left out of the stored source, so every query that traverses it answers live while the scalar columns serve from storage. The source looks fully materialized and is, for its flat fields.
+- **The served copy reads the author's own text** over the stored table (its views, joins, measures and filters as written), so nothing is thinned: a source whose re-root does not compile is left as written and answers live, with a `served-copy-not-served` warning, and the model's other stored sources still serve.
 - A **stale** table (past its freshness window, with `fallback` `live` or `fail`) leaves the serving set, and a run-time store failure under `fallback: live` degrades that query to live.
 
 What the server reports:
 
 - `QueryResult.servedFrom`: `storage` when the tier answered, `live_fallback` when the tier was bound but a run-time store failure degraded the query to a live recompute, and empty for everything else (a colocated hit, no binding, or an ineligible query - three different things).
 - The package's `storageServeBindings`, in its serving state at `GET /api/v0/environments/{env}/packages/{pkg}/status` (an older server: its entry in `GET /api/v0/status`, or the package read), lists the stored tables the package is currently bound to, with each entry's origin (`persist` or `preaggregate`). `manifestEntryCount` does not count them.
-- `publisher_storage_serve_routing_total{outcome=storage|live_fallback|runtime_live_fallback|blocked_by_row_level_gate, origin}` counts routed queries; `publisher_storage_serve_shape_tier_drop_total{tier}` counts refinements the serve shape had to thin.
+- `publisher_storage_serve_routing_total{outcome=storage|live_fallback|runtime_live_fallback|blocked_by_row_level_gate, origin}` counts routed queries, and each query's path report names the table that answered (`servedBy.via: served_copy`) or why each one was skipped.
 - A query's full result carries the SQL it ran; served from the store, its `FROM` names the destination and the physical table.
 
 ## Pre-aggregation uses the same tier
