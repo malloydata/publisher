@@ -151,6 +151,7 @@ import {
 } from "./author_imports";
 import {
    checkJoinCoverage,
+   joinedKeyProblem,
    joinRollupLegs,
    parentKeyProblem,
    unmatchedRowProblem,
@@ -887,6 +888,21 @@ export class RollupVariantServe {
       );
       if (problem !== undefined) {
          throw new RollupSkip("rollup_count_semantics", problem);
+      }
+      // The joined source's own key, when the join is keyed on another
+      // column: live counts and sums its rows once per non-NULL key.
+      const joinedKey = (childDef as { primaryKey?: unknown } | undefined)
+         ?.primaryKey;
+      const joinedProblem = joinedKeyProblem(
+         leg,
+         read,
+         typeof joinedKey === "string" ? joinedKey : undefined,
+         plan.storage !== undefined
+            ? this.tableOf(plan)?.binding?.primaryKeys?.[plan.baseSourceID]
+            : this.parentKeyUniqueness(plan, { sourceID: plan.baseSourceID }),
+      );
+      if (joinedProblem !== undefined) {
+         throw new RollupSkip("rollup_count_semantics", joinedProblem);
       }
       const table = this.tableOf(plan);
       if (!table) {

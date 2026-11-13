@@ -257,6 +257,46 @@ export function unmatchedRowProblem(
 }
 
 /**
+ * Why the stored measures `read` (by name) cannot be read through the leg's
+ * join while the joined source's own primary key is not known unique and
+ * never NULL, or undefined. Since malloydata/malloy#3208 live takes a
+ * `count()`, `sum` or `avg` at the joined source over the rows whose key is
+ * not NULL, and where the rows fan out, once per distinct key; its rollup,
+ * built at the joined source's own grain, counts and sums every row. A
+ * join keyed on that primary key (`joinedKey` the leg's key column) meets no
+ * row whose key is NULL; a `min` or `max` reads every row live too; and a
+ * partial taken at a join of the joined source tests that join's key, which
+ * the rollup's build tests the same way. `joinedKeyUnique` is what the
+ * rollup's build found of the key: true, false (repeated or NULL), or
+ * undefined (not checked).
+ */
+export function joinedKeyProblem(
+   leg: JoinRollupLeg,
+   read: ReadonlySet<string>,
+   joinedKey: string | undefined,
+   joinedKeyUnique: boolean | undefined,
+): string | undefined {
+   if (
+      joinedKey === undefined ||
+      joinedKey === leg.join.keyColumn ||
+      joinedKeyUnique === true
+   ) {
+      return undefined;
+   }
+   for (const m of leg.plan.rollupMeasures) {
+      if (!read.has(m.name)) continue;
+      for (const { leaf } of m.partials) {
+         if (leaf.aggregate === "min" || leaf.aggregate === "max") continue;
+         if (leaf.joinPath.length > 0) continue;
+         return joinedKeyUnique === false
+            ? `\`${leg.join.name}\` holds a value of its primary key \`${joinedKey}\` more than once or NULL, and live counts and sums \`${leg.join.name}.${m.name}\` once per non-NULL key where its rollup reads every row`
+            : `\`${leg.join.name}\`'s primary key \`${joinedKey}\` was not checked unique and never NULL when its rollup was built, and live counts and sums \`${leg.join.name}.${m.name}\` once per non-NULL key where its rollup reads every row`;
+      }
+   }
+   return undefined;
+}
+
+/**
  * Why the leg cannot read a join read as a join_many while the query
  * source's primary key is not known unique and never NULL, or undefined.
  * `parentKeyUnique` is what the rollup's build found of that key: true,

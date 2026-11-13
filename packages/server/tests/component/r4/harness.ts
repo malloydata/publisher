@@ -29,6 +29,7 @@ import {
 import {
    joinOneKey,
    joinOneKeysOf,
+   joinedKeyNeedsOf,
    parentKeyNeedsOf,
    storedKeyChecksOf,
 } from "../../../src/service/materialization/plan/rollup_plan";
@@ -586,6 +587,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             need,
             compile: parentKeyCheckCompiler(materializer),
          })),
+         joinedKeyNeedsOf(SourceMap.of(authorDef)).map((need) => ({
+            need,
+            compile: parentKeyCheckCompiler(materializer),
+         })),
       );
    }
    const rollupPlanned: [
@@ -945,6 +950,33 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                parentKeys: { [source.sourceID]: record.unique },
             };
          }
+      }
+      // A storage rollup's base key check, run on the base's connection
+      // over its rows, as its build runs it (`compileParentKeyChecks`).
+      const rollupChecks = rollupOrigin.has(source.sourceID)
+         ? (rollupPlanByName.get(source.name)?.parentKeyChecks ?? [])
+         : [];
+      if (rollupChecks.length > 0 && checks !== false) {
+         const parentKeys: Record<string, boolean> = {};
+         for (const parent of rollupChecks) {
+            const record =
+               checks === "unique"
+                  ? { unique: true }
+                  : await runRollupKeyCheck(
+                       parent,
+                       connections.get(parent.connectionName ?? "duckdb") ??
+                          duckdb,
+                       table,
+                    );
+            if (record) parentKeys[parent.sourceID] = record.unique;
+         }
+         const entry = entries[`h${i}`] as ManifestEntry & {
+            keyUniqueness?: KeyUniqueness;
+         };
+         entry.keyUniqueness = {
+            ...entry.keyUniqueness,
+            parentKeys: { ...entry.keyUniqueness?.parentKeys, ...parentKeys },
+         };
       }
       entryBySourceID.set(source.sourceID, entries[`h${i}`]);
    }

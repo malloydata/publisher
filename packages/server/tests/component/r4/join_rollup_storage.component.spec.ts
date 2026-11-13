@@ -842,3 +842,75 @@ describe("R4: join-to-rollup in a storage destination, over a stored query sourc
       }
    }
 });
+
+/**
+ * The joined source's own primary key NULL in the data (see the colocated
+ * case in join_rollup.component.spec.ts): live counts and sums `segments`
+ * over the rows whose `seg_id` is not NULL, the rollup in the destination
+ * over every row. The rollup's build checks the key on the base's
+ * connection, and a count or sum through the join is answered live.
+ */
+describe("R4: join-to-rollup (A7) in a storage destination, the joined source's primary key NULL", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `##! experimental.access_modifiers
+source: segments is duckdb.table('segs_raw') extend {
+  primary_key: seg_id
+  #(preaggregate) grain=["flight_id"]${S}
+  measure: seg_miles is miles.sum()
+  #(preaggregate) grain=["flight_id"]${S}
+  measure: seg_count is count()
+  #(preaggregate) grain=["flight_id"]${S}
+  measure: longest is miles.max()
+}
+#(materialize)${S}
+source: flights is duckdb.table('flights_raw') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+}
+`,
+         },
+         seedSql: [
+            seedSql[0]!,
+            `CREATE TABLE segs_raw AS SELECT * FROM (VALUES
+               (10, 1, 'p', 2.0), (11, 1, 'q', 3.0), (NULL, 1, 'p', 9.0),
+               (12, 2, 'p', 4.0), (14, 3, 'q', 1.0), (16, 3, 'p', 7.0)
+             ) AS t(seg_id, flight_id, kind, miles)`,
+         ],
+         materialize: true,
+         preaggregate: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   for (const malloy of [
+      "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }",
+      "run: flights -> { group_by: carrier; aggregate: segments.seg_count }",
+   ]) {
+      it(`answers ${malloy} live (COUNT_SEMANTICS)`, async () => {
+         expectNotFromRollup(await fixture.run({ name: malloy, malloy }));
+         expect(await rollupReasons(fixture, malloy)).toContain(
+            "COUNT_SEMANTICS",
+         );
+      });
+   }
+
+   it("serves a max, which live reads every row for", async () => {
+      expectServedFromRollup(
+         await fixture.run({
+            name: "max",
+            malloy:
+               "run: flights -> { group_by: carrier; aggregate: segments.longest }",
+         }),
+      );
+   });
+});

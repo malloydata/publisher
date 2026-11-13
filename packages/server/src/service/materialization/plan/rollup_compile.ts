@@ -37,6 +37,7 @@ import {
    parentKeyCheckQuery,
    readsAsJoinMany,
    rollupKeyCheckQuery,
+   type JoinedKeyNeed,
    type ParentKeyCheck,
    type ParentKeyNeed,
    type RollupRefusal,
@@ -245,8 +246,13 @@ export function parentKeyCheckCompiler(materializer: {
  * Attach to each colocated rollup in `plans` the primary key checks of the
  * query sources that read it through a join read as a join_many
  * (`readsAsJoinMany`), each compiled once by its `compile` (the author's
- * model that names the source). A check that does not compile is left off,
- * logged: the leg then reads that source's key as unknown and declines.
+ * model that names the source). To each rollup, colocated or in a storage
+ * destination, also attach the check of its base's own primary key when a
+ * join reaches the base on another column (`joinedKeys`, see
+ * {@link JoinedKeyNeed}): the leg serves a count, sum or average of the base
+ * through such a join only when that key is unique and never NULL. A check
+ * that does not compile is left off, logged: the leg then reads that
+ * source's key as unknown and declines.
  */
 export async function compileParentKeyChecks(
    plans: Iterable<RollupVariantPlan>,
@@ -254,37 +260,71 @@ export async function compileParentKeyChecks(
       need: ParentKeyNeed;
       compile: (text: string) => Promise<string>;
    }[],
+   joinedKeys: readonly {
+      need: JoinedKeyNeed;
+      compile: (text: string) => Promise<string>;
+   }[] = [],
 ): Promise<void> {
    const compiled = new Map<string, Promise<string | undefined>>();
-   for (const plan of plans) {
-      // A `#@ preaggregate` (v1) plan is never read through a join.
-      if (plan.variant !== true || plan.storage !== undefined) continue;
-      const checks: ParentKeyCheck[] = [];
-      const seen = new Set<string>();
-      for (const { need, compile } of needs) {
-         if (seen.has(need.sourceID) || !readsAsJoinMany(plan, need)) continue;
-         seen.add(need.sourceID);
-         let sql = compiled.get(need.sourceID);
-         if (sql === undefined) {
-            sql = compile(parentKeyCheckQuery(need.name, need.keyColumn)).catch(
-               (error) => {
-                  logger.warn(
-                     "A query source's primary key check did not compile; queries it answers through a #(preaggregate) rollup read as a join_many are answered live",
-                     {
-                        source: need.name,
-                        keyColumn: need.keyColumn,
-                        error:
-                           error instanceof Error
-                              ? error.message
-                              : String(error),
-                     },
-                  );
-                  return undefined;
+   const compileOnce = (
+      sourceID: string,
+      name: string,
+      keyColumn: string,
+      compile: (text: string) => Promise<string>,
+   ): Promise<string | undefined> => {
+      let sql = compiled.get(sourceID);
+      if (sql === undefined) {
+         sql = compile(parentKeyCheckQuery(name, keyColumn)).catch((error) => {
+            logger.warn(
+               "A source's primary key check did not compile; queries it answers through a #(preaggregate) rollup read through a join are answered live",
+               {
+                  source: name,
+                  keyColumn,
+                  error: error instanceof Error ? error.message : String(error),
                },
             );
-            compiled.set(need.sourceID, sql);
+            return undefined;
+         });
+         compiled.set(sourceID, sql);
+      }
+      return sql;
+   };
+   for (const plan of plans) {
+      // A `#@ preaggregate` (v1) plan is never read through a join.
+      if (plan.variant !== true) continue;
+      const checks: ParentKeyCheck[] = [];
+      const seen = new Set<string>();
+      // A query source's key is checked over its rows where the rollup is
+      // colocated; in a destination, over its stored table there
+      // (`storedKeyChecksOf`).
+      for (const { need, compile } of plan.storage === undefined ? needs : []) {
+         if (seen.has(need.sourceID) || !readsAsJoinMany(plan, need)) continue;
+         seen.add(need.sourceID);
+         const text = await compileOnce(
+            need.sourceID,
+            need.name,
+            need.keyColumn,
+            compile,
+         );
+         if (text === undefined) continue;
+         checks.push({
+            sourceID: need.sourceID,
+            keyColumn: need.keyColumn,
+            connectionName: need.connectionName,
+            sql: text,
+         });
+      }
+      for (const { need, compile } of joinedKeys) {
+         if (need.sourceID !== plan.baseSourceID || seen.has(need.sourceID)) {
+            continue;
          }
-         const text = await sql;
+         seen.add(need.sourceID);
+         const text = await compileOnce(
+            need.sourceID,
+            need.name,
+            need.keyColumn,
+            compile,
+         );
          if (text === undefined) continue;
          checks.push({
             sourceID: need.sourceID,

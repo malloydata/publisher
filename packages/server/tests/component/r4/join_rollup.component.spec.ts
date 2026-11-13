@@ -1407,3 +1407,120 @@ describe("R4: join-to-rollup (A7) through a join_many on the key of a query sour
       });
    }
 });
+
+/**
+ * The joined source's own primary key, NULL or repeated in the data. Since
+ * malloydata/malloy#3208 live takes a count, sum or average at `segments`
+ * over the rows whose `seg_id` is not NULL, and once per distinct `seg_id`
+ * where the rows fan out; the rollup, built at `segments`' own grain, reads
+ * every row. Each rollup's build checks the key, and a count, sum or average
+ * through the join is answered live when the check found it NULL or
+ * repeated. Flight 1 has a segment with no `seg_id` (9 miles), flight 2 one
+ * `seg_id` twice; a `min` or `max` reads every row live too, so is served.
+ */
+const NULL_CHILD_KEY_SEED = [
+   `CREATE TABLE flights_raw AS SELECT * FROM (VALUES
+      (1, 'AA', 100), (2, 'AA', 200), (3, 'BB', 300), (4, 'CC', 400)
+    ) AS t(id, carrier, distance)`,
+   `CREATE TABLE segs_raw AS SELECT * FROM (VALUES
+      (10, 1, 'p', 2.0), (11, 1, 'q', 3.0), (NULL, 1, 'p', 9.0), (12, 2, 'p', 4.0),
+      (12, 2, 'p', 1.5), (14, 3, 'q', 1.0), (16, 3, 'p', 7.0)
+    ) AS t(seg_id, flight_id, kind, miles)`,
+   `CREATE TABLE certs_raw AS SELECT * FROM (VALUES
+      (1, 1), (2, 1), (3, 2), (4, 3)
+    ) AS t(cert_id, flight_id)`,
+];
+
+function nullChildKeyModel(placement: string): string {
+   return `source: certs is duckdb.table('certs_raw') extend { primary_key: cert_id }
+source: segments is duckdb.table('segs_raw') extend {
+  primary_key: seg_id
+  #(preaggregate) grain=["flight_id"]${placement}
+  measure: seg_miles is miles.sum()
+  #(preaggregate) grain=["flight_id"]${placement}
+  measure: seg_count is count()
+  #(preaggregate) grain=["flight_id"]${placement}
+  measure: padded_miles is sum(miles + 1)
+  #(preaggregate) grain=["flight_id"]${placement}
+  measure: longest is miles.max()
+}
+source: flights is duckdb.table('flights_raw') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  join_many: certs on certs.flight_id = id
+}
+`;
+}
+
+const NULL_CHILD_KEY_LIVE = [
+   [
+      "a sum of a column",
+      "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }",
+   ],
+   [
+      "a count",
+      "run: flights -> { group_by: carrier; aggregate: segments.seg_count }",
+   ],
+   [
+      "a sum of a computed value",
+      "run: flights -> { group_by: carrier; aggregate: segments.padded_miles }",
+   ],
+   [
+      "a count in a nest",
+      "run: flights -> { group_by: carrier; nest: n is { group_by: id; aggregate: segments.seg_count } }",
+   ],
+   [
+      "a sum and a count beside another join_many",
+      "run: flights -> { group_by: carrier; aggregate: segments.seg_miles, segments.seg_count, cert_n is certs.count() }",
+   ],
+] as const;
+
+describe("R4: join-to-rollup (A7) through a join to a source whose own primary key the data holds NULL or repeated", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": nullChildKeyModel("") },
+         seedSql: NULL_CHILD_KEY_SEED,
+         preaggregate: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   for (const [name, malloy] of NULL_CHILD_KEY_LIVE) {
+      it(`answers ${name} live (COUNT_SEMANTICS)`, async () => {
+         // Rows first: served from the rollup, flight 1's NULL-keyed segment
+         // is counted and summed where live skips it.
+         expectLive(await fixture.run({ name, malloy }));
+         fixture.setBindings(fixture.bindings);
+         const { path } = await fixture.runAsIs(malloy);
+         const considered = (path?.considered ?? []).filter(
+            (c) => c.kind === "rollup",
+         );
+         expect(considered.map((c) => c.reason)).toContain("COUNT_SEMANTICS");
+         expect(
+            considered.some((c) =>
+               ((c as { detail?: string }).detail ?? "").includes(
+                  "primary key `seg_id` more than once or NULL",
+               ),
+            ),
+         ).toBe(true);
+      });
+   }
+
+   it("serves a max, which live reads every row for", async () => {
+      expectServedFromRollup(
+         await fixture.run({
+            name: "max",
+            malloy:
+               "run: flights -> { group_by: carrier; aggregate: segments.longest }",
+         }),
+      );
+   });
+});

@@ -7,6 +7,7 @@ import type { RollupVariantPlan } from "../plan/rollup_plan";
 import type { QueryLevelFacts } from "../../governance/ir/prepared_query";
 import {
    checkJoinCoverage,
+   joinedKeyProblem,
    joinRollupLegs,
    parentKeyProblem,
    unmatchedRowProblem,
@@ -521,6 +522,57 @@ describe("checkJoinCoverage (row 27)", () => {
    it("asks nothing of a rollup with no fan-out", () => {
       expect(
          checkJoinCoverage(legOf(plan()), level([miles]), () => "aggregate"),
+      ).toBeUndefined();
+   });
+});
+
+describe("joinedKeyProblem", () => {
+   const legOf = (p: RollupVariantPlan = plan()) =>
+      joinRollupLegs([join()], new Map([[CHILD, [p]]]), new Set(), "id")[0]!
+         .leg;
+
+   it("declines a count or sum of the joined source's own rows unless its key was checked unique and never NULL", () => {
+      for (const m of ["seg_miles", "seg_count"]) {
+         const read = new Set([m]);
+         expect(joinedKeyProblem(legOf(), read, "seg_id", false)).toContain(
+            "more than once or NULL",
+         );
+         expect(joinedKeyProblem(legOf(), read, "seg_id", undefined)).toContain(
+            "was not checked unique and never NULL",
+         );
+         expect(
+            joinedKeyProblem(legOf(), read, "seg_id", true),
+         ).toBeUndefined();
+      }
+   });
+
+   it("asks nothing of a join keyed on the joined source's primary key, or of one with none", () => {
+      const read = new Set(["seg_miles"]);
+      expect(
+         joinedKeyProblem(legOf(), read, "flight_id", undefined),
+      ).toBeUndefined();
+      expect(
+         joinedKeyProblem(legOf(), read, undefined, undefined),
+      ).toBeUndefined();
+   });
+
+   it("asks nothing of a min, a max, or a partial taken at a join of the joined source", () => {
+      const p = plan();
+      p.rollupMeasures[0]!.partials = [
+         leaf("max", method("miles", "max")),
+         leaf("min", method("miles", "min")),
+         {
+            column: "q__partial",
+            leaf: {
+               aggregate: "sum",
+               expr: method("qty", "sum"),
+               reads: [],
+               joinPath: ["lines"],
+            },
+         },
+      ] as RollupVariantPlan["rollupMeasures"][number]["partials"];
+      expect(
+         joinedKeyProblem(legOf(p), new Set(["seg_miles"]), "seg_id", false),
       ).toBeUndefined();
    });
 });
