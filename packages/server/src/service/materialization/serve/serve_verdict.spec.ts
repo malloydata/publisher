@@ -468,15 +468,35 @@ describe("reachableSourceIDs", () => {
          verdict: "live",
          reason: "served_copy",
       });
-      // Colocated #(materialize) is built but not served yet.
-      expect(
+      // A colocated #(materialize) table is served by the served copy too,
+      // on the source's own connection (phase 3 pull request 6).
+      const colocatedWith = (
+         state: "serves" | "off" | "not_served",
+         bound = new Set(["entity-orders"]),
+      ) =>
          computeServeVerdicts(
             facts([plan("orders")], {
-               boundEntityIds: new Set(["entity-orders"]),
-               materialize: () => "serves",
+               boundEntityIds: bound,
+               materialize: () => state,
             }),
-         )[0],
-      ).toMatchObject({ verdict: "live", reason: "served_copy" });
+         )[0];
+      expect(colocatedWith("serves")).toMatchObject({ verdict: "serves" });
+      expect(colocatedWith("serves").message).toContain("served copy");
+      expect(colocatedWith("not_served")).toMatchObject({
+         verdict: "live",
+         reason: "served_copy",
+      });
+      expect(colocatedWith("serves", new Set())).toMatchObject({
+         verdict: "not_built",
+      });
+      // Off: the fix names only the materialize switch, not the storage tier.
+      expect(colocatedWith("off")).toMatchObject({
+         verdict: "live",
+         reason: "served_copy",
+      });
+      expect(JSON.stringify(colocatedWith("off"))).not.toContain(
+         "PERSIST_STORAGE_MODE",
+      );
       // A #@ persist source keeps today's serve-shape rule.
       expect(
          computeServeVerdicts(

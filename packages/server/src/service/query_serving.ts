@@ -277,6 +277,17 @@ export function answeredWith(
  */
 export function servedFromOf(answer: Answer): ServedFrom | undefined {
    if (answer.runFailed) return "live_fallback";
+   // A served-copy answer that read only colocated `#(materialize)` tables
+   // read the source's own warehouse, as a colocated `#@ persist` answer
+   // does, which reports no storage hit; its path report names the table.
+   if (
+      answer.tier === "storage" &&
+      answer.storageTablesRead !== undefined &&
+      answer.storageTablesRead.length > 0 &&
+      answer.storageTablesRead.every((b) => b.colocated)
+   ) {
+      return undefined;
+   }
    // A `storage=` persisted view or `#(preaggregate)` rollup reads the
    // storage tier too, through `virtual()`.
    return answer.tier === "storage" ||
@@ -890,6 +901,7 @@ export async function queryPathFor(
          origin: b.origin,
          tablePath: b.tablePath,
          freshAsOf: b.freshAsOf,
+         ...(b.colocated ? { colocated: true as const } : {}),
       });
       const published = args.includeHidden ? undefined : host.publishedNames();
       return buildQueryPath({

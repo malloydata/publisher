@@ -71,6 +71,7 @@ import {
    SERVED_COPY_WARNING_CODE,
    type ServedCopyProblem,
 } from "./serve/served_copy_serve";
+import { deriveColocatedServeBindings } from "./serve/colocated_bindings";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import {
    computeServeVerdicts,
@@ -696,6 +697,7 @@ export class PackageMaterialization {
       if (count === 0) {
          this.boundManifestUri = null;
       }
+      this.refreshColocatedServeBindings();
    }
 
    /**
@@ -910,8 +912,52 @@ export class PackageMaterialization {
       return undefined;
    }
 
-   /** Push the current storage serve bindings onto every loaded model. */
+   /**
+    * The served copy's bindings for the colocated `#(materialize)` tables the
+    * bound manifest holds (colocated_bindings.ts), admitted by the colocated
+    * tier's positive eligibility, keyed by content address as that tier is.
+    */
+   private colocatedServeBindings(): ServeBinding[] {
+      const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
+      const sources = plan?.sources ?? {};
+      const eligible = this.colocatedSourceEligibility?.eligibleEntityIds;
+      return deriveColocatedServeBindings({
+         entries: this.freshnessEntries,
+         planSources: sources,
+         materializePlans: this.materializePlans,
+         eligible: (sourceID) =>
+            !!eligible?.has(sources[sourceID]?.sourceEntityId ?? ""),
+      });
+   }
+
+   /** What {@link pushStorageServeBindingsToModels} last pushed, colocated. */
+   private colocatedBindingsSignature = "";
+
+   /**
+    * Push the bindings again when the colocated `#(materialize)` tables the
+    * served copy would read changed (a manifest bind, a re-derived plan).
+    */
+   private refreshColocatedServeBindings(): void {
+      if (
+         colocatedSignature(this.colocatedServeBindings()) !==
+         this.colocatedBindingsSignature
+      ) {
+         this.pushStorageServeBindingsToModels();
+      }
+   }
+
+   /**
+    * Push the current serve bindings onto every loaded model: the storage
+    * tier's, and the colocated `#(materialize)` tables only the served copy
+    * reads.
+    */
    pushStorageServeBindingsToModels(): void {
+      const colocated = this.colocatedServeBindings();
+      this.colocatedBindingsSignature = colocatedSignature(colocated);
+      const bindings =
+         colocated.length === 0
+            ? this.storageServeBindings
+            : [...this.storageServeBindings, ...colocated];
       for (const model of this.owner.models().values()) {
          // Optional: a model a spec stands in for need not implement them.
          model.setServedCopyContext?.(
@@ -920,7 +966,7 @@ export class PackageMaterialization {
             this.materializePlans,
             (sourceID) => this.declarationOf(sourceID),
          );
-         model.setServeBindings(this.storageServeBindings);
+         model.setServeBindings(bindings);
          // Compiled at bind so a served copy that does not compile is a
          // package warning before any query; never throws.
          void model.prepareServedCopy?.();
@@ -1075,6 +1121,9 @@ export class PackageMaterialization {
             this.buildPlanStale.resolve();
             this.buildPlanStale = undefined;
          }
+         // The plan's addresses and eligibility decide the colocated tables
+         // the served copy reads.
+         this.refreshColocatedServeBindings();
          return derived;
       });
       this.buildPlanRefreshChain = run.catch(() => false);
@@ -2195,4 +2244,15 @@ function servedCopyProblemMessage(
             [...(problem.leaks ?? []), ...(problem.coverage ?? [])].join(" ")
          );
    }
+}
+
+/** The colocated bindings' identity, to push only when they change. */
+function colocatedSignature(bindings: readonly ServeBinding[]): string {
+   return bindings
+      .map(
+         (b) =>
+            `${b.sourceIDs?.join(",")}@${b.destinationName}/${b.virtualHandle}/${b.tablePath}/${b.freshAsOf ?? ""}/${b.freshnessWindowSeconds ?? ""}/${b.freshnessFallback ?? ""}`,
+      )
+      .sort()
+      .join("|");
 }
