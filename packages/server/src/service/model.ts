@@ -180,6 +180,7 @@ import {
    buildJoinBaseMap,
    extractRunTargetSourceName,
    extractRunTargetSourceNames,
+   extractRunViewCall,
    malloyIdentifiers,
    stripMalloyCommentsAndLiterals,
 } from "./query_text";
@@ -4109,11 +4110,19 @@ export class Model {
       privileges: QueryPrivileges,
       today: { rows: unknown; fields: readonly unknown[] },
    ): Promise<void> {
+      // Names only, never a row, a given or SQL: enough to classify an
+      // outcome from the log, an ad-hoc query's included (its run target,
+      // and the view it calls by name).
+      const call = extractRunViewCall(request.query);
       const where = {
          packageName: this.packageName,
          modelPath: this.modelPath,
-         sourceName: request.sourceName,
+         sourceName:
+            request.sourceName ??
+            call?.source ??
+            extractRunTargetSourceName(request.query),
          queryName: request.queryName,
+         ...(call?.view ? { viewName: call.view } : {}),
       };
       try {
          // No metric of the caller's query is counted again (its security,

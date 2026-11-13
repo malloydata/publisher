@@ -10,7 +10,9 @@
  * in `publisher_v1_served_copy_shadow_total`.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { logger } from "../../../src/logger";
+import { Model } from "../../../src/service/model";
 import { resetMaterializationTelemetryForTesting } from "../../../src/materialization_metrics";
 import {
    startMetricsHarness,
@@ -100,6 +102,65 @@ describe("v1 served copy: shadow", () => {
          const counts = await settled(harness, 1);
          expect(counts.metadata_differ).toBe(1);
       } finally {
+         await loader.dispose();
+      }
+   }, 120_000);
+
+   it("logs a shadow error with the model, source and view, and no row, given or SQL", async () => {
+      const shape = SHAPES.find((s) => s.name === "baseline")!;
+      restore = settings("shadow");
+      await freshLoadPool();
+      const loader = await loadFixture({
+         ...DATA_FILES,
+         ...renderFiles(shape, "storage"),
+      });
+      // The shadow run (the cutover's answer) fails as a bad request would;
+      // the caller's own run is untouched.
+      const proto = Model.prototype as unknown as {
+         runQueryResults: (...args: unknown[]) => Promise<unknown>;
+      };
+      const real = proto.runQueryResults;
+      const runs = spyOn(proto, "runQueryResults").mockImplementation(function (
+         this: unknown,
+         ...args: unknown[]
+      ) {
+         const options = args[3] as { shadowRun?: boolean } | undefined;
+         if (options?.shadowRun) {
+            return Promise.reject(new Error("SELECT secret FROM t"));
+         }
+         return real.apply(this, args);
+      });
+      const info = spyOn(logger, "info");
+      try {
+         const fixture = await loader.bind();
+         answerOf(
+            await fixture.run(
+               Object.keys(shape.files)[0],
+               "run: daily -> by_region",
+            ),
+         );
+         const counts = await settled(harness, 1);
+         expect(counts.error).toBe(1);
+         const calls = info.mock.calls as unknown as [
+            string,
+            Record<string, unknown>?,
+         ][];
+         const call = calls.find(
+            ([message]) => message === "v1 served copy shadow: error",
+         );
+         expect(call).toBeDefined();
+         const fields = call?.[1] ?? {};
+         expect(fields).toMatchObject({
+            modelPath: Object.keys(shape.files)[0],
+            sourceName: "daily",
+            viewName: "by_region",
+         });
+         expect(typeof fields.errorKind).toBe("string");
+         // Names only: never the error's text, which can quote the SQL.
+         expect(JSON.stringify(fields)).not.toContain("secret");
+      } finally {
+         runs.mockRestore();
+         info.mockRestore();
          await loader.dispose();
       }
    }, 120_000);
