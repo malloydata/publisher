@@ -1790,8 +1790,8 @@ export class PackageMaterialization {
          const preview = await model.previewServedCopy?.(bindings);
          for (const id of preview?.rerooted ?? []) rerooted.add(id);
          for (const p of preview?.problems ?? []) {
-            if (p.sourceName && !problems.has(p.sourceName)) {
-               problems.set(p.sourceName, p.reason);
+            if (p.sourceID && !problems.has(p.sourceID)) {
+               problems.set(p.sourceID, p.reason);
             }
          }
       }
@@ -1806,7 +1806,7 @@ export class PackageMaterialization {
             ...v,
             cutoverPath: "live",
             cutoverReason:
-               problems.get(v.sourceName) ?? v.reason ?? "not_rerooted",
+               problems.get(v.sourceID) ?? v.reason ?? "not_rerooted",
          };
       });
    }

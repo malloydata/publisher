@@ -238,6 +238,11 @@ export const SERVED_COPY_WARNING_CODE = "served-copy-not-served";
 
 /** Why a model's served copy, or one source in it, is not served. */
 export interface ServedCopyProblem {
+   /**
+    * The left-out source's identity, when the problem is one source's: what a
+    * caller keys on (the keying rule), never its name.
+    */
+   sourceID?: string;
    /** The source, when the problem is one source's. */
    sourceName?: string;
    reason:
@@ -966,14 +971,22 @@ export class ServedCopyServe {
       const url = def.location?.url;
       const range = def.location?.range;
       if (!url || !range) {
-         problems.push({ sourceName, reason: "no_declaration" });
+         problems.push({
+            sourceName,
+            sourceID: node.sourceID,
+            reason: "no_declaration",
+         });
          return undefined;
       }
       // A table an older build typed reads through a cast in today's serve
       // shape; the served copy does not carry casts yet, so it leaves the
       // source to that shape (or live).
       if (binding.readCasts?.length) {
-         problems.push({ sourceName, reason: "column_types" });
+         problems.push({
+            sourceName,
+            sourceID: node.sourceID,
+            reason: "column_types",
+         });
          return undefined;
       }
       // The author's field of each name: its annotations, and the timeframe a
@@ -1016,7 +1029,11 @@ export class ServedCopyServe {
             // A build that stored a dimension under another name cannot be
             // read back as that field.
             if (type === undefined || c.column !== c.dimension) {
-               problems.push({ sourceName, reason: "column_types" });
+               problems.push({
+                  sourceName,
+                  sourceID: node.sourceID,
+                  reason: "column_types",
+               });
                return undefined;
             }
             const notes = storedColumnNotes(
@@ -1038,7 +1055,11 @@ export class ServedCopyServe {
                j.columns.some((c) => storedMalloyType(c.type) === undefined),
             )
          ) {
-            problems.push({ sourceName, reason: "column_types" });
+            problems.push({
+               sourceName,
+               sourceID: node.sourceID,
+               reason: "column_types",
+            });
             return undefined;
          }
          inlinedJoins = joined;
@@ -1084,7 +1105,11 @@ export class ServedCopyServe {
                  })
                : undefined;
          if (mismatches.length > 0 && !typePlan) {
-            problems.push({ sourceName, reason: "column_types" });
+            problems.push({
+               sourceName,
+               sourceID: node.sourceID,
+               reason: "column_types",
+            });
             return undefined;
          }
          const castTo = new Map(
@@ -1115,14 +1140,22 @@ export class ServedCopyServe {
                };
             });
          if (columns.length === 0) {
-            problems.push({ sourceName, reason: "column_types" });
+            problems.push({
+               sourceName,
+               sourceID: node.sourceID,
+               reason: "column_types",
+            });
             return undefined;
          }
       }
       // A column the `type:` cannot declare faithfully would fail the whole
       // model's copy, not just this source: leave this one to its fallback.
       if (columns.some((c) => storedMalloyType(c.type) === undefined)) {
-         problems.push({ sourceName, reason: "column_types" });
+         problems.push({
+            sourceName,
+            sourceID: node.sourceID,
+            reason: "column_types",
+         });
          return undefined;
       }
       let pair: PairReroot | undefined;
@@ -1138,7 +1171,11 @@ export class ServedCopyServe {
             lane,
          );
          if (!pair) {
-            problems.push({ sourceName, reason: "column_types" });
+            problems.push({
+               sourceName,
+               sourceID: node.sourceID,
+               reason: "column_types",
+            });
             return undefined;
          }
       }
@@ -1486,6 +1523,7 @@ export class ServedCopyServe {
             for (const c of failing) {
                problems.push({
                   sourceName: c.reroot.sourceName,
+                  sourceID: c.reroot.sourceID,
                   reason: "column_types",
                });
                withoutKept.delete(c);
@@ -1541,6 +1579,7 @@ export class ServedCopyServe {
                }
                problems.push({
                   sourceName: c.reroot.sourceName,
+                  sourceID: c.reroot.sourceID,
                   reason: c.reroot.pair
                      ? "pair_not_compiled"
                      : "reroot_not_compiled",
@@ -1755,12 +1794,14 @@ export class ServedCopyServe {
             for (const c of lost) {
                problems.push({
                   sourceName: c.reroot.sourceName,
+                  sourceID: c.reroot.sourceID,
                   reason: "fields_not_carried",
                });
             }
             for (const c of unscoped) {
                problems.push({
                   sourceName: c.reroot.sourceName,
+                  sourceID: c.reroot.sourceID,
                   reason: "read_terms_not_kept",
                });
             }

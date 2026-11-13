@@ -63,6 +63,19 @@ describe("v1 cutover: the dry run's serve path", () => {
       expect(paths.order_facts?.[0]).toBe("served_copy");
    }, 120_000);
 
+   it("says live, with the served copy's reason, for a source it leaves as written", async () => {
+      // A v1 storage= table holds public columns only, so a measure over
+      // the internal column does not compile on it.
+      const paths = await preview(
+         "joined persisted source with hidden fields, from an index",
+         "storage",
+         "cutover",
+      );
+      expect(paths.customer_dim?.[0]).toBe("live");
+      expect(paths.customer_dim?.[1]).toBeDefined();
+      expect(paths.customer_dim?.[1]).not.toBe("not_rerooted");
+   }, 120_000);
+
    it("names the rollup leg for a v1 rollup", async () => {
       const paths = await preview(
          "v1 rollup on annotated measures",
