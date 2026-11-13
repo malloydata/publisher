@@ -87,6 +87,17 @@ source: orders is duckdb.table('orders_src') extend {
 }
 `;
 
+/** A one-hop pair table: its build checks its own primary key first. */
+const PAIR = `source: regions is duckdb.table('regions_src') extend {
+  primary_key: code
+}
+#(materialize) storage="lake" name="orders_t" inline=["regions"]
+source: orders is duckdb.table('orders_src') extend {
+  primary_key: id
+  join_many: regions on regions.code = region
+}
+`;
+
 type Metadata = NonNullable<ReturnType<UniquenessLedger["toMetadata"]>>;
 
 async function scenario(model: string) {
@@ -358,6 +369,30 @@ describe("the inline uniqueness check, skipped only when its table is unchanged"
    );
 
    it(
+      "checks a one-hop pair table's parent key on every build, never relying on its own table",
+      async () => {
+         const s = await scenario(PAIR);
+         const first = await s.run(["orders"]);
+         expect(first.failures).toEqual({});
+         expect(outcomes(first.uniquenessChecks)).toEqual(["orders.:ran"]);
+         expect(first.uniquenessChecks?.passes ?? {}).toEqual({});
+         // Its own table is carried, but that is what the build writes, not
+         // what it reads: the check runs again.
+         const second = await s.run(["orders"]);
+         expect(second.failures).toEqual({});
+         expect(outcomes(second.uniquenessChecks)).toEqual(["orders.:ran"]);
+         // A parent key held twice: caught before the table is written.
+         await s.duckdb.runSQL(
+            "INSERT INTO orders_src VALUES (3, 'west', 7.0)",
+         );
+         await expect(s.run(["orders"])).rejects.toThrow(
+            /keys one row flag on 'id' of 'orders' itself/,
+         );
+      },
+      { timeout: 60000 },
+   );
+
+   it(
       "checks again once a newer run's record is deleted, rather than rely on the pass it hid",
       async () => {
          const s = await scenario(PERSISTED_JOIN);
@@ -467,15 +502,16 @@ describe("which run's passes an auto-run relies on", () => {
    async function relied(runs: Materialization[]) {
       const ctx = createMocks();
       ctx.repository.listMaterializations.resolves(runs);
-      return (
+      const prior = await (
          ctx.service as unknown as {
-            priorUniquenessPasses(
+            priorUniquenessMetadata(
                env: string,
                pkg: string,
                exclude: string,
-            ): Promise<unknown>;
+            ): Promise<Record<string, unknown> | undefined>;
          }
-      ).priorUniquenessPasses("env-1", "pkg", "now");
+      ).priorUniquenessMetadata("env-1", "pkg", "now");
+      return prior ? uniquenessPassesIn(prior) : undefined;
    }
 
    it("relies on the newest run when every other finished before it began", async () => {
@@ -549,13 +585,13 @@ describe("which run's passes an auto-run relies on", () => {
       expect(
          await (
             ctx.service as unknown as {
-               priorUniquenessPasses(
+               priorUniquenessMetadata(
                   env: string,
                   pkg: string,
                   exclude: string,
                ): Promise<unknown>;
             }
-         ).priorUniquenessPasses("env-1", "pkg", "now"),
+         ).priorUniquenessMetadata("env-1", "pkg", "now"),
       ).toBeUndefined();
    });
 });

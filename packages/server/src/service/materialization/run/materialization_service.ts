@@ -55,10 +55,11 @@ import {
 } from "./incremental_build";
 import {
    INLINE_UNIQUENESS_KEY,
+   rollupKeyRecordsIn,
+   uncontestedAutoRun,
    UniquenessLedger,
    uniquenessPassesIn,
    withoutUniquenessPasses,
-   type UniquenessPass,
 } from "./inline_uniqueness";
 import { InstructedBuild, nameViewContext } from "./instructed_build";
 import {
@@ -93,13 +94,6 @@ import {
 } from "./storage_build_strategy";
 import { TableClaims } from "./table_claims";
 import { uncarryUnownedTables } from "./table_ownership";
-
-/** A run that can write nothing more. */
-const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
-   "MANIFEST_FILE_READY",
-   "FAILED",
-   "CANCELLED",
-]);
 
 /**
  * Orchestrates single-call materialization builds: the facade the controller,
@@ -854,6 +848,15 @@ export class MaterializationService {
             );
          }
 
+         // A rollup this run may rewrite in place no longer holds what its
+         // bound key check said (known limitation 29): forget it before any
+         // table is written, so a run that fails part-way never leaves a
+         // check bound over rows it did not read. This run's own commit binds
+         // what it checks.
+         pkg.forgetKeyUniqueness?.(
+            instructions.map((instruction) => instruction.sourceEntityId),
+         );
+
          const {
             entries,
             failures,
@@ -898,16 +901,20 @@ export class MaterializationService {
             // passed. A host's tables are its own.
             orchestrated
                ? undefined
-               : new UniquenessLedger(
-                    opts.forceRefresh
+               : await (async () => {
+                    const prior = opts.forceRefresh
                        ? undefined
-                       : await this.priorUniquenessPasses(
+                       : await this.priorUniquenessMetadata(
                             environmentId,
                             packageName,
                             id,
-                         ),
-                    id,
-                 ),
+                         );
+                    return new UniquenessLedger(
+                       prior ? uniquenessPassesIn(prior) : undefined,
+                       id,
+                       prior ? rollupKeyRecordsIn(prior) : undefined,
+                    );
+                 })(),
          );
 
          const { sourcesBuilt, sourcesFailed, sourcesReused } = tallySources(
@@ -1033,6 +1040,7 @@ export class MaterializationService {
                packageName,
                entries,
                versionId,
+               uniquenessChecks?.rollupKeys,
             );
          }
          if (markedShared && versionId !== undefined) {
@@ -1254,11 +1262,11 @@ export class MaterializationService {
     * over. An orchestrated run before, or any doubt (a run still active, one
     * that overlapped, an unreadable listing), relies on nothing.
     */
-   private async priorUniquenessPasses(
+   private async priorUniquenessMetadata(
       environmentId: string,
       packageName: string,
       excludeId: string,
-   ): Promise<Record<string, UniquenessPass> | undefined> {
+   ): Promise<Record<string, unknown> | undefined> {
       let runs: Materialization[];
       try {
          runs = (
@@ -1274,26 +1282,7 @@ export class MaterializationService {
          );
          return undefined;
       }
-      if (runs.length === 0) return undefined;
-      const at = (d: Date | string | null | undefined) =>
-         d ? new Date(d).getTime() : NaN;
-      const previous = runs.reduce((a, b) =>
-         at(b.createdAt) > at(a.createdAt) ? b : a,
-      );
-      if (
-         previous.status !== "MANIFEST_FILE_READY" ||
-         previous.metadata?.mode !== "auto"
-      ) {
-         return undefined;
-      }
-      const began = at(previous.startedAt ?? previous.createdAt);
-      for (const other of runs) {
-         if (other === previous) continue;
-         if (!TERMINAL_STATUSES.has(other.status)) return undefined;
-         const ended = at(other.completedAt ?? other.updatedAt);
-         if (!(ended <= began)) return undefined;
-      }
-      return uniquenessPassesIn(previous.metadata);
+      return uncontestedAutoRun(runs)?.metadata ?? undefined;
    }
 
    /**

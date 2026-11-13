@@ -199,19 +199,27 @@ export function tableIdentity(physicalTableName: string): string {
 export function storageBindingResolverFor(
    repository: Pick<ResourceRepository, "listMaterializations">,
    environmentId: string,
+   /**
+    * What the bind adds to the entries from the runs they came from: the
+    * rollup key records (known limitation 29, `withRollupKeyRecords`).
+    */
+   annotate?: (
+      entries: Record<string, ManifestEntry>,
+      runs: Materialization[],
+   ) => Record<string, ManifestEntry>,
 ): (
    packageName: string,
    reader: ServingReader,
 ) => Promise<Record<string, ManifestEntry>> {
-   return async (packageName, reader) =>
-      newestServingEntries(
-         await repository.listMaterializations(
-            environmentId,
-            packageName,
-            reader.owned !== undefined ? { version: reader.owned } : undefined,
-         ),
-         reader,
+   return async (packageName, reader) => {
+      const runs = await repository.listMaterializations(
+         environmentId,
+         packageName,
+         reader.owned !== undefined ? { version: reader.owned } : undefined,
       );
+      const entries = newestServingEntries(runs, reader);
+      return annotate ? annotate(entries, runs) : entries;
+   };
 }
 
 /**
