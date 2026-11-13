@@ -36,7 +36,6 @@ import * as os from "os";
 import * as path from "path";
 
 import { components } from "../api";
-import { ConnectionNotFoundError } from "../errors";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
@@ -46,10 +45,7 @@ import {
    type ClosingListener,
 } from "../test_helpers/closing_listener";
 import { installSettings } from "../test_helpers/settings_env";
-import {
-   buildEnvironmentMalloyConfig,
-   restrictMalloyConfigToConnections,
-} from "./connection";
+import { buildEnvironmentMalloyConfig } from "./connection";
 import { Environment } from "./environment";
 import { Model } from "./model";
 import { ServedCopyServe } from "./materialization/serve/served_copy_serve";
@@ -441,33 +437,6 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
          serveSide = String((error as Error).message);
       }
       expect(serveSide).not.toContain(NOT_IN_CONFIG);
-   });
-
-   it("lets a serve shape reach only the destinations its own bindings name", async () => {
-      // The narrowing is derived from the binding set rather than handing over the
-      // whole destination list, so a shape cannot reach a sibling destination it
-      // has no binding for — including one belonging to another package.
-      const environment = makeEnvironment();
-      const destinations = environment.getStorageDestinationMalloyConfig();
-      const narrowed = restrictMalloyConfigToConnections(
-         destinations,
-         new Set([DESTINATION_NAME]),
-      );
-
-      let boundError = "";
-      try {
-         await narrowed.connections.lookupConnection(DESTINATION_NAME);
-      } catch (error) {
-         boundError = String((error as Error).message);
-      }
-      // Delegated: the failure is the unreachable catalog, not the narrowing.
-      expect(boundError).not.toContain("not available to a materialization");
-
-      // The sibling destination is configured on this environment and still out of
-      // reach, because no binding named it.
-      await expect(
-         narrowed.connections.lookupConnection(SHARED_NAME),
-      ).rejects.toThrow(ConnectionNotFoundError);
    });
 
    it("keeps a user connection resolvable under a name a destination also holds", async () => {

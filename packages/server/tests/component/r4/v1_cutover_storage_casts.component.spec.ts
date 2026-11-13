@@ -7,7 +7,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
-import { shadowRowDifference } from "../../../src/service/materialization/serve/v1_shadow";
+import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
 import {
    buildScenario,
    disposeScenarios,
@@ -33,7 +33,7 @@ afterAll(async () => {
 async function expectEqualLive(fixture: R4Fixture, q: R4Query) {
    const run = await fixture.run(q);
    expect(rowDifference(run.live, run.served)).toBeUndefined();
-   expect(shadowRowDifference(run.live, run.served)).toBeUndefined();
+   expect(strictRowDifference(run.live, run.served)).toBeUndefined();
    // G6 (a number's subtype) is accepted, and a nest's reference ids differ
    // per compile: neither is compared.
    const shape = (f: typeof run.liveFields) =>

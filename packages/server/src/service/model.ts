@@ -2669,7 +2669,6 @@ export class Model {
    /** The served copy reading this model's state. */
    private newServedCopy(): ServedCopyServe {
       return new ServedCopyServe({
-         perColumnTypes: () => true,
          // The author's compile of a query, reading no table: what a query
          // over a table with a column left out is checked against.
          authorResultShape: async (queryString, givens) => {
@@ -2920,7 +2919,6 @@ export class Model {
       const copy = new ServedCopyServe({
          modelPath: () => this.modelPath,
          modelDef: () => this.modelDef,
-         perColumnTypes: () => true,
          // Compile-only, as the view preview: a destination's catalog need
          // not exist before the first build.
          serveDestinationConfig: () =>
@@ -2970,7 +2968,6 @@ export class Model {
       const copy = new ServedCopyServe({
          modelPath: () => this.modelPath,
          modelDef: () => this.modelDef,
-         perColumnTypes: () => true,
          quiet: true,
          serveDestinationConfig: () => () =>
             compileOnlyDestinationConfig(destinations()),

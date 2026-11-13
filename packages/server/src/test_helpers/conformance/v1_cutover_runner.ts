@@ -34,9 +34,9 @@
 
 import type { GivenValue } from "@malloydata/malloy";
 import {
-   shadowFieldDifference,
-   shadowRowDifference,
-} from "../../service/materialization/serve/v1_shadow";
+   strictFieldDifference,
+   strictRowDifference,
+} from "./answer_difference";
 import { installSettings } from "../settings_env";
 import {
    type Answer,
@@ -115,12 +115,12 @@ export function classify(
       };
    }
    const path = pathOf(answer.answer);
-   const rows = shadowRowDifference(
+   const rows = strictRowDifference(
       live.answer.rows as Record<string, unknown>[],
       answer.answer.rows as Record<string, unknown>[],
    );
    if (rows) return { c: "wrong_rows", path, detail: rows };
-   const fields = shadowFieldDifference(
+   const fields = strictFieldDifference(
       live.answer.fields.map(asResultField),
       answer.answer.fields.map(asResultField),
    );

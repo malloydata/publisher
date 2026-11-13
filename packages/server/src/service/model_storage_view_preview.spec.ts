@@ -203,7 +203,7 @@ describe("previewing a stored source's views", () => {
          expect(info).not.toHaveBeenCalled();
          expect(
             await harness.collectCounter(
-               "publisher_storage_serve_shape_tier_drop_total",
+               "publisher_storage_bindings_withheld_total",
                {},
             ),
          ).toBe(0);

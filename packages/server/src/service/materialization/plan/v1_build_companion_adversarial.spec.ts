@@ -76,7 +76,6 @@ async function plan(
             runtime: new Runtime({ urlReader: reader(overlay), connections }),
             importBaseURL: base,
          }),
-         synthesized: null,
       });
       return parts;
    } finally {

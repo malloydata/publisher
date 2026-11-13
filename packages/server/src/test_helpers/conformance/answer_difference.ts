@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The v1 cutover's shadow comparison (`PUBLISHER_V1_SERVED_COPY=shadow`,
- * materialization v2 phase 3 pull request 6): a query a retiring v1 path
- * answered (the storage serve shape, the `#@ preaggregate` composite, or
- * Malloy's build manifest on the live compile) is answered again as the
- * cutover would, and the two are compared here.
+ * Where a stored answer differs from live: the comparison the v1 cutover's
+ * conformance runner (`v1_cutover_runner.ts`) asks of each served answer.
+ * It began as the cutover's shadow comparison, which retired with the switch
+ * (6g).
  *
  * Rows are compared as a multiset, each value within a float tolerance (two
  * plans may order ties differently and sum floats in another order). Result
@@ -16,108 +15,10 @@
  * accepted for the cutover) and the `#(malloy)` drill annotations.
  *
  * A difference is described by its place (a row index and column, a field
- * and key), never by a value, since the description is logged.
+ * and key), never by a value.
  */
-
-import { getQueryTimeoutMs } from "../../../config";
-
-/** How many query texts a model remembers having compared. */
-export const SHADOW_SEEN_LIMIT = 1000;
-
-/**
- * How many comparisons run at once on one server; a new query text past it
- * is left uncompared and counted `skipped`.
- */
-export const SHADOW_MAX_IN_FLIGHT = 2;
-
-/** The longest a comparison's run may take, in ms. */
-export const SHADOW_BUDGET_MS = 30_000;
-
-/**
- * Which query texts one model compares, and how many comparisons run at once
- * on the server: a text is compared once (the most recent
- * {@link SHADOW_SEEN_LIMIT} are remembered), and a new one past
- * {@link SHADOW_MAX_IN_FLIGHT} comparisons in flight is skipped, not
- * remembered, so a later run of it is compared.
- */
-export class ShadowScheduler {
-   private static inFlight = 0;
-   private readonly seen = new Set<string>();
-
-   /** For specs: the comparisons running on the server now. */
-   static inFlightForTests(): number {
-      return ShadowScheduler.inFlight;
-   }
-
-   /**
-    * Start `run` for `key` unless it was compared already (`seen`) or the
-    * server is at its cap (`skipped`); `started` otherwise. Never throws, and
-    * `run`'s rejection is the caller's to catch.
-    */
-   schedule(
-      key: string,
-      run: () => Promise<void>,
-   ): "started" | "seen" | "skipped" {
-      if (this.seen.has(key)) return "seen";
-      if (ShadowScheduler.inFlight >= SHADOW_MAX_IN_FLIGHT) return "skipped";
-      if (this.seen.size >= SHADOW_SEEN_LIMIT) {
-         const oldest = this.seen.values().next().value;
-         if (oldest !== undefined) this.seen.delete(oldest);
-      }
-      this.seen.add(key);
-      ShadowScheduler.inFlight++;
-      void run()
-         .catch(() => {})
-         .finally(() => {
-            ShadowScheduler.inFlight--;
-         });
-      return "started";
-   }
-}
-
-/** A comparison's budget: {@link SHADOW_BUDGET_MS}, or the query timeout when shorter. */
-export function shadowBudgetMs(): number {
-   const timeout = getQueryTimeoutMs();
-   return timeout > 0 ? Math.min(timeout, SHADOW_BUDGET_MS) : SHADOW_BUDGET_MS;
-}
-
-/** One side of a comparison. */
-export interface ShadowSide {
-   /** The rows, as `compactResult` carries them. */
-   rows: unknown;
-   /** The result schema's fields (`{ name, type, annotations }`). */
-   fields: readonly unknown[];
-}
-
-export type ShadowOutcome =
-   | "equal"
-   | "live"
-   | "rows_differ"
-   | "metadata_differ";
 
 const FLOAT_TOLERANCE = 1e-9;
-
-/**
- * The outcome of comparing today's answer with the cutover's. `live` when the
- * cutover answered live (no stored table), whatever the rows.
- */
-export function shadowOutcome(
-   today: ShadowSide,
-   cutover: ShadowSide & { servedBy: string | undefined },
-): { outcome: ShadowOutcome; detail?: string } {
-   if (cutover.servedBy === undefined || cutover.servedBy === "live") {
-      return { outcome: "live" };
-   }
-   const rows = shadowRowDifference(asRows(today.rows), asRows(cutover.rows));
-   if (rows) return { outcome: "rows_differ", detail: rows };
-   const fields = shadowFieldDifference(today.fields, cutover.fields);
-   if (fields) return { outcome: "metadata_differ", detail: fields };
-   return { outcome: "equal" };
-}
-
-function asRows(rows: unknown): Record<string, unknown>[] {
-   return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
-}
 
 /**
  * A value in a form that compares exactly: a bigint and a date as text, an
@@ -182,7 +83,7 @@ function sortable(value: unknown): unknown {
 }
 
 /** Where two row sets differ (ignoring order), or undefined when they match. */
-export function shadowRowDifference(
+export function strictRowDifference(
    a: readonly Record<string, unknown>[],
    b: readonly Record<string, unknown>[],
 ): string | undefined {
@@ -238,7 +139,7 @@ function notesOf(field: unknown): string[] {
 }
 
 /** Where two result schemas differ, or undefined when they match. */
-export function shadowFieldDifference(
+export function strictFieldDifference(
    a: readonly unknown[],
    b: readonly unknown[],
 ): string | undefined {

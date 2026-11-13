@@ -4,11 +4,11 @@
 // v1 colocated tables under PUBLISHER_V1_SERVED_COPY=on (and today's `off`
 // for comparison). Each query is answered live before any table is bound,
 // then served, callers interleaved and repeated; the served answer must equal
-// live per caller by the shadow's exact rule, and a refusal must stay a
+// live per caller by the strict comparison, and a refusal must stay a
 // refusal. Wide column types keep their table and live's result types.
 
 import { afterAll, describe, expect, it } from "bun:test";
-import { shadowRowDifference } from "../../../src/service/materialization/serve/v1_shadow";
+import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
 import { DATA_FILES, RAW_MODEL } from "./conformance/data";
 import {
    freshLoadPool,
@@ -55,7 +55,7 @@ async function probe(
             if (!prev) served.set(q.name, out);
             else if ("answer" in prev && "answer" in out) {
                expect(
-                  shadowRowDifference(prev.answer.rows, out.answer.rows),
+                  strictRowDifference(prev.answer.rows, out.answer.rows),
                ).toBeUndefined();
             } else expect("error" in prev).toBe("error" in out);
          }
@@ -79,7 +79,7 @@ function check(
       return;
    }
    if ("error" in s) throw new Error(`served errored: ${s.error}`);
-   expect(shadowRowDifference(l.answer.rows, s.answer.rows)).toBeUndefined();
+   expect(strictRowDifference(l.answer.rows, s.answer.rows)).toBeUndefined();
    if (q.stored !== false) expect(s.answer.servedBy).not.toBe("live");
 }
 

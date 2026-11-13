@@ -91,10 +91,7 @@ import {
    type EligibilityRefusalReason,
 } from "../materialization_metrics";
 import { logger } from "../logger";
-import {
-   type SynthesizedPreaggregation,
-   type SynthesizedRuntimeFactory,
-} from "../service/materialization/plan/preaggregation_compile";
+import { type SynthesizedRuntimeFactory } from "../service/materialization/plan/preaggregation_compile";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
@@ -1212,7 +1209,7 @@ async function prepareForMainThread(
    // A v1 rollup is the rollup leg's (G4), so no composite companion is
    // compiled: null ("no usable rollup") whenever the plan or the main
    // thread would have asked for one, so the plan is still made here.
-   const companion: SynthesizedPreaggregation | null | undefined =
+   const companion: null | undefined =
       (job.withPreaggregateCompanions || wantsPlan) &&
       !load.failed &&
       !pastDeadline()
@@ -1237,7 +1234,6 @@ async function prepareForMainThread(
             malloyModel: model.model,
             runtime: model.runtime,
             getRuntime: companionRuntime,
-            synthesized: companion,
          });
          load.planParts?.set(modelPath, parts);
       } catch (error) {

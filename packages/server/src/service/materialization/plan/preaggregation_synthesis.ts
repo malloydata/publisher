@@ -2,59 +2,25 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Synthesis: turn validated `#@ preaggregate` declarations into a rollup plan and
- * the Malloy text that implements it.
+ * The v1 `#@ preaggregate` planner: turn validated declarations into rollup
+ * plans, one per distinct grain, which the v1 cutover reads into the rollup
+ * leg as `#(preaggregate)` plans (G4) and the build plan builds.
  *
- * ## The shape of the output, and why it is a separate model
- *
- * The synthesized text does not edit the author's model. It is a NEW model that
- * imports the base under an alias, rolls it up, and re-exposes the original name
- * as a composite:
- *
- * ```malloy
- * import { orders__preagg_base is orders } from "orders.malloy"
- *
- * #@ persist
- * source: orders__preagg__category__1a2b3c4d is orders__preagg_base -> {
- *   group_by: category
- *   aggregate: total__partial is total
- * } extend {
- *   measure: total is total__partial.sum()
- * }
- *
- * source: orders is compose(orders__preagg__category__1a2b3c4d, orders__preagg_base)
- * ```
- *
- * Each property is load-bearing:
- *
- *  - **No text surgery.** `import { new is old }` provides the original under
- *    another name, so nothing parses or rewrites the author's source.
- *  - **No discovery leak.** The author's model is untouched, so the model the API
- *    introspects still exports `orders` alone; the rollup exists only in this
- *    second model, compiled for the build plan and the transient serve model.
- *  - **The base's measures are referenced BY NAME** (`total__partial is total`),
- *    never re-printed from IR, so a measure aggregating through a join needs no
- *    special handling and no expression printer can disagree with the compiler.
+ * The composite text it once emitted (an aliased import of the base, the
+ * rollup members and a `compose()` re-exposing the base's name) retired with
+ * the cutover (6g).
  *
  * ## Determinism is a correctness property
  *
- * The build leg and the serve leg each synthesize, so both must produce
- * byte-identical text: the rollup's `sourceEntityId` derives from its compiled
- * definition, and if the legs disagree the serve model binds to a table the
- * build never created and every query silently falls back to live. Hence grain
- * dimensions, measures and plans are sorted, and the name derives from the
- * canonical grain.
+ * A rollup's name and table derive from its plan, so grain dimensions,
+ * measures and plans are sorted, and the name derives from the canonical
+ * grain: two plannings of one model must name the same tables.
  *
- * Pure: takes compiled IR, returns a plan and a string, touches no I/O.
+ * Pure: takes compiled IR, returns plans, touches no I/O.
  */
 
 import { Annotations } from "@malloydata/malloy";
 import { parseRouteTag } from "../../motly";
-import {
-   annotationValue,
-   doubleQuotedString,
-   identifier,
-} from "../../malloy_text";
 import { createHash } from "node:crypto";
 import {
    readPreaggregateAnnotation,
@@ -65,11 +31,8 @@ import {
    type ReaggregateFunction,
 } from "./preaggregation_classifier";
 import { isSpliceableNamespace } from "./preaggregation_namespace";
-import { fieldNotes, noteSource } from "../field_notes";
+import { fieldNotes } from "../field_notes";
 import type { ValidatableSource } from "./preaggregation_validation";
-
-/** The alias the base is imported under, and the last compose() member. */
-const BASE_ALIAS_SUFFIX = "__preagg_base";
 
 /** Suffix on the stored partial-aggregate column for a measure. */
 const PARTIAL_SUFFIX = "__partial";
@@ -115,8 +78,7 @@ export interface RollupPlan {
     * {@link basePersistNamespace} for why a destination cannot usefully be.
     *
     * Mutually exclusive with {@link namespace} (refused at publish as
-    * `namespace_with_storage`); {@link emitRollup} also lets storage win, so a
-    * plan carrying both cannot emit a name the destination has no schema for.
+    * `namespace_with_storage`).
     */
    storage?: string;
    /** The one grain, canonically sorted. */
@@ -169,11 +131,6 @@ export function rollupSourceName(
       .replace(/\./g, "_")
       .slice(0, NAME_SLUG_LIMIT);
    return `${baseSourceName}__preagg__${slug}__${grainDigest(grainDimensions)}`;
-}
-
-/** The alias the author's base source is imported under. */
-export function baseAlias(baseSourceName: string): string {
-   return `${baseSourceName}${BASE_ALIAS_SUFFIX}`;
 }
 
 /**
@@ -366,171 +323,4 @@ export function planSourcePreaggregation(
          measures: [...measures].sort((a, b) => a.name.localeCompare(b.name)),
       }))
       .sort(compareRollupBreadth);
-}
-
-/**
- * Plan every source in a compiled model's contents.
- *
- * Sorted by base source name so the plan — and therefore the synthesized text —
- * does not depend on the order the model happened to declare its sources in.
- */
-export function planModelPreaggregation(
-   contents: Record<string, unknown>,
-): RollupPlan[] {
-   return Object.entries(contents)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .flatMap(([name, object]) => {
-         if (!object || typeof object !== "object") return [];
-         const sourceID = (object as { sourceID?: unknown }).sourceID;
-         if (typeof sourceID !== "string") {
-            return planSourcePreaggregation(name, object as ValidatableSource);
-         }
-         // Named by the base's DECLARED name, not the name this model gives
-         // it: a model that imports `o is orders` plans the same rollup as the
-         // declaring model (one target, one address, one table), and a base
-         // imported under a name another model declares does not collide
-         // with that model's rollup.
-         const declaredName = splitSourceID(sourceID)?.name ?? name;
-         return planSourcePreaggregation(name, object as ValidatableSource).map(
-            (plan) => ({
-               ...plan,
-               rollupSourceName: rollupSourceName(
-                  declaredName,
-                  plan.grainDimensions,
-               ),
-               baseSourceID: sourceID,
-            }),
-         );
-      });
-}
-
-/** A Malloy `sourceID`'s declared name and declaring file, or undefined. */
-function splitSourceID(
-   sourceID: string | undefined,
-): { name: string; url: string } | undefined {
-   // The '@' before the URL's scheme: a backtick name may contain '@'.
-   const match = /^(.+)@([a-z][a-z0-9+.-]*:.*)$/i.exec(sourceID ?? "");
-   return match ? { name: match[1], url: match[2] } : undefined;
-}
-
-/** One rollup's `#@ persist source: …` declaration. */
-function emitRollup(plan: RollupPlan): string {
-   const alias = identifier(baseAlias(plan.baseSourceName));
-   const partials = plan.measures
-      .map((m) => `    ${identifier(m.partialName)} is ${identifier(m.name)}`)
-      .join("\n");
-   // The re-declared measure keeps the base's NAME, so a query asking for
-   // `total` finds it on the member; only the stored column is renamed.
-   // Each merged measure carries the author's measure's notes, so a result
-   // column read from the rollup has the annotations live's does. Notes sit
-   // on the source's `extend`, which the build SQL (and so the BuildID)
-   // never reads.
-   const merged = plan.measures
-      .map(
-         (m) =>
-            // malloy-text: the author's own notes, then the re-aggregate method, a fixed name from RollupPlan (sum, min, max), not a value
-            (m.notes ?? []).map((n) => noteSource(n, "    ")).join("") +
-            `    ${identifier(m.name)} is ${identifier(m.partialName)}.${m.reaggregate}()`,
-      )
-      .join("\n");
-   // The destination is QUOTED: unquoted, the tag parser silently splits at
-   // the first non-identifier character (`storage=my-lake` becomes
-   // `storage="my"` plus a stray `lake` tag).
-   //
-   // A destination wins and takes NO `name=`: placement inside a destination is
-   // derived, and the resolver refuses a dotted `name=` (a fresh catalog has no
-   // schema). Bare is safe because `selfAssignTableName` derives the physical
-   // name from the source name, which carries the grain digest.
-   //
-   // Colocated: `name=` only when a namespace was named or inherited;
-   // otherwise the build self-assigns from the source name.
-   const persist = plan.storage
-      ? `#@ persist storage=${annotationValue(plan.storage)}`
-      : plan.namespace
-        ? `#@ persist name=${annotationValue(`${plan.namespace}.${plan.rollupSourceName}`)}`
-        : "#@ persist";
-   return `${persist}
-source: ${identifier(plan.rollupSourceName)} is ${alias} -> {
-  group_by:
-${plan.grainDimensions.map((d) => `    ${identifier(d)}`).join("\n")}
-  aggregate:
-${partials}
-} extend {
-  measure:
-${merged}
-}`;
-}
-
-/**
- * The synthesized model text for one author model.
- *
- * `importPath` is what the emitted `import` statement resolves against — the
- * author's model as the compiler will see it from the synthesized model's own
- * URL. Returns `undefined` when nothing was declared, so a caller can skip the
- * extra compile entirely rather than compiling a model that adds nothing.
- *
- * `experimentalFlags` are re-declared because `##!` flags do not cross an import:
- * the synthesized model uses `compose()` and `#@ persist` in its own right.
- */
-export function synthesizePreaggregationModel(
-   plans: RollupPlan[],
-   importPath: string,
-   {
-      experimentalFlags = "persistence composite_sources",
-      importPathForFile,
-   }: {
-      experimentalFlags?: string;
-      /**
-       * Where to import a base declared in ANOTHER file, given that file's
-       * URL: a path the synthesized model resolves. Returning undefined, or
-       * no resolver, imports from `importPath`, which is right only for a
-       * base the model declares.
-       */
-      importPathForFile?: (declaringURL: string) => string | undefined;
-   } = {},
-): string | undefined {
-   if (plans.length === 0) return undefined;
-
-   // One import line per base, even when it has several grains.
-   const bases = [...new Set(plans.map((p) => p.baseSourceName))].sort();
-   const imports = bases
-      .map((base) => {
-         const declared = splitSourceID(
-            plans.find((p) => p.baseSourceName === base)?.baseSourceID,
-         );
-         const fromDeclaring = declared && importPathForFile?.(declared.url);
-         // A re-exported base is imported under the name its own file gives
-         // it, which an `index.malloy` rename (`o is orders`) does not change.
-         return fromDeclaring
-            ? `import { ${identifier(baseAlias(base))} is ${identifier(declared.name)} } from ${doubleQuotedString(fromDeclaring)}`
-            : `import { ${identifier(baseAlias(base))} is ${identifier(base)} } from ${doubleQuotedString(importPath)}`;
-      })
-      .join("\n");
-
-   // The base LAST in every compose(), so it is the fallback member: the resolver
-   // takes the first member that covers the query, and the base covers everything.
-   //
-   // A `storage=` rollup is DECLARED above (or it is never built) but is NOT a
-   // member: this composite is the colocated serve path, resolved through the
-   // same-connection manifest, which carries no storage entries. As a member it
-   // would be picked first (narrower grain), find no table, and turn a
-   // colocated table read into a GROUP BY of the base. Filtering members, not
-   // plans, keeps the build building it and both legs' text identical.
-   const composites = bases
-      .map((base) => {
-         const members = plans
-            .filter((p) => p.baseSourceName === base && !p.storage)
-            .map((p) => identifier(p.rollupSourceName));
-         return `source: ${identifier(base)} is compose(${[...members, identifier(baseAlias(base))].join(", ")})`;
-      })
-      .join("\n");
-
-   // malloy-text: experimental flag names, a fixed set the caller passes, not a value
-   return `##! experimental { ${experimentalFlags} }
-${imports}
-
-${plans.map(emitRollup).join("\n\n")}
-
-${composites}
-`;
 }

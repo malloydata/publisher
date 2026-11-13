@@ -22,6 +22,7 @@
  */
 
 import { readFileSync } from "fs";
+import { lazyCounter } from "../../../telemetry";
 import { fileURLToPath } from "url";
 import {
    MalloyError,
@@ -287,6 +288,11 @@ export interface ServedCopyProblem {
 }
 
 /** What the served copy reads from the model that owns it. */
+const staleBindingsWithheld = lazyCounter(
+   "publisher_storage_bindings_withheld_total",
+   "Storage serve bindings withheld from a routed query because the freshness gate found them stale; each one is read live instead. Until now staleness was visible only as a later live read.",
+);
+
 export interface ServedCopyHost {
    modelPath(): string;
    modelDef(): unknown;
@@ -296,14 +302,6 @@ export interface ServedCopyHost {
     * tables are read.
     */
    serveDestinationConfig(): (() => MalloyConfig) | undefined;
-   /**
-    * The v1 cutover's per-column types (G5): a v1 table whose column an
-    * older build typed is re-rooted with that column cast on read when a
-    * cast is faithful, and with it left out (only queries reading it answer
-    * live) when none is, rather than refused whole. Absent or false: the
-    * source is refused (`column_types`), as before the cutover.
-    */
-   perColumnTypes?(): boolean;
    /**
     * The shape ({@link resultShapeOf}) of `queryString`'s result compiled
     * against the author's model, reading no table; undefined when it does
@@ -732,6 +730,14 @@ export class ServedCopyServe {
        */
       graftScope: GraftScope;
    }> {
+      // A stored table past its freshness window is left out of the copy and
+      // read live: counted per query, since a query succeeds either way and
+      // this is how an operator sees the tier degrade.
+      const usable = this.bindings.filter((b) => this.usable(b));
+      const withheld = usable.length - this.freshBindings(Date.now()).length;
+      if (withheld > 0 && !this.host.quiet) {
+         staleBindingsWithheld().add(withheld);
+      }
       return this.answer(await this.ensureCompiled(), queryString, givens);
    }
 
@@ -1396,18 +1402,14 @@ export class ServedCopyServe {
          // one holds what Malloy built, hidden columns too (G2): each is
          // kept with its access modifier, written again on the stored table
          // (P3), so a measure over it compiles and the column stays hidden.
-         // The cutover's per-column handling (G5, review F3); before it, the
-         // v1 path is what it was.
-         const perColumn = this.host.perColumnTypes?.() === true;
-         // Under it, a colocated table's columns are every column it holds,
-         // with no access modifier: the author's own text after the query
-         // (kept whole, `keepsIncludes`) renames, drops and re-hides them.
+         // The cutover's per-column handling (G5, review F3): a colocated
+         // table's columns are every column it holds, with no access
+         // modifier: the author's own text after the query (kept whole,
+         // `keepsIncludes`) renames, drops and re-hides them.
          const named = binding.colocated
-            ? perColumn
-               ? storedColumnsWithAccess(binding.schema, def.fields).map(
-                    ({ name, type }) => ({ name, type }),
-                 )
-               : storedColumnsWithAccess(binding.schema, def.fields)
+            ? storedColumnsWithAccess(binding.schema, def.fields).map(
+                 ({ name, type }) => ({ name, type }),
+              )
             : narrowSchemaToPublic(binding.schema, def.fields);
          // A stored column no field of the source names is one its own
          // `extend` block drops (`except:`, `accept:`) or an `include`
@@ -1415,31 +1417,24 @@ export class ServedCopyServe {
          // author's text compiles and removes it again (review F3). Should
          // the text not remove it, the access check below finds a public
          // field the author's source lacks and leaves the source as written.
-         const narrowed = perColumn
-            ? [...named, ...unnamedStoredColumns(binding.schema, def.fields)]
-            : named;
+         const narrowed = [
+            ...named,
+            ...unnamedStoredColumns(binding.schema, def.fields),
+         ];
          const mismatches = storedColumnTypeMismatches(
             narrowed,
             declaredColumnsOf(def.fields),
          );
          // A column the served copy cannot read as its declared type: cast
          // on read when a cast is faithful, else left out so only a query
-         // reading it answers live (G5, the serve shape's handling, plan
-         // call 4); before the cutover, the whole source is refused.
+         // reading it answers live (G5, the serve shape's handling, which
+         // retired plan call 4).
          const typePlan =
-            mismatches.length > 0 && perColumn
+            mismatches.length > 0
                ? serveTypePlan(mismatches, {
                     queryTimezone: queryTimezoneOf(def),
                  })
                : undefined;
-         if (mismatches.length > 0 && !typePlan) {
-            problems.push({
-               sourceName,
-               sourceID: node.sourceID,
-               reason: "column_types",
-            });
-            return undefined;
-         }
          const castTo = new Map(
             (typePlan?.casts ?? []).map((c) => [
                c.column,
@@ -1456,28 +1451,26 @@ export class ServedCopyServe {
          // that cannot hold a repeated record): left out like a column no
          // type reads, so only a query through it answers live, as the serve
          // shape kept the traversal local.
-         if (perColumn) {
-            const stored = new Set(
-               binding.schema.map((c) => c.name.toLowerCase()),
-            );
-            for (const f of (def.fields ?? []) as {
-               name?: unknown;
-               as?: unknown;
-               join?: unknown;
-               type?: unknown;
-            }[]) {
-               const name = String(f.as ?? f.name ?? "");
-               // A nest is a repeated (or single) record; a join the source
-               // declares (`join_one: c is …`) is never a stored column, and
-               // its re-root keeps it as written.
-               if (
-                  typeof f.join === "string" &&
-                  (f.type === "array" || f.type === "record") &&
-                  name !== "" &&
-                  !stored.has(name.toLowerCase())
-               ) {
-                  columnsLeftOut.push(name);
-               }
+         const stored = new Set(
+            binding.schema.map((c) => c.name.toLowerCase()),
+         );
+         for (const f of (def.fields ?? []) as {
+            name?: unknown;
+            as?: unknown;
+            join?: unknown;
+            type?: unknown;
+         }[]) {
+            const name = String(f.as ?? f.name ?? "");
+            // A nest is a repeated (or single) record; a join the source
+            // declares (`join_one: c is …`) is never a stored column, and
+            // its re-root keeps it as written.
+            if (
+               typeof f.join === "string" &&
+               (f.type === "array" || f.type === "record") &&
+               name !== "" &&
+               !stored.has(name.toLowerCase())
+            ) {
+               columnsLeftOut.push(name);
             }
          }
          // Each with its field's annotations (`#(doc)`, `# label`, `#
@@ -1533,12 +1526,11 @@ export class ServedCopyServe {
          return undefined;
       }
       // A column the `type:` cannot declare faithfully would fail the whole
-      // model's copy, not just this source. Under the v1 cutover's
-      // per-column handling it is left out (a nest a destination stores as a
-      // type Malloy cannot read back, say), so only a query that reads it
-      // answers live, as the serve shape kept it local; otherwise the
-      // source is left to its fallback.
-      if (!plan && this.host.perColumnTypes?.() === true) {
+      // model's copy, not just this source. For a v1 table it is left out
+      // (a nest a destination stores as a type Malloy cannot read back,
+      // say), so only a query that reads it answers live, as the serve
+      // shape kept it local; otherwise the source is left to its fallback.
+      if (!plan) {
          const undeclarable = columns
             .filter((c) => storedMalloyType(c.type) === undefined)
             .map((c) => c.name);
@@ -1616,7 +1608,7 @@ export class ServedCopyServe {
             : {}),
          ...(inlinedJoins.length > 0 ? { inlinedJoins } : {}),
          ...(columnsLeftOut.length > 0 ? { columnsLeftOut } : {}),
-         ...(!plan && this.host.perColumnTypes?.() === true
+         ...(!plan
             ? {
                  keepsIncludes: true as const,
                  dropsUnstoredExcepts: true as const,

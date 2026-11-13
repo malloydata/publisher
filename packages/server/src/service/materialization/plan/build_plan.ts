@@ -47,10 +47,7 @@ import {
    isAuthorizeAttributedToEntryPoint,
 } from "./materialization_eligibility";
 
-import {
-   type SynthesizedPreaggregation,
-   type SynthesizedRuntimeFactory,
-} from "./preaggregation_compile";
+import { type SynthesizedRuntimeFactory } from "./preaggregation_compile";
 import type { RollupPlan } from "./preaggregation_synthesis";
 import {
    materializeRefusalFinding,
@@ -909,11 +906,6 @@ export async function collectModelBuildPlan(
       malloyModel: MalloyModel;
       runtime: Runtime;
       getRuntime: SynthesizedRuntimeFactory;
-      /**
-       * The model's pre-aggregation companion when the caller already compiled
-       * it, or null when it has none; compiled here when absent.
-       */
-      synthesized?: SynthesizedPreaggregation | null;
    },
 ): Promise<void> {
    const {

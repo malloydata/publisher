@@ -18,7 +18,7 @@
 
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { shadowRowDifference } from "../../../src/service/materialization/serve/v1_shadow";
+import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    freshLoadPool,
@@ -486,7 +486,7 @@ source: s is base -> { select: * } extend {
          expect(s.answer.via).toBe("served_copy");
          expect(s.answer.servedBy).not.toBe("live");
          expect(
-            shadowRowDifference(l.answer.rows, s.answer.rows),
+            strictRowDifference(l.answer.rows, s.answer.rows),
          ).toBeUndefined();
          if (c.expect) {
             expect(exact(l.answer.rows, c.expect.column)).toEqual(

@@ -308,7 +308,9 @@ October's in parentheses where comparable.
 (`Model.runQueryResults`) costs per query, in process, on the
 [R4 harness](../packages/server/tests/component/r4/harness.ts)'s real build-and-bind path. It has no
 HTTP, so it isolates the routing from transport. Materialization v2 replaces this chain with a
-variant router, and its phase 1 is held to these numbers. The script is
+variant router, and its phase 1 is held to these numbers. The numbers below were recorded on the
+storage serve shape, which the v1 cutover retired (6g); `storage=` queries are now answered by the
+served copy, so a rerun measures that path instead. The script is
 [`tests/perf/router_bench.ts`](../packages/server/tests/perf/router_bench.ts); `--rows`,
 `--iterations` and `--sources` take `--name value` or `--name=value`.
 

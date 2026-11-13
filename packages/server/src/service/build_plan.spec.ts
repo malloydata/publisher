@@ -178,7 +178,6 @@ source: filtered is duckdb.table('t_env') extend { where: a > 0 }
          getRuntime: () => {
             throw new Error("no pre-aggregation in this model");
          },
-         synthesized: null,
       });
       expect(parts.droppedPersistSources).toEqual([
          { name: "filtered", modelPath: "m.malloy" },
@@ -207,7 +206,6 @@ source: rolled is duckdb.table('t') -> { group_by: a }
          getRuntime: () => {
             throw new Error("no pre-aggregation in this model");
          },
-         synthesized: null,
       });
 
       expect(Object.values(parts.sources).map((src) => src.name)).toEqual([
