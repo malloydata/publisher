@@ -21,6 +21,7 @@ import {
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
+import { registerUniquenessCheckCompiler } from "../run/inline_uniqueness";
 import {
    buildCopyName,
    buildCopyText,
@@ -338,11 +339,21 @@ async function compileCompanion(
    const model = await materializer.getModel();
    // The P8 checks' SQL, compiled now (never run here) so a build runs it
    // against the joined source's connection before it writes anything.
+   // Each check can also be compiled again over a run's manifest, so a run
+   // whose parent build reads the joined source's persisted table checks that
+   // table (inline_uniqueness.ts).
    for (const plan of plans) {
       for (const check of plan.uniquenessChecks ?? []) {
          check.sql = await materializer
             .loadQueryByName(check.queryName)
             .getSQL();
+         registerUniquenessCheckCompiler(
+            check,
+            (buildManifest, connectionDigests) =>
+               materializer
+                  .loadQueryByName(check.queryName)
+                  .getSQL({ buildManifest, connectionDigests }),
+         );
       }
    }
    return {
@@ -547,6 +558,15 @@ async function copyDeclaredBuilds(
 }
 
 /**
+ * The field of the build copy's source a hidden column is read through: an
+ * inlined join's column through its join (the join is what is hidden, and
+ * what the lift must make readable), any other through its own dimension.
+ */
+function liftedName(c: { dimension: string; join?: string }): string {
+   return c.join ?? c.dimension;
+}
+
+/**
  * Give each plan that needs one a build copy of the author's model, whose
  * text is read back here: a plan with given-reading terms (P2), which the
  * copy takes out; an extension table that builds over its parent's build
@@ -682,13 +702,13 @@ async function withBuildCopies(
                   .filter((f) => hiddenAccess(f) === undefined)
                   .map((f) => String(f.as ?? f.name)),
             );
-            if (hidden.some((c) => selectable.has(c.dimension))) {
+            if (hidden.some((c) => selectable.has(liftedName(c)))) {
                lifted = selectable;
             }
          }
       }
       const columns = original.columns.filter(
-         (c) => c.access === undefined || lifted?.has(c.dimension),
+         (c) => c.access === undefined || lifted?.has(liftedName(c)),
       );
       let plan: MaterializePlan =
          columns.length === original.columns.length

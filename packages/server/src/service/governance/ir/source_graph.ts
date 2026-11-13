@@ -375,6 +375,63 @@ function filtersPrefix(base: BaseEdgeDef, ext: BaseEdgeDef): boolean {
    );
 }
 
+/**
+ * What a source adds over a base it extends or renames, read from the
+ * compiled definitions: whether its filters are more than its base's, the
+ * names whose field it holds differently (a `rename:` onto a base name, or a
+ * re-annotated `include:` item), and the fields only it has, in its order.
+ * Read across any number of `extend` hops, since each copies its base's
+ * fields and appends its own filters.
+ */
+export interface SourceDelta {
+   addsFilter: boolean;
+   changed: string[];
+   added: unknown[];
+}
+
+export function sourceDelta(ext: unknown, base: unknown): SourceDelta {
+   const e = (ext ?? {}) as BaseEdgeDef;
+   const b = (base ?? {}) as BaseEdgeDef;
+   const theirs = signaturesByName(b);
+   const changed: string[] = [];
+   const added: unknown[] = [];
+   for (const f of Array.isArray(e.fields) ? e.fields : []) {
+      const name = fieldKeyOf(f);
+      if (name === undefined) continue;
+      const signature = theirs.get(name);
+      if (signature === undefined) added.push(f);
+      else if (signature !== fieldSignature(f)) changed.push(name);
+   }
+   const own = Array.isArray(e.filterList) ? e.filterList.length : 0;
+   const inherited = Array.isArray(b.filterList) ? b.filterList.length : 0;
+   return {
+      addsFilter: own !== inherited || !filtersPrefix(b, e),
+      changed,
+      added,
+   };
+}
+
+/**
+ * The names of the source's own fields a field's value reads directly, from
+ * the compiler's record of its references (a function call records the row
+ * itself, an empty path, which names no field), or undefined when it
+ * recorded none or the field reads a path (a join, a record).
+ */
+export function fieldNameReads(field: unknown): string[] | undefined {
+   const usage = (field as IrField | undefined)?.refSummary?.fieldUsage;
+   if (!Array.isArray(usage)) return undefined;
+   const out: string[] = [];
+   for (const u of usage) {
+      const path = u?.path;
+      if (!Array.isArray(path)) return undefined;
+      // The source's own rows, as an expression's call records them.
+      if (path.length === 0) continue;
+      if (path.length !== 1 || typeof path[0] !== "string") return undefined;
+      if (!out.includes(path[0])) out.push(path[0]);
+   }
+   return out;
+}
+
 /** Per field object, its signature without the parts a `rename:` sets. */
 const renamedSignatures = new WeakMap<object, string>();
 
@@ -842,7 +899,7 @@ function joinReader(def: unknown) {
       return result;
    };
 
-   return { fields, visit, conditionOf };
+   return { fields, visit, conditionOf, readsOf };
 }
 
 /** The joins `def` declares or inherits, in field order. */
@@ -947,6 +1004,28 @@ export function fieldJoinUsage(
       out.set(n, reader.visit(n));
    }
    return out;
+}
+
+/**
+ * The joins `def`'s own `where:` reads, directly or through its fields
+ * (`where: segments.kind = 'p'`, or a dimension that reads one), with
+ * `nested` set when one reaches past a join into a join of the joined
+ * source; undefined when the compiler did not record what a field it reads
+ * uses, so a caller treats it as reading every join.
+ */
+export function filterJoinReads(def: unknown): FieldJoinReads | undefined {
+   const reader = joinReader(def);
+   const filters = ((def as { filterList?: unknown[] } | undefined)
+      ?.filterList ?? []) as { e?: unknown }[];
+   const joins = new Set<string>();
+   let nested = false;
+   for (const f of filters) {
+      const reads = reader.readsOf("", expressionPaths(f.e));
+      if (reads === undefined) return undefined;
+      for (const j of reads.joins) joins.add(j);
+      nested ||= reads.nested;
+   }
+   return { joins, nested };
 }
 
 /**

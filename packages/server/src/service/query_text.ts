@@ -164,6 +164,61 @@ export function extractRunViewCall(query?: string): RunViewCall | undefined {
    };
 }
 
+/** A compiled object's location in its file: zero-based lines and UTF-16 columns. */
+export interface TextRange {
+   start: { line: number; character: number };
+   end: { line: number; character: number };
+}
+
+/**
+ * The text of the definition `name is …` that `range` spans in `fileText`, as
+ * written, or undefined unless it reads as exactly that: the name (backticked
+ * or not), `is`, then a body whose every bracket pairs inside the span. For a
+ * compiled field whose location is its definition (`view: v is { … }` spans
+ * `v is { … }`), so the definition can be compiled again elsewhere.
+ */
+export function definitionTextAt(
+   fileText: string,
+   range: TextRange,
+   name: string,
+): string | undefined {
+   const offsetOf = (at: { line: number; character: number }) => {
+      let offset = 0;
+      for (let line = 0; line < at.line; line++) {
+         const next = fileText.indexOf("\n", offset);
+         if (next < 0) return -1;
+         offset = next + 1;
+      }
+      return offset + at.character;
+   };
+   const from = offsetOf(range.start);
+   const to = offsetOf(range.end);
+   if (from < 0 || to <= from || to > fileText.length) return undefined;
+   const text = fileText.slice(from, to);
+   const tokens = tokenize(stripMalloyCommentsAndLiterals(text));
+   if (
+      tokens.count < 3 ||
+      !isName(tokens, 0) ||
+      textOf(tokens, 0) !== name ||
+      !isWord(tokens, 1, "is")
+   ) {
+      return undefined;
+   }
+   for (let k = 0; k < tokens.count; k++) {
+      if (tokens.kind[k] !== PUNCT) continue;
+      const code = tokens.source.charCodeAt(tokens.start[k]);
+      const bracket =
+         code === 40 ||
+         code === 41 ||
+         code === 91 ||
+         code === 93 ||
+         code === 123 ||
+         code === 125;
+      if (bracket && tokens.partner[k] < 0) return undefined;
+   }
+   return text;
+}
+
 /** Whether tokens `k` and `k + 1` are an adjacent `->`. */
 function arrowAt(tokens: Tokens, k: number): boolean {
    return (
