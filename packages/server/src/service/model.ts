@@ -230,6 +230,7 @@ import {
    type ServedCopyProblem,
 } from "./materialization/serve/served_copy_serve";
 import { type ApiQueryPath } from "./materialization/serve/query_path";
+import { PersistedViewServe } from "./materialization/serve/view_variants";
 import { sourceChain } from "./materialization/plan/source_map";
 import type { ViewServeVerdict } from "./materialization/serve/serve_verdict";
 
@@ -426,6 +427,18 @@ export class Model {
     */
    /** The author sourceIDs a `#(materialize)` build stores (see setServeBindings). */
    private materializeSourceIDs: ReadonlySet<string> = new Set();
+   /**
+    * The `#@ persist` view leg (materialization v2, phase 4, P14): a router
+    * candidate only when `materialize.enabled` is on and a source this model
+    * sees persists a view.
+    */
+   private persistedViews = new PersistedViewServe({
+      modelPath: () => this.modelPath,
+      modelDef: () => this.modelDef,
+      modelMaterializer: () => this.modelMaterializer,
+      serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
+      catalog: () => this.policy.materializedTables(),
+   });
    private servedCopy = new ServedCopyServe({
       modelPath: () => this.modelPath,
       modelDef: () => this.modelDef,
@@ -1375,6 +1388,32 @@ export class Model {
 
    /** {@link manifestIfPersistent}'s answer for the model it was read from. */
    private persistenceFlagMemo?: { modelDef: ModelDef; persistent: boolean };
+
+   /**
+    * `manifest` with the persisted views' table entries removed (see
+    * `liveBuildManifest` in runQueryResults). Undefined when nothing survives.
+    */
+   private withoutPersistedViewEntries(
+      manifest: BuildManifest | undefined,
+   ): BuildManifest | undefined {
+      if (!manifest) return undefined;
+      const views = this.persistedViews.buildSourceIDs();
+      if (views.size === 0) return manifest;
+      const planned = this.policy.materializedTables()?.planned;
+      const ids = new Set(
+         [...views].flatMap((id) => {
+            const entity = planned?.get(id)?.sourceEntityId;
+            return entity === undefined ? [] : [entity];
+         }),
+      );
+      if (ids.size === 0) return manifest;
+      const entries = Object.fromEntries(
+         Object.entries(manifest.entries).filter(([id]) => !ids.has(id)),
+      );
+      return Object.keys(entries).length > 0
+         ? { ...manifest, entries }
+         : undefined;
+   }
 
    /** `includeHidden` lists sources the file does not export, which `queryableSources: "all"` still serves. */
    public getSources(includeHidden = false): ApiSource[] | undefined {
@@ -2769,6 +2808,7 @@ export class Model {
       this.storageServe.setServeDestinationConfig(provider);
       this.servedCopy.invalidate();
       this.rollupVariants.invalidate();
+      this.persistedViews.invalidate();
    }
 
    /**
@@ -2779,10 +2819,50 @@ export class Model {
       packagePath: string,
       malloyConfig: ModelConnectionInput,
       materializePlans: Readonly<Record<string, MaterializePlan>> = {},
+      declarationOf?: (sourceID: string) => unknown,
    ): void {
       this.materializeSourceIDs = new Set(Object.keys(materializePlans));
-      this.servedCopy.setContext(packagePath, malloyConfig, materializePlans);
+      this.servedCopy.setContext(
+         packagePath,
+         malloyConfig,
+         materializePlans,
+         declarationOf,
+      );
+      this.persistedViews.setContext(packagePath, malloyConfig);
       this.rollupVariants.setContext(packagePath, malloyConfig);
+   }
+
+   /**
+    * Whether the router may try the persisted-view leg: a model file, the
+    * materialize switch on, and a persisted view on a source it sees.
+    */
+   private persistedViewsEnabled(): boolean {
+      return (
+         this.modelType === "model" &&
+         !this.isNotebook() &&
+         getMaterializeEnabled() &&
+         this.persistedViews.hasViews()
+      );
+   }
+
+   /**
+    * The persisted views' generated build sources this model can see, by
+    * `sourceID`, with the source and view each stores: the package's serve
+    * verdict reads a view's reach through its source.
+    */
+   public persistedViewBuilds(): {
+      buildSourceID: string;
+      sourceID: string;
+      sourceName: string;
+      viewName: string;
+   }[] {
+      if (!getMaterializeEnabled()) return [];
+      return this.persistedViews.plans().map((p) => ({
+         buildSourceID: p.buildSourceID,
+         sourceID: p.sourceID,
+         sourceName: p.sourceName,
+         viewName: p.viewName,
+      }));
    }
 
    /**
@@ -2848,6 +2928,7 @@ export class Model {
       this.storageServe.invalidateServeShapeCache();
       this.servedCopy.invalidate();
       this.rollupVariants.invalidate();
+      this.persistedViews.invalidate();
    }
 
    /** See {@link StorageServeShape.setServeBindings}. */
@@ -2856,15 +2937,25 @@ export class Model {
       // but only the served copy may read it: the serve shape would rebuild
       // the source over a table that already applied its definition.
       const materialized = this.materializeSourceIDs;
-      this.storageServe.setServeBindings(
-         materialized.size === 0
+      // A persisted view's table holds the view's result, not a source's
+      // rows: only the view leg reads it.
+      const views = this.persistedViews.buildSourceIDs();
+      const others =
+         views.size === 0
             ? bindings
             : bindings.filter(
+                 (b) => !(b.sourceIDs ?? []).some((id) => views.has(id)),
+              );
+      this.storageServe.setServeBindings(
+         materialized.size === 0
+            ? others
+            : others.filter(
                  (b) => !(b.sourceIDs ?? []).some((id) => materialized.has(id)),
               ),
       );
-      this.servedCopy.setBindings(bindings);
+      this.servedCopy.setBindings(others);
       this.rollupVariants.setBindings(bindings);
+      this.persistedViews.setBindings(bindings);
    }
 
    /** See {@link StorageServeShape.storedColumnTypeMismatches}. */
@@ -2894,7 +2985,10 @@ export class Model {
     * {@link StorageServeShape.setServeBindings}).
     */
    public servedStorageSourceNames(): string[] {
-      return this.storageServe.serveBindings.map((b) => b.sourceName);
+      return [
+         ...this.storageServe.serveBindings,
+         ...this.persistedViews.viewBindings(),
+      ].map((b) => b.sourceName);
    }
 
    /**
@@ -3068,8 +3162,11 @@ export class Model {
       // and run all agree on the same freshness substitution.
       const buildManifest = this.resolveFreshBuildManifest();
       // Without rollup entries, for every runnable that is NOT the companion.
+      const viewBuildManifest = this.withoutPreaggregateEntries(buildManifest);
+      // Without persisted-view entries too: only the view leg's variant
+      // imports a view's build source (it carries the persistence flag).
       const liveBuildManifest = this.manifestIfPersistent(
-         this.withoutPreaggregateEntries(buildManifest),
+         this.withoutPersistedViewEntries(viewBuildManifest),
       );
       // See filterGivensToModelSurface. Resolved from the caller's own compiled
       // query, before routing or any graft replaces it.
@@ -3251,6 +3348,9 @@ export class Model {
                preaggServeMaterializer,
                ...(this.rollupVariantsEnabled()
                   ? { rollupVariantsFor: runnable }
+                  : {}),
+               ...(this.persistedViewsEnabled()
+                  ? { persistedViewsFor: runnable }
                   : {}),
             }),
             async () => {
@@ -3443,11 +3543,10 @@ export class Model {
       // The serve shape resolves through `virtualMap` and lacks `##!
       // experimental.persistence`, so it gets no manifest. Only the companion
       // sees the FULL manifest (rollup entries).
-      const effectiveBuildManifest = buildManifestFor(
-         answer,
-         buildManifest,
-         liveBuildManifest,
-      );
+      const effectiveBuildManifest =
+         answer.tier === "view" && !answer.runFailed && !answer.virtualMap
+            ? viewBuildManifest
+            : buildManifestFor(answer, buildManifest, liveBuildManifest);
 
       // Prepare INSIDE the run try/catch, so a given-binding throw at prepare
       // gets the same error mapping as run instead of escaping as a 500.
@@ -3718,6 +3817,7 @@ export class Model {
          viewName: sourceName && queryName ? queryName : undefined,
          freshManifest: buildManifest,
          includeHidden: !!includeHiddenFilesAndSources,
+         ...(this.persistedViewsEnabled() ? { queryString } : {}),
       });
       const servedFrom = servedFromOf(answer);
       audit.servedFrom = servedFrom ?? null;
@@ -3763,6 +3863,7 @@ export class Model {
          storageServe: this.storageServe,
          servedCopy: this.servedCopy,
          rollupVariants: this.rollupVariants,
+         persistedViews: this.persistedViews,
          rollupPlans: () => this.preaggregateRollupPlans,
          modelDef: () => this.modelDef,
          materializedTables: () => this.policy.materializedTables(),

@@ -57,6 +57,8 @@ import {
    type MaterializePlan,
 } from "./build_file_generator";
 import { tryCompileMaterializeCompanion } from "./materialize_compile";
+import { persistedViewRefusalFinding } from "./persisted_view";
+import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
 import { rollingWindowsOf } from "./rolling_window";
 import { tryCompileRollupCompanion } from "./rollup_compile";
 import { rollupRefusalFinding } from "./rollup_plan";
@@ -758,6 +760,106 @@ async function collectGeneratedRollups(
 }
 
 /**
+ * The `#@ persist` views (materialization v2, phase 4, P14) a model declares:
+ * one generated build source per view, planned only in the model that
+ * declares the view's source, so a view is listed once however many models
+ * import it. Each keeps its compiled `sourceID`
+ * (`<source>__<view>__view@<declaring model>.persist-view.malloy`) and is
+ * reported under the declaring model's path. Its gate is its source's,
+ * classified on the author's model, where the source's givens are declared.
+ *
+ * A view whose build reads a given is left out with a warning: its table
+ * would hold one caller's result, served to every caller.
+ */
+async function collectGeneratedPersistedViews(
+   parts: BuildPlanParts,
+   args: {
+      modelPath: string;
+      packagePath: string;
+      getRuntime: SynthesizedRuntimeFactory;
+      malloyModel: MalloyModel;
+      materializer: ModelMaterializer;
+   },
+): Promise<void> {
+   const authorDef: ModelDef = args.malloyModel._modelDef;
+   const { generated, refused } = await tryCompilePersistedViewCompanion({
+      packagePath: args.packagePath,
+      modelPath: args.modelPath,
+      modelDef: authorDef,
+      materializer: args.materializer,
+      getRuntime: args.getRuntime,
+   });
+   for (const refusal of refused) {
+      addAnnotationFinding(
+         parts,
+         persistedViewRefusalFinding(refusal, args.modelPath),
+      );
+   }
+   if (!generated) return;
+   const all = await generated.runtime.getBuildTargets(generated.model);
+   const planByName = new Map(
+      generated.plans.map((p) => [p.buildSourceName, p]),
+   );
+   for (const target of all.connections.flatMap((c) => c.targets)) {
+      if (!target.readsGivens) continue;
+      for (const source of target.sources) {
+         const plan = planByName.get(source.name);
+         if (!plan) continue;
+         addAnnotationFinding(
+            parts,
+            persistedViewRefusalFinding(
+               {
+                  ...plan,
+                  reason:
+                     "its result reads a given, so it differs per caller and a table holds one caller's result",
+               },
+               args.modelPath,
+            ),
+         );
+      }
+   }
+   const targets = {
+      ...all,
+      connections: all.connections.map((c) => ({
+         ...c,
+         targets: c.targets.filter((t) => !t.readsGivens),
+      })),
+   };
+   const givens = Array.from(
+      args.malloyModel.givens.values(),
+   ) as unknown as MalloyGiven[];
+   const deps = createGateClassificationDeps(
+      givens.map(malloyGivenToApi),
+      args.modelPath,
+   );
+   let kept = 0;
+   for (const source of plannedSources(targets)) {
+      const plan = planByName.get(source.name);
+      if (!plan) continue;
+      kept++;
+      parts.sources[source.sourceID] = source;
+      recordTarget(parts, source.sourceID, source);
+      parts.sourceModelPaths[source.sourceID] = args.modelPath;
+      // The view's rows are its source's: its gate is the source's, read on
+      // the author's model, by sourceID (the keying rule).
+      const authorSource = Object.values(authorDef.contents ?? {}).find(
+         (object): object is SourceDef =>
+            isSourceDef(object) && object.sourceID === plan.sourceID,
+      );
+      parts.sourceGateOutcomes[source.sourceID] = authorSource
+         ? await classifyPersistSourceGate(
+              { _sourceDef: authorSource, sourceID: plan.sourceID },
+              authorDef,
+              args.materializer,
+              deps,
+              args.modelPath,
+           )
+         : { classification: "rejected", attributed: false };
+   }
+   if (kept > 0) parts.builds.push(...sourceBuildsOf(targets));
+}
+
+/**
  * Add one compiled `.malloy` model's builds, persist sources, dropped
  * `#@ persist` sources, rollups and gate outcomes to `parts`. `materializer`
  * must be the one that compiled `malloyModel` (gate classification grafts
@@ -858,6 +960,14 @@ export async function collectModelBuildPlan(
    // carries it.
    if (getMaterializeEnabled()) {
       await collectGeneratedMaterialize(parts, {
+         modelPath,
+         packagePath,
+         getRuntime,
+         malloyModel,
+         materializer,
+      });
+      // `#@ persist` on a view (phase 4, P14), under the same switch.
+      await collectGeneratedPersistedViews(parts, {
          modelPath,
          packagePath,
          getRuntime,

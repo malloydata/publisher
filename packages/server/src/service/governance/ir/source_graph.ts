@@ -407,6 +407,30 @@ export function sourceJoins(def: unknown): SourceJoin[] {
    return out;
 }
 
+/**
+ * The joined definition of the first join under `def`, at any depth, whose
+ * joined source is the declaration `sourceID`: what the join holds of it (its
+ * fields and filters, as the joining model compiled them). A model that
+ * reaches a source only through a join (an index importing the file that
+ * joins it) has no other definition of it. Undefined when no join reaches it.
+ */
+export function joinedDefinitionOf(
+   def: unknown,
+   sourceID: string,
+   depth = 0,
+): unknown {
+   if (depth > 16) return undefined;
+   const fields = ((def as { fields?: unknown[] } | undefined)?.fields ??
+      []) as IrField[];
+   for (const f of fields) {
+      if (!isJoin(f)) continue;
+      if ((f as { sourceID?: unknown }).sourceID === sourceID) return f;
+      const deeper = joinedDefinitionOf(f, sourceID, depth + 1);
+      if (deeper !== undefined) return deeper;
+   }
+   return undefined;
+}
+
 /** See {@link SourceJoin.keyColumn}. */
 function joinKeyColumn(join: string, on: unknown): string | undefined {
    const expr = on as IrExpr | undefined;

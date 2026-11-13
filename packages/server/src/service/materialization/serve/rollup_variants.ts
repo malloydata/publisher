@@ -79,9 +79,9 @@ import {
 } from "../../governance/ir/prepared_query";
 import type { BuildManifest } from "../types";
 import { evaluateManifestFreshness } from "../run/freshness";
+import { persistBlankedFiles } from "../persist_blanking";
 import {
    packageRelativeSourceID,
-   persistBlankedFiles,
    rollupCompanionURLOf,
 } from "../plan/rollup_compile";
 import { emitMeasureExpr } from "../plan/rollup_measure_grammar";
@@ -492,7 +492,24 @@ source: ${identifier(localName)} is ${identifier(servedName)}${internalPartials(
                : undefined;
          if (!companion || !text) return { error: "no companion" };
          overlay.set(overlayKey(companion.href), text);
-         const blanked = persistBlankedFiles(this.host.modelDef());
+         // The shared, checked blanking (persist_blanking.ts), read through
+         // the package's own reader, as the build companion reads them.
+         const { runtime: reader } = await createModelRuntime(
+            packagePath,
+            modelPath,
+            packageConfig,
+         );
+         const blanked = await persistBlankedFiles(
+            this.host.modelDef(),
+            async (url) => {
+               try {
+                  const read = await reader.urlReader.readURL(new URL(url));
+                  return typeof read === "string" ? read : read.contents;
+               } catch {
+                  return undefined;
+               }
+            },
+         );
          if (!blanked) return { error: "a `#@` line could not be left out" };
          for (const [url, file] of blanked) overlay.set(url, file);
          const built = `${plan.rollupSourceName}__built`;

@@ -35,7 +35,7 @@ reads it.
 | Joins (relationship, target, added or inherited, cross-connection mark) | PR 3 (rewriter) and PR 4 (joins) |
 | Annotations per segment, origin connection | PR 2 (generator) |
 | Links to stored tables by `(sourceEntityId, destination)`, and a package-wide union by `sourceID` | PR 3, with the router's catalog |
-| Hop readers moved into `governance/ir/source_graph.ts` | Not yet: the rename and pipeline readers live in `source_map.ts` until governance needs them |
+| Hop readers moved into `governance/ir/source_graph.ts` | Not yet: the rename and pipeline readers live in `source_map.ts` until governance needs them. The map still walks the IR itself (`baseEdgeOf`, `pipelineReferences`, `reachableSourceIDs`) and holds no text ranges; moving those walks into `source_graph.ts`, and one reader of author text, are phase 5's simplification pass (decided 2026-11-12) |
 
 ## The keying rule
 
@@ -163,11 +163,12 @@ probe (Evidence 7) showed the consequences the map has to carry:
 - the author's file with such a join does not compile live, so the generator
   plans builds from the file with those joins removed, and the map for build
   planning is built over that compile;
-- the served copy is the compile of record for serving, and the map over it is
-  what the rewriter and router read;
-- a query that reaches a side not yet built is refused from build state (its
-  handle is left out of the `virtualMap`), so the map reports which joins
-  depend on which tables.
+- the build view (the author's text with those joins left out) is the compile
+  of record for discovery and gates, and the served copy is what the rewriter
+  and router read (decided 2026-11-12, #1643);
+- a query that reaches a side not yet built is refused from build state (the
+  join is left out of the served copy while that side is unbuilt, #1643), so
+  the map reports which joins depend on which tables.
 
 ## Who consumes it
 

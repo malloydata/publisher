@@ -532,7 +532,26 @@ function storableDimension(field: FieldLike): string | undefined {
 }
 
 /**
- * The stored columns of a source: its public atomic dimensions, less any
+ * Whether a compiled field is a public array its table can hold as it is: a
+ * persisted query's `nest:` (a repeated record) or an array column the source
+ * reads, neither computed. A declared `join_many:` is the joined source's
+ * type, never `array`, so it is not one.
+ */
+function storableArray(field: FieldLike): string | undefined {
+   if (field.type !== "array" || field.e !== undefined) return undefined;
+   if (isHidden(field)) return undefined;
+   const dimension =
+      typeof field.as === "string"
+         ? field.as
+         : typeof field.name === "string"
+           ? field.name
+           : undefined;
+   return dimension;
+}
+
+/**
+ * The stored columns of a source: its public atomic dimensions and arrays
+ * ({@link storableArray}), less any
  * whose value reads through a join that is not inlined (a reference join is
  * read at query time, so what reads through it is computed at read). A field
  * whose join usage is unknown is stored only when the source has no join.
@@ -550,6 +569,11 @@ export function materializeColumns(
    const perRead = currentTimeFields(def.fields);
    for (const raw of def.fields ?? []) {
       const field = raw as FieldLike;
+      const nested = storableArray(field);
+      if (nested !== undefined) {
+         out.push({ dimension: nested, column: nested, computed: false });
+         continue;
+      }
       const dimension = storableDimension(field);
       if (dimension === undefined) continue;
       if (perRead.has(dimension)) continue;
