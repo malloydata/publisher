@@ -996,6 +996,289 @@ source: orders is orders_raw extend {
    );
 
    it(
+      "inlines a path of join_manys as one pair table, with a row flag per level above the last",
+      async () => {
+         const pkg = await packages.create(`${PAIRED}
+source: picks is duckdb.sql("""
+  select * from (values (10, 1, 'a'), (11, 1, 'b'), (12, 3, 'a')) as t(pick_id, line_id, bin)
+""") extend { primary_key: pick_id }
+source: lines_picked is lines extend {
+  join_many: picks on picks.line_id = line_id
+}
+#(materialize) name="orders_all" storage="lake" inline=["lp", "lp.picks"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lp is lines_picked on lp.order_id = id
+}
+`);
+         const c = await compilePackageBuildPlan(pkg);
+         const [plan] = generatedPlans(c);
+         // `lp` is the start of `lp.picks`, which stores it: one table.
+         expect(plan.pairBlocks).toBeUndefined();
+         expect(plan.pair).toEqual({
+            join: "lp",
+            parentKey: "id",
+            childKey: "line_id",
+            childSourceID: expect.stringMatching(/^lines_picked@/),
+            parentRowColumn: "__parent_row",
+            hops: [
+               {
+                  join: "picks",
+                  key: "pick_id",
+                  sourceID: expect.stringMatching(/^picks@/),
+                  rowColumn: "__child_row",
+               },
+            ],
+         });
+         expect(
+            plan.columns
+               .filter((x) => x.join !== undefined)
+               .map((x) => [x.column, x.path ?? null]),
+         ).toEqual([
+            ["lp__line_id", null],
+            ["lp__order_id", null],
+            ["lp__qty", null],
+            ["lp__big_line", null],
+            ["lp__picks__pick_id", ["lp", "picks"]],
+            ["lp__picks__line_id", ["lp", "picks"]],
+            ["lp__picks__bin", ["lp", "picks"]],
+         ]);
+         const [sourceID, source] = Object.entries(c.sources).find(
+            ([, s]) => s.name === "orders",
+         )!;
+         const sql = buildSQLOf(source, { entries: {} }, c.targets?.[sourceID]);
+         const duckdb = await pkg.getMalloyConnection("duckdb");
+         const rows = (
+            await duckdb.runSQL(
+               `SELECT id, lp__line_id AS l, lp__picks__pick_id AS p, __parent_row AS pr, __child_row AS cr FROM (${sql}) t ORDER BY id, l, p`,
+            )
+         ).rows.map((r) => [
+            Number(r.id),
+            r.l === null ? null : Number(r.l),
+            r.p === null ? null : Number(r.p),
+            r.pr,
+            r.cr,
+         ]);
+         // Line 1 has two picks, line 2 none, line 3 one; order 3 no line.
+         expect(rows.map(([id, l, p]) => [id, l, p])).toEqual([
+            [1, 1, 10],
+            [1, 1, 11],
+            [1, 2, null],
+            [2, 3, 12],
+            [3, null, null],
+         ]);
+         for (const id of [1, 2, 3]) {
+            expect(
+               rows.filter((r) => r[0] === id && r[3] === true),
+            ).toHaveLength(1);
+         }
+         // One child-row flag per order and line, a childless order's row
+         // included.
+         for (const [id, line] of [
+            [1, 1],
+            [1, 2],
+            [2, 3],
+            [3, null],
+         ]) {
+            expect(
+               rows.filter(
+                  (r) => r[0] === id && r[1] === line && r[4] === true,
+               ),
+            ).toHaveLength(1);
+         }
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "stores two join_manys as two blocks of one table, each the rows of its own pair table",
+      async () => {
+         const pkg = await packages.create(`${PAIRED}
+source: notes is duckdb.sql("""
+  select * from (values (7, 1, 'late'), (8, 2, 'gift'), (9, 2, 'late')) as t(note_id, order_id, topic)
+""") extend { primary_key: note_id }
+#(materialize) name="orders_all" storage="lake" inline=["lines", "notes"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+  join_many: notes on notes.order_id = id
+}
+`);
+         const c = await compilePackageBuildPlan(pkg);
+         const [plan] = generatedPlans(c);
+         expect(plan.pair?.join).toBe("lines");
+         expect(plan.pairBlocks).toEqual({
+            blocks: [
+               expect.objectContaining({ join: "lines" }),
+               expect.objectContaining({ join: "notes" }),
+            ],
+            laneColumn: "__pair_lane",
+            connection: "duckdb",
+            columnTypes: {
+               lines__line_id: "number",
+               lines__order_id: "number",
+               lines__qty: "number",
+               lines__big_line: "boolean",
+               notes__note_id: "number",
+               notes__order_id: "number",
+               notes__topic: "string",
+            },
+            levels: 1,
+         });
+         const [sourceID, source] = Object.entries(c.sources).find(
+            ([, s]) => s.name === "orders",
+         )!;
+         const sql = buildSQLOf(source, { entries: {} }, c.targets?.[sourceID]);
+         const duckdb = await pkg.getMalloyConnection("duckdb");
+         const rows = (
+            await duckdb.runSQL(
+               `SELECT __pair_lane AS b, id, lines__line_id AS l, notes__note_id AS n, __parent_row AS pr FROM (${sql}) t ORDER BY b, id, l, n`,
+            )
+         ).rows.map((r) =>
+            [r.b, r.id, r.l, r.n].map((v) => (v === null ? null : Number(v))),
+         );
+         // Block 0 is the lines pair table, block 1 the notes one; neither
+         // pairs a line with a note.
+         expect(rows).toEqual([
+            [0, 1, 1, null],
+            [0, 1, 2, null],
+            [0, 2, 3, null],
+            [0, 3, null, null],
+            [1, 1, null, 7],
+            [1, 2, null, 8],
+            [1, 2, null, 9],
+            [1, 3, null, null],
+         ]);
+         const flagged = (
+            await duckdb.runSQL(
+               `SELECT __pair_lane AS b, count(*) AS n FROM (${sql}) t WHERE __parent_row GROUP BY 1 ORDER BY 1`,
+            )
+         ).rows.map((r) => [Number(r.b), Number(r.n)]);
+         // One parent row per order in each block.
+         expect(flagged).toEqual([
+            [0, 3],
+            [1, 3],
+         ]);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "checks a path's and a block table's keys before each build: unique and never null at every level above the leaf",
+      async () => {
+         const model = (lines: string, orders = "orders_raw") => `${BASE}
+source: lines is duckdb.sql("""
+  select * from (values ${lines}) as t(line_id, order_id, qty)
+""") extend { primary_key: line_id }
+source: picks is duckdb.sql("""
+  select * from (values (10, 1, 'a'), (11, 1, 'b'), (12, 3, 'a')) as t(pick_id, line_id, bin)
+""") extend { primary_key: pick_id }
+source: lines_picked is lines extend {
+  join_many: picks on picks.line_id = line_id
+}
+source: notes is duckdb.sql("""
+  select * from (values (7, 1, 'late'), (8, 2, 'gift')) as t(note_id, order_id, topic)
+""") extend { primary_key: note_id }
+#(materialize) name="orders_hop" storage="lake" inline=["lp.picks"]
+source: orders_hop is ${orders} extend {
+  primary_key: id
+  join_many: lp is lines_picked on lp.order_id = id
+}
+#(materialize) name="orders_blocks" storage="lake" inline=["lines", "notes"]
+source: orders_blocks is ${orders} extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+  join_many: notes on notes.order_id = id
+}
+#(materialize) name="orders_one" storage="lake" inline=["lines"]
+source: orders_one is ${orders} extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+}
+`;
+         const plansOf = async (text: string) => {
+            const pkg = await packages.create(text);
+            const c = await compilePackageBuildPlan(pkg);
+            const byName = new Map(
+               generatedPlans(c).map((p) => [p.sourceName, p]),
+            );
+            return { byName, duckdb: await pkg.getMalloyConnection("duckdb") };
+         };
+         const clean = await plansOf(
+            model("(1, 1, 2.0), (2, 1, 3.0), (3, 2, 4.0)"),
+         );
+         // The path checks the source's key and the middle level's; the
+         // leaf needs none. The block table checks the source's key (each
+         // block's child is its leaf). A one-hop table checks nothing.
+         expect(
+            clean.byName
+               .get("orders_hop")
+               ?.uniquenessChecks?.map((x) => [
+                  x.pairLevel,
+                  x.join,
+                  x.keyColumn,
+               ]),
+         ).toEqual([
+            [0, "", "id"],
+            [1, "lp", "line_id"],
+         ]);
+         expect(
+            clean.byName
+               .get("orders_blocks")
+               ?.uniquenessChecks?.map((x) => [
+                  x.pairLevel,
+                  x.join,
+                  x.keyColumn,
+               ]),
+         ).toEqual([[0, "", "id"]]);
+         expect(
+            clean.byName.get("orders_one")?.uniquenessChecks,
+         ).toBeUndefined();
+         for (const name of ["orders_hop", "orders_blocks"]) {
+            await assertInlinedJoinsUnique(
+               clean.byName.get(name),
+               clean.duckdb,
+            );
+         }
+         // A middle key held twice, or null, fails the path's build.
+         for (const lines of [
+            "(1, 1, 2.0), (1, 1, 3.0), (3, 2, 4.0)",
+            "(1, 1, 2.0), (NULL, 1, 3.0), (3, 2, 4.0)",
+         ]) {
+            const bad = await plansOf(model(lines));
+            await expect(
+               assertInlinedJoinsUnique(
+                  bad.byName.get("orders_hop"),
+                  bad.duckdb,
+               ),
+            ).rejects.toThrow(
+               /keys one row flag on 'line_id' of the source 'lp'/,
+            );
+            await assertInlinedJoinsUnique(
+               bad.byName.get("orders_blocks"),
+               bad.duckdb,
+            );
+         }
+         // A null source key fails both.
+         const nullParent = await plansOf(
+            model(
+               "(1, 1, 2.0), (2, 1, 3.0), (3, 2, 4.0)",
+               "orders_raw extend { dimension: id2 is pick null when id = 3 else id } -> { select: id is id2, region, amount, order_date }",
+            ),
+         );
+         for (const name of ["orders_hop", "orders_blocks"]) {
+            await expect(
+               assertInlinedJoinsUnique(
+                  nullParent.byName.get(name),
+                  nullParent.duckdb,
+               ),
+            ).rejects.toThrow(/keys one row flag on 'id' of '.*' itself/);
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
       "stores a many-to-many pair once per pair, and flags each parent once",
       async () => {
          const pkg = await packages.create(`${BASE}
@@ -1064,14 +1347,73 @@ source: orders is orders_raw extend {
          /joins of its own/,
       ],
       [
-         "two join_manys",
-         `#(materialize) name="orders_all" storage="lake" inline=["lines", "l2"]
+         "two paths through one join that part",
+         `source: picks is duckdb.sql("""select 1 as pick_id, 1 as line_id""") extend { primary_key: pick_id }
+source: packs is duckdb.sql("""select 1 as pack_id, 1 as line_id""") extend { primary_key: pack_id }
+source: lines_two is lines extend {
+  join_many: picks on picks.line_id = line_id
+  join_many: packs on packs.line_id = line_id
+}
+#(materialize) name="orders_all" storage="lake" inline=["lt.picks", "lt.packs"]
 source: orders is orders_raw extend {
   primary_key: id
-  join_many: lines on lines.order_id = id
-  join_many: l2 is lines on l2.order_id = id
+  join_many: lt is lines_two on lt.order_id = id
 }`,
-         /more than one join_many/,
+         /two paths through `lt` that part/,
+      ],
+      [
+         "a path through a join_one",
+         `source: lines_one is lines extend {
+  join_one: o is orders_raw extend { primary_key: id } on o.id = order_id
+}
+#(materialize) name="orders_all" storage="lake" inline=["lo.o"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lo is lines_one on lo.order_id = id
+}`,
+         /a path through a join_one/,
+      ],
+      [
+         "a path whose middle source has a join off the path",
+         `source: picks is duckdb.sql("""select 1 as pick_id, 1 as line_id""") extend { primary_key: pick_id }
+source: lines_off is lines extend {
+  join_many: picks on picks.line_id = line_id
+  join_one: o is orders_raw extend { primary_key: id } on o.id = order_id
+}
+#(materialize) name="orders_all" storage="lake" inline=["lf.picks"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lf is lines_off on lf.order_id = id
+}`,
+         /joins off the path \(`o`\)/,
+      ],
+      [
+         "a path with no primary key at its second join",
+         `source: picks_raw is duckdb.sql("""select 1 as pick_id, 1 as line_id""")
+source: lines_unkeyed is lines extend {
+  join_many: picks_raw on picks_raw.line_id = line_id
+}
+#(materialize) name="orders_all" storage="lake" inline=["lu.picks_raw"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lu is lines_unkeyed on lu.order_id = id
+}`,
+         /primary key of `picks_raw`'s joined source/,
+      ],
+      [
+         "two join_manys with a level flag that clashes with a dimension",
+         `source: picks is duckdb.sql("""select 1 as pick_id, 1 as line_id""") extend { primary_key: pick_id }
+source: lines_picked is lines extend {
+  join_many: picks on picks.line_id = line_id
+}
+#(materialize) name="orders_all" storage="lake" inline=["lp.picks", "l2"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lp is lines_picked on lp.order_id = id
+  join_many: l2 is lines on l2.order_id = id
+  dimension: __pair_lane is amount * 2
+}`,
+         /`__pair_lane` column/,
       ],
       [
          "a join_many whose watermark column clashes with a dimension",
@@ -1312,6 +1654,55 @@ source: orders is orders_raw extend {
                ["materialize-pair-full-refresh", "unservable", "orders"],
             ]);
             expect(findings[0].message).toMatch(why);
+         },
+         { timeout: 30000 },
+      );
+   }
+
+   for (const [name, declaration, why] of [
+      [
+         "a path of join_manys",
+         `source: picks is duckdb.sql("""select 1 as pick_id, 1 as line_id""") extend { primary_key: pick_id }
+source: lines_picked is lines extend {
+  join_many: picks on picks.line_id = line_id
+}
+#(materialize) name="orders_all" storage="lake" inline=["lp.picks"] refresh="incremental" watermark="order_date"
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lp is lines_picked on lp.order_id = id
+}`,
+         /a path of join_manys/,
+      ],
+      [
+         "two join_manys",
+         `#(materialize) name="orders_all" storage="lake" inline=["lines", "l2"] refresh="incremental" watermark="order_date"
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+  join_many: l2 is lines on l2.order_id = id
+}`,
+         /more than one inlined join_many/,
+      ],
+   ] as const) {
+      it(
+         `rebuilds in full, with a coded warning, an incremental pair table of ${name}`,
+         async () => {
+            const c = await compiled(`${PAIRED}
+${declaration}
+`);
+            const [plan] = generatedPlans(c);
+            expect(plan.pair).toBeDefined();
+            expect(plan.pair?.watermark).toBeUndefined();
+            expect(plan.pairFullRefresh).toMatch(why);
+            for (const key of ["refresh", "watermark", "merge_key"]) {
+               expect(plan.persist[key]).toBeUndefined();
+            }
+            const findings = (c.annotationFindings ?? []).filter((f) =>
+               f.code.startsWith("materialize-"),
+            );
+            expect(findings.map((f) => [f.code, f.subject])).toEqual([
+               ["materialize-pair-full-refresh", "orders"],
+            ]);
          },
          { timeout: 30000 },
       );
