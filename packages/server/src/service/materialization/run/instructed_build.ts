@@ -56,7 +56,10 @@ import {
    RefusedSource,
    SourceFailure,
 } from "../types";
-import type { IncrementalRunContext } from "./incremental_build";
+import {
+   sourceIncrementalRefresh,
+   type IncrementalRunContext,
+} from "./incremental_build";
 import {
    assertInstructedDestinationWritable,
    assertNoTableCollisions,
@@ -112,6 +115,12 @@ import {
    type OwnedTableTarget,
 } from "./table_ownership";
 import type { SourceBuilder } from "./source_build";
+import {
+   buildKindOf,
+   buildTierOf,
+   reportSourceBuilt,
+   reportSourceRefused,
+} from "./run_telemetry";
 
 /** sourceID -> the sourceIDs it reads, merged across every connection's build. */
 function upstreamsBySourceID(
@@ -304,6 +313,7 @@ export class InstructedBuild {
          nameViewOwnTables: new Map(),
          replacedNameViews: [],
          ...(uniqueness ? { uniqueness } : {}),
+         signal,
       };
       run.ownNameTableAt = this.ownNameTableLookup(run);
       run.otherRunActive = this.otherRunActiveLookup(run);
@@ -674,6 +684,9 @@ export class InstructedBuild {
       );
       let replacedView: { target: string } | undefined;
       let entry;
+      // Set once the build itself starts: a source that fails before it
+      // (ownership, uniqueness, a name preflight) ran no build to time.
+      let buildStartedAt: number | undefined;
       // Held from the ownership check until the mark is written, so another
       // package building the same `name=` at once waits, then sees the mark.
       let releaseOwnedName: (() => void) | undefined;
@@ -790,6 +803,7 @@ export class InstructedBuild {
             }
          }
 
+         buildStartedAt = performance.now();
          entry = await this.seams.buildOneSource(
             persistSource,
             instruction,
@@ -838,12 +852,43 @@ export class InstructedBuild {
             instruction,
             sourceEntityId,
             buildErr,
+            {
+               kind: buildKindOf(compiled, persistSource.sourceID),
+               tier: buildTierOf(instruction),
+               // The method the build would have taken: a delta for a source
+               // whose incremental refresh this run can act on.
+               method:
+                  sourceIncrementalRefresh(run.incremental, persistSource, {
+                     physicalTableName: instruction.physicalTableName,
+                     storageDestinationName: instruction.destination,
+                     sourceEntityId,
+                  }) !== undefined
+                     ? "delta"
+                     : "full",
+               ...(buildStartedAt !== undefined
+                  ? {
+                       durationMs: Math.round(
+                          performance.now() - buildStartedAt,
+                       ),
+                    }
+                  : {}),
+            },
          );
          return;
       } finally {
          releaseOwnedName?.();
       }
       run.builtSources.push(persistSource.name);
+      reportSourceBuilt(
+         {
+            kind: buildKindOf(compiled, persistSource.sourceID),
+            tier: entry.storageDestinationName ? "storage" : "colocated",
+            sourceEntityId,
+            sourceName: persistSource.name,
+            physicalTableName: instruction.physicalTableName,
+         },
+         entry,
+      );
       run.entries[sourceEntityId] = entry;
       run.builtAddresses.add(sourceEntityId);
       // A rollup a join_one reads through its key (known limitation 29):
@@ -1133,6 +1178,10 @@ function recordPendingRefusal(
 ): void {
    const reason = errMessage(err);
    run.refusals.push(err);
+   reportSourceRefused(
+      buildKindOf(run.compiled, persistSource.sourceID),
+      buildTierOf(instruction),
+   );
    run.failedBySourceID.set(persistSource.sourceID, {
       name: persistSource.name,
       reason,

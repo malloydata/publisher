@@ -21,6 +21,7 @@ import {
 import { errMessage } from "../../../utils";
 import { MaterializationStatus } from "../types";
 import { VALID_TRANSITIONS } from "./materialization_run_support";
+import { runFailureReported } from "./run_telemetry";
 
 /**
  * A run's state machine and its life in this process: every status change goes
@@ -135,8 +136,12 @@ export class RunLifecycle {
             const cancelled = abortController.signal.aborted;
             const next = cancelled ? "CANCELLED" : "FAILED";
             // A background throw answers no request, so log it (with the stack)
-            // or it is invisible in the server's output.
-            if (cancelled) {
+            // or it is invisible in the server's output, unless the run's own
+            // `materialization.run.finished` reported it already, with its
+            // code; the message is on the run's record either way.
+            if (runFailureReported(err)) {
+               // Logged once already, by the run.
+            } else if (cancelled) {
                // An abort racing a genuine failure records "Cancelled"; this log
                // is then the only place the real error appears.
                logger.info("Materialization run cancelled", {
