@@ -441,3 +441,135 @@ for (const gated of [true, false]) {
       }
    });
 }
+
+/**
+ * An author's `rename:` beside a stored hidden timeframe field or a hidden
+ * inlined join: the re-root hides their stored columns with labelled renames
+ * in its first block, not an `include`, since Malloy refuses a `rename:` in
+ * the block just after an include and the served copy (every source in the
+ * model) would not compile. Each source answers from storage with live's
+ * rows, a source beside them too, and every refusal holds.
+ */
+describe("R4: hidden timeframe fields and hidden joins beside an author's rename", () => {
+   const renameSeed = [
+      ...seedSql,
+      `CREATE TABLE regions AS SELECT * FROM (VALUES
+         ('east', 'East'), ('west', 'West')
+       ) AS t(code, label)`,
+   ];
+   const renameBase = `##! experimental { access_modifiers }
+
+source: regions is duckdb.table('regions') extend { primary_key: code }
+
+source: tbase is duckdb.table('orders') extend {
+  internal dimension: order_month is ordered_at.month
+}
+`;
+   const renameModel = `##! experimental { access_modifiers }
+import "base.malloy"
+
+#(materialize) storage="lake"
+source: renamed is tbase extend {
+  rename: amt is amount
+  measure: total is amt.sum()
+  view: by_month is { group_by: order_month; aggregate: total }
+}
+
+#(materialize) storage="lake" inline=["r"]
+source: renamed_join is duckdb.table('orders') extend {
+  rename: amt is amount
+  internal join_one: r is regions with region
+  dimension: region_label is r.label
+  measure: total is amt.sum()
+}
+
+#(materialize) storage="lake"
+source: beside is duckdb.table('orders') extend {
+  measure: total is amount.sum()
+}
+`;
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": renameModel, "base.malloy": renameBase },
+         seedSql: renameSeed,
+         materialize: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("compiles the served copy with every source re-rooted", async () => {
+      expect(await fixture.servedCopyProblems()).toEqual([]);
+   });
+
+   for (const [name, malloy] of [
+      ["the source beside them", "run: beside -> { aggregate: total }"],
+      ["the author's view over the timeframe", "run: renamed -> by_month"],
+      [
+         "a caller's extend over the internal timeframe field",
+         "run: renamed extend { dimension: m is order_month } -> { group_by: m; aggregate: total }",
+      ],
+      [
+         "the author's dimension over the internal join",
+         "run: renamed_join -> { group_by: region_label; aggregate: total }",
+      ],
+      [
+         "a caller's extend over the internal join",
+         "run: renamed_join extend { dimension: l is r.label } -> { group_by: l; aggregate: total }",
+      ],
+   ] as const) {
+      it(`answers ${name} from storage with live's rows`, async () => {
+         const run = await fixture.run({ name, malloy });
+         expect(run.live.length).toBeGreaterThan(0);
+         expect(run.servedFrom).toBe("storage");
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+      });
+   }
+
+   for (const [name, malloy] of [
+      [
+         "the internal timeframe field",
+         "run: renamed -> { group_by: order_month }",
+      ],
+      [
+         "its stored column through a caller extend",
+         "run: renamed extend { dimension: x is order_month__stored } -> { group_by: x }",
+      ],
+      [
+         "its stored column made public by a caller include",
+         "run: renamed include { public: order_month__stored } -> { group_by: order_month__stored }",
+      ],
+      [
+         "the internal join's field",
+         "run: renamed_join -> { group_by: r.label }",
+      ],
+      [
+         "the join's stored column through a caller extend",
+         "run: renamed_join extend { dimension: x is r__label__stored } -> { group_by: x }",
+      ],
+   ] as const) {
+      it(`refuses ${name}, from the served copy as from live`, async () => {
+         fixture.setBindings([]);
+         expect(await failure(() => fixture.runAsIs(malloy))).toBeDefined();
+         const copy = await failure(async () => {
+            const { runnable, virtualMap } = await fixture
+               .servedCopy()
+               .loadQuery(malloy, {});
+            await runnable.getSQL({ virtualMap } as never);
+         });
+         expect(copy).toBeDefined();
+         fixture.setBindings(fixture.bindings);
+         const served = await failure(() => fixture.runAsIs(malloy));
+         expect(served).toBeDefined();
+         expect(String(served)).not.toMatch(HIDDEN_VALUES);
+         expect(String(served)).not.toMatch(/East|West/);
+      });
+   }
+});

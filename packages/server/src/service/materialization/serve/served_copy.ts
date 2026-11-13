@@ -55,6 +55,7 @@ import {
    statementStarts,
 } from "../malloy_lexer";
 import {
+   accessLabel,
    dropJoinDefinition,
    inlinedJoinRenames,
    inlinedJoinStatements,
@@ -604,14 +605,19 @@ export function rerootDeclaration(
    // The author's access modifiers written again on the stored hidden
    // columns (P3), on the stored table under its stored names, so before the
    // inverse renames and every kept block (an ancestor's, P10, and the
-   // author's own), which read them as they read the author's fields. When
-   // the re-root writes that `include`, or hides a stored column under an
-   // internal name, every internal name is renamed ahead of the include,
-   // which then hides it ({@link renameAccess}): Malloy refuses a rename in
-   // the block just after an include.
-   const ahead =
-      columns.some((c) => c.access !== undefined) ||
-      generated.some((g) => g.access === "private");
+   // author's own), which read them as they read the author's fields. Only a
+   // hidden column kept under its own name needs that `include`: when the
+   // re-root writes one, every internal name is renamed ahead of it and the
+   // include hides it ({@link renameAccess}), since Malloy refuses a rename
+   // in the block just after an include. A hidden timeframe column or a
+   // hidden join's columns alone are hidden by labelled renames in the first
+   // block (`private rename:`) instead, so an author's `rename:` (and the
+   // inverse block before it) still compiles; an include there would refuse
+   // it, and with it the whole model's served copy.
+   const ahead = columns.some(
+      (c) =>
+         c.access !== undefined && !timeframed.some((t) => t.name === c.name),
+   );
    let extend = servedExtend(kept, r.storedDimensions, timeframed, !ahead);
    if (extend === undefined) return undefined;
    if (inlined.length > 0) {
@@ -881,18 +887,6 @@ function timeframeExpression(c: Timeframed): string {
    return `${identifier(c.internalName)}.${c.timeframe}`;
 }
 
-/** A statement's access label, as Malloy text: empty for a public one. */
-function accessPrefix(access: "private" | "internal" | undefined): string {
-   switch (access) {
-      case "private":
-         return "private ";
-      case "internal":
-         return "internal ";
-      default:
-         return "";
-   }
-}
-
 /**
  * The statements that open the first extend block: with `withRenames`, the
  * internal renames ({@link labelledRenames}), and a `dimension:` for each
@@ -902,8 +896,9 @@ function accessPrefix(access: "private" | "internal" | undefined): string {
  *
  * A hidden field (P3) is redefined under the author's modifier, and its
  * stored column's internal name is `private` ({@link renameAccess}), so no
- * caller reaches it by any path; the re-root then renames it ahead of the
- * `include` that hides it, and `withRenames` is false. A public field's stored
+ * caller reaches it by any path (a `private rename:` here, or, when the
+ * re-root writes an `include` for other hidden columns, a rename ahead of it
+ * that the include hides, and `withRenames` is false). A public field's stored
  * column is renamed `internal`, so no `select:` reaches it.
  */
 function timeframeStatements(
@@ -930,7 +925,7 @@ function timeframeStatements(
                `    ${identifier(c.name)} is ${timeframeExpression(c)}`,
          )
          .join("\n");
-      if (dims) out += `\n  ${accessPrefix(access)}dimension:\n${dims}`;
+      if (dims) out += `\n  ${accessLabel(access)}dimension:\n${dims}`;
    }
    return out;
 }

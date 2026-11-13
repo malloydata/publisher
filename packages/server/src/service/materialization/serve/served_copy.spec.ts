@@ -759,8 +759,8 @@ describe("hidden stored columns (P3)", () => {
    it("restores a hidden timeframe column under the author's modifier, its stored column renamed as hidden (row 8)", () => {
       // Inherited, so the re-root defines the field under its own modifier.
       // A hidden field's stored column is `private` (an `internal` one a
-      // caller's own `extend` could read), renamed ahead of the include that
-      // hides it, since Malloy refuses a rename just after an include.
+      // caller's own `extend` could read), hidden by a labelled rename in the
+      // first block: no include, so an author's `rename:` still compiles.
       const out = rerootDeclaration(
          "orders is base extend {\n  measure: n is count()\n}",
          {
@@ -789,11 +789,11 @@ describe("hidden stored columns (P3)", () => {
       );
       expect(out).toBe(
          "orders is x.virtual('h')::orders__served extend {\n" +
-            "  rename:\n" +
+            "  internal rename:\n" +
+            "    order_day__stored is order_day\n" +
+            "  private rename:\n" +
             "    order_month__stored is order_month\n" +
             "    order_week__stored is order_week\n" +
-            "    order_day__stored is order_day\n" +
-            "} include { public: *; private: order_month__stored, order_week__stored; internal: order_day__stored } extend {\n" +
             "  dimension:\n" +
             "    order_day is order_day__stored.day\n" +
             "  internal dimension:\n" +
@@ -801,6 +801,78 @@ describe("hidden stored columns (P3)", () => {
             "  private dimension:\n" +
             "    order_month is order_month__stored.month\n" +
             "  measure: n is count()\n" +
+            "}",
+      );
+   });
+
+   it("renames a hidden timeframe column ahead of the include another hidden column needs", () => {
+      const out = rerootDeclaration(
+         "orders is base extend {\n  measure: n is count()\n}",
+         {
+            sourceName: "orders",
+            connectionAlias: "x",
+            virtualHandle: "h",
+            typeName: "orders__served",
+            storedDimensions: [],
+            columns: [
+               { name: "org_id", type: "VARCHAR", access: "internal" },
+               {
+                  name: "order_month",
+                  type: "DATE",
+                  timeframe: "month",
+                  access: "private",
+               },
+               { name: "order_day", type: "DATE", timeframe: "day" },
+            ],
+         },
+      );
+      expect(out).toBe(
+         "orders is x.virtual('h')::orders__served extend {\n" +
+            "  rename:\n" +
+            "    order_month__stored is order_month\n" +
+            "    order_day__stored is order_day\n" +
+            "} include { public: *; private: order_month__stored; internal: org_id, order_day__stored } extend {\n" +
+            "  dimension:\n" +
+            "    order_day is order_day__stored.day\n" +
+            "  private dimension:\n" +
+            "    order_month is order_month__stored.month\n" +
+            "  measure: n is count()\n" +
+            "}",
+      );
+   });
+
+   it("writes no include for a hidden timeframe column alone, so an author's rename still compiles", () => {
+      // An include would put the inverse rename block, and the author's own
+      // `rename:`, just after it, which Malloy refuses: the whole served copy
+      // would not compile.
+      const out = rerootDeclaration(
+         "orders is base extend {\n  rename: amt is amount\n  measure: n is amt.sum()\n}",
+         {
+            sourceName: "orders",
+            connectionAlias: "x",
+            virtualHandle: "h",
+            typeName: "orders__served",
+            storedDimensions: [],
+            columns: [
+               { name: "amt", type: "DOUBLE" },
+               {
+                  name: "order_month",
+                  type: "DATE",
+                  timeframe: "month",
+                  access: "internal",
+               },
+            ],
+         },
+      );
+      expect(out).not.toContain("include");
+      expect(out).toBe(
+         "orders is x.virtual('h')::orders__served extend { rename: amount is amt } extend {\n" +
+            "  private rename:\n" +
+            "    order_month__stored is order_month\n" +
+            "  internal dimension:\n" +
+            "    order_month is order_month__stored.month\n" +
+            "  rename: amt is amount\n" +
+            "  measure: n is amt.sum()\n" +
             "}",
       );
    });
@@ -910,10 +982,9 @@ describe("an inlined join_one, answered from its stored columns", () => {
          );
          expect(out).toBe(
             "flights is x.virtual('h')::flights__served extend {\n" +
-               "  rename:\n" +
+               "  private rename:\n" +
                "    carriers__nickname__stored is carriers__nickname\n" +
                "    carriers__since_month__stored is carriers__since_month\n" +
-               "} include { public: *; private: carriers__nickname__stored, carriers__since_month__stored } extend {\n" +
                `  ${access} dimension:\n` +
                "    carriers is {\n" +
                "      nickname is carriers__nickname__stored,\n" +
