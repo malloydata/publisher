@@ -40,8 +40,8 @@
  * - a fan-out grain dimension (A6) is fixed at every aggregating level, by a
  *   `group_by:` there or above, or a `where:` to one value
  *   (`GRAIN_TOO_COARSE`);
- * - it sets no `timezone:` (A5: the build truncated in the model's default
- *   time zone, `TIME_ZONE`);
+ * - it sets no `timezone:`, at any stage or in any nest (A5: the build
+ *   truncated in the model's default time zone, `TIME_ZONE`);
  * - its table is built and fresh, and the compiled SQL reads it.
  *
  * Rollups are offered coarsest first; the first that answers is used. Behind
@@ -75,6 +75,7 @@ import {
    queryLevelFacts,
    readPreparedQuery,
    resolveStructRefSource,
+   setsTimezone,
    type QueryLevelFacts,
 } from "../../governance/ir/prepared_query";
 import type { BuildManifest } from "../types";
@@ -93,7 +94,7 @@ import {
 } from "../plan/rollup_plan";
 import { SourceMap } from "../plan/source_map";
 import { authorNameImports, relativeImport } from "./author_imports";
-import { typeDeclaration } from "./served_copy";
+import { timeframeRestatements, typeDeclaration } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import type { ServeBinding } from "./materialization_serve_transform";
 import type { MaterializedTableCatalog } from "./query_path";
@@ -171,9 +172,28 @@ export class RollupVariantServe {
       this.invalidate();
    }
 
-   setBindings(bindings: ServeBinding[]): void {
-      this.bindings = bindings.filter((b) => b.origin === "preaggregate");
+   /** Keep the bindings that store a rollup this model can see. */
+   setBindings(bindings: readonly ServeBinding[]): void {
+      const ids = this.buildSourceIDs(bindings);
+      this.bindings = bindings.filter((b) =>
+         (b.sourceIDs ?? []).some((id) => ids.has(id)),
+      );
       this.invalidate();
+   }
+
+   /**
+    * The rollups' build `sourceID`s, to keep their bindings off the other
+    * legs (the serve shape and the served copy cannot read a rollup's table).
+    * Plans are read only when `bindings` holds a `preaggregate` one.
+    */
+   buildSourceIDs(bindings: readonly ServeBinding[]): Set<string> {
+      if (!bindings.some((b) => b.origin === "preaggregate")) return new Set();
+      const ids = new Set<string>();
+      for (const plan of [...this.plansByBase().values()].flat()) {
+         const id = rollupSourceID(plan);
+         if (id !== undefined) ids.add(id);
+      }
+      return ids;
    }
 
    invalidate(): void {
@@ -265,7 +285,9 @@ export class RollupVariantServe {
       const shape = queryShapeOf(prepared.query, struct, {
          sourceName: localName,
       });
-      if (shape.timeZone !== undefined) {
+      // Anywhere in the query, a nest's own `timezone:` included: the build
+      // truncated the grain's times in the model's zone.
+      if (setsTimezone(prepared.query)) {
          throw new RollupSkip(
             "rollup_time_zone",
             "the query sets its own time zone, and the rollup was built in the model's",
@@ -469,9 +491,13 @@ export class RollupVariantServe {
             name: c.name,
             type: c.type,
          }));
+         // malloy-text: the served copy's timeframe emitter, names through identifier
+         const timeframes = timeframeRestatements(
+            grainColumns(plan, this.host.modelDef()),
+         );
          // malloy-text: the served copy's type emitter; rollupStatements re-emits the grammar's parse through malloy_text
          declaration = `${typeDeclaration({ typeName, columns })}
-source: ${identifier(servedName)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)} extend {${timeframeStatements(plan, this.host.modelDef())}${rollupStatements(plan)}
+source: ${identifier(servedName)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)} extend {${timeframes}${rollupStatements(plan)}
 }
 source: ${identifier(localName)} is ${identifier(servedName)}${internalPartials(plan)}`;
       } else {
@@ -590,70 +616,24 @@ function internalPartials(plan: RollupVariantPlan): string {
    return ` include { internal: ${partials} public: * }`;
 }
 
-/** The timeframes a stored grain column can carry, the only ones emitted. */
-const TIMEFRAMES = new Set([
-   "second",
-   "minute",
-   "hour",
-   "day",
-   "week",
-   "month",
-   "quarter",
-   "year",
-]);
-
-function timeframeText(timeframe: string): string {
-   switch (timeframe) {
-      case "second":
-         return "second";
-      case "minute":
-         return "minute";
-      case "hour":
-         return "hour";
-      case "day":
-         return "day";
-      case "week":
-         return "week";
-      case "month":
-         return "month";
-      case "quarter":
-         return "quarter";
-      default:
-         return "year";
-   }
-}
-
-/**
- * A stored grain column read back through `virtual()` has no timeframe; the
- * author's field does. Renamed internally and redefined as the column
- * truncated again (the identity on a truncated value), as the served copy does.
- */
-function timeframeStatements(
+/** The rollup's grain columns, each with the author's timeframe if it has one. */
+function grainColumns(
    plan: RollupVariantPlan,
    modelDef: unknown,
-): string {
+): { name: string; timeframe?: string }[] {
    const base = SourceMap.of(modelDef).node(plan.baseSourceID)?.def as
       | { fields?: { name?: unknown; as?: unknown; timeframe?: unknown }[] }
       | undefined;
    const timeframes = new Map<string, string>();
    for (const f of base?.fields ?? []) {
-      const name = String(f.as ?? f.name);
-      if (typeof f.timeframe === "string" && TIMEFRAMES.has(f.timeframe)) {
-         timeframes.set(name, f.timeframe);
+      if (typeof f.timeframe === "string") {
+         timeframes.set(String(f.as ?? f.name), f.timeframe);
       }
    }
-   const truncated = plan.grainDimensions.filter((g) => timeframes.has(g));
-   if (truncated.length === 0) return "";
-   const renames = truncated
-      .map((g) => `    ${identifier(`${g}__stored`)} is ${identifier(g)}`)
-      .join("\n");
-   const dims = truncated
-      .map(
-         (g) =>
-            `    ${identifier(g)} is ${identifier(`${g}__stored`)}.${timeframeText(timeframes.get(g) ?? "")}`,
-      )
-      .join("\n");
-   return `\n  internal rename:\n${renames}\n  dimension:\n${dims}`;
+   return plan.grainDimensions.map((name) => {
+      const timeframe = timeframes.get(name);
+      return timeframe === undefined ? { name } : { name, timeframe };
+   });
 }
 
 /**
@@ -720,7 +700,7 @@ function flagLine(modelDef: unknown): string {
  * join_many), and those a measure read at that level fans out across (a
  * join-level sum or count re-summed across groups that share its key, A2).
  * A level that reads a measure other than by its bare name (an expression, a
- * filtered measure, a `having:`) is held to every measure's.
+ * filtered measure, a `calculate:`, a `having:`) is held to every measure's.
  */
 export function checkCoverage(
    plan: RollupVariantPlan,
@@ -781,9 +761,14 @@ export function checkCoverage(
             aggregates = true;
             for (const d of named) required.add(d);
          } else if (
-            f.expressionType === "aggregate" ||
-            f.expressionType === "ungrouped_aggregate"
+            f.expressionType !== "scalar" &&
+            f.expressionType !== "scalar_analytic"
          ) {
+            // Any field the query defines that may read a measure: an
+            // aggregate expression, an ungrouped one, or a `calculate:` over
+            // a measure (`lag(total)`, `aggregate_analytic`), which computes
+            // that measure at this level even when no `aggregate:` names it.
+            // An unrecorded type fails closed the same way.
             aggregates = true;
             for (const d of anyMeasureFanOut) required.add(d);
          }

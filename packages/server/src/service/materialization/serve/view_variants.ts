@@ -87,7 +87,11 @@ import { SourceMap } from "../plan/source_map";
 import { authorNameImports } from "./author_imports";
 import type { ServeBinding } from "./materialization_serve_transform";
 import type { MaterializedTableCatalog } from "./query_path";
-import { typeDeclaration } from "./served_copy";
+import {
+   TIMEFRAMES,
+   timeframeRestatements,
+   typeDeclaration,
+} from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 
 type VirtualMap = Map<string, Map<string, string>>;
@@ -538,10 +542,12 @@ export class PersistedViewServe {
             name: c.name,
             type: c.type,
          }));
+         // malloy-text: the served copy's timeframe emitter, names through identifier
+         const timeframes = timeframeRestatements(shape.columns);
          // malloy-text: the type emitter, the author's gate and view notes (single lines), and names through identifier
          declaration = `${typeDeclaration({ typeName, columns })}
 source: ${identifier(stored)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)}
-${gates}source: ${identifier(source)} is ${identifier(stored)} extend {${timeframeStatements(shape)}
+${gates}source: ${identifier(source)} is ${identifier(stored)} extend {${timeframes}
 ${viewBody}
 }`;
       } else {
@@ -675,17 +681,6 @@ interface ViewShape {
    notes: string[];
 }
 
-const TIMEFRAMES = new Set([
-   "second",
-   "minute",
-   "hour",
-   "day",
-   "week",
-   "month",
-   "quarter",
-   "year",
-]);
-
 /** The view's output columns, ordering and notes, from a compile of the bare call. */
 async function viewShape(
    author: ModelMaterializer,
@@ -746,47 +741,6 @@ async function viewShape(
       (f) => f.type === "turtle" && (f.as ?? f.name) === plan.viewName,
    );
    return { columns, orderBy, notes: viewNoteTexts(view?.annotations) };
-}
-
-function timeframeText(timeframe: string): string {
-   switch (timeframe) {
-      case "second":
-         return "second";
-      case "minute":
-         return "minute";
-      case "hour":
-         return "hour";
-      case "day":
-         return "day";
-      case "week":
-         return "week";
-      case "month":
-         return "month";
-      case "quarter":
-         return "quarter";
-      default:
-         return "year";
-   }
-}
-
-/**
- * A stored timeframe column read back through `virtual()` has no timeframe;
- * the view's field does. Declared under an internal name and redefined as the
- * column truncated again (the identity on a truncated value).
- */
-function timeframeStatements(shape: ViewShape): string {
-   const truncated = shape.columns.filter((c) => c.timeframe);
-   if (truncated.length === 0) return "";
-   const renames = truncated
-      .map((c) => `    ${identifier(`${c.name}__tf`)} is ${identifier(c.name)}`)
-      .join("\n");
-   const dims = truncated
-      .map(
-         (c) =>
-            `    ${identifier(c.name)} is ${identifier(`${c.name}__tf`)}.${timeframeText(c.timeframe ?? "")}`,
-      )
-      .join("\n");
-   return `\n  internal rename:\n${renames}\n  dimension:\n${dims}`;
 }
 
 /** The view, redeclared over the stored result: its notes, columns and ordering. */

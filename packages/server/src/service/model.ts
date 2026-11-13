@@ -2937,14 +2937,19 @@ export class Model {
       // but only the served copy may read it: the serve shape would rebuild
       // the source over a table that already applied its definition.
       const materialized = this.materializeSourceIDs;
-      // A persisted view's table holds the view's result, not a source's
-      // rows: only the view leg reads it.
+      // A persisted view's table holds the view's result, and a
+      // `#(preaggregate)` rollup's its partials, not a source's rows: only
+      // their own legs read them.
       const views = this.persistedViews.buildSourceIDs();
+      const rollups = this.rollupVariants.buildSourceIDs(bindings);
       const others =
-         views.size === 0
+         views.size === 0 && rollups.size === 0
             ? bindings
             : bindings.filter(
-                 (b) => !(b.sourceIDs ?? []).some((id) => views.has(id)),
+                 (b) =>
+                    !(b.sourceIDs ?? []).some(
+                       (id) => views.has(id) || rollups.has(id),
+                    ),
               );
       this.storageServe.setServeBindings(
          materialized.size === 0

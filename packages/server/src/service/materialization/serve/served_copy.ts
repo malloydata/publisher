@@ -212,7 +212,7 @@ export interface ServedColumn {
 }
 
 /** The timeframes a stored truncation can carry, the only ones emitted. */
-const TIMEFRAMES: ReadonlySet<string> = new Set([
+export const TIMEFRAMES: ReadonlySet<string> = new Set([
    "second",
    "minute",
    "hour",
@@ -222,6 +222,55 @@ const TIMEFRAMES: ReadonlySet<string> = new Set([
    "quarter",
    "year",
 ]);
+
+/** A timeframe in {@link TIMEFRAMES}, as Malloy text. */
+function timeframeKeyword(timeframe: string | undefined): string {
+   switch (timeframe) {
+      case "second":
+         return "second";
+      case "minute":
+         return "minute";
+      case "hour":
+         return "hour";
+      case "day":
+         return "day";
+      case "week":
+         return "week";
+      case "month":
+         return "month";
+      case "quarter":
+         return "quarter";
+      default:
+         return "year";
+   }
+}
+
+/**
+ * For a source declared over a stored table read through `virtual()` (a
+ * persisted view's result, a rollup's grain): each column with a timeframe,
+ * which the table's type cannot carry, renamed internally and redefined as
+ * that column truncated again (the identity on a truncated value), so the
+ * field keeps its timeframe. Text that opens an `extend { … }` block; empty
+ * when no column has a timeframe in {@link TIMEFRAMES}.
+ */
+export function timeframeRestatements(
+   columns: readonly { name: string; timeframe?: string }[],
+): string {
+   const truncated = columns.filter(
+      (c) => c.timeframe !== undefined && TIMEFRAMES.has(c.timeframe),
+   );
+   if (truncated.length === 0) return "";
+   const renames = truncated
+      .map((c) => `    ${identifier(`${c.name}__tf`)} is ${identifier(c.name)}`)
+      .join("\n");
+   const dims = truncated
+      .map(
+         (c) =>
+            `    ${identifier(c.name)} is ${identifier(`${c.name}__tf`)}.${timeframeKeyword(c.timeframe)}`,
+      )
+      .join("\n");
+   return `\n  internal rename:\n${renames}\n  dimension:\n${dims}`;
+}
 
 /** Why a declaration could not be re-rooted; the source then serves live. */
 export interface RerootRefusal {

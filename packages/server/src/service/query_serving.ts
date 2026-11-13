@@ -269,9 +269,11 @@ export function answeredWith(
  */
 export function servedFromOf(answer: Answer): ServedFrom | undefined {
    if (answer.runFailed) return "live_fallback";
-   // A `storage=` persisted view reads the storage tier too.
+   // A `storage=` persisted view or `#(preaggregate)` rollup reads the
+   // storage tier too, through `virtual()`.
    return answer.tier === "storage" ||
-      (answer.tier === "view" && answer.virtualMap !== undefined)
+      ((answer.tier === "view" || answer.tier === "rollup") &&
+         answer.virtualMap !== undefined)
       ? "storage"
       : undefined;
 }

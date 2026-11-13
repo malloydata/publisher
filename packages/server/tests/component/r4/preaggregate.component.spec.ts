@@ -155,6 +155,18 @@ const SERVED = [
       "a fan-out dimension fixed to one value (A6)",
       "run: orders -> { where: line_kind = 'p'; group_by: category; aggregate: line_total }",
    ],
+   [
+      "a calculate: over a stored measure",
+      "run: orders -> { group_by: category; aggregate: total; calculate: prev is lag(total); order_by: category }",
+   ],
+   [
+      "a window function over the result",
+      "run: orders -> { group_by: category; aggregate: total; calculate: r is rank() }",
+   ],
+   [
+      "a calculate: over a fan-out measure with its dimension grouped (A6)",
+      "run: orders -> { group_by: category, line_kind; calculate: prev is lag(line_total); order_by: category, line_kind }",
+   ],
 ] as const;
 
 const LIVE = [
@@ -223,6 +235,21 @@ const LIVE = [
       "run: orders -> { timezone: 'America/Los_Angeles'; group_by: order_day; aggregate: total }",
       "TIME_ZONE",
    ],
+   [
+      "a nest in its own time zone (A5)",
+      "run: orders -> { group_by: category; nest: n is { timezone: 'America/Los_Angeles'; group_by: order_day; aggregate: total } }",
+      "TIME_ZONE",
+   ],
+   [
+      "a calculate: over a fan-out measure the query does not aggregate (A6)",
+      "run: orders -> { group_by: category; calculate: prev is lag(line_total); order_by: category }",
+      "GRAIN_TOO_COARSE",
+   ],
+   [
+      "a calculate: over a join-level measure across its other grain dimension (A2)",
+      "run: orders -> { group_by: carrier; calculate: prev is lag(fleet_by_category); order_by: carrier }",
+      "GRAIN_TOO_COARSE",
+   ],
 ] as const;
 
 function scenarioSuite(label: string, placement: string): void {
@@ -262,6 +289,30 @@ function scenarioSuite(label: string, placement: string): void {
             ).toContain(reason);
          });
       }
+
+      it("keeps the rollups' tables off the serve shape and the served copy", () => {
+         // Only the rollup leg reads a rollup's table: the serve shape would
+         // compile (and fail) every query against it.
+         fixture.setBindings(fixture.bindings);
+         const internals = fixture.model as unknown as {
+            storageServe: { serveBindings: unknown[] };
+            servedCopy: { hasBindings(): boolean };
+         };
+         // A storage= rollup is bound; a colocated one has no binding.
+         expect(fixture.bindings.length > 0).toBe(placement !== "");
+         expect(internals.storageServe.serveBindings).toEqual([]);
+         expect(internals.servedCopy.hasBindings()).toBe(false);
+      });
+
+      it(`reports servedFrom ${placement ? "storage" : "null"} for a rollup answer`, async () => {
+         const run = await fixture.run({
+            name: "servedFrom",
+            malloy: "run: orders -> { group_by: category; aggregate: total }",
+         });
+         expectServedFromRollup(run);
+         // `storage` means a table in a `storage=` destination answered.
+         expect(run.servedFrom).toBe(placement ? "storage" : null);
+      });
 
       it("routes a query that supplies a given (A5)", async () => {
          expectServedFromRollup(

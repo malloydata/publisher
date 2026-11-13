@@ -393,3 +393,20 @@ export function queryLevelFacts(
    };
    return read(pipeline[0] as IrStageLike, 0);
 }
+
+/**
+ * Whether a compiled query sets a `timezone:` anywhere in it: a stage, a later
+ * stage, or a `nest:` at any depth. A stored table truncated or filtered its
+ * times in the model's zone, so a leg that reads one declines any of these.
+ */
+export function setsTimezone(query: unknown, depth = 0): boolean {
+   if (!query || typeof query !== "object" || depth > 64) return false;
+   if (Array.isArray(query)) {
+      return query.some((q) => setsTimezone(q, depth + 1));
+   }
+   for (const [k, v] of Object.entries(query)) {
+      if (k === "queryTimezone" && typeof v === "string") return true;
+      if (typeof v === "object" && setsTimezone(v, depth + 1)) return true;
+   }
+   return false;
+}
