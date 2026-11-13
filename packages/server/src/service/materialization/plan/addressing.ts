@@ -247,6 +247,22 @@ export function renameBuildSourceIDs(
    };
 }
 
+/** `build` without the sourceIDs `drop` names, wherever they appear. */
+export function withoutSourceIDs(
+   build: SourceBuild,
+   drop: (sourceID: string) => boolean,
+): SourceBuild {
+   return {
+      connectionName: build.connectionName,
+      order: build.order.filter((id) => !drop(id)),
+      dependsOn: Object.fromEntries(
+         Object.entries(build.dependsOn)
+            .filter(([id]) => !drop(id))
+            .map(([id, reads]) => [id, reads.filter((r) => !drop(r))]),
+      ),
+   };
+}
+
 /** Record `source`'s target on `parts`, when it has one (an unkeyable source has none). */
 export function recordTarget(
    parts: { targets: Record<string, BuildTarget> },

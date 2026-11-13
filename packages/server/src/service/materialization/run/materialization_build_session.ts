@@ -6,6 +6,7 @@ import {
    FixedConnectionMap,
    InMemoryURLReader,
    Runtime,
+   type PersistSource,
 } from "@malloydata/malloy";
 import {
    existsSync,
@@ -1079,6 +1080,91 @@ async function buildSameCatalogIntoStorage(params: {
 }
 
 /**
+ * Compile a chained `storage=` build's transient model over `connections`
+ * (the destination alone) and plan its downstream under `virtualMap`: the
+ * SQL to CTAS, projected to its public columns, and the downstream it built.
+ * The only SHAPE step of a chained build: every failure is a
+ * {@link MaterializationEligibilityError}, so the caller may fall back.
+ */
+export async function planChainedDownstream(params: {
+   transientModel: string;
+   downstreamName: string;
+   virtualMap: Map<string, Map<string, string>>;
+   connections: FixedConnectionMap;
+}): Promise<{ sql: string; downstream: PersistSource }> {
+   const { transientModel, downstreamName, virtualMap } = params;
+   // The upstream virtual sources declare their captured schema, so compiling
+   // reads no tables; the CTAS below runs the real SQL.
+   const root = "file:///chained-build/";
+   const url = `${root}m.malloy`;
+   const runtime = new Runtime({
+      urlReader: new InMemoryURLReader(new Map([[url, transientModel]])),
+      connections: params.connections,
+   });
+   // The only SHAPE step here: a compile failure means the downstream cannot
+   // be expressed over its rebound parents, so the caller may fall back to
+   // recomputing. Infrastructure failures (attach, CTAS, DESCRIBE) would fail
+   // the same way on fallback, so only shape failures are marked eligible.
+   let model;
+   try {
+      model = await runtime
+         .loadModel(new URL(url), { importBaseURL: new URL(root) })
+         .getModel();
+   } catch (err) {
+      throw new MaterializationEligibilityError({
+         message: `Chained build model did not compile over the rebound parents: ${errMessage(err)}`,
+      });
+   }
+   // Planning renders every source's SQL, and the rebound virtual parents
+   // render only through the `virtualMap`.
+   const targets = await runtime.getBuildTargets(model, { virtualMap });
+   const unbuildable = targets.unbuildable.find(
+      (u) => u.source.name === downstreamName,
+   );
+   if (unbuildable) {
+      throw new MaterializationEligibilityError({
+         message:
+            `Chained build model could not plan '${downstreamName}' over ` +
+            `the rebound parents: ${unbuildable.problem.message}`,
+      });
+   }
+   const downstream = plannedSources(targets).find(
+      (ps) => ps.name === downstreamName,
+   );
+   if (!downstream) {
+      // The downstream references something the rebind model lacks (an
+      // uncarried parent refinement, a live leaf). The caller falls back.
+      throw new MaterializationEligibilityError({
+         message:
+            `Chained build model did not yield a persist source named ` +
+            `'${downstreamName}' (the downstream references something the ` +
+            `rebound parents don't provide).`,
+      });
+   }
+   // The CTAS runs on a read-write session on the destination, as a
+   // same-catalog build does, so the same rule holds: only SQL Malloy
+   // generated. The rebound parents are virtual, so this reads the
+   // downstream's own definition. Marked eligible, so the caller recomputes
+   // from raw, where author SQL runs in the source warehouse (or a
+   // same-catalog source is refused).
+   if (carriesAuthorSql(downstream._sourceDef)) {
+      throw new MaterializationEligibilityError({
+         message:
+            `Chained source '${downstreamName}' carries SQL its author wrote ` +
+            `(an .sql() source, a sql_* expression, or a file or URL table), ` +
+            `which does not run on the destination's read-write session.`,
+      });
+   }
+   // Projected to public columns so hidden (`except:` / access-restricted)
+   // values are not stored at rest.
+   const sql = projectToPublicColumns(
+      downstream,
+      buildSQLOf(downstream, { entries: {} }),
+   );
+   return { sql, downstream };
+}
+
+/**
  * Build a CHAINED `storage=` source from its upstreams' already-materialized
  * tables in the destination, instead of recomputing them from the warehouse.
  * The downstream is then a pure function of the parents' STORED rows.
@@ -1149,77 +1235,15 @@ export async function buildDownstreamIntoStorage(params: {
       // delta path); pinned so lifting that exclusion stays correct.
       await pinSessionToUTC(session);
 
-      // The upstream virtual sources declare their captured schema, so compiling
-      // reads no tables; the CTAS below runs the real SQL.
-      const root = "file:///chained-build/";
-      const url = `${root}m.malloy`;
-      const runtime = new Runtime({
-         urlReader: new InMemoryURLReader(new Map([[url, transientModel]])),
+      const { sql, downstream } = await planChainedDownstream({
+         transientModel,
+         downstreamName,
+         virtualMap,
          connections: new FixedConnectionMap(
             new Map([[destinationName, session]]),
             destinationName,
          ),
       });
-      // The only SHAPE step here: a compile failure means the downstream cannot
-      // be expressed over its rebound parents, so the caller may fall back to
-      // recomputing. Infrastructure failures (attach, CTAS, DESCRIBE) would fail
-      // the same way on fallback, so only shape failures are marked eligible.
-      let model;
-      try {
-         model = await runtime
-            .loadModel(new URL(url), { importBaseURL: new URL(root) })
-            .getModel();
-      } catch (err) {
-         throw new MaterializationEligibilityError({
-            message: `Chained build model did not compile over the rebound parents: ${errMessage(err)}`,
-         });
-      }
-      // Planning renders every source's SQL, and the rebound virtual parents
-      // render only through the `virtualMap`.
-      const targets = await runtime.getBuildTargets(model, { virtualMap });
-      const unbuildable = targets.unbuildable.find(
-         (u) => u.source.name === downstreamName,
-      );
-      if (unbuildable) {
-         throw new MaterializationEligibilityError({
-            message:
-               `Chained build model could not plan '${downstreamName}' over ` +
-               `the rebound parents: ${unbuildable.problem.message}`,
-         });
-      }
-      const downstream = plannedSources(targets).find(
-         (ps) => ps.name === downstreamName,
-      );
-      if (!downstream) {
-         // The downstream references something the rebind model lacks (an
-         // uncarried parent refinement, a live leaf). The caller falls back.
-         throw new MaterializationEligibilityError({
-            message:
-               `Chained build model did not yield a persist source named ` +
-               `'${downstreamName}' (the downstream references something the ` +
-               `rebound parents don't provide).`,
-         });
-      }
-      // The CTAS runs on a read-write session on the destination, as a
-      // same-catalog build does, so the same rule holds: only SQL Malloy
-      // generated. The rebound parents are virtual, so this reads the
-      // downstream's own definition. Marked eligible, so the caller recomputes
-      // from raw, where author SQL runs in the source warehouse (or a
-      // same-catalog source is refused).
-      if (carriesAuthorSql(downstream._sourceDef)) {
-         throw new MaterializationEligibilityError({
-            message:
-               `Chained source '${downstreamName}' carries SQL its author wrote ` +
-               `(an .sql() source, a sql_* expression, or a file or URL table), ` +
-               `which does not run on the destination's read-write session.`,
-         });
-      }
-      // Projected to public columns so hidden (`except:` / access-restricted)
-      // values are not stored at rest.
-      const sql = projectToPublicColumns(
-         downstream,
-         buildSQLOf(downstream, { entries: {} }),
-      );
 
       // Quoted as in buildSourceIntoStorage, to match the serve side.
       const target = quoteManifestTablePath(

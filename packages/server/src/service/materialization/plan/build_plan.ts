@@ -79,6 +79,7 @@ import {
    presentAs,
    recordTarget,
    renameBuildSourceIDs,
+   withoutSourceIDs,
    sourceBuildsOf,
    type SourceBuild,
 } from "./addressing";
@@ -623,8 +624,16 @@ async function collectGeneratedMaterialize(
       generatedPlans.set(source, plan);
       rename.set(source.sourceID, plan.sourceID);
    }
+   // A source declared in a generated file that no plan names (a parent an
+   // extension's build copy re-roots on its build source, and the extension
+   // over it, P10) is on that build source's table: not a build of its own.
+   const unplannedGenerated = (id: string) =>
+      !rename.has(id) &&
+      generated.generatedURLs.has(id.slice(id.indexOf("@") + 1));
    parts.builds.push(
-      ...sourceBuildsOf(targets).map((b) => renameBuildSourceIDs(b, rename)),
+      ...sourceBuildsOf(targets).map((b) =>
+         renameBuildSourceIDs(withoutSourceIDs(b, unplannedGenerated), rename),
+      ),
    );
    // The gate is the author's, on the author's source, reading the author's
    // givens: classified there. The companion imports the source but declares

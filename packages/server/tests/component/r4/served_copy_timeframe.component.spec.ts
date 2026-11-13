@@ -202,10 +202,12 @@ describe("R4: a stored timeframe truncation keeps its timeframe in the served co
          "run: stored_ext -> { timezone: 'UTC'; group_by: is_march }",
       );
       // The extension declares no #(materialize), so it has no table of its
-      // own: `stored`'s table answers it. When the served copy declines, the
-      // report cannot place that table on the extension's chain, since Malloy
-      // records no `extends` on an extension of a table-backed extension.
-      expect(tables(ext.path)).toEqual([]);
+      // own: `stored`'s table answers it. Malloy records no `extends` on an
+      // extension of a table-backed source; the source graph reads its base
+      // from the compiled structure, so the declined table is still placed.
+      expect(tables(ext.path)).toEqual([
+         ["materialized", "skipped", "TIME_ZONE"],
+      ]);
       expect(ext.path?.servedBy.kind).toBe("live");
       const extAnswered = await fixture.runAsIs(
          "run: stored_ext -> { group_by: is_march }",
