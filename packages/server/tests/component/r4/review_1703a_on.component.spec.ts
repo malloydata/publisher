@@ -222,10 +222,7 @@ afterAll(async () => {
 // under the cutover.
 describe("v1 cutover on: a stored column the extend block excepts", () => {
    const Q = "run: dropped -> { group_by: region; aggregate: total }";
-   const FILE = DERIVED.replace(
-      '#@ persist name="shadowed"',
-      '#@ persist name="shadowed"',
-   );
+   const FILE = DERIVED;
    it("colocated, with the build's captured schema", async () => {
       await freshLoadPool();
       const restore = withSwitch("cutover");
