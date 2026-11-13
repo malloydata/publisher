@@ -58,7 +58,20 @@ interface GateKind {
    malloy: string;
    /** Whether a caller's rows must all be of the caller's orgs. */
    rowsAreTheCallersOrgs: boolean;
+   /** Whether a lock refuses ORG_B (its ROLE is not admin). */
+   locksOutB?: boolean;
 }
+
+/** `orders` gated by `baseGate` and stored, then `tail` over it. */
+const gatedBase = (baseGate: string, tail: string) => `${HEAD}
+${baseGate}
+#(materialize) storage="lake"
+source: orders is duckdb.table('orders') extend {
+  measure: total is amount.sum(), n is count()
+}
+
+${tail}
+`;
 
 const BY_ORG = "run: orders -> { group_by: org_id; aggregate: total, n }";
 
@@ -107,6 +120,37 @@ const KINDS: GateKind[] = [
       model: gated("#(authorize) $ROLE = 'admin'"),
       malloy: BY_ORG,
       rowsAreTheCallersOrgs: false,
+      locksOutB: true,
+   },
+   // The routed re-proof compares the whole gate set (own and inherited, both
+   // routes) with live's: these are the shapes where a set could differ.
+   {
+      name: "a lock and an access filter together",
+      model: gated(
+         "#(authorize) $ROLE = 'admin'\n#(access_filter) org_id in $GROUPS",
+      ),
+      malloy: BY_ORG,
+      rowsAreTheCallersOrgs: true,
+      locksOutB: true,
+   },
+   {
+      name: "an inherited lock beside an extension's own access filter",
+      model: gatedBase(
+         "#(authorize) $ROLE = 'admin'",
+         "#(access_filter) org_id in $GROUPS\nsource: mine is orders extend {}",
+      ),
+      malloy: "run: mine -> { group_by: org_id; aggregate: total, n }",
+      rowsAreTheCallersOrgs: true,
+      locksOutB: true,
+   },
+   {
+      name: "a locked base re-opened by an extension beside its access filter",
+      model: gatedBase(
+         "#(authorize) false",
+         "#(authorize) true\n#(access_filter) org_id in $GROUPS\nsource: mine is orders extend {}",
+      ),
+      malloy: "run: mine -> { group_by: org_id; aggregate: total, n }",
+      rowsAreTheCallersOrgs: true,
    },
 ];
 
@@ -169,8 +213,8 @@ describe("R3 adversarially: two callers per gate kind", () => {
          }
          for (const [i, result] of results.entries()) {
             if (result.denied) {
-               // Only the lock denies, and only the caller it locks out.
-               expect(kind.rowsAreTheCallersOrgs).toBe(false);
+               // Only a lock denies, and only the caller it locks out.
+               expect(kind.locksOutB).toBe(true);
                expect(order[i]).toBe(ORG_B);
                continue;
             }

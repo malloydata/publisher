@@ -124,6 +124,14 @@ export interface IncrementalDeclaration {
     * refresh deletes the rows below every window's new lower bound.
     */
    rollingWindow?: RollingWindow[];
+   /**
+    * An incremental pair table's parent key and parent-row flag column (a
+    * `#(materialize)` inlined join_many), set by
+    * `collectIncrementalDeclarations` from its plan: each refresh replaces
+    * every row of each parent whose watermark moved, by the key, rather than
+    * merging row by row (incremental_apply.ts).
+    */
+   pair?: { parentKey: string; parentRow: string };
 }
 
 /** The source's `#@` tag, or undefined when it does not parse. */

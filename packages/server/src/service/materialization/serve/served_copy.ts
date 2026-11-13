@@ -54,13 +54,25 @@ import {
    statementHead,
    statementStarts,
 } from "../malloy_lexer";
-import { definitionCutAt } from "../plan/cross_connection_joins";
+import {
+   dropJoinDefinition,
+   inlinedJoinRenames,
+   inlinedJoinStatements,
+   intoFirstExtend,
+   labelledRenames,
+   renameAccess,
+   renameBlock,
+   TIMEFRAMES,
+   type GeneratedRename,
+} from "../inlined_join_text";
 
 export {
    declarationSpans,
    declaredBaseName,
    dropDimensions,
+   dropJoinDefinition,
    rewriteDimensions,
+   TIMEFRAMES,
 };
 
 /** A zero-based Malloy range, as a compiled source's `location.range` carries. */
@@ -217,6 +229,16 @@ export interface InlinedJoin {
     * live (governance/ir/joined_field_output.ts).
     */
    annotatedFields?: readonly string[];
+   /**
+    * The join's access modifier on the author's source, when it is not
+    * public. The record is declared under it, and its stored columns are
+    * renamed `private` ahead of the include that hides them
+    * (`renameAccess`), so a caller reads `<join>.<field>` exactly where live
+    * lets it (an `internal` join through a caller's own `extend`, a `private`
+    * one never) and its stored columns never, while the author's own fields,
+    * views and gates over it still read it.
+    */
+   access?: "private" | "internal";
 }
 
 /** One measure a pair table's served source re-declares over its parent rows. */
@@ -254,18 +276,6 @@ export interface ServedColumn {
    timeframe?: string;
 }
 
-/** The timeframes a stored truncation can carry, the only ones emitted. */
-export const TIMEFRAMES: ReadonlySet<string> = new Set([
-   "second",
-   "minute",
-   "hour",
-   "day",
-   "week",
-   "month",
-   "quarter",
-   "year",
-]);
-
 /** A timeframe in {@link TIMEFRAMES}, as Malloy text. */
 function timeframeKeyword(timeframe: string | undefined): string {
    switch (timeframe) {
@@ -297,7 +307,12 @@ function timeframeKeyword(timeframe: string | undefined): string {
  * when no column has a timeframe in {@link TIMEFRAMES}.
  */
 export function timeframeRestatements(
-   columns: readonly { name: string; timeframe?: string }[],
+   columns: readonly {
+      name: string;
+      timeframe?: string;
+      /** The author's annotation lines, written again on the redefined field. */
+      notes?: readonly string[];
+   }[],
 ): string {
    const truncated = columns.filter(
       (c) => c.timeframe !== undefined && TIMEFRAMES.has(c.timeframe),
@@ -306,9 +321,11 @@ export function timeframeRestatements(
    const renames = truncated
       .map((c) => `    ${identifier(`${c.name}__tf`)} is ${identifier(c.name)}`)
       .join("\n");
+   // malloy-text: the author's own notes, then names through identifier and a timeframe from TIMEFRAMES
    const dims = truncated
       .map(
          (c) =>
+            (c.notes ?? []).map((n) => `    ${n.trimEnd()}\n`).join("") +
             `    ${identifier(c.name)} is ${identifier(`${c.name}__tf`)}.${timeframeKeyword(c.timeframe)}`,
       )
       .join("\n");
@@ -502,6 +519,13 @@ function keepHiddenDefinitions(
  * field the `include` hides as it read the field on the author's source.
  */
 export function hiddenInclude(columns: readonly ServedColumn[]): string {
+   return accessInclude(columns);
+}
+
+/** {@link hiddenInclude} over names and their access, public when absent. */
+function accessInclude(
+   columns: readonly { name: string; access?: "private" | "internal" }[],
+): string {
    const byAccess = (access: "private" | "internal") =>
       columns.filter((c) => c.access === access).map((c) => identifier(c.name));
    const items = [
@@ -514,9 +538,17 @@ export function hiddenInclude(columns: readonly ServedColumn[]): string {
    return items.length > 1 ? ` include { ${items.join("; ")} }` : "";
 }
 
-/** Whether a re-root writes access modifiers again, so needs their flag. */
-function hasHiddenColumns(r: Pick<Reroot, "columns">): boolean {
-   return r.columns.some((c) => c.access !== undefined);
+/**
+ * Whether a re-root writes access modifiers again, so needs their flag: a
+ * hidden stored column, or a hidden inlined join's record.
+ */
+function hasHiddenColumns(
+   r: Pick<Reroot, "columns" | "inlinedJoins">,
+): boolean {
+   return (
+      r.columns.some((c) => c.access !== undefined) ||
+      (r.inlinedJoins ?? []).some((j) => j.access !== undefined)
+   );
 }
 
 /**
@@ -565,12 +597,38 @@ export function rerootDeclaration(
       new Set((r.columns ?? []).map((c) => c.name)),
    );
    if (renames === undefined) return undefined;
-   let extend = servedExtend(
-      kept,
-      r.columns ?? [],
-      r.storedDimensions,
-      reserved,
+   const columns = r.columns ?? [];
+   const timeframed = timeframedColumns(columns, reserved);
+   const joinRenames = inlinedJoinRenames(inlined, [
+      ...(r.reservedNames ?? []),
+      ...columns.map((c) => c.name),
+      ...timeframed.map((c) => c.internalName),
+   ]);
+   const generated: GeneratedRename[] = [
+      ...timeframed.map((c) => ({
+         internal: c.internalName,
+         column: c.name,
+         access: renameAccess(c),
+      })),
+      ...joinRenames,
+   ];
+   // The author's access modifiers written again on the stored hidden
+   // columns (P3), on the stored table under its stored names, so before the
+   // inverse renames and every kept block (an ancestor's, P10, and the
+   // author's own), which read them as they read the author's fields. Only a
+   // hidden column kept under its own name needs that `include`: when the
+   // re-root writes one, every internal name is renamed ahead of it and the
+   // include hides it ({@link renameAccess}), since Malloy refuses a rename
+   // in the block just after an include. A hidden timeframe column or a
+   // hidden join's columns alone are hidden by labelled renames in the first
+   // block (`private rename:`) instead, so an author's `rename:` (and the
+   // inverse block before it) still compiles; an include there would refuse
+   // it, and with it the whole model's served copy.
+   const ahead = columns.some(
+      (c) =>
+         c.access !== undefined && !timeframed.some((t) => t.name === c.name),
    );
+   let extend = servedExtend(kept, r.storedDimensions, timeframed, !ahead);
    if (extend === undefined) return undefined;
    if (inlined.length > 0) {
       for (const j of inlined) {
@@ -580,13 +638,7 @@ export function rerootDeclaration(
       }
       const opened = intoFirstExtend(
          extend,
-         inlinedJoinStatements(inlined, [
-            ...(r.reservedNames ?? []),
-            ...(r.columns ?? []).map((c) => c.name),
-            ...timeframedColumns(r.columns ?? [], reserved).map(
-               (c) => c.internalName,
-            ),
-         ]),
+         inlinedJoinStatements(inlined, joinRenames, !ahead),
       );
       if (opened === undefined) return undefined;
       extend = opened;
@@ -598,15 +650,23 @@ export function rerootDeclaration(
       pairHead = ` ${pairRenames(r.pair)}`;
       extend = `${replaced}${pairMeasures(r.pair)}`;
    }
+   // The inverse renames just after the include are refused by Malloy,
+   // which would fail the whole served copy and send every source in the
+   // model live: refuse this source's re-root alone instead (known
+   // limitation 25; a pair table's renames there still fail the copy).
+   if (ahead && renames !== "") return undefined;
    const terms = (r.readTimeTerms ?? [])
       .map(readTimeTermText)
       .filter((t) => t !== undefined);
    const reread = terms.length ? ` extend { where: ${terms.join(", ")} }` : "";
-   // The author's access modifiers written again on the stored hidden
-   // columns (P3), on the stored table under its stored names, so before the
-   // inverse renames and every kept block (an ancestor's, P10, and the
-   // author's own), which read them as they read the author's fields.
-   const hide = hiddenInclude(r.columns ?? []);
+   const hide = ahead
+      ? `${renameBlock(generated)}${accessInclude([
+           ...columns
+              .filter((c) => !timeframed.some((t) => t.name === c.name))
+              .map((c) => ({ name: c.name, access: c.access })),
+           ...generated.map((g) => ({ name: g.internal, access: g.access })),
+        ])}`
+      : "";
    return `${name} is ${virtual}${reread}${hide}${pairHead}${renames}${extend ? ` ${extend}` : ""}`;
 }
 
@@ -620,12 +680,11 @@ export function rerootDeclaration(
  */
 function servedExtend(
    text: string,
-   columns: readonly ServedColumn[],
    storedDimensions: readonly string[] | undefined,
-   reservedNames: readonly string[],
+   timeframed: readonly Timeframed[],
+   withRenames: boolean,
 ): string | undefined {
    let extend = text;
-   const timeframed = timeframedColumns(columns, reservedNames);
    const stored = new Set(storedDimensions ?? []);
    const rewrite = new Map<string, string>();
    for (const c of timeframed) {
@@ -652,6 +711,7 @@ function servedExtend(
          timeframeStatements(
             timeframed,
             timeframed.filter((c) => !rewritten.has(c.name)),
+            withRenames,
          ),
       );
       if (opened === undefined) return undefined;
@@ -843,141 +903,59 @@ function timeframeExpression(c: Timeframed): string {
    return `${identifier(c.internalName)}.${c.timeframe}`;
 }
 
+/** A statement's access label, as Malloy text: empty for a public one. */
+function accessPrefix(access: "private" | "internal" | undefined): string {
+   switch (access) {
+      case "private":
+         return "private ";
+      case "internal":
+         return "internal ";
+      default:
+         return "";
+   }
+}
+
 /**
- * The statements that open the first extend block: the internal renames, and
- * a `dimension:` for each timeframe field whose definition is not in the
- * source's own text (an inherited one, or a `#@ persist` query's output
- * column), with the field's annotations.
+ * The statements that open the first extend block: with `withRenames`, the
+ * internal renames ({@link labelledRenames}), and a `dimension:` for each
+ * timeframe field whose definition is not in the source's own text (an
+ * inherited one, or a `#@ persist` query's output column), with the field's
+ * annotations.
+ *
+ * A hidden field (P3) is redefined under the author's modifier, and its
+ * stored column's internal name is `private` ({@link renameAccess}), so no
+ * caller reaches it by any path (a `private rename:` here, or, when the
+ * re-root writes an `include` for other hidden columns, a rename ahead of it
+ * that the include hides, and `withRenames` is false). A public field's stored
+ * column is renamed `internal`, so no `select:` reaches it.
  */
 function timeframeStatements(
    all: readonly Timeframed[],
    emitted: readonly Timeframed[],
+   withRenames: boolean,
 ): string {
-   const renames = all
-      .map((c) => `    ${identifier(c.internalName)} is ${identifier(c.name)}`)
-      .join("\n");
-   let out = `\n  internal rename:\n${renames}`;
-   if (emitted.length > 0) {
+   let out = withRenames
+      ? labelledRenames(
+           all.map((c) => ({
+              internal: c.internalName,
+              column: c.name,
+              access: renameAccess(c),
+           })),
+        )
+      : "";
+   for (const access of [undefined, "internal", "private"] as const) {
       // malloy-text: the author's own notes, then names through identifier and a timeframe from TIMEFRAMES
       const dims = emitted
+         .filter((c) => c.access === access)
          .map(
             (c) =>
                (c.notes ?? []).map((n) => `    ${n.trimEnd()}\n`).join("") +
                `    ${identifier(c.name)} is ${timeframeExpression(c)}`,
          )
          .join("\n");
-      out += `\n  dimension:\n${dims}`;
+      if (dims) out += `\n  ${accessPrefix(access)}dimension:\n${dims}`;
    }
    return out;
-}
-
-/**
- * The statements that replace inlined joins: each stored `<join>__<field>`
- * column renamed internally (to a name none of `reserved` and no stored
- * column has), and per join a dimension of the join's name, a record of the
- * joined source's fields over those columns, a timeframe field truncated
- * again as {@link timeframeStatements} does for the source's own.
- */
-function inlinedJoinStatements(
-   inlined: readonly InlinedJoin[],
-   reserved: readonly string[],
-): string {
-   const taken = new Set([
-      ...reserved,
-      ...inlined.flatMap((j) => j.columns.map((c) => c.column)),
-   ]);
-   const internalOf = new Map<string, string>();
-   for (const j of inlined) {
-      for (const c of j.columns) {
-         let internal = `${c.column}__stored`;
-         for (let n = 2; taken.has(internal); n++) {
-            internal = `${c.column}__stored_${n}`;
-         }
-         taken.add(internal);
-         internalOf.set(c.column, internal);
-      }
-   }
-   const renames = [...internalOf]
-      .map(
-         ([column, internal]) =>
-            `    ${identifier(internal)} is ${identifier(column)}`,
-      )
-      .join("\n");
-   // malloy-text: names through identifier and a timeframe from TIMEFRAMES
-   const records = inlined
-      .map((j) => {
-         const fields = j.columns
-            .map((c) => {
-               const internal = identifier(internalOf.get(c.column) as string);
-               const read =
-                  c.timeframe && TIMEFRAMES.has(c.timeframe)
-                     ? `${internal}.${c.timeframe}`
-                     : internal;
-               return `      ${identifier(c.name)} is ${read}`;
-            })
-            .join(",\n");
-         return `    ${identifier(j.join)} is {\n${fields}\n    }`;
-      })
-      .join("\n");
-   return `\n  internal rename:\n${renames}\n  dimension:\n${records}`;
-}
-
-/** The access modifiers a statement can open with. */
-const ACCESS_WORDS = new Set(["public", "private", "internal"]);
-
-/**
- * A run of `extend { … }` blocks with the join_one named `join` taken out:
- * its definition, with the annotation lines written on it, or its whole
- * statement when it is the statement's only definition. The text unchanged
- * when it declares no such join (one inherited from a base the re-root
- * replaces is not in it); undefined when the text does not lex, or the name
- * is defined there by another kind of join.
- */
-export function dropJoinDefinition(
-   text: string,
-   join: string,
-): string | undefined {
-   const tokens = lexAll(text);
-   if (!tokens) return undefined;
-   const nameOf = (t: { text: string }) =>
-      t.text.startsWith("`") ? t.text.slice(1, -1) : t.text;
-   for (const t of tokens) {
-      if (!isName(t) || nameOf(t) !== join) continue;
-      const cut = definitionCutAt(text, t.start);
-      if (!cut || cut.left.name !== join) continue;
-      if (!cut.left.keyword.startsWith("join_")) continue;
-      if (cut.left.keyword !== "join_one") return undefined;
-      // An access modifier written on the statement (the record would drop
-      // the join's access): refused, whichever of its definitions this is.
-      const keyword = tokens.findLast(
-         (x) => x.start <= t.start && x.text === cut.left.keyword,
-      );
-      const label = keyword ? tokens[tokens.indexOf(keyword) - 1] : undefined;
-      if (label && ACCESS_WORDS.has(label.text)) return undefined;
-      return text.slice(0, cut.start) + text.slice(cut.end);
-   }
-   return text;
-}
-
-/**
- * `statements` placed just inside the first `extend {` of a run of extend
- * blocks, or as a new block when there is none. Undefined when the text does
- * not lex.
- */
-function intoFirstExtend(
-   extend: string,
-   // malloy-text: timeframeStatements' text, every name through identifier
-   statements: string,
-): string | undefined {
-   if (extend === "") return `extend {${statements}\n}`;
-   const open = lexAll(extend)?.find(
-      (t) => t.kind === "open" && t.text === "{",
-   );
-   if (!open) return undefined;
-   const rest = extend.slice(open.end);
-   // On its own line, so the author's first statement keeps its own.
-   const sep = /^[ \t]*\n/.test(rest) ? "" : "\n";
-   return extend.slice(0, open.end) + statements + sep + rest;
 }
 
 /**
@@ -1058,6 +1036,34 @@ function parseNestedType(
       rest = rest.slice(list[0].length);
    }
    return { text, rest };
+}
+
+/**
+ * The annotation lines on a compiled field, outermost first: what it inherits,
+ * then its statement's (block) notes, then its own. Each is the author's text
+ * (`#(doc) "…"`), so it can be written again on the field in a `type:`.
+ */
+export function fieldNotes(field: unknown): string[] {
+   interface Annotation {
+      inherits?: Annotation;
+      blockNotes?: { text?: unknown }[];
+      notes?: { text?: unknown }[];
+   }
+   const out: string[] = [];
+   const walk = (a: Annotation | undefined, depth: number) => {
+      if (!a || depth > 16) return;
+      walk(a.inherits, depth + 1);
+      for (const n of [...(a.blockNotes ?? []), ...(a.notes ?? [])]) {
+         if (typeof n.text === "string" && !out.includes(n.text)) {
+            out.push(n.text);
+         }
+      }
+   };
+   const f = field as
+      | { annotations?: Annotation; annotation?: Annotation }
+      | undefined;
+   walk(f?.annotations ?? f?.annotation, 0);
+   return out;
 }
 
 /** The emitted `type:` declaration for one re-rooted source. */

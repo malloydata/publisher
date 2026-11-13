@@ -10,6 +10,7 @@ import {
    buildJoinBaseMap,
    buildSourceAliasMap,
    collectIdentifierNames,
+   definitionTextAt,
    extractRunTargetSourceName,
    extractRunTargetSourceNames,
    locateProblemsInCallerText,
@@ -978,5 +979,46 @@ describe("extractRunViewCall", () => {
       ]) {
          expect(extractRunViewCall(text)).toBeUndefined();
       }
+   });
+});
+
+describe("definitionTextAt", () => {
+   const file = `source: s is t extend {
+  view: by_c is {
+    group_by: c  // a comment with a } in it
+    where: c != '{'
+  }
+  view: \`odd name\` is { group_by: c }
+}`;
+   const range = (sl: number, sc: number, el: number, ec: number) => ({
+      start: { line: sl, character: sc },
+      end: { line: el, character: ec },
+   });
+
+   it("reads a definition as written, comments and literals included", () => {
+      expect(definitionTextAt(file, range(1, 8, 4, 3), "by_c")).toBe(`by_c is {
+    group_by: c  // a comment with a } in it
+    where: c != '{'
+  }`);
+   });
+
+   it("reads a backticked name", () => {
+      expect(definitionTextAt(file, range(5, 8, 5, 37), "odd name")).toBe(
+         "`odd name` is { group_by: c }",
+      );
+   });
+
+   it("refuses a span that is not that definition", () => {
+      // Another name, a span that cuts the body short, one past the file.
+      expect(
+         definitionTextAt(file, range(1, 8, 4, 3), "other"),
+      ).toBeUndefined();
+      expect(definitionTextAt(file, range(1, 8, 3, 5), "by_c")).toBeUndefined();
+      expect(definitionTextAt(file, range(1, 8, 9, 0), "by_c")).toBeUndefined();
+      // A rename's location: `v2 is v` reads, but has no body to pair.
+      expect(
+         definitionTextAt("rename: v2 is v", range(0, 8, 0, 15), "v2"),
+      ).toBe("v2 is v");
+      expect(definitionTextAt("x is", range(0, 0, 0, 4), "x")).toBeUndefined();
    });
 });

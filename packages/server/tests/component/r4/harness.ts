@@ -184,6 +184,14 @@ export interface R4Fixture {
    /** Each built source's stored table, by the author's source name. */
    physicalTables: Record<string, string>;
    /**
+    * The SELECT each stored table was built from (cast to the declared types,
+    * as a storage build casts), by the author's source name: what a refresh
+    * reads again, for a test that refreshes a table in place.
+    */
+   builtSQL: Record<string, string>;
+   /** The scenario's database: its source tables and its stored ones. */
+   duckdb: DuckDBConnection;
+   /**
     * With {@link R4Scenario.preaggregate}: each colocated `#(preaggregate)`
     * rollup built, by its generated source name, to the table it was built
     * into in the scenario's database.
@@ -191,6 +199,8 @@ export interface R4Fixture {
    rollupTables: Record<string, string>;
    /** The model queries run against, for a test that reaches its internals. */
    model: Model;
+   /** The scenario's package directory, where its model files are written. */
+   packagePath: string;
    run(query: R4Query): Promise<R4Run>;
    /**
     * Point the model at `bindings` (`[]` for live), clearing the memoized
@@ -590,6 +600,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // its parent's stored table.
    const entryBySourceID = new Map<string, ManifestEntry>();
    const storedBuildSQL: Record<string, string> = {};
+   const builtSQL: Record<string, string> = {};
    for (const [i, source] of sources.entries()) {
       if (scenario.unbuilt?.includes(source.name)) continue;
       if (scenario.colocated?.includes(source.name)) {
@@ -657,6 +668,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
               persistSourceDeclaredColumns(built.source),
               { queryTimezone: persistSourceQueryTimezone(built.source) },
            );
+      builtSQL[source.name] = select;
       const origin = connections.get(source.connectionName);
       if (origin && origin !== duckdb) {
          // Built on its origin, its rows copied into the destination.
@@ -788,12 +800,15 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    );
    return {
       bindings,
+      packagePath: dir,
       tableIds: Object.fromEntries(
          Object.values(plan).map((p) => [p.name, p.sourceEntityId]),
       ),
       buildReads,
       storedBuildSQL,
       physicalTables: Object.fromEntries(physicalNames),
+      builtSQL,
+      duckdb,
       model,
       viewRefusals,
       setClock(at) {
