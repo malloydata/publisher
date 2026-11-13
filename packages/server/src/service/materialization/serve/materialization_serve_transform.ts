@@ -220,11 +220,15 @@ export interface ServeBinding {
  * the plan by name and content address is what lets a binding the host supplied
  * carry this server's identity.
  *
- * When no plan source has the entry's content address (an instructed build on
- * an unversioned package stamps the caller's address, which this server may not
- * compute), the one plan source of that name is returned. When the plan holds
- * several, none is: an empty list matches no model's source, so every source of
- * that name serves live rather than one being served from another's table.
+ * Only an exact match counts: a plan source of that name AT that content
+ * address. Every manifest entry carries the content address this server
+ * computes (an instructed build keys its entry by it, whatever identity the
+ * instruction used), so an entry at another address was built from another
+ * definition: a source edited under its old name in an unversioned package, a
+ * manifest restored from before the edit, or one from a release that addressed
+ * the source differently. Its table holds that definition's rows, and its
+ * columns may well be the same, so it serves nothing and the source answers
+ * live until its own table is built. An empty list matches no model's source.
  */
 export function planSourceIds(
    planSources: Record<string, { name?: string; sourceEntityId?: string }>,
@@ -237,13 +241,9 @@ export function planSourceIds(
       byName.set(source.name, named);
    }
    return (sourceName, sourceEntityId) => {
-      const named = byName.get(sourceName) ?? [];
-      const exact = named.filter((s) => s.address === sourceEntityId);
-      if (exact.length > 0) return exact.map((s) => s.sourceID);
-      // No address matches: trust the name only when one plan source has it.
-      // Two would be two different tables' sources, and picking both serves one
-      // from the other's table, so neither is named and both serve live.
-      return named.length === 1 ? [named[0].sourceID] : [];
+      return (byName.get(sourceName) ?? [])
+         .filter((s) => s.address === sourceEntityId)
+         .map((s) => s.sourceID);
    };
 }
 
