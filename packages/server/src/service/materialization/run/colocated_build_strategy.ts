@@ -176,9 +176,12 @@ export async function capturedColocatedSchema(args: {
    sourceName: string;
 }): Promise<{ name: string; type: string }[] | undefined> {
    const key = args.physicalTableName;
+   // Read as the build CREATEd it: quoted for the dialect, so a name a
+   // case-folding warehouse (Snowflake) keeps in its case is found.
+   const tablePath = quoteTablePath(key, args.dialect);
    try {
       const read = await args.connection.fetchSchemaForTables(
-         { [key]: key },
+         { [key]: tablePath },
          { refreshTimestamp: Date.now() },
       );
       const fields = read.schemas[key]?.fields;

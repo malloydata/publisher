@@ -39,6 +39,18 @@ describe("capturedColocatedSchema", () => {
       ]);
    });
 
+   it("reads a table whose name needs quoting, as the build created it", async () => {
+      await connection.runSQL(`CREATE TABLE "Daily Mixed" AS SELECT 1 AS n`);
+      expect(
+         await capturedColocatedSchema({
+            connection,
+            physicalTableName: "Daily Mixed",
+            dialect: "duckdb",
+            sourceName: "daily",
+         }),
+      ).toEqual([{ name: "n", type: "BIGINT" }]);
+   });
+
    it("is undefined when the table cannot be read, so the bind derives the columns", async () => {
       expect(
          await capturedColocatedSchema({

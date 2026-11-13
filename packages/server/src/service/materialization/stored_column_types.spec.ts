@@ -16,6 +16,7 @@ import {
    queryTimezoneOf,
    rebuildWouldRecast,
    serveTypePlan,
+   storedColumnsOfOutput,
    storedColumnTypeMismatches,
    storageBuildCasts,
    storedTypeServesAs,
@@ -476,5 +477,29 @@ source: plain is ev -> { select: id, label is concat('x', id::string) }
          { name: "label", type: "string" },
       ]);
       expect(plainCasts.castOptions).toEqual({ queryTimezone: undefined });
+   });
+});
+
+describe("storedColumnsOfOutput: a bigint read back from a table", () => {
+   it("is a BIGINT, as an integer is, not a DOUBLE", () => {
+      // Malloy reads a 64-bit integer column back as numberType `bigint`
+      // (a captured colocated schema, the v1 cutover); a compiled output's
+      // integer says `integer`. Both are stored as BIGINT. Before the cutover
+      // this also reads a #(materialize) source's compiled output, where a
+      // `bigint` was declared DOUBLE.
+      expect(
+         storedColumnsOfOutput(
+            [
+               { name: "a", type: "number", numberType: "bigint" },
+               { name: "b", type: "number", numberType: "integer" },
+               { name: "c", type: "number", numberType: "float" },
+            ],
+            { nested: true },
+         ),
+      ).toEqual([
+         { name: "a", type: "BIGINT" },
+         { name: "b", type: "BIGINT" },
+         { name: "c", type: "DOUBLE" },
+      ]);
    });
 });
