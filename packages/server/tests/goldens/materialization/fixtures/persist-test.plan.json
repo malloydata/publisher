@@ -40,6 +40,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "order_summary@<pkg>/persist_test.malloy": {

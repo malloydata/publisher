@@ -114,6 +114,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "d_plus@<pkg>/dash.malloy": {

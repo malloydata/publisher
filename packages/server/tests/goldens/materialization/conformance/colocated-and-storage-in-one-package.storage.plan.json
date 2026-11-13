@@ -88,6 +88,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "dim_c@<pkg>/m.malloy": {

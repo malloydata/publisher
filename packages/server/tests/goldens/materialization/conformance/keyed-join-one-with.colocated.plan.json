@@ -85,6 +85,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "cust@<pkg>/m.malloy": {

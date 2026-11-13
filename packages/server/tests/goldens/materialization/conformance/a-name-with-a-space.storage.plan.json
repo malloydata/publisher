@@ -40,6 +40,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "spaced@<pkg>/m.malloy": {
