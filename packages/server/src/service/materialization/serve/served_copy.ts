@@ -151,6 +151,14 @@ export interface Reroot {
     * read ({@link InlinedJoin}).
     */
    inlinedJoins?: readonly InlinedJoin[];
+   /**
+    * The hidden dimensions the kept text defines, computed at read rather
+    * than read from a stored column (set by the rewriter, P3). A rolling
+    * window over one cannot be written on the stored table, where it is not
+    * yet defined: the kept text's own `where:` applies it
+    * ({@link ServedCopySpan.termsKeptAsWritten}).
+    */
+   computedAtRead?: readonly string[];
 }
 
 /**
@@ -415,12 +423,34 @@ export interface RerootRefusal {
       | "pair_join_not_found";
 }
 
+/**
+ * Where one applied re-root's own text lies in its file's served text, as
+ * offsets: its `type:` declaration and its re-rooted declaration. A compile
+ * problem placed in either is that re-root's (the author's own text there
+ * compiles live), so the serve side can drop that re-root alone.
+ */
+export interface ServedCopySpan {
+   sourceName: string;
+   type: { start: number; end: number };
+   declaration: { start: number; end: number };
+   /**
+    * The author's text of each current-time term the re-root does not write
+    * on the stored table because it reads a hidden dimension the kept text
+    * computes at read ({@link Reroot.computedAtRead}): the kept text applies
+    * it as the author wrote it, which the serve side confirms on the
+    * compiled filters (fails closed).
+    */
+   termsKeptAsWritten?: string[];
+}
+
 /** The served copy of the files that declare re-rooted sources. */
 export interface ServedCopy {
    /** File URL → its served text. Files with nothing re-rooted are absent. */
    files: Map<string, string>;
    /** Re-roots that did not apply. */
    refused: RerootRefusal[];
+   /** File URL → where each applied re-root's text lies in it. */
+   spans: Map<string, ServedCopySpan[]>;
 }
 
 /** The compiler flag every served copy needs for `virtual()` sources. */
@@ -450,6 +480,7 @@ export function buildServedCopy(
    }
    const files = new Map<string, string>();
    const refused: RerootRefusal[] = [];
+   const spans = new Map<string, ServedCopySpan[]>();
    for (const [url, list] of byFile) {
       const text = fileText(url);
       if (text === undefined) {
@@ -463,6 +494,14 @@ export function buildServedCopy(
          continue;
       }
       const applied: Reroot[] = [];
+      // Each applied declaration's place in `out`, kept current as earlier
+      // ones (spliced later, from the last back) move it.
+      const placed: {
+         sourceName: string;
+         start: number;
+         end: number;
+         kept: string[];
+      }[] = [];
       let out = text;
       // Splice from the last declaration back, so earlier offsets stay valid.
       const ordered = [...list].sort(
@@ -498,7 +537,19 @@ export function buildServedCopy(
          const effective = keepHiddenDefinitions(declaration, r);
          const replaced =
             effective && rerootDeclaration(declaration, effective);
-         if (effective && replaced === undefined && r.pair && spans) {
+         if (
+            effective &&
+            replaced === undefined &&
+            r.pair &&
+            spans &&
+            // Without the pair it re-roots: what failed is the pair's join,
+            // not the declaration (an inverse rename block behind an
+            // include, known limitation 30, fails either way).
+            rerootDeclaration(declaration, {
+               ...effective,
+               pair: undefined,
+            }) !== undefined
+         ) {
             // The pair's join is not in the source's own `extend` text (a base
             // the re-root replaces declares it, or it shares its statement),
             // so it cannot be replaced by its record.
@@ -518,12 +569,37 @@ export function buildServedCopy(
             continue;
          }
          out = out.slice(0, start) + replaced + out.slice(end);
+         const delta = replaced.length - (end - start);
+         for (const p of placed) {
+            p.start += delta;
+            p.end += delta;
+         }
+         placed.push({
+            sourceName: r.sourceName,
+            start,
+            end: start + replaced.length,
+            kept: termsKeptAsWritten(effective).map((t) => t.code),
+         });
          applied.push(effective);
       }
       if (applied.length === 0) continue;
-      files.set(url, withTypes(out, applied));
+      const typed = withTypes(out, applied);
+      files.set(url, typed.text);
+      spans.set(
+         url,
+         // `placed` and `applied` are in the same order, as are the types.
+         placed.map((p, k) => ({
+            sourceName: p.sourceName,
+            type: typed.types[k],
+            declaration: {
+               start: p.start + typed.shift,
+               end: p.end + typed.shift,
+            },
+            ...(p.kept.length > 0 ? { termsKeptAsWritten: p.kept } : {}),
+         })),
+      );
    }
-   return { files, refused };
+   return { files, refused, spans };
 }
 
 /**
@@ -562,6 +638,7 @@ function keepHiddenDefinitions(
    if (defined.dropped.size === 0) return r;
    return {
       ...r,
+      computedAtRead: [...defined.dropped],
       columns: r.columns.filter((c) => !defined.dropped.has(c.name)),
       ...(r.storedDimensions
          ? {
@@ -635,6 +712,7 @@ export function rerootDeclaration(
       | "keptBlocks"
       | "pair"
       | "inlinedJoins"
+      | "computedAtRead"
    > & { columns?: Reroot["columns"] },
 ): string | undefined {
    const spans = declarationSpans(declaration);
@@ -727,15 +805,30 @@ export function rerootDeclaration(
          );
       }
       if (replaced === undefined) return undefined;
-      pairHead = ` ${pairRenames(r.pair)}`;
+      // Behind an include, the pair's renames go ahead of it with the
+      // others (Malloy refuses a rename in the block just after an include,
+      // known limitation 30), and the include hides each internally.
+      if (ahead) {
+         generated.push(
+            ...pairStoredColumns(r.pair).map((c) => ({
+               internal: c.internalName,
+               column: c.column,
+               access: "internal" as const,
+            })),
+         );
+      }
+      pairHead = pairRenames(r.pair, !ahead);
+      if (pairHead) pairHead = ` ${pairHead}`;
       extend = `${replaced}${pairMeasures(r.pair)}`;
    }
    // The inverse renames just after the include are refused by Malloy,
    // which would fail the whole served copy and send every source in the
    // model live: refuse this source's re-root alone instead (known
-   // limitation 25; a pair table's renames there still fail the copy).
+   // limitation 30). A pair table's renames go ahead of the include (above).
    if (ahead && renames !== "") return undefined;
+   const keptAsWritten = new Set(termsKeptAsWritten(r));
    const terms = (r.readTimeTerms ?? [])
+      .filter((t) => !keptAsWritten.has(t))
       .map(readTimeTermText)
       .filter((t) => t !== undefined);
    const reread = terms.length ? ` extend { where: ${terms.join(", ")} }` : "";
@@ -834,9 +927,10 @@ function pairStoredColumns(
  * The extend block that opens a pair table's served source: the flags and
  * each child column renamed internally, so the record and the re-declared
  * measures read them and no query does; for a block of a multi-path table,
- * the rows of that block only.
+ * the rows of that block only. Without `withRenames` (a re-root that writes
+ * an include renames them ahead of it), only the block's `where:`, or "".
  */
-function pairRenames(pair: PairReroot): string {
+function pairRenames(pair: PairReroot, withRenames = true): string {
    const renames = pairStoredColumns(pair)
       .map(
          (c) => `    ${identifier(c.internalName)} is ${identifier(c.column)}`,
@@ -845,6 +939,7 @@ function pairRenames(pair: PairReroot): string {
    const lane = pair.block
       ? `\n  where: ${identifier(pair.block.laneField)} = ${Math.trunc(pair.block.lane)}`
       : "";
+   if (!withRenames) return lane ? `extend {${lane}\n}` : "";
    return `extend {\n  internal rename:\n${renames}${lane}\n}`;
 }
 
@@ -1019,6 +1114,29 @@ function readTimeTermText(term: MaterializeReadTimeTerm): string | undefined {
          // build generator takes a term out only there).
          return;
    }
+}
+
+/**
+ * The current-time terms a re-root leaves to the kept text: each that reads
+ * a hidden dimension the kept text computes at read
+ * ({@link Reroot.computedAtRead}). Such a dimension is defined only in the
+ * kept text, so the term cannot be written on the stored table ahead of it,
+ * and the term itself is in that text too (whatever reads a field the
+ * source's own or a kept base's block defines is written there or after it,
+ * on the chain the re-root keeps), so it is applied as the author wrote it,
+ * as a given-reading term is. The serve side confirms each on the served
+ * compile's filters and leaves the source as written when one is missing.
+ */
+export function termsKeptAsWritten(
+   r: Pick<Reroot, "readTimeTerms" | "computedAtRead">,
+): MaterializeReadTimeTerm[] {
+   const atRead = new Set(r.computedAtRead ?? []);
+   if (atRead.size === 0) return [];
+   return (r.readTimeTerms ?? []).filter(
+      (t) =>
+         t.kind === "current_time" &&
+         (atRead.has(t.window.field) || t.columns.some((c) => atRead.has(c))),
+   );
 }
 
 /** A timeframe column with the internal name its stored value is renamed to. */
@@ -1257,7 +1375,16 @@ function pairTypedColumns(pair: PairReroot): ServedColumn[] {
  * statement's own annotations (`#@ persist`, `#(authorize)`) are separated
  * from it.
  */
-function withTypes(text: string, applied: readonly Reroot[]): string {
+function withTypes(
+   text: string,
+   applied: readonly Reroot[],
+): {
+   text: string;
+   /** How far the author's statements moved down. */
+   shift: number;
+   /** Each re-root's `type:` declaration, in `applied`'s order, as offsets. */
+   types: { start: number; end: number }[];
+} {
    const lines = text.split("\n");
    let i = 0;
    while (i < lines.length) {
@@ -1273,27 +1400,39 @@ function withTypes(text: string, applied: readonly Reroot[]): string {
       }
       break;
    }
-   const types = applied
-      .map((r) =>
-         typeDeclaration(
-            r.pair
-               ? {
-                    typeName: r.typeName,
-                    inlinedJoins: r.inlinedJoins,
-                    // Each child column carries its field's annotations, so
-                    // the record's fields, derived from it, keep its
-                    // classification (a record's own fields cannot be
-                    // annotated).
-                    columns: [...r.columns, ...pairTypedColumns(r.pair)],
-                 }
-               : r,
-         ),
-      )
-      .join("\n");
+   const declarations = applied.map((r) =>
+      typeDeclaration(
+         r.pair
+            ? {
+                 typeName: r.typeName,
+                 inlinedJoins: r.inlinedJoins,
+                 // Each child column carries its field's annotations, so
+                 // the record's fields, derived from it, keep its
+                 // classification (a record's own fields cannot be
+                 // annotated).
+                 columns: [...r.columns, ...pairTypedColumns(r.pair)],
+              }
+            : r,
+      ),
+   );
+   const types = declarations.join("\n");
    const head = lines.slice(0, i).join("\n");
    const rest = lines.slice(i).join("\n");
    const flag = applied.some(hasHiddenColumns)
       ? SERVED_COPY_ACCESS_FLAG
       : SERVED_COPY_FLAG;
-   return `${head}${head ? "\n" : ""}${flag}\n${types}\n\n${rest}`;
+   const prefix = `${head}${head ? "\n" : ""}${flag}\n`;
+   const out = `${prefix}${types}\n\n${rest}`;
+   const restAt = i === 0 ? 0 : head.length + 1;
+   const typeSpans: { start: number; end: number }[] = [];
+   let at = prefix.length;
+   for (const declaration of declarations) {
+      typeSpans.push({ start: at, end: at + declaration.length });
+      at += declaration.length + 1;
+   }
+   return {
+      text: out,
+      shift: out.length - rest.length - restAt,
+      types: typeSpans,
+   };
 }

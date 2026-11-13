@@ -36,6 +36,15 @@ export function servedCopyAlias(destinationName: string): string {
    return alias;
 }
 
+/**
+ * Whether `text` names a served-copy alias anywhere in it (a compiler message
+ * about the served copy can: a join refused across connections names both
+ * connections). Such text stays in the server log, never in a caller's view.
+ */
+export function namesServedCopyAlias(text: string): boolean {
+   return text.includes(`__publisher_storage_${TOKEN}_`);
+}
+
 /** Whether `name` is a served-copy alias (never an author's connection). */
 export function isServedCopyAlias(name: string): boolean {
    return destinationsByAlias.has(name);
