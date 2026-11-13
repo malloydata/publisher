@@ -4,7 +4,6 @@
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { getV1ServedCopyMode } from "../../../config";
 import { logger } from "../../../logger";
-import { recordSourceBuildDuration } from "../../../materialization_metrics";
 import { errMessage } from "../../../utils";
 import { quoteRenameTarget, quoteTablePath } from "../../quoting";
 import { storedColumnsOfOutput } from "../stored_column_types";
@@ -110,8 +109,8 @@ export class ColocatedCtasStrategy
       manifest.update(sourceEntityId, { tableName: quotedPhysical });
 
       const durationMs = Math.round(performance.now() - startTime);
-      recordSourceBuildDuration(durationMs, "in_warehouse");
-      logger.info(`Built materialized source ${persistSource.name}`, {
+      // Debug: the run's `materialization.build.finished` is the build's event.
+      logger.debug(`Built materialized source ${persistSource.name}`, {
          physicalTableName,
          durationMs,
       });
