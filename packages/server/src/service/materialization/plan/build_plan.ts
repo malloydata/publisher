@@ -601,6 +601,8 @@ async function collectGeneratedMaterialize(
       ...args,
       contents: authorDef.contents ?? {},
       givens: authorDef.givens ?? {},
+      // P9's probes compile against the author's model, never run.
+      probe: args.materializer,
    });
    for (const refusal of refused) {
       addAnnotationFinding(

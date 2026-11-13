@@ -98,15 +98,36 @@
  * Not yet (each is a later pull request's, and is refused or left out here
  * rather than built wrong):
  * - `inline=` on a join_cross is refused.
- * - A dimension that reads a given is not left out of the build: a source
- *   with one is refused by the same eligibility gates that refuse it under
- *   `#@ persist` today.
- * - A dimension that depends on the query time zone (`hour(ts)`) is stored as
- *   the build computes it; the plan computes it at read instead, which needs
- *   the rewriter's served copy to tell such a column apart.
+ * - A dimension that reads a given and is declared on a source this one is
+ *   built from (not on its own declaration) refuses the source: the re-root
+ *   replaces that declaration, so the served copy could not compute it at
+ *   read (P9, below).
  * - The build reads the author's file as written, not a copy with its
  *   `#@ persist` lines removed, so a source that also carries its own
  *   `#@ persist` is refused rather than stored twice.
+ *
+ * Caller-dependent dimensions (P9). A dimension whose value depends on what
+ * the caller sets is left out of the build and computed at read by the served
+ * copy, which keeps its definition (only stored dimensions' definitions are
+ * dropped), over its inputs, which are stored: one that reads a given, the
+ * current time or the query time zone. The probe compiler (probe_compiler.ts)
+ * answers which, by compiling a probe of each computed dimension, never
+ * running it; the IR walks ({@link givenReadingFields}, `currentTimeFields`)
+ * answer too, and either marking a dimension leaves it out. A given or the
+ * current time leaves it out wherever it is declared (a given-reading one
+ * declared on a base refuses the source, since the served copy would lose its
+ * definition and an author should hear why); the time zone leaves out only a
+ * dimension the source's own declaration writes, since one declared on a base
+ * would be lost from the served copy: that one is stored as the build computes
+ * it, in the default zone, and a query that sets a `timezone:` over its table
+ * is answered live. A stored computed dimension the probe cleared of the time
+ * zone is marked `zoneFree`, so a `timezone:` query over a table that stores
+ * only such dimensions is not declined for it. The source's rows are probed
+ * too: a `where:` term or base relation whose SQL moves with the zone (a
+ * timestamp literal) filtered the table in the build's zone, so only a source
+ * the probe cleared is marked `zoneFreeRows`, and a `timezone:` query over
+ * any other's table is answered live. Each left-out dimension is listed on
+ * the plan (`leftOut`).
  *
  * A current-time `where:` term is a rolling window (rolling_window.ts): a lower
  * bound builds as written, since the build's own `now` is the widest-set
@@ -195,9 +216,11 @@ import {
    type InlinedJoinText,
 } from "../inlined_join_text";
 import { offsetOf } from "../malloy_lexer";
+import { callerIndependent, type FieldDependence } from "../../probe_compiler";
 import {
    classifyWhereTerms,
    currentTimeFields,
+   givenReadingFields,
    type ClassifiedWhereTerm,
    type MalloyRange,
    type TermUse,
@@ -408,6 +431,13 @@ export interface MaterializeColumn {
     */
    access?: "private" | "internal";
    /**
+    * For a stored computed dimension of the source's own: the probe compiler
+    * found its value the same in every query time zone (P9), so a query that
+    * sets a `timezone:` reads it from the table. Absent: unknown, and such a
+    * query is answered live.
+    */
+   zoneFree?: true;
+   /**
     * For a column of an inlined join's joined source: the join's name, with
     * {@link dimension} the joined source's field. The served copy declares
     * these under the join's name, in place of the join.
@@ -489,6 +519,18 @@ export function givenReadTerms(
    );
 }
 
+/** What a caller sets that a left-out dimension's value depends on (P9). */
+export type CallerInput = "given" | "current_time" | "time_zone";
+
+/**
+ * A dimension of a materialized source left out of its build because its
+ * value depends on the caller (P9): the served copy computes it at read.
+ */
+export interface LeftOutDimension {
+   dimension: string;
+   reads: CallerInput[];
+}
+
 /** A given a read-time term reads, and the file that declares it. */
 export interface MaterializeGivenDeclaration {
    name: string;
@@ -531,6 +573,20 @@ export interface MaterializePlan {
    givenDeclarations?: MaterializeGivenDeclaration[];
    /** The joins the declaration inlines (`inline=[…]`). */
    inline?: string[];
+   /**
+    * The source's own computed dimensions left out of the build because each
+    * depends on the caller (P9), in field order. Absent when none is.
+    */
+   leftOut?: LeftOutDimension[];
+   /**
+    * The probe compiler found the source's rows the same in every query time
+    * zone (P9): its `where:` terms and base relation compile to the same SQL
+    * at every probe zone. Absent: a `where: ts > @2026-03-08 09:00` (or a
+    * base the probe could not clear) filtered the table's rows in the
+    * build's zone, so a query that sets a `timezone:` over it is answered
+    * live.
+    */
+   zoneFreeRows?: true;
    /** One uniqueness check per inlined join_one (P8). */
    uniquenessChecks?: InlineUniquenessCheck[];
    /**
@@ -915,10 +971,16 @@ export function materializeColumns(
       joinReads?: ReadonlyMap<string, FieldJoinReads | undefined>;
       inline?: ReadonlySet<string>;
       hasJoins?: boolean;
+      /** Dimensions the build leaves out because each depends on the caller (P9). */
+      leftOut?: ReadonlySet<string>;
+      /** Stored computed dimensions the probe cleared of the time zone (P9). */
+      zoneFree?: ReadonlySet<string>;
    } = {},
 ): MaterializeColumn[] {
    const out: MaterializeColumn[] = [];
    const perRead = currentTimeFields(def.fields);
+   // A dimension that reads a given is never stored, whoever asks (P9).
+   const perCaller = givenReadingFields(def.fields);
    for (const raw of def.fields ?? []) {
       const field = raw as FieldLike;
       const nested = storableArray(field);
@@ -929,6 +991,8 @@ export function materializeColumns(
       const dimension = storableDimension(field);
       if (dimension === undefined) continue;
       if (perRead.has(dimension)) continue;
+      if (field.e !== undefined && perCaller.has(dimension)) continue;
+      if (options.leftOut?.has(dimension)) continue;
       const access = hiddenAccess(field);
       const computed = field.e !== undefined;
       if (computed && options.joinReads) {
@@ -946,10 +1010,92 @@ export function materializeColumns(
          dimension,
          column: dimension,
          computed,
+         ...(computed && options.zoneFree?.has(dimension)
+            ? { zoneFree: true as const }
+            : {}),
          ...(access ? { access } : {}),
       });
    }
    return out;
+}
+
+/**
+ * Which of a materialized source's own computed dimensions depend on the
+ * caller (P9), from the probe compiler's answers (`probed`, by dimension;
+ * absent when no probe ran) and the IR walks, and which stored ones the probe
+ * cleared of the time zone. A dimension that reads a given and is declared on
+ * a base, not on the source's own declaration, is a refusal: the served copy
+ * re-roots the declaration and would lose it. So is an inlined join through
+ * which a given is read: its stored columns would hold one caller's values.
+ */
+export function callerDependentDimensions(
+   def: SourceDefLike,
+   probed: ReadonlyMap<string, FieldDependence> | undefined,
+   inline: readonly string[] = [],
+): { leftOut: LeftOutDimension[]; zoneFree: Set<string> } | { reason: string } {
+   const givenIR = givenReadingFields(def.fields);
+   for (const j of inline) {
+      if (
+         givenIR.has(j) ||
+         [...givenIR].some((path) => path.startsWith(`${j}.`))
+      ) {
+         return {
+            reason:
+               `inline= names ${quotedName(j)}, through which a given is read, ` +
+               "so its stored columns would hold one caller's values; " +
+               "reference the join instead",
+         };
+      }
+   }
+   const timeIR = currentTimeFields(def.fields);
+   const declaration = declarationOf(def);
+   const ownDeclaration = (field: FieldLike): boolean => {
+      const at = (
+         field as { location?: { url?: unknown; range?: MalloyRange } }
+      ).location;
+      return (
+         declaration !== undefined &&
+         at?.url === declaration.url &&
+         at.range !== undefined &&
+         rangeWithin(at.range, declaration.range)
+      );
+   };
+   const leftOut: LeftOutDimension[] = [];
+   const zoneFree = new Set<string>();
+   for (const raw of def.fields ?? []) {
+      const field = raw as FieldLike;
+      const dimension = storableDimension(field);
+      if (dimension === undefined || field.e === undefined) continue;
+      const probe = probed?.get(dimension);
+      const reads: CallerInput[] = [];
+      if (givenIR.has(dimension) || (probe?.givens?.length ?? 0) > 0) {
+         reads.push("given");
+      }
+      if (timeIR.has(dimension) || probe?.currentTime === true) {
+         reads.push("current_time");
+      }
+      if (probe?.timeZone === true) reads.push("time_zone");
+      if (reads.includes("given") && !ownDeclaration(field)) {
+         return {
+            reason:
+               `the dimension ${quotedName(dimension)} reads a given and is ` +
+               "declared on a source this one is built from; the served copy " +
+               "re-roots only this declaration, so it could not compute the " +
+               "dimension at read. Declare it on this source, or materialize " +
+               "the source that declares it",
+         };
+      }
+      const perRead =
+         reads.includes("given") ||
+         reads.includes("current_time") ||
+         (reads.includes("time_zone") && ownDeclaration(field));
+      if (perRead) {
+         leftOut.push({ dimension, reads });
+      } else if (reads.length === 0 && callerIndependent(probe)) {
+         zoneFree.add(dimension);
+      }
+   }
+   return { leftOut, zoneFree };
 }
 
 /** A dimension's Malloy type on a compiled source, or "" when unknown. */
@@ -1651,6 +1797,18 @@ export function planModelMaterialize(
    contents: Record<string, unknown>,
    declaredHere?: (declaringURL: string) => boolean,
    givens?: Record<string, unknown>,
+   /**
+    * The probe compiler's answers for each source's computed dimensions, by
+    * `sourceID` then dimension (P9). Absent: the IR walks alone decide, and
+    * no stored dimension is cleared of the time zone.
+    */
+   probed?: ReadonlyMap<string, ReadonlyMap<string, FieldDependence>>,
+   /**
+    * The sources, by `sourceID`, whose rows the probe compiler found the same
+    * in every query time zone (P9). Absent, or a source not in it: a
+    * `timezone:` query over its table is answered live.
+    */
+   zoneFreeRows?: ReadonlySet<string>,
 ): {
    plans: MaterializePlan[];
    refused: MaterializeRefusal[];
@@ -1839,12 +1997,29 @@ export function planModelMaterialize(
          });
          continue;
       }
+      // A dimension that depends on the caller is left out and computed at
+      // read (P9).
+      const dependence = callerDependentDimensions(
+         def,
+         probed?.get(def.sourceID),
+         inline,
+      );
+      if ("reason" in dependence) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: dependence.reason,
+         });
+         continue;
+      }
       // What reads through an inlined join_many has one value per pair, not
       // per parent, so it is computed at read through the served join.
       const columns = materializeColumns(def, {
          joinReads: map.fieldJoinsOf(def.sourceID),
          inline: new Set(ones),
          hasJoins: joins.length > 0,
+         leftOut: new Set(dependence.leftOut.map((d) => d.dimension)),
+         zoneFree: dependence.zoneFree,
       });
       const ownColumns = new Set(columns.map((c) => c.column));
       const joinedColumns = [
@@ -2081,6 +2256,12 @@ export function planModelMaterialize(
               ? withDeclaration(declarationOf(def))
               : {}),
          ...(inline.length > 0 ? { inline } : {}),
+         ...(dependence.leftOut.length > 0
+            ? { leftOut: dependence.leftOut }
+            : {}),
+         ...(zoneFreeRows?.has(def.sourceID)
+            ? { zoneFreeRows: true as const }
+            : {}),
          ...(uniquenessChecks.length > 0 ? { uniquenessChecks } : {}),
          ...(pair ? { pair } : {}),
          ...(pairBlocks ? { pairBlocks } : {}),

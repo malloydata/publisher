@@ -420,6 +420,8 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
               }),
               importBaseURL: new URL(root),
            }),
+           // P9's probes, against the author's model, as the build plan runs them.
+           probe: materializer,
         }).then((c) => c.generated)
       : undefined;
    if (scenario.materialize && !companion) {

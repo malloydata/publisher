@@ -41,6 +41,10 @@ const TRUNCATIONS = [
 
 const model = `source: orders is duckdb.table('ev') extend {
   dimension: inherited_month is d.month
+  // A timestamp truncation declared on a base: stored as the build computed
+  // it, in the default zone (P9 computes at read only what the source's own
+  // declaration writes), so a timezone: query over the table declines.
+  dimension: inherited_day is ts.day
 }
 
 #(materialize) storage="lake"

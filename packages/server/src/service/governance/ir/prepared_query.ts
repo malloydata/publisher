@@ -77,6 +77,22 @@ export async function readPreparedQuery(runnable: {
 }
 
 /**
+ * `_query.givenUsage` of a prepared query: the ids of the givens the query
+ * reads, through the fields and joins it uses and their defaults, and not
+ * through a field it leaves unread. Undefined when the prepared query carries
+ * no such list (a caller decides what that means; every caller today fails
+ * closed). The one reader of this slot: the governor's surface filter, report
+ * tiles and the probe compiler (`../../probe_compiler.ts`) all read it here.
+ */
+export function queryGivenUsageIds(prepared: unknown): string[] | undefined {
+   const usage = preparedQueryView(prepared).query?.givenUsage;
+   if (!Array.isArray(usage)) return undefined;
+   return usage
+      .map((g) => (g as { id?: unknown } | null)?.id)
+      .filter((id): id is string => typeof id === "string");
+}
+
+/**
  * A `structRef` resolved to its struct: a string names a `contents` entry
  * (not checked to be a source); an object is the struct itself. Anything that
  * is not an object after resolution is `undefined`.
