@@ -238,7 +238,9 @@ class Walker {
 
    /**
     * Refuse a path through a join other than the inlined one that names an
-    * aggregate or a view of the joined source.
+    * aggregate or a view of the joined source, or that steps through a
+    * join_many or cross join past its first join (a join_one's own join_many
+    * fans out the pair rows as much as one on the source).
     */
    throughJoin(path: string[]): void {
       let fields = this.fields;
@@ -248,6 +250,15 @@ class Walker {
             throw new Refusal(
                `the query reads \`${path.join(".")}\`, unresolved`,
             );
+         if (
+            i > 0 &&
+            i < path.length - 1 &&
+            (f.join === "many" || f.join === "cross")
+         ) {
+            throw new Refusal(
+               `the query reads \`${path.join(".")}\`, through a join that fans out a pair table's rows`,
+            );
+         }
          if (i === path.length - 1) {
             if (isAggregateField(f) || f.type === "turtle") {
                throw new Refusal(
@@ -901,16 +912,31 @@ class LevelScan {
       return level;
    }
 
-   /** Note a path through a join that fans out the pair rows. */
+   /**
+    * Note a path through a join that fans out the pair rows: another block's
+    * record at its head, or a join_many or cross join at any step of it,
+    * stepped through from the queried source (a join_many reached through a
+    * join_one fans out as much as one on the source). `p` names joins only,
+    * or ends at a field, which is no join.
+    */
    private notePath(p: readonly unknown[], fields: Map<string, Field>): void {
-      const head = p[0];
-      if (typeof head !== "string") return;
-      if (this.pair.otherRecords?.includes(head)) {
+      if (typeof p[0] === "string" && this.pair.otherRecords?.includes(p[0])) {
          this.fansOut = true;
          return;
       }
-      const f = fields.get(head);
-      if (f && (f.join === "many" || f.join === "cross")) this.fansOut = true;
+      let scope = fields;
+      for (const name of p) {
+         if (typeof name !== "string") return;
+         const f = scope.get(name) as
+            | (Field & { fields?: unknown })
+            | undefined;
+         if (!f) return;
+         if (f.join === "many" || f.join === "cross") {
+            this.fansOut = true;
+            return;
+         }
+         scope = fieldsByName(f.fields);
+      }
    }
 
    private path(
@@ -922,7 +948,7 @@ class LevelScan {
       const f = fields.get(p[0]);
       if (!f) throw new Refusal(`the query reads \`${p[0]}\`, unresolved`);
       if (p.length > 1) {
-         this.notePath(p, fields);
+         this.notePath(p.slice(0, -1), fields);
          // Through another join: the joined source's own field, reached by
          // that join's condition, which may read the inlined join (its reads
          // of the join's own fields are the join's, not the parent's).
