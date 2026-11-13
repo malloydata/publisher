@@ -217,8 +217,10 @@ source: scoped is raw extend { where: org_id = $ORG_ID }
 ```
 
 The gates v1 applies to a given still apply, because the generated build source is judged like any
-`#@ persist` source: a given in a declared `dimension:` or `measure:`, or in a join's `on:`, is
-refused, and the source serves live.
+`#@ persist` source. A dimension that reads a given is left out of the build and computed at read, and
+a given-reading `where:` on a base the source extends in the same file is left out of the build and
+re-applied at read too, unlike v1, which refuses a given there
+([materialization.md](materialization.md#the-served-copy-in-development-publisher_materialize)).
 
 ### A rolling window: a current-time `where:`
 

@@ -3526,11 +3526,13 @@ export class Model {
                ? { answeredBy: "served_copy" as const }
                : {}),
          },
-         // The served copy is the author's text, gates included: a row-level
-         // gate is grafted and proven on its own compile, so the routed answer
-         // keeps it (R3), and an answer let past an entry-point gate is
-         // re-proven there. Any other routed shape carries no annotations and
-         // is never reached past a row-level gate (the router's veto).
+         // The served copy is the author's text, gates included, as are a
+         // persisted view's and a `#(preaggregate)` rollup's variants: a
+         // row-level gate is grafted and proven on its own compile, so the
+         // routed answer keeps it (R3), and an answer let past an entry-point
+         // gate is re-proven there. Any other routed shape carries no
+         // annotations and is never reached past a row-level gate (the
+         // router's veto).
          graftScope: answer.graftScope,
          routedPastEntryPointGate: answer.pastEntryPointGate,
       };
@@ -3565,11 +3567,13 @@ export class Model {
       // After the gate, so a denied caller gets its 403 rather than a 400 about
       // a value; before prepare, which is where Malloy would parse it.
       this.assertFilterGivens(givens);
-      // No post-hoc gate check is possible on a serve-shape or rollup
-      // runnable (it carries no annotations): their correctness rests
-      // entirely on `queryEntryPointHasRowLevelGate`. The served copy is the
-      // exception (R3): it keeps the author's gates, and `govern()` above
-      // grafted and proved them on its own compile.
+      // No post-hoc gate check is possible on a serve-shape or v1
+      // `#@ preaggregate` runnable (it carries no annotations): their
+      // correctness rests entirely on `queryEntryPointHasRowLevelGate`. The
+      // served copy, a persisted view and a `#(preaggregate)` rollup are the
+      // exceptions (R3): each keeps the author's gates on the run target's
+      // own `sourceID`, and `govern()` above grafted and proved them on its
+      // own compile.
 
       const maxRows = getMaxQueryRows();
       const maxBytes = getMaxResponseBytes();

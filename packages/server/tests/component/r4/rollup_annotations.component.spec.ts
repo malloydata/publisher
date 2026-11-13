@@ -137,7 +137,7 @@ describe.each([
          malloy: string,
          served: boolean,
          bypassAuthorize = false,
-      ) => {
+      ): Promise<Answer> => {
          fixture.setBindings(served ? fixture.bindings : []);
          const audit = unrecordedAudit();
          try {

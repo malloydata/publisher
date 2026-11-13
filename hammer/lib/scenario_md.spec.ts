@@ -124,6 +124,34 @@ status: 404
       );
    });
 
+   it("parses (within=) on ## Destination tables, and refuses it elsewhere", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Destination tables (within=5s)\n\nExpect:\n\n| name |\n| ---- |\n| a    |\n`,
+         "t",
+      );
+      const step = parsed.steps[0]!;
+      expect(step.kind === "destination" && step.withinMs).toBe(5000);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Destination files (within=5s)\n\nExpect:\n\n| table |\n| ----- |\n| a     |\n`,
+            "t",
+         ),
+      ).toThrow(/applies only to ## Destination tables/);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Destination tables (within=5s)\n\nstatus: 404\n`,
+            "t",
+         ),
+      ).toThrow(/not a status/);
+      for (const bad of ["0s", "61s", "5", "500ms"])
+         expect(() =>
+            parseMarkdownForTest(
+               `${FRONT}\n## Destination tables (within=${bad})\n\nExpect:\n\n| name |\n| ---- |\n| a    |\n`,
+               "t",
+            ),
+         ).toThrow(/takes 1s to 60s/);
+   });
+
    it("rejects status: anywhere it would not be compared", () => {
       expect(() =>
          parseMarkdownForTest(

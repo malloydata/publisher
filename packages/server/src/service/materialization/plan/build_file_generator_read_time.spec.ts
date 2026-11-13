@@ -247,15 +247,26 @@ describe("P2: what is refused rather than left out", () => {
    }
 
    it(
-      "refuses a given term written on a source this one extends",
+      "refuses a given term written on a base in another file",
       async () => {
-         expect(
-            await refusal(`${HEAD}
+         const pkg = await packages.create({
+            "b.malloy": `${HEAD}
 source: scoped is raw extend { where: org_id = $ORG_ID }
+`,
+            "m.malloy": `##! experimental { givens }
+import "b.malloy"
 #(materialize) storage="lake"
 source: orders is scoped extend { dimension: big is amount > 10 }
-`),
-         ).toContain("not on this source's own declaration");
+`,
+         });
+         const c = await compilePackageBuildPlan(pkg);
+         expect(Object.keys(c.materializePlans ?? {})).toEqual([]);
+         expect(
+            (c.annotationFindings ?? []).find(
+               (f) =>
+                  f.code === "materialize-not-built" && f.subject === "orders",
+            )?.message,
+         ).toContain("on a source in another file");
       },
       { timeout: 30000 },
    );

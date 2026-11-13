@@ -259,6 +259,8 @@ export class PackageMaterialization {
    // `#@ persist` sources Malloy's build walk did not plan, which
    // would silently serve live. Warned, and refused at build.
    private droppedPersistSources: { name: string; modelPath: string }[] = [];
+   /** Rollups over a gated base whose gates are grafted at read (row 1). */
+   private rollupsKeepingGates = new Set<string>();
    private rollupsOverStoredBase: { baseName: string; modelPath?: string }[] =
       [];
    private annotationFindings: PackageAnnotationFinding[] = [];
@@ -393,11 +395,13 @@ export class PackageMaterialization {
             incrementalDeclarations,
             buildConnectionNames,
             materializePlans,
+            rollupsKeepingGates,
          } = workerPlan
             ? workerPlan.outcome
             : await computePackageBuildPlan(this.owner.buildPlanPackage);
          this.buildPlan = plan;
          this.materializePlans = materializePlans ?? {};
+         this.rollupsKeepingGates = new Set(rollupsKeepingGates ?? []);
          this.buildPlanFailed = false;
          this.servingPlanWhileUnavailable = null;
          this.droppedPersistSources = droppedPersistSources;
@@ -438,6 +442,7 @@ export class PackageMaterialization {
          this.colocatedSourceEligibility = undefined;
          this.incrementalPolicySources = [];
          this.rollupsOverStoredBase = [];
+         this.rollupsKeepingGates = new Set();
          recordBuildPlanComputeFailed();
          logger.warn(
             `Failed to compute build plan for package ${this.owner.packageName()}`,
@@ -1524,6 +1529,7 @@ export class PackageMaterialization {
             return reaching.length > 0 && reaching.every((root) => root.gated);
          },
          servedCopyKeepsGates: getMaterializeGatedSources(),
+         rollupKeepsGates: (sourceID) => this.rollupsKeepingGates.has(sourceID),
          refusedAtBind: (sourceID, source, tier) =>
             this.refusedAtBind(sourceID, source, tier),
          boundEntityIds: new Set(Object.keys(this.buildManifestEntries ?? {})),

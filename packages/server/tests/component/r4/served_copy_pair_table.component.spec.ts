@@ -720,7 +720,7 @@ describe("R4: an inherited, render-tagged or inferred-class joined field", () =>
       ],
       [
          "the field in a nest",
-         "run: flights -> { group_by: carrier; nest: legs is { group_by: segments.leg; aggregate: n is segments.count() } }",
+         "run: flights -> { group_by: carrier; nest: legs is { group_by: segments.leg; aggregate: n is segments.count(); order_by: leg } }",
       ],
       ["a view read by name", "run: flights -> by_leg"],
       [

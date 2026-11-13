@@ -119,17 +119,21 @@ export interface Reroot {
    reservedNames?: readonly string[];
    /**
     * For a `#(materialize)` re-root: its plan's read-time terms, applied again
-    * over the stored table at every read ({@link readTimeTermText}). A term
-    * inherited from a base is not in the source's own text, so the re-root
-    * writes every term right on the stored table (one the source's own
-    * `extend` repeats is applied twice, which is harmless).
+    * over the stored table at every read ({@link readTimeTermText}). A
+    * current-time term inherited from a base is not in the source's own text,
+    * so the re-root writes it right on the stored table (one the source's own
+    * `extend` repeats is applied twice, which is harmless). A given-reading
+    * term is kept as the author wrote it, in the source's own blocks or a
+    * base's kept block ({@link keptBlocks}).
     */
    readTimeTerms?: readonly MaterializeReadTimeTerm[];
    /**
-    * For an extension table (P10): the trailing `extend` runs of the sources
-    * between it and its nearest materialized ancestor, that ancestor's
-    * included, root first, as their own declarations wrote them in this file.
-    * Its table holds every one of their rows and stored columns, so the
+    * The trailing `extend` runs of the bases the source is built from in this
+    * file, root first, as their own declarations wrote them
+    * (kept_ancestors.ts). For an extension table (P10), whose table holds
+    * every one of their rows and stored columns, and for a source whose plan
+    * left out a base's given-reading `where:` or caller-dependent dimension
+    * (`keptBases`), which only that base's block re-applies at read. The
     * re-root keeps their blocks ahead of its own, and their measures, joins
     * and views stay the source's.
     */
@@ -960,7 +964,9 @@ function readTimeTermText(term: MaterializeReadTimeTerm): string | undefined {
    switch (term.kind) {
       case "current_time":
          // Written from the classified parts, never the author's text: a term
-         // inherited from a base is re-applied here, outside its own file.
+         // inherited from a base is re-applied here, outside its own file. A
+         // lower bound trims what the build's `now` kept; an upper bound, left
+         // out of the build, is applied here alone (a two-sided term is two).
          return nowComparison(
             term.window.field,
             term.window.op,
@@ -968,8 +974,9 @@ function readTimeTermText(term: MaterializeReadTimeTerm): string | undefined {
          );
       case "given":
          // Kept, not written: a given-reading term (P2) is in the
-         // declaration's own trailing `extend`, which the re-root keeps as the
-         // author wrote it (the build generator takes a term out only there).
+         // declaration's own trailing `extend` or a kept base's
+         // (`keptBlocks`), which the re-root keeps as the author wrote it (the
+         // build generator takes a term out only there).
          return;
    }
 }

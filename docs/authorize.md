@@ -273,6 +273,19 @@ for the full contract and how to bound that staleness. `storage=` and `#@ preagg
 unconditionally refused for any `#(access_filter)`-gated source — the relaxation applies to colocated
 persistence only.
 
+**Colocated `#(preaggregate)` rollups (in development).** With `PUBLISHER_MATERIALIZE` and
+`PUBLISHER_MATERIALIZE_GATED_SOURCES` on, a materialization v2 `#(preaggregate)` rollup over a gated
+source is built in the source's own warehouse and read past the gate, the same way: the queried source
+is redeclared over the rollup with its own gates and keeps its identity, so this section's rules hold
+on it unchanged — the gate is grafted onto it per request, proven bound to the source's own field, and
+a gate that cannot be grafted denies. It is built only when every field the gate reads is one of the
+rollup's grain dimensions (so filtering the rollup's groups admits exactly the rows live admits), and
+read only when the gates on the rollup equal the live entry point's; otherwise the rollup is not built,
+or the query is answered live. One table holds every caller's groups, filtered per caller at read, so the
+staleness contract above applies to it as to any colocated table. A rollup in a `storage=` destination
+over a gated source stays off until the managed tier's security review, and a v1 `#@ preaggregate`
+rollup is never read past a gate. See [preaggregation.md](preaggregation.md#preaggregate-materialization-v2-behind-publisher_materialize).
+
 Declare the gate the same way as on any other source — directly above the `source:` line, whether or
 not that line is also tagged `#@ persist`:
 
