@@ -183,7 +183,9 @@ source: summary is orders_raw -> {
       try {
          // Built into the source's own warehouse, and read there by the
          // served copy (phase 3 pull request 6).
-         expect(fixture.built).toEqual([{ name: "summary", tier: "colocated" }]);
+         expect(fixture.built).toEqual([
+            { name: "summary", tier: "colocated" },
+         ]);
          expect(codes(fixture, "materialize-not-built")).toEqual([]);
          expect(fixture.verdicts).toEqual(["summary:serves"]);
          const ran = await run(fixture, "m.malloy", SUMMARY_QUERY);
@@ -628,11 +630,13 @@ source: colocated is orders_raw -> {
       );
       try {
          // Before: "summary:live:shadowed" although the served copy answers it.
-         // A colocated one is not planned at all (`materialize-not-built`).
-         expect(fixture.verdicts.sort()).toEqual(["summary:serves"]);
-         expect(
-            codes(fixture, "materialize-not-built").map((w) => w.subject),
-         ).toEqual(["colocated"]);
+         // A colocated one is served by the served copy too, from its own
+         // warehouse (phase 3 pull request 6).
+         expect(fixture.verdicts.sort()).toEqual([
+            "colocated:serves",
+            "summary:serves",
+         ]);
+         expect(codes(fixture, "materialize-not-built")).toEqual([]);
          const ran = await run(fixture, "m.malloy", SUMMARY_QUERY);
          expect(ran.servedBy).toBe("materialized");
          const colocated = await run(
@@ -640,7 +644,9 @@ source: colocated is orders_raw -> {
             "m.malloy",
             "run: colocated -> { group_by: region; aggregate: t is total.sum() }",
          );
-         expect(colocated.servedBy).toBe("live");
+         expect(colocated.servedBy).toBe("materialized");
+         expect(reads(colocated.sql, "colocated_tbl")).toBe(true);
+         expectReportMatchesSQL(fixture, colocated);
       } finally {
          await fixture.dispose();
       }

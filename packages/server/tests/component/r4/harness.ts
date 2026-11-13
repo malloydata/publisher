@@ -36,6 +36,7 @@ import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
 import {
+   type Connection,
    FixedConnectionMap,
    type GivenValue,
    InMemoryURLReader,
@@ -149,6 +150,18 @@ export interface R4Scenario {
     * the build manifest (Malloy substitutes them), not a storage binding.
     */
    colocated?: string[];
+   /**
+    * A warehouse other than DuckDB (a real Postgres) under `name`, the
+    * scenario's default connection: the seed SQL runs on it, and each
+    * colocated `#(materialize)` table is built in it, in `schema`, and read
+    * by the served copy there. The scenario's DuckDB stays as the storage
+    * destination. Colocated `#(materialize)` scenarios only.
+    */
+   warehouse?: {
+      name: string;
+      connection: Connection;
+      schema: string;
+   };
 }
 
 export type Row = Record<string, unknown>;
@@ -323,10 +336,9 @@ export function colocatedFiles(
  * served_copy_colocated.component.spec.ts.
  */
 export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
-   if (
-      process.env.R4_MATERIALIZE_TIER === "colocated" &&
-      scenario.materialize
-   ) {
+   const exploringColocated =
+      process.env.R4_MATERIALIZE_TIER === "colocated" && !!scenario.materialize;
+   if (exploringColocated) {
       scenario = { ...scenario, files: colocatedFiles(scenario.files) };
    }
    const dir = scratchDir();
@@ -340,7 +352,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    } else {
       duckdb = freshDuckDB("duckdb", dir);
    }
-   for (const sql of scenario.seedSql) await duckdb.runSQL(sql);
+   const warehouse = scenario.warehouse;
+   if (warehouse) {
+      for (const sql of scenario.seedSql)
+         await warehouse.connection.runSQL(sql);
+   } else {
+      for (const sql of scenario.seedSql) await duckdb.runSQL(sql);
+   }
    // On disk, as a package's files are: the serve shape lifts a source's joins
    // and views verbatim from its file, and drops them when it cannot read it.
    for (const [file, text] of Object.entries(scenario.files)) {
@@ -352,13 +370,17 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const root = `${pathToFileURL(dir).href}/`;
    const urlOf = (file: string) => pathToFileURL(path.join(dir, file)).href;
 
-   const connections = new Map<string, DuckDBConnection>([["duckdb", duckdb]]);
+   const connections = new Map<string, Connection>([["duckdb", duckdb]]);
+   if (warehouse) connections.set(warehouse.name, warehouse.connection);
    for (const [name, sql] of Object.entries(scenario.origins ?? {})) {
       const origin = freshDuckDB(name, dir);
       for (const statement of sql) await origin.runSQL(statement);
       connections.set(name, origin);
    }
-   const authorConnections = new FixedConnectionMap(connections, "duckdb");
+   const authorConnections = new FixedConnectionMap(
+      connections,
+      warehouse?.name ?? "duckdb",
+   );
    const [entry] = Object.keys(scenario.files);
    const urlReader = new InMemoryURLReader(
       new Map(
@@ -637,8 +659,12 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       if (colocatedMaterialize(source)) {
          // As a colocated build builds it: its own SQL, in its warehouse,
          // reading a colocated parent's table through the build manifest.
-         const table = `r4_${source.name}_${i}`;
-         await duckdb.runSQL(
+         const table =
+            warehouse && source.connectionName === warehouse.name
+               ? `${warehouse.schema}.r4_${source.name}_${i}`
+               : `r4_${source.name}_${i}`;
+         const builder = connections.get(source.connectionName) ?? duckdb;
+         await builder.runSQL(
             `CREATE TABLE ${table} AS ${buildSQLOf(source, {
                entries: { ...colocatedEntries },
             })}`,
@@ -767,7 +793,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                   name: source.name,
                   sourceEntityId: plan[source.sourceID].sourceEntityId,
                   connectionName: source.connectionName,
-                  dialect: "duckdb",
+                  dialect: source.dialectName,
                },
             ]),
          ),
@@ -959,7 +985,15 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             served: served.rows,
             liveFields: live.fields,
             servedFields: served.fields,
-            servedFrom: served.servedFrom,
+            // Under the exploratory colocated switch a served-copy answer
+            // from a colocated table reports no storage hit; read it as the
+            // `storage=` scenario's would, so the run shows what else differs.
+            servedFrom:
+               exploringColocated &&
+               served.servedFrom === null &&
+               served.path?.servedBy?.via === "served_copy"
+                  ? "storage"
+                  : served.servedFrom,
             servedBy: served.path?.servedBy,
             ...(served.path?.servedBy?.via
                ? { servedVia: served.path.servedBy.via }

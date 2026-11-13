@@ -1177,7 +1177,9 @@ export class ServedCopyServe {
             this.packageConfig,
             destinations(),
             new Set(
-               rerooted.filter((b) => !b.colocated).map((b) => b.destinationName),
+               rerooted
+                  .filter((b) => !b.colocated)
+                  .map((b) => b.destinationName),
             ),
          );
          const load = async (files: ReadonlyMap<string, string>) => {

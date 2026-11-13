@@ -14,6 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
+   colocatedFiles,
    disposeScenarios,
    rowDifference,
    type R4Fixture,
@@ -82,9 +83,12 @@ const QUERIES = [
    ["the ancestor's view through the join", "run: long_flights -> by_carrier"],
 ] as const;
 
-// `storage=` only: a colocated `#(materialize)` is not built
-// (`COLOCATED_NOT_SERVED`, #1666), so there is no colocated extension table.
+// Colocated too (phase 3 pull request 6): the tables sit in the source's own
+// warehouse, so the parent's join kept as written stays on one connection
+// and nothing is left out.
 for (const [label, storage, parentInline, problems] of [
+   ["colocated, the parent inlining it too", "", 'inline=["carriers"] ', []],
+   ["colocated, the parent not inlining it", "", "", []],
    [
       "storage=, the parent inlining it too",
       'storage="lake" ',
@@ -107,8 +111,9 @@ for (const [label, storage, parentInline, problems] of [
          restore = installSettings({
             env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
          }).restore;
+         const files = { "m.malloy": model(storage, parentInline) };
          fixture = await buildScenario({
-            files: { "m.malloy": model(storage, parentInline) },
+            files: storage ? files : colocatedFiles(files),
             seedSql,
             materialize: true,
          });

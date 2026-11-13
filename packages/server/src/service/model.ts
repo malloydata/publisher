@@ -2953,7 +2953,9 @@ export class Model {
       // the served copy alone; no other leg reads one.
       const colocated = bindings.filter((b) => b.colocated);
       const stored =
-         colocated.length === 0 ? bindings : bindings.filter((b) => !b.colocated);
+         colocated.length === 0
+            ? bindings
+            : bindings.filter((b) => !b.colocated);
       const others =
          views.size === 0 && rollups.size === 0
             ? stored

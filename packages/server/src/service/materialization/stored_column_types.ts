@@ -434,7 +434,8 @@ export function storedColumnsOfOutput(
 ): StoredColumn[] {
    const out: StoredColumn[] = [];
    for (const f of fields ?? []) {
-      const name = (f as { as?: unknown; name?: unknown })?.as ??
+      const name =
+         (f as { as?: unknown; name?: unknown })?.as ??
          (f as { name?: unknown })?.name;
       if (typeof name !== "string") continue;
       const type = storedTypeOfField(f, options.nested, 0);
@@ -493,7 +494,8 @@ function structOf(
 ): string | undefined {
    const parts: string[] = [];
    for (const f of fields ?? []) {
-      const name = (f as { as?: unknown; name?: unknown })?.as ??
+      const name =
+         (f as { as?: unknown; name?: unknown })?.as ??
          (f as { name?: unknown })?.name;
       if (typeof name !== "string") return undefined;
       const type = storedTypeOfField(f, true, depth + 1);
