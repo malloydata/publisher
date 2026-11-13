@@ -21,6 +21,15 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — In development: a pair table's middle sums beside the leaf, and incremental refresh for paths and blocks
+
+Behind `PUBLISHER_MATERIALIZE` (off by default). Two pair-table gaps close (materialization v2 known limitation 9):
+
+- **A middle level beside the leaf.** In a path of join_manys (`inline=["items.options"]`), a sum or an average of a stored column of `items` (`items.price.sum()` declared on the source) beside `items.options` fields was answered live; it is now answered from the table when every join down to `items` is keyed on the level above's primary key (`join_many: items on items.order_id = id`), which the build already checks unique and never null, so each item has one order. A middle count, an aggregate of a computed middle field, and a level joined on anything else stay live.
+- **Incremental paths and blocks.** A path's pair table, and a table of several inlined join_manys, declared `refresh="incremental"` used to rebuild in full (`materialize-pair-full-refresh`). They now refresh in place as a one-join pair table does, replacing whole parents, when the watermark names a field of the source and of every level of every path (`watermark=["updated_at", "items.loaded_at", "items.options.loaded_at"]`). Each refresh checks every level's row flag, and for blocks every block's flags and that each parent keeps rows in every block, and rolls back to a full rebuild if one fails. A table of several blocks stores one more internal column, `__pair_watermark_block`. A watermark missing a level still rebuilds in full, with the warning naming the level.
+
+No API change. See docs/materialization.md, "An incremental pair table".
+
 ## [Unreleased] — In development: a `#(preaggregate)` rollup no query reads, over a source with its own time zone, is not built
 
 Behind `PUBLISHER_MATERIALIZE` (off by default). A query on a source that sets its own `timezone:` is never answered from a rollup (`TIME_ZONE`), yet the rollup was still planned and built. Now such a rollup, on a source that sets or inherits its own `timezone:`, is not built, with a `preaggregate-time-zone` warning, unless it is colocated and another source in the same zone joins it, which a query on that source still reads through the join. Answers are unchanged; the build no query read is gone. No API change. See docs/preaggregation.md.
