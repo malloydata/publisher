@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { unrecordedAudit } from "./access_record";
-import { API, MalloyError, Runtime } from "@malloydata/malloy";
+import {
+   API,
+   EMPTY_BUILD_MANIFEST,
+   MalloyError,
+   Runtime,
+} from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import sinon from "sinon";
@@ -420,8 +425,11 @@ describe("service/model", () => {
             ).rejects.toThrow(MalloyError);
 
             expect(preparedResultStub.calledOnce).toBe(true);
+            // Under the v1 cutover the live run reads no table: an explicit
+            // empty manifest, never the runtime's.
             expect(preparedResultStub.firstCall.args[0]).toEqual({
                givens: givensArg,
+               buildManifest: EMPTY_BUILD_MANIFEST,
             });
             expect(runStub.firstCall.args[0]).toMatchObject({
                givens: givensArg,

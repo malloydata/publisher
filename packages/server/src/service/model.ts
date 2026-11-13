@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   EMPTY_BUILD_MANIFEST,
    GivenValue,
    isSourceDef,
    MalloyConfig,
@@ -3346,8 +3347,12 @@ export class Model {
       const viewBuildManifest = this.withoutPreaggregateEntries(buildManifest);
       // Without persisted-view entries too: only the view leg's variant
       // imports a view's build source (it carries the persistence flag).
+      // Under the cutover the live compile reads no table at all: an explicit
+      // empty manifest, since with none Malloy falls back to the manifest
+      // the model's runtime was reloaded with, which no freshness window
+      // filters and no path report names.
       const liveBuildManifest = cutover
-         ? undefined
+         ? EMPTY_BUILD_MANIFEST
          : this.manifestIfPersistent(
               this.withoutPersistedViewEntries(viewBuildManifest),
            );
