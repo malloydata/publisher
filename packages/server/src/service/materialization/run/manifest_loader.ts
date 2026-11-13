@@ -11,6 +11,7 @@ import {
    boundSchemaOf,
    FreshnessManifest,
    isLegacyFailedEntry,
+   type KeyUniqueness,
    ManifestEntry,
 } from "../types";
 
@@ -107,6 +108,9 @@ export async function fetchManifestEntries(
 export function splitManifestEntries(
    entries: Record<string, ManifestEntry>,
    source: string,
+   // Only a bind from Publisher's own store reads a rollup key record
+   // (withRollupKeyRecords); a host's manifest is never trusted with one.
+   readKeyUniqueness = false,
 ): FetchedManifest {
    const tableNameManifest: FreshnessManifest = {};
    const storageEntries: Record<string, ManifestEntry> = {};
@@ -140,7 +144,21 @@ export function splitManifestEntries(
          freshnessWindowSeconds: entry.freshnessWindowSeconds,
          freshnessFallback: entry.freshnessFallback,
          ...boundSchemaOf(entry.schema),
+         // Set only by a bind from the local store (withRollupKeyRecords);
+         // a host's manifest never carries it.
+         ...(readKeyUniqueness && keyUniquenessOnEntry(entry)
+            ? { keyUniqueness: keyUniquenessOnEntry(entry) }
+            : {}),
       };
    }
    return { tableNameManifest, storageEntries };
+}
+
+/** The internal rollup key record a local-store entry may carry. */
+function keyUniquenessOnEntry(entry: ManifestEntry): KeyUniqueness | undefined {
+   const k = (entry as { keyUniqueness?: Partial<KeyUniqueness> })
+      .keyUniqueness;
+   return k && typeof k.keyColumn === "string" && typeof k.unique === "boolean"
+      ? { keyColumn: k.keyColumn, unique: k.unique }
+      : undefined;
 }

@@ -76,6 +76,7 @@ import {
    deriveColocatedServeBindings,
    v1StoredColumnsOf,
 } from "./serve/colocated_bindings";
+import { namesServedCopyAlias } from "./serve/served_copy_config";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import {
    computeServeVerdicts,
@@ -553,6 +554,9 @@ export class PackageMaterialization {
          bound[sourceEntityId] = {
             tableName: entry.tableName,
             ...(entry.dataAsOf ? { dataAsOf: entry.dataAsOf } : {}),
+            ...(entry.keyUniqueness
+               ? { keyUniqueness: entry.keyUniqueness }
+               : {}),
          };
       }
       const catalog: MaterializedTableCatalog = {
@@ -702,6 +706,29 @@ export class PackageMaterialization {
          this.boundManifestUri = null;
       }
       this.refreshColocatedServeBindings();
+   }
+
+   /**
+    * Drop the rollup key checks (known limitation 29) bound for these content
+    * addresses: a run is about to write their tables, so what a check found
+    * over the rows before no longer describes them. The routing itself is
+    * kept; the join-to-rollup leg reads the table as unknown until a run
+    * binds a new check.
+    */
+   forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
+      const entries = this.freshnessEntries;
+      if (!entries) return;
+      let next: FreshnessManifest | undefined;
+      for (const id of sourceEntityIds) {
+         const entry = entries[id];
+         if (!entry?.keyUniqueness) continue;
+         next ??= { ...entries };
+         const { keyUniqueness: _forgotten, ...rest } = entry;
+         next[id] = rest;
+      }
+      if (!next) return;
+      this.freshnessEntries = next;
+      this.tableCatalogCache = undefined;
    }
 
    /**
@@ -2209,12 +2236,14 @@ function withoutChangedConnections(
 /**
  * The compiler's own reasons in a compile error, as `: <reason>; <reason>.`:
  * each diagnostic's message without its file and source excerpt, so a package
- * warning names why without the server's paths. `.` when there are none.
+ * warning names why without the server's paths. A reason that names a
+ * served-copy alias (a join refused across connections) is left out: the
+ * alias stays in the server log. `.` when there are none.
  */
 function compilerReasons(detail: string | undefined): string {
-   const reasons = [...(detail ?? "").matchAll(/^line \d+: (.+)$/gm)].map((m) =>
-      m[1].trim(),
-   );
+   const reasons = [...(detail ?? "").matchAll(/^line \d+: (.+)$/gm)]
+      .map((m) => m[1].trim())
+      .filter((reason) => !namesServedCopyAlias(reason));
    return reasons.length > 0 ? `: ${reasons.join("; ")}.` : ".";
 }
 

@@ -32,6 +32,7 @@
 
 import type { components } from "../../../api";
 import type { ConsideredVariant } from "../../query_router";
+import type { KeyUniqueness } from "../types";
 
 export type ApiQueryPath = components["schemas"]["QueryPath"];
 export type ApiQueryShape = components["schemas"]["QueryShape"];
@@ -63,6 +64,11 @@ export interface PlannedTable {
 export interface BoundTable {
    tableName: string;
    dataAsOf?: string;
+   /**
+    * A rollup's key check, as the run that wrote or carried the table found
+    * it (known limitation 29); absent when unknown.
+    */
+   keyUniqueness?: KeyUniqueness;
 }
 
 /**

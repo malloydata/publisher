@@ -21,10 +21,12 @@
  */
 
 import { createHash } from "node:crypto";
+import { tableIdentity } from "../../versions/materialization_scope";
 import type {
    BuildManifest,
    Connection as MalloyConnection,
 } from "@malloydata/malloy";
+import type { KeyUniqueness, ManifestEntry } from "../types";
 import type {
    InlineUniquenessCheck,
    MaterializePlan,
@@ -125,6 +127,25 @@ export interface UniquenessCheckOutcome {
 }
 
 /**
+ * What a run's rollup key check found (known limitation 29): whether the
+ * rows a `#(preaggregate)` rollup grouped held its one grain dimension (a
+ * join_one's key) once per value. Keyed in the run metadata by the rollup's
+ * content address; it describes the table the run that checked wrote, so it
+ * is carried to a later run only while that table is not written again and
+ * the check is the same ({@link UniquenessLedger.carryRollupKey}).
+ */
+export interface RollupKeyRecord {
+   /** The rollup's table: its connection and physical name. */
+   table: string;
+   keyColumn: string;
+   /** {@link checkDigest} of the table and the check's SQL. */
+   digest: string;
+   unique: boolean;
+   /** The run whose check ran (a carried record keeps it). */
+   checkedInRun?: string;
+}
+
+/**
  * The joined source of a check as the parent's build reads it: a persisted
  * table, substituted for the source in the parent's build SQL. Resolved by
  * the build loop (instructed_build.ts), which knows the run's manifest; any
@@ -168,6 +189,7 @@ export class UniquenessLedger {
    private readonly outcomes: UniquenessCheckOutcome[] = [];
    private readonly writtenAddresses = new Set<string>();
    private readonly writtenTables = new Set<string>();
+   private readonly rollupKeys = new Map<string, RollupKeyRecord>();
 
    constructor(
       /** The previous run's passes; undefined when none may be relied on. */
@@ -175,7 +197,49 @@ export class UniquenessLedger {
          | Readonly<Record<string, UniquenessPass>>
          | undefined,
       private readonly runId?: string,
+      /**
+       * The previous run's rollup key records, under the same proof as its
+       * passes; undefined when none may be relied on.
+       */
+      private readonly priorRollupKeys?: Readonly<
+         Record<string, RollupKeyRecord>
+      >,
    ) {}
+
+   /**
+    * This run checked the rollup at `address` after writing its table: the
+    * record stands for that table until it is written again.
+    */
+   recordRollupKey(address: string, record: RollupKeyRecord): void {
+      this.rollupKeys.set(address, {
+         ...record,
+         ...(this.runId ? { checkedInRun: this.runId } : {}),
+      });
+   }
+
+   /**
+    * Keep the previous run's record for a rollup this run did not build (its
+    * entry carried): only when this run wrote neither its address nor its
+    * table, and the record names the same table and the same check.
+    */
+   carryRollupKey(address: string, table: string, digest: string): void {
+      if (
+         this.rollupKeys.has(address) ||
+         this.writtenAddresses.has(address) ||
+         this.writtenTables.has(table)
+      ) {
+         return;
+      }
+      const prior = this.priorRollupKeys?.[address];
+      if (prior && prior.table === table && prior.digest === digest) {
+         this.rollupKeys.set(address, prior);
+      }
+   }
+
+   /** The rollup key records this run stands behind, by content address. */
+   rollupKeyRecords(): Record<string, RollupKeyRecord> {
+      return Object.fromEntries(this.rollupKeys);
+   }
 
    /** The recorded pass for `digest` that still describes `stored`, if any. */
    heldPass(digest: string, stored: StoredJoin): UniquenessPass | undefined {
@@ -217,6 +281,11 @@ export class UniquenessLedger {
             this.passes.delete(digest);
          }
       }
+      for (const [key, record] of this.rollupKeys) {
+         if (key === address || record.table === table) {
+            this.rollupKeys.delete(key);
+         }
+      }
    }
 
    get id(): string | undefined {
@@ -228,13 +297,22 @@ export class UniquenessLedger {
       | {
            passes: Record<string, UniquenessPass>;
            checks: UniquenessCheckOutcome[];
+           rollupKeys?: Record<string, RollupKeyRecord>;
         }
       | undefined {
-      if (this.outcomes.length === 0 && this.passes.size === 0)
+      if (
+         this.outcomes.length === 0 &&
+         this.passes.size === 0 &&
+         this.rollupKeys.size === 0
+      ) {
          return undefined;
+      }
       return {
          passes: Object.fromEntries(this.passes),
          checks: [...this.outcomes],
+         ...(this.rollupKeys.size > 0
+            ? { rollupKeys: Object.fromEntries(this.rollupKeys) }
+            : {}),
       };
    }
 }
@@ -274,6 +352,45 @@ export function uniquenessPassesIn(
 }
 
 /**
+ * The rollup key records a run's metadata holds (known limitation 29), or
+ * undefined when it holds none or the value is not the shape this Publisher
+ * writes. A record that does not read whole is left out.
+ */
+export function rollupKeyRecordsIn(
+   metadata: Record<string, unknown> | null | undefined,
+): Record<string, RollupKeyRecord> | undefined {
+   const value = metadata?.[INLINE_UNIQUENESS_KEY] as
+      | { rollupKeys?: unknown }
+      | undefined;
+   const records = value?.rollupKeys;
+   if (!records || typeof records !== "object" || Array.isArray(records)) {
+      return undefined;
+   }
+   const out: Record<string, RollupKeyRecord> = {};
+   for (const [address, record] of Object.entries(records)) {
+      const r = record as Partial<RollupKeyRecord> | null;
+      if (
+         r &&
+         typeof r.table === "string" &&
+         typeof r.keyColumn === "string" &&
+         typeof r.digest === "string" &&
+         typeof r.unique === "boolean"
+      ) {
+         out[address] = {
+            table: r.table,
+            keyColumn: r.keyColumn,
+            digest: r.digest,
+            unique: r.unique,
+            ...(typeof r.checkedInRun === "string"
+               ? { checkedInRun: r.checkedInRun }
+               : {}),
+         };
+      }
+   }
+   return out;
+}
+
+/**
  * `metadata` without the passes it records, keeping what became of each
  * check, or undefined when it records none. A pass is relied on only while
  * its run is the newest of the package and no other run overlapped it, which
@@ -286,14 +403,15 @@ export function withoutUniquenessPasses(
 ): Record<string, unknown> | undefined {
    const value = metadata?.[INLINE_UNIQUENESS_KEY];
    if (!metadata || !value || typeof value !== "object") return undefined;
-   const { passes, ...rest } = value as { passes?: unknown };
-   if (
-      !passes ||
-      typeof passes !== "object" ||
-      Object.keys(passes as object).length === 0
-   ) {
-      return undefined;
-   }
+   const { passes, rollupKeys, ...rest } = value as {
+      passes?: unknown;
+      rollupKeys?: unknown;
+   };
+   const holds = (v: unknown) =>
+      !!v && typeof v === "object" && Object.keys(v as object).length > 0;
+   // A rollup key record is relied on under the same proof as a pass, so it
+   // is forgotten with them.
+   if (!holds(passes) && !holds(rollupKeys)) return undefined;
    return { ...metadata, [INLINE_UNIQUENESS_KEY]: { ...rest, passes: {} } };
 }
 
@@ -397,4 +515,138 @@ export async function assertInlinedJoinsUnique(
          });
       }
    }
+}
+
+/**
+ * Run a rollup's key check (known limitation 29) on `connection` and say what
+ * it found: unique when no non-NULL key value repeats. Undefined when the
+ * check could not run, which the join-to-rollup leg reads as unknown and
+ * declines as it did before the check existed; the build itself never fails
+ * for it.
+ */
+export async function runRollupKeyCheck(
+   check: { keyColumn: string; sql: string },
+   connection: Pick<MalloyConnection, "runSQL">,
+   table: string,
+): Promise<Omit<RollupKeyRecord, "checkedInRun"> | undefined> {
+   try {
+      const result = await connection.runSQL(check.sql);
+      return {
+         table,
+         keyColumn: check.keyColumn,
+         digest: checkDigest(table, check.sql),
+         unique: result.rows.length === 0,
+      };
+   } catch {
+      return undefined;
+   }
+}
+
+/** A run that can write nothing more. */
+const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
+   "MANIFEST_FILE_READY",
+   "FAILED",
+   "CANCELLED",
+]);
+
+/**
+ * The newest of a package's runs, when its records may be relied on: it is
+ * the most recently created, it committed, it was an auto-run, and every
+ * other run was terminal and had finished before it began. Then nothing
+ * Publisher runs wrote a table between that run's checks and now, so a table
+ * it holds unchanged is the table its checks read or wrote. Undefined on any
+ * doubt (a run still active, one that overlapped, an orchestrated one, an
+ * unreadable time).
+ */
+export function uncontestedAutoRun<
+   R extends {
+      status: string;
+      metadata?: Record<string, unknown> | null;
+      createdAt?: Date | string | null;
+      startedAt?: Date | string | null;
+      completedAt?: Date | string | null;
+      updatedAt?: Date | string | null;
+   },
+>(runs: readonly R[]): R | undefined {
+   if (runs.length === 0) return undefined;
+   const at = (d: Date | string | null | undefined) =>
+      d ? new Date(d).getTime() : NaN;
+   const previous = runs.reduce((a, b) =>
+      at(b.createdAt) > at(a.createdAt) ? b : a,
+   );
+   if (
+      previous.status !== "MANIFEST_FILE_READY" ||
+      previous.metadata?.mode !== "auto"
+   ) {
+      return undefined;
+   }
+   const began = at(previous.startedAt ?? previous.createdAt);
+   for (const other of runs) {
+      if (other === previous) continue;
+      if (!TERMINAL_RUN_STATUSES.has(other.status)) return undefined;
+      const ended = at(other.completedAt ?? other.updatedAt);
+      if (!(ended <= began)) return undefined;
+   }
+   return previous;
+}
+
+/**
+ * The identity a uniqueness record names a table by: where it lives and its
+ * name as {@link tableIdentity} reads it. Two names a warehouse may read as
+ * one table get one identity, so a write to either loses the record: the
+ * safe direction.
+ */
+export function tableIdentityKey(
+   kind: "connection" | "destination",
+   where: string,
+   physicalTableName: string,
+): string {
+   return JSON.stringify([kind, where, tableIdentity(physicalTableName)]);
+}
+
+/**
+ * What a rollup key record says of the colocated table `entry` names, or
+ * undefined when it names another table (a record never describes a table
+ * it was not taken over).
+ */
+export function keyUniquenessOf(
+   record: RollupKeyRecord | undefined,
+   entry: Pick<ManifestEntry, "physicalTableName" | "connectionName">,
+): KeyUniqueness | undefined {
+   if (
+      !record ||
+      !entry.physicalTableName ||
+      !entry.connectionName ||
+      record.table !==
+         tableIdentityKey(
+            "connection",
+            entry.connectionName,
+            entry.physicalTableName,
+         )
+   ) {
+      return undefined;
+   }
+   return { keyColumn: record.keyColumn, unique: record.unique };
+}
+
+/**
+ * `entries` with each colocated rollup entry carrying what `run`'s key check
+ * records say of its table (see {@link keyUniquenessOf}), for a bind that
+ * restores serving from the store. Only an {@link uncontestedAutoRun}'s
+ * records are read; any doubt leaves the entries as they are, unknown.
+ */
+export function withRollupKeyRecords<E extends ManifestEntry>(
+   entries: Record<string, E>,
+   runs: readonly Parameters<typeof uncontestedAutoRun>[0][number][],
+): Record<string, E & { keyUniqueness?: KeyUniqueness }> {
+   const records = rollupKeyRecordsIn(uncontestedAutoRun(runs)?.metadata);
+   if (!records || Object.keys(records).length === 0) return entries;
+   const out: Record<string, E & { keyUniqueness?: KeyUniqueness }> = {};
+   for (const [address, entry] of Object.entries(entries)) {
+      const keyUniqueness = entry.storageDestinationName
+         ? undefined
+         : keyUniquenessOf(records[address], entry);
+      out[address] = keyUniqueness ? { ...entry, keyUniqueness } : entry;
+   }
+   return out;
 }

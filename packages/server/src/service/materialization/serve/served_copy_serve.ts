@@ -85,10 +85,10 @@ import {
    type DerivedSourceDef,
    type ServeBinding,
 } from "./materialization_serve_transform";
+import { fieldNotes } from "../field_notes";
 import {
    buildServedCopy,
    declaredBaseName,
-   fieldNotes,
    type InlinedJoin,
    type JoinedColumn,
    type PairBlockReroot,
@@ -1404,14 +1404,29 @@ export class ServedCopyServe {
             if (!candidates.some((c) => c.reroot.inlinedJoins)) return false;
             const detail =
                error instanceof Error ? error.message : String(error);
-            inlinedKept = candidates.flatMap((c) =>
-               (c.reroot.inlinedJoins ?? []).map((j) => ({
-                  sourceName: c.reroot.sourceName,
-                  reason: "inline_join_kept" as const,
-                  join: j.join,
-                  detail,
-               })),
+            // Added to, not replaced: a join containment already kept as
+            // written for its own source (see `contain`) stays reported.
+            const reported = new Set(
+               inlinedKept.map((p) => `${p.sourceName}\u0000${p.join}`),
             );
+            inlinedKept = [
+               ...inlinedKept,
+               ...candidates.flatMap((c) =>
+                  (c.reroot.inlinedJoins ?? [])
+                     .filter(
+                        (j) =>
+                           !reported.has(
+                              `${c.reroot.sourceName}\u0000${j.join}`,
+                           ),
+                     )
+                     .map((j) => ({
+                        sourceName: c.reroot.sourceName,
+                        reason: "inline_join_kept" as const,
+                        join: j.join,
+                        detail,
+                     })),
+               ),
+            ];
             candidates = candidates.map((c) => {
                if (!c.reroot.inlinedJoins) return c;
                const { inlinedJoins: _kept, ...reroot } = c.reroot;
@@ -2012,8 +2027,22 @@ function pairRerootOf(
       }
       return out;
    };
+   // A join the author hides keeps its modifier on its record (known
+   // limitation 24), read off the author's compiled source.
+   const joinAccess = (join: string) => {
+      const def = (
+         sourceFields as {
+            name?: unknown;
+            as?: unknown;
+            join?: unknown;
+            accessModifier?: unknown;
+         }[]
+      ).find((f) => f.join !== undefined && String(f.as ?? f.name) === join);
+      return def ? hiddenAccess(def) : undefined;
+   };
    const recordOf = (p: MaterializePair, own: boolean) => {
       const names = [p.join];
+      const access = joinAccess(p.join);
       const childColumns = levelColumns(names, p.childSourceID, own);
       const hops: PairHopColumns[] = [];
       for (const hop of p.hops ?? []) {
@@ -2027,6 +2056,7 @@ function pairRerootOf(
          join: p.join,
          childColumns,
          ...(hops.length > 0 ? { hops } : {}),
+         ...(access ? { access } : {}),
       };
    };
    const own = recordOf(block, true);
@@ -2101,6 +2131,7 @@ function pairRerootOf(
       ...(own.hops ? { hops: own.hops } : {}),
       ...(levelRows.length > 0 ? { levelRows } : {}),
       ...(blockReroot ? { block: blockReroot } : {}),
+      ...(own.access ? { access: own.access } : {}),
    };
 }
 
