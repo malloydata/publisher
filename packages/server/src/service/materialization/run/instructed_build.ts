@@ -5,6 +5,7 @@ import {
    assertInlinedJoinsUnique,
    checkDigest,
    runRollupKeyCheck,
+   storedKeyCheckSql,
    tableIdentityKey,
    uniquenessCheckCompiler,
    type StoredJoin,
@@ -31,7 +32,12 @@ import {
 import { getPersistStorageMode } from "../../../config";
 import { withSpan } from "../../../telemetry";
 import { errMessage } from "../../../utils";
-import { quoteManifestTablePath } from "../../quoting";
+import { quoteManifestTablePath, quoteTablePath } from "../../quoting";
+import {
+   STORAGE_TARGET_DIALECT,
+   withStorageDestinationSession,
+} from "./materialization_build_session";
+import { destinationSchemaOf, storageTablePath } from "./storage_table_path";
 import {
    CompiledBuildPlan,
    computeSourceEntityId,
@@ -864,6 +870,18 @@ export class InstructedBuild {
             writtenTableIdentity(instruction, graphConnectionName),
          );
       }
+      // A source stored in a destination, read there beside a joined
+      // source's rollup through a join keyed on its primary key (#1704):
+      // check that key over the rows its table holds.
+      if (!orchestrated && run.uniqueness && entry.storageDestinationName) {
+         await checkStoredKey(
+            run,
+            run.uniqueness,
+            persistSource,
+            entry,
+            sourceEntityId,
+         );
+      }
       run.writtenTargets.set(target, {
          sourceEntityId,
          sourceName: persistSource.name,
@@ -1403,6 +1421,115 @@ async function checkParentKeys(
 }
 
 /**
+ * The check of a stored table's declared primary key, when the plan asks for
+ * one (`storedKeyChecks`) and the table holds that column: one row when a
+ * value repeats or is NULL. Over every row the table holds: a term the
+ * served copy applies at read only narrows them, so a key unique here is
+ * unique in whatever a caller reads.
+ */
+function storedKeyCheckOf(
+   run: InstructedRun,
+   sourceID: string,
+   entry: ManifestEntry,
+):
+   | {
+        keyColumn: string;
+        sql: string;
+        table: string;
+        destinationName: string;
+        destinationConnection: ReturnType<
+           InstructedRun["environment"]["getStorageDestination"]
+        >;
+     }
+   | undefined {
+   const keyColumn = run.compiled.storedKeyChecks?.[sourceID];
+   const destinationName = entry.storageDestinationName;
+   if (!keyColumn || !destinationName || !entry.physicalTableName) {
+      return undefined;
+   }
+   if (!(entry.schema ?? []).some((c) => c.name === keyColumn)) {
+      return undefined;
+   }
+   let destinationConnection;
+   try {
+      destinationConnection =
+         run.environment.getStorageDestination(destinationName);
+   } catch {
+      return undefined;
+   }
+   const path = quoteTablePath(
+      storageTablePath(
+         destinationName,
+         entry.physicalTableName,
+         destinationSchemaOf(destinationConnection),
+      ),
+      STORAGE_TARGET_DIALECT,
+   );
+   return {
+      keyColumn,
+      sql: storedKeyCheckSql(path, keyColumn),
+      table: tableIdentityKey(
+         "destination",
+         destinationName,
+         entry.physicalTableName,
+      ),
+      destinationName,
+      destinationConnection,
+   };
+}
+
+/**
+ * Run a stored source's primary key check over its table in the destination
+ * and record what it found, under its own address and sourceID. A check that
+ * does not run records nothing: the leg reads the key as unknown.
+ */
+async function checkStoredKey(
+   run: InstructedRun,
+   ledger: UniquenessLedger,
+   persistSource: PersistSource,
+   entry: ManifestEntry,
+   address: string,
+): Promise<void> {
+   const check = storedKeyCheckOf(run, persistSource.sourceID, entry);
+   if (!check) return;
+   let record: Awaited<ReturnType<typeof runRollupKeyCheck>>;
+   try {
+      record = await withStorageDestinationSession(
+         {
+            destinationName: check.destinationName,
+            destinationConnection: check.destinationConnection,
+            environmentPath: run.environment.getEnvironmentPath(),
+         },
+         (session) =>
+            runRollupKeyCheck(
+               check,
+               session as unknown as MalloyConnection,
+               check.table,
+            ),
+      );
+   } catch {
+      record = undefined;
+   }
+   if (!record) {
+      logger.warn(
+         "A stored source's primary key check did not run; its queries through a storage #(preaggregate) rollup read as a join_many are answered live",
+         { source: persistSource.name, keyColumn: check.keyColumn },
+      );
+      return;
+   }
+   if (!record.unique) {
+      logger.warn(
+         "A stored source holds its primary key more than once or NULL; its queries through a storage #(preaggregate) rollup read as a join_many are answered live",
+         { source: persistSource.name, keyColumn: check.keyColumn },
+      );
+   }
+   ledger.recordRollupKey(address, {
+      ...record,
+      sourceID: persistSource.sourceID,
+   });
+}
+
+/**
  * Run a built rollup's key check and record what it found. A check that does
  * not run records nothing, so the rollup's join_one stays unknown.
  */
@@ -1473,5 +1600,25 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
             parent.sourceID,
          );
       }
+   }
+   // A stored source's own key check, while its table stands.
+   for (const sourceID of Object.keys(compiled.storedKeyChecks ?? {})) {
+      const source = compiled.sources[sourceID];
+      if (!source) continue;
+      const address = computeSourceEntityId(
+         source,
+         compiled.connectionDigests,
+         compiled.targets?.[sourceID],
+      );
+      const entry = run.entries[address];
+      if (!entry || run.builtAddresses.has(address)) continue;
+      const check = storedKeyCheckOf(run, sourceID, entry);
+      if (!check) continue;
+      ledger.carryRollupKey(
+         address,
+         check.table,
+         checkDigest(check.table, check.sql),
+         sourceID,
+      );
    }
 }

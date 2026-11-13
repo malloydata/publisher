@@ -702,3 +702,115 @@ source: flights_pairs is duckdb.table('flights_raw') extend {
       });
    }
 });
+
+/**
+ * A join read as a join_many takes the leg only when the query source's
+ * primary key holds in the rows the leg reads: here, the query source's
+ * stored table in the destination, checked at its own build. A key the data
+ * repeats or leaves NULL there, or one no build checked, is answered without
+ * the rollup (`COUNT_SEMANTICS`).
+ */
+describe("R4: join-to-rollup in a storage destination, over a stored query source whose key the data breaks", () => {
+   let restore: () => void;
+   let repeated: R4Fixture;
+   let nulled: R4Fixture;
+   let persisted: R4Fixture;
+   let unchecked: R4Fixture;
+   const flightsOf = (rows: string) =>
+      `CREATE TABLE flights_raw AS SELECT * FROM (VALUES ${rows}) AS t(id, carrier, distance, dep_ts)`;
+   // Flight 1 held twice.
+   const REPEATED = flightsOf(`(1, 'AA', 100, TIMESTAMP '2026-11-09 10:00:00'),
+      (1, 'BB', 150, TIMESTAMP '2026-11-09 11:00:00'),
+      (2, 'AA', 200, TIMESTAMP '2026-10-01 10:00:00'),
+      (3, 'BB', 300, TIMESTAMP '2026-11-01 10:00:00')`);
+   // One flight with no id.
+   const NULLED = flightsOf(`(1, 'AA', 100, TIMESTAMP '2026-11-09 10:00:00'),
+      (2, 'AA', 200, TIMESTAMP '2026-10-01 10:00:00'),
+      (NULL, 'BB', 350, TIMESTAMP '2026-11-02 10:00:00'),
+      (3, 'BB', 300, TIMESTAMP '2026-11-01 10:00:00')`);
+   const seedWith = (flights: string) => [flights, ...seedSql.slice(1)];
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      repeated = await buildScenario({
+         files: { "m.malloy": materializeModel },
+         seedSql: seedWith(REPEATED),
+         preaggregate: true,
+         materialize: true,
+      });
+      nulled = await buildScenario({
+         files: { "m.malloy": materializeModel },
+         seedSql: seedWith(NULLED),
+         preaggregate: true,
+         materialize: true,
+      });
+      persisted = await buildScenario({
+         files: { "m.malloy": persistModel },
+         seedSql: seedWith(REPEATED),
+         preaggregate: true,
+      });
+      // As for a table a host's manifest binds, or a build whose check
+      // could not run: unknown.
+      unchecked = await buildScenario({
+         files: { "m.malloy": materializeModel },
+         seedSql,
+         preaggregate: true,
+         materialize: true,
+         rollupKeyChecks: false,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   const details = async (fixture: R4Fixture, malloy: string) => {
+      fixture.setBindings(fixture.bindings);
+      const { path } = await fixture.runAsIs(malloy);
+      return (path?.considered ?? [])
+         .filter((c) => c.kind === "rollup")
+         .map((c) => ({
+            reason: c.reason,
+            detail: (c as { detail?: string }).detail ?? "",
+         }));
+   };
+
+   for (const [name, malloy] of [
+      [
+         "a sum through a join_many, by a parent dimension",
+         "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }",
+      ],
+      [
+         "the parent's count beside a joined sum",
+         "run: flights -> { aggregate: flight_count, segments.seg_miles }",
+      ],
+      [
+         "grouping by the parent's key",
+         "run: flights -> { group_by: id; aggregate: segments.seg_miles; order_by: id }",
+      ],
+   ] as const) {
+      for (const [which, get, says] of [
+         ["repeated", () => repeated, "more than once or NULL"],
+         ["NULL", () => nulled, "more than once or NULL"],
+         [
+            "repeated, stored by #@ persist",
+            () => persisted,
+            "more than once or NULL",
+         ],
+         ["never checked", () => unchecked, "was not checked"],
+      ] as const) {
+         it(`answers ${name} without the rollup, its key ${which} (COUNT_SEMANTICS)`, async () => {
+            // Rows first: from the rollup, the repeated and NULL cases
+            // differ from live.
+            const fixture = get();
+            expectNotFromRollup(await fixture.run({ name, malloy }));
+            const considered = await details(fixture, malloy);
+            expect(considered.map((c) => c.reason)).toContain(
+               "COUNT_SEMANTICS",
+            );
+            expect(considered.some((c) => c.detail.includes(says))).toBe(true);
+         });
+      }
+   }
+});

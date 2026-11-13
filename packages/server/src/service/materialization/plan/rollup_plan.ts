@@ -1239,6 +1239,36 @@ export function readsAsJoinMany(
 }
 
 /**
+ * The stored-table key checks a build runs (`CompiledBuildPlan.storedKeyChecks`):
+ * each of `sourceIDs` (the planned sources, the rollups left out) with a declared
+ * primary key, by sourceID, when some `storage=` rollup in `plans` is read
+ * through a join keyed on a source's primary key as a join_many. That leg
+ * reads the query source's stored table in the destination (#1704), so the
+ * key is checked over that table at its own build. Empty otherwise: no scan
+ * for nothing.
+ */
+export function storedKeyChecksOf(
+   plans: readonly RollupVariantPlan[],
+   needs: readonly ParentKeyNeed[],
+   primaryKeyOf: (sourceID: string) => string | undefined,
+   sourceIDs: Iterable<string>,
+): Record<string, string> {
+   const out: Record<string, string> = {};
+   const needed = plans.some(
+      (plan) =>
+         plan.variant === true &&
+         plan.storage !== undefined &&
+         needs.some((need) => readsAsJoinMany(plan, need)),
+   );
+   if (!needed) return out;
+   for (const sourceID of sourceIDs) {
+      const key = primaryKeyOf(sourceID);
+      if (key !== undefined) out[sourceID] = key;
+   }
+   return out;
+}
+
+/**
  * The Malloy text of a query source's primary key check, run against the
  * author's model that names it `name`: one row when a value of `keyColumn`
  * is held by more than one row, or is NULL.

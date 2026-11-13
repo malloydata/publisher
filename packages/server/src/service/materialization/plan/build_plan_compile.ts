@@ -27,6 +27,7 @@ import {
    joinOneKey,
    joinOneKeysOf,
    parentKeyNeedsOf,
+   storedKeyChecksOf,
    type ParentKeyNeed,
    type RollupVariantPlan,
 } from "./rollup_plan";
@@ -53,6 +54,8 @@ export async function compilePackageBuildPlan(
       need: ParentKeyNeed;
       compile: (text: string) => Promise<string>;
    }[] = [];
+   // Every declared primary key, by sourceID, for the stored-table key checks.
+   const primaryKeys = new Map<string, string>();
    const yielder = createEventLoopYielder();
 
    for (const modelPath of pkg.getModelPaths()) {
@@ -106,6 +109,12 @@ export async function compilePackageBuildPlan(
       for (const key of joinOneKeysOf(map)) {
          joinOneKeys.add(key);
       }
+      for (const node of map.nodes()) {
+         const key = (node.def as { primaryKey?: unknown }).primaryKey;
+         if (typeof key === "string" && !primaryKeys.has(node.sourceID)) {
+            primaryKeys.set(node.sourceID, key);
+         }
+      }
       for (const need of parentKeyNeedsOf(map)) {
          parentKeyNeeds.push({
             need,
@@ -144,9 +153,20 @@ export async function compilePackageBuildPlan(
 
    // A query source read through a join_many keyed on its primary key:
    // the rollup's build checks that key unique and never NULL.
-   await compileParentKeyChecks(
-      Object.values(parts.preaggregatePlans) as RollupVariantPlan[],
-      parentKeyNeeds,
+   const rollupPlans = Object.values(
+      parts.preaggregatePlans,
+   ) as RollupVariantPlan[];
+   await compileParentKeyChecks(rollupPlans, parentKeyNeeds);
+   // A `storage=` rollup read that way is read beside the query source's
+   // stored table (#1704): each stored source's key is checked over its
+   // table at its own build instead.
+   const storedKeyChecks = storedKeyChecksOf(
+      rollupPlans,
+      parentKeyNeeds.map(({ need }) => need),
+      (sourceID) => primaryKeys.get(sourceID),
+      Object.keys(parts.sources).filter(
+         (sourceID) => !parts.preaggregatePlans[sourceID],
+      ),
    );
 
    const connections = await resolvePackageConnections(
@@ -179,6 +199,7 @@ export async function compilePackageBuildPlan(
       droppedPersistSources: parts.droppedPersistSources,
       annotationFindings: parts.annotationFindings,
       preaggregatePlans: parts.preaggregatePlans,
+      ...(Object.keys(storedKeyChecks).length > 0 ? { storedKeyChecks } : {}),
       materializePlans: parts.materializePlans,
       sourceGateOutcomes: parts.sourceGateOutcomes,
    });

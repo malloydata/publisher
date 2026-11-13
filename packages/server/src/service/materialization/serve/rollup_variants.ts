@@ -816,13 +816,15 @@ export class RollupVariantServe {
       }
       // A join read as a join_many: each rollup row is met by every parent
       // row sharing its key, so the query source's key must be unique and
-      // never NULL, as the rollup's build found it. A rollup in a storage
-      // destination is read beside the query source's stored table, which
-      // no build checks yet (known limitation 35): not judged here.
-      const keyProblem =
-         plan.storage !== undefined
-            ? undefined
-            : parentKeyProblem(leg, this.parentKeyUniqueness(plan, q.struct));
+      // never NULL: as the rollup's build found it, or, for a rollup in a
+      // storage destination, as the build of the query source's stored
+      // table there found it over the rows that table holds.
+      const keyProblem = parentKeyProblem(
+         leg,
+         inDestination
+            ? this.storedKeyUniqueness(inDestination.source, join.baseKey)
+            : this.parentKeyUniqueness(plan, q.struct),
+      );
       if (keyProblem !== undefined) {
          throw new RollupSkip("rollup_count_semantics", keyProblem);
       }
@@ -1315,6 +1317,32 @@ export class RollupVariantServe {
       return this.host.catalog()?.bound[id]?.keyUniqueness?.parentKeys?.[
          sourceID
       ];
+   }
+
+   /**
+    * What the build of a stored table the served copy reads for the query's
+    * source found of `key`: true when a source it stores declares `key` its
+    * primary key and the check found it unique and never NULL; false when one
+    * found it repeated or NULL; undefined when unknown (not checked, or a
+    * binding a host's manifest made).
+    */
+   private storedKeyUniqueness(
+      binding: ServeBinding,
+      key: string | undefined,
+   ): boolean | undefined {
+      if (key === undefined || !binding.primaryKeys) return undefined;
+      const map = SourceMap.of(this.host.modelDef());
+      let found: boolean | undefined;
+      for (const id of binding.sourceIDs ?? []) {
+         const unique = binding.primaryKeys[id];
+         if (unique === undefined) continue;
+         const declared = (map.node(id)?.def as { primaryKey?: unknown })
+            ?.primaryKey;
+         if (declared !== key) continue;
+         if (!unique) return false;
+         found = true;
+      }
+      return found;
    }
 
    /**

@@ -28,9 +28,13 @@ import {
    joinOneKey,
    joinOneKeysOf,
    parentKeyNeedsOf,
+   storedKeyChecksOf,
 } from "../../../src/service/materialization/plan/rollup_plan";
 import { SourceMap } from "../../../src/service/materialization/plan/source_map";
-import { runRollupKeyCheck } from "../../../src/service/materialization/run/inline_uniqueness";
+import {
+   runRollupKeyCheck,
+   storedKeyCheckSql,
+} from "../../../src/service/materialization/run/inline_uniqueness";
 import { createModelRuntime } from "../../../src/service/model_runtime";
 import { tryCompilePersistedViewCompanion } from "../../../src/service/materialization/plan/persisted_view_compile";
 import {
@@ -747,6 +751,20 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       {};
    const builtSQL: Record<string, string> = {};
    const checkFailures: Record<string, string> = {};
+   // The stored-table key checks a package's build plan asks for.
+   const authorMap = SourceMap.of(authorDef);
+   const storedKeyChecks = storedKeyChecksOf(
+      rollups?.generated?.plans ?? [],
+      parentKeyNeedsOf(authorMap),
+      (sourceID) => {
+         const key = (authorMap.node(sourceID)?.def as { primaryKey?: unknown })
+            ?.primaryKey;
+         return typeof key === "string" ? key : undefined;
+      },
+      sources
+         .map((source) => source.sourceID)
+         .filter((sourceID) => !rollupOrigin.has(sourceID)),
+   );
    for (const [i, source] of sources.entries()) {
       if (scenario.unbuilt?.includes(source.name)) continue;
       if (scenario.checkKeys) {
@@ -879,6 +897,39 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             ? { origin: "preaggregate" }
             : {}),
       } as ManifestEntry;
+      // A stored source's primary key, checked over its table as its build
+      // checks it, when a storage rollup is read through a join on it.
+      const storedKey = storedKeyChecks[source.sourceID];
+      const checks = scenario.rollupKeyChecks ?? true;
+      if (
+         storedKey !== undefined &&
+         checks !== false &&
+         entries[`h${i}`].schema?.some((c) => c.name === storedKey)
+      ) {
+         const record =
+            checks === "unique"
+               ? { unique: true }
+               : await runRollupKeyCheck(
+                    {
+                       keyColumn: storedKey,
+                       sql: storedKeyCheckSql(
+                          `${DESTINATION}.${table}`,
+                          storedKey,
+                       ),
+                    },
+                    duckdb,
+                    table,
+                 );
+         if (record) {
+            (
+               entries[`h${i}`] as ManifestEntry & {
+                  keyUniqueness?: KeyUniqueness;
+               }
+            ).keyUniqueness = {
+               parentKeys: { [source.sourceID]: record.unique },
+            };
+         }
+      }
       entryBySourceID.set(source.sourceID, entries[`h${i}`]);
    }
    const bindings = [

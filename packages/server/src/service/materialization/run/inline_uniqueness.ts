@@ -551,6 +551,19 @@ export async function assertInlinedJoinsUnique(
 }
 
 /**
+ * The SQL of a stored table's primary key check, over `quotedTable` (a
+ * DuckDB path, as the destination's session reads it): one row when a value
+ * of `keyColumn` repeats or is NULL.
+ */
+export function storedKeyCheckSql(
+   quotedTable: string,
+   keyColumn: string,
+): string {
+   const k = `"${keyColumn.replace(/"/g, '""')}"`;
+   return `SELECT ${k} FROM ${quotedTable} GROUP BY ${k} HAVING COUNT(*) > 1 OR ${k} IS NULL LIMIT 1`;
+}
+
+/**
  * Run a rollup's key check (known limitation 29) on `connection` and say what
  * it found: unique when no non-NULL key value repeats. Undefined when the
  * check could not run, which the join-to-rollup leg reads as unknown and
@@ -672,17 +685,31 @@ export function keyUniquenessOf(
 export function keyUniquenessAt(
    records: Readonly<Record<string, RollupKeyRecord>> | undefined,
    address: string,
-   entry: Pick<ManifestEntry, "physicalTableName" | "connectionName">,
+   entry: Pick<
+      ManifestEntry,
+      "physicalTableName" | "connectionName" | "storageDestinationName"
+   >,
 ): KeyUniqueness | undefined {
-   if (!records || !entry.physicalTableName || !entry.connectionName) {
-      return undefined;
-   }
-   const own = keyUniquenessOf(records[address], entry);
-   const table = tableIdentityKey(
-      "connection",
-      entry.connectionName,
-      entry.physicalTableName,
-   );
+   if (!records || !entry.physicalTableName) return undefined;
+   // A stored table carries only its own source's primary key check; a
+   // colocated one, its rollup's key check and each query source's.
+   const table = entry.storageDestinationName
+      ? tableIdentityKey(
+           "destination",
+           entry.storageDestinationName,
+           entry.physicalTableName,
+        )
+      : entry.connectionName
+        ? tableIdentityKey(
+             "connection",
+             entry.connectionName,
+             entry.physicalTableName,
+          )
+        : undefined;
+   if (table === undefined) return undefined;
+   const own = entry.storageDestinationName
+      ? undefined
+      : keyUniquenessOf(records[address], entry);
    const parentKeys: Record<string, boolean> = {};
    for (const [key, record] of Object.entries(records)) {
       if (
@@ -712,9 +739,7 @@ export function withRollupKeyRecords<E extends ManifestEntry>(
    if (!records || Object.keys(records).length === 0) return entries;
    const out: Record<string, E & { keyUniqueness?: KeyUniqueness }> = {};
    for (const [address, entry] of Object.entries(entries)) {
-      const keyUniqueness = entry.storageDestinationName
-         ? undefined
-         : keyUniquenessAt(records, address, entry);
+      const keyUniqueness = keyUniquenessAt(records, address, entry);
       out[address] = keyUniqueness ? { ...entry, keyUniqueness } : entry;
    }
    return out;

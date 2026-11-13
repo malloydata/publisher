@@ -135,9 +135,21 @@ export class ManifestCommitter {
          );
          // Storage sources serve cross-connection via the virtual-source
          // transform. No-op without storage= sources.
+         // A stored table's own primary key check rides on its entry, from
+         // this run's records alone (the join-to-rollup leg in a destination).
          await environment.bindPackageStorageServeBindings(
             packageName,
-            builtEntries,
+            Object.fromEntries(
+               Object.entries(builtEntries).map(([id, entry]) => {
+                  const keyUniqueness = entry.storageDestinationName
+                     ? keyUniquenessAt(rollupKeys, id, entry)
+                     : undefined;
+                  return [
+                     id,
+                     keyUniqueness ? { ...entry, keyUniqueness } : entry,
+                  ];
+               }),
+            ),
             versionId,
          );
          recordAutoLoadOutcome("success");

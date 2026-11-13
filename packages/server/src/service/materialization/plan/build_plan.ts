@@ -197,6 +197,15 @@ export interface CompiledBuildPlan {
     */
    preaggregatePlans?: Record<string, RollupPlan>;
    /**
+    * sourceID -> the declared primary key of a planned source whose stored
+    * table a build checks for a repeated or NULL key, when it is stored in a
+    * destination: set when a `storage=` rollup is read through a join keyed
+    * on a source's primary key as a join_many (`readsAsJoinMany`), so the
+    * join-to-rollup leg in a destination (#1704) can read the stored rows'
+    * key as unique. Absent when no such leg exists.
+    */
+   storedKeyChecks?: Record<string, string>;
+   /**
     * sourceID -> entry-point `#(authorize)` gate classification, computed at
     * compile time where the `{modelDef, materializer}` pair exists (see
     * {@link classifyPersistSourceGate}). Read by

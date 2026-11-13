@@ -137,6 +137,15 @@ export interface ServeBinding {
     */
    sourceIDs?: string[];
    /**
+    * What the run that wrote or carried this stored table found of its
+    * source's declared primary key, by sourceID: true when no value repeats
+    * and none is NULL. The join-to-rollup leg in a destination (#1704) reads
+    * a join_many keyed on that key only when true. Internal: absent on every
+    * binding a host's manifest makes, and dropped when a run is about to
+    * rewrite the table.
+    */
+   primaryKeys?: Record<string, boolean>;
+   /**
     * `persist` for a modeler-annotated source, `preaggregate` for a synthesized
     * rollup; absent means `persist`. A rollup must not take the ordinary
     * author-model lookups (see {@link rollupServeBindings}).
@@ -304,6 +313,23 @@ export function groupAliasesByName(
  * that id is the host's opaque value, which need not match the publisher's own
  * content addresses the grouping is computed from.
  */
+/**
+ * The primary key checks a local run recorded on a stored entry (its own
+ * source's, by sourceID): internal, set only by the committing run or a
+ * restore from the store, never by a host's manifest (`splitManifestEntries`).
+ */
+function primaryKeysOf(
+   entry: ManifestEntry,
+): Record<string, boolean> | undefined {
+   const keys = (entry as { keyUniqueness?: { parentKeys?: unknown } })
+      .keyUniqueness?.parentKeys;
+   if (!keys || typeof keys !== "object") return undefined;
+   const out = Object.fromEntries(
+      Object.entries(keys).filter(([, v]) => typeof v === "boolean"),
+   ) as Record<string, boolean>;
+   return Object.keys(out).length > 0 ? out : undefined;
+}
+
 export function deriveServeBindings(
    entries: Record<string, ManifestEntry>,
    aliasesBySourceName: Record<string, string[]>,
@@ -364,6 +390,9 @@ export function deriveServeBindings(
             freshAsOf: entry.dataAsOf,
             freshnessWindowSeconds: entry.freshnessWindowSeconds,
             freshnessFallback: entry.freshnessFallback,
+            ...(primaryKeysOf(entry)
+               ? { primaryKeys: primaryKeysOf(entry) }
+               : {}),
          });
       }
    }

@@ -133,7 +133,17 @@ export function splitManifestEntries(
          continue;
       }
       if (entry.storageDestinationName) {
-         storageEntries[sourceEntityId] = entry;
+         // The internal key record only from the local store
+         // (withRollupKeyRecords); a host's entry never brings one.
+         const { keyUniqueness: _unread, ...plain } = entry as ManifestEntry & {
+            keyUniqueness?: unknown;
+         };
+         const keyUniqueness = readKeyUniqueness
+            ? keyUniquenessOnEntry(entry)
+            : undefined;
+         storageEntries[sourceEntityId] = keyUniqueness
+            ? ({ ...plain, keyUniqueness } as ManifestEntry)
+            : plain;
          continue;
       }
       tableNameManifest[sourceEntityId] = {

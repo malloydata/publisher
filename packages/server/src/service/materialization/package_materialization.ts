@@ -712,10 +712,24 @@ export class PackageMaterialization {
     * binds a new check.
     */
    forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
+      const ids = new Set(sourceEntityIds);
+      // A stored table's own primary key check, on its storage binding.
+      if (
+         this.storageServeBindings.some(
+            (b) => b.primaryKeys && ids.has(b.virtualHandle),
+         )
+      ) {
+         this.storageServeBindings = this.storageServeBindings.map((b) => {
+            if (!b.primaryKeys || !ids.has(b.virtualHandle)) return b;
+            const { primaryKeys: _forgotten, ...rest } = b;
+            return rest;
+         });
+         this.pushStorageServeBindingsToModels();
+      }
       const entries = this.freshnessEntries;
       if (!entries) return;
       let next: FreshnessManifest | undefined;
-      for (const id of sourceEntityIds) {
+      for (const id of ids) {
          const entry = entries[id];
          if (!entry?.keyUniqueness) continue;
          next ??= { ...entries };
