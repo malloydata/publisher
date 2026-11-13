@@ -102,11 +102,27 @@ export function classify(
    live: Outcome,
    answer: Outcome,
 ): { c: Classification; path: string; detail?: string } {
+   // Refused live and refused the same way after it (a denied caller, a
+   // query the model rejects): the answer is live's, not a difference.
+   if ("error" in live && "error" in answer) {
+      return live.error === answer.error
+         ? { c: "live", path: "live", detail: "refused both ways" }
+         : {
+              c: "error",
+              path: "error",
+              detail: "the query failed differently",
+           };
+   }
    if ("error" in answer) {
       return { c: "error", path: "error", detail: "the query failed" };
    }
    if ("error" in live) {
-      return { c: "error", path: "error", detail: "live failed" };
+      // Answered where live refused: possibly rows a caller may not see.
+      return {
+         c: "error",
+         path: "error",
+         detail: "live refused the query, and the stored answer did not",
+      };
    }
    const path = pathOf(answer.answer);
    const rows = shadowRowDifference(
@@ -163,17 +179,15 @@ export async function runV1CutoverConformance(args: {
          await freshLoadPool();
          const loader = await loadFixture(args.package);
          try {
-            const live = new Map<string, Outcome>();
+            // By position: two queries may share a name.
+            const live: Outcome[] = [];
             for (const q of args.queries) {
-               live.set(q.name, await loader.run(q.model, q.malloy, q.givens));
+               live.push(await loader.run(q.model, q.malloy, q.givens));
             }
             const fixture = await loader.bind({ includeRollups: true });
-            const served = new Map<string, Outcome>();
+            const served: Outcome[] = [];
             for (const q of args.queries) {
-               served.set(
-                  q.name,
-                  await fixture.run(q.model, q.malloy, q.givens),
-               );
+               served.push(await fixture.run(q.model, q.malloy, q.givens));
             }
             return { live, served };
          } finally {
@@ -186,12 +200,9 @@ export async function runV1CutoverConformance(args: {
    };
    const today = await run("today");
    const cutover = await run("cutover");
-   return args.queries.map((q) => {
-      const t = classify(today.live.get(q.name)!, today.served.get(q.name)!);
-      const c = classify(
-         cutover.live.get(q.name)!,
-         cutover.served.get(q.name)!,
-      );
+   return args.queries.map((q, i) => {
+      const t = classify(today.live[i], today.served[i]);
+      const c = classify(cutover.live[i], cutover.served[i]);
       return {
          query: q.name,
          today: t.c,
