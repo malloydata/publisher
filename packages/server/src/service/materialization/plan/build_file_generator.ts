@@ -75,12 +75,23 @@
  *
  * What reads through the join_many on the source itself is not stored (a
  * dimension through it has one value per pair, not per parent): the served
- * copy computes it at read, over the record. One join_many per source,
- * declared on the same connection, its condition reading no other join, both
- * sides with a declared primary key that is stored, and the joined source with
- * no joins of its own (one hop); anything else is refused. An incremental pair
- * table refreshes whole parents over a per-parent watermark
- * ({@link pairIncremental}), or is rebuilt in full with a warning.
+ * copy computes it at read, over the record. Each join declared on the same
+ * connection, its condition reading no other join, every side with a declared
+ * primary key that is stored, and a joined source with no joins of its own
+ * but the next of its path; anything else is refused.
+ *
+ * A path of join_manys (`inline=["items.options"]`) is stored as one pair
+ * table through every join of the path (columns `items__options__<field>`),
+ * with one row flag per level above the leaf ({@link pairLevelRowColumn}), and
+ * more than one inlined join_many as blocks of one table, one block per path,
+ * marked by {@link PAIR_LANE_COLUMN} ({@link pairBlocksSource}); the served
+ * copy reads one block per query (served_copy_serve.ts). A path through a
+ * join_one is refused: live aggregates past it by the joined row's key,
+ * however many parents share the row, which no stored row reproduces.
+ *
+ * An incremental one-hop pair table refreshes whole parents over a per-parent
+ * watermark ({@link pairIncremental}), or is rebuilt in full with a warning;
+ * a path's table and a table of several blocks are always rebuilt in full.
  *
  * Not yet (each is a later pull request's, and is refused or left out here
  * rather than built wrong):
