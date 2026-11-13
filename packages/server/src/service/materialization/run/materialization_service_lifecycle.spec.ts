@@ -630,7 +630,9 @@ describe("runBuild (branch behavior)", () => {
       );
       const args = svc.executeInstructedBuild.firstCall.args;
       expect(args[5]).toBe(true);
-      expect(args[args.length - 1]).toBe("refuse");
+      expect(args[12]).toBe("refuse");
+      // A host's build relies on no earlier uniqueness check.
+      expect(args[13]).toBeUndefined();
    });
 
    it("auto-run: derives instructions and auto-loads the manifest", async () => {

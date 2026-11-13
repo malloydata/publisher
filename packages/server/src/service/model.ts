@@ -3513,7 +3513,19 @@ export class Model {
             mm.loadRestrictedQuery(queryString),
          // The caller's OWN text, not the synthesized/injected `queryString`.
          callerQueryText: query,
-         ceiling: { audit, source: () => compiledSource ?? sourceName },
+         ceiling: {
+            audit,
+            source: () => compiledSource ?? sourceName,
+            // Read on the compile that answers: the served copy is the
+            // author's text with its classifications kept (the load's checks
+            // decline a copy that does not keep them), and the only compile
+            // that has a join a cross-connection build view leaves out.
+            ...(answer.tier === "storage" &&
+            answer.via === "served_copy" &&
+            answer.routedRunnable
+               ? { answeredBy: "served_copy" as const }
+               : {}),
+         },
          // The served copy is the author's text, gates included: a row-level
          // gate is grafted and proven on its own compile, so the routed answer
          // keeps it (R3), and an answer let past an entry-point gate is
@@ -3716,7 +3728,11 @@ export class Model {
                graftScope: undefined,
                routedPastEntryPointGate: false,
                boundary: undefined,
-               ceiling: undefined,
+               // Checked on live already, unless the served copy answered:
+               // then the retry, which runs live, is held to live's ceiling.
+               ceiling: governRequest.ceiling?.answeredBy
+                  ? { ...governRequest.ceiling, answeredBy: undefined }
+                  : undefined,
                bypassAlreadyNoted: true,
             },
             { runnable: liveRunnable!, live: liveRunnable },

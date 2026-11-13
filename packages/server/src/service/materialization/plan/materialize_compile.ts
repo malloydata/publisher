@@ -21,6 +21,7 @@ import {
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
+import { registerUniquenessCheckCompiler } from "../run/inline_uniqueness";
 import {
    buildCopyName,
    buildCopyText,
@@ -374,11 +375,21 @@ async function compileCompanion(
    const model = await materializer.getModel();
    // The P8 checks' SQL, compiled now (never run here) so a build runs it
    // against the joined source's connection before it writes anything.
+   // Each check can also be compiled again over a run's manifest, so a run
+   // whose parent build reads the joined source's persisted table checks that
+   // table (inline_uniqueness.ts).
    for (const plan of plans) {
       for (const check of plan.uniquenessChecks ?? []) {
          check.sql = await materializer
             .loadQueryByName(check.queryName)
             .getSQL();
+         registerUniquenessCheckCompiler(
+            check,
+            (buildManifest, connectionDigests) =>
+               materializer
+                  .loadQueryByName(check.queryName)
+                  .getSQL({ buildManifest, connectionDigests }),
+         );
       }
    }
    return {
