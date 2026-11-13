@@ -70,6 +70,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "counts@<hammer>/ujs/ujs.malloy": {
