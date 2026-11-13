@@ -39,6 +39,16 @@
  * column of the joined source. Through a join_one, a count already skips the
  * unmatched row (it counts the joined key), so it is served.
  *
+ * Fan-out grains and join-level measures (A6, A2, row 27): a rollup row is
+ * one group of the joined rows, so a partial re-summed across groups that
+ * share a joined row counts it twice. {@link checkJoinCoverage} holds each
+ * query to the base leg's rule, level by level, over `<join>.<field>`: a
+ * fan-out grain dimension, and the other grain dimensions of a join-level
+ * sum or count, grouped or fixed wherever the query aggregates through the
+ * join. A join-level operand (`kinds.weight` in `kinds.weight.sum()`) is
+ * NULL on an unmatched parent's row when its join is keyed on a column of
+ * the joined source, so it is read like the joined source's own column.
+ *
  * Gates: a gated entry point skips every rollup (`CONTRACT`) as for the base
  * leg; a joined source that declares a gate of its own is declined
  * (`CONTRACT`), since the rollup carries none.
@@ -48,6 +58,10 @@ import { createRequire } from "module";
 import type { SourceJoin } from "../plan/source_map";
 import type { RollupVariantPlan } from "../plan/rollup_plan";
 import type { MeasureExpr } from "../plan/rollup_measure_grammar";
+import type {
+   QueryLevelFacts,
+   QueryLevelField,
+} from "../../governance/ir/prepared_query";
 
 /** The first Malloy release carrying malloydata/malloy#3208. */
 export const MALLOY_SKIPS_UNMATCHED_JOIN_ROWS_SINCE = "0.0.438";
@@ -121,14 +135,15 @@ export interface JoinRollupRefusal {
 
 /**
  * The legs a join of the query's source offers: the join's rollups, each with
- * why it cannot be used, if it cannot. `filterReadsJoin` is whether the
- * source's own `where:` reads the join; `otherConditionsRead` the joins whose
- * conditions read another join.
+ * why it cannot be used, if it cannot. `sourceFilterReads` holds the joins
+ * the source's own `where:` reads; `parentPrimaryKey` is the query source's
+ * declared primary key, if it has one.
  */
 export function joinRollupLegs(
    joins: readonly SourceJoin[],
    plansByBase: ReadonlyMap<string, readonly RollupVariantPlan[]>,
    sourceFilterReads: ReadonlySet<string>,
+   parentPrimaryKey: string | undefined,
 ): { leg: JoinRollupLeg; refusal?: JoinRollupRefusal }[] {
    const out: { leg: JoinRollupLeg; refusal?: JoinRollupRefusal }[] = [];
    for (const join of joins) {
@@ -148,10 +163,41 @@ export function joinRollupLegs(
                   ? ("one" as const)
                   : ("many" as const),
          };
-         out.push({ leg, ...refusalOf(join, plan, joins, sourceFilterReads) });
+         out.push({
+            leg,
+            ...(leg.relationship === "many" || join.relationship === "many"
+               ? keyRepeatRefusal(join, parentPrimaryKey)
+               : {}),
+            // The condition's own refusal, when it has one, is the reason given.
+            ...refusalOf(join, plan, joins, sourceFilterReads),
+         });
       }
    }
    return out;
+}
+
+/**
+ * Why a join read as a join_many (declared one, or re-pointed as one at a
+ * grain finer than its key) cannot take the leg: its key on the query's side
+ * is not that source's primary key. A join_many is read as if each joined row
+ * met one parent row, so live sums a joined row once per parent row that
+ * meets it, and a declared join_one deduplicates at its joined row; a rollup
+ * row met by several parent rows sharing a key answers neither way. Keyed on
+ * the primary key, each rollup row meets one parent row.
+ */
+function keyRepeatRefusal(
+   join: SourceJoin,
+   parentPrimaryKey: string | undefined,
+): { refusal?: JoinRollupRefusal } {
+   if (join.baseKey === undefined || join.baseKey === parentPrimaryKey) {
+      return {};
+   }
+   return {
+      refusal: {
+         code: "rollup_count_semantics",
+         callerDetail: `\`${join.name}\` is keyed on \`${join.baseKey}\`, which is not the query source's primary key, so a row of its rollup could meet more than one of the source's rows`,
+      },
+   };
 }
 
 function refusalOf(
@@ -207,17 +253,13 @@ function refusalOf(
          `another join's condition reads \`${name}\`, whose rows the rollup does not keep`,
       );
    }
-   // A6 and A2 across the join: a rollup row is matched to each parent row,
-   // and a measure partial re-summed across a fan-out grain dimension (or a
-   // join-level one across a grain dimension other than its key) would count
-   // a joined row twice. Not served through a join yet.
-   if (
-      plan.fanOutDimensions.length > 0 ||
-      plan.rollupMeasures.some((m) => m.fanOutDimensions.length > 0)
-   ) {
+   // A6 and A2 across the join are judged per query (checkJoinCoverage),
+   // except a join key that is itself a fan-out dimension: a joined row would
+   // then meet the parent rows of more than one key.
+   if (plan.fanOutDimensions.includes(join.keyColumn)) {
       return refuse(
          "rollup_grain_too_coarse",
-         `the rollup of \`${name}\` has a grain dimension its measures fan out across`,
+         `the rollup of \`${name}\` keeps its join key \`${join.keyColumn}\` through a join_many of its own`,
       );
    }
    return {};
@@ -227,13 +269,16 @@ function refusalOf(
  * Why the stored measures `read` (by name) cannot be read through the leg's
  * join while unmatched parents still reach an aggregate
  * ({@link malloyCountsChildlessParentsAsZero} false), or undefined. `isColumn`
- * says whether a field of the joined source is a bare column (NULL on the row
- * a LEFT JOIN writes for an unmatched parent).
+ * says whether a path of the joined source is a bare column there (NULL on
+ * the row a LEFT JOIN writes for an unmatched parent): its own column
+ * (`["miles"]`), or a column of one of its joins keyed on one of its own
+ * columns (`["lines", "qty"]`, a join-level operand), which meets no row
+ * when that column is NULL.
  */
 export function unmatchedRowProblem(
    leg: JoinRollupLeg,
    read: ReadonlySet<string>,
-   isColumn: (field: string) => boolean,
+   isColumn: (path: readonly string[]) => boolean,
    skipsUnmatched = malloyCountsChildlessParentsAsZero(),
 ): string | undefined {
    if (skipsUnmatched) return undefined;
@@ -256,16 +301,164 @@ export function unmatchedRowProblem(
    return undefined;
 }
 
-/** The one column a `x.sum()`, `sum(x)` leaf aggregates, filters aside. */
-function bareOperand(expr: MeasureExpr): string | undefined {
+/**
+ * The one field path a `x.sum()`, `sum(x)`, `j.x.max()` leaf aggregates,
+ * filters aside: one name, or a join and one name.
+ */
+function bareOperand(expr: MeasureExpr): string[] | undefined {
    let e = expr;
    while (e.kind === "filtered" || e.kind === "paren") e = e.expr;
-   if (e.kind === "method" && e.args.length === 0 && e.path.length === 1) {
-      return e.path[0];
+   if (
+      e.kind === "method" &&
+      e.args.length === 0 &&
+      (e.path.length === 1 || e.path.length === 2)
+   ) {
+      return e.path;
    }
    if (e.kind === "call" && e.args.length === 1) {
       const arg = e.args[0];
-      if (arg?.kind === "path" && arg.path.length === 1) return arg.path[0];
+      if (
+         arg?.kind === "path" &&
+         (arg.path.length === 1 || arg.path.length === 2)
+      ) {
+         return arg.path;
+      }
    }
    return undefined;
+}
+
+/**
+ * A6 and A2 through the join, level by level: the base leg's
+ * `checkCoverage` rule, read on the caller's compiled query, where the
+ * rollup's fields are `<join>.<field>`. A rollup row is one group of the
+ * joined rows, matched to each parent row with its key, so a measure partial
+ * re-summed across groups that share a joined row would count that row
+ * twice. Each level that aggregates anything through the join must group or
+ * fix (`where: <join>.d = <value>`, there or above) every fan-out grain
+ * dimension of the rollup (A6), and every grain dimension a join-level sum
+ * or count it reads merges across (A2). Grouping or fixing the parent's own
+ * key field fixes the join's key column: every rollup row a parent row meets
+ * carries that key. A level that only reads the parent's own fields, or
+ * another join's, aggregates nothing through the join: the parent's
+ * aggregates are taken over its own rows whatever the join matches. Anything
+ * the check cannot place (an expression over the join's measures, a
+ * `having:`, a field it cannot trace) is held to every measure's dimensions;
+ * an ungrouped aggregate (`all`, `exclude`) declines.
+ *
+ * `parentReads` says how a parent field reads the join
+ * (`sourceFieldJoinReads`). Returns why the leg cannot answer, or undefined.
+ */
+export function checkJoinCoverage(
+   leg: JoinRollupLeg,
+   levels: QueryLevelFacts,
+   parentReads: (name: string) => "none" | "scalar" | "aggregate",
+): JoinRollupRefusal | undefined {
+   const { plan, join } = leg;
+   const name = join.name;
+   const fanOut = new Set(plan.fanOutDimensions);
+   const measureFanOut = new Map(
+      plan.rollupMeasures.map((m) => [m.name, m.fanOutDimensions]),
+   );
+   const anyMeasureFanOut = new Set(
+      plan.rollupMeasures.flatMap((m) => m.fanOutDimensions),
+   );
+   if (fanOut.size === 0 && anyMeasureFanOut.size === 0) return undefined;
+   const grain = new Set(plan.grainDimensions);
+   const all = new Set([...fanOut, ...anyMeasureFanOut]);
+   const refuse = (callerDetail: string): JoinRollupRefusal => ({
+      code: "rollup_grain_too_coarse",
+      callerDetail,
+   });
+   /** Whether a field the query defines reads anything through the join. */
+   const definedReadsJoin = (f: QueryLevelField): boolean =>
+      f.reads === undefined ||
+      f.reads.some((p) =>
+         p.length > 1 ? p[0] === name : parentReads(p[0] as string) !== "none",
+      );
+   const visit = (
+      level: QueryLevelFacts,
+      fixedAbove: ReadonlySet<string>,
+   ): JoinRollupRefusal | undefined => {
+      if (level.kind !== "reduce") {
+         return {
+            code: "rollup_count_semantics",
+            callerDetail:
+               "a stage that is not a reduction reads the joined rows, which the rollup does not keep",
+         };
+      }
+      const required = new Set<string>();
+      let aggregates = false;
+      const any = () => {
+         aggregates = true;
+         for (const d of anyMeasureFanOut) required.add(d);
+      };
+      if (level.havings.length > 0) any();
+      const grouped = new Set<string>();
+      let keyFixed = false;
+      for (const f of level.fields) {
+         if (f.isNest) continue;
+         if (f.ungrouped) {
+            return refuse(
+               `\`${f.name}\` re-sums across a fan-out dimension of the rollup of \`${name}\``,
+            );
+         }
+         const ref = f.ref;
+         if (ref !== undefined) {
+            if (ref[0] === name && ref.length === 2) {
+               const field = ref[1] as string;
+               const named = measureFanOut.get(field);
+               if (named !== undefined) {
+                  aggregates = true;
+                  for (const d of named) required.add(d);
+               } else if (grain.has(field)) grouped.add(field);
+               else any();
+            } else if (ref[0] === name) any();
+            else if (ref.length === 1) {
+               if (ref[0] === join.baseKey) keyFixed = true;
+               if (parentReads(ref[0] as string) === "aggregate") any();
+            }
+            // A field of another join reads that join's source alone.
+            continue;
+         }
+         if (
+            f.expressionType !== "scalar" &&
+            f.expressionType !== "scalar_analytic" &&
+            definedReadsJoin(f)
+         ) {
+            any();
+         } else if (f.computesAggregate && definedReadsJoin(f)) any();
+      }
+      const fixed = new Set(fixedAbove);
+      for (const p of level.fixedPathsByWhere) {
+         if (p.length === 2 && p[0] === name) fixed.add(p[1] as string);
+         if (p.length === 1 && p[0] === join.baseKey) keyFixed = true;
+      }
+      for (const d of grouped) fixed.add(d);
+      if (keyFixed) fixed.add(join.keyColumn);
+      for (const d of [...fixed]) if (!all.has(d)) fixed.delete(d);
+      if (aggregates) {
+         for (const d of fanOut) required.add(d);
+         const loose = [...required].find((d) => !fixed.has(d));
+         if (loose !== undefined) {
+            return refuse(
+               fanOut.has(loose)
+                  ? `the query does not group by or fix \`${name}.${loose}\`, a fan-out dimension of its rollup's grain, so its measures would be counted once per value`
+                  : `the query does not group by or fix \`${name}.${loose}\`, so a measure taken through a join of \`${name}\` would count each joined row once per value of it`,
+            );
+         }
+      }
+      for (const f of level.fields) {
+         if (!f.isNest) continue;
+         if (!f.nest) {
+            return {
+               code: "rollup_count_semantics",
+               callerDetail: `the nest \`${f.name}\` could not be read`,
+            };
+         }
+         const inner = visit(f.nest, fixed);
+         if (inner) return inner;
+      }
+      return undefined;
+   };
+   return visit(levels, new Set());
 }

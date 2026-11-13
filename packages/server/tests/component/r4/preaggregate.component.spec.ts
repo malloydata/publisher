@@ -85,6 +85,13 @@ source: orders is duckdb.table('orders_raw') extend {
     order_by: order_day desc
   }
   view: categories_by_day is { group_by: category; nest: by_day }
+  view: by_category_ab is by_category + { where: category = 'A' | 'B' }
+  view: by_category_ab_top is by_category_ab + { order_by: total desc; limit: 1 }
+  view: categories_by_day_a is categories_by_day + { where: category = 'A' }
+  view: days_by_category_ab is { group_by: order_day; nest: by_category_ab }
+  view: by_category_east is by_category + { where: region = 'east' }
+  view: by_category_counted is by_category + { aggregate: c is count() }
+  view: by_category_ab_counted is by_category_ab + { aggregate: c is count() }
   view: by_region is { group_by: region; aggregate: total }
   view: counted is { group_by: category; aggregate: c is count() }
   view: east_by_sql is {
@@ -240,6 +247,30 @@ const SERVED = [
       "run: orders -> by_category + { where: category = 'A' }",
    ],
    [
+      "a view defined as a refinement of another (row 11)",
+      "run: orders -> by_category_ab",
+   ],
+   [
+      "a refinement of a refinement (row 11)",
+      "run: orders -> by_category_ab_top",
+   ],
+   [
+      "a refinement of a view that nests a view (row 11)",
+      "run: orders -> categories_by_day_a",
+   ],
+   [
+      "a view that nests a refinement (row 11)",
+      "run: orders -> days_by_category_ab",
+   ],
+   [
+      "a refinement view refined again in the query (row 11)",
+      "run: orders -> by_category_ab + { limit: 1 }",
+   ],
+   [
+      "a refinement view nested in the query (row 11)",
+      "run: orders -> { group_by: order_day; nest: by_category_ab }",
+   ],
+   [
       "a query that starts from a named view (row 11)",
       "run: orders -> by_category -> { group_by: big is total > 20; aggregate: n is count() }",
    ],
@@ -338,6 +369,21 @@ const LIVE = [
    [
       "a named view that counts rows itself (row 11)",
       "run: orders -> counted",
+      "COUNT_SEMANTICS",
+   ],
+   [
+      "a refinement view that filters outside the grain (row 11)",
+      "run: orders -> by_category_east",
+      "GRAIN_TOO_COARSE",
+   ],
+   [
+      "a refinement view that counts rows itself (row 11)",
+      "run: orders -> by_category_counted",
+      "COUNT_SEMANTICS",
+   ],
+   [
+      "a refinement of a refinement that counts rows itself (row 11)",
+      "run: orders -> by_category_ab_counted",
       "COUNT_SEMANTICS",
    ],
    [
@@ -939,6 +985,9 @@ source: orders is duckdb.table('orders_raw') extend {
   #@ persist storage="${DESTINATION}"
   view: by_category is { group_by: category; aggregate: total }
   view: by_category_too is { group_by: category; aggregate: total }
+  #@ persist storage="${DESTINATION}"
+  view: by_category_a is by_category_too + { where: category = 'A' }
+  view: by_category_b is by_category + { where: category = 'B' }
 }
 `,
          },
@@ -959,6 +1008,24 @@ source: orders is duckdb.table('orders_raw') extend {
       });
       expect(run.servedBy?.kind).toBe("view");
       expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+
+   it("answers a persisted refinement view from its own table", async () => {
+      const run = await fixture.run({
+         name: "persisted refinement",
+         malloy: "run: orders -> by_category_a",
+      });
+      expect(run.servedBy?.kind).toBe("view");
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+
+   it("answers a refinement of a persisted view from the rollup", async () => {
+      expectServedFromRollup(
+         await fixture.run({
+            name: "refines a persisted view",
+            malloy: "run: orders -> by_category_b",
+         }),
+      );
    });
 
    it("answers a view that is not persisted from the rollup", async () => {
@@ -1026,4 +1093,69 @@ describe("R4: a named view whose file changed since the model compiled (row 11)"
             .map((c) => c.reason),
       ).toContain("MISSING_FIELD");
    });
+});
+
+describe("R4: a refinement view whose file changed since the model compiled (row 11)", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `source: orders is duckdb.table('orders_raw') extend {
+  #(preaggregate) grain=["category"]
+  measure: total is amount.sum()
+  #(preaggregate) grain=["category"]
+  measure: east_ is amount.sum() { where: region = 'east' }
+  view: base_view is { group_by: category; aggregate: total }
+  view: refines_base is base_view + { where: category = 'A' }
+  view: other_view is { group_by: category; aggregate: east_ }
+  view: refines_other is other_view + { where: category = 'B' }
+}
+`,
+         },
+         seedSql,
+         preaggregate: true,
+      });
+      // Edits not yet reloaded: the refined view's base, and a refinement's
+      // own text. The served model still runs what it compiled.
+      const file = path.join(fixture.packagePath, "m.malloy");
+      fs.writeFileSync(
+         file,
+         fs
+            .readFileSync(file, "utf8")
+            .replace(
+               "view: base_view is { group_by: category; aggregate: total }",
+               "view: base_view is { group_by: category; aggregate: east_ }",
+            )
+            .replace(
+               "other_view + { where: category = 'B' }",
+               "other_view + { where: category = 'A' }",
+            ),
+      );
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   for (const [name, malloy] of [
+      ["its base view edited", "run: orders -> refines_base"],
+      ["its own text edited", "run: orders -> refines_other"],
+   ] as const) {
+      it(`answers a refinement with ${name} live, never as the file now reads`, async () => {
+         const run = await fixture.run({ name, malloy });
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         expect(run.servedBy?.kind).not.toBe("rollup");
+         fixture.setBindings(fixture.bindings);
+         const { path: report } = await fixture.runAsIs(malloy);
+         expect(
+            report?.considered
+               .filter((c) => c.kind === "rollup")
+               .map((c) => c.reason),
+         ).toContain("MISSING_FIELD");
+      });
+   }
 });
