@@ -184,6 +184,24 @@ function denyUnlessAdmitted(
 }
 
 /**
+ * Whether two {@link EnforcedGates} hold the same gates: per route, the same
+ * set of expressions. A gate reached twice (own and inherited, or by two
+ * checks) counts once; order does not matter. Givens are read by name from
+ * the expression text and bound from the one request, so equal text is the
+ * same gate with the same givens.
+ */
+export function sameGateSet(a: EnforcedGates, b: EnforcedGates): boolean {
+   const same = (x: readonly string[], y: readonly string[]) => {
+      const xs = new Set(x);
+      const ys = new Set(y);
+      return xs.size === ys.size && [...xs].every((e) => ys.has(e));
+   };
+   return (
+      same(a.authorize, b.authorize) && same(a.accessFilter, b.accessFilter)
+   );
+}
+
+/**
  * Budget for a walk over a request's own derivation declarations. Exceeding it
  * fails the proof (and so denies), so it only has to exceed any real chain.
  *
@@ -237,8 +255,9 @@ export interface GovernRequest {
     * The router let `compiled.runnable`, a variant that keeps the author's
     * text (the served copy, R3), past a gate on the query's entry point. The
     * veto read the gate off the LIVE compile; this re-proves it on the routed
-    * one: the request must carry that variant's own `graftScope`, and
-    * governing must find and enforce a gate there, or the query is denied.
+    * one: the request must carry that variant's own `graftScope` and the
+    * `live` compile, and governing must enforce there exactly the gates the
+    * live entry point carries (see `sameGateSet`), or the query is denied.
     */
    routedPastEntryPointGate?: boolean;
    /** See `authorizeAndBindRunnable`'s options. */
@@ -667,14 +686,22 @@ export class QueryGovernor {
          },
       );
       if (request.routedPastEntryPointGate && !request.bypassAuthorize) {
+         // The routed compile must enforce EXACTLY the gates the live entry
+         // point does, by route and expression, own and inherited. One gate
+         // found is not the gate set: a routed form that kept the lock but
+         // lost the filter would answer rows live refuses. A live set that
+         // cannot be read, or is empty, denies too.
+         const expected = live
+            ? await this.liveEntryPointGateSet(live)
+            : undefined;
          const enforced = this.enforcedGatesByRunnable.get(runnable);
-         if (
-            !enforced ||
-            enforced.authorize.length + enforced.accessFilter.length === 0
-         ) {
-            // The live entry point is gated but no gate was found on the
-            // routed compile: it lost the author's gate text. Never answer.
+         if (!expected || !enforced) {
             await this.denyRoutedPastGate(compiled.runnable, "no_gate_found");
+         } else if (!sameGateSet(expected, enforced)) {
+            await this.denyRoutedPastGate(
+               compiled.runnable,
+               "gate_set_differs",
+            );
          }
       }
       if (request.ceiling && !request.bypassAuthorize) {
@@ -710,7 +737,7 @@ export class QueryGovernor {
     */
    private async denyRoutedPastGate(
       routed: QueryMaterializer,
-      why: "no_graft_scope" | "no_gate_found",
+      why: "no_graft_scope" | "no_gate_found" | "gate_set_differs",
    ): Promise<never> {
       const source = await this.resolveAuthorizeSourceFromRunnable(routed);
       recordRowLevelGateDecision("denied_by_gate", "entry_point");
@@ -719,6 +746,27 @@ export class QueryGovernor {
          { modelPath: this.modelPath, source, why },
       );
       throw AccessDeniedError.forSource(source ?? "unknown");
+   }
+
+   /**
+    * The gates governing the LIVE compile would evaluate on its entry point:
+    * the walk ({@link entryPointGatesInForce}: own, inherited, a derivation's
+    * base, a composite's resolved branch) plus this model's on-disk gates for
+    * the run target's name, which {@link probeEntryPointGates} folds in the
+    * same way. `undefined` (deny) when the walk cannot read the run target or
+    * finds no gate, since a routed answer past a gate implies live has one.
+    */
+   private async liveEntryPointGateSet(
+      live: QueryMaterializer,
+   ): Promise<EnforcedGates | undefined> {
+      const walked = await this.entryPointGatesInForce(live);
+      if (!walked) return undefined;
+      const name = await this.resolveAuthorizeSourceFromRunnable(live);
+      const onDisk = name ? (this.entryPointGatesBySource.get(name) ?? []) : [];
+      const gates = enforcedGatesOf([...walked, ...onDisk]);
+      return gates.authorize.length + gates.accessFilter.length === 0
+         ? undefined
+         : gates;
    }
 
    /**
