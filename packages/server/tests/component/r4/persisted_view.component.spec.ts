@@ -285,6 +285,94 @@ for (const gatedSwitch of [true, false]) {
    });
 }
 
+// The routed re-proof compares the variant's whole gate set with live's:
+// a view declared on an extension carries its base's lock (inherited) and
+// its own access filter, both written on the variant, both re-proven.
+const twoGateModel = `##! experimental { givens }
+given: TENANT :: string is ""
+given: ROLE :: string is ""
+
+#(authorize) $ROLE = 'admin'
+source: base is duckdb.table('fl') extend {
+  measure: n is count()
+}
+
+#(access_filter) tenant = $TENANT
+source: ops is base extend {
+  #@ persist name="ops_by_tenant2"
+  view: by_tenant is { group_by: tenant, carrier; aggregate: n }
+}
+`;
+
+describe("R4: a persisted view on an extension with an inherited lock and its own filter", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: {
+            PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+         },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": twoGateModel },
+         seedSql,
+         persistedViews: true,
+         colocated: ["ops__by_tenant__view"],
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   for (const tenant of ["t1", "t2"]) {
+      it(`answers ${tenant} from the view's table, equal to live`, async () => {
+         const malloy = "run: ops -> by_tenant";
+         const givens = { TENANT: tenant, ROLE: "admin" };
+         const run = await fixture.run({ name: tenant, malloy, givens });
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         expect(run.served.length).toBeGreaterThan(0);
+         for (const row of run.served) expect(row.tenant).toBe(tenant);
+         fixture.setBindings(fixture.bindings);
+         const result = await fixture.model.runQuery(
+            (
+               await import("../../../src/service/access_record")
+            ).unrecordedAudit(),
+            { query: malloy, filterParams: {}, givens },
+            (
+               await import("../../../src/service/model_query_request")
+            ).QueryPrivileges.of({ bypassFilters: true }),
+         );
+         expect(result.path?.servedBy.kind).toBe("view");
+      });
+   }
+
+   it("denies a caller the inherited lock refuses", async () => {
+      fixture.setBindings(fixture.bindings);
+      const outcome = await fixture.model
+         .runQuery(
+            (
+               await import("../../../src/service/access_record")
+            ).unrecordedAudit(),
+            {
+               query: "run: ops -> by_tenant",
+               filterParams: {},
+               givens: { TENANT: "t1", ROLE: "viewer" },
+            },
+            (
+               await import("../../../src/service/model_query_request")
+            ).QueryPrivileges.of({ bypassFilters: true }),
+         )
+         .then(
+            () => undefined,
+            (e: unknown) => e,
+         );
+      expect((outcome as Error)?.constructor?.name).toBe("AccessDeniedError");
+   });
+});
+
 // Which source declares a persisted view, end to end: only the statement that
 // annotates it (declaredFieldNotes). A view an extension renames carries its
 // base's notes and answers live; an `include:` re-annotation declares it on
