@@ -27,6 +27,10 @@ With `PUBLISHER_MATERIALIZE` on (off by default), `#(preaggregate) grain=["categ
 
 A malformed declaration (a measure whose partials cannot be merged, an unknown key, a grain naming no dimension) is refused at publish, and is a warning on load. One that cannot be honoured here is a coded warning and is not built: a join-level aggregate whose key is not in the grain, an access filter on a field the grain drops or read through a join, a build that reads a given, a source, grain dimension or measure that reads the current time (a rolling window would be fixed at build time), or a measure Publisher cannot read with certainty. With the switch off nothing changes, and `#@ preaggregate` keeps its v1 behaviour either way.
 
+## [Unreleased] — In development: `#@ persist` on a view
+
+With `PUBLISHER_MATERIALIZE` on, `#@ persist` on a view stores the view's result and answers a query from it only when the query calls that view exactly (`run: src -> view`) or starts from it (`run: src -> view -> { … }`). Refinements, nests, hand-written look-alikes and calls on an extending source are answered live; the path report lists the view's table as `kind: "view"` with why it was skipped. A view that reads a given or the current time, nests while stored with `storage=`, or sits on a gated source whose gate fields it does not group by is not built, with a `persist-view-not-built` package warning. A gated source's view is served only with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on, the gate grafted on the stored result. Off (the default), nothing changes. See docs/materialization.md, "Persisted views".
+
 ## [Unreleased] — In development: `#@ -persist` and `#@ preaggregate` are deprecated in materialization v2, with a migration recipe
 
 Materialization v2 deprecates two v1 forms. `#@ -persist` has no v2 form, because a materialized source serves every reader. `#@ preaggregate` is renamed `#(preaggregate)`, which phase 4 builds. Both follow the Publisher v1 plan's rule for a deprecated form: a package warning through 0.x, refused at 1.0.0, and the reader removed in 1.1. `#@ persist` itself is not deprecated, and moving to `#(materialize)` is optional.

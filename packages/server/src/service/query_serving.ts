@@ -63,6 +63,11 @@ import {
 } from "./materialization/serve/query_path";
 import type { BuildManifest } from "./materialization/types";
 import {
+   type PersistedViewServe,
+   type ViewTable,
+   ViewSkip,
+} from "./materialization/serve/view_variants";
+import {
    readPreparedQuery,
    resolveStructRefSource,
 } from "./governance/ir/prepared_query";
@@ -102,6 +107,17 @@ export type RoutedExtra =
         graftScope?: GraftScope;
      }
    | {
+        kind: "view";
+        /** The persisted view's table that answered. */
+        table: ViewTable;
+        /** For a `storage=` view: how its `virtual()` handle resolves. */
+        virtualMap?: VirtualMap;
+        /** For a `storage=` view: its binding. */
+        binding?: ServeBinding;
+        /** The variant's graft scope, for `govern()` (R3). */
+        graftScope: GraftScope;
+     }
+   | {
         kind: "rollup";
         /**
          * The composite member the compiled query resolved to: the rollup that
@@ -118,8 +134,10 @@ export type RoutedExtra =
 export interface Answer {
    /** Each candidate the router considered, and what it decided. */
    readonly considered: readonly ConsideredVariant[];
-   /** The tier the router chose: a stored table, a rollup, or live. */
-   readonly tier: "storage" | "rollup" | "live";
+   /** The tier the router chose: a persisted view, a stored table, a rollup, or live. */
+   readonly tier: "view" | "storage" | "rollup" | "live";
+   /** For a view answer: the persisted view's table. */
+   readonly viewTable: ViewTable | undefined;
    /** The routed runnable, or undefined when live answers (the caller's own compile runs). */
    readonly routedRunnable: QueryMaterializer | undefined;
    /** For a storage answer: how the shape's virtual sources resolve to tables. */
@@ -157,6 +175,7 @@ export const LIVE_ANSWER: Answer = Object.freeze({
    graftScope: undefined,
    pastEntryPointGate: false,
    rollupMember: undefined,
+   viewTable: undefined,
    runFailed: false,
    colocatedRead: new Set<string>(),
 });
@@ -165,6 +184,22 @@ export const LIVE_ANSWER: Answer = Object.freeze({
 export function routedAnswer(route: RouteDecision<RoutedExtra>): Answer {
    if (route.served !== "variant") {
       return Object.freeze({ ...LIVE_ANSWER, considered: route.considered });
+   }
+   if (route.extra.kind === "view") {
+      return Object.freeze({
+         ...LIVE_ANSWER,
+         considered: route.considered,
+         tier: "view",
+         routedRunnable: route.runnable,
+         virtualMap: route.extra.virtualMap,
+         serveShapeBindings: route.extra.binding ? [route.extra.binding] : [],
+         storageTablesRead: route.extra.binding
+            ? [route.extra.binding]
+            : undefined,
+         graftScope: route.extra.graftScope,
+         pastEntryPointGate: route.pastEntryPointGate === true,
+         viewTable: route.extra.table,
+      });
    }
    if (route.extra.kind === "storage") {
       return Object.freeze({
@@ -210,7 +245,11 @@ export function answeredWith(
  */
 export function servedFromOf(answer: Answer): ServedFrom | undefined {
    if (answer.runFailed) return "live_fallback";
-   return answer.tier === "storage" ? "storage" : undefined;
+   // A `storage=` persisted view reads the storage tier too.
+   return answer.tier === "storage" ||
+      (answer.tier === "view" && answer.virtualMap !== undefined)
+      ? "storage"
+      : undefined;
 }
 
 /**
@@ -403,6 +442,8 @@ export interface QueryServingHost {
    admitsSourceByName(name: string): boolean;
    /** Every source's `sourceID` chain in the model. */
    sourceChains(): ReadonlyMap<string, readonly string[]>;
+   /** The `#@ persist` view leg (materialization v2, phase 4, P14). */
+   readonly persistedViews: PersistedViewServe;
 }
 
 /**
@@ -422,6 +463,11 @@ export function routeCandidates(
       storageRoutingPossible: boolean;
       servedCopyPossible: boolean;
       preaggServeMaterializer: ModelMaterializer | undefined;
+      /**
+       * The caller's own compile, for the persisted-view leg; absent when the
+       * leg is off (`materialize.enabled`) or the model has no persisted view.
+       */
+      persistedViewsFor?: QueryMaterializer;
    },
 ): Variant<RoutedExtra>[] {
    const {
@@ -433,6 +479,54 @@ export function routeCandidates(
       preaggServeMaterializer,
    } = args;
    const candidates: Variant<RoutedExtra>[] = [];
+   // A persisted view first (R1: view by exact call, rollup, nearest table,
+   // live). Listed only when the model has one; applicable only when the text
+   // calls one, so a look-alike or a nest never costs a compile.
+   if (args.persistedViewsFor) {
+      const authorRunnable = args.persistedViewsFor;
+      candidates.push({
+         kind: "view",
+         applicable: !!host.persistedViews.calledView(queryString),
+         // R3, behind the same switch as the served copy (question 14): the
+         // source's gates are written on the variant and grafted there.
+         keepsContracts: getMaterializeGatedSources(),
+         attempt: async () => {
+            const answer = await host.persistedViews.attempt({
+               queryString,
+               givens: surfaceGivens,
+               authorRunnable,
+               buildManifest,
+            });
+            return {
+               runnable: answer.runnable,
+               extra: {
+                  kind: "view",
+                  table: answer.table,
+                  graftScope: answer.graftScope,
+                  ...(answer.virtualMap
+                     ? { virtualMap: answer.virtualMap }
+                     : {}),
+                  ...(answer.binding ? { binding: answer.binding } : {}),
+               },
+            };
+         },
+         explain: (err) =>
+            err instanceof ViewSkip
+               ? {
+                    code: err.code,
+                    ...(err.callerDetail
+                       ? { callerDetail: err.callerDetail }
+                       : {}),
+                 }
+               : undefined,
+         onSkip: (err) => {
+            logger.debug("the persisted view does not answer this query", {
+               modelPath: host.modelPath,
+               error: err instanceof Error ? err.message : String(err),
+            });
+         },
+      });
+   }
    // The served copy on `virtual` (materialization v2): the author's own
    // files with each stored source re-rooted on its table. Tried first when
    // enabled; a query it cannot answer falls through to the serve shape.
@@ -643,6 +737,8 @@ export async function queryPathFor(
       viewName: string | undefined;
       freshManifest: BuildManifest | undefined;
       includeHidden: boolean;
+      /** The text the router saw, to name the persisted view it calls. */
+      queryString?: string;
    },
 ): Promise<ApiQueryPath | undefined> {
    try {
@@ -663,6 +759,16 @@ export async function queryPathFor(
       });
       const catalog = host.materializedTables();
       const plans = host.rollupPlans();
+      // The persisted view the query calls, if any: its table is the first
+      // candidate (R1), whatever the router decided about it.
+      const viewTable =
+         answer.viewTable ??
+         (args.queryString !== undefined
+            ? host.persistedViews.reportedTable(
+                 args.queryString,
+                 args.freshManifest,
+              )
+            : undefined);
       // Nothing materialized for this model: the answer is live and there is
       // nothing to name, so skip the chain walks and the catalog reads.
       if (
@@ -670,6 +776,7 @@ export async function queryPathFor(
          host.storageServe.serveBindings.length === 0 &&
          host.servedCopy.materializeBindings().length === 0 &&
          plans.length === 0 &&
+         viewTable === undefined &&
          answer.considered.length === 0
       ) {
          return {
@@ -726,6 +833,7 @@ export async function queryPathFor(
          ),
          runFailed: answer.runFailed,
          colocatedRead: answer.colocatedRead,
+         ...(viewTable ? { view: viewTable } : {}),
          ...(answer.rollupMember ? { rollupMember: answer.rollupMember } : {}),
          chains: host.sourceChains(),
          // The discovery surface: a name the caller cannot list is never

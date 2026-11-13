@@ -4,7 +4,7 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { InMemoryURLReader, SingleConnectionRuntime } from "@malloydata/malloy";
-import { persistBlankedFiles } from "./rollup_compile";
+import { persistBlankedFiles } from "../persist_blanking";
 import {
    generateRollupBuildFile,
    planModelRollups,
@@ -368,7 +368,7 @@ describe("the rollup build file", () => {
 source: daily is ${ROWS} -> { group_by: category; aggregate: n is count() }
 `;
       const modelDef = await compile({ "m.malloy": text });
-      const blanked = persistBlankedFiles(modelDef, () => text);
+      const blanked = await persistBlankedFiles(modelDef, () => text);
       const out = [...(blanked?.values() ?? [])][0] ?? "";
       expect(out.split("\n")[1]?.trim()).toBe("");
       expect(out.split("\n").length).toBe(text.split("\n").length);
@@ -383,9 +383,11 @@ source: daily is ${ROWS} -> { group_by: category; aggregate: n is count() }
       const modelDef = await compile({ "m.malloy": text });
       // The file moved on since it compiled: the span holds something else.
       expect(
-         persistBlankedFiles(modelDef, () => `\n\n${text}`),
+         await persistBlankedFiles(modelDef, () => `\n\n${text}`),
       ).toBeUndefined();
       // Or cannot be read at all.
-      expect(persistBlankedFiles(modelDef, () => undefined)).toBeUndefined();
+      expect(
+         await persistBlankedFiles(modelDef, () => undefined),
+      ).toBeUndefined();
    });
 });

@@ -23,12 +23,11 @@ import type {
    ModelMaterializer,
    Runtime,
 } from "@malloydata/malloy";
-import { readFileSync } from "fs";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
-import { routeOfNote } from "../../annotation_reader";
 import { overlayKey } from "../../overlay_key";
+import { persistBlankedFiles } from "../persist_blanking";
 import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
 import {
    generateRollupBuildFile,
@@ -95,109 +94,6 @@ export function packageRelativeSourceID(
    }
 }
 
-/** A zero-based range, as a note's `at.range` carries it. */
-interface NoteRange {
-   start: { line: number; character: number };
-   end: { line: number; character: number };
-}
-
-/** Every source-level note on an annotation chain, inherited levels included. */
-function sourceNotes(
-   annotations: unknown,
-   depth = 0,
-): { text: string; at?: { url: string; range: NoteRange } }[] {
-   if (!annotations || typeof annotations !== "object" || depth > 64) return [];
-   const a = annotations as {
-      notes?: { text: string; at?: { url: string; range: NoteRange } }[];
-      blockNotes?: { text: string; at?: { url: string; range: NoteRange } }[];
-      inherits?: unknown;
-   };
-   return [
-      ...(a.blockNotes ?? []),
-      ...(a.notes ?? []),
-      ...sourceNotes(a.inherits, depth + 1),
-   ];
-}
-
-/**
- * `text` with each range replaced by spaces, line breaks kept, or undefined
- * when a range does not hold the note the compiler says it does (a file that
- * changed since it compiled, or a range read differently): nothing is blanked
- * by guess.
- */
-function blankRanges(
-   text: string,
-   notes: readonly { text: string; range: NoteRange }[],
-): string | undefined {
-   const lines = text.split("\n");
-   for (const { text: note, range: r } of notes) {
-      // A note is one line: `#@ persist …` up to the end of its line.
-      if (r.start.line !== r.end.line) return undefined;
-      const current = lines[r.start.line];
-      if (current === undefined) return undefined;
-      const from = r.start.character;
-      const to = Math.min(r.end.character, current.length);
-      const held = current.slice(from, to);
-      if (
-         from > current.length ||
-         !held.startsWith("#@") ||
-         held.trimEnd() !== note.trimEnd()
-      ) {
-         return undefined;
-      }
-      lines[r.start.line] =
-         current.slice(0, from) + " ".repeat(to - from) + current.slice(to);
-   }
-   return lines.join("\n");
-}
-
-/**
- * The author's files with every source-level `#@` note blanked, keyed by URL,
- * for each file of `modelDef` that carries one: empty when none does, which
- * is the common case. The spans are the compiler's own (each note's
- * `at.range`), not a text search, and each is checked to hold its note before
- * it is blanked. Undefined when a file cannot be read or a span does not
- * hold its note: the caller builds nothing rather than build over a stored
- * base it meant to leave out.
- */
-export function persistBlankedFiles(
-   modelDef: unknown,
-   readText: (url: string) => string | undefined = readLocalFile,
-): Map<string, string> | undefined {
-   const byFile = new Map<string, { text: string; range: NoteRange }[]>();
-   const seen = new Set<string>();
-   for (const node of SourceMap.of(modelDef).nodes()) {
-      const annotations = (node.def as { annotations?: unknown }).annotations;
-      for (const note of sourceNotes(annotations)) {
-         if (routeOfNote(note.text) !== "@") continue;
-         if (!note.at) return undefined;
-         const r = note.at.range;
-         const key = `${note.at.url}#${r.start.line}:${r.start.character}`;
-         if (seen.has(key)) continue;
-         seen.add(key);
-         const notes = byFile.get(note.at.url) ?? [];
-         notes.push({ text: note.text, range: r });
-         byFile.set(note.at.url, notes);
-      }
-   }
-   const out = new Map<string, string>();
-   for (const [url, notes] of byFile) {
-      const text = readText(url);
-      const blanked = text === undefined ? undefined : blankRanges(text, notes);
-      if (blanked === undefined) return undefined;
-      out.set(overlayKey(url), blanked);
-   }
-   return out;
-}
-
-function readLocalFile(url: string): string | undefined {
-   try {
-      return readFileSync(fileURLToPath(url), "utf8");
-   } catch {
-      return undefined;
-   }
-}
-
 /**
  * Plan, generate and compile the rollup companion for one author model: the
  * rollups of every source the model DECLARES. `generated` is undefined when it
@@ -235,7 +131,17 @@ export async function tryCompileRollupCompanion(args: {
       );
       if (!text) return { refused };
       const url = rollupCompanionURL(args.packagePath, args.modelPath);
-      const overlay = persistBlankedFiles(args.modelDef);
+      // The shared, checked blanking (persist_blanking.ts): each compiler
+      // span must hold its note and the file must lex the same once blanked.
+      const { runtime: reader } = await args.getRuntime(new Map());
+      const overlay = await persistBlankedFiles(args.modelDef, async (href) => {
+         try {
+            const read = await reader.urlReader.readURL(new URL(href));
+            return typeof read === "string" ? read : read.contents;
+         } catch {
+            return undefined;
+         }
+      });
       if (!overlay) {
          // Building over the author's files as they are would chain a rollup
          // onto its base's table (#6293); build nothing instead.
@@ -245,7 +151,7 @@ export async function tryCompileRollupCompanion(args: {
          );
          return { refused };
       }
-      overlay.set(url.href, text);
+      overlay.set(overlayKey(url.href), text);
       const { runtime, importBaseURL } = await args.getRuntime(overlay);
       const materializer = runtime.loadModel(url, { importBaseURL });
       const model = await materializer.getModel();

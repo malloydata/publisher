@@ -28,9 +28,11 @@ import { recordQueryVariantRouting } from "../materialization_metrics";
 /** The kinds of candidate the router knows, in their usual catalog order. */
 /**
  * `served` is the served copy on `virtual` (materialization v2), tried before
- * `storage` (today's serve shape) when `materialize.enabled` is on.
+ * `storage` (today's serve shape) when `materialize.enabled` is on. `view` is
+ * a persisted view's table (`#@ persist` on a view, phase 4), tried first: it
+ * answers only an exact call of its view (R1).
  */
-export type VariantKind = "served" | "storage" | "rollup";
+export type VariantKind = "view" | "served" | "storage" | "rollup";
 
 /**
  * Why a candidate did not answer. Internal for now; the path report maps

@@ -36,7 +36,10 @@
 
 import { identifier, nowComparison, stringLiteral } from "../../malloy_text";
 import type { MaterializeReadTimeTerm } from "../plan/build_file_generator";
-import { duckdbTypeToMalloy } from "./materialization_serve_transform";
+import {
+   duckdbTypeToMalloy,
+   duckdbTypeToMalloyType,
+} from "./materialization_serve_transform";
 import { declarationSpans, topLevelTokens } from "../declaration_text";
 import { isName, lexAll, offsetOf, statementStarts } from "../malloy_lexer";
 
@@ -129,11 +132,14 @@ export interface RerootRefusal {
    sourceName: string;
    url: string;
    /**
-    * `not_query_shaped`: the declaration's base is not a query (`x -> { … }`).
-    * A source declared by refinement alone (`deals is all_deals extend {
-    * where: … }`) stores its root's rows, and the serve side re-applies the
-    * whole chain's filters, so re-rooting it would drop its base's `where:`.
-    * It is left as written; it still inherits a re-rooted base by name.
+    * `not_query_shaped`: the declaration's base is not a query (`x -> { … }`)
+    * nor a connection's table or SQL (`conn.sql("…") extend { … }`, whose
+    * table is that SQL's rows, with the declaration's own `extend` run kept
+    * and applied again over it). A source declared by refinement alone
+    * (`deals is all_deals extend { where: … }`) stores its root's rows, and
+    * the serve side re-applies the whole chain's filters, so re-rooting it
+    * would drop its base's `where:`. It is left as written; it still inherits
+    * a re-rooted base by name.
     */
    reason: "range_not_found" | "definition_not_parsed" | "not_query_shaped";
 }
@@ -198,7 +204,12 @@ export function buildServedCopy(
          }
          const declaration = out.slice(start, end);
          const spans = declarationSpans(declaration);
-         if (spans && !spans.queryShaped && !r.storedDimensions) {
+         if (
+            spans &&
+            !spans.queryShaped &&
+            !spans.connectionRooted &&
+            !r.storedDimensions
+         ) {
             refused.push({
                sourceName: r.sourceName,
                url,
@@ -274,6 +285,16 @@ export function rerootDeclaration(
       if (!kept) return undefined;
       extend = kept.text;
       rewritten = kept.rewritten;
+   }
+   if (r.storedDimensions !== undefined) {
+      // A `#(materialize)` table stores a field the source renames under its
+      // new name, so the rename has nothing left to rename.
+      const renamed = dropRenames(
+         extend,
+         new Set((r.columns ?? []).map((c) => c.name)),
+      );
+      if (!renamed) return undefined;
+      extend = renamed.text;
    }
    if (timeframed.length > 0) {
       const opened = intoFirstExtend(
@@ -416,6 +437,20 @@ export function dropDimensions(
 }
 
 /**
+ * In a run of `extend { … }` blocks, delete each `rename:` whose new name is
+ * in `names`, as {@link dropDimensions} deletes a definition: a `#(materialize)`
+ * table stores a renamed field under its new name, so the stored column IS the
+ * field and the rename's old name is not on the table to rename.
+ */
+export function dropRenames(
+   text: string,
+   names: ReadonlySet<string>,
+): { text: string; dropped: Set<string> } | undefined {
+   const out = rewriteDimensions(text, names, new Map(), "rename");
+   return out && { text: out.text, dropped: out.dropped };
+}
+
+/**
  * {@link dropDimensions}, and also replace the expression of each definition
  * named in `rewrite` (`<name> is <expression>`) with the given text, keeping
  * its name, its annotations and its place. Returns the names it dropped and
@@ -425,6 +460,7 @@ export function rewriteDimensions(
    text: string,
    names: ReadonlySet<string>,
    rewrite: ReadonlyMap<string, string>,
+   keyword: "dimension" | "rename" = "dimension",
 ): { text: string; dropped: Set<string>; rewritten: Set<string> } | undefined {
    const tokens = lexAll(text);
    if (!tokens) return undefined;
@@ -437,7 +473,7 @@ export function rewriteDimensions(
    const starts = statementStarts(level);
    for (let si = 0; si < starts.length; si++) {
       const kw = level[starts[si]];
-      if (kw.text !== "dimension") continue;
+      if (kw.text !== keyword) continue;
       const colon = level[starts[si] + 1];
       const nextStart =
          si + 1 < starts.length ? level[starts[si + 1]].start : Infinity;
@@ -557,6 +593,86 @@ export function declaredBaseName(
    return t.text.startsWith("`") ? t.text.slice(1, -1) : undefined;
 }
 
+/**
+ * The Malloy type a stored column is declared as in the `type:`. A scalar is
+ * the serve shape's mapping; a list and a struct (what a persisted `nest:`
+ * stores, `STRUCT(status VARCHAR, n BIGINT)[]`) are written as Malloy's array
+ * and record types (`{ status::string, n::number }[]`), so the nest's rows read
+ * back through it as they do live. A nested type that does not read as one
+ * (a MAP, a union) is the serve shape's `json`, which does not compile.
+ */
+export function storedTypeText(stored: string): string {
+   return storedMalloyType(stored) ?? duckdbTypeToMalloy(stored);
+}
+
+/**
+ * {@link storedTypeText} when the stored type reads back faithfully, else
+ * undefined: a type the `type:` could only declare as `json`, which Malloy
+ * refuses there, so one such column would fail the whole model's copy. A
+ * nest built from a warehouse whose nests are JSON (Postgres, Snowflake) is
+ * stored as `JSON`, for one.
+ */
+export function storedMalloyType(stored: string): string | undefined {
+   const parsed = parseNestedType(stored.trim());
+   if (parsed === undefined || parsed.rest.trim() !== "") return undefined;
+   return parsed.text;
+}
+
+/**
+ * One DuckDB type at the start of `s`: a scalar, `STRUCT(<name> <type>, …)`,
+ * or either followed by `[]`. Undefined when it is no such type.
+ */
+function parseNestedType(
+   s: string,
+   depth = 0,
+): { text: string; rest: string } | undefined {
+   if (depth > 16) return undefined;
+   let text: string;
+   let rest: string;
+   const struct = /^STRUCT\s*\(/i.exec(s);
+   if (struct) {
+      rest = s.slice(struct[0].length);
+      const fields: string[] = [];
+      for (;;) {
+         const name = /^\s*("(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*)\s+/.exec(
+            rest,
+         );
+         if (!name) return undefined;
+         const fieldName = name[1].startsWith('"')
+            ? name[1].slice(1, -1).replace(/""/g, '"')
+            : name[1];
+         const inner = parseNestedType(rest.slice(name[0].length), depth + 1);
+         if (!inner) return undefined;
+         fields.push(`${identifier(fieldName)}::${inner.text}`);
+         rest = inner.rest.trimStart();
+         if (rest.startsWith(",")) {
+            rest = rest.slice(1);
+            continue;
+         }
+         if (!rest.startsWith(")")) return undefined;
+         rest = rest.slice(1);
+         break;
+      }
+      text = `{ ${fields.join(", ")} }`;
+   } else {
+      // A scalar, with its own parenthesised arguments (`DECIMAL(18,2)`).
+      const scalar =
+         /^[A-Za-z_][A-Za-z0-9_ ]*?(\([0-9,\s]*\))?(?=\s*(\[|,|\)|$))/.exec(s);
+      if (!scalar) return undefined;
+      const mapped = duckdbTypeToMalloyType(scalar[0]);
+      if (!("type" in mapped)) return undefined;
+      text = mapped.type;
+      rest = s.slice(scalar[0].length);
+   }
+   for (;;) {
+      const list = /^\s*\[\s*\]/.exec(rest);
+      if (!list) break;
+      text = `${text}[]`;
+      rest = rest.slice(list[0].length);
+   }
+   return { text, rest };
+}
+
 /** The emitted `type:` declaration for one re-rooted source. */
 export function typeDeclaration(
    r: Pick<Reroot, "typeName" | "columns">,
@@ -569,7 +685,7 @@ export function typeDeclaration(
             (c.timeframe && TIMEFRAMES.has(c.timeframe) ? [] : (c.notes ?? []))
                .map((note) => `   ${note.trimEnd()}\n`)
                .join("") +
-            `   ${identifier(c.name)}::${duckdbTypeToMalloy(c.type)}`,
+            `   ${identifier(c.name)}::${storedTypeText(c.type)}`,
       )
       .join(",\n");
    return `type: ${identifier(r.typeName)} is {\n${fields}\n}`;
