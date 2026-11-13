@@ -35,12 +35,49 @@ read these fields should switch to the codes:
   `reason` (it could name a watermark boundary) and keep `reasonCode`. "Applied an incremental delta"
   drops `rangeStart` and `rangeEnd`. The boundary reached is on the manifest entry's `ledger`.
 - "Could not read a covered_through boundary after a full rebuild" carries `errorCode`, not `error`.
-- "Source failed to materialize", "Storage materialization build failed" and "Chained storage build
-  could not reuse the parent table" carry `code` (a driver's code, Publisher's error kind or the
-  error's class), not `reason` or `error`; the cast fallback and the two rollback warnings carry
-  `errorCode` or `causeCode`.
-- "Materialization run failed" and "Materialization run cancelled" carry `code` and, for a failure,
-  the stack's frames without its message line.
+- "Chained storage build could not reuse the parent table" carries `code` (a driver's code,
+  Publisher's error kind or the error's class), not `reason`; the cast fallback and the two rollback
+  warnings carry `errorCode` or `causeCode`.
+- "Materialization run failed" and "Materialization run cancelled", logged for a run failure that
+  `materialization.run.finished` did not already report, carry `code` and, for a failure, the
+  stack's frames without its message line.
+
+## [Unreleased] — (BREAKING) Materialization build metrics: one build counter, and structured run and build events
+
+Three materialization metrics are replaced, and one loses a label. Dashboards or alerts on the old
+names stop receiving data.
+
+- `publisher_materialization_sources_total{outcome, mode}` and
+  `publisher_storage_build_failures_total{destination, reason}` fold into
+  `publisher_materialization_build_total{kind, tier, outcome, failure_class}`, counted once per
+  source per run. `kind` is `materialize`, `persist`, `rollup`, `view` or `pair`; `tier` is
+  `colocated` or `storage`; `outcome` is `built`, `reused`, `refused`, `failed` or `cancelled`; and
+  `failure_class` is `none` unless the build failed, then `deterministic`, `transient`,
+  `unclassified` (the per-source `retryable` false, true and absent) or `billed_read_lost` (the old
+  `reason="billed_read_not_captured"`: the warehouse read was charged and its rows were lost, so a
+  retry pays again). Colocated failures are now counted too, not only `storage=` ones. The run's
+  `mode` stays on `publisher_materialization_runs_total`. A failed build is counted even when the
+  whole run then fails, where the old counter counted nothing for such a run; a reused source is
+  counted only when its run commits.
+- `publisher_materialization_source_build_duration_ms{engine}` becomes
+  `publisher_materialization_build_duration_ms{kind, tier, method}`, with explicit buckets from
+  100 ms to an hour. The old `engine` maps as `in_warehouse` to colocated/full, `storage` to
+  storage/full, `delta` to colocated/delta and `delta_storage` to storage/delta. A failed build that
+  started is timed too.
+- New: `publisher_materialization_build_read_bytes{tier}`, the warehouse bytes a build scanned,
+  recorded only when the warehouse reported a count.
+- `publisher_storage_tables_retained_total` drops its `destination` label; the destination is on
+  the warn log beside each count.
+
+The run's log lines change with them. `materialization.run.started` (info) and
+`materialization.run.finished` (info, warn when partial, error when failed) replace "Materialization
+build started" and "Materialization build complete…", and `materialization.build.finished` (info) and
+`materialization.build.failed` (warn, error when unclassified) replace "Source failed to
+materialize". Each carries `runId` (the run's id), the source's `sourceEntityId`, `kind`, `tier`,
+`method` and, for a failure, `failureClass` and `code`. A failure's message is no longer logged, since
+a driver error can quote SQL or a value: it stays on the run's record (`error`, and each
+`failures[].reason`), and the log carries its code. A whole-run failure is logged once, by
+`materialization.run.finished`, rather than again as "Materialization run failed".
 
 ## [Unreleased] — In development: integers past 2^53 served from storage come back exact
 

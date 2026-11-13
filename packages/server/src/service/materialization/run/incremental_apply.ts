@@ -4,7 +4,8 @@
 import { decodeDottedTablePath } from "@malloydata/malloy";
 
 import { logger } from "../../../logger";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "./run_telemetry";
+import type { IncrementalStepReason } from "../../../materialization_metrics";
 import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface";
 import type { IncrementalStrategy } from "../types";
 import { errMessage } from "../../../utils";
@@ -1104,23 +1105,7 @@ export function ledgerLineageMismatch(
  * `reason` label — the free-text `reason` names specifics (columns, versions,
  * boundary values) that a metric label cannot carry.
  */
-export type IncrementalStepReasonCode =
-   // Seeds.
-   | "forced"
-   | "no_boundary"
-   | "lineage_changed"
-   | "table_renamed"
-   | "merge_unsupported"
-   | "table_unreadable"
-   | "table_emptied"
-   | "shape_mismatch"
-   | "ledger_unreadable"
-   | "plan_error"
-   | "chained_storage"
-   | "pair_parent_row"
-   // Skips.
-   | "frontier_unreadable"
-   | "not_advanced";
+export type IncrementalStepReasonCode = IncrementalStepReason;
 
 /** What one source's refresh should do. */
 export type IncrementalStep =

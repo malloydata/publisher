@@ -24,7 +24,7 @@ import {
    StorageCatalogNotFoundError,
 } from "../../../errors";
 import { logger } from "../../../logger";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "./run_telemetry";
 import { getPartitionedWriteFlushThreshold } from "../../../config";
 import { errMessage } from "../../../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "../../quoting";

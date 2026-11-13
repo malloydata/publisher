@@ -15,7 +15,8 @@ import { createMocks } from "../../../test_helpers/materialization_service_harne
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { createTableWithDeclaredTypes } from "./materialization_build_session";
-import { errorCodeOf, stackFrames } from "./error_code";
+import { stackFrames } from "./run_lifecycle";
+import { errorCodeOf } from "./run_telemetry";
 
 // The never-log rule (docs/materialization-v2-plan.md, "Step 4
 // specification"): no log call, at any level, carries a value from the data
@@ -344,7 +345,7 @@ describe("build failure logs never carry the driver's message", () => {
 
       expect(result.failures["a1aaaaaaaaaaaaaa"].reason).toContain(ROW_VALUE);
       const failed = logged.find(
-         (c) => c[1] === "Source failed to materialize",
+         (c) => c[1] === "materialization.build.failed",
       );
       expect(failed?.[2]).toMatchObject({ code: "22018" });
       expectNothingQuoted();
