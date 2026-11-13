@@ -9,6 +9,7 @@ import {
    rmSync,
    writeFileSync,
 } from "fs";
+import { randomUUID } from "crypto";
 import * as path from "path";
 import { TEMP_DIR_PATH } from "../constants";
 import {
@@ -33,7 +34,13 @@ import { startedStore } from "../test_helpers/started_store";
  * A fake simple-git and storage manager are injected into each store.
  */
 
-const serverRootPath = path.join(TEMP_DIR_PATH, "clone-spec-server-root");
+// Unique per run: a fixed name in the shared temp directory let two runs at
+// once (two worktrees, or the suite beside a single spec) delete each other's
+// tree mid-test.
+const serverRootPath = path.join(
+   TEMP_DIR_PATH,
+   `clone-spec-server-root-${randomUUID()}`,
+);
 
 const ENV_NAME = "clone-env";
 const PKG_NAME = "pkg-a";
