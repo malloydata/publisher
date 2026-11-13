@@ -320,14 +320,14 @@ lists where it differs from `#@ preaggregate`.
 
 Each of these is a later pull request. The warning text names the reason when it applies.
 
-| v2 form                                                                      | Status                                                               |
-| ---------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| Serving a colocated `#(materialize)` table                                   | Phase 3. It builds, and queries are computed live                    |
-| `inline=` on a join_many or join_cross                                       | Phase 4. Not built; `materialize-not-built`                          |
-| The `name=` view, and a materialized extension built from its parent's table | Phase 3                                                              |
-| A stored computed dimension under a query's own `timezone:`                  | Answered live today, since the build computed it in the default zone |
-| Routing a persisted view (`#@ persist` on a view), or a named view to a rollup | Phase 4                                                            |
-| Generations, as-of reads, and the control plane's promote and cleanup        | Phase 5                                                              |
+| v2 form                                                                        | Status                                                               |
+| ------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| Serving a colocated `#(materialize)` table                                     | Phase 3. It builds, and queries are computed live                    |
+| `inline=` on a join_many or join_cross                                         | Phase 4. Not built; `materialize-not-built`                          |
+| The `name=` view, and a materialized extension built from its parent's table   | Phase 3                                                              |
+| A stored computed dimension under a query's own `timezone:`                    | Answered live today, since the build computed it in the default zone |
+| Routing a persisted view (`#@ persist` on a view), or a named view to a rollup | Phase 4                                                              |
+| Generations, as-of reads, and the control plane's promote and cleanup          | Phase 5                                                              |
 
 ## Addresses: what moves once
 
