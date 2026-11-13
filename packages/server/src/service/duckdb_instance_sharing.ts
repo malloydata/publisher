@@ -53,7 +53,9 @@ interface DuckDBConnectionInternals {
    normalized: NormalizedDuckDBConfig;
    shareKey: string;
    setupError?: Error;
+   connecting?: Promise<void>;
    init(): Promise<void>;
+   close(): Promise<void>;
    detachInstance(): void;
    buildInstanceOptions(opts?: unknown): Record<string, string>;
 }
@@ -169,6 +171,7 @@ export function installDuckDBInstanceSharing(): void {
    const proto =
       DuckDBConnection.prototype as unknown as DuckDBConnectionInternals;
    const init = proto.init;
+   const close = proto.close;
    const detachInstance = proto.detachInstance;
    const buildInstanceOptions = proto.buildInstanceOptions;
    // This patches `@malloydata/db-duckdb` internals. If a release reshapes
@@ -197,10 +200,16 @@ export function installDuckDBInstanceSharing(): void {
       const normalized = this.normalized;
       // Shareable mode opens a private in-memory primary and ATTACHes the file
       // lazily, releasing it on idle; it holds no instance of the file.
-      const file = normalized.effectiveShareable
-         ? undefined
-         : canonicalDuckDBFile(normalized.databasePath);
-      if (!file) return init.call(this);
+      if (normalized.effectiveShareable) return init.call(this);
+      const file = canonicalDuckDBFile(normalized.databasePath);
+      if (!file) {
+         // No file (in-memory, MotherDuck): db-duckdb still shares one
+         // instance between connections with the same share key, so a joining
+         // connection needs the same pin as a file's.
+         const cached = DuckDBConnection.activeDBs[this.shareKey];
+         if (!cached) return init.call(this);
+         return pinnedWhile(cached, () => init.call(this)).then(() => {});
+      }
 
       const pending = pendingOpens.get(file);
       if (pending) {
@@ -220,33 +229,21 @@ export function installDuckDBInstanceSharing(): void {
          openFiles.delete(file);
          open = undefined;
       }
-      let pin: ActiveDB["connections"][number] | undefined;
+      if (open && open.instanceKey !== instanceKey) {
+         this.setupError = new DuckDBInstanceSettingsChangedError(file);
+         return Promise.resolve();
+      }
       if (open) {
-         if (open.instanceKey !== instanceKey) {
-            this.setupError = new DuckDBInstanceSettingsChangedError(file);
-            return Promise.resolve();
-         }
          // Malloy's init reads activeDBs synchronously, before its first
          // await, so this alias is seen and the open instance is reused.
          DuckDBConnection.activeDBs[this.shareKey] ??= open.activeDB;
-         // Malloy adds this connection to the instance's list only after
-         // `instance.connect()` resolves. Until then a placeholder holds the
-         // instance open, so the last other connection detaching meanwhile
-         // cannot close it under the pending connect.
-         pin = {} as ActiveDB["connections"][number];
-         open.activeDB.connections.push(pin);
       }
-      const shared = open?.activeDB;
-      const opened = init.call(this).then(() => {
-         if (shared && pin) {
-            shared.connections = shared.connections.filter((c) => c !== pin);
-            if (shared.connections.length === 0) {
-               // The connect failed and nothing else holds the instance:
-               // release it, as the last detach would have.
-               releaseInstance(shared);
-               return;
-            }
-         }
+      const opened = (
+         open
+            ? pinnedWhile(open.activeDB, () => init.call(this))
+            : init.call(this).then(() => true)
+      ).then((live) => {
+         if (!live) return;
          const activeDB = DuckDBConnection.activeDBs[this.shareKey];
          if (activeDB && !this.setupError) {
             openFiles.set(file, { instanceKey, activeDB });
@@ -263,12 +260,52 @@ export function installDuckDBInstanceSharing(): void {
       return opened;
    };
 
+   // db-duckdb starts `init()` in the constructor and its `close()` does not
+   // wait for it, so a connection closed before its first query would detach
+   // nothing, and the instance its `init()` then registers would stay open
+   // with a connection nobody detaches: a leaked instance, and a file lock
+   // held until the process exits.
+   proto.close = async function (
+      this: DuckDBConnectionInternals,
+   ): Promise<void> {
+      await this.connecting;
+      return close.call(this);
+   };
+
    proto.detachInstance = function (this: DuckDBConnectionInternals): void {
       const activeDB = DuckDBConnection.activeDBs[this.shareKey];
       detachInstance.call(this);
       if (!activeDB || activeDB.connections.length > 0) return;
       dropAliases(activeDB);
    };
+}
+
+/**
+ * Run `connect`, a connection's `init()` joining `shared`, while a placeholder
+ * in `shared`'s connection list holds the instance open. Malloy adds the
+ * joining connection to that list only after `instance.connect()` resolves,
+ * so without the placeholder the last other connection detaching meanwhile
+ * closes the instance under the pending connect: DuckDB frees the database
+ * the connect is using, and the process segfaults. Resolves whether the
+ * instance is still open afterwards; when the connect failed and nothing else
+ * holds it, it is released, as the last detach would have.
+ */
+function pinnedWhile(
+   shared: ActiveDB,
+   connect: () => Promise<void>,
+): Promise<boolean> {
+   const pin = {} as ActiveDB["connections"][number];
+   shared.connections.push(pin);
+   const unpin = (): boolean => {
+      shared.connections = shared.connections.filter((c) => c !== pin);
+      if (shared.connections.length > 0) return true;
+      releaseInstance(shared);
+      return false;
+   };
+   return connect().then(unpin, (error: unknown) => {
+      unpin();
+      throw error;
+   });
 }
 
 /**
@@ -322,6 +359,7 @@ export function dbDuckDBInternalsMatch(): boolean {
       .activeDBs;
    return (
       typeof proto.init === "function" &&
+      typeof proto.close === "function" &&
       typeof proto.detachInstance === "function" &&
       typeof proto.buildInstanceOptions === "function" &&
       typeof activeDBs === "object" &&

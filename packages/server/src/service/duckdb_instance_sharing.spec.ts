@@ -205,6 +205,38 @@ describe("one DuckDB instance per file", () => {
    });
 });
 
+describe("one shared in-memory DuckDB instance", () => {
+   // db-duckdb shares an in-memory instance between connections with the same
+   // settings, as it does a file's, so the same race applies: closing the last
+   // registered connection while another is still connecting to the instance
+   // freed the database under the connect, and the process segfaulted (the
+   // Windows unit-suite crash). It crashed within two rounds when unguarded.
+   it("keeps the instance open while a joining connection connects, even if the last other one closes meanwhile", async () => {
+      for (let round = 0; round < 20; round++) {
+         const a = open({ databasePath: ":memory:", workingDirectory: dir });
+         await a.runSQL("SELECT 1");
+         const b = open({ databasePath: ":memory:", workingDirectory: dir });
+         await a.close();
+         expect((await b.runSQL("SELECT 42 AS v")).rows).toEqual([{ v: 42 }]);
+         await b.close();
+         expect(DuckDBConnection.activeDBs[shareKeyOf(b)]).toBeUndefined();
+      }
+   });
+
+   it("closes the instance of a connection closed before its first query", async () => {
+      const connection = open({
+         databasePath: ":memory:",
+         workingDirectory: dir,
+      });
+      // The constructor's init() is still opening the instance.
+      await connection.close();
+      await connection.connecting;
+      expect(
+         DuckDBConnection.activeDBs[shareKeyOf(connection)],
+      ).toBeUndefined();
+   });
+});
+
 describe("attach runs of one connection on one instance", () => {
    it("run one at a time", async () => {
       const a = open({ databasePath: path.join(dir, "runs.duckdb") });
