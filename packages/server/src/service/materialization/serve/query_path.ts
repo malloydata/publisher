@@ -198,6 +198,11 @@ export interface QueryPathInput {
     */
    storageWarned?: boolean;
    rollups: readonly ModelRollup[];
+   /**
+    * The bases of the rollups the query could read through one of its
+    * source's joins (A7, join-to-rollup): named as the query's own rollups.
+    */
+   joinedRollupBases?: ReadonlySet<string>;
    /** The router's decision; empty when no candidate existed. */
    considered: readonly ConsideredVariant[];
    /** For a storage answer: the bindings whose tables the routed query read. */
@@ -655,6 +660,10 @@ export const VARIANT_SKIP_CODES = {
    rollup_grain_too_coarse: "GRAIN_TOO_COARSE",
    rollup_time_zone: "TIME_ZONE",
    rollup_not_built: "NOT_BUILT",
+   // A7: a joined source's gate, which the rollup read through the join does
+   // not carry; a rollup in a storage destination, across from the source.
+   rollup_contract: "CONTRACT",
+   rollup_cross_connection: "CROSS_CONNECTION",
    view_missing_field: "MISSING_FIELD",
    view_not_built: "NOT_BUILT",
    view_stale: "STALE",
@@ -770,7 +779,9 @@ function tablesFor(
    // Rollups of a source on the chain.
    for (const rollup of input.rollups) {
       const baseOnChain = rollup.baseSourceID
-         ? onChain.has(rollup.baseSourceID)
+         ? onChain.has(rollup.baseSourceID) ||
+           (rollup.variant === true &&
+              !!input.joinedRollupBases?.has(rollup.baseSourceID))
          : input.chain.some((id) => nameOf(id) === rollup.baseSourceName);
       if (!baseOnChain) continue;
       const binding = input.storage.all.find(

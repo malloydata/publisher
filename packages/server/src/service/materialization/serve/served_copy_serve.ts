@@ -85,6 +85,7 @@ import {
    buildServedCopy,
    declarationSpans,
    declaredBaseName,
+   fieldNotes,
    type InlinedJoin,
    type JoinedColumn,
    type PairMeasure,
@@ -1694,34 +1695,6 @@ function classificationNotKept(
       });
    }
    return unsafe;
-}
-
-/**
- * The annotation lines on a compiled field, outermost first: what it inherits,
- * then its statement's (block) notes, then its own. Each is the author's text
- * (`#(doc) "…"`), so it can be written again on the field in a `type:`.
- */
-function fieldNotes(field: unknown): string[] {
-   interface Annotation {
-      inherits?: Annotation;
-      blockNotes?: { text?: unknown }[];
-      notes?: { text?: unknown }[];
-   }
-   const out: string[] = [];
-   const walk = (a: Annotation | undefined, depth: number) => {
-      if (!a || depth > 16) return;
-      walk(a.inherits, depth + 1);
-      for (const n of [...(a.blockNotes ?? []), ...(a.notes ?? [])]) {
-         if (typeof n.text === "string" && !out.includes(n.text)) {
-            out.push(n.text);
-         }
-      }
-   };
-   const f = field as
-      | { annotations?: Annotation; annotation?: Annotation }
-      | undefined;
-   walk(f?.annotations ?? f?.annotation, 0);
-   return out;
 }
 
 /**

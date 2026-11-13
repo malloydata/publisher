@@ -395,6 +395,76 @@ export function queryLevelFacts(
 }
 
 /**
+ * The views of `struct` a compiled query reads by name: `called` (a view the
+ * query's text runs, `src -> v`, which the compiled pipeline holds expanded,
+ * without its name), then every `nest: v` in the first stage of the query or
+ * of a view it reads, at any depth (a nest under a view's name counts as that
+ * view, so a reader may declare one view more than it needs, never one
+ * fewer). Each comes after the views it nests; a view that nests itself is
+ * read once.
+ */
+export function namedViewsRead(
+   view: PreparedQueryView,
+   struct: unknown,
+   called?: string,
+): string[] {
+   const turtles = new Map<string, { pipeline?: unknown }>();
+   for (const f of ((struct as { fields?: unknown[] } | undefined)?.fields ??
+      []) as {
+      type?: unknown;
+      name?: unknown;
+      as?: unknown;
+      pipeline?: unknown;
+   }[]) {
+      const n =
+         typeof f.as === "string"
+            ? f.as
+            : typeof f.name === "string"
+              ? f.name
+              : undefined;
+      if (n !== undefined && f.type === "turtle") turtles.set(n, f);
+   }
+   const out: string[] = [];
+   const seen = new Set<string>();
+   // Each view after the views it nests, so they can be declared in order.
+   const add = (name: string, depth: number) => {
+      const turtle = turtles.get(name);
+      if (!turtle || seen.has(name)) return;
+      seen.add(name);
+      visit(firstStage(turtle.pipeline), depth + 1);
+      out.push(name);
+   };
+   const visit = (stage: IrStageLike | undefined, depth: number): void => {
+      if (!stage || depth > 64) return;
+      for (const field of stage.queryFields ?? []) {
+         if (
+            field.type === "fieldref" &&
+            Array.isArray(field.path) &&
+            field.path.length === 1 &&
+            typeof field.path[0] === "string"
+         ) {
+            add(field.path[0], depth);
+         } else if (field.type === "turtle") {
+            // `nest: v` compiles to a turtle named `v`, the view expanded. A
+            // nest of the query's own under a view's name reads as that view
+            // too: one more view declared, never one fewer.
+            if (typeof field.name === "string") add(field.name, depth);
+            visit(firstStage(field.pipeline), depth + 1);
+         }
+      }
+   };
+   if (called !== undefined) add(called, 0);
+   visit(firstStage(view.pipeline), 0);
+   return out;
+}
+
+function firstStage(pipeline: unknown): IrStageLike | undefined {
+   return Array.isArray(pipeline)
+      ? (pipeline[0] as IrStageLike | undefined)
+      : undefined;
+}
+
+/**
  * Whether a compiled query sets a `timezone:` anywhere in it: a stage, a later
  * stage, or a `nest:` at any depth. A stored table truncated or filtered its
  * times in the model's zone, so a leg that reads one declines any of these.
@@ -409,4 +479,277 @@ export function setsTimezone(query: unknown, depth = 0): boolean {
       if (typeof v === "object" && setsTimezone(v, depth + 1)) return true;
    }
    return false;
+}
+
+/**
+ * Whether a compiled expression or query holds raw SQL (the `sql_*` family,
+ * `genericSQLExpr`) anywhere it computes or reads. Its text names columns by
+ * itself (`${TABLE}.region`, or a bare `region`), which the compiler records
+ * as no field read, so a reader of field references cannot tell what it
+ * needs.
+ */
+export function readsRawSql(node: unknown): boolean {
+   let found = false;
+   eachQueryNode(node, (n) => {
+      if (n.node === "genericSQLExpr") found = true;
+   });
+   return found;
+}
+
+/** Keys of a stage that hold no expression the query computes or reads. */
+const NOT_QUERY_READS = new Set([
+   ...NOT_EXPRESSIONS,
+   "structRef",
+   "outputStruct",
+]);
+
+/** Visit every object under `node` but those under {@link NOT_QUERY_READS}. */
+function eachQueryNode(
+   node: unknown,
+   visit: (n: Record<string, unknown>) => void,
+   depth = 0,
+): void {
+   if (!node || typeof node !== "object" || depth > 256) return;
+   if (Array.isArray(node)) {
+      for (const n of node) eachQueryNode(n, visit, depth + 1);
+      return;
+   }
+   const n = node as Record<string, unknown>;
+   visit(n);
+   for (const [key, value] of Object.entries(n)) {
+      if (NOT_QUERY_READS.has(key)) continue;
+      if (value && typeof value === "object") {
+         eachQueryNode(value, visit, depth + 1);
+      }
+   }
+}
+
+/**
+ * Every field path a prepared query reads, as the compiler expanded them
+ * (`expandedFieldUsage` on each segment, nested ones included): a measure or
+ * dimension named by the query is followed into what it reads, so a source's
+ * measure that reads a join shows the join's paths too. Relative to the
+ * segment's source. Undefined when an entry is not a list of names, so a
+ * caller fails closed.
+ */
+export function queryFieldUsagePaths(
+   view: PreparedQueryView,
+): string[][] | undefined {
+   const out: string[][] = [];
+   let unreadable = false;
+   eachQueryNode(view.pipeline, (n) => {
+      const usage = n.expandedFieldUsage;
+      if (!Array.isArray(usage)) return;
+      for (const u of usage as { path?: unknown }[]) {
+         if (
+            !Array.isArray(u?.path) ||
+            u.path.some((p) => typeof p !== "string")
+         ) {
+            unreadable = true;
+            continue;
+         }
+         out.push(u.path as string[]);
+      }
+   });
+   return unreadable ? undefined : out;
+}
+
+/** An aggregate node: `x.sum()`, `count()`, or an aggregate function call. */
+function isAggregateNode(n: IrExprLike): boolean {
+   return (
+      n.node === "aggregate" ||
+      (n.node === "function_call" &&
+         n.overload?.returnType?.expressionType === "aggregate")
+   );
+}
+
+/**
+ * Whether `e` computes an aggregate of its own over the rows of `join`: one
+ * taken at the join (`j.count()`, `j.x.sum()`) or over a value read through
+ * it (`sum(j.x)`, `count(j.k)`, `count_approx(j.k)`). Reading a measure of
+ * the joined source by name (`j.total`) is not one: that aggregate is the
+ * joined source's own.
+ */
+function aggregatesThrough(e: unknown, join: string): boolean {
+   const readsJoin = (x: unknown) =>
+      holds(
+         x,
+         (k) =>
+            k.node === "field" &&
+            Array.isArray(k.path) &&
+            k.path.length > 1 &&
+            k.path[0] === join,
+      );
+   return holds(e, (n) => {
+      if (!isAggregateNode(n)) return false;
+      const at = (n as { structPath?: unknown }).structPath;
+      if (Array.isArray(at) && at[0] === join) return true;
+      const { node: _node, ...rest } = n as Record<string, unknown>;
+      return readsJoin(rest);
+   });
+}
+
+/**
+ * The first field (by name) a prepared query reads that computes an aggregate
+ * of its own over `join`'s rows: one the query writes (in a field, a filter,
+ * a `having:`, a query-level `extend:` or a nest), or a measure of
+ * `sourceDef` that the query reads, directly or through another of its
+ * measures (`measure: n is segments.count()`). Undefined when there is none.
+ * A table built at the joined source's grain answers only the joined
+ * source's own measures; any other aggregate over its rows would count its
+ * rows, not the joined rows.
+ */
+export function aggregateWrittenThroughJoin(
+   view: PreparedQueryView,
+   sourceDef: unknown,
+   join: string,
+): string | undefined {
+   return firstAggregateWhere(view.pipeline, view, sourceDef, (e) =>
+      aggregatesThrough(e, join),
+   );
+}
+
+/**
+ * Whether `e` computes an aggregate at a grain other than `join`'s: one not
+ * taken at the join (`count()`, `distance.sum()`, `other.x.sum()`). An
+ * aggregate taken at the join (`j.x.sum()`, `sum(j.x)`) is not one.
+ */
+function aggregatesOutside(e: unknown, join: string): boolean {
+   return holds(e, (n) => {
+      if (!isAggregateNode(n)) return false;
+      const at = (n as { structPath?: unknown }).structPath;
+      if (Array.isArray(at) && at.length > 0) return at[0] !== join;
+      const { node: _node, ...rest } = n as Record<string, unknown>;
+      let reads = false;
+      const outside = holds(rest, (k) => {
+         if (k.node !== "field" || !Array.isArray(k.path)) return false;
+         if (k.path.length > 1 && k.path[0] === join) {
+            reads = true;
+            return false;
+         }
+         return true;
+      });
+      return outside || !reads;
+   });
+}
+
+/**
+ * The first field (by name) the FIRST stage of a prepared query reads that
+ * computes an aggregate at a grain other than `join`'s: a `count()` or a sum
+ * over the source's own rows, or a measure of another join, written in the
+ * query (in a field, a filter, a `having:` or a nest) or read by name, from
+ * `sourceDef`'s measures or Malloy's own record of the aggregates it needs a
+ * key for. Undefined when every aggregate is taken at `join`. Through a
+ * join_one that is not unique on its key, live repeats each parent row once
+ * per joined row, so such an aggregate counts the repeats; a table with one
+ * row per key does not. Later stages read the first stage's output rows and
+ * are not read.
+ */
+export function aggregateOutsideJoin(
+   view: PreparedQueryView,
+   sourceDef: unknown,
+   join: string,
+): string | undefined {
+   const first = (view.pipeline as unknown[] | undefined)?.[0];
+   if (first === undefined) return undefined;
+   // A count at the source's grain or any aggregate at another join's, as
+   // the compiler recorded it.
+   let unreadable = false;
+   let keyed: string | undefined;
+   eachQueryNode(first, (n) => {
+      const usage = n.expandedFieldUsage;
+      if (!Array.isArray(usage)) return;
+      for (const u of usage as {
+         path?: unknown;
+         uniqueKeyRequirement?: unknown;
+      }[]) {
+         if (!u || u.uniqueKeyRequirement === undefined) continue;
+         if (!Array.isArray(u.path)) {
+            unreadable = true;
+            continue;
+         }
+         if (u.path.length !== 1 || u.path[0] !== join) {
+            keyed ??=
+               u.path.length === 0
+                  ? "count()"
+                  : `an aggregate of \`${u.path.join(".")}\``;
+         }
+      }
+   });
+   if (unreadable) return "a field the compiler did not record";
+   if (keyed !== undefined) return keyed;
+   return firstAggregateWhere(first, view, sourceDef, (e) =>
+      aggregatesOutside(e, join),
+   );
+}
+
+/**
+ * The first field (by name) under `pipeline` whose expression `offends`, or
+ * a measure of `sourceDef` the query reads (directly or through another of
+ * its measures) whose definition does.
+ */
+function firstAggregateWhere(
+   pipeline: unknown,
+   view: PreparedQueryView,
+   sourceDef: unknown,
+   offendsExpr: (e: unknown) => boolean,
+): string | undefined {
+   let found: string | undefined;
+   eachQueryNode(pipeline, (n) => {
+      if (found !== undefined) return;
+      const e = (n as { e?: unknown }).e;
+      if (e !== undefined && offendsExpr(e)) {
+         found =
+            typeof n.as === "string"
+               ? n.as
+               : typeof n.name === "string"
+                 ? n.name
+                 : typeof n.code === "string"
+                   ? n.code
+                   : "an expression";
+      }
+   });
+   if (found !== undefined) return found;
+   // The source's own fields that do, followed through each other by name.
+   const fields = ((sourceDef as { fields?: unknown[] } | undefined)?.fields ??
+      []) as { name?: unknown; as?: unknown; e?: unknown }[];
+   const byName = new Map<string, unknown>();
+   for (const f of fields) {
+      const name =
+         typeof f.as === "string"
+            ? f.as
+            : typeof f.name === "string"
+              ? f.name
+              : undefined;
+      if (name !== undefined && f.e !== undefined) byName.set(name, f.e);
+   }
+   const memo = new Map<string, boolean>();
+   const offends = (name: string, depth = 0): boolean => {
+      const known = memo.get(name);
+      if (known !== undefined) return known;
+      const e = byName.get(name);
+      if (e === undefined || depth > 64) return depth > 64;
+      memo.set(name, false);
+      const result =
+         offendsExpr(e) ||
+         holds(
+            e,
+            (k) =>
+               k.node === "field" &&
+               Array.isArray(k.path) &&
+               k.path.length === 1 &&
+               typeof k.path[0] === "string" &&
+               k.path[0] !== name &&
+               offends(k.path[0], depth + 1),
+         );
+      memo.set(name, result);
+      return result;
+   };
+   const usage = queryFieldUsagePaths(view);
+   if (usage === undefined) return "a field the compiler did not record";
+   for (const path of usage) {
+      const head = path[0];
+      if (path.length === 1 && head !== undefined && offends(head)) return head;
+   }
+   return undefined;
 }
