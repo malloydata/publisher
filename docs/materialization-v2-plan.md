@@ -341,6 +341,84 @@ Order: 1, then 3, 4, 5 and 6, with 2 beside 3. If 2 or 3 is too large to review,
 - A query that sets its own time zone over a stored computed dimension is declined to live.
 - A source whose given-reading `where:` the re-root would drop (a term written in a parenthesised head or an inline extend in the base) is refused and serves live, failing closed. The check compares the compiled filters of the author's source and the served source, not their text.
 
+**v1 cutover design (pull request 6, proposed 2026-11-12).** The rest of pull request 6: every v1 `#@ persist` and `#@ preaggregate` table served through the served copy and the rollup leg, then today's storage serve shape, the pre-aggregation composite and the colocated build-manifest path retired, then D3. It assumes #1684 (P9 probes), #1688 (base given terms) and #1685 (colocated `#(materialize)` on the served copy) have merged, and #1691 (annotations on a `storage=` persisted view and a v1 rollup).
+
+*Measured.* Main with #1684, #1688 and #1685 merged, on DuckDB, through the real package path of the #7098 fixture (`conformance/package_harness.ts`), plus two shapes the fixture lacks (a v1 `#@ preaggregate` rollup on annotated measures, and `#@ persist` on a view). Each query was answered live, then as today (materialize switch off: serve shape, composite, colocated manifest), then as after the cutover (switch and `PUBLISHER_MATERIALIZE_GATED_SOURCES` on, no storage serve shape, no build manifest on the live compile, and each v1 colocated `#@ persist` source bound on the served copy with its schema read off the compiled output). Rows, result types (timeframes included) and annotations were compared, not rows alone. The full R4 suite was also run in the cutover configuration. Of 137 v1 cases (25 shapes, `storage=` and colocated):
+
+| Outcome after the cutover | Cases | What |
+| --- | --- | --- |
+| Served, equal to live | 87 | Every baseline, import, chain, extension, rename, nest, reserved-word, spaced-name, raw-SQL, `#@ -persist` sibling and given-term case that is served today. 77 of them lose a number's integer or decimal subtype (G6) |
+| Newly served, equal to live | 22 | `storage=`: renames, imports under another name, a query-shaped source over an import, a named query, a nest, a keyed `join_one … with`, same-named sources in two models, an access-filtered extension of a stored source; five answers that today's serve shape serves with wrong metadata (below). Colocated: a warehouse source joining a stored one (#6643, #6983), and `#@ persist` views |
+| Live both ways | 22 | By design: opt-out readers, a stored source joined across connections, colliding table names, a gated `storage=` source, queries a rollup does not cover |
+| Regressions: served today, live after | 4 here, 20 in R4 | G2 and G4 here, G5 in R4; with `PUBLISHER_MATERIALIZE_GATED_SOURCES` off, two more (G3) |
+| Wrong rows or errors | 0 | — |
+| Wrong metadata | 2 | A `storage=` persisted view drops its measures' annotations; not the cutover's (the view leg is unchanged), fixed by #1691 |
+
+*The serve shape's metadata defects.* Measured, not only read from the code: today's serve shape answers a v1 `storage=` source with its stored timeframes dropped (`order_month` reads back as a plain `date`, `created_hour` as a plain `timestamp`) and its output columns' annotations dropped (`# percent`, `#(doc)`, `# label`), and a v1 `#@ preaggregate storage=` rollup with its measures' annotations dropped (`# currency`, `#(doc)`); rows and `fieldsRead` are equal. The cutover fixes the first by moving those sources onto the served copy, which carries both. The second is fixed only by G4's fix; without it the rollup answers live, which drops the speedup and the defect together. Neither needs a fix in `serveShapeFragment` first, since that code is deleted here; if the cutover slips past a release, a metadata-only fix there would be throwaway work.
+
+*The gap list.*
+
+| # | Gap | Evidence | Proposed fix |
+| --- | --- | --- | --- |
+| G1 | v1 colocated `#@ persist` is not on the served copy at all, and a colocated build records no schema | #1685 binds only `#(materialize)` (`colocated_bindings.ts`). Bound by hand from the compiled output, colocated answers stay equal to live, after two corrections a real binding needs: a stored column is the pre-`rename:` name, and a nest is a column (Malloy gives it a `join`) | Bind every planned v1 colocated `#@ persist` source the colocated tier admits. Capture the table's schema after a colocated build, as a `storage=` build does (`DESCRIBE`); for a table built before that, derive it from the compiled output with the two corrections |
+| G2 | A v1 colocated source with an `internal` or `private` column fails the whole model's served copy | The v1 path narrows a binding to public columns (`narrowSchemaToPublic` in `served_copy_serve.ts`), right for a v1 `storage=` table (public columns only) and wrong for a colocated one, which Malloy built with them; `'home_region' is not defined`, and every source in that model answers live | For a colocated v1 binding, keep the hidden columns and re-hide them with P3's `include`, by giving the source a generated plan (below) instead of the v1 shortcut |
+| G3 | A gated colocated v1 source answers live | The manifest path keeps the author's gate on the live compile; the served copy declines with `CONTRACT` until `PUBLISHER_MATERIALIZE_GATED_SOURCES` is on. With it on, both fixture cases are served, equal to live, per caller | Turn contracts at read on for colocated tables at the cutover (question 14's own proposal: colocated first, the managed tier after its review) |
+| G4 | v1 `#@ preaggregate storage=` answers live | Only the serve shape serves it: the composite is inapplicable when every rollup is storage-bound, and the served copy skips `origin: "preaggregate"` bindings. The same shape as `#(preaggregate)` is served by the rollup leg, equal to live with the author's annotations | Read each v1 rollup plan into the rollup leg as a `#(preaggregate)` plan; the composite and its coverage check retire with it. The v2 build names its table differently (`orders__rollup__…` against `orders__preagg__…`), so v1 rollups rebuild once unless the leg reads the v1 table at its address |
+| G5 | A source with one stored column the served copy cannot declare answers live in full | 20 R4 cases (`r4.component.spec.ts`: stored column types, a mistyped column kept local, sources built on a mistyped source) move from storage to live, rows equal: the served copy refuses the whole source (`column_types`) where the serve shape casts a castable column and keeps an uncastable one live per query (plan call 4) | Port that handling: declare a castable column as its declared type and cast it in the bound relation (probe first: a `virtualMap` entry naming a casting subquery, else a `sql()` re-root for those sources), and decline per query (`MISSING_FIELD`) only a query that reads an uncastable column. Call 4 then retires |
+| G6 | Colocated answers lose a number's subtype | 48 of 54 colocated answers served from a table: the manifest path keeps Malloy's compiled definition, the served copy's `type:` cannot say integer or decimal (known limitation 12). Re-rooting on `conn.table()` does not fix it (probed: `count()` reads back `bigint` against live's `integer`) | Accept as limitation 12 for colocated too (the fixture already tolerates it per case), or hold the cutover for typed `type:` declarations in Malloy core |
+| G7 | Incremental v1 tables were not measured on answers | The fixture is DuckDB, and an incremental `#@ persist` needs Postgres, BigQuery or Snowflake. Serving reads the same table either way, and #1685's Postgres spec serves incremental `#(materialize)` tables equal to live | A Postgres variant of the fixture (follow-up 3), before the default flips |
+
+*What flips.* One new switch, `materialize.v1ServedCopy` (`PUBLISHER_V1_SERVED_COPY`), `off` / `shadow` / `on`, so the v1 cutover rolls out separately from `PUBLISHER_MATERIALIZE`, which also turns on v2 planning (call 1 currently reuses it for v1 `storage=`). `shadow` serves as today and also compiles every v1 query against the served copy, logging the decline reason or a difference in rows or metadata; `on` serves through the served copy, the rollup leg and live only. `PERSIST_STORAGE_MODE` keeps its meaning (whether `storage=` tables serve at all); G3 turns contracts at read on for colocated tables. R1 is settled as main already runs it: persisted view by exact call, rollup, served copy, live. With the switch on, the router lists no storage serve shape and no composite candidate, and the live compile gets no build manifest, so a stored table is read only by a candidate that reports it in the path report. When the switch is removed (the retirement pull request), `on` is the only behaviour.
+
+*What retires with the serve shape.* Under `packages/server/src/service/`:
+
+- `materialization/serve/model_serve_shape.ts`, whole (`StorageServeShape`, `isolateCompilable`, `VIEW_ISOLATION_COMPILES`), and `Model.storageServe` with it.
+- In `materialization/serve/materialization_serve_transform.ts`: `buildServeShapeModel`, `buildServeShapeModelForBindings`, `buildServeShapeTiers`, `buildOverTiers`, `REFINEMENT_TIER_KINDS`, `NEVER_THINNED`, `serveShapeDiagnostics`, `extractRefinements`, `extractSourceFilters`, `extractJoins`, `extractViews`, `authorRefinementsFor`, `documentFlagsForLifts`, `withholdUnreproducibleCallerScopedJoins`, `RollupShapeGroup`. Kept, because the served copy or the build reads them: `ServeBinding`, `deriveServeBindings`, `boundTablePath`, `buildVirtualMap`, `narrowSchemaToPublic`, `optsOutOfPersist`, `authorModelLiftContext`, `duckdbTypeToMalloy`, and, until a v1 chained `storage=` build moves onto #1661's chained build (pull request 6f), `buildChainedStorageBuildModel`, `assertServesInDuckDB` and `liftDerivedSources` (`run/storage_build_strategy.ts`, `run/materialization_build_session.ts`).
+- With G4: `materialization/serve/preaggregation_serve_bindings.ts`; the composite companion in `materialization/plan/preaggregation_synthesis.ts` and `preaggregation_compile.ts`; `materialization/plan/preaggregation_coverage.ts` (`rollupCoverageViolation`), which phase 4 meant to retire; `Model.buildPreaggregateServeModel` and `preaggregateServeMaterializer`; `pushPreaggregateServeModels` in `package_materialization.ts`.
+- In `query_serving.ts`: the `storage` and composite candidates of `routeCandidates`, `RollupCoverageError` and `explainCoverageSkip`; `buildManifestFor` and `recordingManifest` for the live compile.
+- In `model.ts`: `storageRoutingPossible`, and `liveBuildManifest` with the filters that build it (D3, below).
+- Plan call 4 (tables built under an older type stay on the serve shape), once G5 lands.
+- Specs that pin the retired paths: `r4.component.spec.ts`'s `[serve_shape]` mode, `serve_shape_views.component.spec.ts`, `isolate_compilable.spec.ts`, the serve-shape half of `materialization_serve_transform.spec.ts`, and the composite lock case in `preaggregation_seams.spec.ts`, which Consolidation says must pass unchanged; at retirement it is replaced by the same case against the rollup leg, not kept.
+
+*What D3 removal deletes.* Four guards exist only because an author's file must carry `##! experimental.persistence` and Malloy refuses a non-empty build manifest on a file that does not:
+
+1. `build_plan.ts`: the early return before `getBuildTargets` when the model lacks the flag, so a v1 `#@ persist` in an unflagged file is never planned.
+2. `model.ts`: `manifestIfPersistent` and `persistenceFlagMemo`, which withhold the manifest from an unflagged model.
+3. `model.ts`: `withoutPreaggregateEntries`, which keeps rollup entries off an author's model that need not carry the flag.
+4. `model.ts`: `withoutPersistedViewEntries`, which keeps persisted-view entries off the live compile, since only a view variant carries the flag.
+
+Guards 2 to 4 go when the live compile stops taking a manifest (the retirement pull request). Guard 1 goes with the generated companion for v1: for each model file that declares a v1 `#@ persist`, the planner compiles a build copy of the author's file (the #1644 build-copy mechanism) with `##! experimental.persistence` as its first line and asks it for build targets, so the author's file needs no flag and a file that has one is unchanged. v1 addresses must not move: a corpus-wide spec over `persist_corpus.ts` asserts that every v1 source's BuildID from the companion equals the BuildID from the author's own file, and the companion lands only with it passing.
+
+*What Credible's private CI must pass (question 15), and what Publisher provides.* Per real package snapshot, with `PUBLISHER_V1_SERVED_COPY=on`: the package loads with no new warning; every v1 source's serve verdict is unchanged or improved (no source moves from a table to live without a coded, expected reason); and for a sample of each package's recorded queries, the served answer equals live in rows, result types and annotations, with the subtype tolerance of G6 if it is accepted. Then the same with `shadow` in a running deployment for a release, with zero logged differences. Publisher makes that a configuration job, not new code:
+
+1. The conformance runner as a library entry point: a package directory, a query list with givens, and a data snapshot in, one row per query out (live, today, after the cutover, classified as above). It is the scratch measurement above, made a supported runner.
+2. `shadow` mode, with its differences counted by reason in the existing metrics and logged once per query text.
+3. The serve verdict naming the path that will serve each source after the cutover (`served_copy`, `rollup`, or a decline reason), in the dry-run publish, so a package can be checked without data.
+
+*Order of pull requests.*
+
+| # | Pull request | Gate |
+| --- | --- | --- |
+| 6a | `PUBLISHER_V1_SERVED_COPY` with `off`, `shadow` and `on`; v1 colocated bound on the served copy (G1); hidden columns re-hidden (G2); colocated contracts at read (G3); the fixture gains an after-the-cutover column, with G4 to G6 as declared gaps | The fixture passes under `on` |
+| 6b | Per-column cast and decline in the served copy (G5) | The 20 R4 cases serve under `on` |
+| 6c | v1 `#@ preaggregate` read into the rollup leg (G4) | The fixture's rollup shapes serve under `on` |
+| 6d | The generated companion for v1 and guard 1 (D3, first half) | The corpus address-equality spec |
+| 6e | The conformance runner as a library entry point, and the cutover serve verdict in dry-run | Credible's private job runs on it |
+| — | Credible's private CI passes under `on`, then `shadow` runs a release with no differences (question 15) | — |
+| 6f | Default `on`; v1 chained `storage=` builds over #1661's chained build | — |
+| 6g | Retirement: the serve shape, the composite, the live manifest, guards 2 to 4, call 4, the switch; docs, skill and migration recipe | One release after 6f |
+
+6a to 6e touch only new switch paths, so they can land in any order after 6a; 6b and 6c are independent of each other.
+
+*Risks.*
+
+- One source's re-root failing takes the whole model's served copy live (G2's shape). The served copy's retry without the failing source (`withoutKept`, extension tables only) should cover every re-root before the default flips.
+- Every v1 package now compiles a served copy per model at load. The phase 3 risk row's load numbers (time and RSS per package, against today's serve shape) gate 6f.
+- Real packages hold shapes the fixture lacks. `shadow` exists to find them before `on`.
+- A v1 colocated table built before 6a has no recorded schema; the derived one must agree with the table, which a mismatch check at bind (as for `storage=`) enforces by declining that source.
+- G4's rebuild of v1 `storage=` rollups, if the leg cannot read the v1 address.
+- G3 puts gated colocated sources on the served copy, so question 14's review must cover colocated before 6a's default.
+
 **Phase 4 in four pull requests (decided 2026-11-11).**
 
 | # | Pull request | Scope |
