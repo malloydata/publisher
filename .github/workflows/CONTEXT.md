@@ -51,6 +51,14 @@ Two workflows hold real warehouse credentials, and both should be treated as suc
 `connection-integration-tests.yml` (the full connection matrix) and `k6-tests.yml`, which passes
 `BQ_PRESTO_TRINO_KEY` and runs on pushes as well as on demand.
 
+Every workflow a pull request triggers shares one `concurrency:` rule: runs for a PR are grouped by
+its number and a new push cancels the one in flight, while every other event (push to `main`,
+`workflow_run`, schedule, dispatch) is grouped by its own run id, so it is never cancelled or
+replaced and every merged commit is tested. `push:` triggers are `main` only, so a PR branch runs
+once, through `pull_request`. Path filters are not used on `build.yml` or `app-playwright.yml`:
+their jobs are required status checks on `main`, and a filtered-out workflow leaves a required check
+pending forever. A docs-only skip needs an always-run gate job first.
+
 ## Publishing
 
 There are three npm trains and one PyPI train. The PyPI train shares sdk/app/server's version;
