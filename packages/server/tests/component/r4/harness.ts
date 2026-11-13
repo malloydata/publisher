@@ -1022,17 +1022,41 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // the package's connections; only routed when its setting is on.
    model.setServedCopyContext(dir, connections, materializePlans);
 
+   // The ordering the author's query asks for, from compiling it against the
+   // author's model: the served answer is held to it, not to its own.
+   const orderingOf = async (
+      malloy: string,
+      givens?: Record<string, GivenValue>,
+   ): Promise<RowOrdering | undefined> => {
+      try {
+         const prepared = await materializer
+            .loadQuery(malloy, givens ? { givens } : {})
+            .getPreparedResult();
+         const structs = prepared._rawQuery.structs;
+         const result = structs[structs.length - 1];
+         return result
+            ? orderingOfStruct(result as unknown as ResultStructShape)
+            : undefined;
+      } catch {
+         // A query the author's model alone cannot compile (one that only
+         // the served side answers): its rows carry no ordering, and
+         // rowDifference reads them strictly.
+         return undefined;
+      }
+   };
+
    const runOnce = async (
       malloy: string,
       givens?: Record<string, GivenValue>,
    ) => {
+      const ordering = await orderingOf(malloy, givens);
       const result = await model.runQuery(
          unrecordedAudit(),
          { query: malloy, filterParams: {}, ...(givens ? { givens } : {}) },
          QueryPrivileges.of({ bypassFilters: true }),
       );
       return {
-         rows: result.compactResult as unknown as Row[],
+         rows: withOrdering(result.compactResult as unknown as Row[], ordering),
          // The result's field types as the wire carries them (a timeframe
          // included), so a test can hold served metadata to live's.
          fields: (result.result?.schema?.fields ?? []).map((f) => ({
@@ -1170,13 +1194,64 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
 const FLOAT_TOLERANCE = 1e-9;
 
 /**
- * A value in the form two runs are compared in. A nested result (a `nest:`)
- * is put in a canonical row order, as the top level is in `rowDifference`: a
- * nest whose aggregate ties leaves the order of the tied rows to the engine,
- * so the same answer could come back in two orders and read as a difference.
+ * How a query orders its rows, and each of its nests' rows, as its compiled
+ * result shape states it. Malloy orders every nest: by its `order_by`, else by
+ * its default (the first aggregate descending, and so on), so the order of a
+ * nest is part of its answer, the same as its values.
  */
+export interface RowOrdering {
+   /** The output fields the rows are sorted by, in order; empty when unordered. */
+   orderBy: { field: string; dir: "asc" | "desc" }[];
+   /** Each nested result's own ordering, by its output name. */
+   nests: Record<string, RowOrdering>;
+}
+
+/** The ordering each run's rows were answered under, by the rows array. */
+const orderings = new WeakMap<Row[], RowOrdering>();
+
+/** Record the ordering `rows` were answered under, for {@link rowDifference}. */
+export function withOrdering(rows: Row[], ordering?: RowOrdering): Row[] {
+   if (ordering) orderings.set(rows, ordering);
+   return rows;
+}
+
+interface ResultStructShape {
+   fields?: ResultFieldShape[];
+   resultMetadata?: {
+      orderBy?: { field: string | number; dir?: "asc" | "desc" }[];
+   };
+}
+interface ResultFieldShape extends ResultStructShape {
+   name: string;
+   as?: string;
+}
+
+/** A compiled result struct's ordering, and its nests', from Malloy's result metadata. */
+export function orderingOfStruct(struct: ResultStructShape): RowOrdering {
+   const fields = struct.fields ?? [];
+   const orderBy = (struct.resultMetadata?.orderBy ?? []).flatMap((o) => {
+      const field =
+         typeof o.field === "number"
+            ? (fields[o.field - 1]?.as ?? fields[o.field - 1]?.name)
+            : o.field;
+      return field ? [{ field, dir: o.dir ?? "asc" }] : [];
+   });
+   const nests: Record<string, RowOrdering> = {};
+   for (const f of fields) {
+      if (Array.isArray(f.fields)) nests[f.as ?? f.name] = orderingOfStruct(f);
+   }
+   return { orderBy, nests };
+}
+
+/** A value in the form two runs are compared in. */
 function normalizeValue(value: unknown): unknown {
-   if (typeof value === "bigint") return Number(value);
+   if (typeof value === "bigint") {
+      // Past 2^53 a Number would round two different integers together.
+      return value >= Number.MIN_SAFE_INTEGER &&
+         value <= Number.MAX_SAFE_INTEGER
+         ? Number(value)
+         : value.toString();
+   }
    if (value instanceof Date) return value.toISOString();
    if (
       typeof value === "string" &&
@@ -1186,16 +1261,7 @@ function normalizeValue(value: unknown): unknown {
       // DuckDB returns some integer aggregates as strings over raw SQL.
       return Number(value);
    }
-   if (Array.isArray(value)) {
-      const items = value.map(normalizeValue);
-      if (items.every(isRecord)) {
-         return items
-            .map((item) => ({ item, key: canonicalJson(item) }))
-            .sort((p, q) => p.key.localeCompare(q.key))
-            .map(({ item }) => item);
-      }
-      return items;
-   }
+   if (Array.isArray(value)) return value.map(normalizeValue);
    if (isRecord(value)) {
       return Object.fromEntries(
          Object.entries(value).map(([k, v]) => [k, normalizeValue(v)]),
@@ -1226,17 +1292,49 @@ function canonicalJson(value: unknown): string {
    );
 }
 
-/** Equal within the float tolerance, through nested rows as well. */
-function valuesEqual(a: unknown, b: unknown): boolean {
-   return normalizedEqual(normalizeValue(a), normalizeValue(b));
+/**
+ * A row's sort key for pairing it with its counterpart: its normalized value
+ * with nested rows in a canonical order, so two rows that differ only in how
+ * tied nested rows came back still pair. Only the pairing uses it; the nested
+ * rows' order is judged separately, against the nest's own ordering.
+ */
+function pairingKey(value: unknown): string {
+   const canonical = (v: unknown): unknown => {
+      if (Array.isArray(v)) {
+         const items = v.map(canonical);
+         return items.every(isRecord)
+            ? items
+                 .map((item) => ({ item, key: canonicalJson(item) }))
+                 .sort((p, q) => p.key.localeCompare(q.key))
+                 .map(({ item }) => item)
+            : items;
+      }
+      if (isRecord(v)) {
+         return Object.fromEntries(
+            Object.entries(v).map(([k, x]) => [k, canonical(x)]),
+         );
+      }
+      return v;
+   };
+   return canonicalJson(canonical(normalizeValue(value)));
 }
 
+/**
+ * Integers (counts, sums of integers) must match exactly; other numbers
+ * within the relative float tolerance, floored at 1 so two values near zero
+ * are compared absolutely.
+ */
+function numbersEqual(x: number, y: number): boolean {
+   if (x === y) return true;
+   if (Number.isSafeInteger(x) && Number.isSafeInteger(y)) return false;
+   const scale = Math.max(Math.abs(x), Math.abs(y), 1);
+   return Math.abs(x - y) <= FLOAT_TOLERANCE * scale;
+}
+
+/** Two normalized scalars (or nests with no known ordering, in order) equal. */
 function normalizedEqual(x: unknown, y: unknown): boolean {
-   if (typeof x === "number" && typeof y === "number") {
-      if (x === y) return true;
-      const scale = Math.max(Math.abs(x), Math.abs(y), 1);
-      return Math.abs(x - y) <= FLOAT_TOLERANCE * scale;
-   }
+   if (typeof x === "number" && typeof y === "number")
+      return numbersEqual(x, y);
    if (Array.isArray(x) && Array.isArray(y)) {
       return (
          x.length === y.length && x.every((v, i) => normalizedEqual(v, y[i]))
@@ -1252,39 +1350,112 @@ function normalizedEqual(x: unknown, y: unknown): boolean {
    return canonicalJson(x) === canonicalJson(y);
 }
 
-function sortKey(row: Row, columns: string[]): string {
-   return canonicalJson(columns.map((c) => normalizeValue(row[c])));
+/**
+ * The difference between two sets of rows, or undefined when they match.
+ *
+ * With an ordering that sorts by some fields, the rows must come back in that
+ * order: row i's sort-key values must equal row i's on the other side, so the
+ * only freedom left is among rows that tie on every sort key, whose order the
+ * engine decides. Unordered (no ordering, at the top level, or a nest whose
+ * ordering is empty), the rows are compared as a set. A nest whose ordering is
+ * not known at all is compared in order, the strict reading.
+ */
+function rowsDifference(
+   expected: unknown[],
+   actual: unknown[],
+   ordering: RowOrdering | undefined,
+   where: string,
+): string | undefined {
+   if (expected.length !== actual.length) {
+      return `${where}row counts differ: ${expected.length} against ${actual.length}`;
+   }
+   const records = expected.every(isRecord) && actual.every(isRecord);
+   if (!records) {
+      return normalizedEqual(normalizeValue(expected), normalizeValue(actual))
+         ? undefined
+         : `${where}${JSON.stringify(normalizeValue(expected))} against ${JSON.stringify(normalizeValue(actual))}`;
+   }
+   const sortedBy = (ordering?.orderBy ?? []).filter(
+      (o) =>
+         expected.every((r) => o.field in r) &&
+         actual.every((r) => o.field in r),
+   );
+   for (let i = 0; i < expected.length && sortedBy.length > 0; i++) {
+      for (const { field } of sortedBy) {
+         const x = normalizeValue(expected[i][field]);
+         const y = normalizeValue(actual[i][field]);
+         if (!normalizedEqual(x, y)) {
+            return `${where}row ${i} is out of order on ${field}: ${JSON.stringify(x)} against ${JSON.stringify(y)}`;
+         }
+      }
+   }
+   const pair = (rows: Record<string, unknown>[]) =>
+      ordering === undefined && where !== ""
+         ? rows
+         : rows
+              .map((row) => ({ row, key: pairingKey(row) }))
+              .sort((p, q) => p.key.localeCompare(q.key))
+              .map(({ row }) => row);
+   const a = pair(expected);
+   const b = pair(actual);
+   for (let i = 0; i < a.length; i++) {
+      const columns = Object.keys(a[i]).sort();
+      const otherColumns = Object.keys(b[i]).sort();
+      if (JSON.stringify(columns) !== JSON.stringify(otherColumns)) {
+         return `${where}columns differ: ${columns.join(",")} against ${otherColumns.join(",")}`;
+      }
+      for (const c of columns) {
+         const x = a[i][c];
+         const y = b[i][c];
+         if (Array.isArray(x) && Array.isArray(y)) {
+            const inner = rowsDifference(
+               x,
+               y,
+               ordering?.nests[c],
+               `${where}row ${i} column ${c}: `,
+            );
+            if (inner) return inner;
+         } else if (!normalizedEqual(normalizeValue(x), normalizeValue(y))) {
+            return `${where}row ${i} column ${c}: ${JSON.stringify(normalizeValue(x))} against ${JSON.stringify(normalizeValue(y))}`;
+         }
+      }
+   }
+   return undefined;
 }
 
 /**
- * The difference between two row sets, ignoring row order, or undefined when
- * they match: same columns, same row count, and each value equal within the
- * float tolerance.
+ * The difference between two row sets, or undefined when they match: same
+ * columns, same row count, each value equal (integers exactly, other numbers
+ * within the float tolerance), and rows in the order the query asked for, up
+ * to ties on its sort keys.
+ *
+ * The ordering is the one recorded for the rows ({@link withOrdering}; every
+ * run of a fixture records its query's). The top level is held to it only
+ * when both sides are such answers: rows from raw SQL (a test's truth, a
+ * stored table) come back in no order the query decides, so against them the
+ * top level is compared as a set, and each nest is still held to its own
+ * ordering. With no ordering on either side, the top level is a set and each
+ * nest is compared in order.
  */
 export function rowDifference(
    expected: Row[],
    actual: Row[],
+   ordering?: RowOrdering,
 ): string | undefined {
    const columns = Object.keys(expected[0] ?? actual[0] ?? {}).sort();
    const actualColumns = Object.keys(actual[0] ?? expected[0] ?? {}).sort();
    if (JSON.stringify(columns) !== JSON.stringify(actualColumns)) {
       return `columns differ: ${columns.join(",")} against ${actualColumns.join(",")}`;
    }
-   if (expected.length !== actual.length) {
-      return `row counts differ: ${expected.length} against ${actual.length}`;
-   }
-   const a = [...expected].sort((p, q) =>
-      sortKey(p, columns).localeCompare(sortKey(q, columns)),
+   const recorded = orderings.get(expected) ?? orderings.get(actual);
+   const known = ordering ?? recorded;
+   const bothAnswers =
+      ordering !== undefined ||
+      (orderings.has(expected) && orderings.has(actual));
+   return rowsDifference(
+      expected,
+      actual,
+      known && !bothAnswers ? { orderBy: [], nests: known.nests } : known,
+      "",
    );
-   const b = [...actual].sort((p, q) =>
-      sortKey(p, columns).localeCompare(sortKey(q, columns)),
-   );
-   for (let i = 0; i < a.length; i++) {
-      for (const c of columns) {
-         if (!valuesEqual(a[i][c], b[i][c])) {
-            return `row ${i} column ${c}: ${JSON.stringify(normalizeValue(a[i][c]))} against ${JSON.stringify(normalizeValue(b[i][c]))}`;
-         }
-      }
-   }
-   return undefined;
 }
