@@ -110,6 +110,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "monthly@<pkg>/m.malloy": {

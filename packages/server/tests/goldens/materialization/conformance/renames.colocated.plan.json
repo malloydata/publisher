@@ -62,6 +62,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "daily_r2@<pkg>/m.malloy": {

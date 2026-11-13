@@ -66,6 +66,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "orders__preagg__m_region__3b5ca627@<pkg>/m.malloy.preagg.malloy": {
