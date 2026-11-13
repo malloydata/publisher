@@ -344,7 +344,7 @@ export function rerootDeclaration(
          ? ""
          : declaration.slice(spans.extendStart).trimEnd(),
       r.columns ?? [],
-      r.storedDimensions ?? [],
+      r.storedDimensions,
       r.reservedNames ?? [],
    );
    if (extend === undefined) return undefined;
@@ -367,17 +367,18 @@ export function rerootDeclaration(
  * columns: each stored computed dimension's definition dropped (the column
  * stands in for it), and each stored timeframe column renamed internally and
  * its field redefined with the timeframe a `type:` cannot declare. Undefined
- * when the text does not lex.
+ * when the text does not lex. `storedDimensions` is undefined for a
+ * `#@ persist` re-root, and set (maybe empty) for a `#(materialize)` one.
  */
 function servedExtend(
    text: string,
    columns: readonly ServedColumn[],
-   storedDimensions: readonly string[],
+   storedDimensions: readonly string[] | undefined,
    reservedNames: readonly string[],
 ): string | undefined {
    let extend = text;
    const timeframed = timeframedColumns(columns, reservedNames);
-   const stored = new Set(storedDimensions);
+   const stored = new Set(storedDimensions ?? []);
    const rewrite = new Map<string, string>();
    for (const c of timeframed) {
       // Only a `#(materialize)` computed dimension has a definition in the
@@ -397,13 +398,10 @@ function servedExtend(
       extend = kept.text;
       rewritten = kept.rewritten;
    }
-   if (r.storedDimensions !== undefined) {
+   if (storedDimensions !== undefined) {
       // A `#(materialize)` table stores a field the source renames under its
       // new name, so the rename has nothing left to rename.
-      const renamed = dropRenames(
-         extend,
-         new Set((r.columns ?? []).map((c) => c.name)),
-      );
+      const renamed = dropRenames(extend, new Set(columns.map((c) => c.name)));
       if (!renamed) return undefined;
       extend = renamed.text;
    }
