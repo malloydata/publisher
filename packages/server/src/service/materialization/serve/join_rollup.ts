@@ -274,13 +274,22 @@ function refusalOf(
 
 /**
  * Why the stored measures `read` (by name) cannot be read through the leg's
- * join while unmatched parents still reach an aggregate
- * ({@link malloyCountsChildlessParentsAsZero} false), or undefined. `isColumn`
- * says whether a path of the joined source is a bare column there (NULL on
- * the row a LEFT JOIN writes for an unmatched parent): its own column
- * (`["miles"]`), or a column of one of its joins keyed on one of its own
- * columns (`["lines", "qty"]`, a join-level operand), which meets no row
+ * join because live aggregates a row the rollup does not hold, or undefined.
+ * `isColumn` says whether a path of the joined source is a bare column there
+ * (NULL on the row a LEFT JOIN writes for an unmatched parent): its own
+ * column (`["miles"]`), or a column of one of its joins keyed on one of its
+ * own columns (`["lines", "qty"]`, a join-level operand), which meets no row
  * when that column is NULL.
+ *
+ * Before malloydata/malloy#3208 ({@link malloyCountsChildlessParentsAsZero}
+ * false) live aggregated that row as a row of the joined source: a
+ * join_many's count counted it, and any operand not NULL there read it. With
+ * it, an aggregate skips the rows where the source it is placed at has no
+ * key, so the joined source's own row of NULLs is skipped. A join of the
+ * joined source keyed on a computed value is still different: its key need
+ * not be NULL on that row (`coalesce(kind, 'p')` matches the `'p'` row for a
+ * parent with no rows), so live aggregates a row of it there, which the
+ * rollup does not hold.
  */
 export function unmatchedRowProblem(
    leg: JoinRollupLeg,
@@ -288,18 +297,23 @@ export function unmatchedRowProblem(
    isColumn: (path: readonly string[]) => boolean,
    skipsUnmatched = malloyCountsChildlessParentsAsZero(),
 ): string | undefined {
-   if (skipsUnmatched) return undefined;
    for (const m of leg.plan.rollupMeasures) {
       if (!read.has(m.name)) continue;
       for (const { leaf } of m.partials) {
          if (leaf.aggregate === "count") {
             // A join_one's count counts the joined key, NULL when unmatched.
-            if (leg.join.relationship === "many") {
+            if (!skipsUnmatched && leg.join.relationship === "many") {
                return `\`${leg.join.name}.${m.name}\` counts through a join_many, where Malloy counts a parent with no rows as one (malloydata/malloy#1762)`;
             }
             continue;
          }
          const operand = bareOperand(leaf.expr);
+         if (skipsUnmatched) {
+            if (operand && operand.length > 1 && !isColumn(operand)) {
+               return `\`${leg.join.name}.${m.name}\` aggregates \`${operand.join(".")}\` through a join keyed on a computed value, which meets a row for a parent with no rows of \`${leg.join.name}\` live`;
+            }
+            continue;
+         }
          if (operand === undefined || !isColumn(operand)) {
             return `\`${leg.join.name}.${m.name}\` aggregates a value that is not NULL on a parent with no rows, which Malloy aggregates live (malloydata/malloy#1762)`;
          }

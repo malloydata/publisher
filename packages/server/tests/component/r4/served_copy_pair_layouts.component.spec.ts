@@ -214,8 +214,8 @@ describe("R4: a path of join_manys and more than one join_many, served flat from
          "run: orders_hop -> { group_by: cat; aggregate: order_n, amt_sum, amt_avg, amt_max, cat_n, opt_n, extra_sum, extra_avg, extra_min, kind_n }",
       ],
       [
-         "leaf aggregates written in the query",
-         "run: orders_hop -> { group_by: cat; aggregate: c is items.opts.count(), s is items.opts.extra.sum(), a is items.opts.extra.avg(), mx is items.opts.extra.max(), mn is items.opts.extra.min(), d is count(items.opts.kind) }",
+         "leaf aggregates of stored columns written in the query",
+         "run: orders_hop -> { group_by: cat; aggregate: s is items.opts.extra.sum(), a is items.opts.extra.avg(), mx is items.opts.extra.max(), mn is items.opts.extra.min(), d is count(items.opts.kind) }",
       ],
       [
          "parent measures beside middle measures, the leaf unread",
@@ -352,7 +352,7 @@ describe("R4: a path of join_manys and more than one join_many, served flat from
       ],
       [
          "the other block's aggregates written in the query, grouped by its field",
-         "run: orders -> { group_by: pays.method; aggregate: pay_n, s is pays.paid.sum(), a is pays.paid.avg(), c is pays.count() }",
+         "run: orders -> { group_by: pays.method; aggregate: pay_n, s is pays.paid.sum(), a is pays.paid.avg() }",
       ],
       [
          "a ratio over the parent",
@@ -380,7 +380,7 @@ describe("R4: a path of join_manys and more than one join_many, served flat from
       });
    }
 
-   it("reproduces live's middle count of a childless order (one), not the true count", async () => {
+   it("counts a childless order's items as live does: none (malloydata/malloy#3208)", async () => {
       const run = await fixture.run({
          name: "childless",
          malloy:
@@ -393,13 +393,23 @@ describe("R4: a path of join_manys and more than one join_many, served flat from
             .sort((a, b) => a[0] - b[0]),
       ).toEqual([
          [1, 2],
-         [4, 1],
+         [4, 0],
       ]);
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 
    // Each answered live, equal to live, with the reason the path report gives.
    const declined = [
+      [
+         "a leaf count written in the query (live skips a childless row, malloydata/malloy#3208)",
+         "run: orders_hop -> { group_by: cat; aggregate: c is items.opts.count() }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "the other block's count written in the query",
+         "run: orders -> { group_by: pays.method; aggregate: c is pays.count() }",
+         "COUNT_SEMANTICS",
+      ],
       [
          "a middle measure beside a leaf measure (live aggregates the middle by its key)",
          "run: orders_hop -> { group_by: cat; aggregate: item_n, opt_n }",
@@ -654,12 +664,13 @@ source: ${rerootDeclaration(declaration, {
                ? { otherRecords: pair.block.others.map((o) => o.join) }
                : {}),
             ...(pair.oneParentLevels
-               ? {
-                    oneParentLevels: pair.oneParentLevels,
-                    computedFields: pair.childStoredDimensions.map(
-                       (d) => `${pair.join}.${d}`,
-                    ),
-                 }
+               ? { oneParentLevels: pair.oneParentLevels }
+               : {}),
+            computedFields: pair.childStoredDimensions.map(
+               (d) => `${pair.join}.${d}`,
+            ),
+            ...(pair.levelPresent
+               ? { levelPresentFields: pair.levelPresent.map((p) => p?.field) }
                : {}),
          },
       );
@@ -696,8 +707,12 @@ source: ${rerootDeclaration(declaration, {
       }));
    };
 
+   // With `present`, each level's presence dimension, as the served copy
+   // declares it (malloydata/malloy#3208); without, the flags alone, the
+   // layout before it.
    const hopPair = async (
       parentMeasures: PairReroot["parentMeasures"],
+      present = false,
    ): Promise<PairReroot> => ({
       join: "items",
       parentRowColumn: { name: "__parent_row", type: "BOOLEAN" },
@@ -728,8 +743,56 @@ source: ${rerootDeclaration(declaration, {
             field: "__child_row__pair",
          },
       ],
+      ...(present
+         ? {
+              levelPresent: [
+                 {
+                    field: "__items_present__pair",
+                    keyColumn: "items__item_id__pair",
+                 },
+                 {
+                    field: "__items__opts_present__pair",
+                    keyColumn: "items__opts__opt_id__pair",
+                 },
+              ],
+           }
+         : {}),
       parentMeasures,
       childStoredDimensions: [],
+   });
+
+   it("a leaf count without its level's presence answers wrong, and is refused (malloydata/malloy#3208)", async () => {
+      // Live counts the options a childless order or item has as none; the
+      // flat rows hold one null row for each, which a count reads.
+      const malloy = "run: orders_hop -> { group_by: id; aggregate: opt_n }";
+      const live = (await fixture.run({ name: "presence", malloy })).live;
+      const present = await answer(
+         "hop",
+         hopDeclaration("orders_hop"),
+         await hopPair(
+            [
+               { name: "order_n", internalName: "order_n__pair" },
+               { name: "opt_n", internalName: "opt_n__pair", level: 2 },
+            ],
+            true,
+         ),
+         ["id", "cat", "amt"],
+         malloy,
+         "orders_hop",
+      );
+      expect(rowDifference(live, present.rows)).toBeUndefined();
+      expect(present.refusal).toBeUndefined();
+      // The leaf count left as written: every flat row counted.
+      const mutated = await answer(
+         "hop",
+         hopDeclaration("orders_hop"),
+         await hopPair([{ name: "order_n", internalName: "order_n__pair" }]),
+         ["id", "cat", "amt"],
+         malloy,
+         "orders_hop",
+      );
+      expect(rowDifference(live, mutated.rows)).toBeDefined();
+      expect(mutated.refusal).toMatch(/malloydata\/malloy#3208/);
    });
 
    it("a middle measure without its level's row flag answers wrong, and is refused", async () => {
@@ -739,11 +802,14 @@ source: ${rerootDeclaration(declaration, {
       const flagged = await answer(
          "hop",
          hopDeclaration("orders_hop"),
-         await hopPair([
-            { name: "order_n", internalName: "order_n__pair" },
-            { name: "item_n", internalName: "item_n__pair", level: 1 },
-            { name: "price_sum", internalName: "price_sum__pair", level: 1 },
-         ]),
+         await hopPair(
+            [
+               { name: "order_n", internalName: "order_n__pair" },
+               { name: "item_n", internalName: "item_n__pair", level: 1 },
+               { name: "price_sum", internalName: "price_sum__pair", level: 1 },
+            ],
+            true,
+         ),
          ["id", "cat", "amt"],
          malloy,
          "orders_hop",
@@ -766,7 +832,7 @@ source: ${rerootDeclaration(declaration, {
 
    it("a middle measure beside the leaf, flagged, answers wrong, and is refused", async () => {
       // Live aggregates the middle level by its key once the leaf is read: a
-      // childless order's item count is 0 there, 1 under the flag.
+      // childless order's item count is 0 there, 1 under the flag alone.
       const malloy =
          "run: orders_hop -> { group_by: id; aggregate: item_n, opt_n }";
       const live = (await fixture.run({ name: "beside", malloy })).live;
@@ -805,7 +871,13 @@ source: ${rerootDeclaration(declaration, {
          { name: "item_n", internalName: "item_n__pair", level: 1 },
       ];
       const proven = {
-         ...(await hopPair(flaggedMiddle)),
+         ...(await hopPair(
+            [
+               ...flaggedMiddle,
+               { name: "opt_n", internalName: "opt_n__pair", level: 2 },
+            ],
+            true,
+         )),
          oneParentLevels: [1],
          childStoredDimensions: ["pricey", "pricey_n"],
       };
@@ -832,15 +904,20 @@ source: ${rerootDeclaration(declaration, {
          "orders_hop",
       );
       expect(unproven.refusal).toMatch(/beside fields below it/);
-      // A middle count reads a childless order's null row under the flag,
-      // where live's count by the item key skips it: wrong, and refused.
+      // A middle count reads a childless order's null row under the flag
+      // alone, where live's count by the item key skips it: wrong, and
+      // refused.
       const counts =
          "run: orders_hop -> { group_by: id; aggregate: item_n, opt_n }";
       const want = (await fixture.run({ name: counts, malloy: counts })).live;
       const got = await answer(
          "hop",
          declaration,
-         proven,
+         {
+            ...(await hopPair(flaggedMiddle)),
+            oneParentLevels: [1],
+            childStoredDimensions: ["pricey", "pricey_n"],
+         },
          ["id", "cat", "amt"],
          counts,
          "orders_hop",
@@ -931,8 +1008,27 @@ source: ${rerootDeclaration(declaration, {
                laneField: "__pair_lane__pair",
                others: [other],
             },
+            ...(lane === 1
+               ? {
+                    levelPresent: [
+                       {
+                          field: "__pays_present__pair",
+                          keyColumn: "pays__pay_id__pair",
+                       },
+                    ],
+                 }
+               : {}),
             parentMeasures: [
                { name: "order_n", internalName: "order_n__pair" },
+               ...(lane === 1
+                  ? [
+                       {
+                          name: "pay_n",
+                          internalName: "pay_n__pair",
+                          level: 1,
+                       },
+                    ]
+                  : []),
             ],
             childStoredDimensions: [],
          };

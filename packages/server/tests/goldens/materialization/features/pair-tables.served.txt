@@ -112,9 +112,15 @@ source: orders_pair is __served_copy_alias_of_lake.virtual('19d80b436ce31978acec
   internal rename:
     order_n__pair is order_n
     amount_sum__pair is amount_sum
+    line_n__pair is line_n
+    qty_sum__pair is qty_sum
+  internal dimension:
+    __lines_present__pair is lines.line_id is not null
   measure:
     order_n is order_n__pair { where: __parent_row__pair }
     amount_sum is amount_sum__pair { where: __parent_row__pair }
+    line_n is line_n__pair { where: __lines_present__pair }
+    qty_sum is qty_sum__pair { where: __lines_present__pair }
 }
 
 source: orders_with_lines is orders_raw extend {
@@ -170,9 +176,14 @@ source: customers_path is __served_copy_alias_of_lake.virtual('86beef7e3f90b49ad
   internal rename:
     customer_n__pair is customer_n
     order_n__pair is order_n
+    qty_sum__pair is qty_sum
+  internal dimension:
+    __orders_present__pair is orders.id is not null
+    __orders__lines_present__pair is orders.lines.line_id is not null
   measure:
     customer_n is customer_n__pair { where: __parent_row__pair }
-    order_n is order_n__pair { where: __child_row__pair }
+    order_n is order_n__pair { where: __child_row__pair, __orders_present__pair }
+    qty_sum is qty_sum__pair { where: __orders__lines_present__pair }
 }
 
 // A path and another join_many: two blocks of one table.
@@ -245,8 +256,12 @@ source: customers_blocks is __served_copy_alias_of_lake.virtual('c058478f6fd7ba6
 } extend {
   internal rename:
     customer_n__pair is customer_n
+    qty_sum__pair is qty_sum
+  internal dimension:
+    __orders__lines_present__pair is orders.lines.line_id is not null
   measure:
     customer_n is customer_n__pair { where: __parent_row__pair }
+    qty_sum is qty_sum__pair { where: __orders__lines_present__pair }
 }
 
 // ==== <pkg>/m.malloy (text 2 of 2)
@@ -360,9 +375,15 @@ source: orders_pair is __served_copy_alias_of_lake.virtual('19d80b436ce31978acec
   internal rename:
     order_n__pair is order_n
     amount_sum__pair is amount_sum
+    line_n__pair is line_n
+    qty_sum__pair is qty_sum
+  internal dimension:
+    __lines_present__pair is lines.line_id is not null
   measure:
     order_n is order_n__pair { where: __parent_row__pair }
     amount_sum is amount_sum__pair { where: __parent_row__pair }
+    line_n is line_n__pair { where: __lines_present__pair }
+    qty_sum is qty_sum__pair { where: __lines_present__pair }
 }
 
 source: orders_with_lines is orders_raw extend {
@@ -418,9 +439,14 @@ source: customers_path is __served_copy_alias_of_lake.virtual('86beef7e3f90b49ad
   internal rename:
     customer_n__pair is customer_n
     order_n__pair is order_n
+    qty_sum__pair is qty_sum
+  internal dimension:
+    __orders_present__pair is orders.id is not null
+    __orders__lines_present__pair is orders.lines.line_id is not null
   measure:
     customer_n is customer_n__pair { where: __parent_row__pair }
-    order_n is order_n__pair { where: __child_row__pair }
+    order_n is order_n__pair { where: __child_row__pair, __orders_present__pair }
+    qty_sum is qty_sum__pair { where: __orders__lines_present__pair }
 }
 
 // A path and another join_many: two blocks of one table.
@@ -492,6 +518,10 @@ source: customers_blocks is __served_copy_alias_of_lake.virtual('c058478f6fd7ba6
 } extend {
   internal rename:
     customer_n__pair is customer_n
+    big_n__pair is big_n
+  internal dimension:
+    __big_orders_present__pair is big_orders.id is not null
   measure:
     customer_n is customer_n__pair { where: __parent_row__pair }
+    big_n is big_n__pair { where: __big_orders_present__pair }
 }

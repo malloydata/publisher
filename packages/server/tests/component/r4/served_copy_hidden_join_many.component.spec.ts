@@ -415,7 +415,7 @@ describe("R4: an inlined hidden join_many (known limitation 24)", () => {
       });
    }
 
-   it("reproduces live's count of a childless parent through a hidden join_many", async () => {
+   it("counts a childless parent's children through a hidden join_many as live does: none (malloydata/malloy#3208)", async () => {
       const run = await expectServed(
          fixture,
          "run: hidden_many -> { where: id = 3 | 4; group_by: id; aggregate: seg_n }",
@@ -426,7 +426,7 @@ describe("R4: an inlined hidden join_many (known limitation 24)", () => {
             .sort((a, b) => a[0] - b[0]),
       ).toEqual([
          [3, 4],
-         [4, 1],
+         [4, 0],
       ]);
    });
 

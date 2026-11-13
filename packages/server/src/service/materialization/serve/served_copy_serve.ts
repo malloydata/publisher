@@ -2382,12 +2382,13 @@ function flatPairOf(pair: PairReroot): FlatPair {
          ? { levelRowFields: pair.levelRows.map((l) => l.field) }
          : {}),
       ...(pair.oneParentLevels
-         ? {
-              oneParentLevels: pair.oneParentLevels,
-              computedFields: pair.childStoredDimensions.map(
-                 (d) => `${pair.join}.${d}`,
-              ),
-           }
+         ? { oneParentLevels: pair.oneParentLevels }
+         : {}),
+      computedFields: pair.childStoredDimensions.map(
+         (d) => `${pair.join}.${d}`,
+      ),
+      ...(pair.levelPresent
+         ? { levelPresentFields: pair.levelPresent.map((p) => p?.field) }
          : {}),
       ...(pair.block
          ? { otherRecords: pair.block.others.map((o) => o.join) }
@@ -2572,10 +2573,36 @@ function pairRerootOf(
          others,
       };
    }
-   // A measure over one level above the leaf is re-declared over that
-   // level's rows; one at the leaf reads every row as it stands, and one
+   // Each level of the path is present on a row where its primary key's
+   // stored column is not null: the test Malloy makes for a joined source's
+   // own rows (malloydata/malloy#3208).
+   const levelPresent: ({ field: string; keyColumn: string } | undefined)[] =
+      [];
+   {
+      const keys = [block.childKey, ...(block.hops ?? []).map((h) => h.key)];
+      const levels = [
+         own.childColumns,
+         ...(own.hops ?? []).map((h) => h.columns),
+      ];
+      const names = [block.join];
+      keys.forEach((key, i) => {
+         if (i > 0) names.push((block.hops ?? [])[i - 1].join);
+         const column = levels[i]?.find((c) => c.name === key);
+         levelPresent.push(
+            column === undefined
+               ? undefined
+               : {
+                    field: fresh(`__${names.join("__")}_present`),
+                    keyColumn: column.internalName,
+                 },
+         );
+      });
+   }
+   // A measure over one level is re-declared over that level's rows; one
    // reading several levels (or anything else) is left as it is, so a query
-   // that reads it is answered live (pair_flat_query.ts).
+   // that reads it is answered live (pair_flat_query.ts). One at the leaf is
+   // re-declared only where the leaf's presence is declared: without it the
+   // re-declaration would read every row, as the measure does as it stands.
    const path = {
       join: block.join,
       hops: (block.hops ?? []).map((h) => h.join),
@@ -2592,7 +2619,8 @@ function pairRerootOf(
       const level = levels.get(name);
       if (!level || level.size !== 1) continue;
       const only = [...level][0];
-      if (only >= leaf) continue;
+      if (only > leaf) continue;
+      if (only === leaf && levelPresent[leaf - 1] === undefined) continue;
       // A private measure cannot be renamed by an extension; a public one
       // that reads it carries the flag to it.
       if (f.accessModifier === "private") continue;
@@ -2620,6 +2648,7 @@ function pairRerootOf(
       ...(block.oneParentLevels && block.oneParentLevels.length > 0
          ? { oneParentLevels: block.oneParentLevels }
          : {}),
+      ...(levelPresent.some((p) => p !== undefined) ? { levelPresent } : {}),
       ...(blockReroot ? { block: blockReroot } : {}),
       ...(own.access ? { access: own.access } : {}),
    };

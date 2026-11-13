@@ -33,8 +33,8 @@ ORDER BY 1 desc NULLS LAST
 -- sourceID: rollup@<hammer>/dcr/dcr.malloy
 -- connection: orders_pg
 -- reads: daily@<hammer>/dcr/dcr.malloy
--- sourceEntityId: 771259a69a58edf222ac391568d923c3f246f971d46d37de2f72cda4b9e9b402
--- compiler key: 771259a69a58edf222ac391568d923c3f246f971d46d37de2f72cda4b9e9b402 (the sourceEntityId)
+-- sourceEntityId: 7198faaf8672ba01060bb77f1ae48c2820d856f5a172a1d9962efdb8094e749e
+-- compiler key: 7198faaf8672ba01060bb77f1ae48c2820d856f5a172a1d9962efdb8094e749e (the sourceEntityId)
 -- build SQL:
 WITH __stage0 AS (
   SELECT 
@@ -56,7 +56,7 @@ SELECT
    COALESCE((
         SELECT SUM(a.val) as value
         FROM (
-          SELECT UNNEST(list(distinct {key:c_0."order_date", val: c_0."order_count"})) a
+          SELECT UNNEST(list(distinct {key:c_0."order_date", val: CASE WHEN c_0."order_date" IS NOT NULL THEN c_0."order_count" END})) a
         )
       ),0) as "orders"
 FROM __stage0 as base
@@ -68,7 +68,7 @@ SELECT
    COALESCE((
         SELECT SUM(a.val) as value
         FROM (
-          SELECT UNNEST(list(distinct {key:c_0."order_date", val: c_0."order_count"})) a
+          SELECT UNNEST(list(distinct {key:c_0."order_date", val: CASE WHEN c_0."order_date" IS NOT NULL THEN c_0."order_count" END})) a
         )
       ),0) as "orders"
 FROM built.daily as base
