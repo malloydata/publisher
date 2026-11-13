@@ -80,6 +80,15 @@ class Kinds(unittest.TestCase):
                           r["number"]["passRate"]), ("quality", 0, 1, 2, 0.5))
         self.assertEqual([s["step"] for s in r["steps"]], ran)
 
+    def test_the_number_is_split_and_the_test_split_is_the_one_to_quote(self):
+        (self.set / "cases.jsonl").write_text(
+            '{"qid": "a", "split": "test"}\n{"qid": "b", "split": "dev"}\n')
+        _, _, r, _ = self.go("quality", on={"run": lambda: self.answer_run(self.run_dir)})
+        self.assertEqual(r["number"]["bySplit"],
+                         {"dev": {"passed": 0, "decided": 1, "passRate": 0.0},
+                          "test": {"passed": 1, "decided": 1, "passRate": 1.0}})
+        self.assertIn("1 of 1 on the test split", r["reason"])
+
     def test_quality_never_times_queries(self):
         _, ran, _, _ = self.go("quality", on={"run": lambda: self.answer_run(self.run_dir)})
         self.assertNotIn("query-replay", ran)

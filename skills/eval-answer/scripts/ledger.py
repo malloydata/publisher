@@ -170,7 +170,12 @@ EVENTS: dict[str, dict[str, set[str]]] = {
         "required": {"issue_ids", "files", "diffSummary", "probes", "edit"},
         "optional": {"qids", "editTier", "disagreement", "compiled",
                      "patchPath", "meaningChanged", "goldenSuspect",
-                     "goldenAudit", "improvedBy", "at"},
+                     "goldenAudit", "improvedBy", "at",
+                     # What a script found in the diff itself: a case's answer
+                     # stated in it (golden_leak.py), the rejected attempt that
+                     # made this same edit (attempts.py), and the hash the two
+                     # are matched by.
+                     "goldenLeak", "duplicateOf", "patchSha"},
     },
     "acceptance_check": {
         "required": {"decision", "baselineRunId", "finalRunIds",

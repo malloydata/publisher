@@ -59,6 +59,14 @@ $E experiment stop tip-fix --set <set>
 When it is not accepted, change the edit or drop it. The record is untouched
 either way.
 
+Either way the check is written to `attempts.jsonl` beside the cases: what was
+tried, on which cases, whether it was accepted, and the rule it failed if not.
+Commit that file with the set. It is how the next person, or the next night's
+improve run, learns that an edit was already tried: the improve step shows the
+attempts at a cluster's cases to the agent editing for it, refuses to re-ask
+for an edit identical to a rejected one, and refuses one that writes a case's
+expected value into a doc.
+
 Before the agent runs at all, a retrieval problem can be fixed cheaper:
 `eval.py replay` re-asks `get_context` the stored questions with no answerer
 (retrieval-replay.md).

@@ -92,8 +92,12 @@ what arrived with each question, why nothing imports as a verified value, and
 the seal that makes a later edit to a question detectable. Read it whenever the
 questions came from outside, which is most of the time. While importing:
 
-- Freeze each case's `split`: `dev` or `holdout`. Diagnose and improve read
-  dev cases only; the acceptance check runs both. A set that is all dev cannot defend an
+- Freeze each case's `split`: `dev` or `holdout`, and on a set large enough
+  to spare the cases, `test`. A `test` case is never diagnosed and decides
+  nothing in the acceptance check, so its pass rate is the one number the loop
+  was not tuned on: quote that one. Holdout is read by every acceptance check,
+  so over many edits it stops being unseen. Diagnose and improve read
+  dev cases only; the acceptance check runs dev and holdout. A set that is all dev cannot defend an
   accept. On a small set a holdout is too few cases to mean anything (three
   dev and seven holdout from ten cases says nothing); there, say the set is
   all dev, accept nothing on it alone, and grow it.

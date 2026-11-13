@@ -635,6 +635,16 @@ def select_cases(events: list[dict[str, Any]],
             # says which, and none of them is a model failure.
             exclude(f"unscored ({e.get('reason') or 'no reason recorded'})",
                     qid)
+        elif case.get("split") == "test":
+            # Never diagnosed, and no flag makes it so. `test` is the split the
+            # reported number comes from: a diagnosis of one of its failures is
+            # read by the improve step, and then the number has been tuned on.
+            # Holdout can be spent by choice (--include-holdout); this cannot.
+            if verdict == "match":
+                excluded_passes.setdefault(
+                    "test, never diagnosed", []).append(qid)
+            else:
+                exclude("test, never diagnosed", qid)
         elif case.get("split") == "holdout" and not include_holdout:
             # Ahead of the verdict checks, beside contamination and for the
             # same reason: what split a case is on does not depend on how it

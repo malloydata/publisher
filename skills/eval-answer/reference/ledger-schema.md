@@ -87,7 +87,7 @@ One JSON object per line:
 |---|---|
 | `qid` | Stable case id. |
 | `question` | Exact text the answerer will see. |
-| `split` | `dev` or `holdout`. Frozen at import. Diagnose and improve read `dev` only; the acceptance check runs both. |
+| `split` | `dev`, `holdout` or `test`. A `test` case is never diagnosed and is left out of every acceptance rule; its pass rate is the number to quote. Frozen at import. Diagnose and improve read `dev` only; the acceptance check runs both. |
 | `tags` | list Free-form, owned by the set. A slice in `slices.json` selects cases by tag, and `run_baseline.py` prints pass counts per tag. |
 | `state` | `candidate` / `selected` / `excluded`. |
 | `source` | Where the case came from. |

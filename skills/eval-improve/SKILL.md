@@ -209,6 +209,30 @@ Two differences from every other edit here:
 Its acceptance is a query replay, not an answer run (`skill:eval-loop`,
 `reference/query-performance.md`).
 
+### Read what was already tried, and keep the answer out of the edit
+
+Your prompt carries the attempts already made on this set, from
+`<set>/attempts.jsonl`: each edit put to the acceptance check, whether it was
+accepted, and the rule it failed if not. Read them before Step 3.
+
+- Do not make a rejected edit again, and do not make it again in other words.
+  If the rejection names a regression, your edit has to be one that could not
+  cause it. If you think the rejection was noise, say so in `disagreement` and
+  make no edit: a person decides that, not a second attempt.
+- An accepted edit is already in the model. Build on it.
+
+Two things about your diff are checked by a script when you finish, and
+either one stops the acceptance check until a person has looked:
+
+- **It states a case's answer.** A number in a line you added that equals a
+  number in any case's key (five significant digits or more), or a golden
+  query pasted whole. A doc says what a field MEANS and how it is computed. It
+  does not say what it currently adds up to. A value in a doc passes the case
+  that asks for it and teaches the model nothing, and it is wrong by next
+  month.
+- **It is the same edit as a rejected attempt**, compared by the lines it adds
+  and removes.
+
 ## Step 4: Check what your edit did to the answer key
 
 An edit that changes what a field *means* can silently invalidate goldens for

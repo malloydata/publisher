@@ -41,6 +41,17 @@ query replay's rows when given `--replay`), against `--baseline record` by
 default, and prints the checkpoint message. The rest stay yours: the judge's
 doubts about a key, and whether the flips clear the bar for their size.
 
+It measures noise when it can: given a second run of the baseline, found by
+its pins or named with `--aa`, a case the two disagree on is unstable, and
+neither a fix nor a regression on it counts (measurement.md). A case on the
+`test` split is left out of every rule.
+
+Every check, accepted or rejected, is appended to `<set>/attempts.jsonl`: the
+edit (`--what`, `--patch`), the issue (`--issue`), the cases it aimed at, the
+rule it failed and a one-line `--lesson`. The improve step reads that file, so
+give it the patch and a lesson. A rejected edit that nobody recorded is an
+edit somebody will pay to reject again.
+
 "Nothing but the model changed" covers the judge, its prompt, the answerer, the
 turn cap and the effort: a run at `--max-turns 40` against a record made at 30
 is two changes. The two runs must be two runs: the same label named twice, or

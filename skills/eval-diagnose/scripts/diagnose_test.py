@@ -492,6 +492,19 @@ class SelectingWhatToDiagnose(unittest.TestCase):
             len(excluded["holdout, withheld from diagnosis"]), 1,
             "a holdout failure is still withheld, and still non-passing")
 
+    def test_a_test_case_is_never_diagnosed_and_no_flag_lets_it_through(self):
+        events = [{"kind": "score", "qid": "t0", "sample": None, "phase": "baseline",
+                   "verdict": "no_match", "reason": "r"},
+                  {"kind": "score", "qid": "t1", "sample": None, "phase": "baseline",
+                   "verdict": "match", "reason": "ok"}]
+        cases = {"t0": {"qid": "t0", "split": "test"}, "t1": {"qid": "t1", "split": "test"}}
+        for include in (False, True):
+            failed, passed, _, excluded, excluded_passes = diagnose.select_cases(
+                events, cases, ("no_match",), include_holdout=include)
+            self.assertEqual((failed, passed), ([], []))
+            self.assertEqual(excluded["test, never diagnosed"], ["t0"])
+            self.assertEqual(excluded_passes["test, never diagnosed"], ["t1"])
+
     def test_only_records_what_it_dropped_as_an_exclusion(self):
         failed, _, _, excluded = self.select(
             self.scores(4), self.cases(4), only="q0,q1")

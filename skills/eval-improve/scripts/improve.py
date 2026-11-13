@@ -72,6 +72,8 @@ import config  # noqa: E402
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 import golden_rows  # noqa: E402
+import attempts  # noqa: E402
+import golden_leak  # noqa: E402
 
 SKILLS_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 IMPROVE_TOOLS = ("mcp__publisher__get_context",
@@ -189,6 +191,16 @@ THE CLUSTER
 
 THE CASES IN IT
 {cases}
+
+WHAT WAS ALREADY TRIED ON THIS SET
+
+Each entry is an edit that was put to the acceptance check, newest first,
+those aimed at your cases before the rest. A REJECTED edit failed for the
+reason given: do not make it again, and do not make a reworded version of it.
+If you believe a rejected edit was right and the rejection was noise, say so
+in `disagreement` and make no edit. An ACCEPTED edit is already in the model.
+
+{prior}
 
 MAKING YOUR EDIT REACH THE SERVER
 
@@ -318,6 +330,23 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
             "tail": (p.stdout or p.stderr or "").strip().splitlines()[-25:]}
 
 
+def golden_keys(cases: dict[str, Any], set_dir: pathlib.Path | None
+                ) -> tuple[dict[str, Any], dict[str, list[str]]]:
+    """Every case's key and its golden queries, for the leak check. A key
+    whose rows cannot be read is left out: there is nothing to look for."""
+    keys: dict[str, Any] = {}
+    queries: dict[str, list[str]] = {}
+    for qid, c in cases.items():
+        g = c.get("golden") or {}
+        try:
+            keys[qid] = golden_rows.key_value(g, set_dir, qid)
+        except golden_rows.GoldenRowsError:
+            pass
+        qs = [g.get("query"), (g.get("verification") or {}).get("verifyQuery")]
+        queries[qid] = [q for q in qs if isinstance(q, str)]
+    return keys, queries
+
+
 def cluster_members(issue: dict[str, Any], cases: dict[str, Any],
                     set_dir: pathlib.Path | None) -> list[dict[str, Any]]:
     """Each case in the cluster with its question, key and rubric.
@@ -375,6 +404,7 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
                                  "sufficiency", "diagnosis", "evidence")},
                                indent=2),
             cases=json.dumps(members, indent=2)[:8000],
+            prior=attempts.brief(attempts.relevant(a.prior, issue.get("qids", [])))[:6000],
             cases_file=(a.set_dir / "cases.jsonl").resolve()),
         skills=["eval-improve", *a.role_skills], skills_root=a.roots,
         model=a.model,
@@ -392,6 +422,12 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
     # whose stored value silently moved is invisible here, which is why the
     # agent is asked for goldenSuspect as well.
     audit = verify_goldens(a, d, diff)
+    # Two checks a script can make on the diff itself, before anything is
+    # re-answered. An edit that states a case's answer passes that case for
+    # nothing, and one that was already rejected would cost two runs to
+    # reject again.
+    leak = golden_leak.check(diff, a.keys, a.golden_queries)
+    again = attempts.same_edit(a.prior, diff)
 
     helper.unlink(missing_ok=True)
     if a.isolate:
@@ -404,7 +440,10 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
 
     res = {"issue_id": cid, "qids": issue.get("qids", []),
            "diffStat": stat, "diffEmpty": not diff.strip(),
-           "goldenAudit": audit,
+           "goldenAudit": audit, "goldenLeak": leak,
+           "duplicateOf": ({"at": again.get("at"), "what": again.get("what"),
+                            "failedRules": again.get("failedRules")} if again else None),
+           "patchSha": attempts.patch_sha(diff),
            "patchPath": str((d / "edit.patch").relative_to(art.parent)),
            "cost_usd": r.cost_usd, "wall_seconds": r.wall_seconds,
            "attempts": r.attempts, "agentError": r.error,
@@ -540,6 +579,8 @@ def main(argv: list[str] | None = None) -> int:
 
     events = read_jsonl(a.run / "events.jsonl")
     cases = {c["qid"]: c for c in read_jsonl(a.set_dir / "cases.jsonl")}
+    a.prior = attempts.read(a.set_dir)
+    a.keys, a.golden_queries = golden_keys(cases, a.set_dir)
 
     status: dict[str, str] = {}
     for e in events:
@@ -602,6 +643,12 @@ def main(argv: list[str] | None = None) -> int:
             for g in (r.get("goldenSuspect") or []):
                 print(f"  ! golden_suspect {g.get('qid')} via {g.get('entity')}: "
                       f"{g.get('stored')} -> {g.get('rederived')}")
+            for x in (r.get("goldenLeak") or []):
+                print(f"  ! the edit states {x['qid']}'s answer ({x['kind']}): {x['found']}")
+            if r.get("duplicateOf"):
+                dup = r["duplicateOf"]
+                print(f"  ! this same edit was REJECTED on {dup.get('at')} ({dup.get('what')}): "
+                      + "; ".join(f"{k}: {v}" for k, v in (dup.get("failedRules") or {}).items()))
 
     # Keyed by issue_id so a re-run replaces its own candidates instead of
     # appending a second set. This script may be re-invoked after a crash.
@@ -617,6 +664,9 @@ def main(argv: list[str] | None = None) -> int:
         meaningChanged=r.get("meaningChanged") or [],
         goldenSuspect=r.get("goldenSuspect") or [],
         goldenAudit=r.get("goldenAudit") or {},
+        goldenLeak=r.get("goldenLeak") or [],
+        duplicateOf=r.get("duplicateOf"),
+        patchSha=r.get("patchSha"),
         improvedBy=a.model,
         at=ledger.now(),
     ) for r in results]
@@ -647,14 +697,23 @@ def main(argv: list[str] | None = None) -> int:
                for r in results]
     blocked = [(r, g, aud) for r, g, aud in blocked
                if g or (aud.get("ran") and not aud.get("clean"))
-               or aud.get("couldNotRun")]
+               or aud.get("couldNotRun") or r.get("goldenLeak") or r.get("duplicateOf")]
     if blocked:
         print(f"\nACCEPTANCE CHECK BLOCKED: {len(blocked)} cluster(s) either may "
-              f"have invalidated a golden or were never checked. Settle each "
+              f"have invalidated a golden, were never checked, state a case's "
+              f"answer, or repeat a rejected edit. Settle each "
               f"through the golden side door in skill:eval-loop, and re-run any "
               f"verification that failed to start, before re-answering.")
         for r, g, aud in blocked:
             print(f"  {r['issue_id']}")
+            for x in r.get("goldenLeak") or []:
+                print(f"    the edit states {x['qid']}'s answer ({x['kind']}: {x['found']}). "
+                      f"Re-asking that case would pass it for nothing. Take the value out "
+                      f"of the edit, or confirm it is a constant of the business and not "
+                      f"the answer")
+            if r.get("duplicateOf"):
+                print(f"    the same edit was rejected on {r['duplicateOf'].get('at')}; "
+                      f"read why in {attempts.path(a.set_dir)} before paying to reject it again")
             if aud.get("ran") and not aud.get("clean"):
                 print(f"    verify_goldens failed; see "
                       f"artifacts/clusters/*/verify_goldens.txt")

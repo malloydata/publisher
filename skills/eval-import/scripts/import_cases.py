@@ -52,7 +52,9 @@ from typing import Any
 # off the case to return `golden_verified_wrong`) and this one rejected it, so
 # a mature set carrying an adjudicated key failed validation.
 STATUSES = ("verified", "provisional", "invalid", "ambiguous", "verified_wrong")
-SPLITS = ("dev", "holdout")
+# `test` is the split no decision is made on: never diagnosed, never an
+# acceptance rule, only reported. A set does not need one.
+SPLITS = ("dev", "holdout", "test")
 
 
 def sha256_text(text: str) -> str:

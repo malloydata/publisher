@@ -401,7 +401,7 @@ not roll into the new one.
 
 ## Step 6: freeze the split
 
-Every case gets `split`: `dev` or `holdout`. Diagnose and improve read dev only;
+Every case gets `split`: `dev`, `holdout` or `test`. `test` is optional: its cases are never diagnosed and decide nothing in the acceptance check, so their pass rate is the one number the loop has not been tuned on, and the one to quote. Diagnose and improve read dev only;
 the acceptance check runs both, and a set that is all dev cannot defend an
 accept. `skill:eval-loop` owns the rule; import is where it is frozen, because
 a split chosen after the first failures is not a holdout.

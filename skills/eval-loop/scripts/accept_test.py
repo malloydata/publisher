@@ -148,5 +148,128 @@ class RunSettings(unittest.TestCase):
         self.assertTrue(self.other(maxTurns=30, judgePromptSha="p1", packageSkillsSha="new")["ok"])
 
 
+class Noise(unittest.TestCase):
+    """A second run of the baseline says which cases flip with nothing changed."""
+
+    def setUp(self):
+        Rules.setUp(self)
+        shutil.rmtree(self.base)
+        pins = dict(maxTurns=30, started="2026-11-01")
+        # `flaky` fails here and passes in the second run; `wobble` the reverse.
+        self.base = run(self.runs / "base", {"fix": "no_match", "keep": "match", "held": "match",
+                                             "flaky": "no_match", "wobble": "match"},
+                        modelGitSha="m0", **pins)
+        self.aa = run(self.runs / "base2", {"fix": "no_match", "keep": "match", "held": "match",
+                                            "flaky": "match", "wobble": "no_match"},
+                      modelGitSha="m0", **{**pins, "started": "2026-11-02"})
+        with (self.set / "cases.jsonl").open("a") as f:
+            f.write('{"qid": "flaky", "split": "dev"}\n{"qid": "wobble", "split": "dev"}\n')
+
+    def tearDown(self):
+        Rules.tearDown(self)
+
+    def cand(self, name, **verdicts):
+        v = {"fix": "match", "keep": "match", "held": "match", "flaky": "match",
+             "wobble": "match", **verdicts}
+        return run(self.runs / name, v, maxTurns=30)
+
+    def check(self, *cands, aa="yes", targets=None):
+        return accept.check(self.cfg, self.base, list(cands), targets, None,
+                            self.aa if aa == "yes" else None)
+
+    def test_the_cases_the_two_runs_disagree_on_are_unstable(self):
+        r = self.check(self.cand("a"), self.cand("b"))
+        self.assertEqual(r["unstable"], ["flaky", "wobble"])
+
+    def test_an_unstable_failure_is_not_a_default_target(self):
+        r = self.check(self.cand("a"), self.cand("b"))
+        self.assertEqual((r["targets"], r["unstableTargets"]), (["fix"], ["flaky"]))
+        self.assertTrue(r["accepted"], r["rules"])
+
+    def test_a_regression_on_an_unstable_case_does_not_fail_the_edit(self):
+        r = self.check(self.cand("a", wobble="no_match"), self.cand("b"))
+        self.assertTrue(r["rules"]["no regression"]["ok"])
+        self.assertEqual(r["noise"], ["wobble in a"])
+
+    def test_a_regression_on_a_stable_case_still_does(self):
+        r = self.check(self.cand("a", keep="no_match"), self.cand("b"))
+        self.assertFalse(r["rules"]["no regression"]["ok"])
+
+    def test_with_no_second_run_every_case_counts(self):
+        r = self.check(self.cand("a", wobble="no_match"), self.cand("b"), aa=None)
+        self.assertFalse(r["rules"]["no regression"]["ok"])
+        self.assertEqual((r["aa"], r["targets"]), (None, ["fix", "flaky"]))
+
+    def test_an_edit_whose_only_target_is_unstable_shows_nothing(self):
+        r = self.check(self.cand("a"), self.cand("b"), targets=["flaky"])
+        self.assertFalse(r["rules"]["targets fixed"]["ok"])
+        self.assertIn("unstable", r["rules"]["targets fixed"]["detail"])
+
+    def test_the_second_run_is_found_by_its_pins_and_an_edited_model_is_not_one(self):
+        self.assertEqual(accept.find_aa(self.cfg, self.base).name, "base2")
+        self.cand("a")                                  # another model: modelGitSha "a"
+        self.assertEqual(accept.find_aa(self.cfg, self.base).name, "base2")
+        shutil.rmtree(self.aa)
+        self.assertIsNone(accept.find_aa(self.cfg, self.base))
+
+    def test_a_run_with_other_pins_named_as_the_second_run_cannot_be_checked(self):
+        self.cand("a"), self.cand("b")
+        code = accept.main(["--set", str(self.set), "--baseline", "base", "--run", "a",
+                            "--run", "b", "--aa", "a", "--no-record"])
+        self.assertEqual(code, 3)
+
+
+class TestSplitAndRecord(unittest.TestCase):
+    def setUp(self):
+        Rules.setUp(self)
+
+    def tearDown(self):
+        Rules.tearDown(self)
+
+    def test_a_test_case_decides_nothing(self):
+        with (self.set / "cases.jsonl").open("a") as f:
+            f.write('{"qid": "final", "split": "test"}\n')
+        shutil.rmtree(self.base)
+        self.base = run(self.runs / "base", {"fix": "no_match", "keep": "match", "held": "match",
+                                             "final": "match"})
+        # `final` regresses in both candidates, and it must not block: a rule
+        # that read it would be tuning the edit against the reported number.
+        bad = {"fix": "match", "keep": "match", "held": "match", "final": "no_match"}
+        r = accept.check(self.cfg, self.base, [run(self.runs / "a", bad),
+                                               run(self.runs / "b", bad)], None, None)
+        self.assertTrue(r["accepted"], r["rules"])
+        self.assertEqual(r["testCasesLeftOut"], 1)
+
+    def go(self, verdicts, *extra):
+        run(self.runs / "a", verdicts), run(self.runs / "b", verdicts)
+        code = accept.main(["--set", str(self.set), "--baseline", "base", "--run", "a",
+                            "--run", "b", "--aa", "none", "--what", "doc net_sales", *extra])
+        rows = [json.loads(x) for x in (self.set / "attempts.jsonl").read_text().splitlines()] \
+            if (self.set / "attempts.jsonl").exists() else []
+        return code, rows
+
+    def test_an_accepted_edit_is_recorded_with_its_patch_and_lesson(self):
+        patch = self.root / "e.patch"
+        patch.write_text("--- a/m.malloy\n+++ b/m.malloy\n@@ -1 +1 @@\n-  x\n+  #(doc) net\n")
+        code, rows = self.go({"fix": "match", "keep": "match", "held": "match"},
+                             "--patch", str(patch), "--issue", "r:c1", "--lesson", "net excludes returns")
+        self.assertEqual(code, 0)
+        r = rows[0]
+        self.assertEqual((r["outcome"], r["what"], r["targets"], r["issueIds"], r["lesson"]),
+                         ("accepted", "doc net_sales", ["fix"], ["r:c1"], "net excludes returns"))
+        self.assertEqual(r["effect"]["targetsFixed"], 1)
+        self.assertTrue(r["patchSha"] and "+  #(doc) net" in r["patch"])
+
+    def test_a_rejected_edit_is_recorded_with_the_rule_it_failed(self):
+        code, rows = self.go({"fix": "match", "keep": "no_match", "held": "match"})
+        self.assertEqual((code, rows[0]["outcome"]), (1, "rejected"))
+        self.assertIn("no regression", rows[0]["failedRules"])
+        self.assertEqual(rows[0]["effect"]["regressions"], ["keep in a", "keep in b"])
+
+    def test_no_record_writes_nothing(self):
+        _, rows = self.go({"fix": "match", "keep": "match", "held": "match"}, "--no-record")
+        self.assertEqual(rows, [])
+
+
 if __name__ == "__main__":
     unittest.main()

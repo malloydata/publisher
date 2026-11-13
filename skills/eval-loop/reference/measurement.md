@@ -103,6 +103,32 @@ An A/A is not a repeat in the sense the sampling rule forbids. It is a one-off
 calibration of the instrument, and the loop's whole acceptance rule rests on
 the constant it produces.
 
+## The check does this part
+
+`eval.py accept` applies the per-case half of all this by itself. It looks for
+a second run of the baseline: another complete run with the baseline's exact
+pins, the model's included. Two nights with no edit between them are one, so a
+set that runs every night usually has it for nothing. `--aa <run>` names one,
+and `--aa none` uses none.
+
+A case whose verdict differs between those two runs is **unstable**. Then:
+
+- An unstable failure is not a default target, and a named one is not required
+  to pass. It may pass tomorrow with nothing changed, so passing after the
+  edit shows nothing.
+- A regression on an unstable case does not fail the edit. It is listed.
+- An edit whose only targets are unstable is not accepted: there is nothing to
+  see it fix.
+
+With no second run the check prints `noise: NOT MEASURED` and every case
+counts, which is the old behaviour: stricter on regressions, and open to a fix
+that is really a coin landing the other way. This is why the first thing to do
+on a new set, or after any change to the judge or the answerer, is to run the
+baseline twice.
+
+The flip-count table above is still yours to read for a broad change. The
+check does not apply it.
+
 ## What CALIBRATION.md holds
 
 The file lives with the set, beside `cases.jsonl`, and holds one block per

@@ -78,13 +78,36 @@ def read_json(path: pathlib.Path) -> dict[str, Any]:
         return {}
 
 
-def quality_number(run: pathlib.Path) -> dict[str, Any]:
+def by_split(run: pathlib.Path, set_dir: pathlib.Path | None) -> dict[str, dict[str, Any]]:
+    """The pass rate on each split. When the set has a `test` split, that is
+    the number to quote: no edit was chosen or accepted on those cases, so it
+    is the one rate the loop has not been tuned against."""
+    from flip_table import verdicts
+    from ledger import read_jsonl
+    if set_dir is None or not (run / "events.jsonl").is_file():
+        return {}
+    split = {c.get("qid"): c.get("split") or "dev"
+             for c in read_jsonl(set_dir / "cases.jsonl")}
+    out: dict[str, dict[str, Any]] = {}
+    for q, v in verdicts(run).items():
+        if v["passed"] is None:
+            continue
+        s = out.setdefault(split.get(q, "dev"), {"passed": 0, "decided": 0})
+        s["decided"] += 1
+        s["passed"] += bool(v["passed"])
+    for s in out.values():
+        s["passRate"] = round(s["passed"] / s["decided"], 4)
+    return dict(sorted(out.items()))
+
+
+def quality_number(run: pathlib.Path, set_dir: pathlib.Path | None = None) -> dict[str, Any]:
     """What a quality routine reports: the pass rate over the cases with a verdict."""
     import run_index
     meta = read_json(run / "run.json")
     passed, decided = run_index.score_of(run)
     return {"passed": passed, "decided": decided,
             "passRate": round(passed / decided, 4) if decided else None,
+            "bySplit": by_split(run, set_dir),
             "truncated": meta.get("truncated") or [],
             "contaminated": meta.get("contaminated") or [],
             "recovered": meta.get("recovered") or [],
@@ -190,13 +213,13 @@ class Routine:
             code = self.do(name, *args)
             if code != 0 and name == "run" and read_json(
                     self.run_dir / "run.json").get("abortReason") == "max_cost":
-                self.result["number"] = quality_number(self.run_dir)
+                self.result["number"] = quality_number(self.run_dir, self.cfg.set_dir)
                 return NO_NUMBER, (f"the run stopped at --max-cost-usd {self.a.max_cost_usd:g} "
                                    f"before every case was answered. No number is recorded")
             if code != 0:
                 return STEP_FAILED, f"stopped at {name} (exit {code}); nothing after it ran"
         status = read_json(self.run_dir / "run.json").get("status")
-        self.result["number"] = quality_number(self.run_dir)
+        self.result["number"] = quality_number(self.run_dir, self.cfg.set_dir)
         if status != "complete":
             # A diagnosis of a run that did not finish reads harness faults as
             # model failures, so it is not made.
@@ -216,10 +239,13 @@ class Routine:
             code = self.do(name, *args)
             if code != 0:
                 return STEP_FAILED, f"stopped at {name} (exit {code}); nothing after it ran"
-        self.result["number"] = quality_number(self.run_dir)      # with the diagnosis cost
+        self.result["number"] = quality_number(self.run_dir, self.cfg.set_dir)      # with the diagnosis cost
         self.share()
         n = self.result["number"]
         said = f"{n['passed']} of {n['decided']} decided cases passed"
+        if "test" in n["bySplit"]:
+            t = n["bySplit"]["test"]
+            said += f" ({t['passed']} of {t['decided']} on the test split, the number to quote)"
         if capped:
             return NEEDS_A_LOOK, (f"{said}. The run and its judging cost ${spent:.2f}, at or "
                                   f"over --max-cost-usd {self.a.max_cost_usd:g}, so it was not "
