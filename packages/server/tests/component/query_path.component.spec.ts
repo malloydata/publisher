@@ -838,9 +838,9 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          expect(stale).toBeDefined();
          expect(stale).not.toContain("built_daily_sentinel");
          // Not over-corrected: a table within its window is still previewed.
-         expect(await preview("run: by_region -> { group_by: region }")).toContain(
-            "built_by_region",
-         );
+         expect(
+            await preview("run: by_region -> { group_by: region }"),
+         ).toContain("built_by_region");
       }, 60_000);
    }
 });
