@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — In development: `#@ persist` on a view
+
+With `PUBLISHER_MATERIALIZE` on, `#@ persist` on a view stores the view's result and answers a query from it only when the query calls that view exactly (`run: src -> view`) or starts from it (`run: src -> view -> { … }`). Refinements, nests, hand-written look-alikes and calls on an extending source are answered live; the path report lists the view's table as `kind: "view"` with why it was skipped. A view that reads a given or the current time, nests while stored with `storage=`, or sits on a gated source whose gate fields it does not group by is not built, with a `persist-view-not-built` package warning. A gated source's view is served only with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on, the gate grafted on the stored result. Off (the default), nothing changes. See docs/materialization.md, "Persisted views".
+
 ## [Unreleased] — In development: `#@ -persist` and `#@ preaggregate` are deprecated in materialization v2, with a migration recipe
 
 Materialization v2 deprecates two v1 forms. `#@ -persist` has no v2 form, because a materialized source serves every reader. `#@ preaggregate` is renamed `#(preaggregate)`, which phase 4 builds. Both follow the Publisher v1 plan's rule for a deprecated form: a package warning through 0.x, refused at 1.0.0, and the reader removed in 1.1. `#@ persist` itself is not deprecated, and moving to `#(materialize)` is optional.

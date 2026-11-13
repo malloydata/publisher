@@ -654,7 +654,7 @@ export function recordStorageServeRouting(
  * `run_failed` is a chosen variant whose run failed and fell back live.
  */
 export function recordQueryVariantRouting(
-   variant: "served" | "storage" | "rollup",
+   variant: "view" | "served" | "storage" | "rollup",
    outcome: "used" | "skipped",
    reason:
       | "none"

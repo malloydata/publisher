@@ -8,9 +8,12 @@ import {
    declaredBaseName,
    dropDimensions,
    dropJoinDefinition,
+   dropRenames,
    rerootDeclaration,
    rewriteDimensions,
    SERVED_COPY_FLAG,
+   storedMalloyType,
+   storedTypeText,
    typeDeclaration,
    type Reroot,
 } from "./served_copy";
@@ -188,6 +191,40 @@ describe("typeDeclaration", () => {
    });
 });
 
+describe("storedTypeText", () => {
+   it("writes a persisted nest's list of structs as Malloy's record array", () => {
+      expect(storedTypeText("STRUCT(status VARCHAR, n BIGINT)[]")).toBe(
+         "{ status::string, n::number }[]",
+      );
+      expect(
+         storedTypeText('STRUCT("line total" DOUBLE, "select" VARCHAR)[]'),
+      ).toBe("{ `line total`::number, `select`::string }[]");
+      expect(storedTypeText("STRUCT(a STRUCT(b INTEGER)[])[]")).toBe(
+         "{ a::{ b::number }[] }[]",
+      );
+      expect(storedTypeText("STRUCT(d DECIMAL(10,2))")).toBe("{ d::number }");
+      expect(storedTypeText("VARCHAR[]")).toBe("string[]");
+   });
+
+   it("keeps the serve shape's scalar mapping, and its fallback for what it cannot read", () => {
+      expect(storedTypeText("DECIMAL(18,2)")).toBe("number");
+      expect(storedTypeText("TIMESTAMP WITH TIME ZONE")).toBe("timestamp");
+      expect(storedTypeText("MAP(VARCHAR, INTEGER)")).toBe("json");
+      expect(storedTypeText("STRUCT(a VARCHAR")).toBe("json");
+   });
+
+   it("storedMalloyType: undefined for what the type: could only call json", () => {
+      // A nest built from Postgres or Snowflake lands as JSON: the source is
+      // declined on its own rather than failing the whole model's copy.
+      expect(storedMalloyType("JSON")).toBeUndefined();
+      expect(storedMalloyType("MAP(VARCHAR, INTEGER)")).toBeUndefined();
+      expect(storedMalloyType("STRUCT(a VARCHAR")).toBeUndefined();
+      expect(storedMalloyType("BLOB")).toBeUndefined();
+      expect(storedMalloyType("STRUCT(s VARCHAR)[]")).toBe("{ s::string }[]");
+      expect(storedMalloyType("BIGINT")).toBe("number");
+   });
+});
+
 describe("buildServedCopy", () => {
    const file = `##! experimental { persistence }
 source: ev is duckdb.table('ev')
@@ -281,6 +318,36 @@ source: deals is all_deals extend {
             reason: "not_query_shaped",
          },
       ]);
+   });
+
+   it("re-roots a connection's SQL or table under an extend run, which its table holds as written", () => {
+      const raw = `#@ persist name="raw" storage="lake"
+source: raw is duckdb.sql("""SELECT region, amount FROM t""") extend {
+  where: amount > 0
+  measure: total is amount.sum()
+}
+`;
+      const copy = buildServedCopy([reroot(raw, "raw")], () => raw);
+      expect(copy.refused).toEqual([]);
+      expect(copy.files.get("file:///m.malloy")).toContain(
+         "source: raw is __publisher_storage_t_0.virtual('h1')::raw__served extend {\n  where: amount > 0\n  measure: total is amount.sum()\n}",
+      );
+      expect(
+         declarationSpans("t is duckdb.table('t') extend { }")
+            ?.connectionRooted,
+      ).toBe(true);
+      // A named base, or a method call that is not a root, is not one.
+      expect(declarationSpans("t is base extend { }")?.connectionRooted).toBe(
+         false,
+      );
+      expect(
+         declarationSpans("t is duckdb.table('t') -> { select: * }")
+            ?.connectionRooted,
+      ).toBe(false);
+      expect(
+         declarationSpans("t is duckdb.virtual('t')::x extend { }")
+            ?.connectionRooted,
+      ).toBe(false);
    });
 
    it("refuses every re-root of a file it cannot read", () => {
@@ -401,6 +468,38 @@ source: east is orders extend {
       expect(copy.files.get("file:///m.malloy")).toContain(
          "source: east is __publisher_storage_t_0.virtual('h1')::east__served extend {\n  where: region = 'east'\n}",
       );
+   });
+
+   it("drops a rename whose new name the table stores, since the table holds the field under it", () => {
+      expect(
+         rerootDeclaration(
+            "daily_r is orders -> {\n  group_by: area is region, order_date\n} extend {\n  rename: order_day is order_date\n  measure: grand is total.sum()\n}",
+            {
+               ...target,
+               storedDimensions: [],
+               columns: [
+                  { name: "area", type: "VARCHAR" },
+                  { name: "order_day", type: "DATE" },
+               ],
+            },
+         ),
+      ).toBe(
+         "daily_r is x.virtual('h')::east__served extend {\n  measure: grand is total.sum()\n}",
+      );
+      // Only the renames to a stored name go; a #@ persist re-root keeps all.
+      const out = dropRenames(
+         "extend {\n  rename: a is x, b is y\n  dimension: c is 1\n}",
+         new Set(["a"]),
+      );
+      expect(out?.text).toBe(
+         "extend {\n  rename: b is y\n  dimension: c is 1\n}",
+      );
+      expect(
+         rerootDeclaration(
+            "d is q -> { group_by: x } extend {\n  rename: y is x\n}",
+            { ...target, columns: [{ name: "x", type: "VARCHAR" }] },
+         ),
+      ).toBe("d is x.virtual('h')::east__served extend {\n  rename: y is x\n}");
    });
 
    it("names a declaration's base when it is a bare source name", () => {

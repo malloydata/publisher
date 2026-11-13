@@ -139,7 +139,7 @@ interface TableState {
     * since its only other name is a physical storage path.
     */
    tableId?: string;
-   kind: "materialized" | "rollup";
+   kind: "materialized" | "rollup" | "view";
    tier: "storage" | "colocated";
    /** Built and bound, but withheld by its freshness window. */
    stale: boolean;
@@ -206,6 +206,17 @@ export interface QueryPathInput {
     * say which rollup answered; the compiled query can.
     */
    rollupMember?: string;
+   /**
+    * The table of the persisted view the query calls (`#@ persist` on a view,
+    * P14), when it calls one: tried before every other table (R1).
+    */
+   view?: {
+      tableId?: string;
+      tier: "storage" | "colocated";
+      built: boolean;
+      stale: boolean;
+      dataAsOf?: string;
+   };
    /** The `sourceID` chain of every source in the model, for `notConsidered`. */
    chains: ReadonlyMap<string, readonly string[]>;
    /**
@@ -277,6 +288,47 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
       tierOf.set(candidate, t.tier);
       considered.push(candidate);
    };
+
+   // A persisted view's table, first (R1). When it answered, nothing after
+   // it was tried, so nothing after it is named.
+   const viewDecision = decided.get("view");
+   if (input.view) {
+      const t: TableState = {
+         key: `persisted-view/${input.view.tableId ?? ""}`,
+         ...(input.view.tableId ? { tableId: input.view.tableId } : {}),
+         kind: "view",
+         tier: input.view.tier,
+         stale: input.view.stale,
+         unbuilt: !input.view.built,
+         ...(input.view.dataAsOf ? { dataAsOf: input.view.dataAsOf } : {}),
+      };
+      if (viewDecision?.outcome === "used") {
+         if (input.runFailed) {
+            skip(t, "RUN_FAILED");
+         } else {
+            markUsed(t);
+            return {
+               query: input.shape,
+               servedBy,
+               considered,
+               notConsidered: nearbyTables(
+                  input,
+                  onChain,
+                  new Set([t.tableId]),
+               ),
+               warnings: [],
+            };
+         }
+      } else if (!input.view.built) {
+         skip(t, "NOT_BUILT");
+      } else if (input.view.stale) {
+         skip(t, "STALE");
+      } else if (viewDecision?.reason === "row_level_gate") {
+         skip(t, "CONTRACT");
+      } else if (viewDecision && viewDecision.reason !== "not_applicable") {
+         skip(t, skipReasonOf(viewDecision), viewDecision.callerDetail);
+      }
+   }
 
    // `storage=`: tried only when the tier was a candidate at all (mode on,
    // bindings and a destination present).
@@ -568,6 +620,9 @@ export function verdictWarningMessage(reason: string): string {
 export const VARIANT_SKIP_CODES = {
    rollup_missing_field: "MISSING_FIELD",
    rollup_count_semantics: "COUNT_SEMANTICS",
+   view_missing_field: "MISSING_FIELD",
+   view_not_built: "NOT_BUILT",
+   view_stale: "STALE",
    served_copy_time_zone: "TIME_ZONE",
    served_copy_cross_connection: "CROSS_CONNECTION",
    served_copy_not_served: "WARNED",
