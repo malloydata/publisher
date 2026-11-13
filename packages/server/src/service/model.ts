@@ -2766,9 +2766,15 @@ export class Model {
       packagePath: string,
       malloyConfig: ModelConnectionInput,
       materializePlans: Readonly<Record<string, MaterializePlan>> = {},
+      declarationOf?: (sourceID: string) => unknown,
    ): void {
       this.materializeSourceIDs = new Set(Object.keys(materializePlans));
-      this.servedCopy.setContext(packagePath, malloyConfig, materializePlans);
+      this.servedCopy.setContext(
+         packagePath,
+         malloyConfig,
+         materializePlans,
+         declarationOf,
+      );
    }
 
    /**

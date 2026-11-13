@@ -34,9 +34,19 @@ interface DeclarationRange {
  * `extend { … }` blocks begins, if any. Undefined when no top-level `is`
  * follows the name.
  */
-export function declarationSpans(
-   declaration: string,
-): { nameEnd: number; extendStart?: number; queryShaped: boolean } | undefined {
+export function declarationSpans(declaration: string):
+   | {
+        nameEnd: number;
+        extendStart?: number;
+        queryShaped: boolean;
+        /**
+         * The base is a connection's table or SQL (`conn.table('…')`,
+         * `conn.sql("…")`) and nothing else: no source of the model's is
+         * under it.
+         */
+        connectionRooted: boolean;
+     }
+   | undefined {
    const tokens = topLevelTokens(declaration);
    if (!tokens) return undefined;
    const isIndex = tokens.findIndex(
@@ -74,10 +84,24 @@ export function declarationSpans(
          tokens[k + 1]?.text === ">" &&
          tokens[k + 1].start === t.end,
    );
+   // `<connection> . table|sql ( … )`: the parenthesised argument is not a
+   // top-level token, so exactly three tokens stand between `is` and the run.
+   const base = tokens.filter(
+      (t, k) => k > isIndex && t.end <= baseEnd && t.kind !== "close",
+   );
+   const connectionRooted =
+      !queryShaped &&
+      base.length === 3 &&
+      base[0].kind === "word" &&
+      base[1].text === "." &&
+      base[1].start === base[0].end &&
+      base[2].kind === "word" &&
+      (base[2].text === "table" || base[2].text === "sql");
    return {
       nameEnd,
       ...(extendStart !== undefined ? { extendStart } : {}),
       queryShaped,
+      connectionRooted,
    };
 }
 
