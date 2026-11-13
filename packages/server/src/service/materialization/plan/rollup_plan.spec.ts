@@ -9,9 +9,11 @@ import {
    generateRollupBuildFile,
    planModelRollups,
    rollupName,
+   rollupsReadUnderGates,
    type RollupRefusal,
    type RollupVariantPlan,
 } from "./rollup_plan";
+import { emitMeasureExpr } from "./rollup_measure_grammar";
 import { SourceMap } from "./source_map";
 
 const connection = new DuckDBConnection("duckdb", ":memory:");
@@ -51,12 +53,14 @@ async function compile(files: Record<string, string>): Promise<unknown> {
 async function plan(
    files: Record<string, string>,
    declaredIn?: string,
+   readUnderGates?: boolean,
 ): Promise<{ plans: RollupVariantPlan[]; refused: RollupRefusal[] }> {
    const modelDef = await compile(files);
    return planModelRollups(
       SourceMap.of(modelDef),
       {
          packageRelativeSourceID: (id) => id.replace("file:///pkg/", ""),
+         ...(readUnderGates !== undefined ? { readUnderGates } : {}),
       },
       declaredIn ? (url) => url === `file:///pkg/${declaredIn}` : undefined,
    );
@@ -243,10 +247,8 @@ source: orders is ${ROWS} extend {
    });
 });
 
-describe("#(preaggregate) access filters (A4)", () => {
-   it("warns and leaves out a rollup whose grain drops the gate's field", async () => {
-      const { plans, refused } = await plan({
-         "orders.malloy": `##! experimental.givens
+const GATED = {
+   "orders.malloy": `##! experimental.givens
 given: REGION :: string is 'x'
 #(access_filter) region = $REGION
 source: orders is ${ROWS} extend {
@@ -254,7 +256,12 @@ source: orders is ${ROWS} extend {
   #(preaggregate) grain=["category", "region"]
   measure: total is amount.sum()
 }`,
-      });
+};
+
+describe("#(preaggregate) access filters (A4)", () => {
+   it("warns and leaves out a rollup whose grain drops the gate's field", async () => {
+      // As planned once a gated entry point can read a rollup (row 1).
+      const { plans, refused } = await plan(GATED, undefined, true);
       expect(plans.map((p) => p.grainDimensions)).toEqual([
          ["category", "region"],
       ]);
@@ -264,10 +271,60 @@ source: orders is ${ROWS} extend {
    });
 });
 
-describe("#(preaggregate) access filters through a join (A4, fail closed)", () => {
-   it("leaves out every rollup when the gate reads through a join, which no grain keeps", async () => {
+describe("#(preaggregate) over a gated source, while gated entry points skip rollups (row 21)", () => {
+   it("plans no rollup over a gated source, even one whose grain keeps the gate's field", async () => {
+      expect(rollupsReadUnderGates()).toBe(false);
+      const { plans, refused } = await plan(GATED);
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => [r.tier, r.code])).toEqual([
+         ["unservable", "preaggregate-access-filter"],
+         ["unservable", "preaggregate-access-filter"],
+      ]);
+      expect(refused[0]?.message).toContain(
+         "a query on a gated source is not read from a rollup yet",
+      );
+   });
+
+   it("plans none under an #(authorize) gate that reads no field", async () => {
       const { plans, refused } = await plan({
          "orders.malloy": `##! experimental.givens
+given: ROLE :: string is 'viewer'
+#(authorize) 'admin' = $ROLE
+source: orders is ${ROWS} extend {
+  #(preaggregate) grain=["category"]
+  measure: total is amount.sum()
+}`,
+      });
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => r.code)).toEqual([
+         "preaggregate-access-filter",
+      ]);
+   });
+
+   it("plans none over an extension that inherits the gate, and still plans the ungated", async () => {
+      const { plans } = await plan({
+         "orders.malloy": `##! experimental.givens
+given: REGION :: string is 'x'
+#(access_filter) region = $REGION
+source: gated is ${ROWS}
+source: orders is gated extend {
+  #(preaggregate) grain=["category", "region"]
+  measure: total is amount.sum()
+}
+source: open is ${ROWS} extend {
+  #(preaggregate) grain=["category"]
+  measure: total is amount.sum()
+}`,
+      });
+      expect(plans.map((p) => p.baseSourceName)).toEqual(["open"]);
+   });
+});
+
+describe("#(preaggregate) access filters through a join (A4, fail closed)", () => {
+   it("leaves out every rollup when the gate reads through a join, which no grain keeps", async () => {
+      const { plans, refused } = await plan(
+         {
+            "orders.malloy": `##! experimental.givens
 given: FLEET :: number is 5
 source: carriers is ${CARRIERS} extend { primary_key: code }
 #(access_filter) carriers.fleet = $FLEET
@@ -276,10 +333,61 @@ source: orders is ${ROWS} extend {
   #(preaggregate) grain=["category", "carrier"]
   measure: total is amount.sum()
 }`,
-      });
+         },
+         undefined,
+         true,
+      );
       expect(plans).toEqual([]);
       expect(refused.map((r) => [r.tier, r.code])).toEqual([
          ["unservable", "preaggregate-access-filter"],
+      ]);
+   });
+});
+
+describe("#(preaggregate) join-level min and max (row 23)", () => {
+   const MODEL = (grain: string) => ({
+      "orders.malloy": `source: carriers is ${CARRIERS} extend { primary_key: code }
+source: orders is ${ROWS} extend {
+  join_one: carriers with carrier
+  #(preaggregate) grain=${grain}
+  measure: top_fleet is carriers.fleet.max()
+  #(preaggregate) grain=${grain}
+  measure: low_fleet is carriers.fleet.min()
+}`,
+   });
+
+   it("stores carriers.x.max() and .min() with the join's key in the grain, merged by max and min, with no fan-out", async () => {
+      const { plans, refused } = await plan(MODEL(`["carrier", "category"]`));
+      expect(refused).toEqual([]);
+      expect(
+         plans[0]?.rollupMeasures.map((m) => [
+            m.name,
+            m.partials.map((p) => emitMeasureExpr(p.leaf.expr)),
+            emitMeasureExpr(m.merged),
+            m.fanOutDimensions,
+         ]),
+      ).toEqual([
+         [
+            "low_fleet",
+            ["carriers.fleet.min()"],
+            "low_fleet__partial.min()",
+            [],
+         ],
+         [
+            "top_fleet",
+            ["carriers.fleet.max()"],
+            "top_fleet__partial.max()",
+            [],
+         ],
+      ]);
+   });
+
+   it("still serves live a join-level max whose join key the grain drops", async () => {
+      const { plans, refused } = await plan(MODEL(`["category"]`));
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => r.code)).toEqual([
+         "preaggregate-join-level",
+         "preaggregate-join-level",
       ]);
    });
 });

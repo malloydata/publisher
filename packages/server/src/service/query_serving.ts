@@ -70,6 +70,7 @@ import {
    RollupSkip,
    type RollupVariantServe,
 } from "./materialization/serve/rollup_variants";
+import { rollupsReadUnderGates } from "./materialization/plan/rollup_plan";
 import {
    type PersistedViewServe,
    type ViewTable,
@@ -568,6 +569,10 @@ export function routeCandidates(
       candidates.push({
          kind: "rollup",
          applicable: true,
+         // Not yet past an entry-point gate (CONTRACT, known limitation 1):
+         // the one switch the planner also reads, so a rollup over a gated
+         // source is neither built nor read until it flips.
+         keepsContracts: rollupsReadUnderGates(),
          attempt: async () => {
             const answer = await host.rollupVariants.attempt({
                queryString,

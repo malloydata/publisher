@@ -12,6 +12,8 @@ import {
    aggregateOutsideJoin,
    aggregateWrittenThroughJoin,
    joinGrainAggregatePaths,
+   namedViewsRead,
+   readsRawSql,
    preparedQueryView,
    probeFilterList,
    queryFieldUsagePaths,
@@ -153,6 +155,62 @@ describe("joinGrainAggregatePaths", () => {
             ]),
          ).unreadable,
       ).toBe(true);
+   });
+});
+
+describe("namedViewsRead", () => {
+   const stage = (...queryFields: unknown[]) => [
+      { type: "reduce", queryFields },
+   ];
+   const struct = {
+      fields: [
+         { type: "string", name: "c" },
+         {
+            type: "turtle",
+            name: "leaf",
+            pipeline: stage({ type: "fieldref", path: ["c"] }),
+         },
+         {
+            type: "turtle",
+            name: "outer",
+            pipeline: stage({ type: "turtle", name: "leaf", pipeline: [] }),
+         },
+         {
+            type: "turtle",
+            name: "loop",
+            pipeline: stage({ type: "fieldref", path: ["loop"] }),
+         },
+      ],
+   };
+   const view = (...queryFields: unknown[]) =>
+      preparedQueryView({ _query: { pipeline: stage(...queryFields) } });
+
+   it("reads the called view, then each nested one, each after what it nests", () => {
+      expect(namedViewsRead(view(), struct, "outer")).toEqual([
+         "leaf",
+         "outer",
+      ]);
+   });
+
+   it("reads a nest by name, by reference or expanded, and not a field or an unknown name", () => {
+      expect(
+         namedViewsRead(
+            view(
+               { type: "fieldref", path: ["c"] },
+               { type: "fieldref", path: ["leaf"] },
+               {
+                  type: "turtle",
+                  name: "mine",
+                  pipeline: stage({ type: "fieldref", path: ["outer"] }),
+               },
+            ),
+            struct,
+         ),
+      ).toEqual(["leaf", "outer"]);
+   });
+
+   it("reads a view that nests itself once", () => {
+      expect(namedViewsRead(view(), struct, "loop")).toEqual(["loop"]);
    });
 });
 
@@ -446,5 +504,25 @@ describe("join-to-rollup readers (A7)", () => {
             "crew",
          ),
       ).toBeUndefined();
+   });
+});
+
+describe("readsRawSql", () => {
+   it("finds an sql_* expression in a stage's filters or fields, not in its output shape", () => {
+      const raw = { node: "genericSQLExpr", kids: { args: [] }, src: ["1"] };
+      expect(readsRawSql([{ type: "reduce", filterList: [{ e: raw }] }])).toBe(
+         true,
+      );
+      expect(readsRawSql({ node: "and", kids: { left: raw } })).toBe(true);
+      expect(
+         readsRawSql([
+            {
+               type: "reduce",
+               queryFields: [{ type: "fieldref", path: ["a"] }],
+               outputStruct: { fields: [{ e: raw }] },
+            },
+         ]),
+      ).toBe(false);
+      expect(readsRawSql(undefined)).toBe(false);
    });
 });
