@@ -1041,10 +1041,13 @@ describe("executeInstructedBuild", () => {
       );
    }
 
-   it("warns, and still builds, when two definitions collide on one table", async () => {
-      // Warn-only by default, matching the load/publish collision gate: a package
-      // published before that check existed must not start failing its rebuilds.
+   it("warns, and still builds, when two definitions collide on one table and PERSIST_COLLISION_ENFORCE=false", async () => {
+      // The opt-out, matching the load/publish collision gate: a deployment
+      // that keeps a package with a latent collision keeps its rebuilds.
       const warn = sinon.stub(logger, "warn");
+      const { restore } = installSettings({
+         env: { PERSIST_COLLISION_ENFORCE: "false" },
+      });
       try {
          const runSQL = sinon.stub().resolves();
          await collidingBuild(runSQL);
@@ -1062,6 +1065,7 @@ describe("executeInstructedBuild", () => {
                ),
          ).toBe(true);
       } finally {
+         restore();
          warn.restore();
       }
    });
@@ -1140,6 +1144,9 @@ describe("executeInstructedBuild", () => {
       const harness = await startMetricsHarness();
       resetMaterializationTelemetryForTesting();
       const warn = sinon.stub(logger, "warn");
+      const { restore } = installSettings({
+         env: { PERSIST_COLLISION_ENFORCE: "false" },
+      });
       try {
          await collidingBuild(sinon.stub().resolves());
          expect(
@@ -1155,13 +1162,14 @@ describe("executeInstructedBuild", () => {
             ),
          ).toBe(0);
       } finally {
+         restore();
          warn.restore();
          resetMaterializationTelemetryForTesting();
          await harness.shutdown();
       }
    });
 
-   it("refuses that collision under PERSIST_COLLISION_ENFORCE, before any write", async () => {
+   it("refuses that collision by default (PERSIST_COLLISION_ENFORCE), before any write", async () => {
       // The refusal is the whole point of the flag, so it has to land before the
       // first CTAS: a mid-loop throw would leave the pair's first table already
       // replaced, and nothing puts the overwritten rows back — the failure path

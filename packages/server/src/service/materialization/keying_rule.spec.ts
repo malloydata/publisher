@@ -89,7 +89,7 @@ const ALLOWED: Record<string, Record<string, string>> = {
    "serve/serve_verdict.ts": {
       "const storageBound = facts.boundStorageNames.has(source.name);":
          "phase 3: storage bindings are emitted by name; migrate verdict facts to sourceID with the catalog",
-      'if (origin === "persist" && !facts.servedStorageNames.has(source.name)) {':
+      "!facts.servedStorageNames.has(source.name)":
          "phase 3: storage bindings are emitted by name; migrate verdict facts to sourceID with the catalog",
       "!facts.freshStorageNames.has(source.name)":
          "phase 3: storage bindings are emitted by name; migrate verdict facts to sourceID with the catalog",

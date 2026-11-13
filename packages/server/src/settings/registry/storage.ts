@@ -149,7 +149,7 @@ export const storage = [
       default: false,
       description:
          "Read #(materialize) and build its generated #@ persist sources (materialization v2, in development).",
-      notes: "Materialization v2's `#(materialize)` front end, still being built (phase 3). On, a source annotated `#(materialize)` gets a generated build source, a query-shaped `#@ persist` over the source in a companion model the package never shows, and the build plan builds it under the author's source name: the plan, a name-scoped run (`sourceNames` takes the author's name), the manifest, warnings and the path report never name the generated source. With `PERSIST_STORAGE_MODE=on`, a built `storage=` source is also served from its **served copy**: the author's own files, held in memory, with the source re-rooted on its stored table and each computed dimension read as the stored column of its own name (its `#(doc)` and other annotations kept on the field), so extensions, views, joins and importing files are the author's text unchanged; a query the served copy cannot answer falls back to today's serve path, then live. The served copy also re-roots a query-shaped `#@ persist storage=` source. A served copy that does not compile is a `served-copy-not-served` package warning. Off, `#(materialize)` is ignored and the build plan is exactly what it was. Read at startup. Leave it off outside development.",
+      notes: "Materialization v2's `#(materialize)` front end, still being built (phase 3). On, a source annotated `#(materialize)` gets a generated build source, a query-shaped `#@ persist` over the source in a companion model the package never shows, and the build plan builds it under the author's source name: the plan, a name-scoped run (`sourceNames` takes the author's name), the manifest, warnings and the path report never name the generated source. With `PERSIST_STORAGE_MODE=on`, a built `storage=` source is also served from its **served copy**: the author's own files, held in memory, with the source re-rooted on its stored table and each computed dimension read as the stored column of its own name (its `#(doc)` and other annotations kept on the field), so extensions, views, joins and importing files are the author's text unchanged; a query the served copy cannot answer falls back to today's serve path, then live. The served copy also re-roots a query-shaped `#@ persist storage=` source. A served copy that does not compile is a `served-copy-not-served` package warning. On, a package that declares v1's `#@ -persist` also gets a `deprecated-persist-opt-out` warning naming the v2 rewrite ([materialization-migration.md](materialization-migration.md)); it still works as before. `#@ preaggregate` gets no warning yet, because `#(preaggregate)` is not read until phase 4. Off, `#(materialize)` is ignored and the build plan is exactly what it was. Read at startup. Leave it off outside development.",
       aliases: { env: ["PUBLISHER_MATERIALIZE"] },
    }),
    setting({
@@ -164,10 +164,10 @@ export const storage = [
    setting({
       key: "persist.collisionEnforcementEnabled",
       type: boolean(),
-      default: false,
+      default: true,
       description:
          "Refuse a publish where two persist sources resolve to the same table.",
-      notes: "Set to `true` to refuse a publish in which two persist sources of one package resolve to the same table in the same destination. Off, a collision is a warning; loading a package only ever warns.",
+      notes: "On by default: a publish in which two different persist sources of one package resolve to the same table in the same destination is refused, as is a build of such a package, before anything is written. Give each source a distinct `name=` to fix it. Set to `false` to opt out, which turns the refusal into a warning; loading a package only ever warns. Either way neither source is served from the shared table, which holds whichever build ran last: queries on both are answered live until each has its own `name=`. A `#(materialize)` source on another source's table is never built, whatever this says (`materialize-not-built`).",
       aliases: { env: ["PERSIST_COLLISION_ENFORCE"] },
    }),
    setting({

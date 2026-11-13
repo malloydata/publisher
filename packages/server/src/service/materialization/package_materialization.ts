@@ -77,9 +77,11 @@ import {
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
 import { storageTablePath } from "./run/storage_table_path";
+import { persistTableTarget } from "./plan/eligibility_collect";
+import { quoteManifestTablePath } from "../quoting";
 import { structsReachedFrom } from "../governance/ir/source_graph";
 import { CLASSIFICATION_COVERAGE } from "../classification";
-import { reachableSourceIDs } from "./plan/source_map";
+import { reachableSourceIDs, SourceMap } from "./plan/source_map";
 import type {
    BuildManifest,
    BuildPlan,
@@ -586,6 +588,9 @@ export class PackageMaterialization {
          // The deployment facts are read live, not replaced wholesale, so
          // they key the memo by what they answer for this plan.
          this.deploymentSignature(),
+         // So is each model's served copy, which compiles after the bind and
+         // is dropped on invalidation; a `#(materialize)` verdict reads it.
+         this.servedCopyState(models).signature,
       ];
       const cached = this.liveVerdictCache;
       if (cached && cached.key.every((part, i) => part === key[i])) {
@@ -703,9 +708,21 @@ export class PackageMaterialization {
       const eligibleEntityIds = eligibility?.eligibleEntityIds;
       const allowed: FreshnessManifest = {};
       let dropped = 0;
+      const dialects = this.dialectsByEntityId();
       for (const [sourceEntityId, entry] of Object.entries(entries)) {
          if (eligibleEntityIds?.has(sourceEntityId)) {
-            allowed[sourceEntityId] = entry;
+            // Malloy pastes `tableName` into `FROM` verbatim, so a table named
+            // by a reserved word (`name="order"`) or needing case preserved
+            // reaches the warehouse only quoted, as the builder CREATEd it and
+            // as `Package.reloadAllModels` binds it. The dialect is the plan's
+            // for this content address; a quoted name passes through.
+            const dialect = dialects.get(sourceEntityId);
+            allowed[sourceEntityId] = dialect
+               ? {
+                    ...entry,
+                    tableName: quoteManifestTablePath(entry.tableName, dialect),
+                 }
+               : entry;
             continue;
          }
          dropped++;
@@ -734,6 +751,17 @@ export class PackageMaterialization {
          );
       }
       this.recordManifestBinding(allowed);
+   }
+
+   /** Each planned source's dialect, by its content address. */
+   private dialectsByEntityId(): Map<string, string> {
+      const out = new Map<string, string>();
+      for (const source of Object.values(this.buildPlan?.sources ?? {})) {
+         if (source.sourceEntityId && source.dialect) {
+            out.set(source.sourceEntityId, source.dialect);
+         }
+      }
+      return out;
    }
 
    /**
@@ -860,6 +888,21 @@ export class PackageMaterialization {
       }
    }
 
+   /**
+    * A declaration's compiled definition, from the package model that holds it
+    * as a node of its own (the model that declares or imports it). A model
+    * that reaches a source only through a join (an index importing the file
+    * that joins it, #6643) holds the join, not the declaration, so its served
+    * copy finds the declaration here.
+    */
+   private declarationOf(sourceID: string): unknown {
+      for (const model of this.owner.models().values()) {
+         const def = SourceMap.of(model.getModelDef?.()).node(sourceID)?.def;
+         if (def) return def;
+      }
+      return undefined;
+   }
+
    /** Push the current storage serve bindings onto every loaded model. */
    pushStorageServeBindingsToModels(): void {
       for (const model of this.owner.models().values()) {
@@ -868,6 +911,7 @@ export class PackageMaterialization {
             this.owner.packagePath(),
             this.owner.malloyConfig(),
             this.materializePlans,
+            (sourceID) => this.declarationOf(sourceID),
          );
          model.setServeBindings(this.storageServeBindings);
          // Compiled at bind so a served copy that does not compile is a
@@ -1359,12 +1403,23 @@ export class PackageMaterialization {
    ): ServeVerdict[] {
       const models = this.owner.models();
       const index = this.entryPointIndex(models);
+      const persistedViews = new Map<
+         string,
+         { sourceID: string; sourceName: string; viewName: string }
+      >();
+      for (const model of models.values()) {
+         for (const v of model.persistedViewBuilds?.() ?? []) {
+            persistedViews.set(v.buildSourceID, v);
+         }
+      }
       const servedStorageNames = new Set<string>();
       for (const model of models.values()) {
          for (const name of model.servedStorageSourceNames?.() ?? []) {
             servedStorageNames.add(name);
          }
       }
+      const servedCopy = this.servedCopyState(models);
+      const materializeIDs = new Set(Object.keys(this.materializePlans));
       const now = new Date();
       const freshStorageNames = new Set(
          this.storageServeBindings
@@ -1415,6 +1470,14 @@ export class PackageMaterialization {
          servedStorageNames,
          freshStorageNames,
          rollupsOverStoredBase: this.rollupsOverStoredBase,
+         materialize: (sourceID) => {
+            if (!materializeIDs.has(sourceID)) return undefined;
+            if (!servedCopy.on) return "off";
+            return servedCopy.ids.has(sourceID) || servedCopy.pending
+               ? "serves"
+               : "not_served";
+         },
+         persistedViewOf: (sourceID) => persistedViews.get(sourceID),
          views,
          destinationConfigured: (name) => this.destinationConfigured(name),
          connectionCanHoldTable: (name) =>
@@ -1433,6 +1496,34 @@ export class PackageMaterialization {
     * the {@link liveVerdictsByTable} memo's key part for facts the
     * environment can change under a loaded package.
     */
+   /**
+    * What the models' served copies answer from storage, by author
+    * `sourceID`: every model's, since a source is re-rooted in each model that
+    * reads it. `on` when any model's served copy is enabled, `pending` when one
+    * has yet to compile, and a `signature` that changes whenever either does.
+    */
+   private servedCopyState(models: ReadonlyMap<string, Model>): {
+      on: boolean;
+      pending: boolean;
+      ids: ReadonlySet<string>;
+      signature: string;
+   } {
+      let on = false;
+      let pending = false;
+      const ids = new Set<string>();
+      for (const model of models.values()) {
+         const reread = model.servedCopySourceIDs?.();
+         if (reread === undefined) continue;
+         on = true;
+         if (reread === "pending") pending = true;
+         else for (const id of reread) ids.add(id);
+      }
+      const signature = on
+         ? `${pending ? "pending" : "compiled"}:${[...ids].sort().join(",")}`
+         : "off";
+      return { on, pending, ids, signature };
+   }
+
    private deploymentSignature(): string {
       if (!this.deploymentFacts) return "";
       const parts: string[] = [];
@@ -1877,9 +1968,11 @@ export class PackageMaterialization {
     * not flagged. The destination comes from the DECLARED annotation, so the
     * storage kill switch never hides a collision.
     *
-    * Warn-only unless `PERSIST_COLLISION_ENFORCE` is set, so packages published
-    * before this check still republish. Cross-version and cross-package
-    * collisions need the host's global view.
+    * A publish refusal unless `PERSIST_COLLISION_ENFORCE=false` opts out, and
+    * a warning at load either way. Either way none of them is served
+    * from the shared table (`sharedTables` in eligibility_collect.ts): it
+    * holds whichever build ran last, so each answers live. Cross-version and
+    * cross-package collisions need the host's global view.
     */
    persistenceCollisionWarnings(): string[] {
       const sources = this.buildPlan?.sources
@@ -1890,14 +1983,16 @@ export class PackageMaterialization {
          { name: string; destination: string; sources: Map<string, string> }
       >();
       for (const source of sources) {
-         const fields = source.annotationFields ?? {};
-         const physicalName = (fields.name || source.name).trim();
-         const storage = fields.storage?.trim();
-         const destination = storage ? storage : source.connectionName;
-         // Verbatim key: names differing only by case or quoting may still fold
-         // to one table on some destinations. Normalizing is dialect-dependent,
-         // so the host's naming is the backstop.
-         const key = `${destination} ${physicalName}`;
+         // The one definition of a collision, shared with the serve refusal.
+         const {
+            key,
+            name: physicalName,
+            destination,
+         } = persistTableTarget(
+            source.annotationFields ?? {},
+            source.name,
+            source.connectionName,
+         );
          const bucket = targets.get(key) ?? {
             name: physicalName,
             destination,
@@ -1922,16 +2017,25 @@ export class PackageMaterialization {
                `"${name}" in destination "${destination}". Distinct sources ` +
                `must not share a physical target — the second build would ` +
                `overwrite the first, and a serve binding or GC drop for one ` +
-               `would affect the other. Give each a distinct #@ persist name=.`,
+               `would affect the other, so none is served from it and queries ` +
+               `on them are answered live. Give each a distinct #@ persist name=.`,
          );
       }
       return warnings;
    }
 
-   /** Collisions as a publish rejection; "" unless `PERSIST_COLLISION_ENFORCE` is set. */
+   /** Collisions as a publish rejection; "" when `PERSIST_COLLISION_ENFORCE=false`. */
    formatPersistenceCollisionRejections(): string {
       if (!getPersistCollisionEnforce()) return "";
-      return this.persistenceCollisionWarnings().join("\n");
+      const collisions = this.persistenceCollisionWarnings();
+      if (collisions.length === 0) return "";
+      // The operator's opt-out, named once, after the author's fix.
+      return [
+         ...collisions,
+         "A deployment that must publish such a package anyway can set " +
+            "PERSIST_COLLISION_ENFORCE=false, which warns instead and serves " +
+            "the colliding sources live.",
+      ].join("\n");
    }
 }
 
@@ -2003,7 +2107,7 @@ function servedCopyProblemMessage(problem: ServedCopyProblem): string {
       case "cross_connection_unbuilt":
          return "This model joins sources from different connections; its served copy compiles once both sides are built into one destination, and serves live until then.";
       case "column_types":
-         return "This source's stored column types differ from the types the model declares, so the served copy leaves it to the serve shape.";
+         return "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it to the serve shape.";
       case "no_declaration":
          return "This source's declaration was not found in the compiled model, so the served copy leaves it to the serve shape.";
       case "range_not_found":
@@ -2014,7 +2118,7 @@ function servedCopyProblemMessage(problem: ServedCopyProblem): string {
       case "pair_not_compiled":
          return "This source's pair table (an inlined join_many) could not be read as the source with its join as a record (its text reads a measure or view of the joined source through the join, which the record does not carry), so the served copy leaves it as written.";
       case "read_terms_not_kept":
-         return "This source filters by a given in a place its stored table cannot keep, so the served copy leaves it as written rather than answer every caller alike.";
+         return "This source filters by a given in a place its stored table cannot keep, or is filtered and reached here only through a join, so the served copy leaves it as written rather than answer every caller alike.";
       case "fields_not_carried":
          return "This source inherits fields (a measure, view or join declared on the source it is built from) that its stored table does not carry, so the served copy leaves it as written.";
       case "cross_connection_join":

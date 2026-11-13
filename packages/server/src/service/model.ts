@@ -38,6 +38,7 @@ import {
 import * as fs from "fs/promises";
 import { createRequire } from "module";
 import * as path from "path";
+import { fileURLToPath } from "url";
 import { components } from "../api";
 import {
    getMaxQueryRows,
@@ -86,6 +87,7 @@ import type { SerializedModel } from "../package_load/protocol";
 import { decodeSerializedModel } from "../package_load/protocol_decode";
 import { BuildManifest } from "./materialization/types";
 import {
+   modelAnnotations,
    ownModelAnnotations,
    ownModelNoteObjects,
    ownModelNotes,
@@ -129,6 +131,10 @@ import {
    type FilterParams,
 } from "./filter";
 import { assertFilterGivensParse, gateGivenSource } from "./given";
+import {
+   deprecatedPersistAnnotations,
+   type DeprecatedPersistAnnotation,
+} from "./deprecated/persist_annotations";
 import { filterPublisherOwnedRenderLogs } from "./report_manifest";
 import {
    docCommentTitleAndDescription,
@@ -136,6 +142,7 @@ import {
    parseRouteTag,
    readAutorun,
    readStartingGivens,
+   routeHasKey,
    tagText,
 } from "./motly";
 import {
@@ -222,6 +229,7 @@ import {
    type ServedCopyProblem,
 } from "./materialization/serve/served_copy_serve";
 import { type ApiQueryPath } from "./materialization/serve/query_path";
+import { PersistedViewServe } from "./materialization/serve/view_variants";
 import { sourceChain } from "./materialization/plan/source_map";
 import type { ViewServeVerdict } from "./materialization/serve/serve_verdict";
 
@@ -389,6 +397,11 @@ export interface ModelState {
     * row-level gate denies.
     */
    gateRuntime?: HydrationRuntime;
+   /**
+    * The model file's absolute path, which tells a source this file declares
+    * from one an import brought in. Absent: no source counts as declared here.
+    */
+   modelFile?: string;
 }
 
 export class Model {
@@ -398,6 +411,12 @@ export class Model {
    private modelType: ModelType;
    private modelMaterializer: ModelMaterializer | undefined;
    private modelDef: ModelDef | undefined;
+   /** See {@link ModelState.modelFile}. */
+   private modelFile: string | undefined;
+   /** See {@link declaredDeprecatedPersistAnnotations}. */
+   private deprecatedPersistAnnotationsMemo:
+      | DeprecatedPersistAnnotation[]
+      | undefined;
    private modelInfo: Malloy.ModelInfo | undefined;
    private storageServe = new StorageServeShape(this.serveShapeHost());
    /**
@@ -407,6 +426,18 @@ export class Model {
     */
    /** The author sourceIDs a `#(materialize)` build stores (see setServeBindings). */
    private materializeSourceIDs: ReadonlySet<string> = new Set();
+   /**
+    * The `#@ persist` view leg (materialization v2, phase 4, P14): a router
+    * candidate only when `materialize.enabled` is on and a source this model
+    * sees persists a view.
+    */
+   private persistedViews = new PersistedViewServe({
+      modelPath: () => this.modelPath,
+      modelDef: () => this.modelDef,
+      modelMaterializer: () => this.modelMaterializer,
+      serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
+      catalog: () => this.policy.materializedTables(),
+   });
    private servedCopy = new ServedCopyServe({
       modelPath: () => this.modelPath,
       modelDef: () => this.modelDef,
@@ -607,6 +638,7 @@ export class Model {
       this.dataStyles = state.dataStyles;
       this.modelType = state.modelType;
       this.modelDef = state.modelDef;
+      this.modelFile = state.modelFile;
       this.modelMaterializer = state.modelMaterializer;
       this.sources = state.sources;
       this.queries = state.queries;
@@ -646,15 +678,6 @@ export class Model {
     */
    public declaredFilterSourceNames(): string[] {
       if (!this.modelDef) return [];
-      const ownFile = (url: string): boolean => {
-         try {
-            return decodeURIComponent(new URL(url).pathname).endsWith(
-               `/${this.modelPath}`,
-            );
-         } catch {
-            return false;
-         }
-      };
       const names: string[] = [];
       for (const entry of Object.values(this.modelDef.contents)) {
          if (!isSourceDef(entry)) continue;
@@ -663,11 +686,38 @@ export class Model {
             (note) =>
                note.text.trim().startsWith(FILTER_ANNOTATION_PREFIX) &&
                note.at !== undefined &&
-               ownFile(note.at.url),
+               this.declaredHere(note.at.url),
          );
          if (declares) names.push(entry.as || entry.name);
       }
       return names.sort();
+   }
+
+   /**
+    * Whether a document URL is this model's own file. Compared as resolved
+    * paths: a suffix match on {@link modelPath} would take
+    * `sub/models/a.malloy`, imported here, for `models/a.malloy`.
+    */
+   private declaredHere(url: string): boolean {
+      if (this.modelFile === undefined) return false;
+      try {
+         return path.resolve(fileURLToPath(url)) === this.modelFile;
+      } catch {
+         return false;
+      }
+   }
+
+   /**
+    * The deprecated v1 `#@ -persist` and `#@ preaggregate` annotations THIS
+    * file declares, each once, at the source or measure it is written on.
+    */
+   public declaredDeprecatedPersistAnnotations(): DeprecatedPersistAnnotation[] {
+      if (!this.modelDef) return [];
+      // Read per package request, and the model never changes: walk it once.
+      return (this.deprecatedPersistAnnotationsMemo ??=
+         deprecatedPersistAnnotations(this.modelDef, (url) =>
+            this.declaredHere(url),
+         ));
    }
 
    /** The parsed filter definitions for a source; empty when none. */
@@ -950,6 +1000,7 @@ export class Model {
             modelType,
             modelMaterializer,
             modelDef,
+            modelFile: path.resolve(packagePath, modelPath),
             sources,
             queries,
             sourceInfos,
@@ -1000,7 +1051,7 @@ export class Model {
     */
    public static fromSerialized(
       packageName: string,
-      _packagePath: string,
+      packagePath: string,
       malloyConfig: ModelConnectionInput,
       data: SerializedModel,
       options: {
@@ -1070,6 +1121,7 @@ export class Model {
          modelType: data.modelType,
          modelMaterializer,
          modelDef,
+         modelFile: path.resolve(packagePath, data.modelPath),
          sources,
          queries,
          sourceInfos,
@@ -1287,6 +1339,64 @@ export class Model {
          Object.entries(manifest.entries).filter(
             ([sourceEntityId]) => !preaggregateIds.has(sourceEntityId),
          ),
+      );
+      return Object.keys(entries).length > 0
+         ? { ...manifest, entries }
+         : undefined;
+   }
+
+   /**
+    * `manifest`, or undefined when this model does not carry `##!
+    * experimental.persistence` (its own or through an import). Malloy refuses
+    * a non-empty `buildManifest` against such a model, and the package's
+    * manifest is package-wide: one colocated table bound for another model
+    * (a `#@ persist` model beside it, or a `#(materialize)` source, whose
+    * author file needs no flag) would 400 every query here. A model without
+    * the flag has no persisted source for Malloy to substitute, so nothing it
+    * reads is lost. Presence only, decided as Malloy decides it.
+    */
+   private manifestIfPersistent(
+      manifest: BuildManifest | undefined,
+   ): BuildManifest | undefined {
+      const modelDef = this.modelDef;
+      if (!manifest || !modelDef) return undefined;
+      if (this.persistenceFlagMemo?.modelDef !== modelDef) {
+         this.persistenceFlagMemo = {
+            modelDef,
+            persistent: routeHasKey(
+               new Annotations(modelAnnotations(modelDef)),
+               "!",
+               "experimental",
+               "persistence",
+            ),
+         };
+      }
+      return this.persistenceFlagMemo.persistent ? manifest : undefined;
+   }
+
+   /** {@link manifestIfPersistent}'s answer for the model it was read from. */
+   private persistenceFlagMemo?: { modelDef: ModelDef; persistent: boolean };
+
+   /**
+    * `manifest` with the persisted views' table entries removed (see
+    * `liveBuildManifest` in runQueryResults). Undefined when nothing survives.
+    */
+   private withoutPersistedViewEntries(
+      manifest: BuildManifest | undefined,
+   ): BuildManifest | undefined {
+      if (!manifest) return undefined;
+      const views = this.persistedViews.buildSourceIDs();
+      if (views.size === 0) return manifest;
+      const planned = this.policy.materializedTables()?.planned;
+      const ids = new Set(
+         [...views].flatMap((id) => {
+            const entity = planned?.get(id)?.sourceEntityId;
+            return entity === undefined ? [] : [entity];
+         }),
+      );
+      if (ids.size === 0) return manifest;
+      const entries = Object.fromEntries(
+         Object.entries(manifest.entries).filter(([id]) => !ids.has(id)),
       );
       return Object.keys(entries).length > 0
          ? { ...manifest, entries }
@@ -2685,6 +2795,7 @@ export class Model {
    public setServeDestinationConfig(provider: () => MalloyConfig): void {
       this.storageServe.setServeDestinationConfig(provider);
       this.servedCopy.invalidate();
+      this.persistedViews.invalidate();
    }
 
    /**
@@ -2695,9 +2806,49 @@ export class Model {
       packagePath: string,
       malloyConfig: ModelConnectionInput,
       materializePlans: Readonly<Record<string, MaterializePlan>> = {},
+      declarationOf?: (sourceID: string) => unknown,
    ): void {
       this.materializeSourceIDs = new Set(Object.keys(materializePlans));
-      this.servedCopy.setContext(packagePath, malloyConfig, materializePlans);
+      this.servedCopy.setContext(
+         packagePath,
+         malloyConfig,
+         materializePlans,
+         declarationOf,
+      );
+      this.persistedViews.setContext(packagePath, malloyConfig);
+   }
+
+   /**
+    * Whether the router may try the persisted-view leg: a model file, the
+    * materialize switch on, and a persisted view on a source it sees.
+    */
+   private persistedViewsEnabled(): boolean {
+      return (
+         this.modelType === "model" &&
+         !this.isNotebook() &&
+         getMaterializeEnabled() &&
+         this.persistedViews.hasViews()
+      );
+   }
+
+   /**
+    * The persisted views' generated build sources this model can see, by
+    * `sourceID`, with the source and view each stores: the package's serve
+    * verdict reads a view's reach through its source.
+    */
+   public persistedViewBuilds(): {
+      buildSourceID: string;
+      sourceID: string;
+      sourceName: string;
+      viewName: string;
+   }[] {
+      if (!getMaterializeEnabled()) return [];
+      return this.persistedViews.plans().map((p) => ({
+         buildSourceID: p.buildSourceID,
+         sourceID: p.sourceID,
+         sourceName: p.sourceName,
+         viewName: p.viewName,
+      }));
    }
 
    /**
@@ -2729,6 +2880,16 @@ export class Model {
       return this.crossConnectionLeftOut ?? [];
    }
 
+   /**
+    * The sources this model's served copy answers from storage, by author
+    * `sourceID`: undefined when the served copy is off for this model, and
+    * `pending` before it has compiled.
+    */
+   public servedCopySourceIDs(): ReadonlySet<string> | "pending" | undefined {
+      if (!this.servedCopyEnabled()) return undefined;
+      return this.servedCopy.rerootedSourceIDs() ?? "pending";
+   }
+
    /** Why this model's served copy leaves sources unserved (empty when off). */
    public servedCopyProblems(): readonly ServedCopyProblem[] {
       if (!this.servedCopyEnabled()) return [];
@@ -2739,6 +2900,7 @@ export class Model {
    public invalidateServeShapeCache(): void {
       this.storageServe.invalidateServeShapeCache();
       this.servedCopy.invalidate();
+      this.persistedViews.invalidate();
    }
 
    /** See {@link StorageServeShape.setServeBindings}. */
@@ -2747,14 +2909,24 @@ export class Model {
       // but only the served copy may read it: the serve shape would rebuild
       // the source over a table that already applied its definition.
       const materialized = this.materializeSourceIDs;
-      this.storageServe.setServeBindings(
-         materialized.size === 0
+      // A persisted view's table holds the view's result, not a source's
+      // rows: only the view leg reads it.
+      const views = this.persistedViews.buildSourceIDs();
+      const others =
+         views.size === 0
             ? bindings
             : bindings.filter(
+                 (b) => !(b.sourceIDs ?? []).some((id) => views.has(id)),
+              );
+      this.storageServe.setServeBindings(
+         materialized.size === 0
+            ? others
+            : others.filter(
                  (b) => !(b.sourceIDs ?? []).some((id) => materialized.has(id)),
               ),
       );
-      this.servedCopy.setBindings(bindings);
+      this.servedCopy.setBindings(others);
+      this.persistedViews.setBindings(bindings);
    }
 
    /** See {@link StorageServeShape.storedColumnTypeMismatches}. */
@@ -2784,7 +2956,10 @@ export class Model {
     * {@link StorageServeShape.setServeBindings}).
     */
    public servedStorageSourceNames(): string[] {
-      return this.storageServe.serveBindings.map((b) => b.sourceName);
+      return [
+         ...this.storageServe.serveBindings,
+         ...this.persistedViews.viewBindings(),
+      ].map((b) => b.sourceName);
    }
 
    /**
@@ -2958,7 +3133,12 @@ export class Model {
       // and run all agree on the same freshness substitution.
       const buildManifest = this.resolveFreshBuildManifest();
       // Without rollup entries, for every runnable that is NOT the companion.
-      const liveBuildManifest = this.withoutPreaggregateEntries(buildManifest);
+      const viewBuildManifest = this.withoutPreaggregateEntries(buildManifest);
+      // Without persisted-view entries too: only the view leg's variant
+      // imports a view's build source (it carries the persistence flag).
+      const liveBuildManifest = this.manifestIfPersistent(
+         this.withoutPersistedViewEntries(viewBuildManifest),
+      );
       // See filterGivensToModelSurface. Resolved from the caller's own compiled
       // query, before routing or any graft replaces it.
       let querySurfaceGivens: Record<string, GivenValue> | undefined;
@@ -3137,6 +3317,9 @@ export class Model {
                storageRoutingPossible,
                servedCopyPossible,
                preaggServeMaterializer,
+               ...(this.persistedViewsEnabled()
+                  ? { persistedViewsFor: runnable }
+                  : {}),
             }),
             async () => {
                // Cheap short-circuit for gate-free models. Safe, unlike
@@ -3328,11 +3511,10 @@ export class Model {
       // The serve shape resolves through `virtualMap` and lacks `##!
       // experimental.persistence`, so it gets no manifest. Only the companion
       // sees the FULL manifest (rollup entries).
-      const effectiveBuildManifest = buildManifestFor(
-         answer,
-         buildManifest,
-         liveBuildManifest,
-      );
+      const effectiveBuildManifest =
+         answer.tier === "view" && !answer.runFailed && !answer.virtualMap
+            ? viewBuildManifest
+            : buildManifestFor(answer, buildManifest, liveBuildManifest);
 
       // Prepare INSIDE the run try/catch, so a given-binding throw at prepare
       // gets the same error mapping as run instead of escaping as a 500.
@@ -3603,6 +3785,7 @@ export class Model {
          viewName: sourceName && queryName ? queryName : undefined,
          freshManifest: buildManifest,
          includeHidden: !!includeHiddenFilesAndSources,
+         ...(this.persistedViewsEnabled() ? { queryString } : {}),
       });
       const servedFrom = servedFromOf(answer);
       audit.servedFrom = servedFrom ?? null;
@@ -3647,6 +3830,7 @@ export class Model {
          modelPath: this.modelPath,
          storageServe: this.storageServe,
          servedCopy: this.servedCopy,
+         persistedViews: this.persistedViews,
          rollupPlans: () => this.preaggregateRollupPlans,
          modelDef: () => this.modelDef,
          materializedTables: () => this.policy.materializedTables(),

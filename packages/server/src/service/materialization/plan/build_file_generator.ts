@@ -126,7 +126,7 @@
  */
 
 import { Annotations } from "@malloydata/malloy";
-import { ownLevelNotes } from "../../annotations";
+import { ownLevelNotes, sameNotePosition } from "../../annotations";
 import { declaredNotes } from "../../governance/ir/declared_notes";
 import {
    routeOfNote,
@@ -342,6 +342,12 @@ export interface MaterializePlan {
    uniquenessChecks?: InlineUniquenessCheck[];
    /** For an inlined join_many: the pair table's layout (P5). */
    pair?: MaterializePair;
+   /**
+    * The table takes the source's own name because the declaration has no
+    * `name=`, which the refusal of a colliding table name says (see
+    * `refuseCollidingMaterialize`).
+    */
+   nameDefaulted?: true;
 }
 
 /** A declaration the generator could not plan, and why. */
@@ -456,6 +462,47 @@ function declaresOwnPersist(
 }
 
 /**
+ * Whether the source is persisted through a `#@ persist` it INHERITS (it
+ * extends or renames a persisted source, here or in an imported file) rather
+ * than declares, and the source that declares it when this model holds it.
+ * Read as Malloy reads it: the whole annotation chain decides whether the
+ * source persists, and {@link declaredNotes} decides which of those notes its
+ * own statement wrote. Undefined when it does not persist, or persists by its
+ * own annotation (see {@link declaresOwnPersist}).
+ */
+function inheritedPersist(
+   def: SourceDefLike,
+   contents: Readonly<Record<string, unknown>>,
+): { from?: string } | undefined {
+   const chain = new Annotations(
+      (def.annotations ?? {}) as ConstructorParameters<typeof Annotations>[0],
+   );
+   if (!routeHasKey(chain, "@", "persist")) return undefined;
+   const own = declaredNotes(def, contents);
+   const inherited = chain
+      .forRoute("@")
+      .filter(
+         (note) =>
+            !own.some(
+               (o) => o.at && note.at && sameNotePosition(o.at, note.at),
+            ),
+      );
+   if (inherited.length === 0) return undefined;
+   for (const [name, object] of Object.entries(contents)) {
+      if (object === def || !object || typeof object !== "object") continue;
+      const other = object as SourceDefLike;
+      if (!declaresOwnPersist(other, contents)) continue;
+      const declares = declaredNotes(other, contents).some((o) =>
+         inherited.some(
+            (note) => o.at && note.at && sameNotePosition(o.at, note.at),
+         ),
+      );
+      if (declares) return { from: name };
+   }
+   return {};
+}
+
+/**
  * The declaration's `#@ persist` keys by key path, or why one cannot be
  * carried: a key `#(materialize)` does not accept (a misspelt `name=` must not
  * fall back to a default table), or a value of the wrong shape (an array where
@@ -533,7 +580,26 @@ function storableDimension(field: FieldLike): string | undefined {
 }
 
 /**
- * The stored columns of a source: its public atomic dimensions, less any
+ * Whether a compiled field is a public array its table can hold as it is: a
+ * persisted query's `nest:` (a repeated record) or an array column the source
+ * reads, neither computed. A declared `join_many:` is the joined source's
+ * type, never `array`, so it is not one.
+ */
+function storableArray(field: FieldLike): string | undefined {
+   if (field.type !== "array" || field.e !== undefined) return undefined;
+   if (isHidden(field)) return undefined;
+   const dimension =
+      typeof field.as === "string"
+         ? field.as
+         : typeof field.name === "string"
+           ? field.name
+           : undefined;
+   return dimension;
+}
+
+/**
+ * The stored columns of a source: its public atomic dimensions and arrays
+ * ({@link storableArray}), less any
  * whose value reads through a join that is not inlined (a reference join is
  * read at query time, so what reads through it is computed at read). A field
  * whose join usage is unknown is stored only when the source has no join.
@@ -551,6 +617,11 @@ export function materializeColumns(
    const perRead = currentTimeFields(def.fields);
    for (const raw of def.fields ?? []) {
       const field = raw as FieldLike;
+      const nested = storableArray(field);
+      if (nested !== undefined) {
+         out.push({ dimension: nested, column: nested, computed: false });
+         continue;
+      }
       const dimension = storableDimension(field);
       if (dimension === undefined) continue;
       if (perRead.has(dimension)) continue;
@@ -976,6 +1047,22 @@ export function planModelMaterialize(
          });
          continue;
       }
+      // A source that inherits `#@ persist` is already its base's table under
+      // v1 (an extension is its base's table): the plan holds it under its
+      // own sourceID, so a generated build source presented as it would
+      // overwrite that entry and read itself in the build graph.
+      const inherited = inheritedPersist(def, contents);
+      if (inherited) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason:
+               `the source inherits #@ persist from ${inherited.from ? `\`${inherited.from}\`` : "the source it is built on"}, ` +
+               "so it is already stored as that source's table; put #(materialize) on a " +
+               "source that does not inherit #@ persist, or drop the #@ persist",
+         });
+         continue;
+      }
       const deferred = declaration.keys.find((key) => key in DEFERRED_KEYS);
       if (deferred) {
          refused.push({
@@ -1165,6 +1252,7 @@ export function planModelMaterialize(
          ...(inline.length > 0 ? { inline } : {}),
          ...(uniquenessChecks.length > 0 ? { uniquenessChecks } : {}),
          ...(pair ? { pair } : {}),
+         ...(declaration.keys.includes("name") ? {} : { nameDefaulted: true }),
       });
    }
    return { plans, refused };

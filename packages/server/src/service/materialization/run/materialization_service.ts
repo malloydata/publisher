@@ -51,7 +51,7 @@ import {
    incrementalRunContext,
    type IncrementalRunContext,
 } from "./incremental_build";
-import { InstructedBuild } from "./instructed_build";
+import { InstructedBuild, nameViewContext } from "./instructed_build";
 import {
    ManifestCommitter,
    referenceManifestToEntries,
@@ -63,6 +63,7 @@ import {
    tallySources,
    type WarehouseReach,
 } from "./materialization_run_support";
+import { NAME_VIEWS_KEY, restoreNameViews } from "./name_view";
 import { Reclaimer } from "./reclaimer";
 import { RunLifecycle } from "./run_lifecycle";
 import {
@@ -818,6 +819,7 @@ export class MaterializationService {
             // refusal is in failures".
             refusalsInFailures = instructedRefused,
             refusedBesideBuilt = {},
+            nameViews = [],
          } = await this.executeInstructedBuild(
             compiled,
             environment,
@@ -861,36 +863,51 @@ export class MaterializationService {
          const sourcesRefused =
             Object.keys(derivedRefused).length + instructedRefused;
          const durationMs = Date.now() - startedAt;
-         await this.commitManifest(id, entries, failures, {
-            forceRefresh: opts.forceRefresh,
-            sourceNames: opts.sourceNames ?? null,
-            mode,
-            trigger: opts.trigger,
-            sourcesBuilt,
-            sourcesReused,
-            ...(sourcesRefused > 0 ? { sourcesRefused } : {}),
-            // Auto-run's refusals, plus instructed sources refused beside a
-            // table an eligible sibling built (ms2data/service#7078), which
-            // are not in `failures`.
-            ...(Object.keys(derivedRefused).length +
-               Object.keys(refusedBesideBuilt).length >
-            0
-               ? {
-                    refusedSources: {
-                       ...derivedRefused,
-                       ...refusedBesideBuilt,
-                    },
-                 }
-               : {}),
-            durationMs,
-            // commitManifest replaces the metadata, so the version is set again.
-            ...(versionId !== undefined
-               ? {
-                    versionId,
-                    scope: pkg.getPackageMetadata().scope ?? "package",
-                 }
-               : {}),
-         });
+         try {
+            await this.commitManifest(id, entries, failures, {
+               forceRefresh: opts.forceRefresh,
+               sourceNames: opts.sourceNames ?? null,
+               mode,
+               trigger: opts.trigger,
+               sourcesBuilt,
+               sourcesReused,
+               ...(sourcesRefused > 0 ? { sourcesRefused } : {}),
+               // Auto-run's refusals, plus instructed sources refused beside a
+               // table an eligible sibling built (ms2data/service#7078), which
+               // are not in `failures`.
+               ...(Object.keys(derivedRefused).length +
+                  Object.keys(refusedBesideBuilt).length >
+               0
+                  ? {
+                       refusedSources: {
+                          ...derivedRefused,
+                          ...refusedBesideBuilt,
+                       },
+                    }
+                  : {}),
+               durationMs,
+               // The `name=` views this run pointed, for the dropper and the
+               // reclaimers to find (name_view.ts).
+               ...(nameViews.length > 0 ? { [NAME_VIEWS_KEY]: nameViews } : {}),
+               // commitManifest replaces the metadata, so the version is set again.
+               ...(versionId !== undefined
+                  ? {
+                       versionId,
+                       scope: pkg.getPackageMetadata().scope ?? "package",
+                    }
+                  : {}),
+            });
+         } catch (err) {
+            // The views were pointed at this run's tables just before the
+            // commit; a run that did not commit must not leave them there.
+            if (nameViews.length > 0) {
+               await restoreNameViews(
+                  nameViews,
+                  nameViewContext({ compiled, environment }),
+               );
+            }
+            throw err;
+         }
 
          // Auto-run owns distribution; orchestrated leaves it to the caller
          // (manifestLocation).
