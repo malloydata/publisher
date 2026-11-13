@@ -756,7 +756,6 @@ function pairRenames(pair: PairReroot): string {
          (c) => `    ${identifier(c.internalName)} is ${identifier(c.column)}`,
       )
       .join("\n");
-   // malloy-text: a block number, an integer the plan assigned
    const lane = pair.block
       ? `\n  where: ${identifier(pair.block.laneField)} = ${Math.trunc(pair.block.lane)}`
       : "";

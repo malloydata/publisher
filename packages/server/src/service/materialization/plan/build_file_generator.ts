@@ -2235,11 +2235,13 @@ function pairFlags(pair: MaterializePair, levels: number): string {
  */
 function pairBody(pair: MaterializePair, columns: string): string {
    const parent = identifier(pair.parentKey);
+   // malloy-text: pairFlags writes every name through identifier
+   const flags = pairFlags(pair, 1 + (pair.hops?.length ?? 0));
    // malloy-text: columns is emitBuildSource's select list, every name through identifier
    return `  group_by:
 ${columns}
   calculate:
-${pairFlags(pair, 1 + (pair.hops?.length ?? 0))}${pair.watermark ? `\n    ${pairWatermarkCalculation(pair.watermark, parent)}` : ""}
+${flags}${pair.watermark ? `\n    ${pairWatermarkCalculation(pair.watermark, parent)}` : ""}
   order_by: ${parent}`;
 }
 
@@ -2270,12 +2272,15 @@ function pairBlocksSource(
       );
       items.push(`    ${identifier(blocks.laneColumn)} is ${lane}`);
       const parent = identifier(pair.parentKey);
-      // malloy-text: names through identifier, each type one of NULLABLE_TYPES, lane a block index
+      // malloy-text: each item a selectItem or a typed null, names through identifier, each type one of NULLABLE_TYPES
+      const listed = items.join(",\n");
+      // malloy-text: pairFlags writes every name through identifier
+      const flags = pairFlags(pair, blocks.levels);
       return `%{ ${identifier(importAlias(plan))} -> {
   group_by:
-${items.join(",\n")}
+${listed}
   calculate:
-${pairFlags(pair, blocks.levels)}
+${flags}
   order_by: ${parent}
 } }`;
    };
@@ -2285,7 +2290,6 @@ ${pairFlags(pair, blocks.levels)}
             `SELECT * FROM (${block(pair, lane)}) AS ${PAIR_LANE_COLUMN}_${lane}`,
       )
       .join("\nUNION ALL\n");
-   // malloy-text: the connection is the source's own, through identifier; the SQL around the embedded queries is a fixed union
    return `${identifier(blocks.connection)}.sql("""\n${union}\n""")`;
 }
 
