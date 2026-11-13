@@ -480,20 +480,24 @@ example `amount_text::"double"`: a cast to a type Malloy already believes the fi
 reads through a JavaScript number, so 9007199254740993 would come back as 9007199254740992. A
 column whose field Malloy types as a big integer (a DuckDB `BIGINT`, `HUGEINT` or `UBIGINT`, a
 BigQuery `INT64`, a Snowflake `NUMBER(p,0)`, or a sum or max over one) is therefore read through a
-native cast: `::"HUGEINT"` in a `storage=` table, and the warehouse's own big-integer type in a
-colocated one (a colocated `#(materialize)` table, or a v1 `#@ persist` one under
-`PUBLISHER_V1_SERVED_COPY=on`). Malloy types the cast as a big integer, so the value comes back with every digit and
-the field keeps live's `bigint` subtype; selecting, grouping, filtering and aggregating it all stay
-served from storage, and a `primary_key:`, dimension or measure over it keeps compiling. A
-`count()` or a sum of 32-bit integers is an ordinary integer live too, and is not touched. A column
-no cast reads exactly (one stored as a float, whose digits are already gone) is left out per query:
-a query that reads it is answered live, every other query still reads the table. Served never
-exceeds live: on a source whose live answer itself rounds such values (Postgres returns its rows
-through JSON), a `storage=` table reads the column as a plain number, which rounds the same way,
-and a colocated one reads it through Postgres's own `bigint` cast, on live's own path. A colocated
-cast can be narrower than the stored column: a Postgres sum of `BIGINT`s past 2^63 (stored as
-`NUMERIC`), or a DuckDB `UHUGEINT` above 2^127 − 1, fails the query rather than answering it
-([known limitation 12](materialization-v2-plan.md#known-limitations-to-revisit)).
+native cast: `::"HUGEINT"` in a `storage=` table, and, in a colocated one (a colocated
+`#(materialize)` table, or a v1 `#@ persist` one under `PUBLISHER_V1_SERVED_COPY=on`), the
+column's own warehouse type, which each colocated build reads from the warehouse's catalog and
+records on its manifest entry (`nativeSchema`). Malloy types the cast as a big integer, so the
+value comes back with every digit and the field keeps live's `bigint` subtype; selecting,
+grouping, filtering and aggregating it all stay served from storage, and a `primary_key:`,
+dimension or measure over it keeps compiling. Because the cast is to exactly the stored type, no
+value is narrowed: a DuckDB `UHUGEINT` past 2^127 − 1 is read as `UHUGEINT`, and SQL Server's
+`decimal(38,0)` as itself. A `count()` or a sum of 32-bit integers is an ordinary integer live too,
+and is not touched. A column no cast reads exactly is left out per query: a query that reads it is
+answered live, every other query still reads the table. That is a column stored as a float, whose
+digits are already gone; a colocated column whose warehouse type Malloy does not read as a big
+integer, such as the `numeric` Postgres stores a sum of `BIGINT`s as; and a colocated column whose
+type its build did not record (a table built before this, or a manifest whose producer does not
+record it). Served never exceeds live: on a source whose live answer itself rounds such values
+(Postgres returns its rows through JSON), a `storage=` table reads the column as a plain number,
+which rounds the same way, and a colocated one reads it through Postgres's own `bigint` type, on
+live's own path ([known limitation 12](materialization-v2-plan.md#known-limitations-to-revisit)).
 
 ## Will it serve? The serve verdict
 

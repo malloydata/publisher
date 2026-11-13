@@ -392,6 +392,8 @@ describe("buildOneSource: incremental refresh", () => {
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
          // Postgres: the swap is one implicit transaction in one call.
          'DROP TABLE IF EXISTS "orders_v1";\nALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1";',
+         // Then the built table's column types (colocated_native_types.ts).
+         "SELECT row_to_json(c) AS row FROM (SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, a.attnum FROM pg_attribute a WHERE a.attrelid = to_regclass('\"orders_v1\"') AND a.attnum > 0 AND NOT a.attisdropped) c ORDER BY c.attnum",
       ]);
       expect(upsert.called).toBe(false);
       expect(remove.called).toBe(false);
@@ -434,8 +436,9 @@ describe("buildOneSource: incremental refresh", () => {
          context,
          "abcdef1234567890",
       );
-      // The staging drop, the CTAS and the one-transaction swap.
-      expect(runSQL.getCalls().map((c) => c.args[0])).toHaveLength(3);
+      // The staging drop, the CTAS, the one-transaction swap, and the read of
+      // the built table's column types.
+      expect(runSQL.getCalls().map((c) => c.args[0])).toHaveLength(4);
       expect(upsert.called).toBe(false);
    });
 

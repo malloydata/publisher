@@ -35,16 +35,23 @@ shape) read a big-integer column through the table's plain
 known limitation 12, which said answers were equal and only metadata differed).
 
 A column whose field Malloy types as a big integer (`BIGINT`, `HUGEINT`, `UBIGINT`, `INT64`,
-`NUMBER(p,0)`, a sum or max over one) is now read through a native cast (`::"HUGEINT"` in a
-`storage=` table, the warehouse's own big-integer type in a colocated one), so it stays served from
-storage and comes back exact, with live's `bigint` subtype. Selecting, grouping, filtering and
-aggregating it, a `primary_key:` and the author's own measures over it all keep serving. A column
-no cast reads exactly (stored as a float) is left out per query and answered live. On Postgres,
-whose live answer itself rounds such values (its rows come back through JSON), served equals live,
-never more precise. `count()`, 32-bit integers and decimals are unchanged.
+`NUMBER(p,0)`, a sum or max over one) is now read through a native cast, so it stays served from
+storage and comes back exact, with live's `bigint` subtype. In a `storage=` table the cast is
+`::"HUGEINT"`. In a colocated one it is the column's own warehouse type, which each colocated build
+now reads from the warehouse's catalog, so no value is narrowed (a DuckDB `UHUGEINT` past
+2^127 − 1, SQL Server's `decimal(38,0)`). Selecting, grouping, filtering and aggregating it, a
+`primary_key:` and the author's own measures over it all keep serving. A column no cast reads
+exactly is left out per query and answered live: one stored as a float, a colocated column whose
+warehouse type Malloy does not read as a big integer (Postgres stores a sum of `BIGINT`s as
+`numeric`), and a colocated column whose build did not record its type (a table built before this
+release). On Postgres, whose live answer itself rounds such values (its rows come back through
+JSON), served equals live, never more precise. `count()`, 32-bit integers and decimals are
+unchanged.
 
-No API change. See docs/materialization.md, "Stored column types follow the model, not the
-warehouse".
+API: a build manifest entry gains `nativeSchema`, each colocated column with its warehouse type,
+recorded by every colocated build and incremental refresh. A host that stores and replays manifests
+should keep it; without it, a colocated table's big-integer columns are answered live. See
+docs/materialization.md, "Stored column types follow the model, not the warehouse".
 
 ## [Unreleased] — In development: join-to-rollup checks the querying source's primary key, and declines a count beside a re-pointed join
 

@@ -104,7 +104,9 @@ describe("buildOneSource", () => {
       });
 
       const bags = runSQL.getCalls().map((c) => c.args[1]?.queryMetadata);
-      expect(bags).toHaveLength(3);
+      // The staging drop, the CTAS, the swap, and the read of the built
+      // table's column types (colocated_native_types.ts).
+      expect(bags).toHaveLength(4);
       for (const bag of bags) {
          expect(bag).toEqual({
             deployment: "eu",
@@ -159,6 +161,8 @@ describe("buildOneSource", () => {
          'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
          'BEGIN TRANSACTION;\nDROP TABLE IF EXISTS "orders_v1";\nALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1";\nCOMMIT;',
+         // Then the built table's column types (colocated_native_types.ts).
+         'DESCRIBE "orders_v1"',
       ]);
       expect(entry.physicalTableName).toBe("orders_v1");
       expect(entry.sourceEntityId).toBe("abcdef1234567890");
@@ -186,6 +190,7 @@ describe("buildOneSource", () => {
          'ALTER TABLE "MY_SCHEMA"."orders_v1" RENAME TO "MY_SCHEMA"."orders_v1_oabcdef12345"',
          'ALTER TABLE "MY_SCHEMA"."orders_v1_abcdef123456" RENAME TO "MY_SCHEMA"."orders_v1"',
          'DROP TABLE IF EXISTS "MY_SCHEMA"."orders_v1_oabcdef12345"',
+         "SELECT column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders_v1') AND lower(table_schema) = lower('MY_SCHEMA') ORDER BY ordinal_position",
       ]);
       // The manifest keeps the logical name the control plane sent.
       expect(entry.physicalTableName).toBe("MY_SCHEMA.orders_v1");
@@ -281,6 +286,7 @@ describe("buildOneSource", () => {
          "ALTER TABLE `ds`.`orders_v1` RENAME TO `orders_v1_oabcdef12345`",
          "ALTER TABLE `ds`.`orders_v1_abcdef123456` RENAME TO `orders_v1`",
          "DROP TABLE IF EXISTS `ds`.`orders_v1_oabcdef12345`",
+         "SELECT column_name, data_type FROM `ds`.INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'orders_v1' ORDER BY ordinal_position",
       ]);
       expect(entry.physicalTableName).toBe("ds.orders_v1");
    });

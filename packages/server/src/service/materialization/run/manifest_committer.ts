@@ -16,6 +16,7 @@ import type { MaterializationHost } from "../host";
 import {
    BuildInstruction,
    BuildManifestResult,
+   boundNativeSchemaOf,
    boundSchemaOf,
    FreshnessManifest,
    isLegacyFailedEntry,
@@ -127,6 +128,7 @@ export class ManifestCommitter {
                // The columns a colocated build captured (v1 cutover), which
                // the served copy binds a v1 table with.
                ...boundSchemaOf(entry.schema),
+               ...boundNativeSchemaOf(entry.nativeSchema),
                ...(keyUniqueness ? { keyUniqueness } : {}),
             };
          }

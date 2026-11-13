@@ -11,6 +11,7 @@ import {
    bigIntegerReads,
    castToDeclaredTypes,
    liveKeepsBigIntegers,
+   nativeTypeLookup,
    STORED_COLUMN_TYPE_MISMATCH_CODE,
    declaredColumnsOf,
    persistSourceDeclaredColumns,
@@ -545,41 +546,58 @@ describe("bigIntegerReads (known limitation 12)", () => {
       ).toEqual([]);
    });
 
-   it("reads a colocated table through the warehouse's own bigint type, on live's own data path", () => {
-      expect(
-         bigIntegerReads(schema("DOUBLE"), fields, {
-            dialect: "postgres",
-            colocated: true,
-         }),
-      ).toEqual([{ column: "id", castTo: "BIGINT" }]);
-      expect(
-         bigIntegerReads(schema("DOUBLE"), fields, {
-            dialect: "duckdb",
-            colocated: true,
-         }),
-      ).toEqual([{ column: "id", castTo: "HUGEINT" }]);
-      expect(
-         bigIntegerReads(schema("DOUBLE"), fields, {
-            dialect: "snowflake",
-            colocated: true,
-         }),
-      ).toEqual([{ column: "id", castTo: "NUMBER" }]);
-      expect(
-         bigIntegerReads(schema("DOUBLE"), fields, {
-            dialect: "standardsql",
-            colocated: true,
-         }),
-      ).toEqual([{ column: "id", castTo: "INT64" }]);
+   const colocated = (dialect: string, nativeType: string | undefined) =>
+      bigIntegerReads(schema("DOUBLE"), fields, {
+         dialect,
+         colocated: true,
+         nativeTypeOf: nativeTypeLookup(
+            nativeType === undefined ? [] : [{ name: "id", type: nativeType }],
+         ),
+      });
+
+   it("reads a colocated column through a cast to exactly the warehouse type its build captured", () => {
+      for (const [dialect, nativeType] of [
+         ["postgres", "bigint"],
+         ["duckdb", "BIGINT"],
+         ["duckdb", "HUGEINT"],
+         // Past HUGEINT: never narrowed to it (review of #1714).
+         ["duckdb", "UHUGEINT"],
+         ["snowflake", "NUMBER(38,0)"],
+         ["standardsql", "INT64"],
+         // Past BIGINT: never narrowed to it.
+         ["sqlserver", "decimal(38,0)"],
+         ["mysql", "bigint unsigned"],
+      ] as const) {
+         expect(colocated(dialect, nativeType)).toEqual([
+            { column: "id", castTo: nativeType },
+         ]);
+      }
    });
 
-   it("leaves a colocated column out where Malloy does not read the warehouse's bigint type back as one", () => {
-      // MySQL's SIGNED comes back as `sql native`.
-      expect(
-         bigIntegerReads(schema("DOUBLE"), fields, {
-            dialect: "mysql",
-            colocated: true,
-         }),
-      ).toEqual([{ column: "id" }]);
+   it("leaves a colocated column out when no cast is exact in live's representation", () => {
+      // Postgres stores a sum of BIGINTs as `numeric`, which can hold values
+      // past 2^63 (a cast back to BIGINT failed) and which Malloy reads as a
+      // float (a cast to it changes the representation): answered live.
+      expect(colocated("postgres", "numeric")).toEqual([{ column: "id" }]);
+      expect(colocated("duckdb", "DECIMAL(38,0)")).toEqual([{ column: "id" }]);
+      expect(colocated("standardsql", "BIGNUMERIC")).toEqual([
+         { column: "id" },
+      ]);
+      // No type captured (a table built before the capture, a host manifest
+      // without it): nothing is known to be exact.
+      expect(colocated("postgres", undefined)).toEqual([{ column: "id" }]);
+      expect(colocated("duckdb", undefined)).toEqual([{ column: "id" }]);
+   });
+
+   it("matches a captured type to its column by a unique case fold", () => {
+      const lookup = nativeTypeLookup([
+         { name: "ID", type: "NUMBER(38,0)" },
+         { name: "x", type: "a" },
+         { name: "X", type: "b" },
+      ]);
+      expect(lookup("id")).toBe("NUMBER(38,0)");
+      expect(lookup("x")).toBe("a");
+      expect(lookup("missing")).toBeUndefined();
    });
 
    it("reads DuckDB as keeping every digit, though Malloy's flag says otherwise", () => {

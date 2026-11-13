@@ -53,6 +53,7 @@ import {
    type SqlRunner,
    type WatermarkBound,
 } from "./incremental_apply";
+import { capturedNativeSchema } from "./colocated_native_types";
 import type { IncrementalDeclaration } from "../plan/incremental_declaration";
 
 /**
@@ -793,6 +794,18 @@ export async function refreshOneSourceIncrementally(params: {
    params.manifest.update(sourceEntityId, {
       tableName: target.quotedTablePath,
    });
+   // A colocated table's warehouse column types, read again as a full build
+   // reads them (colocated_native_types.ts): the entry replaces the last
+   // build's, and without them its big-integer columns would answer live.
+   const nativeSchema =
+      lineage.storageDestinationName === undefined
+         ? await capturedNativeSchema({
+              run: target.runner,
+              physicalTableName: target.logicalTablePath,
+              dialect: target.dialect,
+              sourceName: persistSource.name,
+           })
+         : undefined;
    return {
       sourceEntityId,
       sourceName: persistSource.name,
@@ -808,6 +821,7 @@ export async function refreshOneSourceIncrementally(params: {
       // A delta reports where it advanced to; a skip, the boundary in force.
       ...ledgerFields(lineage, outcome.coveredThrough),
       ...refreshFields(outcome.refresh),
+      ...(nativeSchema?.length ? { nativeSchema } : {}),
    };
 }
 
