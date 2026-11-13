@@ -224,7 +224,12 @@ describe("a host manifest from an older worker of the v1 cutover (mixed fleet)",
       const olderID = "f".repeat(ownID.length);
       expect(olderID).not.toBe(ownID);
       const olderEntries = {
-         [olderID]: { ...own, physicalTableName: olderTable },
+         [olderID]: {
+            ...own,
+            sourceEntityId: olderID,
+            sourceName: olderTable,
+            physicalTableName: olderTable,
+         },
       };
 
       await tamper("__preagg__", 1000);
