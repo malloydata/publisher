@@ -943,6 +943,12 @@ _Moved here from the materialization v2 plan (`docs/materialization-v2-plan.md`,
 | `materialization.generation.promoted`                                                    | info event                                                      | `generationId`, `version`                                                                            | the promote call (orchestrated) or commit (auto)                                                                                                                                                    |
 | `asOfMethod` (C3) on `materialization.run.started`                                       | event field                                                     | the run's as-of method                                                                               | `runBuild`, after the claim                                                                                                                                                                         |
 
+**Scenarios it must pass** (materialization v2's requirements, S22 to S24; none is covered by C1b alone, since S22 needs C1a's whole-manifest publish):
+
+- **S22.** `#(materialize)` on flights plus a rollup on `ops.flight_count`. New rows land, and the flights rebuild completes while the rollup rebuild is still running. `flight_count` by `carrier_name` and by `route`, back to back: both read the previous generation until both tables are published, so totals reconcile at every moment (C1, C2).
+- **S23.** Flights and `carriers_base` both materialized (a reference join) on BigQuery. A carrier is renamed between the two table builds. `flight_count` by `carrier_name`: both tables read their sources as of the generation's timestamp, so the rename isn't visible until the next generation, and the path report shows one as-of for both (C3, C4).
+- **S24.** S23 on DuckDB. The path report shows two as-of times, and the workload log records the spread (C4).
+
 **Tests it adds.** Consistency: a partial run's carry-forward and dependent expansion; bind refusing a derived entry pinned to another generation; rollup-over-stored-base snapshot equality in R4. Failure mode: a retention window exceeded (C3).
 
 **Risk.** Generations against today's per-source refresh (C1 to C3): a large change to build and serve, and the hosted half needs control-plane work. Mitigation: the single-node manifest pinning (C1b) ships first in materialization v2; promote and cleanup follow in Credible. Warehouses without as-of reads fall back to the build-window bound and say so.
