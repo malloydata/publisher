@@ -1,0 +1,84 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "order_rows@<hammer>/ivm/ivm.malloy": []
+        },
+        "order": [
+          "order_rows@<hammer>/ivm/ivm.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "order_rows@<hammer>/ivm/ivm.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "order_rows@<hammer>/ivm/ivm.malloy": "ivm.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "order_rows@<hammer>/ivm/ivm.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "order_rows@<hammer>/ivm/ivm.malloy": {
+        "annotationFields": {
+          "merge_key": "order_id",
+          "name": "ivm_rows",
+          "refresh": "incremental",
+          "storage": "lake",
+          "watermark": "batch"
+        },
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "batch",
+            "type": "number"
+          },
+          {
+            "name": "amount_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ivm.malloy",
+        "name": "order_rows",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": "incremental",
+        "sourceEntityId": "0590287a429e95b9a7f1c85100e5da24bf537419ecef8ac84d2556d481d83ee3",
+        "sourceID": "order_rows@<hammer>/ivm/ivm.malloy",
+        "sql": "sha256:4c9ea00b8753229d"
+      }
+    }
+  }
+}

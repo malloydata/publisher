@@ -1,0 +1,154 @@
+// feature: gated sources, gated switch on: files generated while serving
+
+// ==== <pkg>/m.malloy (text 1 of 3)
+##! experimental { givens access_modifiers }
+##! experimental { virtual_source }
+type: locked_mat__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number
+}
+type: gated_mat__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number
+}
+
+given: REGION :: string
+given: ROLE :: string
+
+import "raw.malloy"
+
+#(access_filter) region = $REGION
+source: by_column is orders_raw extend {
+  #(preaggregate) grain=["status", "region"]
+  measure: total is amount.sum()
+}
+
+#(authorize) 'admin' = $ROLE
+source: by_lock is orders_raw extend {
+  #(preaggregate) grain=["status"]
+  measure: total is amount.sum()
+}
+
+#(access_filter) region = $REGION
+#(materialize) storage="lake"
+source: gated_mat is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb')::gated_mat__served extend {
+  measure:
+ n is count()
+ total is amount.sum()
+}
+
+#(authorize) 'admin' = $ROLE
+#(materialize) storage="lake"
+source: locked_mat is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb')::locked_mat__served extend {
+  measure: n is count()
+}
+
+// ==== <pkg>/m.malloy (text 2 of 3)
+##! experimental { access_modifiers givens persistence virtual_source }
+import { REGION, ROLE, by_lock, gated_mat, locked_mat } from "m.malloy.rollup-author.malloy"
+
+import { by_column__rollup__region_status__5f704d70__built is by_column__rollup__region_status__5f704d70 } from "m.malloy.preaggregate.malloy"
+source: by_column__rollup__region_status__5f704d70__served is by_column__rollup__region_status__5f704d70__built extend {
+  measure:
+    #(preaggregate) grain=["status", "region"]
+    total is total__partial.sum()
+}
+#(access_filter) region = $REGION
+source: by_column is by_column__rollup__region_status__5f704d70__served include { internal: total__partial public: * }
+
+// ==== <pkg>/m.malloy (text 3 of 3)
+##! experimental { access_modifiers givens persistence virtual_source }
+import { REGION, ROLE, by_column, gated_mat, locked_mat } from "m.malloy.rollup-author.malloy"
+
+import { by_lock__rollup__status__eb4380b4__built is by_lock__rollup__status__eb4380b4 } from "m.malloy.preaggregate.malloy"
+source: by_lock__rollup__status__eb4380b4__served is by_lock__rollup__status__eb4380b4__built extend {
+  measure:
+    #(preaggregate) grain=["status"]
+    total is total__partial.sum()
+}
+#(authorize) 'admin' = $ROLE
+source: by_lock is by_lock__rollup__status__eb4380b4__served include { internal: total__partial public: * }
+
+// ==== <pkg>/m.malloy.preaggregate.malloy (text 1 of 2)
+##! experimental.persistence
+import { by_column__rollup_base is by_column } from "m.malloy.rollup-author.malloy"
+
+#@ persist
+source: by_column__rollup__region_status__5f704d70 is by_column__rollup_base -> {
+  group_by:
+    region
+    status
+  aggregate:
+    total__partial is amount.sum()
+}
+
+// ==== <pkg>/m.malloy.preaggregate.malloy (text 2 of 2)
+##! experimental.persistence
+import { by_lock__rollup_base is by_lock } from "m.malloy.rollup-author.malloy"
+
+#@ persist
+source: by_lock__rollup__status__eb4380b4 is by_lock__rollup_base -> {
+  group_by:
+    status
+  aggregate:
+    total__partial is amount.sum()
+}
+
+// ==== <pkg>/m.malloy.rollup-author.malloy
+##! experimental { givens access_modifiers }
+given: REGION :: string
+given: ROLE :: string
+
+import "raw.malloy"
+
+#(access_filter) region = $REGION
+source: by_column is orders_raw extend {
+  #(preaggregate) grain=["status", "region"]
+  measure: total is amount.sum()
+}
+
+#(authorize) 'admin' = $ROLE
+source: by_lock is orders_raw extend {
+  #(preaggregate) grain=["status"]
+  measure: total is amount.sum()
+}
+
+#(access_filter) region = $REGION
+#(materialize) storage="lake"
+source: gated_mat is orders_raw extend {
+  measure:
+ n is count()
+ total is amount.sum()
+}
+
+#(authorize) 'admin' = $ROLE
+#(materialize) storage="lake"
+source: locked_mat is orders_raw extend {
+  measure: n is count()
+}
+
+// ==== <pkg>/m.malloy.rollup.malloy (text 1 of 2)
+##! experimental { access_modifiers givens persistence virtual_source }
+import { REGION, ROLE, by_lock, gated_mat, locked_mat, REGION, ROLE } from "m.malloy.rollup-author.malloy"
+import { orders_raw, customers_raw, lines_raw } from "raw.malloy"
+import { by_column } from "m.malloy"
+
+// ==== <pkg>/m.malloy.rollup.malloy (text 2 of 2)
+##! experimental { access_modifiers givens persistence virtual_source }
+import { REGION, ROLE, by_column, gated_mat, locked_mat, REGION, ROLE } from "m.malloy.rollup-author.malloy"
+import { orders_raw, customers_raw, lines_raw } from "raw.malloy"
+import { by_lock } from "m.malloy"

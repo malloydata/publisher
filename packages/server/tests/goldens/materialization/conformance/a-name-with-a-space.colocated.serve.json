@@ -1,0 +1,155 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "spaced",
+        "tier": "colocated"
+      }
+    ],
+    "verdicts": [
+      "spaced:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "line total"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "1da3647c2d4d40b1",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(line total)"
+          ],
+          "source": "spaced",
+          "stages": 1
+        },
+        "source": "spaced"
+      },
+      "equalToLive": true,
+      "malloy": "run: spaced -> { group_by: status; aggregate: lt is `line total`.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "5af4cda2cb1755ea8666a6d3d3846c41477f2dbc3de37ef4b5618385021eb460"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "line total"
+          ],
+          "sourceName": "spaced"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "5af4cda2cb1755ea8666a6d3d3846c41477f2dbc3de37ef4b5618385021eb460"
+        },
+        "warnings": []
+      },
+      "query": "the spaced column",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "line total"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "1da3647c2d4d40b1",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(line total)"
+          ],
+          "source": "spaced",
+          "stages": 1
+        },
+        "source": "spaced"
+      },
+      "equalToLive": true,
+      "malloy": "run: spaced -> { group_by: status; aggregate: lt is `line total`.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "5af4cda2cb1755ea8666a6d3d3846c41477f2dbc3de37ef4b5618385021eb460"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "line total"
+          ],
+          "sourceName": "spaced"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "5af4cda2cb1755ea8666a6d3d3846c41477f2dbc3de37ef4b5618385021eb460"
+        },
+        "warnings": []
+      },
+      "query": "the spaced column",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

@@ -1,0 +1,131 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "daily_orders",
+        "tier": "colocated"
+      }
+    ],
+    "verdicts": [
+      "daily_orders:serves"
+    ],
+    "warnings": [
+      {
+        "code": "persist-unknown-key",
+        "message": "#@ persist source \"daily_orders\": `mergekey=` is not a key `#@` reads, so it does nothing (did you mean `merge_key=`?)",
+        "subject": "daily_orders"
+      }
+    ]
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "ca78588a9c998079",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()"
+          ],
+          "source": "daily_orders",
+          "stages": 1
+        },
+        "source": "daily_orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: daily_orders -> { aggregate: n is count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "3e2e0d29260223019303fa0c3cbb3679421f9c8a7dd2c9ff514138e9b30592bc"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [],
+          "measures": [],
+          "sourceName": "daily_orders"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "3e2e0d29260223019303fa0c3cbb3679421f9c8a7dd2c9ff514138e9b30592bc"
+        },
+        "warnings": []
+      },
+      "query": "count daily_orders",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "ca78588a9c998079",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()"
+          ],
+          "source": "daily_orders",
+          "stages": 1
+        },
+        "source": "daily_orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: daily_orders -> { aggregate: n is count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "3e2e0d29260223019303fa0c3cbb3679421f9c8a7dd2c9ff514138e9b30592bc"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [],
+          "measures": [],
+          "sourceName": "daily_orders"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "3e2e0d29260223019303fa0c3cbb3679421f9c8a7dd2c9ff514138e9b30592bc"
+        },
+        "warnings": []
+      },
+      "query": "count daily_orders",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

@@ -1,0 +1,116 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/sim/orders.malloy": [],
+          "weekly@<hammer>/sim/orders.malloy": [
+            "daily@<hammer>/sim/orders.malloy"
+          ]
+        },
+        "order": [
+          "daily@<hammer>/sim/orders.malloy",
+          "weekly@<hammer>/sim/orders.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/sim/orders.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "weekly@<hammer>/sim/orders.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/sim/orders.malloy": "orders.malloy",
+      "weekly@<hammer>/sim/orders.malloy": "orders.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/sim/orders.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/sim/orders.malloy"
+              ],
+              "sourceID": "weekly@<hammer>/sim/orders.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/sim/orders.malloy": {
+        "annotationFields": {
+          "name": "sim_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "orders.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "bca6f544d948e815fb8e735b47787915a4b52dbcc87e7d257e951af41ab7e5d3",
+        "sourceID": "daily@<hammer>/sim/orders.malloy",
+        "sql": "sha256:c82ed3437e494633"
+      },
+      "weekly@<hammer>/sim/orders.malloy": {
+        "annotationFields": {
+          "name": "sim_weekly",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "grand_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "orders.malloy",
+        "name": "weekly",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "cc7a8093a2fc454e407e504b031e3bf381b1d4004d6bc8b76e9e95f6898cf179",
+        "sourceID": "weekly@<hammer>/sim/orders.malloy",
+        "sql": "sha256:6a2fd2da4e6da0a6"
+      }
+    }
+  }
+}

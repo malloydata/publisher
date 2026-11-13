@@ -1,0 +1,180 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "order",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "order:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "count"
+          },
+          {
+            "classifications": [],
+            "path": "group"
+          },
+          {
+            "classifications": [],
+            "path": "order"
+          },
+          {
+            "classifications": [],
+            "path": "select"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "order",
+            "select"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "8b4b7d98270a9d71",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(count)",
+            "group"
+          ],
+          "source": "order",
+          "stages": 1
+        },
+        "source": "order"
+      },
+      "equalToLive": true,
+      "malloy": "run: `order` -> { group_by: `select`, `order`; aggregate: c is `count`.sum(), `group` }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "ddeab0253bd9657798b023c29fabb35badff349b5ffe3f3fd2e14f144ba0e635"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "select",
+            "order"
+          ],
+          "measures": [
+            "count",
+            "group"
+          ],
+          "sourceName": "order"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "ddeab0253bd9657798b023c29fabb35badff349b5ffe3f3fd2e14f144ba0e635"
+        },
+        "warnings": []
+      },
+      "query": "reserved-word fields",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "count"
+          },
+          {
+            "classifications": [],
+            "path": "group"
+          },
+          {
+            "classifications": [],
+            "path": "order"
+          },
+          {
+            "classifications": [],
+            "path": "select"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "order",
+            "select"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "8b4b7d98270a9d71",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(count)",
+            "group"
+          ],
+          "source": "order",
+          "stages": 1
+        },
+        "source": "order"
+      },
+      "equalToLive": true,
+      "malloy": "run: `order` -> { group_by: `select`, `order`; aggregate: c is `count`.sum(), `group` }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "ddeab0253bd9657798b023c29fabb35badff349b5ffe3f3fd2e14f144ba0e635"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "select",
+            "order"
+          ],
+          "measures": [
+            "count",
+            "group"
+          ],
+          "sourceName": "order"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "ddeab0253bd9657798b023c29fabb35badff349b5ffe3f3fd2e14f144ba0e635",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "reserved-word fields",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

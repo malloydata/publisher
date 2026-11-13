@@ -1,0 +1,97 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "by_date@<hammer>/rss/rss.malloy": [],
+          "scoped_rollup@<hammer>/rss/rss.malloy": []
+        },
+        "order": [
+          "by_date@<hammer>/rss/rss.malloy",
+          "scoped_rollup@<hammer>/rss/rss.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "by_date@<hammer>/rss/rss.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "scoped_rollup@<hammer>/rss/rss.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "by_date@<hammer>/rss/rss.malloy": "rss.malloy",
+      "scoped_rollup@<hammer>/rss/rss.malloy": "rss.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "by_date@<hammer>/rss/rss.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "scoped_rollup@<hammer>/rss/rss.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {
+      "scoped_rollup@<hammer>/rss/rss.malloy": {
+        "message": "Source 'scoped_rollup' cannot be materialized into a storage destination: a given is read while the persisted relation is BUILT, so its value is substituted at build time — from the declaration's default, the only value available then — and every caller is served that one slice. Move the given out of the persisted query and into the source's extend block (`where: …`), where it is left out of the build and applied per caller when the artifact is read.",
+        "modelPath": "rss.malloy",
+        "name": "scoped_rollup",
+        "reason": "given_in_persisted_query",
+        "sourceID": "scoped_rollup@<hammer>/rss/rss.malloy",
+        "tier": "storage"
+      }
+    },
+    "sources": {
+      "by_date@<hammer>/rss/rss.malloy": {
+        "annotationFields": {
+          "name": "rss_by_date",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "rss.malloy",
+        "name": "by_date",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "d6ce0dba9f8d006ca13abcbcf57fa6f08b5d02dc1dfcf2a7b8a1914d7ae5f7f2",
+        "sourceID": "by_date@<hammer>/rss/rss.malloy",
+        "sql": "sha256:fd5612fb0b236af0"
+      }
+    }
+  }
+}

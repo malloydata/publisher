@@ -1,0 +1,122 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "daily_r@<pkg>/m.malloy": []
+        },
+        "order": [
+          "daily_r@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "daily_r@<pkg>/m.malloy": {
+        "buildSourceName": "daily_r__mat",
+        "columns": [
+          {
+            "column": "area",
+            "computed": false,
+            "dimension": "area"
+          },
+          {
+            "column": "total",
+            "computed": false,
+            "dimension": "total"
+          },
+          {
+            "column": "order_day",
+            "computed": false,
+            "dimension": "order_day"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "daily_r",
+          "storage": "lake"
+        },
+        "sourceID": "daily_r@<pkg>/m.malloy",
+        "sourceName": "daily_r",
+        "storedColumns": [
+          {
+            "name": "area",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "total",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_day",
+            "type": "DATE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily_r@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily_r@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily_r@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "daily_r@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "daily_r",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "area",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "order_day",
+            "type": "date"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "daily_r",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "795f45fa66eea903bdfe67664522fbeb875ef94ed68b499f85d7e46fc9c8557f",
+        "sourceID": "daily_r@<pkg>/m.malloy",
+        "sql": "sha256:1831ff34873e9660"
+      }
+    }
+  }
+}

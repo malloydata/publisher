@@ -1,0 +1,307 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "annotated",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "annotated:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "order_month"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "order_month",
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "fd888c6b7e264b14",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "annotated",
+          "stages": 1
+        },
+        "source": "annotated"
+      },
+      "equalToLive": true,
+      "malloy": "run: annotated -> { group_by: region, order_month; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "e6445a23f015408d62c8f05d74c67fb93f6c6445d24521d1b1d4a41fd0a4b924"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region",
+            "order_month"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "annotated"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "e6445a23f015408d62c8f05d74c67fb93f6c6445d24521d1b1d4a41fd0a4b924"
+        },
+        "warnings": []
+      },
+      "query": "an annotated output field and an annotated measure",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "order_month"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "order_month"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "4476aab20beebf38",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "annotated",
+          "stages": 1
+        },
+        "source": "annotated"
+      },
+      "equalToLive": true,
+      "malloy": "run: annotated -> { group_by: order_month; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "e6445a23f015408d62c8f05d74c67fb93f6c6445d24521d1b1d4a41fd0a4b924"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "order_month"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "annotated"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "e6445a23f015408d62c8f05d74c67fb93f6c6445d24521d1b1d4a41fd0a4b924"
+        },
+        "warnings": []
+      },
+      "query": "a stored measure column re-aggregated",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "order_month"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "order_month",
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "fd888c6b7e264b14",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "annotated",
+          "stages": 1
+        },
+        "source": "annotated"
+      },
+      "equalToLive": true,
+      "malloy": "run: annotated -> { group_by: region, order_month; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "e6445a23f015408d62c8f05d74c67fb93f6c6445d24521d1b1d4a41fd0a4b924"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region",
+            "order_month"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "annotated"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "e6445a23f015408d62c8f05d74c67fb93f6c6445d24521d1b1d4a41fd0a4b924",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "an annotated output field and an annotated measure",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "order_month"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "order_month"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "4476aab20beebf38",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "annotated",
+          "stages": 1
+        },
+        "source": "annotated"
+      },
+      "equalToLive": true,
+      "malloy": "run: annotated -> { group_by: order_month; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "e6445a23f015408d62c8f05d74c67fb93f6c6445d24521d1b1d4a41fd0a4b924"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "order_month"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "annotated"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "e6445a23f015408d62c8f05d74c67fb93f6c6445d24521d1b1d4a41fd0a4b924",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a stored measure column re-aggregated",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

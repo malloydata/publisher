@@ -111,6 +111,15 @@ export interface LoadedFixture {
    dispose(): Promise<void>;
 }
 
+/** How {@link loadFixture}'s `bind` builds the plan. */
+export interface BindOptions {
+   /**
+    * Build the `#(preaggregate)` and `#@ preaggregate` rollups too (default
+    * false: the conformance fixture serves no rollup, so it builds none).
+    */
+   includeRollups?: boolean;
+}
+
 /**
  * Write `files` as a package under a fresh environment, load it, and return a
  * handle that can build and bind it (`bind`) and query it. Queries before
@@ -118,8 +127,12 @@ export interface LoadedFixture {
  */
 export async function loadFixture(files: Record<string, string>): Promise<{
    run: LoadedFixture["run"];
-   bind(): Promise<LoadedFixture>;
+   bind(options?: BindOptions): Promise<LoadedFixture>;
    dispose(): Promise<void>;
+   /** The loaded package, before any bind. */
+   pkg: Package;
+   /** The temporary directory the environment and the lake live in. */
+   root: string;
 }> {
    const root = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-conform-"));
    const envPath = path.join(root, "env");
@@ -197,8 +210,10 @@ export async function loadFixture(files: Record<string, string>): Promise<{
    return {
       run,
       dispose,
-      async bind() {
-         const { built, buildErrors } = await buildAll(pkg, lake);
+      pkg,
+      root,
+      async bind(options: BindOptions = {}) {
+         const { built, buildErrors } = await buildAll(pkg, lake, options);
          // The served copy compiles at bind, asynchronously; settle it so its
          // warnings and its first answer are not a race.
          for (const modelPath of pkg.getModelPaths()) {
@@ -236,6 +251,7 @@ export async function loadFixture(files: Record<string, string>): Promise<{
 async function buildAll(
    pkg: Package,
    lake: DuckDBConnection,
+   options: BindOptions = {},
 ): Promise<{
    built: LoadedFixture["built"];
    buildErrors: Record<string, string>;
@@ -252,7 +268,7 @@ async function buildAll(
    // The declaring source first, so a table is recorded under it rather than
    // an extension that inherits its annotation.
    const entries = Object.values(pkg.getBuildPlan()?.sources ?? {})
-      .filter((e) => e.origin !== "preaggregate")
+      .filter((e) => options.includeRollups || e.origin !== "preaggregate")
       .sort(
          (a, b) =>
             Number(b.annotationFields?.name === b.name) -

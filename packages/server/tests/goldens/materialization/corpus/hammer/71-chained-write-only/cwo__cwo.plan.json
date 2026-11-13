@@ -1,0 +1,116 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/cwo/cwo.malloy": [],
+          "rollup@<hammer>/cwo/cwo.malloy": [
+            "daily@<hammer>/cwo/cwo.malloy"
+          ]
+        },
+        "order": [
+          "daily@<hammer>/cwo/cwo.malloy",
+          "rollup@<hammer>/cwo/cwo.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/cwo/cwo.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollup@<hammer>/cwo/cwo.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/cwo/cwo.malloy": "cwo.malloy",
+      "rollup@<hammer>/cwo/cwo.malloy": "cwo.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/cwo/cwo.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/cwo/cwo.malloy"
+              ],
+              "sourceID": "rollup@<hammer>/cwo/cwo.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/cwo/cwo.malloy": {
+        "annotationFields": {
+          "name": "cwo_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cwo.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "04d5219ebfb9be9beb295a1ff05807f1dcd25b740d96e59ca649e36a5a67a4bd",
+        "sourceID": "daily@<hammer>/cwo/cwo.malloy",
+        "sql": "sha256:317d40bdb07d22b9"
+      },
+      "rollup@<hammer>/cwo/cwo.malloy": {
+        "annotationFields": {
+          "name": "cwo_rollup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "grand_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cwo.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "efe8fe51a7a252aab414b1c8765d50adf4f2352f84d93ee942ca70bb56355abc",
+        "sourceID": "rollup@<hammer>/cwo/cwo.malloy",
+        "sql": "sha256:9e61b51124743c78"
+      }
+    }
+  }
+}

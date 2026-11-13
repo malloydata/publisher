@@ -1,0 +1,126 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "summary@<pkg>/a.malloy": []
+        },
+        "order": [
+          "summary@<pkg>/a.malloy"
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "summary@<pkg>/b.malloy": []
+        },
+        "order": [
+          "summary@<pkg>/b.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "summary@<pkg>/a.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "summary@<pkg>/b.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "summary@<pkg>/a.malloy": "a.malloy",
+      "summary@<pkg>/b.malloy": "b.malloy"
+    }
+  },
+  "loadWarnings": [
+    {
+      "message": "#@ persist sources \"summary\", \"summary\" all resolve to the same materialized table \"summary\" in destination \"duckdb\". Distinct sources must not share a physical target — the second build would overwrite the first, and a serve binding or GC drop for one would affect the other, so none is served from it and queries on them are answered live. Give each a distinct #@ persist name=."
+    }
+  ],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "summary@<pkg>/a.malloy"
+            }
+          ]
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "summary@<pkg>/b.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "summary@<pkg>/a.malloy": {
+        "annotationFields": {},
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "a.malloy",
+        "name": "summary",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3",
+        "sourceID": "summary@<pkg>/a.malloy",
+        "sql": "sha256:d52258e1b431e257"
+      },
+      "summary@<pkg>/b.malloy": {
+        "annotationFields": {},
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "b.malloy",
+        "name": "summary",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7",
+        "sourceID": "summary@<pkg>/b.malloy",
+        "sql": "sha256:42314ee13920b1bc"
+      }
+    }
+  }
+}

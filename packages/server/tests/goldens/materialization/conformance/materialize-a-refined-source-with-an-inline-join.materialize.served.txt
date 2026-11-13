@@ -1,0 +1,73 @@
+// conformance: materialize: a refined source with an inline join [materialize]: files generated while serving
+
+// ==== <pkg>/m.malloy (text 1 of 2)
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: enriched__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number,
+   order_month::date,
+   big::boolean
+}
+
+import "raw.malloy"
+
+#(materialize) storage="lake"
+source: enriched is __served_copy_alias_of_lake.virtual('58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909')::enriched__served extend {
+  internal rename:
+    order_month__stored is order_month
+  join_one: c is customers_raw extend {
+    dimension: seg_up is upper(segment)
+  } on customer_id = c.id
+  dimension:
+    #(doc) "Month of the order"
+    order_month is order_month__stored.month
+  measure: total is amount.sum()
+}
+
+source: enriched_ext is enriched extend {
+  measure: n is count()
+}
+
+// ==== <pkg>/m.malloy (text 2 of 2)
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: enriched__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number,
+   order_month::date,
+   big::boolean
+}
+
+import "raw.malloy"
+
+#(materialize) storage="lake"
+source: enriched is __served_copy_alias_of_lake.virtual('58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909')::enriched__served extend {
+  internal rename:
+    order_month__stored is order_month
+                                       
+                                       
+                         
+  dimension:
+    #(doc) "Month of the order"
+    order_month is order_month__stored.month
+  measure: total is amount.sum()
+}
+
+source: enriched_ext is enriched extend {
+  measure: n is count()
+}

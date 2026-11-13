@@ -1,0 +1,200 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/ctp/ctp.malloy": [],
+          "daily_counts@<hammer>/ctp/ctp.malloy": [],
+          "joined@<hammer>/ctp/ctp.malloy": [],
+          "rollup@<hammer>/ctp/ctp.malloy": [
+            "daily@<hammer>/ctp/ctp.malloy",
+            "joined@<hammer>/ctp/ctp.malloy"
+          ]
+        },
+        "order": [
+          "daily@<hammer>/ctp/ctp.malloy",
+          "joined@<hammer>/ctp/ctp.malloy",
+          "daily_counts@<hammer>/ctp/ctp.malloy",
+          "rollup@<hammer>/ctp/ctp.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/ctp/ctp.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "daily_counts@<hammer>/ctp/ctp.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "joined@<hammer>/ctp/ctp.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollup@<hammer>/ctp/ctp.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/ctp/ctp.malloy": "ctp.malloy",
+      "daily_counts@<hammer>/ctp/ctp.malloy": "ctp.malloy",
+      "joined@<hammer>/ctp/ctp.malloy": "ctp.malloy",
+      "rollup@<hammer>/ctp/ctp.malloy": "ctp.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/ctp/ctp.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "joined@<hammer>/ctp/ctp.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "daily_counts@<hammer>/ctp/ctp.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/ctp/ctp.malloy",
+                "joined@<hammer>/ctp/ctp.malloy"
+              ],
+              "sourceID": "rollup@<hammer>/ctp/ctp.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/ctp/ctp.malloy": {
+        "annotationFields": {
+          "name": "ctp_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ctp.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "19419b266dd98e1b3a815a0f79507e1dd5b022eccc5358e978519ed2b333168c",
+        "sourceID": "daily@<hammer>/ctp/ctp.malloy",
+        "sql": "sha256:2b284e4433e25273"
+      },
+      "daily_counts@<hammer>/ctp/ctp.malloy": {
+        "annotationFields": {
+          "name": "ctp_daily_counts",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "order_count",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ctp.malloy",
+        "name": "daily_counts",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "8ecb0ba1fb30213898e124664fed5956b906fc4692213f71ae06f4bac64442fe",
+        "sourceID": "daily_counts@<hammer>/ctp/ctp.malloy",
+        "sql": "sha256:d33a41f35eb001cf"
+      },
+      "joined@<hammer>/ctp/ctp.malloy": {
+        "annotationFields": {
+          "name": "ctp_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ctp.malloy",
+        "name": "joined",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "19419b266dd98e1b3a815a0f79507e1dd5b022eccc5358e978519ed2b333168c",
+        "sourceID": "joined@<hammer>/ctp/ctp.malloy",
+        "sql": "sha256:2b284e4433e25273"
+      },
+      "rollup@<hammer>/ctp/ctp.malloy": {
+        "annotationFields": {
+          "name": "ctp_rollup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "grand_total",
+            "type": "number"
+          },
+          {
+            "name": "orders",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ctp.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "067cf1c1dccc96f12d0ae683b02e2b48aa69cc9447e166f65f25b5d6ea66216b",
+        "sourceID": "rollup@<hammer>/ctp/ctp.malloy",
+        "sql": "sha256:5d9c1f5892d03cee"
+      }
+    }
+  }
+}

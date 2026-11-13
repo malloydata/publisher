@@ -1,0 +1,323 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "customer_dim",
+        "tier": "storage"
+      },
+      {
+        "name": "order_facts",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "customer_dim:serves",
+      "order_facts:serves"
+    ],
+    "warnings": [
+      {
+        "code": "served-copy-not-served",
+        "message": "This model's served copy does not compile, so its stored sources serve through the serve shape or live."
+      },
+      {
+        "code": "served-copy-not-served",
+        "message": "This model's served copy does not compile, so its stored sources serve through the serve shape or live."
+      },
+      {
+        "code": "served-copy-not-served",
+        "message": "This model's served copy does not compile, so its stored sources serve through the serve shape or live."
+      }
+    ]
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "amount"
+          },
+          {
+            "classifications": [],
+            "path": "c.segment"
+          },
+          {
+            "classifications": [],
+            "path": "c.west_n"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "c.segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "4bbba08dfc6b32dc",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(amount)",
+            "c.west_n"
+          ],
+          "source": "order_facts",
+          "stages": 1
+        },
+        "source": "order_facts"
+      },
+      "equalToLive": true,
+      "malloy": "run: order_facts -> { group_by: c.segment; aggregate: w is c.west_n, t is amount.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "MISSING_FIELD",
+            "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "c.segment"
+          ],
+          "measures": [
+            "c.west_n",
+            "amount"
+          ],
+          "sourceName": "order_facts"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a measure over the joined source's internal column, from the index",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "segment"
+          },
+          {
+            "classifications": [],
+            "path": "west_n"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3fa46cbf319de5b2",
+          "kind": "reduce",
+          "measures": [
+            "west_n"
+          ],
+          "source": "customer_dim",
+          "stages": 1
+        },
+        "source": "customer_dim"
+      },
+      "equalToLive": true,
+      "malloy": "run: customer_dim -> { group_by: segment; aggregate: west_n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "MISSING_FIELD",
+            "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "west_n"
+          ],
+          "sourceName": "customer_dim"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the joined source's measure, in its own file",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "amount"
+          },
+          {
+            "classifications": [],
+            "path": "c.segment"
+          },
+          {
+            "classifications": [],
+            "path": "c.west_n"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "c.segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "4bbba08dfc6b32dc",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(amount)",
+            "c.west_n"
+          ],
+          "source": "order_facts",
+          "stages": 1
+        },
+        "source": "order_facts"
+      },
+      "equalToLive": true,
+      "malloy": "run: order_facts -> { group_by: c.segment; aggregate: w is c.west_n, t is amount.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "MISSING_FIELD",
+            "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "c.segment"
+          ],
+          "measures": [
+            "c.west_n",
+            "amount"
+          ],
+          "sourceName": "order_facts"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a measure over the joined source's internal column, from the index",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "segment"
+          },
+          {
+            "classifications": [],
+            "path": "west_n"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3fa46cbf319de5b2",
+          "kind": "reduce",
+          "measures": [
+            "west_n"
+          ],
+          "source": "customer_dim",
+          "stages": 1
+        },
+        "source": "customer_dim"
+      },
+      "equalToLive": true,
+      "malloy": "run: customer_dim -> { group_by: segment; aggregate: west_n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "MISSING_FIELD",
+            "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "west_n"
+          ],
+          "sourceName": "customer_dim"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the joined source's measure, in its own file",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

@@ -1,0 +1,124 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "batch_totals@<hammer>/ivc/ivc.malloy": [],
+          "doubled@<hammer>/ivc/ivc.malloy": [
+            "batch_totals@<hammer>/ivc/ivc.malloy"
+          ]
+        },
+        "order": [
+          "batch_totals@<hammer>/ivc/ivc.malloy",
+          "doubled@<hammer>/ivc/ivc.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "batch_totals@<hammer>/ivc/ivc.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "doubled@<hammer>/ivc/ivc.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "batch_totals@<hammer>/ivc/ivc.malloy": "ivc.malloy",
+      "doubled@<hammer>/ivc/ivc.malloy": "ivc.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "batch_totals@<hammer>/ivc/ivc.malloy"
+            },
+            {
+              "dependsOn": [
+                "batch_totals@<hammer>/ivc/ivc.malloy"
+              ],
+              "sourceID": "doubled@<hammer>/ivc/ivc.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "batch_totals@<hammer>/ivc/ivc.malloy": {
+        "annotationFields": {
+          "name": "ivc_batches",
+          "refresh": "incremental",
+          "storage": "lake",
+          "watermark": "batch"
+        },
+        "columns": [
+          {
+            "name": "batch",
+            "type": "number"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ivc.malloy",
+        "name": "batch_totals",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": "incremental",
+        "sourceEntityId": "98a9b66e913464c7653ea2b213b70a5e0b49a6224e5820587102347c6fd459be",
+        "sourceID": "batch_totals@<hammer>/ivc/ivc.malloy",
+        "sql": "sha256:d569e28d71a50ca5"
+      },
+      "doubled@<hammer>/ivc/ivc.malloy": {
+        "annotationFields": {
+          "name": "ivc_doubled",
+          "refresh": "incremental",
+          "storage": "lake",
+          "watermark": "batch"
+        },
+        "columns": [
+          {
+            "name": "batch",
+            "type": "number"
+          },
+          {
+            "name": "doubled_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ivc.malloy",
+        "name": "doubled",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": "incremental",
+        "sourceEntityId": "9d7e97a0b40f210d3911745033de9529cf5282b33f3eb0f9159568015c305bdf",
+        "sourceID": "doubled@<hammer>/ivc/ivc.malloy",
+        "sql": "sha256:88325a7899c3ffc1"
+      }
+    }
+  }
+}

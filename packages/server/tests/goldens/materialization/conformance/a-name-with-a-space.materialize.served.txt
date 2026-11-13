@@ -1,0 +1,14 @@
+// conformance: a name with a space [materialize]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: spaced__served is {
+   status::string,
+   `line total`::number
+}
+
+import "raw.malloy"
+
+#(materialize) storage="lake"
+source: spaced is __served_copy_alias_of_lake.virtual('ab7413d03101ccc433b90013f48de0df48c21d5097024c169a5d3b0d9b722f44')::spaced__served

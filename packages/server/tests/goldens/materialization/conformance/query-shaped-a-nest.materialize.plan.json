@@ -1,0 +1,118 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "nested@<pkg>/m.malloy": []
+        },
+        "order": [
+          "nested@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "nested@<pkg>/m.malloy": {
+        "buildSourceName": "nested__mat",
+        "columns": [
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "total",
+            "computed": false,
+            "dimension": "total"
+          },
+          {
+            "column": "by_status",
+            "computed": false,
+            "dimension": "by_status"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "nested",
+          "storage": "lake"
+        },
+        "sourceID": "nested@<pkg>/m.malloy",
+        "sourceName": "nested",
+        "storedColumns": [
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "total",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "by_status",
+            "type": "STRUCT(\"status\" VARCHAR, \"n\" BIGINT)[]"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "nested@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "nested@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "nested@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "nested@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "nested",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "nested",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "2dd1093d430137e8a6481be81760193ed55b86915c232e4d9ed5f68efd17443c",
+        "sourceID": "nested@<pkg>/m.malloy",
+        "sql": "sha256:74a679f387aea669"
+      }
+    }
+  }
+}

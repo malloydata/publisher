@@ -1,0 +1,75 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "spaced@<pkg>/m.malloy": []
+        },
+        "order": [
+          "spaced@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "spaced@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "spaced@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "spaced@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "spaced@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "spaced",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "line total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "spaced",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "5af4cda2cb1755ea8666a6d3d3846c41477f2dbc3de37ef4b5618385021eb460",
+        "sourceID": "spaced@<pkg>/m.malloy",
+        "sql": "sha256:202972a170247e14"
+      }
+    }
+  }
+}

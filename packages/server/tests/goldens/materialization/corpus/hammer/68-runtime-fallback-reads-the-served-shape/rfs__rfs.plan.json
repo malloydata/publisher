@@ -1,0 +1,116 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/rfs/rfs.malloy": [],
+          "weekly@<hammer>/rfs/rfs.malloy": []
+        },
+        "order": [
+          "daily@<hammer>/rfs/rfs.malloy",
+          "weekly@<hammer>/rfs/rfs.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/rfs/rfs.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "weekly@<hammer>/rfs/rfs.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/rfs/rfs.malloy": "rfs.malloy",
+      "weekly@<hammer>/rfs/rfs.malloy": "rfs.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/rfs/rfs.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "weekly@<hammer>/rfs/rfs.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/rfs/rfs.malloy": {
+        "annotationFields": {
+          "name": "rfs_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "rfs.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "9e5e51436de410d2744df57f04a2f660aaebe9725a0d8bd9449f763a168c3f50",
+        "sourceID": "daily@<hammer>/rfs/rfs.malloy",
+        "sql": "sha256:b12f6349f1abbe0b"
+      },
+      "weekly@<hammer>/rfs/rfs.malloy": {
+        "annotationFields": {
+          "name": "rfs_weekly",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "orders_count",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "rfs.malloy",
+        "name": "weekly",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "5b1498387954654e207f8792e17e1bda2336913eda8007641eb0a025a713db6e",
+        "sourceID": "weekly@<hammer>/rfs/rfs.malloy",
+        "sql": "sha256:c75026f470eaeeca"
+      }
+    }
+  }
+}
