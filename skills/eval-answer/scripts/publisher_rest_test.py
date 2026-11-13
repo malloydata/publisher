@@ -257,6 +257,26 @@ class PackageIdentityTests(unittest.TestCase):
                            "api/v0/environments/env/packages/pkg": pkg}),
             {"sourceContentSha": "abc", "servedRevision": "r1"})
 
+class BuildCosts(unittest.TestCase):
+    def test_one_row_per_built_table_with_what_the_server_reported(self):
+        manifest = {"entries": {
+            "b@m": {"sourceName": "b", "rowCount": 10, "buildDurationMs": 400,
+                    "queryCostBytes": None, "storageDestinationName": "lake"},
+            "a@m": {"sourceName": "a", "origin": "preaggregate", "rowCount": 3,
+                    "buildDurationMs": None, "queryCostBytes": 2048},
+            "bad@m": {"sourceName": "bad", "error": "boom"}}}
+        got = publisher_rest.build_costs(manifest)
+        self.assertEqual([b["source"] for b in got], ["a", "b"])       # sorted, failures out
+        self.assertEqual((got[0]["origin"], got[0]["buildMs"], got[0]["scannedBytes"]),
+                         ("preaggregate", None, 2048))                  # null stays null
+        self.assertEqual((got[1]["origin"], got[1]["rows"], got[1]["storage"]),
+                         ("persist", 10, "lake"))
+
+    def test_no_manifest_is_no_builds(self):
+        for m in (None, {}, {"entries": None}, "x"):
+            self.assertEqual(publisher_rest.build_costs(m), [])
+
+
 if __name__ == "__main__":
     os.chdir(os.path.dirname(__file__))
     unittest.main()

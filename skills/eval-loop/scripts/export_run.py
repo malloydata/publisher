@@ -113,6 +113,8 @@ def rows_runs(run: pathlib.Path, meta: dict[str, Any], index_row: dict[str, Any]
         "decided": index_row.get("decided"), "recall_exact": index_row.get("recall_exact"),
         "answerer_cost_usd": meta.get("answererCostUsd"), "judge_cost_usd": meta.get("judgeCostUsd"),
         "p50_ms": index_row.get("p50_ms"), "total_ms": index_row.get("total_ms"),
+        "build_ms": index_row.get("build_ms"),
+        "build_scanned_bytes": index_row.get("build_scanned_bytes"),
         # The file as written, not a re-serialization: import_run.py writes
         # this text back, and a store tells two copies of a run apart by their
         # bytes.
@@ -233,7 +235,7 @@ COLUMNS = {
                   "judge_model", "judge_version", "rubric_sha", "judge_prompt_sha",
                   "retrieval_mode", "model_git_sha", "cases", "passed", "decided",
                   "recall_exact", "answerer_cost_usd", "judge_cost_usd", "p50_ms", "total_ms",
-                  "run_json"),
+                  "build_ms", "build_scanned_bytes", "run_json"),
     "eval_attempts": ATTEMPT_COLUMNS,
     "eval_events": ("run_id", "seq", "kind", "qid", "sample", "event"),
     "eval_transcripts": ("run_id", "qid", "transcript", "answer", "judge"),

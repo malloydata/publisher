@@ -45,6 +45,18 @@ bound, and the newest build. **A reload unbinds them.** After any edit,
 time nothing before that, or every persisted source computes live. The replay
 warns when a persisted source has no bound table.
 
+The same state carries what each built table cost, as `builds`: its rows, the
+time that one table took to build, and the warehouse bytes the build scanned.
+That is the other side of a speed edit. A persisted source makes reads faster
+and costs a build on every refresh, so a replay prints the build cost under the
+query times, with the baseline's beside it, and `summary.json` holds it as
+`build`. Read the two together: 3 seconds saved across the stored queries for
+a 40 second build each night is a trade, not a win. A measure the server did
+not report is null, never zero: a table that was reused was not built again,
+and DuckDB reports no bytes. The server reports no size on disk, so rows is
+the only size, and a table built beside its source in local DuckDB reports no
+rows either: measured, such a build reported its 4 ms and nothing else.
+
 `servedFrom` reports only the `storage=` tier. A query answered from a table
 built in the source's own warehouse reads null, the same as a live one, so use
 the binding in `run.json`, not `servedFrom`, to say a colocated persist was in

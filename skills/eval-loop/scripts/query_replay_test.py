@@ -292,6 +292,27 @@ class Replay(unittest.TestCase):
         self.assertEqual(json.loads((d / "run.json").read_text())["status"], "aborted")
         self.assertIsNone(ri.record(ri.set_runs(qr.config.load(self.set)), "perf"))
 
+    def test_a_replay_records_what_the_tables_cost_and_shows_the_baselines(self):
+        one = {"builds": [{"source": "orders", "rows": 9, "buildMs": 400, "scannedBytes": None}]}
+        two = {"builds": [{"source": "orders", "rows": 9, "buildMs": 300, "scannedBytes": None},
+                          {"source": "items", "rows": 2, "buildMs": None, "scannedBytes": None}]}
+        _, _, d1 = self.replay("perf-1", mat=one)
+        code, out, d2 = self.replay("perf-2", "--from", "perf-1", "--baseline", "perf-1", mat=two)
+        b = json.loads((d2 / "summary.json").read_text())["build"]
+        self.assertEqual((b["tables"], b["build_ms"], b["scanned_bytes"], b["rows"]),
+                         (2, 300, None, 11))
+        self.assertEqual(b["unreported"], {"build_ms": 1, "scanned_bytes": 2})
+        self.assertIn("build cost: 2 table(s), 300 ms to build (1 did not report a build time)", out)
+        self.assertIn("(baseline: 1 table(s), 400 ms to build)", out)
+        row = next(r for r in ri.set_runs(qr.config.load(self.set)) if r["run"] == "perf-2")
+        self.assertEqual(row["build_ms"], 300)
+
+    def test_a_package_with_no_built_table_has_no_build_cost(self):
+        _, out, d = self.replay("perf-1")
+        self.assertIsNone(json.loads((d / "summary.json").read_text())["build"])
+        self.assertNotIn("build cost", out)
+        self.assertIsNone(qr.build_summary([]))
+
     def test_a_slice_limits_the_queries(self):
         code, _, d = self.replay("perf-s", "--tag", "join")
         self.assertEqual(code, 0)

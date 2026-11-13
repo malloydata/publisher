@@ -100,6 +100,9 @@ def speed_number(run: pathlib.Path) -> dict[str, Any]:
     return {"queries": s.get("queries"), "errors": s.get("errors"),
             "p50Ms": s.get("p50_ms"), "p95Ms": s.get("p95_ms"), "totalMs": s.get("total_ms"),
             "slow": s.get("slow") or [],
+            "build": ({"tables": b["tables"], "buildMs": b["build_ms"],
+                       "scannedBytes": b["scanned_bytes"], "rows": b["rows"]}
+                      if (b := s.get("build")) else None),
             "compare": {"baseline": c.get("baseline"),
                         "rowsChanged": c.get("rows_changed") or [],
                         "broke": c.get("broke") or [],

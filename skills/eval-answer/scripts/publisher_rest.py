@@ -198,7 +198,8 @@ def materialization_state(base: str, environment: str, package: str,
     Read from `GET …/build-plan` (the persist sources a build makes, and the
     ones it refuses), `GET …/status` (`manifestBindingStatus`,
     `manifestEntryCount`, `storageServeBindings`) and the newest
-    `GET …/materializations` entry. A key the server could not answer is absent.
+    `GET …/materializations` entry, whose manifest gives `builds`: what each
+    built table cost (`build_costs`). A key the server could not answer is absent.
 
     `persistSources` with `bound` false is the state to warn about: the model
     declares persisted tables, and queries still compute live, because no build
@@ -235,12 +236,45 @@ def materialization_state(base: str, environment: str, package: str,
             m = runs[0]
             out["latestMaterialization"] = {k: m.get(k) for k in
                                             ("id", "status", "completedAt")}
+            if not isinstance(m.get("manifest"), dict) and m.get("id"):
+                # A listing may leave the manifest out; the record itself has it.
+                full = get_json(base, f"{pkg_path}/materializations/"
+                                      f"{urllib.parse.quote(str(m['id']))}{q}")
+                m = full if isinstance(full, dict) else m
+            builds = build_costs(m.get("manifest"))
+            if builds:
+                out["builds"] = builds
     except Exception:                                   # noqa: BLE001
         pass
     if "persistSources" in out:
         out["bound"] = (out.get("manifestBindingStatus") == "bound"
                         or bool(out.get("storageServeBindings")))
     return out
+
+
+def build_costs(manifest: Any) -> list[dict[str, Any]]:
+    """What each built table cost, from a materialization's manifest.
+
+    One row per source the build made a table for: `rows`, `buildMs` (wall
+    clock for that one table) and `scannedBytes` (warehouse bytes the build
+    read, which is the recurring cost of keeping the source materialized).
+    Each is null when the server did not report it: a reused table was not
+    built again, and DuckDB reports no bytes. Null is not zero. The server
+    reports no size on disk, so rows is the only size here.
+    """
+    entries = (manifest or {}).get("entries") if isinstance(manifest, dict) else None
+    out = []
+    for e in (entries or {}).values() if isinstance(entries, dict) else []:
+        if not isinstance(e, dict) or e.get("error"):
+            continue
+        out.append({"source": e.get("sourceName"),
+                    "origin": e.get("origin") or "persist",
+                    "storage": e.get("storageDestinationName"),
+                    "rows": e.get("rowCount"),
+                    "buildMs": e.get("buildDurationMs"),
+                    "scannedBytes": e.get("queryCostBytes"),
+                    "dataAsOf": e.get("dataAsOf")})
+    return sorted(out, key=lambda b: str(b["source"]))
 
 
 def get_json(base: str, path: str, timeout: int = 30) -> Any:

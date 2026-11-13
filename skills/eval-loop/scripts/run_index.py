@@ -129,6 +129,9 @@ def runs(workdir: pathlib.Path, n_cases: int | None = None,
             row["slow"] = len(summary.get("slow") or [])
             row["cases"] = summary.get("queries")
             row["errors"] = summary.get("errors")
+            build = summary.get("build") or {}
+            row["build_ms"] = build.get("build_ms")
+            row["build_scanned_bytes"] = build.get("scanned_bytes")
         elif meta.get("phase") == "replay" or meta.get("mode") == "retrieval":
             row["kind"] = "replay"
             summary = {}

@@ -29,7 +29,8 @@ under `--min-delta-ms` is noise however large its ratio). `flip_table.py` prints
 the same comparison for any two replays.
 
 THE MATERIALIZATION STATE is read before the queries run and kept in run.json
-(`materialization`): the persist sources the build plan makes and refuses,
+(`materialization`): what each built table cost (`builds`: rows, build time,
+bytes scanned), the persist sources the build plan makes and refuses,
 whether their tables are bound, and the newest build. A persisted source whose
 table is not bound computes live, so a "before" number taken then is a number
 for the wrong thing. The replay warns about it.
@@ -207,6 +208,49 @@ def summarize(rows: list[dict[str, Any]], budget_ms: int | None) -> dict[str, An
         "unstable_rows": sorted(r["qid"] for r in ok if r.get("unstable_rows")),
         "by_source": dict(sorted(by_source.items(), key=lambda kv: -kv[1]["total_ms"])),
     }
+
+
+def build_summary(builds: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    """What the tables these queries read cost to build, summed. None when the
+    package has no built table.
+
+    This is the other side of a speed edit: a persisted source makes reads
+    faster and costs a build every refresh. A total is null when no table
+    reported that measure, and `unreported` counts the tables that did not, so
+    a sum over some of them is never read as the whole.
+    """
+    if not builds:
+        return None
+
+    def total(key: str) -> tuple[float | None, int]:
+        got = [b[key] for b in builds if b.get(key) is not None]
+        return (sum(got) if got else None), len(builds) - len(got)
+    ms, no_ms = total("buildMs")
+    by, no_by = total("scannedBytes")
+    rows, _ = total("rows")
+    return {"tables": len(builds), "build_ms": ms, "scanned_bytes": by, "rows": rows,
+            "unreported": {"build_ms": no_ms, "scanned_bytes": no_by},
+            "by_source": {str(b["source"]): {"build_ms": b.get("buildMs"),
+                                             "scanned_bytes": b.get("scannedBytes"),
+                                             "rows": b.get("rows")} for b in builds}}
+
+
+def fmt_build(b: dict[str, Any] | None, before: dict[str, Any] | None = None) -> list[str]:
+    """The build line of a replay's report, with the baseline's beside it."""
+    if not b and not before:
+        return []
+
+    def said(x: dict[str, Any] | None) -> str:
+        if not x:
+            return "no built table"
+        ms = "not reported" if x["build_ms"] is None else f"{x['build_ms']:g} ms"
+        by = "" if x["scanned_bytes"] is None else f", {x['scanned_bytes']:g} bytes scanned"
+        part = x["unreported"]["build_ms"]
+        return (f"{x['tables']} table(s), {ms} to build{by}"
+                + (f" ({part} did not report a build time)" if part and x["build_ms"] is not None
+                   else ""))
+    return [f"  build cost: {said(b)}" + (f"   (baseline: {said(before)})"
+                                         if before is not None or b is None else "")]
 
 
 # --------------------------------------------------------------------------- comparison
@@ -394,10 +438,16 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
     # A replay in which no query ran timed nothing. Marked complete, it became
     # the record the next replay compared with, and every query read as fixed.
     status = "aborted" if summary["errors"] == summary["queries"] else "complete"
+    summary["build"] = build_summary(mat.get("builds"))
     if a.baseline:
         base_rows = ledger.read_jsonl(a.baseline / "results.jsonl")
         summary["compare"] = {"baseline": a.baseline.name,
                               **compare(base_rows, rows, a.band, a.min_delta_ms)}
+        try:
+            before = json.loads((a.baseline / "summary.json").read_text()).get("build")
+        except (OSError, ValueError):
+            before = None
+        summary["compare"]["build_before"] = before
     pins: dict[str, Any] = {
         "runId": a.out.name, "label": a.label, "target": "local", "answererModel": None,
         "phase": PHASE, "started": started, "status": status,
@@ -435,6 +485,8 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
         print(f"  live_fallback (the stored table was not used): {', '.join(s['live_fallback'])}")
     if "compare" in s:
         print("\n".join(fmt_compare(s["compare"], a.baseline.name, a.label)))
+    print("\n".join(fmt_build(s["build"], s.get("compare", {}).get("build_before")
+                              if "compare" in s else None)))
     print(f"\nrun directory: {a.out}")
     if status == "aborted":
         print("! every query errored, so nothing was timed. The run is marked aborted: it is "
