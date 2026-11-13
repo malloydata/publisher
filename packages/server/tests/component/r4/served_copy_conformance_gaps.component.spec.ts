@@ -158,15 +158,21 @@ for (const c of CASES) {
       });
 
       for (const q of queries) {
-         it(`${q.name}: the served copy answers, equal to live`, () => {
-            const l = answerOf(live.get(q.name));
-            const s = answerOf(served.get(q.name));
-            expect(s.servedBy).toBe("materialized");
-            expect(s.servedFrom).toBe("storage");
-            expect(s.via).toBe("served_copy");
-            expect(rowDifference(l.rows, s.rows)).toBeUndefined();
-            expect(comparable(s.fields)).toEqual(comparable(l.fields));
-         });
+         // Live wrong on the pinned Malloy (conformance/shapes.ts): expected
+         // to fail until Malloy is fixed.
+         const liveWrong = q.gaps?.[`${c.variant}/on`]?.kind === "live-wrong";
+         (liveWrong ? it.failing : it)(
+            `${q.name}: the served copy answers, equal to live`,
+            () => {
+               const l = answerOf(live.get(q.name));
+               const s = answerOf(served.get(q.name));
+               expect(s.servedBy).toBe("materialized");
+               expect(s.servedFrom).toBe("storage");
+               expect(s.via).toBe("served_copy");
+               expect(rowDifference(l.rows, s.rows)).toBeUndefined();
+               expect(comparable(s.fields)).toEqual(comparable(l.fields));
+            },
+         );
       }
    });
 }

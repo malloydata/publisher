@@ -7,7 +7,7 @@ import {
    InMemoryURLReader,
    Runtime,
 } from "@malloydata/malloy";
-import { afterAll, beforeAll, describe, expect, it, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import { shadowRowDifference } from "../../../src/service/materialization/serve/v1_shadow";
 import {

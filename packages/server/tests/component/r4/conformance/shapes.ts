@@ -59,7 +59,10 @@ export interface ConformanceQuery {
  *  - `not-live`: a stored table answered a query that must be live;
  *  - `wrong`: a stored table answered with different rows;
  *  - `error`: the served query failed;
- *  - `load`: the package does not load or build in that variant.
+ *  - `load`: the package does not load or build in that variant;
+ *  - `live-wrong`: live's answer is wrong on the pinned Malloy and the stored
+ *    table's is right, so the two differ. Registered as expected to fail,
+ *    so it fails once Malloy is fixed and the gap must come out.
  */
 export interface Gap {
    kind:
@@ -69,7 +72,8 @@ export interface Gap {
       | "not-live"
       | "wrong"
       | "error"
-      | "load";
+      | "load"
+      | "live-wrong";
    reason: string;
    /** The tracker issue it belongs to, when there is one. */
    issue?: string;
@@ -93,6 +97,17 @@ export interface Shape {
    variants?: Variant[];
    gaps?: GapMap;
 }
+
+/**
+ * Malloy 0.0.438 tests a nested record's rows by a key built from its parent
+ * row's, so a parent whose key is NULL loses every nested row from a sum.
+ */
+const NESTED_NULL_PARENT_KEY: Gap = {
+   kind: "live-wrong",
+   reason:
+      "live skips the nested rows under a parent whose key is NULL; the stored table's answer is right",
+   issue: "malloydata/malloy#3220",
+};
 
 /** Render a shape's files for one variant. */
 export function renderFiles(
@@ -597,6 +612,18 @@ source: nested is orders_raw -> {
             name: "through the nested rows",
             malloy:
                "run: nested -> { group_by: by_status.status; aggregate: n is by_status.n.sum() }",
+            // Live Malloy 0.0.438 skips the nested rows of the NULL region
+            // (malloydata/malloy#3220); the served copy, over the stored
+            // table, counts them.
+            gaps: Object.fromEntries(
+               [
+                  "storage/on",
+                  "storage/cutover",
+                  "colocated/cutover",
+                  "materialize/on",
+                  "materialize/cutover",
+               ].map((k) => [k, NESTED_NULL_PARENT_KEY]),
+            ),
          },
       ],
    },
