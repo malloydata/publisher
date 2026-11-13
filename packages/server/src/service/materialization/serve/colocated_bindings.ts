@@ -122,6 +122,9 @@ export function deriveColocatedServeBindings(args: {
             ? quoteManifestTablePath(entry.tableName, source.dialect)
             : entry.tableName,
          schema: schema.map((c) => ({ ...c })),
+         ...(entry.nativeSchema?.length
+            ? { nativeSchema: entry.nativeSchema.map((c) => ({ ...c })) }
+            : {}),
          ...(entry.dataAsOf !== undefined ? { freshAsOf: entry.dataAsOf } : {}),
          ...(entry.freshnessWindowSeconds !== undefined
             ? { freshnessWindowSeconds: entry.freshnessWindowSeconds }

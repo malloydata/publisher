@@ -11,11 +11,7 @@ Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, and 
 
 The `Release (NPM + Docker + PyPI)` workflow (`.github/workflows/release.yml`) creates GitHub releases automatically with a standard header (NPM/Docker links) plus an auto-generated "What's Changed" PR list via `gh release create --generate-notes`. That auto list is sufficient for routine patch releases.
 
-For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased] — In development: `PUBLISHER_V1_SERVED_COPY`, the v1 cutover's switch (off, shadow, on)
-
-Off by default, and off serves exactly as before. Materialization v2's v1 cutover: v1 `#@ persist` and `#@ preaggregate` tables are served by the served copy and the rollup and persisted-view legs instead of today's storage serve shape, `#@ preaggregate` composite and Malloy's build manifest on the live compile. `on`: a colocated `#@ persist` table is bound on the served copy with the columns its build captured (or, for a table built before, the persisted query's own output), read past a row-level gate with the gate grafted and proven, since it never leaves the author's warehouse (a `storage=` table still needs `PUBLISHER_MATERIALIZE_GATED_SOURCES`); its hidden columns, and those its `extend` block drops or renames, are kept for the author's own text to drop and hide again; a column an older build typed is cast on read, or left out so only a query reading it answers live; a `#@ preaggregate` rollup is the rollup leg's, `storage=` included, under the v2 rollup's table name, so it rebuilds once and answers with its measures' annotations; and a model file needs no `##! experimental.persistence` for its `#@ persist` sources to be planned (a build copy carries it, with every address unchanged). `shadow`: served as `off`, and each query a retiring path answered is answered again as `on` would, off the request path, at most two at once per server within a 30-second budget, recording no metric of the caller's query; the outcome is counted in `publisher_v1_served_copy_shadow_total` and a difference logged by place, never by value. A dry run (`POST …/packages?dryRun=true`) with the switch past `off` adds `cutoverPath` and `cutoverReason` (open strings) to each serve verdict, the path that will serve the source after the cutover. `scripts/v1-cutover-conformance.ts` runs the cutover's conformance check over a package snapshot. Behind `PUBLISHER_MATERIALIZE`, separately: a `#(materialize)` source over a base in its own file that declares measures, views or joins is now served (it kept the base's blocks). No enum is added. Publisher does not authenticate callers: a gate holds only behind the gateway that sets the givens from a verified identity.
-
-## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
+For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
 
 One step is a human's: someone has to open `release/v<version>` as a PR into `main` and merge it. `main` requires a pull request, so the release cannot land it itself, and the job summary prints the link. Until it merges the headings on `main` still read `[Unreleased]` and the next release would ship them twice, so the `Release sync` check (`release-sync.yml`) fails on `main` and on every pull request until it does. Whoever cuts the release owns that PR; the `publisher-release` skill makes it a step.
 
@@ -62,6 +58,10 @@ a driver error can quote SQL or a value: it stays on the run's record (`error`, 
 `failures[].reason`), and the log carries its code. A whole-run failure is logged once, by
 `materialization.run.finished`, rather than again as "Materialization run failed".
 
+## [Unreleased] — In development: `PUBLISHER_V1_SERVED_COPY`, the v1 cutover's switch (off, shadow, on)
+
+Off by default, and off serves exactly as before. Materialization v2's v1 cutover: v1 `#@ persist` and `#@ preaggregate` tables are served by the served copy and the rollup and persisted-view legs instead of today's storage serve shape, `#@ preaggregate` composite and Malloy's build manifest on the live compile. `on`: a colocated `#@ persist` table is bound on the served copy with the columns its build captured (or, for a table built before, the persisted query's own output), read past a row-level gate with the gate grafted and proven, since it never leaves the author's warehouse (a `storage=` table still needs `PUBLISHER_MATERIALIZE_GATED_SOURCES`); its hidden columns, and those its `extend` block drops or renames, are kept for the author's own text to drop and hide again; a column an older build typed is cast on read, or left out so only a query reading it answers live; a `#@ preaggregate` rollup is the rollup leg's, `storage=` included, under the v2 rollup's table name, so it rebuilds once and answers with its measures' annotations; and a model file needs no `##! experimental.persistence` for its `#@ persist` sources to be planned (a build copy carries it, with every address unchanged). `shadow`: served as `off`, and each query a retiring path answered is answered again as `on` would, off the request path, at most two at once per server within a 30-second budget, recording no metric of the caller's query; the outcome is counted in `publisher_v1_served_copy_shadow_total` and a difference logged by place, never by value. A dry run (`POST …/packages?dryRun=true`) with the switch past `off` adds `cutoverPath` and `cutoverReason` (open strings) to each serve verdict, the path that will serve the source after the cutover. `scripts/v1-cutover-conformance.ts` runs the cutover's conformance check over a package snapshot. Behind `PUBLISHER_MATERIALIZE`, separately: a `#(materialize)` source over a base in its own file that declares measures, views or joins is now served (it kept the base's blocks). No enum is added. Publisher does not authenticate callers: a gate holds only behind the gateway that sets the givens from a verified identity.
+
 ## [Unreleased] — In development: integers past 2^53 served from storage come back exact
 
 A wrong answer is fixed. A query answered from a stored table (`storage=`, colocated
@@ -72,16 +72,24 @@ shape) read a big-integer column through the table's plain
 known limitation 12, which said answers were equal and only metadata differed).
 
 A column whose field Malloy types as a big integer (`BIGINT`, `HUGEINT`, `UBIGINT`, `INT64`,
-`NUMBER(p,0)`, a sum or max over one) is now read through a native cast (`::"HUGEINT"` in a
-`storage=` table, the warehouse's own big-integer type in a colocated one), so it stays served from
-storage and comes back exact, with live's `bigint` subtype. Selecting, grouping, filtering and
-aggregating it, a `primary_key:` and the author's own measures over it all keep serving. A column
-no cast reads exactly (stored as a float) is left out per query and answered live. On Postgres,
-whose live answer itself rounds such values (its rows come back through JSON), served equals live,
-never more precise. `count()`, 32-bit integers and decimals are unchanged.
+`NUMBER(p,0)`, a sum or max over one) is now read through a native cast, so it stays served from
+storage and comes back exact, with live's `bigint` subtype. In a `storage=` table the cast is
+`::"HUGEINT"`. In a colocated one it is the column's own warehouse type, which each colocated build
+now reads from the warehouse's catalog, so no value is narrowed (a DuckDB `UHUGEINT` past
+2^127 − 1, SQL Server's `decimal(38,0)`). Selecting, grouping, filtering and aggregating it, a
+`primary_key:` and the author's own measures over it all keep serving. A column no cast reads
+exactly is left out per query and answered live: one stored as a float, a colocated column whose
+warehouse type Malloy does not read as a big integer (Postgres stores a sum of `BIGINT`s as
+`numeric`; a MySQL integer, which MySQL's `CAST` cannot name), and a colocated column whose build did
+not record its type (a table built before this release, or an unqualified name the warehouse's
+`information_schema` finds in more than one schema). On Postgres, whose live answer itself rounds such values (its rows come back through
+JSON), served equals live, never more precise. `count()`, 32-bit integers and decimals are
+unchanged.
 
-No API change. See docs/materialization.md, "Stored column types follow the model, not the
-warehouse".
+API: a build manifest entry gains `nativeSchema`, each colocated column with its warehouse type,
+recorded by every colocated build and incremental refresh. A host that stores and replays manifests
+should keep it; without it, a colocated table's big-integer columns are answered live. See
+docs/materialization.md, "Stored column types follow the model, not the warehouse".
 
 ## [Unreleased] — In development: join-to-rollup checks the querying source's primary key, and declines a count beside a re-pointed join
 

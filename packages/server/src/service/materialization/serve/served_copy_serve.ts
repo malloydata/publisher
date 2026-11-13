@@ -59,6 +59,8 @@ import {
    bigIntegerReadOf,
    bigIntegerReads,
    type BigIntegerRead,
+   type BigIntegerReadOptions,
+   nativeTypeLookup,
    declaredColumnsOf,
    queryTimezoneOf,
    serveTypePlan,
@@ -1304,14 +1306,19 @@ export class ServedCopyServe {
          // A joined big-integer field is read through its native type in the
          // record; one no cast reads exactly leaves the source to its
          // fallback (known limitation 12).
-         const joinedReads = joined.map((j) =>
-            bigIntegerReadsOf(
-               j.columns.map((c) => ({ name: c.name, type: c.type })),
-               joinedFieldsAt(def.fields, [j.join]),
-               def,
-               binding,
-            ),
-         );
+         const joinedReads = joined.map((j) => {
+            const fields = joinedFieldsAt(def.fields, [j.join]);
+            const reads = new Map<string, string | undefined>();
+            for (const c of j.columns) {
+               const read = bigIntegerReadOf(
+                  fields.find((f) => fieldNameOf(f) === c.name),
+                  { name: c.column, type: c.type },
+                  bigIntegerOptionsOf(def, binding),
+               );
+               if (read) reads.set(c.name, read.castTo);
+            }
+            return reads;
+         });
          if (joinedReads.some((reads) => [...reads.values()].some((r) => !r))) {
             problems.push({
                sourceName,
@@ -1462,10 +1469,11 @@ export class ServedCopyServe {
             readSourceClassifications(def.fields as IrField[] | undefined),
             lane,
             (field, column) =>
-               bigIntegerReadOf(field, column, {
-                  dialect: (def as { dialect?: unknown }).dialect,
-                  colocated: binding.colocated === true,
-               }),
+               bigIntegerReadOf(
+                  field,
+                  column,
+                  bigIntegerOptionsOf(def, binding),
+               ),
          );
          if (!pair) {
             problems.push({
@@ -2878,15 +2886,6 @@ export function classifyServedCopyFailure(
       : "compile_failed";
 }
 
-/**
- * The join_ones a `#(materialize)` plan inlines, as the served copy answers
- * them from stored columns: each stored `<join>__<field>` column with its
- * stored type and the joined field's timeframe, and the join's own access
- * modifier when the author hides it, read off the author's compiled source. A join whose joined source
- * filters by a given is left out (kept as written, so each caller's read
- * applies the filter through the join). Undefined when the table lacks a
- * column the plan stores.
- */
 /** A compiled field's name on its source (`as`, else `name`). */
 function fieldNameOf(field: unknown): string | undefined {
    const f = (field ?? {}) as { name?: unknown; as?: unknown };
@@ -2929,13 +2928,39 @@ function bigIntegerReadsOf(
    binding: ServeBinding,
 ): Map<string, string | undefined> {
    return new Map(
-      bigIntegerReads(columns, fields, {
-         dialect: (def as { dialect?: unknown }).dialect,
-         colocated: binding.colocated === true,
-      }).map((r) => [r.column, r.castTo] as const),
+      bigIntegerReads(columns, fields, bigIntegerOptionsOf(def, binding)).map(
+         (r) => [r.column, r.castTo] as const,
+      ),
    );
 }
 
+/**
+ * What decides a big-integer column's read for a binding: the author's
+ * source's dialect, where the table is, and, for a colocated table, the
+ * warehouse types its build captured (`nativeSchema`).
+ */
+function bigIntegerOptionsOf(
+   def: unknown,
+   binding: ServeBinding,
+): BigIntegerReadOptions {
+   return {
+      dialect: (def as { dialect?: unknown }).dialect,
+      colocated: binding.colocated === true,
+      ...(binding.colocated
+         ? { nativeTypeOf: nativeTypeLookup(binding.nativeSchema) }
+         : {}),
+   };
+}
+
+/**
+ * The join_ones a `#(materialize)` plan inlines, as the served copy answers
+ * them from stored columns: each stored `<join>__<field>` column with its
+ * stored type and the joined field's timeframe, and the join's own access
+ * modifier when the author hides it, read off the author's compiled source. A join whose joined source
+ * filters by a given is left out (kept as written, so each caller's read
+ * applies the filter through the join). Undefined when the table lacks a
+ * column the plan stores.
+ */
 function inlinedJoinsOf(
    plan: MaterializePlan,
    fields: unknown[] | undefined,
