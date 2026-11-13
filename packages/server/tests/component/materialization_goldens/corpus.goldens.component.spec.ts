@@ -3,8 +3,9 @@
 
 /**
  * Materialization characterization goldens over the repo's persist corpus
- * (phase 5, step 1): every hammer scenario model that persists
- * (`test_helpers/persist_corpus.ts`), compiled against its DuckDB stand-in
+ * (phase 5, step 1): every hammer scenario model that materializes, through
+ * v1 `#@ persist` / `#@ preaggregate` or v2 `#(materialize)` /
+ * `#(preaggregate)` (`test_helpers/persist_corpus.ts`), compiled against its DuckDB stand-in
  * and planned through `collectModelBuildPlan` with the materialize switch
  * on, as a package load plans each model. The persist fixtures are packages,
  * and run through the package goldens instead.
@@ -46,6 +47,7 @@ import {
    closeCorpus,
    type CorpusModel,
    hammerModels,
+   materializes,
    releasingEach,
 } from "../../../src/test_helpers/persist_corpus";
 import { installSettings } from "../../../src/test_helpers/settings_env";
@@ -199,7 +201,7 @@ beforeAll(async () => {
       env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
    }).restore;
    root = fs.mkdtempSync(path.join(os.tmpdir(), "mat-goldens-corpus-"));
-   const { models } = await hammerModels();
+   const { models } = await hammerModels(materializes);
    for await (const model of releasingEach(models)) {
       const stem = stemOf(model);
       if (planned.has(stem)) throw new Error(`two corpus models at ${stem}`);
