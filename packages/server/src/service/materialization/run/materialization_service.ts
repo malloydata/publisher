@@ -912,9 +912,10 @@ export class MaterializationService {
                   nameViewContext({ compiled, environment }),
                );
                // What became of each table a view had replaced, on the
-               // failed run's record (the failure keeps its metadata).
+               // failed run's record (the failure keeps its metadata), beside
+               // the run's other views.
                if (restored.length > 0) {
-                  await this.recordRestoredNameViews(id, restored);
+                  await this.recordRestoredNameViews(id, nameViews, restored);
                }
             }
             throw err;
@@ -948,6 +949,20 @@ export class MaterializationService {
                logger.warn(
                   "Could not retire the entries of a table a name= view replaced",
                   { materializationId: id, error: errMessage(err) },
+               );
+            }
+            // Another loaded version may serve the replaced table (a shared
+            // run's entry, read through the name that is now this run's
+            // view): rebound, it reads its entries less the ones just
+            // retired, as after a shared table's rebuild, instead of this
+            // run's generation through the view. A run that marked shared
+            // tables rebinds them below anyway; this run's own version is
+            // its caller's to load (orchestrated) or already loaded.
+            if (versionId !== undefined && !markedShared) {
+               await this.committer.rebindLoadedVersions(
+                  environmentName,
+                  packageName,
+                  versionId,
                );
             }
          }
@@ -1031,14 +1046,23 @@ export class MaterializationService {
     */
    private async recordRestoredNameViews(
       id: string,
+      nameViews: NameViewRecord[],
       restored: NameViewRecord[],
    ): Promise<void> {
+      // Each replacement's record gives way to what became of it; the run's
+      // other views keep theirs.
+      const pending = [...restored];
+      const records = nameViews.map((record) =>
+         record.outcome === "replaced_own_table"
+            ? (pending.shift() ?? record)
+            : record,
+      );
       try {
          const current = await this.repository.getMaterializationById(id);
          await this.repository.updateMaterialization(id, {
             metadata: {
                ...(current?.metadata ?? {}),
-               [NAME_VIEWS_KEY]: restored,
+               [NAME_VIEWS_KEY]: records,
             },
          });
       } catch (err) {

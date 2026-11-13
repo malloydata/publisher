@@ -525,6 +525,54 @@ describe("the name= view through real builds", () => {
    );
 
    it(
+      "another loaded version stops serving the table a later version's view replaced",
+      async () => {
+         await publish("1.0.0", 1, "package");
+         const self = await build({ versionId: VersionRef.parse("1.0.0") });
+         expect(self.status).toBe("MANIFEST_FILE_READY");
+         const servedBy = (versionId: string) =>
+            storageBindingResolverFor(repo, ENV_ID)(PKG, { versionId });
+         // 1.0.0 serves the entry its self run wrote at `summary`.
+         expect(
+            Object.values(await servedBy("1.0.0")).map(
+               (e) => e.physicalTableName,
+            ),
+         ).toEqual(["summary"]);
+
+         // 2.0.0 builds tables of its own, named for it, with the view at
+         // `summary`.
+         await publish("2.0.0", 2, "version");
+         const committer = (
+            service as unknown as {
+               committer: {
+                  rebindLoadedVersions: (...args: unknown[]) => Promise<void>;
+               };
+            }
+         ).committer;
+         const rebind = committer.rebindLoadedVersions.bind(committer);
+         const rebound: unknown[][] = [];
+         committer.rebindLoadedVersions = async (...args: unknown[]) => {
+            rebound.push(args);
+            return rebind(...args);
+         };
+         const v2 = await build({ versionId: VersionRef.parse("2.0.0") });
+         expect(nameViewsIn(v2.metadata)[0]).toEqual(
+            expect.objectContaining({
+               physicalTableName: versionTable("2.0.0"),
+               outcome: "replaced_own_table",
+            }),
+         );
+         // `summary` is 2.0.0's view now. Read through it, 1.0.0 would
+         // answer from 2.0.0's generation: its entry is retired, and the
+         // loaded versions other than 2.0.0 are rebound off it.
+         expect((await summaryView())?.answer).toBe(2);
+         expect(await servedBy("1.0.0")).toEqual({});
+         expect(rebound).toEqual([[ENV, PKG, "2.0.0"]]);
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
       "self-instructed, then orchestrated, whose commit fails: the table is put back",
       async () => {
          await publish("1.0.0", 1, "package");
@@ -573,6 +621,44 @@ describe("the name= view through real builds", () => {
             answer: 2,
             comment: mark("summary_g2"),
          });
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
+      "a failed run records what became of each replaced table beside its other views",
+      async () => {
+         await publish("1.0.0", 1, "package");
+         const failed = await repo.createMaterialization(ENV_ID, PKG);
+         const view = {
+            sourceEntityId: "a",
+            sourceName: "summary",
+            owner: nameViewOwner(ENV, PKG),
+            viewName: "summary",
+            physicalTableName: "summary_g1",
+            connectionName: "warehouse",
+         };
+         const created = { ...view, viewName: "other", outcome: "created" };
+         const replaced = {
+            ...view,
+            outcome: "replaced_own_table",
+            asideTableName: "summary_oa",
+         };
+         const restored = { ...replaced, outcome: "table_restored" };
+         await (
+            service as unknown as {
+               recordRestoredNameViews: (
+                  id: string,
+                  nameViews: unknown[],
+                  restored: unknown[],
+               ) => Promise<void>;
+            }
+         ).recordRestoredNameViews(failed.id, [created, replaced], [restored]);
+         expect(
+            nameViewsIn(
+               (await repo.getMaterializationById(failed.id))!.metadata,
+            ),
+         ).toEqual([created, restored]);
       },
       { timeout: 60_000 },
    );

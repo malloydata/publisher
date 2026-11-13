@@ -512,6 +512,7 @@ export async function replaceOwnTableWithView(
    site: NameViewSite,
    intent: NameViewIntent,
    table: OwnNameTable,
+   context: Pick<NameViewContext, "otherRunActive"> = {},
 ): Promise<string> {
    const mark = { target: intent.physicalTableName, owner: intent.owner };
    const aside = asideTableNameFor(intent.viewName, table);
@@ -533,8 +534,18 @@ export async function replaceOwnTableWithView(
    };
    // The table is at the name, so a table under its backup name is a stale
    // older copy (a crashed swap's, as swapByRenamingAside reads it), and
-   // would make the rename fail.
+   // would make the rename fail. Unless another run of the package is
+   // building: then it may be that run's copy in flight (a swap that moved
+   // the served table there, or a replacement of its own), the only copy of
+   // the table until it finishes. Left alone, and the view is not made.
    if ((await probeNameView(site, aside)).state === "taken") {
+      if (!context.otherRunActive || (await context.otherRunActive())) {
+         throw new Error(
+            `'${aside}', where the table is kept while the view replaces ` +
+               `it, holds a table, and another run of this package may be ` +
+               `using it`,
+         );
+      }
       await site.run(ddl.dropAside);
    }
    if (ddl.transactional) {
@@ -1077,6 +1088,7 @@ async function publishNameView(
                   site,
                   intent,
                   ownTable,
+                  context,
                );
                return {
                   ...intent,

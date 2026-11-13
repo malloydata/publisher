@@ -500,7 +500,7 @@ describe("in a plain-DuckDB storage= destination", () => {
       await onLake((run) => run("CREATE TABLE summary_oaddr AS SELECT 0 AS x"));
       const records = await publishNameViews(
          [intent],
-         context,
+         { ...context, otherRunActive: () => false },
          new Map([[nameViewKey(intent), OWN]]),
       );
       expect(records[0].outcome).toBe("replaced_own_table");
@@ -509,6 +509,32 @@ describe("in a plain-DuckDB storage= destination", () => {
             Number((await run("SELECT x FROM summary_oaddr"))[0].x),
          ),
       ).toBe(1);
+   });
+
+   it("a copy under the backup name is never dropped while another run may be using it", async () => {
+      // Another run's swap, mid-way, keeps the served table under the backup
+      // name: it may be the only copy until that run finishes.
+      await onLake((run) => run("CREATE TABLE summary_oaddr AS SELECT 0 AS x"));
+      for (const otherRunActive of [() => true, undefined]) {
+         const records = await publishNameViews(
+            [intent],
+            { ...context, ...(otherRunActive ? { otherRunActive } : {}) },
+            new Map([[nameViewKey(intent), OWN]]),
+         );
+         expect(records[0].outcome).toBe("failed");
+         expect(records[0].message).toContain("another run of this package");
+         expect(await relations()).toEqual([
+            "TABLE:summary",
+            "TABLE:summary_g1",
+            "TABLE:summary_oaddr",
+         ]);
+         expect(await answer()).toBe(1);
+         expect(
+            await onLake(async (run) =>
+               Number((await run("SELECT x FROM summary_oaddr"))[0].x),
+            ),
+         ).toBe(0);
+      }
    });
 
    it("without the preflight's finding the table is never touched", async () => {
