@@ -120,3 +120,110 @@ describe("a pair table's delta on DuckLake", () => {
       expect(await rows(conn)).toEqual(before);
    });
 });
+
+// A table of several blocks: the per-block level flags and the every-block
+// check run on DuckLake too.
+describe("a multi-block pair table's delta on DuckLake", () => {
+   async function blocks(): Promise<DuckDBConnection> {
+      const conn = await lake();
+      await conn.runSQL("DROP TABLE lake.pairs");
+      // Lane 0 a path (child, grandchild), lane 1 one hop (other).
+      await conn.runSQL(`CREATE TABLE lake.pairs AS SELECT * FROM (VALUES
+         (1, 0, 10, 100, NULL, true, true, 5),
+         (1, 0, 10, 101, NULL, false, false, 5),
+         (1, 1, NULL, NULL, 50, true, true, 5),
+         (2, 0, NULL, NULL, NULL, true, true, 6),
+         (2, 1, NULL, NULL, 60, true, true, 6)
+      ) AS t(id, __pair_lane, child, grand, other, __parent_row, __child_row_1, __pair_watermark)`);
+      return conn;
+   }
+   const columns = [
+      "id",
+      "__pair_lane",
+      "child",
+      "grand",
+      "other",
+      "__parent_row",
+      "__child_row_1",
+      "__pair_watermark",
+   ];
+   const blockStatements = (deltaSQL: string) =>
+      deltaStatements({
+         dialect: "duckdb",
+         quotedTablePath: "lake.pairs",
+         deltaSQL,
+         columns,
+         mergeKeys: ["id"],
+         watermarkName: "__pair_watermark",
+         start: { malloyType: "number", value: "8" },
+         end: { malloyType: "number", value: "20" },
+         pair: {
+            parentKey: "id",
+            parentRow: "__parent_row",
+            checks: [
+               { flag: "__parent_row", keys: ["id"], lane: 0 },
+               { flag: "__child_row_1", keys: ["id", "child"], lane: 0 },
+               { flag: "__parent_row", keys: ["id"], lane: 1 },
+            ],
+            laneColumn: "__pair_lane",
+            lanes: 2,
+            stagingTable: pairStagingTable("lake.pairs"),
+         },
+      });
+   const all = async (conn: DuckDBConnection) =>
+      (
+         (
+            await conn.runSQL(
+               `SELECT ${columns.join(", ")} FROM lake.pairs ORDER BY ALL`,
+               { rowLimit: 1000 },
+            )
+         ).rows as Record<string, unknown>[]
+      ).map((r) => JSON.stringify(r));
+   const COLS = `AS t(${columns.join(", ")})`;
+
+   it("replaces a parent in both blocks", async () => {
+      const conn = await blocks();
+      await applyDeltaScript(
+         (sql) => conn.runSQL(sql),
+         "duckdb",
+         blockStatements(`SELECT * FROM (VALUES
+            (2, 0, 20, NULL, NULL, true, true, 9),
+            (2, 1, NULL, NULL, 61, true, true, 9)
+         ) ${COLS}`),
+      );
+      const ids = (await all(conn)).map((r) => JSON.parse(r));
+      expect(
+         ids.filter((r) => r.id === 2).map((r) => r.child ?? r.other),
+      ).toEqual([20, 61]);
+   });
+
+   it("rolls back a delta that leaves a parent with rows in one block only", async () => {
+      const conn = await blocks();
+      const before = await all(conn);
+      const err = await applyDeltaScript(
+         (sql) => conn.runSQL(sql),
+         "duckdb",
+         blockStatements(`SELECT * FROM (VALUES
+            (2, 0, 20, NULL, NULL, true, true, 9)
+         ) ${COLS}`),
+      ).catch((e: unknown) => e);
+      expect(isPairGuardFailure(err)).toBe(true);
+      expect(await all(conn)).toEqual(before);
+   });
+
+   it("rolls back a delta that flags a middle row twice within its block", async () => {
+      const conn = await blocks();
+      const before = await all(conn);
+      const err = await applyDeltaScript(
+         (sql) => conn.runSQL(sql),
+         "duckdb",
+         blockStatements(`SELECT * FROM (VALUES
+            (2, 0, 20, 200, NULL, true, true, 9),
+            (2, 0, 20, 201, NULL, false, true, 9),
+            (2, 1, NULL, NULL, 61, true, true, 9)
+         ) ${COLS}`),
+      ).catch((e: unknown) => e);
+      expect(isPairGuardFailure(err)).toBe(true);
+      expect(await all(conn)).toEqual(before);
+   });
+});

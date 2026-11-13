@@ -8,6 +8,7 @@ import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface"
 import type { IncrementalStrategy } from "../types";
 import { errMessage } from "../../../utils";
 import { quoteIdentifier } from "../../quoting";
+import type { PairDelta } from "../plan/incremental_declaration";
 import { windowDeleteBefore, type RollingWindow } from "../plan/rolling_window";
 
 /**
@@ -652,7 +653,7 @@ export function deltaStatements(params: {
     * A pair table's parent key and parent-row flag: the delta replaces whole
     * parents by the key instead of merging rows ({@link pairDeltaStatements}).
     */
-   pair?: { parentKey: string; parentRow: string; stagingTable: string };
+   pair?: PairDelta & { stagingTable: string };
 }): string[] {
    if (params.pair) {
       return pairDeltaStatements({
@@ -782,7 +783,7 @@ export function pairDeltaStatements(params: {
    quotedTablePath: string;
    deltaSQL: string;
    columns: string[];
-   pair: { parentKey: string; parentRow: string; stagingTable: string };
+   pair: PairDelta & { stagingTable: string };
    windowDeletes?: readonly { column: string; before: WatermarkBound }[];
 }): string[] {
    const { dialect, quotedTablePath, pair } = params;
@@ -811,9 +812,30 @@ export function pairDeltaStatements(params: {
       ),
       // The uniqueness check over the whole table, two columns read: a parent
       // with no flag or two would be counted wrongly by every parent measure.
-      `SELECT error('${PAIR_GUARD_MESSAGE}') FROM (` +
-         `SELECT ${key} FROM ${quotedTablePath} GROUP BY ${key} ` +
-         `HAVING count(*) FILTER (WHERE ${q(pair.parentRow)}) <> 1) AS __g LIMIT 1`,
+      // A path's level flags are checked the same way, each over the keys
+      // down to its level.
+      ...(
+         pair.checks ?? [{ flag: pair.parentRow, keys: [pair.parentKey] }]
+      ).map(({ flag, keys, lane }) => {
+         const within =
+            lane !== undefined && pair.laneColumn !== undefined
+               ? ` WHERE ${q(pair.laneColumn)} = ${Number(lane)}`
+               : "";
+         return (
+            `SELECT error('${PAIR_GUARD_MESSAGE}') FROM (` +
+            `SELECT ${keys.map(q).join(", ")} FROM ${quotedTablePath}${within} ` +
+            `GROUP BY ${keys.map(q).join(", ")} ` +
+            `HAVING count(*) FILTER (WHERE ${q(flag)}) <> 1) AS __g LIMIT 1`
+         );
+      }),
+      // A table of several blocks: every parent keeps its rows in each.
+      ...(pair.laneColumn !== undefined && pair.lanes !== undefined
+         ? [
+              `SELECT error('${PAIR_GUARD_MESSAGE}') FROM (` +
+                 `SELECT ${key} FROM ${quotedTablePath} GROUP BY ${key} ` +
+                 `HAVING count(DISTINCT ${q(pair.laneColumn)}) <> ${Number(pair.lanes)}) AS __g LIMIT 1`,
+           ]
+         : []),
       transaction.commit,
       `DROP TABLE IF EXISTS ${staged}`,
    ];
@@ -954,7 +976,7 @@ export interface IncrementalLineage {
     * is `[parentKey]`); not compared on its own, since the pair's build SQL
     * is in {@link sourceEntityId}.
     */
-   pair?: { parentKey: string; parentRow: string };
+   pair?: PairDelta;
 }
 
 /**

@@ -153,6 +153,27 @@ describe("which tables at a name= are the package's own", () => {
       }
    });
 
+   it("never an entry its run's records retire (superseded)", () => {
+      const retired = (id: string, at: number, tables: string[]) =>
+         run(id, at, {}, { metadata: { supersededTables: tables } });
+      // The newest writer's entry retired: not the package's, and an older
+      // entry (which the retirement marks too) is not read in its place.
+      expect(
+         ownNameTableIn(
+            [retired("a", 1, ["summary"]), retired("b", 2, ["summary"])],
+            intent,
+         ),
+      ).toBeUndefined();
+      expect(
+         ownNameTableIn([run("a", 1), retired("b", 2, ["SUMMARY"])], intent),
+      ).toEqual({ materializationId: "a", sourceEntityId: "addr-a" });
+      // Another table retired leaves this one read.
+      expect(ownNameTableIn([retired("a", 1, ["other"])], intent)).toEqual({
+         materializationId: "a",
+         sourceEntityId: "addr-a",
+      });
+   });
+
    it("not once a later run made a view at the name; again once a later run wrote the table", () => {
       expect(
          ownNameTableIn([run("a", 1), viewRun("g1", 2)], intent),

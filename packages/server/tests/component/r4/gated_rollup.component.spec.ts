@@ -545,6 +545,12 @@ for (const placement of ["colocated", "storage"] as const) {
       }
 
       it("never answers a source with its own time zone from its rollup: a truncation gate admits only live's rows", async () => {
+         // Never read, so never planned or built (#1686's decision 1).
+         expect(
+            Object.keys(fixture.rollupTables).filter((n) =>
+               n.startsWith("by_zoned_truncation"),
+            ),
+         ).toEqual([]);
          // 05:00 UTC is midnight in New York: read without the source's zone,
          // the stored days equal it, while live's New York days never do.
          for (const day of [

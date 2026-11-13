@@ -327,6 +327,7 @@ interface SourceLike {
    sourceID?: unknown;
    annotations?: Parameters<typeof ownLevelNotes>[0];
    fields?: unknown[];
+   queryTimezone?: unknown;
 }
 
 const fieldNameOf = (f: FieldLike): string | undefined =>
@@ -610,6 +611,29 @@ export function planSourceRollups(
             t.dependsOn.kind === "given_and_current_time",
       ) || readsCurrentTime((def as { query?: unknown }).query);
    const timeFields = currentTimeFields(def.fields);
+   // #1686: a source that sets its own `timezone:` (or inherits one) built
+   // its times in that zone, and the base leg reads no query on it from a
+   // rollup (`TIME_ZONE`), whose variant is redeclared without the zone. The
+   // only reader left is the join leg (A7): through a join from a source in
+   // the same zone, colocated or, since #1704, in a `storage=` destination
+   // the joining source is stored in too (the leg declines at read when it
+   // is not). Anything else is never read.
+   const zone =
+      typeof def.queryTimezone === "string" && def.queryTimezone !== ""
+         ? def.queryTimezone
+         : undefined;
+   const joinedInZone =
+      zone !== undefined &&
+      map
+         .nodes()
+         .some(
+            (n) =>
+               n.sourceID !== node.sourceID &&
+               (n.def as SourceLike).queryTimezone === zone &&
+               map
+                  .joinsOf(n.sourceID)
+                  .some((j) => j.sourceID === node.sourceID),
+         );
    const scope = {
       measureCode: (n: string) => {
          const f = byName.get(n);
@@ -699,6 +723,16 @@ export function planSourceRollups(
                "preaggregate-current-time",
                decl.measure,
                `${timeRead}, which a rollup would fix at build time while a live query reads it again at every read`,
+            ),
+         );
+         continue;
+      }
+      if (zone !== undefined && !joinedInZone) {
+         refused.push(
+            unservable(
+               "preaggregate-time-zone",
+               decl.measure,
+               `the source sets its own time zone (\`timezone: '${zone}'\`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads`,
             ),
          );
          continue;

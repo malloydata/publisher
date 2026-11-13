@@ -1928,6 +1928,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.materialization.servedCopyWarnings(),
          ...this.materialization.droppedPersistWarnings(),
          ...this.materialization.rollupsOverStoredBaseWarnings(),
+         ...this.materialization.repeatedJoinOneKeyWarnings(),
          ...this.materialization.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),
          ...this.materialization.persistRefusalWarnings(),
