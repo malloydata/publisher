@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Second review of #1703, 6e: the conformance runner's classification of a
+ * 6e: the conformance runner's classification of a
  * query live refuses (a source gate denies the caller), and of two queries
  * that share a name.
  */

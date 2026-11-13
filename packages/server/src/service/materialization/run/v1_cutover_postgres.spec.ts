@@ -25,7 +25,7 @@ import { storageBindingResolverFor } from "../../versions/materialization_scope"
 import { MaterializationService } from "./materialization_service";
 
 /**
- * Second review of #1703: the v1 cutover on a real Postgres (the R4 subset the
+ * The v1 cutover on a real Postgres (the R4 subset the
  * fixture cannot reach, and G7): v1 colocated `#@ persist` tables, one of them
  * incremental, built through real builds with PUBLISHER_V1_SERVED_COPY=on and
  * answered from the served copy equal to live, before and after a delta. Date
@@ -36,7 +36,7 @@ const ENV = "testEnv";
 const ENV_ID = "env-1";
 const PKG = "sales";
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
-const SCHEMA = "review_1703b_v1";
+const SCHEMA = "v1_cutover_pg";
 const q = (name: string) => `${SCHEMA}.${name}`;
 
 function modelText(flag: boolean): string {
@@ -138,7 +138,7 @@ function sortRows(rows: Row[]): string {
 
 for (const flag of [true, false])
    describe.skipIf(!POSTGRES_URL)(
-      `review 1703b: v1 colocated #@ persist on Postgres under the cutover (${flag ? "flagged" : "unflagged"} file)`,
+      `v1 colocated #@ persist on Postgres under the cutover (${flag ? "flagged" : "unflagged"} file)`,
       () => {
          let root: string;
          let envPath: string;
@@ -229,7 +229,7 @@ for (const flag of [true, false])
             }).restore;
             await __setPackageLoadPoolForTests(null);
             root = fs.realpathSync(
-               fs.mkdtempSync(path.join(os.tmpdir(), "review-1703b-pg-")),
+               fs.mkdtempSync(path.join(os.tmpdir(), "v1-cutover-pg-")),
             );
             envPath = path.join(root, "env");
             sourcesPath = path.join(root, "sources");

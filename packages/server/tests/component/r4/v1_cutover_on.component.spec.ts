@@ -1,7 +1,9 @@
-// Review probes (PR #1703, first half): v1 colocated tables under
-// PUBLISHER_V1_SERVED_COPY=on. Each query is answered live before any table
-// is bound, then under the cutover; the served answer must equal live per
-// caller, and a refusal must stay a refusal. Not for merge.
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+// v1 colocated tables under PUBLISHER_V1_SERVED_COPY=on. Each query is
+// answered live before any table is bound, then under the cutover; the served
+// answer must equal live per caller, and a refusal must stay a refusal.
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DATA_FILES } from "./conformance/data";
