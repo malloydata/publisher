@@ -1,0 +1,19 @@
+import "b.malloy"
+import "base.malloy"
+
+// a defines `scaled` as v * 3 over the same `items` b refines as v * 2: if one
+// importer's refinement reached the other, a_scaled or b_scaled would be wrong.
+source: a_items is items extend {
+  dimension: scaled is v * 3
+  measure: scaled_total is scaled.sum()
+  join_one: b is b_items on id = b.id
+}
+
+#(doc) Expect row_count 6, v_total 210, a_scaled 630, b_scaled 420.
+query: check_ab is a_items -> {
+  aggregate:
+    row_count
+    v_total
+    a_scaled is scaled_total
+    b_scaled is b.scaled_total
+}

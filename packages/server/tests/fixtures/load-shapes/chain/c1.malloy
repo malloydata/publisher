@@ -1,0 +1,3 @@
+import "c0.malloy"
+
+source: c1 is c0 extend { dimension: s1 is s0 + 1 }

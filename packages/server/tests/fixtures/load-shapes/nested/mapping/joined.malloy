@@ -1,0 +1,6 @@
+import "../core/orders.malloy"
+import "../../diamond/base.malloy"
+
+source: joined is orders extend {
+  join_one: item is items on item_id = item.id
+}

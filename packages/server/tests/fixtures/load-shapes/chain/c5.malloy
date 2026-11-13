@@ -1,0 +1,10 @@
+import "c4.malloy"
+
+source: c5 is c4 extend { dimension: s5 is s4 + 5 }
+
+#(doc) s5 is v + 15, so expect row_count 6, s5_total 300.
+query: check_chain is c5 -> {
+  aggregate:
+    row_count
+    s5_total is s5.sum()
+}
