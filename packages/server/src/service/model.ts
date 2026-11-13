@@ -459,6 +459,12 @@ export class Model {
       modelDef: () => this.modelDef,
       serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
       catalog: () => this.policy.materializedTables(),
+      // A joined source's `storage=` rollup is read through a join only from
+      // a query source the served copy reads in the same destination.
+      joinRollupBasis: async () =>
+         this.servedCopyEnabled()
+            ? this.servedCopy.joinRollupBasis()
+            : undefined,
    });
    /**
     * The synthesized pre-aggregation model for this model, compiled once per load

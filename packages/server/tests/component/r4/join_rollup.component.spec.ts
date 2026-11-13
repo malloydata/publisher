@@ -416,7 +416,7 @@ source: flights is duckdb.table('flights_raw') extend {
    }
 });
 
-describe("R4: join-to-rollup (A7) declines a joined source's rollup in a storage destination", () => {
+describe("R4: join-to-rollup (A7) declines a joined source's rollup in a storage destination the query source is not stored in", () => {
    let restore: () => void;
    let fixture: R4Fixture;
    beforeAll(async () => {

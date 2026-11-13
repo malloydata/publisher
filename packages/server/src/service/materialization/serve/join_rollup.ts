@@ -39,6 +39,13 @@
  * column of the joined source. Through a join_one, a count already skips the
  * unmatched row (it counts the joined key), so it is served.
  *
+ * A rollup in a `storage=` destination is joined there, so only for a query
+ * source the served copy reads from the same destination: the variant is
+ * then compiled over the served copy's files (known limitation 26,
+ * `RollupVariantServe.answerJoinInDestination`); any other query source
+ * reads its own connection, and Malloy joins within one (`CROSS_CONNECTION`,
+ * malloydata/malloy#3032).
+ *
  * Gates: a gated entry point skips every rollup (`CONTRACT`) as for the base
  * leg; a joined source that declares a gate of its own is declined
  * (`CONTRACT`), since the rollup carries none.
