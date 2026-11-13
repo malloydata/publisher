@@ -68,8 +68,9 @@ function readTree(dir: string): Record<string, string> {
          const full = path.join(at, entry.name);
          if (entry.isDirectory()) walk(full);
          else {
-            out[path.relative(dir, full).split(path.sep).join("/")] =
-               fs.readFileSync(full, "utf8").replace(/\r\n/g, "\n");
+            out[path.relative(dir, full).split(path.sep).join("/")] = fs
+               .readFileSync(full, "utf8")
+               .replace(/\r\n/g, "\n");
          }
       }
    };

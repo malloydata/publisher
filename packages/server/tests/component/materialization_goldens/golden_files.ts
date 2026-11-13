@@ -69,9 +69,7 @@ function editScript(a: string[], b: string[]): DiffLine[] {
       }
    } else {
       // lcs[i][j]: the common subsequence length of a[start+i..] and b[start+j..].
-      const lcs = Array.from({ length: n + 1 }, () =>
-         new Uint32Array(m + 1),
-      );
+      const lcs = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
       for (let i = n - 1; i >= 0; i--) {
          for (let j = m - 1; j >= 0; j--) {
             lcs[i][j] =
