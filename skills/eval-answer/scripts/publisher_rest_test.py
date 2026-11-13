@@ -149,6 +149,25 @@ class CompactJson(unittest.TestCase):
         self.assertEqual(rows, [{"n": 7}])
 
 
+class BearerToken(unittest.TestCase):
+    """A hosted data plane serves the same query API behind a login."""
+
+    def setUp(self):
+        self.saved = os.environ.pop("EVAL_PUBLISHER_TOKEN", None)
+
+    def tearDown(self):
+        os.environ.pop("EVAL_PUBLISHER_TOKEN", None)
+        if self.saved is not None:
+            os.environ["EVAL_PUBLISHER_TOKEN"] = self.saved
+
+    def test_no_token_sends_no_authorization_header(self):
+        self.assertNotIn("Authorization", publisher_rest._headers())
+
+    def test_a_token_is_sent_as_a_bearer_header(self):
+        os.environ["EVAL_PUBLISHER_TOKEN"] = "abc"
+        self.assertEqual(publisher_rest._headers()["Authorization"], "Bearer abc")
+        self.assertEqual(publisher_rest._headers()["Content-Type"], "application/json")
+
 
 class PackageIdentityTests(unittest.TestCase):
     """The served identity comes from the package's serving state, and on older

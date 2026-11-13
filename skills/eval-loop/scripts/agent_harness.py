@@ -95,6 +95,10 @@ ALWAYS_BLOCKED = (
     # contaminated on an answer that made two MCP calls and nothing else, and
     # a judged arm would have voided all 24 verdicts.
     "Artifact",
+    # Granted to every headless session by the CLI as of 2026-11-03; with
+    # PublishPlugin they alone flagged all 97 attempts of a platform run
+    # contaminated, none called.
+    "SendToProject", "SendToProjectContext",
 )
 
 # The role-dependent half, and the reason it cannot join ALWAYS_BLOCKED:
