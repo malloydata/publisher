@@ -456,9 +456,9 @@ export class Model {
    private servedCopy = this.newServedCopy();
    /**
     * Under `PUBLISHER_V1_SERVED_COPY=shadow` only: the served copy as the v1
-    * cutover would compile it (with the v1 colocated tables re-rooted), for
-    * the shadow comparison, when it differs from {@link servedCopy}. Created
-    * when first needed; undefined in every other mode.
+    * cutover would compile it (the v1 colocated tables re-rooted, and v1
+    * columns an older build typed cast on read), for the shadow comparison.
+    * Created at the first bind; undefined in every other mode.
     */
    private shadowServedCopy: ServedCopyServe | undefined;
    /** What {@link setServedCopyContext} last set, for a shadow copy made later. */
@@ -2826,9 +2826,14 @@ export class Model {
       }
    }
 
-   /** A served copy reading this model's state (one per mode it serves in). */
-   private newServedCopy(): ServedCopyServe {
+   /**
+    * A served copy reading this model's state (one per mode it serves in):
+    * the model's own, with the v1 cutover's per-column types under `on`, or
+    * the shadow comparison's, with them always (`cutover`).
+    */
+   private newServedCopy(cutover = false): ServedCopyServe {
       return new ServedCopyServe({
+         perColumnTypes: () => cutover || getV1ServedCopyMode() === "on",
          modelPath: () => this.modelPath,
          modelDef: () => this.modelDef,
          // Storage tables only while the storage tier serves; colocated tables
@@ -3024,8 +3029,8 @@ export class Model {
       // A v1 colocated `#@ persist` table (no `#(materialize)` plan) is bound
       // only with the v1 cutover past `off` (package_materialization.ts). It
       // joins the served copy only under `on`; under `shadow` the model's own
-      // copy stays as today's and a second copy carries it, for the
-      // comparison alone.
+      // copy stays as today's and a second copy carries it (with the
+      // cutover's per-column types), for the comparison alone.
       const mode = getV1ServedCopyMode();
       const isV1 = (b: ServeBinding) =>
          !(b.sourceIDs ?? []).some((id) => materialized.has(id));
@@ -3034,9 +3039,9 @@ export class Model {
       this.servedCopy.setBindings(
          today.length === 0 ? others : [...others, ...today],
       );
-      if (mode === "shadow" && today.length !== colocated.length) {
+      if (mode === "shadow") {
          if (!this.shadowServedCopy) {
-            this.shadowServedCopy = this.newServedCopy();
+            this.shadowServedCopy = this.newServedCopy(true);
             if (this.servedCopyContext) {
                this.shadowServedCopy.setContext(...this.servedCopyContext);
             }

@@ -20,12 +20,14 @@ import {
 } from "./harness";
 
 /**
- * The #7098 fixture runs twice: through today's storage serve shape, and with
- * PUBLISHER_MATERIALIZE on, through the served copy on `virtual` wherever it
- * can answer (phase 0 Evidence 5). Every answer must equal live in both.
+ * The #7098 fixture runs three ways: through today's storage serve shape;
+ * with PUBLISHER_MATERIALIZE on, through the served copy on `virtual`
+ * wherever it can answer (phase 0 Evidence 5); and after the v1 cutover
+ * (PUBLISHER_V1_SERVED_COPY=on), where no serve shape exists, so every
+ * stored answer is the served copy's. Every answer must equal live in all.
  */
-for (const mode of ["serve_shape", "served_copy"] as const) {
-   const servedCopy = mode === "served_copy";
+for (const mode of ["serve_shape", "served_copy", "cutover"] as const) {
+   const servedCopy = mode !== "serve_shape";
    describe(`[${mode}]`, () => {
       let restoreSettings: () => void;
       beforeAll(() => {
@@ -33,6 +35,9 @@ for (const mode of ["serve_shape", "served_copy"] as const) {
             env: {
                PERSIST_STORAGE_MODE: "on",
                ...(servedCopy ? { PUBLISHER_MATERIALIZE: "true" } : {}),
+               ...(mode === "cutover"
+                  ? { PUBLISHER_V1_SERVED_COPY: "on" }
+                  : {}),
             },
          }).restore;
       });

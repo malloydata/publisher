@@ -56,6 +56,8 @@ import { rollingWindowsOf } from "../plan/rolling_window";
 import { evaluateManifestFreshness } from "../run/freshness";
 import {
    declaredColumnsOf,
+   queryTimezoneOf,
+   serveTypePlan,
    storedColumnTypeMismatches,
 } from "../stored_column_types";
 import { annotatedJoinedOutput } from "../../governance/ir/joined_field_output";
@@ -283,6 +285,14 @@ export interface ServedCopyHost {
     * tables are read.
     */
    serveDestinationConfig(): (() => MalloyConfig) | undefined;
+   /**
+    * The v1 cutover's per-column types (G5): a v1 table whose column an
+    * older build typed is re-rooted with that column cast on read when a
+    * cast is faithful, and with it left out (only queries reading it answer
+    * live) when none is, rather than refused whole. Absent or false: the
+    * source is refused (`column_types`), as before the cutover.
+    */
+   perColumnTypes?(): boolean;
 }
 
 interface Compiled {
@@ -386,6 +396,13 @@ type AuthorReroot = Reroot & {
     * `where:` term or base relation whose SQL moves with the zone).
     */
    storesZonedDimension?: true;
+   /**
+    * For a v1 re-root under the cutover's per-column types (G5): the stored
+    * columns no cast reads as their declared type, left out of the `type:`,
+    * so only a query reading one fails to compile here and answers live.
+    * Their absence is not a lost field.
+    */
+   columnsLeftOut?: readonly string[];
 };
 
 /** How many declined queries one compiled copy remembers before starting over. */
@@ -976,6 +993,7 @@ export class ServedCopyServe {
       };
       let columns: ServedColumn[];
       let inlinedJoins: InlinedJoin[] = [];
+      let columnsLeftOut: string[] = [];
       if (plan) {
          // Exactly what the build stored: the plan's columns (the source's
          // atomic dimensions, computed ones too, each under its own name, a
@@ -1032,24 +1050,55 @@ export class ServedCopyServe {
          const narrowed = binding.colocated
             ? storedColumnsWithAccess(binding.schema, def.fields)
             : narrowSchemaToPublic(binding.schema, def.fields);
-         if (
-            storedColumnTypeMismatches(narrowed, declaredColumnsOf(def.fields))
-               .length > 0
-         ) {
+         const mismatches = storedColumnTypeMismatches(
+            narrowed,
+            declaredColumnsOf(def.fields),
+         );
+         // A column the served copy cannot read as its declared type: cast
+         // on read when a cast is faithful, else left out so only a query
+         // reading it answers live (G5, the serve shape's handling, plan
+         // call 4); before the cutover, the whole source is refused.
+         const typePlan =
+            mismatches.length > 0 && this.host.perColumnTypes?.()
+               ? serveTypePlan(mismatches, {
+                    queryTimezone: queryTimezoneOf(def),
+                 })
+               : undefined;
+         if (mismatches.length > 0 && !typePlan) {
             problems.push({ sourceName, reason: "column_types" });
             return undefined;
          }
+         const castTo = new Map(
+            (typePlan?.casts ?? []).map((c) => [
+               c.column,
+               c.castTo === "BOOLEAN"
+                  ? ("boolean" as const)
+                  : ("date" as const),
+            ]),
+         );
+         const leftOut = new Set(
+            (typePlan?.unservable ?? []).map((m) => m.column),
+         );
+         columnsLeftOut = [...leftOut];
          // Each with its field's annotations (`#(doc)`, `# label`, `#
          // percent` on the query's output field), as a `#(materialize)` column
          // carries them, so the stored field reads back as the author's.
-         columns = narrowed.map((c) => {
-            const notes = fieldNotes(fieldsByName.get(c.name));
-            return {
-               ...c,
-               ...(notes.length > 0 ? { notes } : {}),
-               ...timeframeOf(c.name),
-            };
-         });
+         columns = narrowed
+            .filter((c) => !leftOut.has(c.name))
+            .map((c) => {
+               const notes = fieldNotes(fieldsByName.get(c.name));
+               const cast = castTo.get(c.name);
+               return {
+                  ...c,
+                  ...(notes.length > 0 ? { notes } : {}),
+                  ...timeframeOf(c.name),
+                  ...(cast ? { castTo: cast } : {}),
+               };
+            });
+         if (columns.length === 0) {
+            problems.push({ sourceName, reason: "column_types" });
+            return undefined;
+         }
       }
       // A column the `type:` cannot declare faithfully would fail the whole
       // model's copy, not just this source: leave this one to its fallback.
@@ -1102,6 +1151,7 @@ export class ServedCopyServe {
             ? { readTimeTerms: plan.readTimeTerms }
             : {}),
          ...(inlinedJoins.length > 0 ? { inlinedJoins } : {}),
+         ...(columnsLeftOut.length > 0 ? { columnsLeftOut } : {}),
          sourceID: node.sourceID,
          authorDef: node.def,
       } as AuthorReroot;
@@ -1370,6 +1420,35 @@ export class ServedCopyServe {
          // table falls back to its own blocks (or to as written); any other
          // source is dropped and answers live, with a coded warning. Each
          // step is one pass; the rest of the model compiles again.
+         // A v1 column no cast makes faithful is left out of its source's
+         // `type:` (G5). When the model's own text names it (an extension's
+         // dimension), the copy cannot compile with it gone: that source is
+         // left as written and answers live, as the serve shape withholds a
+         // binding whose unservable column a refinement names, and every
+         // other source keeps its table.
+         const withoutLeftOutColumn = (error: unknown): boolean => {
+            const message =
+               error instanceof Error ? error.message : String(error);
+            const named = new Set(
+               [...message.matchAll(/'([^']+)' is not defined/g)].map(
+                  (m) => m[1],
+               ),
+            );
+            if (named.size === 0) return false;
+            const failing = candidates.filter((c) =>
+               (c.reroot.columnsLeftOut ?? []).some((n) => named.has(n)),
+            );
+            if (failing.length === 0) return false;
+            for (const c of failing) {
+               problems.push({
+                  sourceName: c.reroot.sourceName,
+                  reason: "column_types",
+               });
+               withoutKept.delete(c);
+            }
+            candidates = candidates.filter((c) => !failing.includes(c));
+            return true;
+         };
          const contain = (
             error: unknown,
             files: ReadonlyMap<string, string>,
@@ -1439,6 +1518,7 @@ export class ServedCopyServe {
                runtime: servedRuntime,
             } = await load(overlay));
          } catch (err) {
+            if (withoutLeftOutColumn(err)) continue;
             if (contain(err, copy.files, "precise")) continue;
             // A reference join the re-root moved across connections (question
             // 11): leave it out, with what reads it, so every other query
@@ -1559,11 +1639,12 @@ export class ServedCopyServe {
                   .filter((n): n is string => n !== undefined),
             );
             chain.add(c.reroot.sourceName);
-            const excused = new Set(
-               leftOut
+            const excused = new Set([
+               ...leftOut
                   .filter((l) => chain.has(l.declaration ?? l.name))
                   .map((l) => l.name),
-            );
+               ...(c.reroot.columnsLeftOut ?? []),
+            ]);
             // A private field the table does not hold (one private on a
             // source this one extends, which the build never selects, P3)
             // cannot be read by the source, its extensions or a caller, so
