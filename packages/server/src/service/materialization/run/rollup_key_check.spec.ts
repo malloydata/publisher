@@ -298,6 +298,24 @@ describe("the query source's primary key check, on a build", () => {
       expect(one.rollup?.parentKeyChecks).toBeUndefined();
    });
 
+   it("is not planned for a source whose rows depend on a given, with or without a default", async () => {
+      // Compiled once at plan time, the check would read the default
+      // caller's rows (or not compile), not the rows another caller reads.
+      for (const given of [
+         "given: CARRIER :: string is 'AA'",
+         "given: CARRIER :: string",
+      ]) {
+         const scoped = await scenario(`##! experimental.givens
+${given}
+${MANY.replace(
+   "primary_key: id\n",
+   "primary_key: id\n  where: carrier = $CARRIER\n",
+)}`);
+         expect(scoped.rollup).toBeDefined();
+         expect(scoped.rollup?.parentKeyChecks).toBeUndefined();
+      }
+   });
+
    it(
       "records unique, carries it while the rollup's table stands, and checks again on a rebuild",
       async () => {
