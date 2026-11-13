@@ -1,0 +1,77 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "ov__by_region__view@<pkg>/m.malloy.persist-view.malloy": []
+        },
+        "order": [
+          "ov__by_region__view@<pkg>/m.malloy.persist-view.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "ov__by_region__view@<pkg>/m.malloy.persist-view.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "ov__by_region__view@<pkg>/m.malloy.persist-view.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "ov__by_region__view@<pkg>/m.malloy.persist-view.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "ov__by_region__view@<pkg>/m.malloy.persist-view.malloy": {
+        "annotationFields": {
+          "name": "ov_by_region",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "ov__by_region__view",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533",
+        "sourceID": "ov__by_region__view@<pkg>/m.malloy.persist-view.malloy",
+        "sql": "sha256:e06d2b33e94f9d2f"
+      }
+    }
+  }
+}

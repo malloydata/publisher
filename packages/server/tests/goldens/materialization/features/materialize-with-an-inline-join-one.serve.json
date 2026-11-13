@@ -1,0 +1,785 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "orders_wide",
+        "tier": "storage"
+      },
+      {
+        "name": "orders_wide_local",
+        "tier": "colocated"
+      }
+    ],
+    "verdicts": [
+      "orders_wide:serves",
+      "orders_wide_local:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customers.segment"
+          },
+          {
+            "classifications": [],
+            "path": "order_count"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "customers.segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "22d8b94e225af28a",
+          "kind": "reduce",
+          "measures": [
+            "order_count",
+            "total"
+          ],
+          "source": "orders_wide",
+          "stages": 1
+        },
+        "source": "orders_wide"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_wide -> { group_by: customers.segment; aggregate: order_count, total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "orders_wide_local",
+            "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "customers.segment"
+          ],
+          "measures": [
+            "order_count",
+            "total"
+          ],
+          "sourceName": "orders_wide"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a joined dimension, storage=",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customer_region"
+          },
+          {
+            "classifications": [],
+            "path": "customers_ordering"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "customer_region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "946ffc53deac7f05",
+          "kind": "reduce",
+          "measures": [
+            "customers_ordering"
+          ],
+          "source": "orders_wide",
+          "stages": 1
+        },
+        "source": "orders_wide"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_wide -> { group_by: customer_region; aggregate: customers_ordering }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "orders_wide_local",
+            "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "customer_region"
+          ],
+          "measures": [
+            "customers_ordering"
+          ],
+          "sourceName": "orders_wide"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a dimension reading the join",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customers.segment"
+          },
+          {
+            "classifications": [],
+            "path": "order_count"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "customers.segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "22d8b94e225af28a",
+          "kind": "reduce",
+          "measures": [
+            "order_count",
+            "total"
+          ],
+          "source": "orders_wide",
+          "stages": 1
+        },
+        "source": "orders_wide"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_wide -> by_segment",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "orders_wide_local",
+            "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "customers.segment"
+          ],
+          "measures": [
+            "order_count",
+            "total"
+          ],
+          "sourceName": "orders_wide"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a declared view",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customers.customer_count"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "4d654908c61a9526",
+          "kind": "reduce",
+          "measures": [
+            "customers.customer_count"
+          ],
+          "source": "orders_wide",
+          "stages": 1
+        },
+        "source": "orders_wide"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_wide -> { group_by: region; aggregate: customers.customer_count }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "orders_wide_local",
+            "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "customers.customer_count"
+          ],
+          "sourceName": "orders_wide"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the joined source's own measure",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customers.loud_name"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "customers.loud_name"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "41b0528b5b6dc773",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "orders_wide_local",
+          "stages": 1
+        },
+        "source": "orders_wide_local"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_wide_local -> { group_by: customers.loud_name; aggregate: total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "orders_wide",
+            "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "customers.loud_name"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "orders_wide_local"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a joined dimension, colocated",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customers.segment"
+          },
+          {
+            "classifications": [],
+            "path": "order_count"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "customers.segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "22d8b94e225af28a",
+          "kind": "reduce",
+          "measures": [
+            "order_count",
+            "total"
+          ],
+          "source": "orders_wide",
+          "stages": 1
+        },
+        "source": "orders_wide"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_wide -> { group_by: customers.segment; aggregate: order_count, total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "orders_wide_local",
+            "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "customers.segment"
+          ],
+          "measures": [
+            "order_count",
+            "total"
+          ],
+          "sourceName": "orders_wide"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a joined dimension, storage=",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customer_region"
+          },
+          {
+            "classifications": [],
+            "path": "customers_ordering"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "customer_region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "946ffc53deac7f05",
+          "kind": "reduce",
+          "measures": [
+            "customers_ordering"
+          ],
+          "source": "orders_wide",
+          "stages": 1
+        },
+        "source": "orders_wide"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_wide -> { group_by: customer_region; aggregate: customers_ordering }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "orders_wide_local",
+            "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "customer_region"
+          ],
+          "measures": [
+            "customers_ordering"
+          ],
+          "sourceName": "orders_wide"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a dimension reading the join",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customers.segment"
+          },
+          {
+            "classifications": [],
+            "path": "order_count"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "customers.segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "22d8b94e225af28a",
+          "kind": "reduce",
+          "measures": [
+            "order_count",
+            "total"
+          ],
+          "source": "orders_wide",
+          "stages": 1
+        },
+        "source": "orders_wide"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_wide -> by_segment",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "orders_wide_local",
+            "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "customers.segment"
+          ],
+          "measures": [
+            "order_count",
+            "total"
+          ],
+          "sourceName": "orders_wide"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a declared view",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customers.customer_count"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "4d654908c61a9526",
+          "kind": "reduce",
+          "measures": [
+            "customers.customer_count"
+          ],
+          "source": "orders_wide",
+          "stages": 1
+        },
+        "source": "orders_wide"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_wide -> { group_by: region; aggregate: customers.customer_count }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "MISSING_FIELD",
+            "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "orders_wide_local",
+            "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "customers.customer_count"
+          ],
+          "sourceName": "orders_wide"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the joined source's own measure",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customers.loud_name"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "customers.loud_name"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "41b0528b5b6dc773",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "orders_wide_local",
+          "stages": 1
+        },
+        "source": "orders_wide_local"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_wide_local -> { group_by: customers.loud_name; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "orders_wide",
+            "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "customers.loud_name"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "orders_wide_local"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a joined dimension, colocated",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

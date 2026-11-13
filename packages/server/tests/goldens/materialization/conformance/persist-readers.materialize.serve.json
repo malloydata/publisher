@@ -1,0 +1,413 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "summary",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "summary:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "d93132f30b9f433b",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "summary_fresh",
+          "stages": 1
+        },
+        "source": "summary_fresh"
+      },
+      "equalToLive": true,
+      "malloy": "run: summary_fresh -> { group_by: region; aggregate: grand }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "summary_fresh"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the opted-out reader",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "g"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "09b80469eae7af34",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(g)"
+          ],
+          "source": "summary_fresh_rollup",
+          "stages": 1
+        },
+        "source": "summary_fresh_rollup"
+      },
+      "equalToLive": true,
+      "malloy": "run: summary_fresh_rollup -> { group_by: region; aggregate: t is g.sum() }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "g"
+          ],
+          "sourceName": "summary_fresh_rollup"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a reader built on the opted-out one",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "d1012c832ed6be9f",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "summary_kept",
+          "stages": 1
+        },
+        "source": "summary_kept"
+      },
+      "equalToLive": true,
+      "malloy": "run: summary_kept -> { group_by: region; aggregate: grand }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "summary_kept"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a sibling that does not opt out",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "d93132f30b9f433b",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "summary_fresh",
+          "stages": 1
+        },
+        "source": "summary_fresh"
+      },
+      "equalToLive": true,
+      "malloy": "run: summary_fresh -> { group_by: region; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "code": "persist-opt-out",
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "WARNED",
+            "tableId": "1f62ee077661338e4aa69c6e0c67fa4a23d17f33d7806206cd5caf829b2ff57e"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "summary_fresh"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the opted-out reader",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "g"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "09b80469eae7af34",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(g)"
+          ],
+          "source": "summary_fresh_rollup",
+          "stages": 1
+        },
+        "source": "summary_fresh_rollup"
+      },
+      "equalToLive": true,
+      "malloy": "run: summary_fresh_rollup -> { group_by: region; aggregate: t is g.sum() }",
+      "path": {
+        "considered": [
+          {
+            "code": "persist-opt-out",
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "WARNED",
+            "tableId": "1f62ee077661338e4aa69c6e0c67fa4a23d17f33d7806206cd5caf829b2ff57e"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "g"
+          ],
+          "sourceName": "summary_fresh_rollup"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a reader built on the opted-out one",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "d1012c832ed6be9f",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "summary_kept",
+          "stages": 1
+        },
+        "source": "summary_kept"
+      },
+      "equalToLive": true,
+      "malloy": "run: summary_kept -> { group_by: region; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "1f62ee077661338e4aa69c6e0c67fa4a23d17f33d7806206cd5caf829b2ff57e"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "summary_kept"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "1f62ee077661338e4aa69c6e0c67fa4a23d17f33d7806206cd5caf829b2ff57e",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a sibling that does not opt out",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

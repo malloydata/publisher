@@ -1,0 +1,122 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "dropped@<pkg>/m.malloy": [],
+          "rehidden@<pkg>/m.malloy": []
+        },
+        "order": [
+          "dropped@<pkg>/m.malloy",
+          "rehidden@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "dropped@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rehidden@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "dropped@<pkg>/m.malloy": "m.malloy",
+      "rehidden@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "dropped@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "rehidden@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "dropped@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "dropped"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "dropped",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792",
+        "sourceID": "dropped@<pkg>/m.malloy",
+        "sql": "sha256:1c11c4f32b8df464"
+      },
+      "rehidden@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "rehidden"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "segment",
+            "type": "string"
+          },
+          {
+            "name": "region_raw",
+            "type": "string"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "rehidden",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e",
+        "sourceID": "rehidden@<pkg>/m.malloy",
+        "sql": "sha256:8a0625f7f9864927"
+      }
+    }
+  }
+}

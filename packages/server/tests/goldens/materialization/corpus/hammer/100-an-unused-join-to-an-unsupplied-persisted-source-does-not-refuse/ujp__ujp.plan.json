@@ -1,0 +1,157 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "counts@<hammer>/ujp/ujp.malloy": [],
+          "daily@<hammer>/ujp/ujp.malloy": [],
+          "rollup@<hammer>/ujp/ujp.malloy": [
+            "daily@<hammer>/ujp/ujp.malloy",
+            "counts@<hammer>/ujp/ujp.malloy"
+          ]
+        },
+        "order": [
+          "counts@<hammer>/ujp/ujp.malloy",
+          "daily@<hammer>/ujp/ujp.malloy",
+          "rollup@<hammer>/ujp/ujp.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "counts@<hammer>/ujp/ujp.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "daily@<hammer>/ujp/ujp.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollup@<hammer>/ujp/ujp.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "counts@<hammer>/ujp/ujp.malloy": "ujp.malloy",
+      "daily@<hammer>/ujp/ujp.malloy": "ujp.malloy",
+      "rollup@<hammer>/ujp/ujp.malloy": "ujp.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "counts@<hammer>/ujp/ujp.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/ujp/ujp.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/ujp/ujp.malloy",
+                "counts@<hammer>/ujp/ujp.malloy"
+              ],
+              "sourceID": "rollup@<hammer>/ujp/ujp.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "counts@<hammer>/ujp/ujp.malloy": {
+        "annotationFields": {
+          "name": "ujp_counts"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "order_count",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ujp.malloy",
+        "name": "counts",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "e0c8608d950cd1f4e05681cf328f0e8220dce2ad4498722787626adba3fb9772",
+        "sourceID": "counts@<hammer>/ujp/ujp.malloy",
+        "sql": "sha256:2a44a3a11402a3a7"
+      },
+      "daily@<hammer>/ujp/ujp.malloy": {
+        "annotationFields": {
+          "name": "ujp_daily"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ujp.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "9e2946c24d93348533d887f4a1a76b78f6f3f4489f71eb0efec8d704340d4cd9",
+        "sourceID": "daily@<hammer>/ujp/ujp.malloy",
+        "sql": "sha256:b7f056d69637eec7"
+      },
+      "rollup@<hammer>/ujp/ujp.malloy": {
+        "annotationFields": {
+          "name": "ujp_rollup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "grand_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ujp.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "6296e0159a81ea1436716846404c383f0d729e331a186229bbea5e9755e0e784",
+        "sourceID": "rollup@<hammer>/ujp/ujp.malloy",
+        "sql": "sha256:ab3b3d534af515d2"
+      }
+    }
+  }
+}

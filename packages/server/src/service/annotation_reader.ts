@@ -11,9 +11,9 @@
  * helpers for annotation bundles (own notes, model notes, positions); this
  * module is about routes.
  *
- * Materialization v2's routes (`#(materialize)`, `#(preaggregate)`) join the
- * registry in the phases that make them work (3 and 4), so nothing here
- * recognizes a spelling that still does nothing.
+ * Materialization v2's routes (`#(materialize)`, `#(preaggregate)`) are in the
+ * registry with their closed key sets, and are read only with the materialize
+ * switch on (`PUBLISHER_MATERIALIZE`): see {@link MATERIALIZE_V2_ROUTES}.
  */
 
 import {
@@ -23,7 +23,7 @@ import {
    type DocumentLocation,
 } from "@malloydata/malloy";
 import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
-import { parseRouteTag } from "./motly";
+import { parseBounded, parseRouteTag } from "./motly";
 
 /** Malloy's routing for one note: its route, `""` for a MOTLY tag, `undefined` when the prefix is malformed. */
 export function routeOfNote(text: string): string | undefined {
@@ -56,7 +56,15 @@ function readNote(
    const route = routeOfNote(text);
    if (route !== undefined) return { route, payload: payloadOfNote(text) };
    const glued = GLUED_PREFIX.exec(text);
-   if (glued && glued[1] !== undefined && glued[1] in PUBLISHER_ROUTES) {
+   // Only the routes that were always read glued: a v2 route's reader is
+   // Malloy's `routeOf`, so a glued `#(materialize)…` declares nothing and
+   // must stay visible to the near-miss scan.
+   if (
+      glued &&
+      glued[1] !== undefined &&
+      glued[1] in PUBLISHER_ROUTES &&
+      !MATERIALIZE_V2_ROUTES.has(glued[1])
+   ) {
       return { route: glued[1], payload: glued[2] ?? "" };
    }
    const docString = GLUED_DOC_STRING.exec(text);
@@ -88,6 +96,107 @@ export function payloadsOnRoute(
       if (note?.route === route) out.push(note.payload);
    }
    return out;
+}
+
+/**
+ * The top-level keys a `tag` payload declares, folded to lower case, in the
+ * order written. Read by Malloy's tag parser, so quoting, nesting and
+ * deletion (`-key`) mean what they mean to every MOTLY reader. Only key names
+ * leave, so an `@env.` value is never hydrated into a result. A payload that
+ * does not parse is read word by word, so one broken property cannot hide a
+ * sibling's key, and a word that does not parse on its own still names the
+ * key before its `=` (`sharing=`, `sharing="a`, `sharing=x)`), as the
+ * whitespace split this replaced did: a malformed value must not hide the
+ * knob it sets.
+ */
+export function tagPayloadKeys(payload: string): string[] {
+   const declared = (text: string): string[] | undefined => {
+      const { tag, messages } = parseBounded([`# ${text}`]);
+      if (!tag || messages.length > 0) return undefined;
+      return [...tag.entries()]
+         .filter(([key]) => tag.has(key))
+         .map(([key]) => key.toLowerCase());
+   };
+   const assigned = (word: string): string[] => {
+      const key = /^(['"]?)([A-Za-z_]\w*)\1=/.exec(word)?.[2];
+      return key === undefined ? [] : [key.toLowerCase()];
+   };
+   const keys =
+      declared(payload) ??
+      payload
+         .split(/[ \t\r\n]+/)
+         .filter(Boolean)
+         .flatMap((word) => declared(word) ?? assigned(word));
+   return [...new Set(keys)];
+}
+
+/**
+ * An `#(index)` / `#(index_values)` tagline: `#(` (or `# (`) and the word, at
+ * the object level. Parenthesis-only, and a block note (`#|(index)`) is not
+ * one: see `hasIndexTag` in `dim_index_discovery.ts` for why widening it is a
+ * change of its own.
+ */
+const INDEX_NOTE = /^#\s*\(\s*index(?:_values)?\b/;
+/** A tagline Malloy does not route to `index`: the bracket's body and what follows it. */
+const INDEX_NOTE_PARTS = /^#\s*\(\s*index(?:_values)?\b([^)]*)\)(.*)$/;
+
+/** Whether a tagline opts its field into the dimension index. */
+export function isIndexNote(text: string): boolean {
+   return INDEX_NOTE.test(text);
+}
+
+/**
+ * An index tagline's payload, or `undefined` when `text` is none. Malloy's
+ * own payload when it routes the note (`#(index) n=200`); otherwise the
+ * shapes authors write that Malloy calls malformed or reads as a MOTLY tag,
+ * which have always been read: the payload inside the parens
+ * (`#( index_values n=200 )`), glued to them (`#(index)n=200`), or after a
+ * spaced prefix (`# (index) n=200`). An unclosed paren is no payload.
+ */
+export function indexNotePayload(text: string): string | undefined {
+   const trimmed = text.trim();
+   if (!isIndexNote(trimmed)) return undefined;
+   const route = routeOfNote(trimmed);
+   if (route === "index" || route === "index_values") {
+      return payloadOfNote(trimmed);
+   }
+   const parts = INDEX_NOTE_PARTS.exec(trimmed);
+   if (!parts) return undefined;
+   return [parts[1], parts[2]]
+      .map((part) => (part ?? "").trim())
+      .filter(Boolean)
+      .join(" ");
+}
+
+/** The mark that keeps a source out of agent retrieval. Deprecated, still read. */
+export const AGENT_HIDDEN_ROUTE = "agent-hidden";
+
+/**
+ * Every spelling of the mark that hides, past Malloy's own route: a malformed
+ * prefix (`#( agent-hidden )`, `#agent-hidden`, `#(agent-hidden)x`) and a
+ * MOTLY tag naming it (`# agent-hidden`, `# (agent-hidden)`). Read wide on
+ * purpose: a missed mark exposes a source the author meant to withhold, and
+ * the hosted service reads the plan's verdict.
+ */
+const AGENT_HIDDEN_MARK = /^#\|?\s*[([{<]?\s*agent-hidden\b/;
+
+/**
+ * Whether a note marks agent-hidden at `level`: `#(agent-hidden)` on a
+ * source, `##(agent-hidden)` on a model file. Every bracket pair Malloy
+ * routes and a block note (`#|(agent-hidden) … |#`) count, as do the
+ * near-miss spellings {@link AGENT_HIDDEN_MARK} lists.
+ */
+export function marksAgentHidden(
+   text: string,
+   level: "source" | "file",
+): boolean {
+   if (!text.startsWith("#")) return false;
+   const fileLevel = text.startsWith("##");
+   if (fileLevel !== (level === "file")) return false;
+   const note = fileLevel ? text.slice(1) : text;
+   return (
+      routeOfNote(note) === AGENT_HIDDEN_ROUTE || AGENT_HIDDEN_MARK.test(note)
+   );
 }
 
 /** A sorted set, in codepoint order, so two servers on identical bytes agree. */
@@ -146,6 +255,46 @@ const PREAGGREGATE_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * `#(materialize)`'s keys (materialization v2, P13): the `#@ persist` keys it
+ * carries onto its generated build source, and `inline`, which the plan reads.
+ * A closed set: any other key is malformed, refused at publish.
+ */
+export const MATERIALIZE_KEYS: ReadonlySet<string> = new Set([
+   "name",
+   "storage",
+   "refresh",
+   "watermark",
+   "merge_key",
+   "partition",
+   "freshness",
+   "queryMetadata",
+   "inline",
+]);
+
+/**
+ * `#(preaggregate)`'s keys (materialization v2, A1): the grain it stores a
+ * measure at, and where (a `storage=` destination, or a `namespace=` in the
+ * source's own warehouse). A closed set: any other key is malformed.
+ */
+export const PREAGGREGATE_ROUTE_KEYS: ReadonlySet<string> = new Set([
+   "grain",
+   "storage",
+   "namespace",
+]);
+
+/**
+ * The materialization v2 routes. Each is read only with the materialize switch
+ * on (`PUBLISHER_MATERIALIZE`); off, nothing reads them and the near-miss scan
+ * treats them as it did before they were registered. A key outside a v2
+ * route's set is malformed (`<route>-unknown-key`), refused at publish, where
+ * an unknown key on v1's `#@` route only warns (P13).
+ */
+export const MATERIALIZE_V2_ROUTES: ReadonlySet<string> = new Set([
+   "materialize",
+   "preaggregate",
+]);
+
+/**
  * The routes Publisher reads, keyed by route: the bracketed app routes it
  * owns, and the Malloy routes it reads directives from (`@`, `!`, and `""`
  * for MOTLY tags).
@@ -156,7 +305,15 @@ export const PUBLISHER_ROUTES: Readonly<Record<string, RouteSpec>> = {
    classification: { payload: "list" },
    carries: { payload: "list" },
    secure: { payload: "none" },
-   index: { payload: "tag" },
+   index: {
+      payload: "tag",
+      // Package-level knobs a dimension may not set: refused at load
+      // (`findForbiddenIndexPolicyKeys`). The route's other keys are open.
+      retiredKeys: {
+         sharing: "set materialization.scope in publisher.json",
+         schedule: "set materialization.schedule in publisher.json",
+      },
+   },
    dbmeta: { payload: "tag" },
    doc: { payload: "prose" },
    markdown: { payload: "prose" },
@@ -170,6 +327,8 @@ export const PUBLISHER_ROUTES: Readonly<Record<string, RouteSpec>> = {
             "set materialization.schedule in publisher.json; a source no longer sets its own schedule",
       },
    },
+   materialize: { payload: "tag", keys: MATERIALIZE_KEYS },
+   preaggregate: { payload: "tag", keys: PREAGGREGATE_ROUTE_KEYS },
    "!": { payload: "tag" },
    "": { payload: "tag" },
 };
@@ -210,7 +369,9 @@ export interface AnnotationFinding {
  * A route's tag, read without the server's environment (see `parseRouteTag`),
  * and a finding for each top-level key the route does not accept or has
  * retired. The findings are reported at the tier the callers already use:
- * an unknown key is `unservable` (a warning), a retired one `malformed`.
+ * an unknown key is `unservable` (a warning), a retired one `malformed`. On a
+ * v2 route ({@link MATERIALIZE_V2_ROUTES}) the key set is closed, so an
+ * unknown key is `malformed` too.
  */
 export function readRouteTag(
    annotations: Annotations,
@@ -222,6 +383,11 @@ export function readRouteTag(
    const spec = PUBLISHER_ROUTES[route];
    const accepted = keys ?? spec?.keys;
    const findings: AnnotationFinding[] = [];
+   // `#@`, `#!` and `#` are sigil routes; an app route is written `#(name)`.
+   const spelled =
+      route === "@" || route === "!" || route === ""
+         ? `#${route}`
+         : `#(${route})`;
    if (accepted) {
       for (const [key] of tag.entries()) {
          const retired = spec?.retiredKeys?.[key];
@@ -230,16 +396,18 @@ export function readRouteTag(
                route,
                tier: "malformed",
                code: `${route === "@" ? "persist" : route}-retired-key`,
-               message: `\`${key}=\` is no longer read on \`#${route}\``,
+               message: `\`${key}=\` is no longer read on \`${spelled}\``,
                rewrite: retired,
             });
          } else if (!accepted.has(key)) {
             const near = nearestKey(key, accepted);
             findings.push({
                route,
-               tier: "unservable",
+               tier: MATERIALIZE_V2_ROUTES.has(route)
+                  ? "malformed"
+                  : "unservable",
                code: `${route === "@" ? "persist" : route}-unknown-key`,
-               message: `\`${key}=\` is not a key \`#${route}\` reads, so it does nothing${near ? ` (did you mean \`${near}=\`?)` : ""}`,
+               message: `\`${key}=\` is not a key \`${spelled}\` reads, so it does nothing${near ? ` (did you mean \`${near}=\`?)` : ""}`,
             });
          }
       }
@@ -281,7 +449,7 @@ export function persistAnnotationFindings(
  * The accepted key within edit distance 2 of `key`, closest first, or
  * undefined: the likely intended spelling of an unknown key.
  */
-function nearestKey(
+export function nearestKey(
    key: string,
    accepted: ReadonlySet<string>,
 ): string | undefined {

@@ -1,0 +1,79 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/cbc/cbc.malloy": []
+        },
+        "order": [
+          "daily@<hammer>/cbc/cbc.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/cbc/cbc.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/cbc/cbc.malloy": "cbc.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/cbc/cbc.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/cbc/cbc.malloy": {
+        "annotationFields": {
+          "name": "cbc_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cbc.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "d5c5e31419d48ef5cffcad7a3d8deb0ba643457e57ded41ef7ac6650f7340c4d",
+        "sourceID": "daily@<hammer>/cbc/cbc.malloy",
+        "sql": "sha256:afad15023d46c4b7"
+      }
+    }
+  }
+}

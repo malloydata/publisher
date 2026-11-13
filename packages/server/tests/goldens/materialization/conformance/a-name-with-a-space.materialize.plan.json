@@ -1,0 +1,111 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "spaced@<pkg>/m.malloy": []
+        },
+        "order": [
+          "spaced@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "spaced@<pkg>/m.malloy": {
+        "buildSourceName": "spaced__mat",
+        "columns": [
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "line total",
+            "computed": false,
+            "dimension": "line total"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "spaced",
+          "storage": "lake"
+        },
+        "sourceID": "spaced@<pkg>/m.malloy",
+        "sourceName": "spaced",
+        "storedColumns": [
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "line total",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "spaced@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "spaced@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "spaced@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "spaced@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "spaced",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "line total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "spaced",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "ab7413d03101ccc433b90013f48de0df48c21d5097024c169a5d3b0d9b722f44",
+        "sourceID": "spaced@<pkg>/m.malloy",
+        "sql": "sha256:fd9af7539496e7df"
+      }
+    }
+  }
+}

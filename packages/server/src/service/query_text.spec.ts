@@ -10,6 +10,7 @@ import {
    buildJoinBaseMap,
    buildSourceAliasMap,
    collectIdentifierNames,
+   definitionTextAt,
    extractRunTargetSourceName,
    extractRunTargetSourceNames,
    locateProblemsInCallerText,
@@ -623,12 +624,14 @@ describe("service/query_text", () => {
       });
 
       it("does not backtrack exponentially on crafted trivia", () => {
-         const text =
-            "join_one: e " + "# a -- b // c -- d\n".repeat(64) + "isnt";
-         const start = performance.now();
-         buildIsEdgeMap(text);
-         buildJoinBaseMap(text);
-         expect(performance.now() - start).toBeLessThan(1000);
+         // 32 lines of trivia against 128: backtracking over them would take
+         // 2^96 times as long on the larger text, not 4.
+         const text = (scale: number) =>
+            "join_one: e " + "# a -- b // c -- d\n".repeat(64 * scale) + "isnt";
+         expectLinear(text, (t) => {
+            buildIsEdgeMap(t);
+            buildJoinBaseMap(t);
+         });
       });
    });
 
@@ -865,7 +868,6 @@ describe("service/query_text", () => {
    });
 });
 
-/** The best of a few runs, each after a full GC, so the suite's leftover heap and a busy machine do not read as super-linearity. */
 /** Every text reader the 1MB cases feed. */
 function readAll(text: string): void {
    stripMalloyCommentsAndLiterals(text);
@@ -875,41 +877,56 @@ function readAll(text: string): void {
 }
 
 /**
- * Doubling the input about doubles the time when `read` is linear, and about
- * quadruples it when it is quadratic, whatever the machine's speed; a fixed
- * millisecond budget instead fails on a slow CI runner. The smaller time is
- * floored so that two very fast runs are not read as a ratio of noise, the
- * best of up to three ratios is judged, and a generous ceiling still catches a
- * pathological case outright.
+ * Asserts that `read` scales linearly in the size of the text `build` makes,
+ * without any fixed millisecond budget, which fails on a loaded machine.
+ *
+ * It compares the input at a quarter of the full scale against the full scale:
+ * a linear reader takes about 4 times as long on the larger text, a quadratic
+ * one about 16 times, and an exponential one never finishes. The bound sits at
+ * 8, the geometric middle, so either side has a factor of 2 to absorb noise.
+ * The two sizes are timed alternately, and each keeps its fastest run, so a
+ * burst of load on the machine slows both rather than one; the smaller time
+ * is floored so that two very fast runs are not read as a ratio of noise; and
+ * a ratio that still misses is measured again, up to three times, because a
+ * quadratic reader misses on every attempt.
  */
 function expectLinear(
    build: (scale: number) => string,
    read: (text: string) => void,
 ): void {
-   const half = build(1);
+   const small = build(0.5);
    const full = build(2);
-   // A noisy runner can push one linear measurement just past 3, so take the
-   // best of three; a quadratic reader stays near 4 on every attempt.
    let ratio = Infinity;
-   let fullMs = 0;
-   for (let attempt = 0; attempt < 3 && ratio >= 3; attempt++) {
-      const halfMs = fastestMs(() => read(half));
-      fullMs = fastestMs(() => read(full));
-      ratio = Math.min(ratio, fullMs / Math.max(halfMs, 5));
+   for (let attempt = 0; attempt < 3 && ratio >= 8; attempt++) {
+      const [smallMs, fullMs] = fastestAlternating(
+         () => read(small),
+         () => read(full),
+      );
+      ratio = Math.min(ratio, fullMs / Math.max(smallMs, 2));
    }
-   expect(ratio).toBeLessThan(3);
-   expect(fullMs).toBeLessThan(10_000);
+   expect(ratio).toBeLessThan(8);
 }
 
-function fastestMs(run: () => void, runs = 5): number {
-   let best = Infinity;
+/** The fastest of a few runs of each, alternated and each after a full GC. */
+function fastestAlternating(
+   a: () => void,
+   b: () => void,
+   runs = 4,
+): [number, number] {
+   let bestA = Infinity;
+   let bestB = Infinity;
    for (let i = 0; i < runs; i++) {
-      Bun.gc(true);
-      const start = performance.now();
-      run();
-      best = Math.min(best, performance.now() - start);
+      bestA = Math.min(bestA, timedMs(a));
+      bestB = Math.min(bestB, timedMs(b));
    }
-   return best;
+   return [bestA, bestB];
+}
+
+function timedMs(run: () => void): number {
+   Bun.gc(true);
+   const start = performance.now();
+   run();
+   return performance.now() - start;
 }
 
 describe("extractRunViewCall", () => {
@@ -978,5 +995,46 @@ describe("extractRunViewCall", () => {
       ]) {
          expect(extractRunViewCall(text)).toBeUndefined();
       }
+   });
+});
+
+describe("definitionTextAt", () => {
+   const file = `source: s is t extend {
+  view: by_c is {
+    group_by: c  // a comment with a } in it
+    where: c != '{'
+  }
+  view: \`odd name\` is { group_by: c }
+}`;
+   const range = (sl: number, sc: number, el: number, ec: number) => ({
+      start: { line: sl, character: sc },
+      end: { line: el, character: ec },
+   });
+
+   it("reads a definition as written, comments and literals included", () => {
+      expect(definitionTextAt(file, range(1, 8, 4, 3), "by_c")).toBe(`by_c is {
+    group_by: c  // a comment with a } in it
+    where: c != '{'
+  }`);
+   });
+
+   it("reads a backticked name", () => {
+      expect(definitionTextAt(file, range(5, 8, 5, 37), "odd name")).toBe(
+         "`odd name` is { group_by: c }",
+      );
+   });
+
+   it("refuses a span that is not that definition", () => {
+      // Another name, a span that cuts the body short, one past the file.
+      expect(
+         definitionTextAt(file, range(1, 8, 4, 3), "other"),
+      ).toBeUndefined();
+      expect(definitionTextAt(file, range(1, 8, 3, 5), "by_c")).toBeUndefined();
+      expect(definitionTextAt(file, range(1, 8, 9, 0), "by_c")).toBeUndefined();
+      // A rename's location: `v2 is v` reads, but has no body to pair.
+      expect(
+         definitionTextAt("rename: v2 is v", range(0, 8, 0, 15), "v2"),
+      ).toBe("v2 is v");
+      expect(definitionTextAt("x is", range(0, 0, 0, 4), "x")).toBeUndefined();
    });
 });

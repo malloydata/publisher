@@ -124,6 +124,36 @@ export interface IncrementalDeclaration {
     * refresh deletes the rows below every window's new lower bound.
     */
    rollingWindow?: RollingWindow[];
+   /**
+    * An incremental pair table's parent key and parent-row flag column (a
+    * `#(materialize)` inlined join_many), set by
+    * `collectIncrementalDeclarations` from its plan: each refresh replaces
+    * every row of each parent whose watermark moved, by the key, rather than
+    * merging row by row (incremental_apply.ts).
+    */
+   pair?: PairDelta;
+}
+
+/**
+ * What a pair table's delta replaces rows by and checks after: the parent key
+ * and the parent-row flag, and, for a path of join_manys or a table of
+ * several blocks, every row flag the delta must leave exact, each with the
+ * stored keys it marks one row per distinct value of (from the source down
+ * to its level), and for a table of several blocks the block it is checked
+ * within (`lane`, a value of `laneColumn`). Absent `checks`: the parent-row
+ * flag over the parent key, as a one-hop table of one block has.
+ */
+export interface PairDelta {
+   parentKey: string;
+   parentRow: string;
+   checks?: { flag: string; keys: string[]; lane?: number }[];
+   laneColumn?: string;
+   /**
+    * For a table of several blocks: how many there are. Every parent has rows
+    * in each (a block is a LEFT JOIN from the parents), which the delta also
+    * checks.
+    */
+   lanes?: number;
 }
 
 /** The source's `#@` tag, or undefined when it does not parse. */

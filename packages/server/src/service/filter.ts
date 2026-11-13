@@ -304,7 +304,7 @@ export class FilterValidationError extends Error {
 // ---------------------------------------------------------------------------
 
 /** Split on whitespace, respecting quotes: `name="Foo Bar" dimension=status`. */
-export function tokenize(input: string): string[] {
+function tokenize(input: string): string[] {
    const tokens: string[] = [];
    let current = "";
    let inQuote = false;

@@ -1,0 +1,126 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders@<hammer>/jt/jt.malloy": [
+            "regions@<hammer>/jt/jt.malloy"
+          ],
+          "regions@<hammer>/jt/jt.malloy": []
+        },
+        "order": [
+          "regions@<hammer>/jt/jt.malloy",
+          "orders@<hammer>/jt/jt.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "orders@<hammer>/jt/jt.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "regions@<hammer>/jt/jt.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders@<hammer>/jt/jt.malloy": "jt.malloy",
+      "regions@<hammer>/jt/jt.malloy": "jt.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "regions@<hammer>/jt/jt.malloy"
+            },
+            {
+              "dependsOn": [
+                "regions@<hammer>/jt/jt.malloy"
+              ],
+              "sourceID": "orders@<hammer>/jt/jt.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders@<hammer>/jt/jt.malloy": {
+        "annotationFields": {
+          "name": "jt_orders",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "region_id",
+            "type": "string"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "jt.malloy",
+        "name": "orders",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "564149a103dc700271633fbe82a9b0b1762021a99d6dfda750206ff461bd12e8",
+        "sourceID": "orders@<hammer>/jt/jt.malloy",
+        "sql": "sha256:5c7588100ef75475"
+      },
+      "regions@<hammer>/jt/jt.malloy": {
+        "annotationFields": {
+          "name": "jt_regions",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region_id",
+            "type": "string"
+          },
+          {
+            "name": "region_name",
+            "type": "string"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "jt.malloy",
+        "name": "regions",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "9c2f05a717fe2161bbb147f590d625da5de3a7bc7a8b4c0d4e5cffa38b83982f",
+        "sourceID": "regions@<hammer>/jt/jt.malloy",
+        "sql": "sha256:9d2841e3691b367b"
+      }
+    }
+  }
+}

@@ -1,0 +1,137 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "from_view@<pkg>/m.malloy": []
+        },
+        "order": [
+          "from_view@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "from_view@<pkg>/m.malloy": {
+        "buildSourceName": "from_view__mat",
+        "columns": [
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "total",
+            "computed": false,
+            "dimension": "total"
+          },
+          {
+            "column": "n",
+            "computed": false,
+            "dimension": "n"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "from_view",
+          "storage": "lake"
+        },
+        "sourceID": "from_view@<pkg>/m.malloy",
+        "sourceName": "from_view",
+        "storedColumns": [
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "total",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "n",
+            "type": "BIGINT"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "from_view@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "from_view@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "from_view@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "from_view@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "from_view",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "from_view",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "9ed55dbb1432fac7ffd6246709050d36f20372cdc3def07717591f4f42623980",
+        "sourceID": "from_view@<pkg>/m.malloy",
+        "sql": "sha256:2b62e7772c2f87d5"
+      }
+    }
+  }
+}

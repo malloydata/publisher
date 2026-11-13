@@ -22,11 +22,15 @@
 import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
 import {
    fieldJoinUsage,
+   filterJoinReads,
+   inferredExtendedSource,
    joinedSourceReads,
+   nextSourceInChain,
    resolveCompositeResolvedBase,
    resolveDeclaredSource,
    resolveExtendedSource,
    resolveQuerySourceBase,
+   sourceBaseEdge,
    sourceJoins,
    type FieldJoinReads,
    type SourceJoin,
@@ -122,59 +126,28 @@ function byId(
    return entry;
 }
 
-/** A query-shaped source's base: a name in the model, a sourceID, or an embedded definition. */
-function queryBase(
-   def: MappedSourceDef,
-   model: IrModel | undefined,
-): MappedSourceDef | undefined {
-   if (def.type !== "query_source") return undefined;
-   const ref = def.query?.structRef;
-   if (typeof ref !== "string") {
-      return ref && typeof ref === "object"
-         ? (ref as MappedSourceDef)
-         : undefined;
-   }
-   const byName = model?.contents?.[ref] as MappedSourceDef | undefined;
-   if (byName && typeof byName === "object") return byName;
-   return byId(model, ref);
-}
-
 /**
- * The one source `def` is built from, and the hop that reaches it: `extends`
- * first, then a rename (`referenceID`), then a query-shaped source's base.
- * Persistence is inherited along the first two hops only; a query-shaped source
- * starts a new segment. A composite has members, not a base (see
- * {@link compositeMemberIds}).
+ * The one source `def` is built from, and the hop that reaches it, as the
+ * governance IR reads it ({@link sourceBaseEdge}): a rename first (its copied
+ * `extends` names the grandparent), then `extends`, then a query-shaped
+ * source's base, and for an extension of a table-backed source, which Malloy
+ * records no edge for, the base the compiler's shared and copied structure
+ * names. Persistence is inherited along the first two hops only; a
+ * query-shaped source starts a new segment. A composite has members, not a
+ * base (see {@link compositeMemberIds}).
  */
 export function baseEdgeOf(
    def: MappedSourceDef,
    modelDef: unknown,
 ): BaseEdge | undefined {
-   const model = modelDef as IrModel | undefined;
-   const id = typeof def.sourceID === "string" ? def.sourceID : undefined;
-   if (typeof def.extends === "string") {
-      return {
-         hop: "extends",
-         sourceID: def.extends,
-         def: byId(model, def.extends),
-      };
-   }
-   if (typeof def.referenceID === "string" && def.referenceID !== id) {
-      return {
-         hop: "rename",
-         sourceID: def.referenceID,
-         def: byId(model, def.referenceID),
-      };
-   }
-   if (def.type === "query_source") {
-      const base = queryBase(def, model);
-      return {
-         hop: "query",
-         sourceID: structRefSourceId(def.query?.structRef),
-         def: base,
-      };
-   }
-   return undefined;
+   const edge = sourceBaseEdge(def, modelDef);
+   return (
+      edge && {
+         hop: edge.hop,
+         sourceID: edge.sourceID,
+         def: edge.def as MappedSourceDef | undefined,
+      }
+   );
 }
 
 /** A composite source's members' sourceIDs, in order. */
@@ -184,27 +157,6 @@ export function compositeMemberIds(def: MappedSourceDef): string[] {
       const id = structRefSourceId(member);
       return id === undefined ? [] : [id];
    });
-}
-
-/**
- * The next definition up a chain, as the walkers before the source map read
- * it: `extends`, else a rename, else a query-shaped base, each tried in turn
- * when the one before does not resolve in this model.
- */
-function nextInChain(
-   def: MappedSourceDef,
-   model: IrModel | undefined,
-): MappedSourceDef | undefined {
-   const id = typeof def.sourceID === "string" ? def.sourceID : undefined;
-   return (
-      (typeof def.extends === "string"
-         ? byId(model, def.extends)
-         : undefined) ??
-      (typeof def.referenceID === "string" && def.referenceID !== id
-         ? byId(model, def.referenceID)
-         : undefined) ??
-      queryBase(def, model)
-   );
 }
 
 function kindOf(def: MappedSourceDef, base: BaseEdge | undefined): SourceKind {
@@ -269,6 +221,11 @@ export class SourceMap {
       });
    }
 
+   /** The compiled model this map was built from. */
+   model(): unknown {
+      return this.modelDef;
+   }
+
    /** The node for a declaration. */
    node(sourceID: string): SourceNode | undefined {
       return this.nodesById.get(sourceID);
@@ -296,6 +253,15 @@ export class SourceMap {
    fieldJoinsOf(sourceID: string): Map<string, FieldJoinReads | undefined> {
       const node = this.nodesById.get(sourceID);
       return node ? fieldJoinUsage(node.def) : new Map();
+   }
+
+   /**
+    * The joins a declaration's own `where:` reads (see {@link filterJoinReads});
+    * undefined when unknown.
+    */
+   filterJoinsOf(sourceID: string): FieldJoinReads | undefined {
+      const node = this.nodesById.get(sourceID);
+      return node ? filterJoinReads(node.def) : undefined;
    }
 
    /**
@@ -332,12 +298,11 @@ export class SourceMap {
          if (typeof id === "string" && !out.includes(id)) out.push(id);
          // Each hop falls through to the next when it does not resolve here,
          // so an `extends` the registry lacks still reaches a rename or base.
-         const next = nextInChain(
-            current,
-            this.modelDef as IrModel | undefined,
-         );
+         const next = nextSourceInChain(current, this.modelDef) as
+            | MappedSourceDef
+            | undefined;
          if (!next) {
-            for (const ref of [current.extends, current.referenceID]) {
+            for (const ref of [current.referenceID, current.extends]) {
                if (typeof ref === "string" && !out.includes(ref)) out.push(ref);
             }
          }
@@ -506,6 +471,8 @@ export function reachableSourceIDs(
          const declared = resolveDeclaredSource(struct, model);
          if (declared.kind === "resolved") visit(declared.source);
          visit(resolveExtendedSource(struct, model));
+         // An extension of a table-backed source records no `extends`.
+         visit(inferredExtendedSource(struct, model));
          visit(resolveQuerySourceBase(struct, model));
          visit(resolveCompositeResolvedBase(struct));
       }

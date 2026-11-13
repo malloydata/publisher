@@ -31,8 +31,6 @@ type ApiPackageWarning = NonNullable<
 const DEPRECATED_MALLOYNB_NOTEBOOK = "deprecated-malloynb-notebook";
 /** `PackageWarning.code` of a source's deprecated `#(filter)` annotations warning. */
 const DEPRECATED_FILTER_ANNOTATION = "deprecated-filter-annotation";
-/** `PackageWarning.code` of a source's deprecated `#@ -persist` opt-out warning. */
-const DEPRECATED_PERSIST_OPT_OUT = "deprecated-persist-opt-out";
 /** `PackageWarning.code` of a measure's deprecated `#@ preaggregate` warning. */
 const DEPRECATED_PREAGGREGATE_ANNOTATION = "deprecated-preaggregate-annotation";
 
@@ -75,32 +73,6 @@ const filterAnnotations: DeprecatedLint = (models) =>
    );
 
 /**
- * One per source a file declares `#@ -persist` on. Under materialization v2 a
- * materialized source serves every reader (P11), so the opt-out has no v2
- * form: the rewrite points the reader at a source with no annotation.
- */
-const persistOptOuts: DeprecatedLint = (models) =>
-   Array.from(models).flatMap(([modelPath, model]) =>
-      model
-         .declaredDeprecatedPersistAnnotations()
-         .filter((found) => found.kind === "persist_opt_out")
-         .map(({ source }) => ({
-            model: modelPath,
-            subject: source,
-            code: DEPRECATED_PERSIST_OPT_OUT,
-            severity: "warn" as const,
-            message:
-               `Source ${source} uses #@ -persist, which is deprecated: under ` +
-               `#(materialize) a materialized source serves every reader, so ` +
-               `there is nothing to opt out of. To keep ${source} live, base it ` +
-               `on a source with no annotation, and put #(materialize) on a ` +
-               `separate source that reads that same one (see ` +
-               `${MATERIALIZATION_MIGRATION_DOCS_URL}). Until then it still ` +
-               `recomputes live.`,
-         })),
-   );
-
-/**
  * One per measure a file declares `#@ preaggregate` on (however many grains),
  * naming the source (`subject`) and the measure. Its v2 spelling is
  * `#(preaggregate) grain=[…]`, which materialization v2's phase 4 builds.
@@ -109,7 +81,6 @@ const preaggregateAnnotations: DeprecatedLint = (models) =>
    Array.from(models).flatMap(([modelPath, model]) =>
       model
          .declaredDeprecatedPersistAnnotations()
-         .flatMap((found) => (found.kind === "preaggregate" ? [found] : []))
          .map(({ source, measure }) => ({
             model: modelPath,
             subject: source,
@@ -119,8 +90,8 @@ const preaggregateAnnotations: DeprecatedLint = (models) =>
                `Measure ${measure} on source ${source} uses #@ preaggregate, ` +
                `which is deprecated: its v2 spelling is #(preaggregate) ` +
                `grain=[…] (see ${MATERIALIZATION_MIGRATION_DOCS_URL}). ` +
-               `#(preaggregate) is not built yet, so keep #@ preaggregate ` +
-               `until it is; it still builds and serves its rollups.`,
+               `Until you switch, #@ preaggregate still builds and serves ` +
+               `its rollups.`,
          })),
    );
 
@@ -135,23 +106,12 @@ const DEPRECATED_LINTS: readonly {
 }[] = [
    { feature: "malloynb", lint: malloynbNotebooks },
    { feature: "filter_annotation", lint: filterAnnotations },
-   // Materialization v2's deprecations start with the release that ships its
-   // annotations (plan, question 5). Until then v2 is behind
-   // `materialize.enabled`, so only a deployment that turned it on is told to
-   // move to annotations it can use.
-   {
-      feature: "persist_opt_out",
-      lint: persistOptOuts,
-      shown: getMaterializeEnabled,
-   },
-   // Held back, even with the switch on, until `#(preaggregate)` is read:
-   // until then the warning would point at a spelling that does nothing.
-   // Materialization v2's phase 4 PR 1 sets this to `getMaterializeEnabled`.
-   // The lint stays, so usage is still counted.
+   // `#(preaggregate)` is read, built and served with the switch on, so the
+   // warning points at a spelling that works there.
    {
       feature: "preaggregate_annotation",
       lint: preaggregateAnnotations,
-      shown: () => false,
+      shown: getMaterializeEnabled,
    },
 ];
 
@@ -166,8 +126,8 @@ export function deprecatedFormatWarnings(
 
 /**
  * Count each deprecated-format warning as one use of its feature: a
- * `.malloynb` file, a source declaring `#(filter)` or `#@ -persist`, or a
- * measure declaring `#@ preaggregate`, whether or not its warning is shown.
+ * `.malloynb` file, a source declaring `#(filter)`, or a measure declaring
+ * `#@ preaggregate`, whether or not its warning is shown.
  * Called once per load
  * or reload; the warnings themselves are computed per request, so they are
  * not where to count.

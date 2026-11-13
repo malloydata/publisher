@@ -1,0 +1,81 @@
+// feature: persisted views: files generated while serving
+
+// ==== <pkg>/m.malloy (text 1 of 3)
+##! experimental { access_modifiers givens persistence virtual_source }
+import { north_orders } from "m.malloy.view-author.malloy"
+
+type: orders__by_region__view__type is {
+   region::string,
+   n::number,
+   total::number
+}
+source: orders__by_region__view__stored is __served_copy_alias_of_lake.virtual('2fbc1e225d9431d76c336dc2997792c7d30e8ee6ca6c0a0aa793502eb420db5a')::orders__by_region__view__type
+source: orders is orders__by_region__view__stored extend {
+  view: by_region is { select: region, n, total; order_by: n desc }
+}
+
+// ==== <pkg>/m.malloy (text 2 of 3)
+##! experimental { access_modifiers givens persistence virtual_source }
+import { north_orders } from "m.malloy.view-author.malloy"
+
+import { orders__by_status__view__built is orders__by_status__view } from "m.malloy.persist-view.malloy"
+source: orders is orders__by_status__view__built extend {
+  view: by_status is { select: status, n; order_by: n desc }
+}
+
+// ==== <pkg>/m.malloy (text 3 of 3)
+##! experimental { access_modifiers givens persistence virtual_source }
+import { north_orders } from "m.malloy.view-author.malloy"
+
+type: orders__two_stage__view__type is {
+   region::string,
+   n::number
+}
+source: orders__two_stage__view__stored is __served_copy_alias_of_lake.virtual('b3fc9bd92fd43c859fd061bf8bd1333035de41bb7a77730d0fc9aa70cba70d88')::orders__two_stage__view__type
+source: orders is orders__two_stage__view__stored extend {
+  view: two_stage is { select: region, n }
+}
+
+// ==== <pkg>/m.malloy.persist-view.malloy
+##! experimental.persistence
+import { orders__pv_base is orders } from "m.malloy.view-author.malloy"
+
+#@ persist storage="lake"
+source: orders__by_region__view is orders__pv_base -> by_region
+
+#@ persist name="orders_by_status"
+source: orders__by_status__view is orders__pv_base -> by_status
+
+#@ persist storage="lake"
+source: orders__two_stage__view is orders__pv_base -> two_stage
+
+#@ persist storage="lake"
+source: orders__recent__view is orders__pv_base -> recent
+
+// ==== <pkg>/m.malloy.view-author.malloy
+import "raw.malloy"
+
+source: orders is orders_raw extend {
+  measure:
+    n is count()
+    total is amount.sum()
+  #@ persist storage="lake"
+  view: by_region is { group_by: region; aggregate: n, total }
+  #@ persist name="orders_by_status"
+  view: by_status is { group_by: status; aggregate: n }
+  #@ persist storage="lake"
+  view: two_stage is { group_by: region; aggregate: n } -> { select: region, n; where: n > 1 }
+  #@ persist storage="lake"
+  view: recent is { where: created_at > now - 30 days; group_by: region; aggregate: n }
+  view: plain is { group_by: status; aggregate: total }
+}
+
+source: north_orders is orders extend {
+  where: region = 'north'
+}
+
+// ==== <pkg>/m.malloy.view.malloy
+##! experimental { access_modifiers givens persistence virtual_source }
+import { orders_raw, customers_raw, lines_raw } from "raw.malloy"
+import { orders } from "m.malloy"
+import { north_orders } from "m.malloy.view-author.malloy"

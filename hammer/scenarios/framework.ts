@@ -175,6 +175,11 @@ export interface Scenario {
    packages: PackageSpec[];
    /** Connections to wire into the config beyond the defaults (see {@link ConnectionDecl}). */
    connections?: ConnectionDecl[];
+   /**
+    * Why the scenario did not load (a parse error, or the state it collides
+    * on), for a scenario tagged `malformed` or `collision`; `--list` prints it.
+    */
+   loadError?: string;
    run(ctx: ScenarioContext, assert: Assert): Promise<void>;
 }
 

@@ -1,0 +1,126 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/esi/esi.malloy": [],
+          "daily_with_avg@<hammer>/esi/esi.malloy": []
+        },
+        "order": [
+          "daily@<hammer>/esi/esi.malloy",
+          "daily_with_avg@<hammer>/esi/esi.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/esi/esi.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "daily_with_avg@<hammer>/esi/esi.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/esi/esi.malloy": "esi.malloy",
+      "daily_with_avg@<hammer>/esi/esi.malloy": "esi.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/esi/esi.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "daily_with_avg@<hammer>/esi/esi.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/esi/esi.malloy": {
+        "annotationFields": {
+          "name": "esi_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          },
+          {
+            "name": "num_orders",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "esi.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "5699b6e1d50645661a4ae27c571761c92aa7af8e56a55e7eb11a13b3f012145b",
+        "sourceID": "daily@<hammer>/esi/esi.malloy",
+        "sql": "sha256:4bde5cdf6d94c402"
+      },
+      "daily_with_avg@<hammer>/esi/esi.malloy": {
+        "annotationFields": {
+          "name": "esi_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          },
+          {
+            "name": "num_orders",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "esi.malloy",
+        "name": "daily_with_avg",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "5699b6e1d50645661a4ae27c571761c92aa7af8e56a55e7eb11a13b3f012145b",
+        "sourceID": "daily_with_avg@<hammer>/esi/esi.malloy",
+        "sql": "sha256:4bde5cdf6d94c402"
+      }
+    }
+  }
+}

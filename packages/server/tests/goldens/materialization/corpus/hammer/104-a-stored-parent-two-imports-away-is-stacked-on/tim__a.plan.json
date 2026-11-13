@@ -1,0 +1,79 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/tim/a.malloy": []
+        },
+        "order": [
+          "daily@<hammer>/tim/a.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/tim/a.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/tim/a.malloy": "a.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/tim/a.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/tim/a.malloy": {
+        "annotationFields": {
+          "name": "tim_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "a.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "77d1ee2d60220500033e17b15b7fe81dd68320356a8d460ec224f14100d5b3a6",
+        "sourceID": "daily@<hammer>/tim/a.malloy",
+        "sql": "sha256:b0b541e8be2c1128"
+      }
+    }
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily_orders@<hammer>/sec2/sec2.malloy": []
+        },
+        "order": [
+          "daily_orders@<hammer>/sec2/sec2.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily_orders@<hammer>/sec2/sec2.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily_orders@<hammer>/sec2/sec2.malloy": "sec2.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily_orders@<hammer>/sec2/sec2.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily_orders@<hammer>/sec2/sec2.malloy": {
+        "annotationFields": {
+          "name": "sec2_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "sec2.malloy",
+        "name": "daily_orders",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "2d06f55062c36217892c7a897c215299d572239dda395f53a8be724d9ee687aa",
+        "sourceID": "daily_orders@<hammer>/sec2/sec2.malloy",
+        "sql": "sha256:5a3f6c34909d2678"
+      }
+    }
+  }
+}

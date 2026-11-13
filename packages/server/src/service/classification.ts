@@ -918,6 +918,30 @@ function computesValue(
    return reads !== undefined && !reads.nest;
 }
 
+/**
+ * The element expression of a part of a record literal (`r is { a is x }`),
+ * with the owner the record's expression reads from, or undefined for any
+ * other field: the record's IR keeps each element's expression in its
+ * literal's `kids` by name, so a part reads what its own element reads
+ * rather than the whole record's value.
+ */
+function recordLiteralPart(
+   entry: { field: IrField; record?: string },
+   byPath: ReadonlyMap<string, { field: IrField; owner: string }>,
+): { e: unknown; owner: string } | undefined {
+   if (entry.record === undefined) return undefined;
+   const record = byPath.get(entry.record);
+   const e = record?.field.e as
+      | { node?: unknown; kids?: Record<string, unknown> }
+      | undefined;
+   if (!record || e?.node !== "recordLiteral" || !e.kids) return undefined;
+   const name = activeName(entry.field);
+   if (!name || !Object.prototype.hasOwnProperty.call(e.kids, name)) {
+      return undefined;
+   }
+   return { e: e.kids[name], owner: record.owner };
+}
+
 function walkSourceClassifications(
    fields: IrField[] | undefined,
    outputs: QueryOutputs | undefined,
@@ -1039,7 +1063,9 @@ function walkSourceClassifications(
       const own = readClassification(texts);
       const outReads = out ? out.outputs.reads.get(out.rel) : undefined;
       // A part of a computed record carries no expression of its own: it returns a piece of the record.
-      const partOf = outReads ? undefined : entry.record;
+      // A part of a record literal (`r is { a is x, b is y }`) is its own element, read beside the record.
+      const literal = outReads ? undefined : recordLiteralPart(entry, byPath);
+      const partOf = outReads || literal ? undefined : entry.record;
       // A record with no one value, such as a struct column or a nest, returns its parts.
       const parts =
          isRecordField(field) && !computesValue(field, out, entry.record)
@@ -1053,10 +1079,12 @@ function walkSourceClassifications(
          ? // A nest's own summary names what its extend declares; its outputs carry what they read.
            { value: [], filter: [], passthrough: false }
          : (outReads ?? {
-              value: out || partOf ? [] : fieldReferences(field.e),
+              value:
+                 out || partOf ? [] : fieldReferences(literal?.e ?? field.e),
               filter: [],
               // An output whose reads are unknown may be a copy.
-              passthrough: out || partOf ? true : isPassthrough(field.e),
+              passthrough:
+                 out || partOf ? true : isPassthrough(literal?.e ?? field.e),
            });
       const inputs: ClassifiedInput[] = [];
       const seenInput = new Set<string>();
@@ -1079,7 +1107,8 @@ function walkSourceClassifications(
       const read = (refs: string[][]): void => {
          for (const ref of refs) {
             const name = ref.join(".");
-            const refPath = owner && !out ? `${owner}.${name}` : name;
+            const from = literal ? literal.owner : owner;
+            const refPath = from && !out ? `${from}.${name}` : name;
             if (refPath === path && !out) continue;
             readInput(
                refPath,

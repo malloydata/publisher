@@ -1,0 +1,33 @@
+// conformance: persisted view [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { access_modifiers givens persistence virtual_source }
+
+import { ov__by_region__view__built is ov__by_region__view } from "m.malloy.persist-view.malloy"
+source: ov is ov__by_region__view__built extend {
+  view: by_region is { select: region, total; order_by: total desc }
+}
+
+// ==== <pkg>/m.malloy.persist-view.malloy
+##! experimental.persistence
+import { ov__pv_base is ov } from "m.malloy.view-author.malloy"
+
+#@ persist name="ov_by_region"
+source: ov__by_region__view is ov__pv_base -> by_region
+
+// ==== <pkg>/m.malloy.view-author.malloy
+##! experimental { persistence }
+import "raw.malloy"
+
+source: ov is orders_raw extend {
+  # currency
+  #(doc) "Revenue"
+  measure: total is amount.sum()
+  #@ persist name="ov_by_region"
+  view: by_region is { group_by: region; aggregate: total }
+}
+
+// ==== <pkg>/m.malloy.view.malloy
+##! experimental { access_modifiers givens persistence virtual_source }
+import { orders_raw, customers_raw, lines_raw } from "raw.malloy"
+import { ov } from "m.malloy"

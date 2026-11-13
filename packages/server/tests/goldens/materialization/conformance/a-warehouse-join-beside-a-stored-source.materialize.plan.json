@@ -1,0 +1,111 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "cust_b@<pkg>/m.malloy": []
+        },
+        "order": [
+          "cust_b@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "cust_b@<pkg>/m.malloy": {
+        "buildSourceName": "cust_b__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "segment",
+            "computed": false,
+            "dimension": "segment"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "cust_b",
+          "storage": "lake"
+        },
+        "sourceID": "cust_b@<pkg>/m.malloy",
+        "sourceName": "cust_b",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "segment",
+            "type": "VARCHAR"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "cust_b@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "cust_b@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "cust_b@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "cust_b@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "cust_b",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "segment",
+            "type": "string"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "cust_b",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "f234b5b635601c6ab30e41520cbfb0ca5dea189f42b4cf1a6e29af2245250b6a",
+        "sourceID": "cust_b@<pkg>/m.malloy",
+        "sql": "sha256:bdab8c28cb0a7dbb"
+      }
+    }
+  }
+}

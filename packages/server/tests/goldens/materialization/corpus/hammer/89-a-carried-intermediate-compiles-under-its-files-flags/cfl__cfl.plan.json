@@ -1,0 +1,122 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/cfl/cfl.malloy": [],
+          "rollup@<hammer>/cfl/cfl.malloy": [
+            "daily@<hammer>/cfl/cfl.malloy"
+          ]
+        },
+        "order": [
+          "daily@<hammer>/cfl/cfl.malloy",
+          "rollup@<hammer>/cfl/cfl.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/cfl/cfl.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollup@<hammer>/cfl/cfl.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/cfl/cfl.malloy": "cfl.malloy",
+      "rollup@<hammer>/cfl/cfl.malloy": "cfl.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/cfl/cfl.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/cfl/cfl.malloy"
+              ],
+              "sourceID": "rollup@<hammer>/cfl/cfl.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/cfl/cfl.malloy": {
+        "annotationFields": {
+          "name": "cfl_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          },
+          {
+            "name": "order_count",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cfl.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "2ea78588915bc00b4efb8b94868a14ed503d2ea5d2ed0dedcd37042ca14f5ba5",
+        "sourceID": "daily@<hammer>/cfl/cfl.malloy",
+        "sql": "sha256:d9e6cc0541fe31ea"
+      },
+      "rollup@<hammer>/cfl/cfl.malloy": {
+        "annotationFields": {
+          "name": "cfl_rollup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "grand_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cfl.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "198f637e0b29e9e18bec81e49117c69565ea81f82c50615107a9f02920d90db2",
+        "sourceID": "rollup@<hammer>/cfl/cfl.malloy",
+        "sql": "sha256:7bb39cf77d48a1b7"
+      }
+    }
+  }
+}

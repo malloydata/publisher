@@ -13,7 +13,7 @@ import type {
    SourceDef,
 } from "@malloydata/malloy";
 import * as path from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import {
    persistAnnotationFindings,
    persistUnparseableFinding,
@@ -37,6 +37,7 @@ import { malloyGivenToApi, type MalloyGiven } from "../../given";
 import {
    resolveIncrementalDeclaration,
    type IncrementalDeclaration,
+   type PairDelta,
 } from "./incremental_declaration";
 import {
    assertColocatedPersistNotAuthorizeGated,
@@ -54,15 +55,21 @@ import {
 import type { RollupPlan } from "./preaggregation_synthesis";
 import {
    materializeRefusalFinding,
+   pairFullRefreshFinding,
+   pairKeyColumns,
+   pairLevelRowColumn,
    type MaterializePlan,
 } from "./build_file_generator";
 import { tryCompileMaterializeCompanion } from "./materialize_compile";
-import { rollingWindowsOf } from "./rolling_window";
-import { getMaterializeEnabled } from "../../../config";
-import {
-   classifyDynamicTerms,
-   type DynamicTerm,
-} from "./persist_dynamic_terms";
+import { persistedViewRefusalFinding } from "./persisted_view";
+import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
+import { deletingWindowsOf } from "./rolling_window";
+import { tryCompileRollupCompanion } from "./rollup_compile";
+import { compileV1BuildCompanion } from "./v1_build_companion";
+import { rollupGateEnforcedAtRead } from "./rollup_plan";
+import { rollupRefusalFinding } from "./rollup_plan";
+import { getMaterializeEnabled, getV1ServedCopyMode } from "../../../config";
+import { admitGivenPositions, type DynamicTerm } from "./persist_dynamic_terms";
 import { resolvePartitionColumns } from "./persist_partition";
 import {
    deriveAnnotationFields,
@@ -74,10 +81,12 @@ import { quoteIdentifier } from "../../quoting";
 import {
    addressSQL,
    computeSourceEntityId,
+   isUnkeyable,
    plannedSources,
    presentAs,
    recordTarget,
    renameBuildSourceIDs,
+   withoutSourceIDs,
    sourceBuildsOf,
    type SourceBuild,
 } from "./addressing";
@@ -91,6 +100,12 @@ import {
    type SourceEligibility,
 } from "./eligibility_collect";
 import { resolveFreshness, resolveQueryMetadata } from "./plan_layers";
+import {
+   finalizeOmissions,
+   omittedByID,
+   type Omission,
+   type OmittedSourceReason,
+} from "./omitted_sources";
 
 // Addressing, plan layers and eligibility collection live in their own
 // modules; re-exported so every existing import of build_plan keeps working.
@@ -193,6 +208,15 @@ export interface CompiledBuildPlan {
     */
    preaggregatePlans?: Record<string, RollupPlan>;
    /**
+    * sourceID -> the declared primary key of a planned source whose stored
+    * table a build checks for a repeated or NULL key, when it is stored in a
+    * destination: set when a `storage=` rollup is read through a join keyed
+    * on a source's primary key as a join_many (`readsAsJoinMany`), so the
+    * join-to-rollup leg in a destination (#1704) can read the stored rows'
+    * key as unique. Absent when no such leg exists.
+    */
+   storedKeyChecks?: Record<string, string>;
+   /**
     * sourceID -> entry-point `#(authorize)` gate classification, computed at
     * compile time where the `{modelDef, materializer}` pair exists (see
     * {@link classifyPersistSourceGate}). Read by
@@ -207,6 +231,11 @@ export interface CompiledBuildPlan {
     * generated source's table (materialization v2, phase 3).
     */
    materializePlans?: Record<string, MaterializePlan>;
+   /**
+    * Sources planning left out because it FAILED (a companion that did not
+    * compile), for the wire plan's `omittedSources`. Absent: none.
+    */
+   omittedSources?: Omission[];
 }
 
 function wireTerm(term: DynamicTerm): WireStrippedTerm {
@@ -235,7 +264,7 @@ function planDynamicFields(
    if (partition.ok && partition.columns.length > 0) {
       out.partition = partition.columns;
    }
-   const classified = classifyDynamicTerms(source);
+   const classified = admitGivenPositions(source);
    if (classified.ok && classified.terms.length > 0) {
       out.strippedTerms = classified.terms.map(wireTerm);
    }
@@ -389,6 +418,58 @@ function detectDroppedPersistSources(
 }
 
 /**
+ * The sourceIDs of the `#@ persist` sources a compiled model holds, read as
+ * {@link detectDroppedPersistSources} reads them: what a model's build copy
+ * would have planned, for `omittedSources` when that copy does not compile.
+ */
+function declaredPersistSourceIDs(malloyModel: MalloyModel): string[] {
+   const ids: string[] = [];
+   try {
+      for (const def of Object.values(malloyModel._modelDef?.contents ?? {})) {
+         if (!isSourceDef(def) || !def.annotations) continue;
+         try {
+            if (routeHasKey(new Annotations(def.annotations), "@", "persist")) {
+               if (def.sourceID) ids.push(def.sourceID);
+            }
+         } catch {
+            // An annotation that cannot be read plans nothing either.
+         }
+      }
+   } catch {
+      // Fail open, as detectDroppedPersistSources does.
+   }
+   return ids;
+}
+
+/**
+ * The sourceIDs of the sources in `malloyModel` carrying a `#@` note at `at`
+ * (a `#@` line that did not parse), read in the model's own coordinates.
+ * Fail-open: an unreadable annotation names nothing.
+ */
+function sourceIDsWithNoteAt(
+   malloyModel: MalloyModel,
+   at: { url: string; range: { start: { line: number } } },
+): string[] {
+   const ids: string[] = [];
+   try {
+      for (const def of Object.values(malloyModel._modelDef?.contents ?? {})) {
+         if (!isSourceDef(def) || !def.annotations || !def.sourceID) continue;
+         try {
+            const notes = new Annotations(def.annotations).forRoute("@");
+            if (notes.some((note) => noteCovers(note, at))) {
+               ids.push(def.sourceID);
+            }
+         } catch {
+            // An annotation that cannot be read names nothing.
+         }
+      }
+   } catch {
+      // Fail open, as detectDroppedPersistSources does.
+   }
+   return ids;
+}
+
+/**
  * Classify one persist source's entry-point `#(authorize)` gate(s) and decide
  * whether it is `attributed` — see {@link PersistSourceGateOutcome}.
  *
@@ -467,6 +548,8 @@ export interface BuildPlanParts {
    sourceGateOutcomes: Record<string, PersistSourceGateOutcome>;
    /** Findings on the `#@` annotations of this model's sources (see annotation_reader). */
    annotationFindings: PackageAnnotationFinding[];
+   /** See {@link CompiledBuildPlan.omittedSources}. */
+   omittedSources: Omission[];
 }
 
 export function emptyBuildPlanParts(): BuildPlanParts {
@@ -480,6 +563,7 @@ export function emptyBuildPlanParts(): BuildPlanParts {
       materializePlans: {},
       sourceGateOutcomes: {},
       annotationFindings: [],
+      omittedSources: [],
    };
 }
 
@@ -500,6 +584,8 @@ export function mergeBuildPlanParts(
    Object.assign(into.preaggregatePlans, from.preaggregatePlans);
    Object.assign(into.materializePlans, from.materializePlans);
    Object.assign(into.sourceGateOutcomes, from.sourceGateOutcomes);
+   // `?? []`: parts a worker built before this field existed.
+   into.omittedSources.push(...(from.omittedSources ?? []));
    for (const finding of from.annotationFindings) {
       addAnnotationFinding(into, finding);
    }
@@ -594,18 +680,31 @@ async function collectGeneratedMaterialize(
    },
 ): Promise<void> {
    const authorDef: ModelDef = args.malloyModel._modelDef;
-   const { generated, refused } = await tryCompileMaterializeCompanion({
-      ...args,
-      contents: authorDef.contents ?? {},
-      givens: authorDef.givens ?? {},
-   });
+   const { generated, refused, omitted } = await tryCompileMaterializeCompanion(
+      {
+         ...args,
+         contents: authorDef.contents ?? {},
+         givens: authorDef.givens ?? {},
+         // P9's probes compile against the author's model, never run.
+         probe: args.materializer,
+      },
+   );
    for (const refusal of refused) {
       addAnnotationFinding(
          parts,
          materializeRefusalFinding(refusal, args.modelPath),
       );
    }
+   parts.omittedSources.push(...(omitted ?? []));
    if (!generated) return;
+   for (const plan of generated.plans) {
+      if (plan.pairFullRefresh) {
+         addAnnotationFinding(
+            parts,
+            pairFullRefreshFinding(plan, plan.pairFullRefresh, args.modelPath),
+         );
+      }
+   }
    const targets = await generated.runtime.getBuildTargets(generated.model);
    const planByName = new Map(
       generated.plans.map((p) => [p.buildSourceName, p]),
@@ -622,8 +721,16 @@ async function collectGeneratedMaterialize(
       generatedPlans.set(source, plan);
       rename.set(source.sourceID, plan.sourceID);
    }
+   // A source declared in a generated file that no plan names (a parent an
+   // extension's build copy re-roots on its build source, and the extension
+   // over it, P10) is on that build source's table: not a build of its own.
+   const unplannedGenerated = (id: string) =>
+      !rename.has(id) &&
+      generated.generatedURLs.has(id.slice(id.indexOf("@") + 1));
    parts.builds.push(
-      ...sourceBuildsOf(targets).map((b) => renameBuildSourceIDs(b, rename)),
+      ...sourceBuildsOf(targets).map((b) =>
+         renameBuildSourceIDs(withoutSourceIDs(b, unplannedGenerated), rename),
+      ),
    );
    // The gate is the author's, on the author's source, reading the author's
    // givens: classified there. The companion imports the source but declares
@@ -663,6 +770,203 @@ async function collectGeneratedMaterialize(
 }
 
 /**
+ * The `#(preaggregate)` rollups (materialization v2, phase 4) a model declares:
+ * one build source per rollup, planned only in the model that declares its
+ * base, so a rollup is listed once however many models import the base. Each
+ * keeps its compiled `sourceID` (`<rollup>@<declaring model>.preaggregate.malloy`)
+ * and is reported under the declaring model's path.
+ *
+ * A rollup whose build reads a given is left out with a warning: its table
+ * would hold one given value's rows, served to every caller.
+ */
+async function collectGeneratedRollups(
+   parts: BuildPlanParts,
+   args: {
+      modelPath: string;
+      packagePath: string;
+      getRuntime: SynthesizedRuntimeFactory;
+      modelDef: unknown;
+   },
+): Promise<void> {
+   const { generated, refused, omitted } =
+      await tryCompileRollupCompanion(args);
+   for (const refusal of refused) {
+      addAnnotationFinding(
+         parts,
+         rollupRefusalFinding(refusal, args.modelPath),
+      );
+   }
+   parts.omittedSources.push(...(omitted ?? []));
+   if (!generated) return;
+   const all = await generated.runtime.getBuildTargets(generated.model);
+   const planByName = new Map(
+      generated.plans.map((p) => [p.rollupSourceName, p]),
+   );
+   for (const target of all.connections.flatMap((c) => c.targets)) {
+      if (!target.readsGivens) continue;
+      for (const source of target.sources) {
+         const plan = planByName.get(source.name);
+         if (!plan) continue;
+         addAnnotationFinding(
+            parts,
+            rollupRefusalFinding(
+               {
+                  tier: "unservable",
+                  code: "preaggregate-reads-given",
+                  message:
+                     `#(preaggregate) rollup of source "${plan.baseSourceName}" at ` +
+                     `(${plan.grainDimensions.join(", ")}) is not built, so its measures ` +
+                     "are served live: its rows read a given, and a table holds one " +
+                     "value's rows.",
+                  sourceName: plan.baseSourceName,
+               },
+               args.modelPath,
+            ),
+         );
+      }
+   }
+   const targets = {
+      ...all,
+      connections: all.connections.map((c) => ({
+         ...c,
+         targets: c.targets.filter((t) => !t.readsGivens),
+      })),
+   };
+   const kept = new Set<string>();
+   for (const source of plannedSources(targets)) {
+      const plan = planByName.get(source.name);
+      if (!plan) continue;
+      kept.add(source.sourceID);
+      parts.sources[source.sourceID] = source;
+      recordTarget(parts, source.sourceID, source);
+      parts.sourceModelPaths[source.sourceID] = args.modelPath;
+      parts.preaggregatePlans[source.sourceID] = plan;
+   }
+   parts.builds.push(...sourceBuildsOf(targets));
+   if (kept.size === 0) return;
+   const givens = Array.from(
+      generated.model.givens.values(),
+   ) as unknown as MalloyGiven[];
+   const deps = createGateClassificationDeps(
+      givens.map(malloyGivenToApi),
+      `${args.modelPath}#preaggregate`,
+   );
+   for (const source of plannedSources(targets)) {
+      if (!kept.has(source.sourceID)) continue;
+      parts.sourceGateOutcomes[source.sourceID] =
+         await classifyPersistSourceGate(
+            source,
+            generated.model._modelDef,
+            generated.materializer,
+            deps,
+            `${args.modelPath}#preaggregate`,
+         );
+   }
+}
+
+/**
+ * The `#@ persist` views (materialization v2, phase 4, P14) a model declares:
+ * one generated build source per view, planned only in the model that
+ * declares the view's source, so a view is listed once however many models
+ * import it. Each keeps its compiled `sourceID`
+ * (`<source>__<view>__view@<declaring model>.persist-view.malloy`) and is
+ * reported under the declaring model's path. Its gate is its source's,
+ * classified on the author's model, where the source's givens are declared.
+ *
+ * A view whose build reads a given is left out with a warning: its table
+ * would hold one caller's result, served to every caller.
+ */
+async function collectGeneratedPersistedViews(
+   parts: BuildPlanParts,
+   args: {
+      modelPath: string;
+      packagePath: string;
+      getRuntime: SynthesizedRuntimeFactory;
+      malloyModel: MalloyModel;
+      materializer: ModelMaterializer;
+   },
+): Promise<void> {
+   const authorDef: ModelDef = args.malloyModel._modelDef;
+   const { generated, refused, omitted } =
+      await tryCompilePersistedViewCompanion({
+         packagePath: args.packagePath,
+         modelPath: args.modelPath,
+         modelDef: authorDef,
+         materializer: args.materializer,
+         getRuntime: args.getRuntime,
+      });
+   for (const refusal of refused) {
+      addAnnotationFinding(
+         parts,
+         persistedViewRefusalFinding(refusal, args.modelPath),
+      );
+   }
+   parts.omittedSources.push(...(omitted ?? []));
+   if (!generated) return;
+   const all = await generated.runtime.getBuildTargets(generated.model);
+   const planByName = new Map(
+      generated.plans.map((p) => [p.buildSourceName, p]),
+   );
+   for (const target of all.connections.flatMap((c) => c.targets)) {
+      if (!target.readsGivens) continue;
+      for (const source of target.sources) {
+         const plan = planByName.get(source.name);
+         if (!plan) continue;
+         addAnnotationFinding(
+            parts,
+            persistedViewRefusalFinding(
+               {
+                  ...plan,
+                  reason:
+                     "its result reads a given, so it differs per caller and a table holds one caller's result",
+               },
+               args.modelPath,
+            ),
+         );
+      }
+   }
+   const targets = {
+      ...all,
+      connections: all.connections.map((c) => ({
+         ...c,
+         targets: c.targets.filter((t) => !t.readsGivens),
+      })),
+   };
+   const givens = Array.from(
+      args.malloyModel.givens.values(),
+   ) as unknown as MalloyGiven[];
+   const deps = createGateClassificationDeps(
+      givens.map(malloyGivenToApi),
+      args.modelPath,
+   );
+   let kept = 0;
+   for (const source of plannedSources(targets)) {
+      const plan = planByName.get(source.name);
+      if (!plan) continue;
+      kept++;
+      parts.sources[source.sourceID] = source;
+      recordTarget(parts, source.sourceID, source);
+      parts.sourceModelPaths[source.sourceID] = args.modelPath;
+      // The view's rows are its source's: its gate is the source's, read on
+      // the author's model, by sourceID (the keying rule).
+      const authorSource = Object.values(authorDef.contents ?? {}).find(
+         (object): object is SourceDef =>
+            isSourceDef(object) && object.sourceID === plan.sourceID,
+      );
+      parts.sourceGateOutcomes[source.sourceID] = authorSource
+         ? await classifyPersistSourceGate(
+              { _sourceDef: authorSource, sourceID: plan.sourceID },
+              authorDef,
+              args.materializer,
+              deps,
+              args.modelPath,
+           )
+         : { classification: "rejected", attributed: false };
+   }
+   if (kept > 0) parts.builds.push(...sourceBuildsOf(targets));
+}
+
+/**
  * Add one compiled `.malloy` model's builds, persist sources, dropped
  * `#@ persist` sources, rollups and gate outcomes to `parts`. `materializer`
  * must be the one that compiled `malloyModel` (gate classification grafts
@@ -687,6 +991,11 @@ export async function collectModelBuildPlan(
        * it, or null when it has none; compiled here when absent.
        */
       synthesized?: SynthesizedPreaggregation | null;
+      /**
+       * The rollups a caller's failed compile of {@link synthesized} left
+       * out (see `tryCompileSynthesizedPreaggregation`'s `onOmitted`).
+       */
+      synthesizedOmitted?: Omission[];
    },
 ): Promise<void> {
    const {
@@ -697,19 +1006,29 @@ export async function collectModelBuildPlan(
       runtime,
       getRuntime,
    } = args;
+   const v1Cutover = getV1ServedCopyMode() === "on";
    // Pre-aggregation runs BEFORE the early `return`s below: a model may declare
    // `#@ preaggregate` with no persist source and no `experimental.persistence`
    // flag — the SYNTHESIZED model carries both — and must still get its rollup.
-   const synthesized =
-      args.synthesized !== undefined
-         ? args.synthesized
-         : await tryCompileSynthesizedPreaggregation({
-              packagePath,
-              modelPath,
-              getRuntime,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              contents: (malloyModel as any)._modelDef?.contents ?? {},
-           });
+   // Under the v1 cutover a v1 rollup is planned by the rollup leg instead
+   // (`#(preaggregate)`'s, below; G4), so v1's own synthesis is skipped.
+   if (!v1Cutover && args.synthesized !== undefined) {
+      parts.omittedSources.push(...(args.synthesizedOmitted ?? []));
+   }
+   const synthesized = v1Cutover
+      ? null
+      : args.synthesized !== undefined
+        ? args.synthesized
+        : await tryCompileSynthesizedPreaggregation(
+             {
+                packagePath,
+                modelPath,
+                getRuntime,
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                contents: (malloyModel as any)._modelDef?.contents ?? {},
+             },
+             (omitted) => parts.omittedSources.push(...omitted),
+          );
    if (synthesized) {
       const rollupTargets = await synthesized.runtime.getBuildTargets(
          synthesized.model,
@@ -769,12 +1088,33 @@ export async function collectModelBuildPlan(
          malloyModel,
          materializer,
       });
+      // `#@ persist` on a view (phase 4, P14), under the same switch.
+      await collectGeneratedPersistedViews(parts, {
+         modelPath,
+         packagePath,
+         getRuntime,
+         malloyModel,
+         materializer,
+      });
+   }
+   // `#(preaggregate)` (phase 4), under the same switch, and under the v1
+   // cutover, which reads v1 `#@ preaggregate` lines as its declarations.
+   if (getMaterializeEnabled() || v1Cutover) {
+      await collectGeneratedRollups(parts, {
+         modelPath,
+         packagePath,
+         getRuntime,
+         modelDef: malloyModel._modelDef,
+      });
    }
 
    // getBuildTargets() THROWS on a model without `##! experimental.persistence`,
-   // which would abort the whole package's plan. Such a model cannot carry a
-   // persist source anyway, so skip it, mirroring Malloy's own guard.
-   // Presence only, decided as Malloy decides it.
+   // which would abort the whole package's plan. Before the v1 cutover such a
+   // model plans no persist source, mirroring Malloy's own guard (guard 1).
+   // Under it, its build copy carries the flag instead (D3), so the author's
+   // file need not. Presence only, decided as Malloy decides it.
+   let planModel = malloyModel;
+   let planRuntime = runtime;
    if (
       !routeHasKey(
          malloyModel.modelAnnotations,
@@ -783,10 +1123,31 @@ export async function collectModelBuildPlan(
          "persistence",
       )
    ) {
-      return;
+      const companion = v1Cutover
+         ? await compileV1BuildCompanion({
+              packagePath,
+              modelPath,
+              getRuntime,
+              onCompileFailed: (error) => {
+                 logger.error(
+                    "The v1 build copy of a model could not be read or did not compile; its #@ persist sources are left out of the build plan",
+                    { modelPath, error: errMessage(error) },
+                 );
+                 parts.omittedSources.push(
+                    ...omittedByID(
+                       declaredPersistSourceIDs(malloyModel),
+                       "v1_build_companion_failed",
+                    ),
+                 );
+              },
+           })
+         : undefined;
+      if (!companion) return;
+      planModel = companion.model;
+      planRuntime = companion.runtime;
    }
 
-   const targets = await runtime.getBuildTargets(malloyModel);
+   const targets = await planRuntime.getBuildTargets(planModel);
    const parseErrors = targets.tagParseLog.filter((msg) => {
       logger.warn("Persist annotation issue", {
          modelPath,
@@ -802,6 +1163,23 @@ export async function collectModelBuildPlan(
    // A `#@` line that does not parse is reported by what it cost. Malloy drops
    // a source only when none of its `#@` lines parse; when another does, the
    // source is still planned, built without the broken line's directives.
+   // A location in the build copy (D3) sits one line below the author's,
+   // since the copy opens with the flag: the finding names the author's line.
+   // The copy's own location still matches the planned sources' notes.
+   const companionURL =
+      planModel !== malloyModel
+         ? pathToFileURL(path.resolve(packagePath, modelPath)).href
+         : undefined;
+   const authorAt = (at: (typeof parseErrors)[number]["at"]) =>
+      at && companionURL && at.url === companionURL
+         ? {
+              ...at,
+              range: {
+                 start: { ...at.range.start, line: at.range.start.line - 1 },
+                 end: { ...at.range.end, line: at.range.end.line - 1 },
+              },
+           }
+         : at;
    for (const msg of parseErrors) {
       const at = msg.at;
       const onPlanned = at
@@ -814,10 +1192,21 @@ export async function collectModelBuildPlan(
               }))
               .find((hit) => hit.note !== undefined)
          : undefined;
+      // A source none of whose `#@` lines parse is not planned at all, and
+      // the finding names a line: report the source by its sourceID, so its
+      // absence is not read as its leaving the plan.
+      if (at && !onPlanned?.note) {
+         parts.omittedSources.push(
+            ...omittedByID(
+               sourceIDsWithNoteAt(planModel, at),
+               "persist_annotation_unparseable",
+            ),
+         );
+      }
       addAnnotationFinding(
          parts,
          persistUnparseableFinding(
-            msg,
+            { ...msg, at: authorAt(msg.at) },
             declaringModelPath(at?.url, packagePath, modelPath),
             onPlanned?.note
                ? { subject: onPlanned.source.name, line: onPlanned.note.text }
@@ -900,6 +1289,8 @@ export function deriveBuildPlan(
       preaggregatePlans?: Record<string, RollupPlan>;
       materializePlans?: Record<string, MaterializePlan>;
       sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
+      /** See {@link CompiledBuildPlan.omittedSources}. */
+      omittedSources?: Omission[];
    },
 ): BuildPlan {
    const include = sourceNames ? new Set(sourceNames) : null;
@@ -933,8 +1324,13 @@ export function deriveBuildPlan(
 
    const wireSources: Record<string, WirePersistSourcePlan> = {};
    const refusedSources: Record<string, WireRefusedSource> = {};
+   const omitted: Omission[] = [...(options?.omittedSources ?? [])];
    for (const [sourceID, source] of Object.entries(sources)) {
       if (include && !include.has(source.name)) continue;
+      // What the catch below reports, if this source fails to project: a
+      // gate failing with an error (not a refusal) is told apart from the
+      // rest of the projection.
+      let failedAt: OmittedSourceReason = "projection_failed";
       // One unreadable source must not cost the package its plan: addressing
       // throws for a colocated source referencing a given with no default, and
       // an escaping throw would drop EVERY colocated binding for the package.
@@ -965,7 +1361,10 @@ export function deriveBuildPlan(
             } catch (err) {
                // Only an eligibility refusal is reportable; anything else must not
                // masquerade as a security refusal.
-               if (!(err instanceof MaterializationEligibilityError)) throw err;
+               if (!(err instanceof MaterializationEligibilityError)) {
+                  failedAt = "eligibility_check_failed";
+                  throw err;
+               }
                refusedSources[sourceID] = {
                   name: source.name,
                   sourceID: source.sourceID,
@@ -992,7 +1391,10 @@ export function deriveBuildPlan(
                   }),
                });
             } catch (err) {
-               if (!(err instanceof MaterializationEligibilityError)) throw err;
+               if (!(err instanceof MaterializationEligibilityError)) {
+                  failedAt = "eligibility_check_failed";
+                  throw err;
+               }
                refusedSources[sourceID] = {
                   name: source.name,
                   sourceID: source.sourceID,
@@ -1014,23 +1416,32 @@ export function deriveBuildPlan(
             // otherwise treat it as materialized/buildable.
             let storageRefused = false;
             try {
+               // A `#(preaggregate)` rollup over a gated base whose gates
+               // the variant grafts at read (rows 1 and 21) is not refused
+               // for them; a v1 rollup always is.
+               const keepsGate = rollupGateEnforcedAtRead(rollup);
                assertColocatedPersistNotAuthorizeGated(
                   source,
                   source.name,
                   "preaggregate",
                   options?.sourceGateOutcomes?.[sourceID],
                   annotationFields,
+                  { gateEnforcedAtRead: keepsGate },
                );
                if (declaresStorage) {
                   storageRefused = true;
                   assertMaterializationEligible(
                      source,
                      deriveAnnotationFields(source),
+                     { gateEnforcedAtRead: keepsGate },
                   );
                   storageRefused = false;
                }
             } catch (err) {
-               if (!(err instanceof MaterializationEligibilityError)) throw err;
+               if (!(err instanceof MaterializationEligibilityError)) {
+                  failedAt = "eligibility_check_failed";
+                  throw err;
+               }
                refusedSources[sourceID] = {
                   name: source.name,
                   sourceID: source.sourceID,
@@ -1077,15 +1488,25 @@ export function deriveBuildPlan(
             modelPath: sourceModelPaths?.[sourceID],
          };
       } catch (err) {
+         // Reported, so a host does not read the source's absence as its
+         // leaving the plan; by a code, never the message, which may quote SQL.
+         const reason = isUnkeyable(source) ? "unkeyable" : failedAt;
          logger.warn("Failed to project a persist source into the build plan", {
             sourceID,
             sourceName: source.name,
+            reason,
             error: errMessage(err),
          });
+         omitted.push({ sourceID, reason });
       }
    }
 
-   return { graphs: wireGraphs, sources: wireSources, refusedSources };
+   return {
+      graphs: wireGraphs,
+      sources: wireSources,
+      refusedSources,
+      ...finalizeOmissions(omitted, new Set(Object.keys(wireSources))),
+   };
 }
 
 /** What a package load keeps from its build plan. */
@@ -1116,6 +1537,13 @@ export interface BuildPlanOutcome {
     * worker that predates it sends none.
     */
    materializePlans?: Record<string, MaterializePlan>;
+   /**
+    * The `#(preaggregate)` rollups over a gated base whose gates are grafted
+    * on their variant at read ({@link rollupGateEnforcedAtRead}), by their
+    * sourceID, so the serve verdict does not call them gated out. Optional:
+    * a worker that predates it sends none.
+    */
+   rollupsKeepingGates?: string[];
 }
 
 /**
@@ -1135,8 +1563,10 @@ export function deriveBuildPlanOutcome(
       compiled.sources,
       compiled.materializePlans,
    );
+   // A plan that lost sources is not "no plan": it is kept, so a host reads
+   // `omittedSources` rather than an empty plan.
    const plan =
-      compiled.builds.length === 0
+      compiled.builds.length === 0 && !compiled.omittedSources?.length
          ? null
          : deriveBuildPlan(
               compiled.builds,
@@ -1149,6 +1579,7 @@ export function deriveBuildPlanOutcome(
                  preaggregatePlans: compiled.preaggregatePlans,
                  materializePlans: compiled.materializePlans,
                  sourceGateOutcomes: compiled.sourceGateOutcomes,
+                 omittedSources: compiled.omittedSources,
               },
            );
    // One entry per base: its grains share the reason.
@@ -1177,7 +1608,75 @@ export function deriveBuildPlanOutcome(
          ...new Set(compiled.builds.map((b) => b.connectionName)),
       ].sort(),
       materializePlans: compiled.materializePlans ?? {},
+      rollupsKeepingGates: Object.entries(compiled.preaggregatePlans ?? {})
+         .filter(([, rollup]) => rollupGateEnforcedAtRead(rollup))
+         .map(([sourceID]) => sourceID)
+         .sort(),
    };
+}
+
+/**
+ * What an incremental pair table's plan adds to its declaration: the parent
+ * key each refresh replaces rows by, and its two generated windows taken off
+ * `calculateFields`. Both are partitioned by that key, and the watermark is
+ * one value per parent, so a delta holds whole parents and the windows over
+ * it compute what the full build's do; the window gate exists for frames that
+ * reach outside a delta, which these cannot. Nothing for any other source.
+ */
+function pairDeclaration(
+   declaration: IncrementalDeclaration,
+   plan: MaterializePlan | undefined,
+): Partial<IncrementalDeclaration> {
+   const pair = plan?.pair;
+   const blocks = plan?.pairBlocks;
+   const watermark = blocks?.watermark ?? pair?.watermark;
+   if (!pair || !watermark) return {};
+   const delta = pairDelta(pair, blocks);
+   const generated = new Set([
+      pair.parentRowColumn,
+      watermark.column,
+      ...(delta.checks ?? []).map((c) => c.flag),
+   ]);
+   return {
+      pair: delta,
+      calculateFields: declaration.calculateFields.filter(
+         (name) => !generated.has(name),
+      ),
+   };
+}
+
+/**
+ * The flags a pair table's delta checks, as the build writes them
+ * (`pairFlags`): one table of one hop checks its parent-row flag alone (the
+ * default); a path checks each level's flag over the keys down to it; a table
+ * of several blocks checks every flag within each block, over that block's
+ * own keys (a flag past a block's own leaf partitions on every key it has).
+ */
+export function pairDelta(
+   pair: NonNullable<MaterializePlan["pair"]>,
+   blocks: MaterializePlan["pairBlocks"],
+): PairDelta {
+   const base = { parentKey: pair.parentKey, parentRow: pair.parentRowColumn };
+   const flagsOf = (p: typeof pair, levels: number, lane?: number) => {
+      const keys = pairKeyColumns(p);
+      return Array.from({ length: levels }, (_, level) => ({
+         flag: level === 0 ? p.parentRowColumn : pairLevelRowColumn(level),
+         keys: keys.slice(0, Math.min(level, keys.length - 1) + 1),
+         ...(lane !== undefined ? { lane } : {}),
+      }));
+   };
+   if (blocks) {
+      return {
+         ...base,
+         checks: blocks.blocks.flatMap((p, lane) =>
+            flagsOf(p, blocks.levels, lane),
+         ),
+         laneColumn: blocks.laneColumn,
+         lanes: blocks.blocks.length,
+      };
+   }
+   if (!pair.hops || pair.hops.length === 0) return base;
+   return { ...base, checks: flagsOf(pair, 1 + pair.hops.length) };
 }
 
 /**
@@ -1201,12 +1700,15 @@ export function collectIncrementalDeclarations(
             source,
             deriveAnnotationFields(source),
          );
-         const window = rollingWindowsOf(
-            materializePlans[sourceID]?.readTimeTerms,
-         );
-         declarations[sourceID] = window.length
-            ? { ...declaration, rollingWindow: window }
-            : declaration;
+         const plan = materializePlans[sourceID];
+         // Only a lower bound deletes; an upper bound is left out of the
+         // build, so every refresh appends and keeps every row.
+         const window = deletingWindowsOf(plan?.readTimeTerms);
+         declarations[sourceID] = {
+            ...declaration,
+            ...(window.length ? { rollingWindow: window } : {}),
+            ...pairDeclaration(declaration, plan),
+         };
       } catch (err) {
          // One unreadable source must not cost the package its plan. "No
          // declaration" is safe: the build path dispatches a delta only for a

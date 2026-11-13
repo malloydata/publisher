@@ -205,4 +205,99 @@ export class TableClaims {
          }
       }
    }
+
+   /**
+    * After run `id` committed a `name=` view in place of a table this
+    * package's own run wrote at that name (name_view.ts): mark, on every
+    * other run, the entries naming that table there superseded
+    * (SUPERSEDED_TABLES_KEY). The table is gone, so no reader may serve or
+    * reuse it again; the dropper retires those entries when their run goes
+    * (heldByOwnNameView). Matched exactly: the same name, connection and
+    * destination. Best-effort: a mark that fails is logged.
+    */
+   async markReplacedByView(
+      environmentId: string,
+      packageName: string,
+      id: string,
+      tables: {
+         physicalTableName: string;
+         connectionName: string;
+         storageDestinationName?: string;
+      }[],
+   ): Promise<void> {
+      await this.markTablesGone(environmentId, packageName, id, tables);
+   }
+
+   /**
+    * When an auto-run finds a table its package's records name held by
+    * another package, or cannot tell who holds it (table_ownership.ts): mark,
+    * on every run of the package but `id`, the entries naming that table
+    * there superseded (SUPERSEDED_TABLES_KEY), so the package serves the
+    * source live rather than another package's rows, and never reuses the
+    * entry. Matched exactly, as {@link markReplacedByView}. Best-effort: a
+    * mark that fails is logged.
+    */
+   async markHeldElsewhere(
+      environmentId: string,
+      packageName: string,
+      id: string,
+      table: {
+         physicalTableName: string;
+         connectionName: string;
+         storageDestinationName?: string;
+      },
+   ): Promise<void> {
+      await this.markTablesGone(environmentId, packageName, id, [table]);
+   }
+
+   /** Mark every other run's entries for `tables`, exactly, superseded. */
+   private async markTablesGone(
+      environmentId: string,
+      packageName: string,
+      id: string,
+      tables: {
+         physicalTableName: string;
+         connectionName: string;
+         storageDestinationName?: string;
+      }[],
+   ): Promise<void> {
+      if (tables.length === 0) return;
+      await this.lockFor(environmentId, packageName).runExclusive(async () => {
+         for (const m of await this.repository().listMaterializations(
+            environmentId,
+            packageName,
+         )) {
+            if (m.id === id) continue;
+            const marked = tableNamesIn(m.metadata, SUPERSEDED_TABLES_KEY);
+            const replaced = Object.values(m.manifest?.entries ?? {})
+               .filter((e) =>
+                  tables.some(
+                     (t) =>
+                        t.physicalTableName === e.physicalTableName &&
+                        t.connectionName === e.connectionName &&
+                        (t.storageDestinationName ?? undefined) ===
+                           (e.storageDestinationName ?? undefined),
+                  ),
+               )
+               .map((e) => e.physicalTableName)
+               .filter((t) => !marked.includes(t));
+            if (replaced.length === 0) continue;
+            try {
+               await this.repository().updateMaterialization(m.id, {
+                  metadata: {
+                     ...(m.metadata ?? {}),
+                     [SUPERSEDED_TABLES_KEY]: [
+                        ...new Set([...marked, ...replaced]),
+                     ],
+                  },
+               });
+            } catch (err) {
+               logger.warn(
+                  "Could not retire a run's entry for a table it no longer holds",
+                  { materializationId: m.id, error: errMessage(err) },
+               );
+            }
+         }
+      });
+   }
 }

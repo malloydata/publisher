@@ -9,6 +9,7 @@ import {
 } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it, test } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
+import { shadowRowDifference } from "../../../src/service/materialization/serve/v1_shadow";
 import {
    buildScenario,
    rowDifference,
@@ -20,12 +21,14 @@ import {
 } from "./harness";
 
 /**
- * The #7098 fixture runs twice: through today's storage serve shape, and with
- * PUBLISHER_MATERIALIZE on, through the served copy on `virtual` wherever it
- * can answer (phase 0 Evidence 5). Every answer must equal live in both.
+ * The #7098 fixture runs three ways: through today's storage serve shape;
+ * with PUBLISHER_MATERIALIZE on, through the served copy on `virtual`
+ * wherever it can answer (phase 0 Evidence 5); and after the v1 cutover
+ * (PUBLISHER_V1_SERVED_COPY=on), where no serve shape exists, so every
+ * stored answer is the served copy's. Every answer must equal live in all.
  */
-for (const mode of ["serve_shape", "served_copy"] as const) {
-   const servedCopy = mode === "served_copy";
+for (const mode of ["serve_shape", "served_copy", "cutover"] as const) {
+   const servedCopy = mode !== "serve_shape";
    describe(`[${mode}]`, () => {
       let restoreSettings: () => void;
       beforeAll(() => {
@@ -33,6 +36,9 @@ for (const mode of ["serve_shape", "served_copy"] as const) {
             env: {
                PERSIST_STORAGE_MODE: "on",
                ...(servedCopy ? { PUBLISHER_MATERIALIZE: "true" } : {}),
+               ...(mode === "cutover"
+                  ? { PUBLISHER_V1_SERVED_COPY: "on" }
+                  : {}),
             },
          }).restore;
       });
@@ -55,6 +61,12 @@ for (const mode of ["serve_shape", "served_copy"] as const) {
          if (query.expectLive) expect(run.servedFrom).not.toBe("storage");
          else expect(run.servedFrom).toBe("storage");
          expect(rowDifference(run.live, run.served)).toBeUndefined();
+         // After the cutover, also by the shadow comparison's exact rule (a
+         // string stays a string, an integer and a bigint exact): what the
+         // shadow release would log must be nothing.
+         if (mode === "cutover") {
+            expect(shadowRowDifference(run.live, run.served)).toBeUndefined();
+         }
          return run;
       }
 

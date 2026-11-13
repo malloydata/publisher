@@ -1,0 +1,167 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "daily_r2@<pkg>/m.malloy": [],
+          "daily_r3@<pkg>/m.malloy": [],
+          "daily_r@<pkg>/m.malloy": []
+        },
+        "order": [
+          "daily_r@<pkg>/m.malloy",
+          "daily_r2@<pkg>/m.malloy",
+          "daily_r3@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily_r2@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "daily_r3@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "daily_r@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily_r2@<pkg>/m.malloy": "m.malloy",
+      "daily_r3@<pkg>/m.malloy": "m.malloy",
+      "daily_r@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily_r@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "daily_r2@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "daily_r3@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily_r2@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "daily_r",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "order_day",
+            "type": "date"
+          },
+          {
+            "name": "zone",
+            "type": "string"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "daily_r2",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "610a61e5c5ec7535205405f43a14d7dc85aa4f8bde6e4f35f3cb2ba1073294e5",
+        "sourceID": "daily_r2@<pkg>/m.malloy",
+        "sql": "sha256:c537fd21903f0755"
+      },
+      "daily_r3@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "daily_r",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "order_day",
+            "type": "date"
+          },
+          {
+            "name": "territory",
+            "type": "string"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "daily_r3",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "610a61e5c5ec7535205405f43a14d7dc85aa4f8bde6e4f35f3cb2ba1073294e5",
+        "sourceID": "daily_r3@<pkg>/m.malloy",
+        "sql": "sha256:c537fd21903f0755"
+      },
+      "daily_r@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "daily_r",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "area",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "order_day",
+            "type": "date"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "daily_r",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "610a61e5c5ec7535205405f43a14d7dc85aa4f8bde6e4f35f3cb2ba1073294e5",
+        "sourceID": "daily_r@<pkg>/m.malloy",
+        "sql": "sha256:c537fd21903f0755"
+      }
+    }
+  }
+}

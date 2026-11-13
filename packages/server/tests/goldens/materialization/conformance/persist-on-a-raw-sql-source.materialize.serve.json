@@ -1,0 +1,149 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "raw_direct",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "raw_direct:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "08b593de5c8fbe20",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "raw_direct",
+          "stages": 1
+        },
+        "source": "raw_direct"
+      },
+      "equalToLive": true,
+      "malloy": "run: raw_direct -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "raw_direct"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the source itself",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "08b593de5c8fbe20",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "raw_direct",
+          "stages": 1
+        },
+        "source": "raw_direct"
+      },
+      "equalToLive": true,
+      "malloy": "run: raw_direct -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "d315aa74c60e26bdae2de1c53ed1a5dbd279d607ad66f56d81a4684721304742"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "raw_direct"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "d315aa74c60e26bdae2de1c53ed1a5dbd279d607ad66f56d81a4684721304742",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the source itself",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

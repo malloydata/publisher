@@ -23,6 +23,19 @@ import {
    type CompiledBuildPlan,
 } from "./build_plan";
 import { refuseCollidingMaterialize } from "./eligibility_collect";
+import {
+   joinOneKey,
+   joinOneKeysOf,
+   parentKeyNeedsOf,
+   storedKeyChecksOf,
+   type ParentKeyNeed,
+   type RollupVariantPlan,
+} from "./rollup_plan";
+import {
+   compileParentKeyChecks,
+   parentKeyCheckCompiler,
+} from "./rollup_compile";
+import { SourceMap } from "./source_map";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import { Model } from "../../model";
 import { keyedOverlay } from "../../overlay_key";
@@ -36,6 +49,16 @@ export async function compilePackageBuildPlan(
    signal?: AbortSignal,
 ): Promise<CompiledBuildPlan> {
    const parts = emptyBuildPlanParts();
+   // Every join_one of every model, for the rollup key checks a build runs.
+   const joinOneKeys = new Set<string>();
+   // Every source keyed on its primary key by a join, with the model that
+   // names it, for the query source key checks a rollup's build runs.
+   const parentKeyNeeds: {
+      need: ParentKeyNeed;
+      compile: (text: string) => Promise<string>;
+   }[] = [];
+   // Every declared primary key, by sourceID, for the stored-table key checks.
+   const primaryKeys = new Map<string, string>();
    const yielder = createEventLoopYielder();
 
    for (const modelPath of pkg.getModelPaths()) {
@@ -85,6 +108,22 @@ export async function compilePackageBuildPlan(
          buildView = keyedOverlay(view.overlay);
       }
       const { runtime, materializer, malloyModel } = loaded;
+      const map = SourceMap.of(malloyModel._modelDef);
+      for (const key of joinOneKeysOf(map)) {
+         joinOneKeys.add(key);
+      }
+      for (const node of map.nodes()) {
+         const key = (node.def as { primaryKey?: unknown }).primaryKey;
+         if (typeof key === "string" && !primaryKeys.has(node.sourceID)) {
+            primaryKeys.set(node.sourceID, key);
+         }
+      }
+      for (const need of parentKeyNeedsOf(map)) {
+         parentKeyNeeds.push({
+            need,
+            compile: parentKeyCheckCompiler(materializer),
+         });
+      }
       await collectModelBuildPlan(parts, {
          modelPath,
          packagePath: pkg.getPackagePath(),
@@ -100,6 +139,38 @@ export async function compilePackageBuildPlan(
             ),
       });
    }
+
+   // A rollup key check no join_one of the package reads is not run: it
+   // would scan the base for nothing (known limitation 29).
+   for (const plan of Object.values(parts.preaggregatePlans)) {
+      const rollup = plan as RollupVariantPlan;
+      if (
+         rollup.keyCheck &&
+         !joinOneKeys.has(
+            joinOneKey(rollup.baseSourceID, rollup.keyCheck.keyColumn),
+         )
+      ) {
+         delete rollup.keyCheck;
+      }
+   }
+
+   // A query source read through a join_many keyed on its primary key:
+   // the rollup's build checks that key unique and never NULL.
+   const rollupPlans = Object.values(
+      parts.preaggregatePlans,
+   ) as RollupVariantPlan[];
+   await compileParentKeyChecks(rollupPlans, parentKeyNeeds);
+   // A `storage=` rollup read that way is read beside the query source's
+   // stored table (#1704): each stored source's key is checked over its
+   // table at its own build instead.
+   const storedKeyChecks = storedKeyChecksOf(
+      rollupPlans,
+      parentKeyNeeds.map(({ need }) => need),
+      (sourceID) => primaryKeys.get(sourceID),
+      Object.keys(parts.sources).filter(
+         (sourceID) => !parts.preaggregatePlans[sourceID],
+      ),
+   );
 
    const connections = await resolvePackageConnections(
       pkg,
@@ -131,8 +202,10 @@ export async function compilePackageBuildPlan(
       droppedPersistSources: parts.droppedPersistSources,
       annotationFindings: parts.annotationFindings,
       preaggregatePlans: parts.preaggregatePlans,
+      ...(Object.keys(storedKeyChecks).length > 0 ? { storedKeyChecks } : {}),
       materializePlans: parts.materializePlans,
       sourceGateOutcomes: parts.sourceGateOutcomes,
+      omittedSources: parts.omittedSources,
    });
 }
 
