@@ -22,6 +22,7 @@ import {
    setPackage,
 } from "../../../test_helpers/materialization_service_harness";
 import { logger } from "../../../logger";
+import { reportSourceBuilt } from "./run_telemetry";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
 import { startMetricsHarness } from "../../../test_helpers/metrics_harness";
 
@@ -504,6 +505,7 @@ describe("runBuild (branch behavior)", () => {
                | undefined;
             strictUpstreams?: boolean | undefined;
             warehouseReach?: "recompute" | "refuse";
+            trigger?: "ON_DEMAND" | "SCHEDULER";
          },
          signal: AbortSignal,
       ) => Promise<void>;
@@ -701,6 +703,168 @@ describe("runBuild (branch behavior)", () => {
       ]);
    });
 
+   it("counts auto-run's refusals and carried sources once each, between run.started and run.finished", async () => {
+      const harness = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+      const info = sinon.stub(logger, "info");
+      try {
+         const svc = stubEngine();
+         (
+            svc as unknown as { deriveSelfInstructions: sinon.SinonStub }
+         ).deriveSelfInstructions = sinon.stub().returns({
+            instructions: [makeInstruction()],
+            carried: {
+               "carried-1": {
+                  sourceEntityId: "carried-1",
+                  physicalTableName: "carried_t",
+                  connectionName: "duckdb",
+                  storageDestinationName: "lake",
+               },
+            },
+            refused: {
+               gated: {
+                  name: "gated",
+                  sourceID: "gated",
+                  tier: "storage",
+                  reason: "given",
+                  message: "Source 'gated' cannot be materialized",
+               },
+            },
+         });
+
+         await svc.runBuild(
+            "mat-1",
+            "my-env",
+            "pkg",
+            {
+               sourceNames: undefined,
+               forceRefresh: true,
+               buildInstructions: undefined,
+               trigger: "SCHEDULER",
+            },
+            new AbortController().signal,
+         );
+
+         expect(
+            await harness.collectAttributes(
+               "publisher_materialization_build_total",
+            ),
+         ).toEqual([
+            {
+               kind: "persist",
+               tier: "storage",
+               outcome: "refused",
+               failure_class: "none",
+            },
+            {
+               kind: "persist",
+               tier: "storage",
+               outcome: "reused",
+               failure_class: "none",
+            },
+         ]);
+         expect(
+            await harness.collectCounter(
+               "publisher_materialization_build_total",
+            ),
+         ).toBe(2);
+         const events = info.getCalls().map((c) => c.args as unknown[]);
+         expect(events[0][0]).toBe("materialization.run.started");
+         expect(events[0][1]).toMatchObject({
+            runId: "mat-1",
+            mode: "auto",
+            trigger: "schedule",
+            sourceCount: 1,
+         });
+         const finished = events.find(
+            (e) => e[0] === "materialization.run.finished",
+         );
+         // The build loop is stubbed, so only the run's own counts appear.
+         expect(finished?.[1]).toMatchObject({
+            runId: "mat-1",
+            outcome: "success",
+            reused: 1,
+            refused: 1,
+         });
+      } finally {
+         info.restore();
+         resetMaterializationTelemetryForTesting();
+         await harness.shutdown();
+      }
+   });
+
+   it("counts a source the run rebuilt once, as built, when the host also supplied it by reference", async () => {
+      const harness = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+      try {
+         const svc = stubEngine();
+         // The build loop (stubbed) builds the instructed address and counts
+         // it; the host's reference names the same address.
+         svc.executeInstructedBuild.callsFake(async () => {
+            reportSourceBuilt(
+               {
+                  kind: "persist",
+                  tier: "colocated",
+                  sourceEntityId: "build-orders",
+                  sourceName: "orders",
+               },
+               {},
+            );
+            return {
+               entries: {
+                  "build-orders": {
+                     sourceEntityId: "build-orders",
+                     physicalTableName: '"orders_v2"',
+                     connectionName: "duckdb",
+                  },
+               },
+               failures: {},
+               sourcesRefused: 0,
+            };
+         });
+
+         await svc.runBuild(
+            "mat-1",
+            "my-env",
+            "pkg",
+            {
+               sourceNames: undefined,
+               forceRefresh: false,
+               buildInstructions: [makeInstruction()],
+               referenceManifest: [
+                  {
+                     sourceEntityId: "build-orders",
+                     physicalTableName: '"orders_v1"',
+                     connectionName: "duckdb",
+                  },
+               ],
+            },
+            new AbortController().signal,
+         );
+
+         expect(
+            await harness.collectAttributes(
+               "publisher_materialization_build_total",
+            ),
+         ).toEqual([
+            {
+               kind: "persist",
+               tier: "colocated",
+               outcome: "built",
+               failure_class: "none",
+            },
+         ]);
+         expect(
+            await harness.collectCounter(
+               "publisher_materialization_build_total",
+            ),
+         ).toBe(1);
+      } finally {
+         resetMaterializationTelemetryForTesting();
+         await harness.shutdown();
+      }
+   });
+
    it("counts an orchestrated refusal in the metadata, and lists it only in failures", async () => {
       const svc = stubEngine();
       svc.executeInstructedBuild.resolves({
@@ -742,7 +906,7 @@ describe("runBuild (branch behavior)", () => {
       );
    });
 
-   it("lists an orchestrated refusal beside a built table in refusedSources, and meters it as refused only", async () => {
+   it("lists an orchestrated refusal beside a built table in refusedSources, and meters the run a success", async () => {
       // ms2data/service#7078, storage=: a refused source on an address an
       // eligible sibling built is not in `failures` (the table stands), so the
       // run's free-form metadata is the only place it is named.
@@ -790,14 +954,23 @@ describe("runBuild (branch behavior)", () => {
             sourcesRefused: 1,
             refusedSources: { gated: refused },
          });
-         const count = (outcome: string) =>
-            harness.collectCounter("publisher_materialization_sources_total", {
-               outcome,
-               mode: "orchestrated",
-            });
-         expect(await count("refused")).toBe(1);
-         expect(await count("failed")).toBe(0);
-         expect(await count("built")).toBe(1);
+         // The run is a success, not partial: the refusal is not a loss.
+         expect(
+            await harness.collectCounter(
+               "publisher_materialization_runs_total",
+               {
+                  mode: "orchestrated",
+                  outcome: "success",
+               },
+            ),
+         ).toBe(1);
+         // Each instructed source is counted once, by the build loop (stubbed
+         // here); the run adds nothing for them on top.
+         expect(
+            await harness.collectCounter(
+               "publisher_materialization_build_total",
+            ),
+         ).toBe(0);
       } finally {
          resetMaterializationTelemetryForTesting();
          await harness.shutdown();

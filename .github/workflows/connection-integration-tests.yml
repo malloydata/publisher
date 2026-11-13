@@ -9,6 +9,7 @@ on:
     paths:
       - "packages/server/src/service/connection.ts"
       - "packages/server/src/service/connection.spec.ts"
+      - "packages/server/src/service/ducklake_init_race.spec.ts"
       - "packages/server/src/service/proxy.ts"
       - "packages/server/src/test_helpers/ssh_tunnel_harness.ts"
       - "packages/server/src/service/materialization/run/materialization_build_session.ts"
@@ -38,6 +39,7 @@ on:
     paths:
       - "packages/server/src/service/connection.ts"
       - "packages/server/src/service/connection.spec.ts"
+      - "packages/server/src/service/ducklake_init_race.spec.ts"
       - "packages/server/src/service/proxy.ts"
       - "packages/server/src/test_helpers/ssh_tunnel_harness.ts"
       - "packages/server/src/service/materialization/run/materialization_build_session.ts"
@@ -192,6 +194,16 @@ jobs:
         run: |
           cd packages/server
           bun test --timeout 100000 ./src/service/connection.spec.ts
+
+      # Builds attaching one DuckLake catalog that does not exist yet, at once,
+      # on this job's Postgres: every one must write into it, not lose the
+      # create race. Skipped everywhere this variable is not set.
+      - name: Run DuckLake catalog-create race test
+        env:
+          PUBLISHER_TEST_POSTGRES_URL: "postgresql://postgres:postgres@localhost:5432/malloy_test"
+        run: |
+          cd packages/server
+          bun test --timeout 120000 ./src/service/ducklake_init_race.spec.ts
 
       # The admin API's catalogs against a real catalog database: creates,
       # loads, ownership through the owner role, error reasons, snapshot
