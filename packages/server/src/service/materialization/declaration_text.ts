@@ -534,8 +534,9 @@ export function documentFlagLines(text: string): string[] {
 }
 
 /**
- * In a run of `extend { … }` blocks, delete each `except:` item that
- * `removable` accepts, and an `except:` statement left with no item. For a
+ * In a run of `extend { … }` blocks, delete each `except:` item of a
+ * top-level block's own statement that `removable` accepts, and an `except:`
+ * statement left with no item. For a
  * stored table that never held an excluded column (a v1 `storage=` table
  * stores public columns only), `except: region` names nothing the re-rooted
  * source has, which Malloy refuses; with nothing to exclude, deleting it
@@ -560,7 +561,12 @@ export function dropExceptItems(
    for (let k = 0; k + 1 < tokens.length; k++) {
       const t = tokens[k];
       const colon = tokens[k + 1];
-      if (t.kind !== "word" || t.text !== "except") continue;
+      // Only a statement of a top-level block (`extend { … }`, `include
+      // { … }`), which excludes from the re-rooted source itself. One nested
+      // deeper (a join's own `extend { except: … }`) hides a field of the
+      // joined source, which the table never stores either: deleting it
+      // would expose that field through the join.
+      if (t.kind !== "word" || t.text !== "except" || t.depth !== 1) continue;
       if (colon.text !== ":" || colon.start !== t.end) continue;
       const items: number[] = [];
       let i = k + 2;
