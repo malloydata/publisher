@@ -500,7 +500,7 @@ Turning the switch on for `storage=` still waits for question 14's review. Gates
 
 ### Phase 5 design: consistency and simplification
 
-**Status: proposed 2026-11-13, for review before any refactor starts.** This is the audit and plan (step 1 of the quality pass). No code changes with it. Steps 2 to 5 (simplify, test, telemetry, tighten) are planned below and start only after review. Measured on `main` at `95568293f`, with the raw numbers kept outside the repo. Paths are under `packages/server/src/service/` unless they say otherwise.
+**Status: proposed 2026-11-13; its questions decided the same day (end of this section).** This is the audit and plan (step 1 of the quality pass). No code changes with it. Steps 2 to 5 (simplify, test, telemetry, tighten) are planned below and start only after review. Measured on `main` at `95568293f`, with the raw numbers kept outside the repo. Paths are under `packages/server/src/service/` unless they say otherwise.
 
 #### 1. Audit summary
 
@@ -559,7 +559,7 @@ Turning the switch on for `storage=` still waits for question 14's review. Gates
 - *Verified:* `pairConditionReadsChild` (`governance/ir/pair_flat_query.ts:834`) has no reference anywhere. 132 exports in scope are used only in their own file, so their `export` keyword is unneeded: 23 in `build_file_generator.ts`, 10 in `source_map.ts`, 7 in `rollup_variants.ts`, 5 in `rollup_plan.ts`, and the rest spread out.
 - *Test-only:* `GENERATOR_KEYS` (a closed-key contract spec reads it; keep it), `parseMeasureExpression`, `isNameViewComment` and `isServedCopyAlias`.
 - *Retired by 6g:* roughly 3.5k to 4k source lines (`serve/model_serve_shape.ts` 1,220; most of `serve/materialization_serve_transform.ts` 1,790; `serve/preaggregation_serve_bindings.ts` 178; `plan/preaggregation_coverage.ts` 225; the composite half of `plan/preaggregation_synthesis.ts` and `plan/preaggregation_compile.ts`; the D3 guards) and about 4.5k spec lines (`materialization_serve_transform.spec.ts` 2,664, mostly; `preaggregation_serve_bindings.spec.ts` 558; `preaggregation_coverage.spec.ts` 283; `isolate_compilable.spec.ts`; `serve_shape_views.component.spec.ts` 277; the `[serve_shape]` mode of `r4.component.spec.ts`). The cutover design lists them. This pass does not delete them again; it starts after they are gone.
-- *Suspected, with external callers this audit cannot see:* the local Credible checkout (`~/service`) dates from March 2026 and predates v2, so it cannot settle these. They are questions 3 and 5 below. Credible's runtime reaches Publisher over REST and generated clients, so wire types, enum values and metric names are the external contract, not module exports.
+- *Suspected, with external callers this audit cannot see:* the local Credible checkout (`~/service`) dates from March 2026 and predates v2, so it cannot settle these. *Decided 2026-11-13, checked against Credible's current main:* nothing there references them (decisions 3 and 5). Credible's runtime reaches Publisher over REST and generated clients, so wire types, enum values and metric names are the external contract, not module exports.
 
 **Highest risk, least tested.** Unit line coverage (`bun test --coverage` over `src/`, 9,733 tests, 205.7 s; one unrelated failure in compile-construct containment):
 
@@ -602,20 +602,20 @@ Flaky tests seen: the pair-table nest whose legs tie (fixed in #1697 by ordering
 
 **C1a. Publish the run manifest whole.** A partial run (`sourceNames`, one schedule's sources, a retry) still has to produce a whole generation.
 
-- *Option A (recommended): carry forward.* The commit writes a complete binding set: rebuilt sources point at new entries, and untouched sources get entries that reference the same `physical_tables` rows as before, with no copy. A partial run also expands to the *dependents* of what it rebuilds (rollups, extension tables, pair tables, persisted views over a rebuilt source), read off the plan's chain edges. Those are rebuilt in the same run, or the run fails before commit. It keeps B1's commit transaction as written and adds one join.
+- *Option A (decided 2026-11-13): carry forward.* The commit writes a complete binding set: rebuilt sources point at new entries, and untouched sources get entries that reference the same `physical_tables` rows as before, with no copy. A partial run also expands to the *dependents* of what it rebuilds (rollups, extension tables, pair tables, persisted views over a rebuilt source), read off the plan's chain edges. Those are rebuilt in the same run, or the run fails before commit. It keeps B1's commit transaction as written and adds one join.
 - *Option B: per-source generations*, with consistency only inside each dependency closure. That means fewer rebuilds, but a query across two unrelated stored sources still mixes runs, and the router would have to check closures per query.
 
 **C1b. Pin one manifest per query.** Each `Model` holds an immutable `BindingSnapshot { generationId, bindings, virtualMap, asOf }`, replaced by one reference swap when bindings change, never edited in place. `runQueryResults` reads the snapshot once, before `routeCandidates`. Every leg (view, rollup, served copy) and the path report take that one snapshot, so a rebind mid-query cannot split it. After 6g the served copy and the rollup leg read tables only through the per-query `virtualMap` (the live compile takes no build manifest), so pinning needs no recompile. Freshness (`run/freshness.ts`) becomes a check on the snapshot (skip reason `STALE`) rather than a per-entry drop that thins a generation.
 
 **C1c. Keep superseded tables while a query may read them.**
 
-- *Option A (recommended): a time-based grace.* B1's grace period, set to at least twice the longest query timeout (with a 15-minute minimum), plus an in-process count of pinned snapshots. The OSS reclaimer skips a table any live snapshot references.
+- *Option A (decided 2026-11-13): a time-based grace.* B1's grace period, set to at least twice the longest query timeout (with a 15-minute minimum), plus an in-process count of pinned snapshots. The OSS reclaimer skips a table any live snapshot references.
 - *Option B: a cross-worker reference count* that workers report to the control plane. It is exact, but it adds a heartbeat protocol. Hold it until a measured miss under option A.
 
 **C2. Pin derived tables to their upstream.**
 
 - *Option A: fold the upstream's build id into the content address* (the requirement's wording). Every upstream rebuild then re-addresses every derived table: new table names, reuse misses, and incremental ledger and anchor churn (the #6145 class).
-- *Option B (recommended): keep the address definition-only, and pin through the entry.* Add `upstream_entry_ids` to `manifest_entries`. Fold the upstream build ids into the reuse fingerprint (skip-if-unchanged) but not into the table's address. Bind refuses a derived entry whose upstream entry is not in the same generation, so it is rebuilt by the next run's dependent expansion (C1a) and answers live until then. Reference manifests carry the storage upstream's destination (#6734). It needs the control plane's #5967 fix first, as the plan already says.
+- *Option B (decided 2026-11-13): keep the address definition-only, and pin through the entry.* Add `upstream_entry_ids` to `manifest_entries`. Fold the upstream build ids into the reuse fingerprint (skip-if-unchanged) but not into the table's address. Bind refuses a derived entry whose upstream entry is not in the same generation, so it is rebuilt by the next run's dependent expansion (C1a) and answers live until then. Reference manifests carry the storage upstream's destination (#6734). It needs the control plane's #5967 fix first, as the plan already says.
 
 **C2 lifts known limitation 3 (rollups over the stored base).** Once generations are whole and pinned, a `#(preaggregate)` rollup's build source reads its base's staging table in the same run: the rollup becomes a chained build that Malloy's planner orders, just as an extension table builds over its parent's build source (#1661). It applies when the rollup and its base share a tier, both colocated or one `storage=` destination. Across tiers the rollup keeps building from raw rows, pinned with C3's as-of. A rollup then equals its base's snapshot and scans the base table, not the warehouse. The interim `preaggregate-over-stored-base` refusal (#6293) and the raw-chain rollup text in `rollup_compile.ts` retire. Proof: an R4 suite that builds base and rollup at two warehouse states and asserts the rollup equals the rollup computed from the stored base at every read, never the warehouse's newer rows.
 
@@ -630,7 +630,7 @@ Flaky tests seen: the pair-table nest whose legs tie (fixed in #1697 by ordering
 | Postgres, MySQL, SQL Server, DuckDB, MotherDuck | none | `build_window` (start and end of the build) |
 
 - *Option A: rewrite table references in the generated build SQL.* It works for any root, but it is a SQL rewriter, which the plan's text-only rule rules out.
-- *Option B (recommended): re-root in Malloy text.* In the build copy (the #1644 mechanism), re-root each `conn.table('t')` root on `conn.sql("SELECT * FROM t <as-of>")`, dialect-gated and behind its own switch. A `conn.sql()` root records `build_window`. **Probe first:** whether the as-of literal enters `BuildID`. If it does, the address must come from the as-of-free copy (`plan/addressing.ts` already computes the wire address on its own), or every run re-addresses. A retention window shorter than the run (BigQuery's 7 days, a Snowflake retention setting) fails the build with a deterministic failure class.
+- *Option B (decided 2026-11-13): re-root in Malloy text.* In the build copy (the #1644 mechanism), re-root each `conn.table('t')` root on `conn.sql("SELECT * FROM t <as-of>")`, dialect-gated and behind its own switch, off by default (opt-in, decided 2026-11-13). A `conn.sql()` root records `build_window`. **Probe first:** whether the as-of literal enters `BuildID`. If it does, the address must come from the as-of-free copy (`plan/addressing.ts` already computes the wire address on its own), or every run re-addresses. A retention window shorter than the run (BigQuery's 7 days, a Snowflake retention setting) fails the build with a deterministic failure class.
 
 **C4. Record as-of on every table.** Write `manifest_entries.data_as_of` (already in B1's schema) with a new `as_of_method` and the window bounds. The path report (A52, `QueryPath`) gains `generationId` and, per table served, `asOf: { method, at | from, to }`. The access record (T1) gains `asOfSpread`, the largest gap between the as-of values of the tables one answer read. All fields are additive. `method` is a new wire enum, so it ships in the same pull request as the spec sync (the generated Java clients have no unknown-enum default).
 
@@ -643,26 +643,26 @@ Flaky tests seen: the pair-table nest whose legs tie (fixed in #1697 by ordering
 
 #### 3. Prioritized refactor plan (steps 2 to 5)
 
-The rules for every pass: no external behavior change; one commit per pass, or per sub-pass where noted (question 2); `bun run test:unit`, `test:component`, lint and typecheck after each commit; R4, the conformance fixture and the characterization goldens (section 4) unchanged. Every contract change is listed, and none is assumed approved.
+The rules for every pass: no external behavior change; one commit per pass, and step 2 as one commit per sub-pass, 2a to 2h (decided 2026-11-13); `bun run test:unit`, `test:component`, lint and typecheck after each commit; R4, the conformance fixture and the characterization goldens (section 4) unchanged. Every contract change is listed, and none is assumed approved.
 
 **Step 2: simplify (after 6g).** In priority order:
 
 | # | Change | Deletes or consolidates | Risk | Guarded by |
 | --- | --- | --- | --- | --- |
-| 2a | Trim exports: drop `export` from the 132 own-file-only names; delete `pairConditionReadsChild`; settle the test-only exports (question 3) | About 135 export sites; no runtime change | Low | Typecheck; the import-direction lint and `import_cycles.spec.ts` |
+| 2a | Trim exports: drop `export` from the 132 own-file-only names; delete `pairConditionReadsChild`; delete the test-only `isNameViewComment` and `isServedCopyAlias` (decided 2026-11-13) | About 135 export sites; no runtime change | Low | Typecheck; the import-direction lint and `import_cycles.spec.ts` |
 | 2b | The generated-file host: one `GeneratedFiles` (author file reader, `#@` blanking, author imports, overlay keys, compile-never-run) that `materialize_compile`, `persisted_view_compile`, `rollup_compile`, `view_variants`, `rollup_variants`, `declaring_file_variant` and `served_copy_serve` take | 6 reader closures, 4 blanking call sites, `author_imports.ts`; the `*_compile.ts` files shrink to their own planning | Medium: overlay URLs must stay byte-identical | Generated-text goldens; `persist_blanking.spec.ts`; R4 |
 | 2c | One IR reader: move `source_map.ts`'s walks (`baseEdgeOf`, `pipelineReferences`, `reachableSourceIDs`, `sourceChain`) and `keptAncestorChain` onto `governance/ir/source_graph.ts`; one `queryTimezoneOf` in `governance/ir` for the 5 readers; one shape reader for `queryShapeOf` and `workload_shape.ts`; one given walker shared by `probe_compiler.ts` and `persist_dynamic_terms.ts` (the gate-side walkers move in the wider IR pass, Appendix) | 4 chain walkers to 1; 5 time-zone readers to 1; 2 shape readers to 1 | Medium: a chain that disagrees with the gate walk is a governance bug | `source_graph.spec.ts`; `authorize_gate_walk`; `gate_proof_precedence`; `governed_runnable_audit`; `entities_golden.spec.ts`; path-report goldens |
-| 2d | One text reader: `declaration_text.ts`, `inlined_join_text.ts`, the cross-connection blanking, the build copy's code search and `rollup_measure_grammar.ts` read statements through one `malloy_lexer.ts` API. `query_text.ts` keeps its own caller-text API (it reads untrusted text before compile), but shares the lexer core (question 5) | 2 tokenizers to 1 core; per-module statement scanners | Medium: text rewriting is upgrade-fragile | `malloy_text_ratchet.spec.ts`; generated-text goldens; `query_text.spec.ts` |
-| 2e | The bind guard: the served copy's `keepsGivenTerms`, `keepsAccess` and lost-fields check move onto `filter_binding_guard.ts`, the Consolidation item deferred here | About 150 lines of parallel guard; one proof of "still reads what it was written against" | **High (security):** a weaker guard serves a re-root that lost a filter | Characterization first: every served-copy refusal code in the R4 adversarial suites pinned before and after; review scope as question 10 |
+| 2d | One text reader: `declaration_text.ts`, `inlined_join_text.ts`, the cross-connection blanking, the build copy's code search and `rollup_measure_grammar.ts` read statements through one `malloy_lexer.ts` API. `query_text.ts` keeps its own caller-text API (it reads untrusted text before compile), but shares the lexer core (decided 2026-11-13: `malloy-code-server`, which copied `query_text.ts`, is gone) | 2 tokenizers to 1 core; per-module statement scanners | Medium: text rewriting is upgrade-fragile | `malloy_text_ratchet.spec.ts`; generated-text goldens; `query_text.spec.ts` |
+| 2e | The bind guard: the served copy's `keepsGivenTerms`, `keepsAccess` and lost-fields check move onto `filter_binding_guard.ts`, the Consolidation item deferred here | About 150 lines of parallel guard; one proof of "still reads what it was written against" | **High (security):** a weaker guard serves a re-root that lost a filter | Characterization first: every served-copy refusal code in the R4 adversarial suites pinned before and after; a short security review note in the pull request (decided 2026-11-13) |
 | 2f | One `#@` payload reader: a typed `PersistTag` (name, storage, refresh, partition, freshness, queryMetadata) read once per source in the source map; the 12 call sites read it | 5 `storage=` fallback chains to 1 | Low to medium: a differing fallback changes which destination is read | `annotation_reader.spec.ts`; the build-target corpus spec (addresses unchanged) |
 | 2g | Decompose the long functions: move serving out of `Model` into a `ModelServing` (the three remaining legs, the snapshot from C1b, routing, the answer), leaving `Model.runQueryResults` about compile and run; express `routeCandidates` as a list of leg factories; split `build_file_generator.ts` into planning (`planModelMaterialize`, `planBases`), stored-chain text, the hidden-field lift and read-time terms; break up `runBuild`, `storage_build_strategy.build` and `ServedCopyServe.compile` at their existing phase comments | `model.ts` loses about 600 lines; no function over 200 lines in scope | Medium: wide diff, no logic change | Every suite above; the diff reviewed with `--color-moved` |
 | 2h | One skip vocabulary: the router emits the public `SkipReason` (plus an internal code), and `RouterSkipReason` goes | 1 enum and its mapping | Low | `query_router.spec.ts`; `query_path.spec.ts` |
 
-*Contract changes to flag in step 2:* none required. Optional, each for approval: removing `PUBLISHER_MATERIALIZE` once v2 is the only path (question 9), and deleting the test-only `isNameViewComment` and `isServedCopyAlias` (question 3).
+*Contract changes in step 2:* none required. Approved 2026-11-13: deleting the test-only `isNameViewComment` and `isServedCopyAlias` (no Credible reference), and removing `PUBLISHER_MATERIALIZE` one release after its default turns on.
 
 **Step 3: tests.** See section 4. One commit for the shared fixtures and helpers, one for the merges and deletions, one for the new unit tests. The characterization goldens land first, before step 2.
 
-**Step 4: telemetry.** See section 5. One commit. *Contract changes to flag:* renaming `publisher_query_variant_routing_total` to `publisher_query_route_total` with public reasons, and dropping `publisher_storage_serve_routing_total` (already retired by 6g); dashboards or alerts on either break (question 4).
+**Step 4: telemetry.** See section 5. One commit. *Contract changes to flag:* renaming `publisher_query_variant_routing_total` to `publisher_query_route_total` with public reasons, and dropping `publisher_storage_serve_routing_total` (already retired by 6g); approved 2026-11-13: no Credible dashboard or alert reads either, nor `manifest_bind_total` or `colocated_bind_dropped_total`, which fold into `served_copy_bind_total`.
 
 **Step 5: tighten.** See section 6. One commit, comment and naming only; the diff must compile to identical JavaScript apart from deleted dead code.
 
@@ -675,7 +675,7 @@ The rules for every pass: no external behavior change; one commit per pass, or p
 | Unit | Every routing decision, coverage rule, guard, text emitter and plan derivation tested as a pure function over small fixtures; `serve/` line coverage from 63.8% to 90% or more, by making the legs testable rather than by counting lines | Materialization's share of the unit suite no larger than today's (`plan/`, `run/`, `serve/`: 90 files) |
 | Component | R4 as the served-equals-live oracle, one matrix per feature rather than one file per adversarial case; the conformance fixture as is | 85 s or less |
 | Integration | Real server and REST: run, commit, bind, query, path report, access record; Postgres and DuckLake builds | as today |
-| End to end (hammer) | Critical user paths only; the 145 materialization scenarios trimmed to the ones no component spec covers, run nightly | nightly, not per pull request |
+| End to end (hammer) | Critical user paths only; the 145 materialization scenarios trimmed to the ones no component spec covers, run nightly in CI (decided 2026-11-13) | nightly, not per pull request |
 
 **Add.**
 
@@ -766,20 +766,20 @@ Measured over the 98 files in scope: 16,981 comment lines of 62,943 (27%).
 - A release carrying malloydata/malloy#3208 (row 25) deletes the `COUNT_SEMANTICS` declines for counts.
 - Route claiming and declared grain keys (Ownership) delete the near-miss scan for owned routes and the parent-only skip.
 
-**Open questions for review.**
+**Decided 2026-11-13** (the questions this design raised):
 
-1. Simplification before the consistency build? B1 is not built, and 6g deletes the paths C1 would otherwise have to pin twice. The phase table lists consistency first.
-2. "One commit per pass": step 2 is too large for one reviewable pull request. May it ship as 2a to 2h, one commit each?
-3. `isNameViewComment` and `isServedCopyAlias` are used only by tests. Does Credible's orphan sweeper rely on the `name=` view comment mark having a Publisher-side recognizer, or can they go?
-4. Do Credible dashboards or alerts read `publisher_query_variant_routing_total`, `publisher_storage_serve_routing_total`, `manifest_bind_total` or `colocated_bind_dropped_total`? Step 4 renames or folds them.
-5. The local Credible checkout predates v2, so external callers of server internals cannot be checked here. Is `malloy-code-server`, which vendored `query_text.ts`, gone on Credible's default branch, so `query_text.ts` may share the lexer core?
-6. C2: option B (pin through the entry, definition-only address) over the requirement's "fingerprint includes the upstream build id"?
-7. C3: is a `build_window` fallback acceptable as the guarantee on Postgres, MySQL, SQL Server and DuckDB? Should as-of reads default on per dialect, or opt in?
-8. C1c: a time-based grace for superseded tables, rather than a cross-worker reference count, until a miss is measured?
-9. After 6g, remove `PUBLISHER_MATERIALIZE` (v2 planning on by default)? That is a contract change for deployments that set it.
-10. Step 2e moves a security guard. Does it need the same review as question 14, or is behavior-identical characterization enough?
-11. Should the hammer suite run nightly in CI after it is trimmed, and are scenario numbers referenced anywhere outside the repo before the duplicates are renumbered?
-12. Should metrics carry a `package` label at all on a shared worker, or only on single-tenant deployments behind a setting?
+1. Simplify first: steps 2 to 5 run after 6g and before the consistency build, which waits for B1 anyway; C1b (snapshot pinning) rides with step 2g.
+2. Step 2 ships as 2a to 2h, one commit each.
+3. `isNameViewComment` and `isServedCopyAlias` are deleted. Credible's current main references neither, nor any Publisher table mark (the `malloy-publisher:` comments, `_o<id>`, `__p` hashes).
+4. The routing and bind metrics may be renamed or folded freely: Credible's monitoring reads only `controlplane_materialization_*` and other control-plane metrics.
+5. `malloy-code-server` is gone, so `query_text.ts` shares the lexer core (step 2d).
+6. C2 pins the upstream through the manifest entry (`upstream_entry_ids`); addresses stay definition-only.
+7. C3's as-of reads are opt-in per deployment; `build_window` is the recorded guarantee where a warehouse has no time travel.
+8. C1c keeps superseded tables for a time-based grace; a cross-worker reference count waits for a measured miss.
+9. `PUBLISHER_MATERIALIZE` is removed one release after its default turns on.
+10. Step 2e needs behavior-identical characterization tests plus a short security review note in its pull request, not question 14's review.
+11. The trimmed hammer suite runs nightly in CI, and the duplicated scenario numbers (70, 76, 77, 119) are renumbered.
+12. No `package` label on any metric.
 
 ## Telemetry and cost estimation
 
