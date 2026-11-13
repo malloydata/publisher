@@ -532,3 +532,184 @@ source: s is base -> { select: * } extend {
       });
    }
 });
+
+/** 2^127, one past HUGEINT's largest value. */
+const PAST_HUGEINT = 2n ** 127n;
+/** A BIGINT whose sum over two rows is past 2^63 (BIGINT's range). */
+const HALF_PAST_INT64 = 6000000000000000001n;
+
+/**
+ * A colocated column wider than any type Malloy names for a `bigint` number
+ * (review of #1714): read through a cast to exactly the type its build
+ * captured from the warehouse's catalog, or, with no such cast, answered
+ * live. Never narrowed: a served read that fails where live answers is a
+ * wrong answer too.
+ *
+ * - DuckDB: a UHUGEINT past 2^127 - 1 is read as UHUGEINT, not HUGEINT.
+ * - Postgres: a sum of BIGINTs is stored as `numeric`, which Malloy reads as
+ *   a float. Casting it back to BIGINT failed with "bigint out of range" past
+ *   2^63; it is now left out, so a query reading it answers live (equal to
+ *   live, with live's own representation), and every other query still reads
+ *   the table.
+ */
+const narrowingTiers: {
+   label: string;
+   scenario: () => Promise<R4Scenario & { cleanup?: () => Promise<void> }>;
+   cases: (Case & { expectLive?: true })[];
+}[] = [
+   {
+      label: "DuckDB, a UHUGEINT past 2^127 - 1",
+      scenario: async () => ({
+         files: {
+            "m.malloy": `#(materialize) name="r4_bigu"
+source: s is duckdb.table('wide') extend {
+  measure: u_max is u.max()
+}
+`,
+         },
+         seedSql: [
+            `CREATE TABLE wide AS SELECT * FROM (VALUES
+               (CAST('${PAST_HUGEINT}' AS UHUGEINT), 'a'),
+               (CAST('${2n ** 128n - 1n}' AS UHUGEINT), 'a'),
+               (CAST('1' AS UHUGEINT), 'b')
+             ) AS t(u, g)`,
+         ],
+         materialize: true,
+      }),
+      cases: [
+         {
+            name: "selects it, exact",
+            malloy: "run: s -> { select: u, g; order_by: u }",
+            expect: {
+               column: "u",
+               values: ["1", `${PAST_HUGEINT}`, `${2n ** 128n - 1n}`],
+            },
+         },
+         {
+            name: "groups and filters by it",
+            malloy: `run: s -> { where: u >= ${PAST_HUGEINT}; group_by: u; order_by: u }`,
+            expect: {
+               column: "u",
+               values: [`${PAST_HUGEINT}`, `${2n ** 128n - 1n}`],
+            },
+         },
+         {
+            name: "a max over it",
+            malloy: "run: s -> { group_by: g; aggregate: u_max; order_by: g }",
+            expect: { column: "u_max", values: [`${2n ** 128n - 1n}`, "1"] },
+         },
+      ],
+   },
+   ...(POSTGRES_URL
+      ? [
+           {
+              label: "Postgres, a sum of BIGINTs past 2^63 stored as numeric",
+              scenario: async () => {
+                 const schema = "r4_big_sum";
+                 const pg = new PostgresConnection({
+                    name: "pg",
+                    connectionString: POSTGRES_URL,
+                 });
+                 await pg.runSQL(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+                 await pg.runSQL(`CREATE SCHEMA ${schema}`);
+                 return {
+                    files: {
+                       "m.malloy": `#(materialize) name="r4_bigsum"
+source: s is pg.table('${schema}.v') -> {
+  group_by: g
+  aggregate: tot is v.sum(), n is count()
+}
+`,
+                    },
+                    seedSql: [
+                       `CREATE TABLE ${schema}.v AS SELECT * FROM (VALUES
+                          (CAST('${HALF_PAST_INT64}' AS BIGINT), 'a'),
+                          (CAST('${HALF_PAST_INT64}' AS BIGINT), 'a'),
+                          (CAST('5' AS BIGINT), 'b')
+                        ) AS t(v, g)`,
+                    ],
+                    materialize: true,
+                    warehouse: { name: "pg", connection: pg, schema },
+                    cleanup: async () => {
+                       await pg.runSQL(
+                          `DROP SCHEMA IF EXISTS ${schema} CASCADE`,
+                       );
+                       await pg.close();
+                    },
+                 };
+              },
+              cases: [
+                 {
+                    name: "a query reading the sum answers live, equal to live",
+                    malloy: "run: s -> { select: g, tot; order_by: g }",
+                    expect: {
+                       column: "tot",
+                       values: [`${2n * HALF_PAST_INT64}`, "5"].map((v) =>
+                          BigInt(Number(BigInt(v))).toString(),
+                       ),
+                    },
+                    expectLive: true as const,
+                 },
+                 {
+                    name: "a query not reading it still reads the table",
+                    malloy:
+                       "run: s -> { group_by: g; aggregate: c is n.sum(); order_by: g }",
+                 },
+              ],
+           },
+        ]
+      : []),
+];
+
+for (const tier of narrowingTiers) {
+   describe(`R4: a colocated big integer wider than Malloy's bigint type is never narrowed (${tier.label})`, () => {
+      let restore: () => void;
+      let fixture: R4Fixture;
+      let cleanup: (() => Promise<void>) | undefined;
+      beforeAll(async () => {
+         restore = installSettings({
+            env: { PERSIST_STORAGE_MODE: "off", PUBLISHER_MATERIALIZE: "true" },
+         }).restore;
+         const scenario = await tier.scenario();
+         cleanup = scenario.cleanup;
+         fixture = await buildScenario(scenario);
+      });
+      afterAll(async () => {
+         restore();
+         await disposeScenarios();
+         await cleanup?.();
+      });
+
+      for (const c of tier.cases) {
+         it(c.name, async () => {
+            const run = await fixture.run({
+               name: c.name,
+               malloy: c.malloy,
+               ...(c.expectLive ? { expectLive: true } : {}),
+            });
+            expect(rowDifference(run.live, run.served)).toBeUndefined();
+            if (c.expect) {
+               expect(exact(run.live, c.expect.column)).toEqual(
+                  c.expect.values,
+               );
+               expect(exact(run.served, c.expect.column)).toEqual(
+                  c.expect.values,
+               );
+            }
+            // The same representation as live: a bigint stays a bigint.
+            const kinds = (rows: Row[]) =>
+               rows.map((r) =>
+                  Object.fromEntries(
+                     Object.entries(r).map(([k, v]) => [k, typeof v]),
+                  ),
+               );
+            expect(kinds(run.served)).toEqual(kinds(run.live));
+            if (c.expectLive) {
+               expect(run.servedVia).toBeUndefined();
+            } else {
+               expect(run.servedVia).toBe("served_copy");
+            }
+         });
+      }
+   });
+}

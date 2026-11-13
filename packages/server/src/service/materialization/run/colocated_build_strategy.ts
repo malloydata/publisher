@@ -8,6 +8,7 @@ import { errorCodeOf } from "./error_code";
 import { errMessage } from "../../../utils";
 import { quoteRenameTarget, quoteTablePath } from "../../quoting";
 import { storedColumnsOfOutput } from "../stored_column_types";
+import { capturedNativeSchema } from "./colocated_native_types";
 import { ManifestEntry } from "../types";
 import type { BuildStrategy, ColocatedBuildRequest } from "./build_strategy";
 import {
@@ -129,6 +130,18 @@ export class ColocatedCtasStrategy
                  sourceName: persistSource.name,
               });
 
+      // Each column's type as the warehouse names it, so the served copy
+      // reads a big-integer column through a cast to exactly that type and
+      // never narrows one (known limitation 12). Captured on every build: a
+      // `#(materialize)` table records no other schema.
+      const nativeSchema = await capturedNativeSchema({
+         run: (sql, options) =>
+            connection.runSQL(sql, { ...runOptions, ...options }),
+         physicalTableName,
+         dialect,
+         sourceName: persistSource.name,
+      });
+
       // The table now holds a full snapshot; its boundary turns the NEXT
       // refresh into a delta.
       const seededThrough = incrementalRefresh
@@ -157,6 +170,7 @@ export class ColocatedCtasStrategy
          // The recurring warehouse cost of keeping this source materialized.
          queryCostBytes: buildCostBytes ?? null,
          ...(schema?.length ? { schema } : {}),
+         ...(nativeSchema?.length ? { nativeSchema } : {}),
          ...request.upstreamReuse,
       };
    }

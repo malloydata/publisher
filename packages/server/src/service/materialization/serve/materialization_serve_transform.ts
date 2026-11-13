@@ -177,6 +177,13 @@ export interface ServeBinding {
    /** Authoritative DuckDB columns captured post-build (raw DuckDB types). */
    schema: { name: string; type: string }[];
    /**
+    * A colocated table's columns with their warehouse types as its build
+    * captured them (`ManifestEntry.nativeSchema`): a big-integer column is
+    * cast to exactly its type, and one with none is answered live (known
+    * limitation 12). Absent for a `storage=` table, whose `schema` is native.
+    */
+   nativeSchema?: { name: string; type: string }[];
+   /**
     * Columns read through a cast to their declared type, set by the serve
     * shape for a table an older build typed (ms2data/service#6642). The shape
     * then declares the stored table as `<name>__stored` and the source as a

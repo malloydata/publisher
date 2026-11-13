@@ -297,7 +297,11 @@ export function deltaSelect(params: {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** How a probe or DML statement reaches the warehouse. */
-export type SqlRunner = (sql: string) => Promise<{ rows: unknown[] }>;
+export type SqlRunner = (
+   sql: string,
+   /** A row limit past the connection's default (as few as ten rows). */
+   options?: { rowLimit?: number },
+) => Promise<{ rows: unknown[] }>;
 
 /**
  * Per-dialect table-path decoding. The physical name arrives as SQL (bare or
