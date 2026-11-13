@@ -35,7 +35,7 @@ reads it.
 | Joins (relationship, target, added or inherited, cross-connection mark) | PR 3 (rewriter) and PR 4 (joins) |
 | Annotations per segment, origin connection | PR 2 (generator) |
 | Links to stored tables by `(sourceEntityId, destination)`, and a package-wide union by `sourceID` | PR 3, with the router's catalog |
-| Hop readers moved into `governance/ir/source_graph.ts` | Not yet: the rename and pipeline readers live in `source_map.ts` until governance needs them. The map still walks the IR itself (`baseEdgeOf`, `pipelineReferences`, `reachableSourceIDs`) and holds no text ranges; moving those walks into `source_graph.ts`, and one reader of author text, are phase 5's simplification pass (decided 2026-11-12) |
+| Hop readers moved into `governance/ir/source_graph.ts` | The base edge (`sourceBaseEdge`, `nextSourceInChain`, with the inferred edge of a table-backed extension) moved with extension tables; the pipeline reader lives in `source_map.ts` until governance needs it. The map still walks pipelines itself (`pipelineReferences`, `reachableSourceIDs`) and holds no text ranges; moving those walks into `source_graph.ts`, and one reader of author text, are phase 5's simplification pass (decided 2026-11-12) |
 
 ## The keying rule
 
@@ -71,9 +71,17 @@ One node per declaration, keyed by `sourceID`:
   composite (`compose(a, b)`, with its members in order; a composite has no
   single base).
 - **Base edge:** the one source it is built from, with the hop that reaches
-  it: `extends` (an `extend`), `referenceID` (a rename), or `query.structRef`
-  (a query-shaped segment, including a query over a composite, whose base is
-  the composite). A table, SQL source or composite has none; the member Malloy
+  it: `referenceID` (a rename, read first: Malloy copies the referent's own
+  `extends` onto a rename, so a rename's `extends` names the grandparent),
+  `extends` (an `extend`), or `query.structRef` (a query-shaped segment,
+  including a query over a composite, whose base is the composite). Malloy
+  records `extends` only on an extension of a query or SQL source; for an
+  extension of a table-backed source the base is read from the compiled
+  structure, never from text: the annotations object it shares with its base
+  (or its own object's `inherits`), the same table, its base's fields copied
+  unchanged or renamed, its base's filters opening its own, and a declaration
+  order the model shows. Two candidates neither of which holds the other, or
+  one of unknown order, give no edge. A table, SQL source or composite has none; the member Malloy
   resolves for a query over a composite (`query.compositeResolvedSourceDef`)
   is read by reachability, not recorded as a base. When a hop does not
   resolve in the model, the chain falls through to the next hop, as the walks

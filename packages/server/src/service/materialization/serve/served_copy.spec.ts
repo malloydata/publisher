@@ -4,11 +4,12 @@
 import { describe, expect, it } from "bun:test";
 import {
    buildServedCopy,
+   hiddenInclude,
+   SERVED_COPY_ACCESS_FLAG,
    declarationSpans,
    declaredBaseName,
    dropDimensions,
    dropJoinDefinition,
-   dropRenames,
    rerootDeclaration,
    rewriteDimensions,
    SERVED_COPY_FLAG,
@@ -18,6 +19,7 @@ import {
    type Reroot,
    replacePairJoin,
 } from "./served_copy";
+import { inverseRenameBlocks } from "../declaration_text";
 
 /** The zero-based range of `needle`'s declaration (after `source: `) in `text`. */
 function rangeOf(text: string, name: string): Reroot["range"] {
@@ -56,6 +58,63 @@ function reroot(
 }
 
 describe("rerootDeclaration", () => {
+   it("keeps an extension table's ancestors' blocks ahead of its own, less the dimensions it stores (P10)", () => {
+      const out = rerootDeclaration(
+         "east is stored extend {\n  where: region = 'east'\n  dimension: twice is amt * 2\n}",
+         {
+            sourceName: "east",
+            connectionAlias: "x",
+            virtualHandle: "h",
+            typeName: "east__served",
+            storedDimensions: ["twice", "m"],
+            columns: [
+               { name: "region", type: "VARCHAR" },
+               { name: "amt", type: "DOUBLE" },
+               { name: "twice", type: "DOUBLE" },
+               { name: "m", type: "DATE" },
+            ],
+            keptBlocks:
+               "extend {\n  dimension: m is d.month\n  measure: total is amt.sum()\n}",
+         },
+      );
+      expect(out).toBe(
+         "east is x.virtual('h')::east__served extend {\n  measure: total is amt.sum()\n} extend {\n  where: region = 'east'\n}",
+      );
+   });
+
+   it("gives a stored renamed column back the name its kept blocks rename it from", () => {
+      const out = rerootDeclaration(
+         "renamed is stored extend {\n  rename: order_id is id\n  measure: s is order_id.sum()\n}",
+         {
+            sourceName: "renamed",
+            connectionAlias: "x",
+            virtualHandle: "h",
+            typeName: "renamed__served",
+            storedDimensions: [],
+            columns: [
+               { name: "order_id", type: "INTEGER" },
+               { name: "amt", type: "DOUBLE" },
+            ],
+            keptBlocks: "extend { measure: n is count() }",
+         },
+      );
+      expect(out).toBe(
+         "renamed is x.virtual('h')::renamed__served extend { rename: id is order_id } extend { measure: n is count() } extend {\n  rename: order_id is id\n  measure: s is order_id.sum()\n}",
+      );
+   });
+
+   it("refuses a rename it cannot read, rather than re-root around it", () => {
+      expect(
+         rerootDeclaration("r is s extend {\n  internal rename: a is b\n}", {
+            sourceName: "r",
+            connectionAlias: "x",
+            virtualHandle: "h",
+            typeName: "r__served",
+            columns: [{ name: "a", type: "INTEGER" }],
+         }),
+      ).toBeUndefined();
+   });
+
    it("re-applies a rolling window on the stored table, before the author's blocks", () => {
       const out = rerootDeclaration(
          "recent is last30 extend {\n  measure: n is count()\n}",
@@ -471,7 +530,7 @@ source: east is orders extend {
       );
    });
 
-   it("drops a rename whose new name the table stores, since the table holds the field under it", () => {
+   it("undoes a rename whose new name the table stores, since the table holds the field under it", () => {
       expect(
          rerootDeclaration(
             "daily_r is orders -> {\n  group_by: area is region, order_date\n} extend {\n  rename: order_day is order_date\n  measure: grand is total.sum()\n}",
@@ -485,16 +544,16 @@ source: east is orders extend {
             },
          ),
       ).toBe(
-         "daily_r is x.virtual('h')::east__served extend {\n  measure: grand is total.sum()\n}",
+         "daily_r is x.virtual('h')::east__served extend { rename: order_date is order_day } extend {\n  rename: order_day is order_date\n  measure: grand is total.sum()\n}",
       );
-      // Only the renames to a stored name go; a #@ persist re-root keeps all.
-      const out = dropRenames(
-         "extend {\n  rename: a is x, b is y\n  dimension: c is 1\n}",
-         new Set(["a"]),
-      );
-      expect(out?.text).toBe(
-         "extend {\n  rename: b is y\n  dimension: c is 1\n}",
-      );
+      // Only the renames to a stored name are undone; a #@ persist re-root,
+      // whose table holds its query's output under the old name, keeps all.
+      expect(
+         inverseRenameBlocks(
+            "extend {\n  rename: a is x, b is y\n  dimension: c is 1\n}",
+            new Set(["a"]),
+         ),
+      ).toBe(" extend { rename: x is a }");
       expect(
          rerootDeclaration(
             "d is q -> { group_by: x } extend {\n  rename: y is x\n}",
@@ -646,6 +705,63 @@ describe("a stored timeframe truncation (decision 3)", () => {
       expect(out?.text).toBe("extend { dimension: m is m__stored.month }");
       expect([...(out?.rewritten ?? [])]).toEqual(["m"]);
       expect([...(out?.dropped ?? [])].sort()).toEqual(["a", "b"]);
+   });
+});
+
+describe("hidden stored columns (P3)", () => {
+   const text = `source: orders is base include { private: org_id; public: * } extend {
+  private dimension: secret is amount * 2
+  measure: total is secret.sum()
+}
+`;
+   const columns: Reroot["columns"] = [
+      { name: "amount", type: "DOUBLE" },
+      { name: "org_id", type: "VARCHAR", access: "private" },
+      { name: "region_code", type: "VARCHAR", access: "internal" },
+      { name: "secret", type: "DOUBLE", access: "private" },
+   ];
+
+   it("writes the author's modifiers again on the stored table, before the author's extend", () => {
+      const copy = buildServedCopy(
+         [
+            reroot(text, "orders", {
+               columns,
+               storedDimensions: ["region_code", "secret"],
+            }),
+         ],
+         () => text,
+      );
+      const out = copy.files.get("file:///m.malloy") as string;
+      expect(out.startsWith(SERVED_COPY_ACCESS_FLAG)).toBe(true);
+      expect(out).toContain(
+         "orders is __publisher_storage_t_0.virtual('h1')::orders__served include { public: *; private: org_id; internal: region_code } extend {",
+      );
+      // `secret` is defined in the source's own extend: that definition is
+      // kept as written, modifier and all, and its column left out of the
+      // type, so the stored column never stands in for it publicly.
+      expect(out).toContain("  private dimension: secret is amount * 2");
+      expect(out).not.toMatch(/secret::/);
+      expect(out).toContain("org_id::string");
+      expect(out).toContain("region_code::string");
+   });
+
+   it("writes nothing, and the plain flag, when no stored column is hidden", () => {
+      expect(hiddenInclude([{ name: "a", type: "DOUBLE" }])).toBe("");
+      const copy = buildServedCopy(
+         [reroot(text, "orders", { storedDimensions: [] })],
+         () => text,
+      );
+      const out = copy.files.get("file:///m.malloy") as string;
+      expect(out.startsWith(SERVED_COPY_FLAG)).toBe(true);
+      expect(out).not.toContain("include { public: *");
+   });
+
+   it("quotes a hidden name that needs it", () => {
+      expect(
+         hiddenInclude([
+            { name: "source", type: "VARCHAR", access: "internal" },
+         ]),
+      ).toBe(" include { public: *; internal: `source` }");
    });
 });
 
@@ -862,5 +978,59 @@ describe("rerootDeclaration (pair tables, P5)", () => {
     #(doc) "Flights"
     flight_count is flight_count__pair { where: __parent_row__pair }
 }`);
+   });
+});
+
+describe("a statement's access label stays on its own statement (P3 with P10)", () => {
+   it("drops a labelled dimension statement whole, label included", () => {
+      expect(
+         dropDimensions(
+            "extend {\n  internal dimension: big is amt > 10\n  private dimension: secret is amt * 2\n  measure: total is amt.sum()\n}",
+            new Set(["big", "secret"]),
+         )?.text,
+      ).toBe("extend {\n  measure: total is amt.sum()\n}");
+   });
+
+   it("never takes the next statement's label with a dropped one", () => {
+      const out = dropDimensions(
+         "extend {\n  dimension: big is amt > 10\n  internal dimension: secret is amt * 2\n}",
+         new Set(["big"]),
+      );
+      expect(out?.text).toBe(
+         "extend {\n  internal dimension: secret is amt * 2\n}",
+      );
+   });
+
+   it("reads a rename followed by a labelled statement, and undoes it", () => {
+      expect(
+         inverseRenameBlocks(
+            "extend {\n  rename: amount is amt\n  private dimension: secret is amount * 2\n}",
+            new Set(["amount"]),
+         ),
+      ).toBe(" extend { rename: amt is amount }");
+   });
+
+   it("still refuses an access-labelled rename (it would rename a hidden column)", () => {
+      expect(
+         inverseRenameBlocks(
+            "extend {\n  internal rename: amount is amt\n}",
+            new Set(["amount"]),
+         ),
+      ).toBeUndefined();
+   });
+
+   it("refuses dropping any definition of an access-labelled join_one statement", () => {
+      expect(
+         dropJoinDefinition(
+            "extend {\n  internal join_one: a with x, b with y\n  measure: n is count()\n}",
+            "a",
+         ),
+      ).toBeUndefined();
+      expect(
+         dropJoinDefinition(
+            "extend {\n  internal join_one: a with x, b with y\n  measure: n is count()\n}",
+            "b",
+         ),
+      ).toBeUndefined();
    });
 });

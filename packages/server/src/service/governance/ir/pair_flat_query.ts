@@ -40,11 +40,6 @@ export interface FlatPair {
    join: string;
    /** The parent-row flag's (internal) field on the served source. */
    parentRowField: string;
-   /**
-    * The joined source's fields that carry annotations, which the record
-    * cannot: a query that outputs one is answered live, with them.
-    */
-   annotatedChildFields: ReadonlySet<string>;
 }
 
 /** Where an aggregate (or a value it reads) lives. */
@@ -456,11 +451,6 @@ function checkSegment(
          const p = pathOf(qf as Node);
          if (!p) throw new Refusal("a field reference that cannot be read");
          if (p[0] === pair.join) {
-            if (p.length === 2 && pair.annotatedChildFields.has(p[1])) {
-               throw new Refusal(
-                  `the query outputs \`${p.join(".")}\`, whose annotations its pair table's record cannot carry`,
-               );
-            }
             childGrouped = true;
             continue;
          }
