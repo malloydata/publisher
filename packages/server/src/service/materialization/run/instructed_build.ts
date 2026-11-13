@@ -10,7 +10,7 @@ import {
    type StoredJoin,
    type UniquenessLedger,
 } from "./inline_uniqueness";
-import type { RollupKeyCheck } from "../plan/rollup_plan";
+import type { ParentKeyCheck, RollupKeyCheck } from "../plan/rollup_plan";
 import type { InlineUniquenessCheck } from "../plan/build_file_generator";
 import { buildSQLOf } from "../plan/addressing";
 import type {
@@ -852,6 +852,17 @@ export class InstructedBuild {
             sourceEntityId,
             writtenTableIdentity(instruction, graphConnectionName),
          );
+         // The query sources that read it through a join_many keyed on
+         // their primary key: that key unique and never NULL.
+         await checkParentKeys(
+            run.uniqueness,
+            rollupParentKeyChecksOf(run.compiled, persistSource.sourceID),
+            connection,
+            graphConnectionName,
+            persistSource.name,
+            sourceEntityId,
+            writtenTableIdentity(instruction, graphConnectionName),
+         );
       }
       run.writtenTargets.set(target, {
          sourceEntityId,
@@ -1338,6 +1349,59 @@ function rollupKeyCheckOf(
    )?.keyCheck;
 }
 
+/** The query source key checks a run builds for the rollup `sourceID`. */
+function rollupParentKeyChecksOf(
+   compiled: CompiledBuildPlan,
+   sourceID: string,
+): ParentKeyCheck[] {
+   return (
+      (
+         compiled.preaggregatePlans?.[sourceID] as
+            | { parentKeyChecks?: ParentKeyCheck[] }
+            | undefined
+      )?.parentKeyChecks ?? []
+   );
+}
+
+/**
+ * Run each query source's primary key check of a built rollup, on the
+ * rollup's connection, and record what it found beside the rollup. A check
+ * on another connection, or one that does not run, records nothing: the
+ * join-to-rollup leg then reads that source's key as unknown and declines.
+ */
+async function checkParentKeys(
+   ledger: UniquenessLedger,
+   checks: readonly ParentKeyCheck[],
+   connection: MalloyConnection,
+   connectionName: string,
+   rollupName: string,
+   address: string,
+   table: string,
+): Promise<void> {
+   for (const check of checks) {
+      if (check.connectionName !== connectionName) continue;
+      const record = await runRollupKeyCheck(check, connection, table);
+      if (!record) {
+         logger.warn(
+            "A query source's primary key check did not run; its queries through a #(preaggregate) rollup read as a join_many are answered live",
+            { rollup: rollupName, source: check.sourceID },
+         );
+         continue;
+      }
+      if (!record.unique) {
+         logger.warn(
+            "A query source holds its primary key more than once or NULL; its queries through a #(preaggregate) rollup read as a join_many are answered live",
+            {
+               rollup: rollupName,
+               source: check.sourceID,
+               keyColumn: check.keyColumn,
+            },
+         );
+      }
+      ledger.recordRollupKey(address, { ...record, sourceID: check.sourceID });
+   }
+}
+
 /**
  * Run a built rollup's key check and record what it found. A check that does
  * not run records nothing, so the rollup's join_one stays unknown.
@@ -1377,8 +1441,9 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
    const { compiled } = run;
    for (const sourceID of Object.keys(compiled.preaggregatePlans ?? {})) {
       const check = rollupKeyCheckOf(compiled, sourceID);
+      const parentChecks = rollupParentKeyChecksOf(compiled, sourceID);
       const source = compiled.sources[sourceID];
-      if (!check || !source) continue;
+      if ((!check && parentChecks.length === 0) || !source) continue;
       const address = computeSourceEntityId(
          source,
          compiled.connectionDigests,
@@ -1397,6 +1462,16 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
          source.connectionName,
          entry.physicalTableName,
       );
-      ledger.carryRollupKey(address, table, checkDigest(table, check.sql));
+      if (check) {
+         ledger.carryRollupKey(address, table, checkDigest(table, check.sql));
+      }
+      for (const parent of parentChecks) {
+         ledger.carryRollupKey(
+            address,
+            table,
+            checkDigest(table, parent.sql),
+            parent.sourceID,
+         );
+      }
    }
 }

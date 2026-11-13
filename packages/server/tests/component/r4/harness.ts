@@ -20,10 +20,14 @@
 import { loadLeavingOutCrossConnectionJoins } from "../../../src/service/materialization/plan/cross_connection_joins";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
 import { assertInlinedJoinsUnique } from "../../../src/service/materialization/run/inline_uniqueness";
-import { tryCompileRollupCompanion } from "../../../src/service/materialization/plan/rollup_compile";
+import {
+   compileParentKeyChecks,
+   tryCompileRollupCompanion,
+} from "../../../src/service/materialization/plan/rollup_compile";
 import {
    joinOneKey,
    joinOneKeysOf,
+   parentKeyNeedsOf,
 } from "../../../src/service/materialization/plan/rollup_plan";
 import { SourceMap } from "../../../src/service/materialization/plan/source_map";
 import { runRollupKeyCheck } from "../../../src/service/materialization/run/inline_uniqueness";
@@ -564,6 +568,17 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    > = {};
    // The join_ones a package's build reads the rollups' key checks for.
    const joinOneKeys = joinOneKeysOf(SourceMap.of(authorDef));
+   // The query sources' primary key checks, compiled as a package's build
+   // plan compiles them: against the author's model.
+   if (rollups?.generated) {
+      await compileParentKeyChecks(
+         rollups.generated.plans,
+         parentKeyNeedsOf(SourceMap.of(authorDef)).map((need) => ({
+            need,
+            compile: (text: string) => materializer.loadQuery(text).getSQL(),
+         })),
+      );
+   }
    const rollupPlanned: [
       string,
       {
@@ -600,6 +615,20 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                   unique: record.unique,
                };
             }
+         }
+         if (checks !== false && (plan.parentKeyChecks ?? []).length > 0) {
+            const parentKeys: Record<string, boolean> = {};
+            for (const parent of plan.parentKeyChecks ?? []) {
+               const record =
+                  checks === "unique"
+                     ? { unique: true }
+                     : await runRollupKeyCheck(parent, duckdb, table);
+               if (record) parentKeys[parent.sourceID] = record.unique;
+            }
+            colocatedEntries[target.buildId].keyUniqueness = {
+               ...colocatedEntries[target.buildId].keyUniqueness,
+               parentKeys,
+            };
          }
          rollupPlanned.push([
             source.sourceID,

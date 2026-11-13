@@ -11,6 +11,8 @@ import {
    joinRollupLegs,
    malloyCountsChildlessParentsAsZero,
    MALLOY_SKIPS_UNMATCHED_JOIN_ROWS_SINCE,
+   parentKeyProblem,
+   relationshipChangeProblem,
    unmatchedRowProblem,
    versionAtLeast,
 } from "./join_rollup";
@@ -223,6 +225,93 @@ describe("joinRollupLegs", () => {
          "id",
       );
       expect(legs[0]?.refusal?.code).toBe("rollup_count_semantics");
+   });
+});
+
+describe("parentKeyProblem", () => {
+   const legOf = (relationship: "one" | "many", declared: "one" | "many") => ({
+      join: join({ relationship: declared }) as never,
+      plan: plan(),
+      relationship,
+   });
+
+   it("serves a join read as a join_many only over a key known unique and never NULL", () => {
+      for (const leg of [
+         legOf("one", "many"),
+         legOf("many", "many"),
+         legOf("many", "one"),
+      ]) {
+         expect(parentKeyProblem(leg, true)).toBeUndefined();
+         expect(parentKeyProblem(leg, false)).toContain("more than once or NULL");
+         expect(parentKeyProblem(leg, undefined)).toContain("was not checked");
+      }
+   });
+
+   it("asks nothing of a join_one read at its key", () => {
+      expect(parentKeyProblem(legOf("one", "one"), undefined)).toBeUndefined();
+   });
+});
+
+describe("relationshipChangeProblem", () => {
+   const legOf = (relationship: "one" | "many", declared: "one" | "many") => ({
+      join: join({ relationship: declared }) as never,
+      plan: plan(),
+      relationship,
+   });
+   const fansOut = (path: readonly string[]) => path[0] !== "crew";
+
+   it("before malloydata/malloy#3208: a count, sum or average through another join_many beside a re-pointed join", () => {
+      for (const leg of [legOf("one", "many"), legOf("many", "one")]) {
+         expect(
+            relationshipChangeProblem(
+               leg,
+               [{ path: ["certs"], isCount: true }],
+               fansOut,
+               false,
+            ),
+         ).toContain("count through the join_many `certs`");
+         expect(
+            relationshipChangeProblem(
+               leg,
+               [{ path: ["certs"], isCount: false }],
+               fansOut,
+               false,
+            ),
+         ).toContain("sum or average");
+         expect(
+            relationshipChangeProblem(leg, undefined, fansOut, false),
+         ).toContain("could not be traced");
+      }
+   });
+
+   it("leaves the source's own grain, the leg's join, a join_one path and an unchanged relationship alone", () => {
+      const keyed = [
+         { path: [], isCount: true },
+         { path: ["segments"], isCount: false },
+         { path: ["crew"], isCount: true },
+      ];
+      expect(
+         relationshipChangeProblem(legOf("one", "many"), keyed, fansOut, false),
+      ).toBeUndefined();
+      expect(
+         relationshipChangeProblem(
+            legOf("many", "many"),
+            [{ path: ["certs"], isCount: true }],
+            fansOut,
+            false,
+         ),
+      ).toBeUndefined();
+   });
+
+   it("after malloydata/malloy#3208: nothing is declined", () => {
+      expect(
+         relationshipChangeProblem(
+            legOf("one", "many"),
+            [{ path: ["certs"], isCount: true }],
+            fansOut,
+            true,
+         ),
+      ).toBeUndefined();
    });
 });
 

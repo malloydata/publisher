@@ -177,6 +177,52 @@ export interface RollupVariantPlan extends RollupPlan {
     * {@link joinOneKeysOf}); the join-to-rollup leg (A7) reads its outcome.
     */
    keyCheck?: RollupKeyCheck;
+   /**
+    * The primary key checks of the query sources that read this rollup through
+    * a join read as a join_many (see {@link readsAsJoinMany}): set at plan time
+    * for each such source the package declares (see {@link parentKeyNeedsOf}),
+    * and run by the rollup's build. The join-to-rollup leg (A7) reads their
+    * outcome: a rollup row is met by every parent row that shares its key, so
+    * the leg answers as live does only when the query source's key is unique
+    * and never NULL.
+    */
+   parentKeyChecks?: ParentKeyCheck[];
+}
+
+/**
+ * A query source's primary key check: whether a source that reads a rollup
+ * through a join read as a join_many holds a value of its declared
+ * `primary_key` more than once, or a NULL. The SQL is compiled from the
+ * author's model, over the source's rows as a query reads them, and returns
+ * one row when the key repeats or is NULL.
+ */
+export interface ParentKeyCheck {
+   /** The query source whose key is checked. */
+   sourceID: string;
+   keyColumn: string;
+   /** The connection the query source reads; the check runs only on it. */
+   connectionName: string | undefined;
+   sql: string;
+}
+
+/**
+ * A source that may read a rollup through a join keyed on its declared
+ * primary key: what {@link readsAsJoinMany} matches against a rollup, and
+ * what its check is compiled from.
+ */
+export interface ParentKeyNeed {
+   /** The query source. */
+   sourceID: string;
+   /** Its name in the model it was found in. */
+   name: string;
+   /** Its declared primary key, which the join is keyed on. */
+   keyColumn: string;
+   connectionName: string | undefined;
+   /** The joined source's declaration. */
+   joinedSourceID: string;
+   /** The joined side's column the join is keyed on. */
+   joinKeyColumn: string;
+   relationship: "one" | "many";
 }
 
 /**
@@ -1130,6 +1176,80 @@ export function rollupKeyCheckQuery(
   group_by: ${k}
   aggregate: key_rows__check is count()
   having: key_rows__check > 1
+  limit: 1
+}`;
+}
+
+/**
+ * Every named source in `map` with a declared primary key and a join, keyed
+ * on that key, to a declared source: the query sources whose key the
+ * join-to-rollup leg may need checked. A join keyed on another field never
+ * takes the leg as a join_many (`keyRepeatRefusal`), so it needs no check.
+ */
+export function parentKeyNeedsOf(map: SourceMap): ParentKeyNeed[] {
+   const out: ParentKeyNeed[] = [];
+   for (const node of map.nodes()) {
+      const def = node.def as { primaryKey?: unknown; connection?: unknown };
+      const keyColumn =
+         typeof def.primaryKey === "string" ? def.primaryKey : undefined;
+      if (node.name === undefined || keyColumn === undefined) continue;
+      for (const join of map.joinsOf(node.sourceID)) {
+         if (
+            join.relationship === "cross" ||
+            join.sourceID === undefined ||
+            join.keyColumn === undefined ||
+            join.baseKey !== keyColumn
+         ) {
+            continue;
+         }
+         out.push({
+            sourceID: node.sourceID,
+            name: node.name,
+            keyColumn,
+            connectionName:
+               typeof def.connection === "string" ? def.connection : undefined,
+            joinedSourceID: join.sourceID,
+            joinKeyColumn: join.keyColumn,
+            relationship: join.relationship,
+         });
+      }
+   }
+   return out;
+}
+
+/**
+ * Whether the join-to-rollup leg reads rollup `plan` through `need`'s join as
+ * a join_many: the join is declared one, or the rollup's grain is finer than
+ * the join's key, so the leg re-points it as one (`joinRollupLegs`).
+ */
+export function readsAsJoinMany(
+   plan: RollupVariantPlan,
+   need: ParentKeyNeed,
+): boolean {
+   if (
+      plan.baseSourceID !== need.joinedSourceID ||
+      !plan.grainDimensions.includes(need.joinKeyColumn)
+   ) {
+      return false;
+   }
+   const keyGrain =
+      plan.grainDimensions.length === 1 &&
+      plan.grainDimensions[0] === need.joinKeyColumn;
+   return need.relationship === "many" || !keyGrain;
+}
+
+/**
+ * The Malloy text of a query source's primary key check, run against the
+ * author's model that names it `name`: one row when a value of `keyColumn`
+ * is held by more than one row, or is NULL.
+ */
+export function parentKeyCheckQuery(name: string, keyColumn: string): string {
+   return `run: ${identifier(name)} -> {
+  group_by: key__check is ${identifier(keyColumn)}
+  aggregate: key_rows__check is count()
+} -> {
+  where: key_rows__check > 1 or key__check = null
+  select: key__check
   limit: 1
 }`;
 }

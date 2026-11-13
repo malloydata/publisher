@@ -33,7 +33,11 @@ import {
    generateRollupBuildFile,
    planModelRollups,
    ROLLUP_COMPANION_SUFFIX,
+   parentKeyCheckQuery,
+   readsAsJoinMany,
    rollupKeyCheckQuery,
+   type ParentKeyCheck,
+   type ParentKeyNeed,
    type RollupRefusal,
    type RollupVariantPlan,
 } from "./rollup_plan";
@@ -177,6 +181,60 @@ export async function tryCompileRollupCompanion(args: {
          },
       );
       return { refused };
+   }
+}
+
+/**
+ * Attach to each colocated rollup in `plans` the primary key checks of the
+ * query sources that read it through a join read as a join_many
+ * (`readsAsJoinMany`), each compiled once by its `compile` (the author's
+ * model that names the source). A check that does not compile is left off,
+ * logged: the leg then reads that source's key as unknown and declines.
+ */
+export async function compileParentKeyChecks(
+   plans: Iterable<RollupVariantPlan>,
+   needs: readonly {
+      need: ParentKeyNeed;
+      compile: (text: string) => Promise<string>;
+   }[],
+): Promise<void> {
+   const compiled = new Map<string, Promise<string | undefined>>();
+   for (const plan of plans) {
+      // A `#@ preaggregate` (v1) plan is never read through a join.
+      if (plan.variant !== true || plan.storage !== undefined) continue;
+      const checks: ParentKeyCheck[] = [];
+      const seen = new Set<string>();
+      for (const { need, compile } of needs) {
+         if (seen.has(need.sourceID) || !readsAsJoinMany(plan, need)) continue;
+         seen.add(need.sourceID);
+         let sql = compiled.get(need.sourceID);
+         if (sql === undefined) {
+            sql = compile(parentKeyCheckQuery(need.name, need.keyColumn)).catch(
+               (error) => {
+                  logger.warn(
+                     "A query source's primary key check did not compile; queries it answers through a #(preaggregate) rollup read as a join_many are answered live",
+                     {
+                        source: need.name,
+                        keyColumn: need.keyColumn,
+                        error: error instanceof Error ? error.message : String(error),
+                     },
+                  );
+                  return undefined;
+               },
+            );
+            compiled.set(need.sourceID, sql);
+         }
+         const text = await sql;
+         if (text === undefined) continue;
+         checks.push({
+            sourceID: need.sourceID,
+            keyColumn: need.keyColumn,
+            connectionName: need.connectionName,
+            sql: text,
+         });
+      }
+      if (checks.length > 0) plan.parentKeyChecks = checks;
+      else delete plan.parentKeyChecks;
    }
 }
 

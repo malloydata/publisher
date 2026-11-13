@@ -302,6 +302,63 @@ export function unmatchedRowProblem(
 }
 
 /**
+ * Why the leg cannot read a join read as a join_many while the query
+ * source's primary key is not known unique and never NULL, or undefined.
+ * `parentKeyUnique` is what the rollup's build found of that key: true,
+ * false (repeated or NULL), or undefined (not checked). A rollup row is met
+ * by every parent row sharing its key: with the key repeated, the variant
+ * sums it once per parent row where live sums each joined row once, and with
+ * a NULL key the variant's `COUNT(1)` counts a parent live's
+ * `COUNT(DISTINCT key)` skips.
+ */
+export function parentKeyProblem(
+   leg: JoinRollupLeg,
+   parentKeyUnique: boolean | undefined,
+): string | undefined {
+   if (leg.relationship === "one" && leg.join.relationship === "one") {
+      return undefined;
+   }
+   if (parentKeyUnique === true) return undefined;
+   const key = leg.join.baseKey;
+   return parentKeyUnique === false
+      ? `the query source holds a value of its primary key \`${key}\` more than once or NULL, so a row of the rollup of \`${leg.join.name}\` would be read once per row that shares it`
+      : `the query source's primary key \`${key}\` was not checked unique and never NULL when the rollup of \`${leg.join.name}\` was built, so a row of it could be read once per row that shares it`;
+}
+
+/**
+ * Why a leg that re-points its join with another relationship (a join_many
+ * as a join_one at its key, or a join_one as a join_many at a finer grain)
+ * cannot answer a query that takes a `count()`, `sum` or `avg` through
+ * another join_many, or undefined. Re-pointing changes which joins Malloy
+ * sees fan out, so it changes how it writes those aggregates (`COUNT(1)`
+ * against `COUNT(DISTINCT key)`), and until malloydata/malloy#3208
+ * ({@link malloyCountsChildlessParentsAsZero}) the two count the row a LEFT
+ * JOIN writes for a parent with no rows differently. `keyed` is every
+ * aggregate Malloy needs a key for, by the join path it is taken at
+ * (`uniqueKeyAggregatePaths`); `fansOut` says whether a path passes through
+ * a join_many (or cannot be traced).
+ */
+export function relationshipChangeProblem(
+   leg: JoinRollupLeg,
+   keyed: readonly { path: readonly string[]; isCount: boolean }[] | undefined,
+   fansOut: (path: readonly string[]) => boolean,
+   skipsUnmatched = malloyCountsChildlessParentsAsZero(),
+): string | undefined {
+   if (skipsUnmatched || leg.relationship === leg.join.relationship) {
+      return undefined;
+   }
+   if (keyed === undefined) {
+      return "the query's aggregates could not be traced";
+   }
+   for (const { path, isCount } of keyed) {
+      if (path.length === 0 || path[0] === leg.join.name) continue;
+      if (!fansOut(path)) continue;
+      return `the query takes a ${isCount ? "count" : "sum or average"} through the join_many \`${path.join(".")}\`, which Malloy writes another way once \`${leg.join.name}\` is read as a join_${leg.relationship}, counting a parent with no rows differently (malloydata/malloy#1762)`;
+   }
+   return undefined;
+}
+
+/**
  * The one field path a `x.sum()`, `sum(x)`, `j.x.max()` leaf aggregates,
  * filters aside: one name, or a join and one name.
  */

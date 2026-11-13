@@ -126,6 +126,7 @@ import {
    resolveStructRefSource,
    setsTimezone,
    sourceFieldJoinReads,
+   uniqueKeyAggregatePaths,
    type QueryLevelFacts,
 } from "../../governance/ir/prepared_query";
 import type { BuildManifest } from "../types";
@@ -152,6 +153,8 @@ import {
 import {
    checkJoinCoverage,
    joinRollupLegs,
+   parentKeyProblem,
+   relationshipChangeProblem,
    unmatchedRowProblem,
    type JoinRollupLeg,
 } from "./join_rollup";
@@ -771,6 +774,26 @@ export class RollupVariantServe {
             );
          }
       }
+      // A join read as a join_many: each rollup row is met by every parent
+      // row sharing its key, so the query source's key must be unique and
+      // never NULL, as the rollup's build found it.
+      const keyProblem = parentKeyProblem(
+         leg,
+         this.parentKeyUniqueness(plan, q.struct),
+      );
+      if (keyProblem !== undefined) {
+         throw new RollupSkip("rollup_count_semantics", keyProblem);
+      }
+      // Re-pointed with another relationship, the join changes how Malloy
+      // writes a count, sum or average through another join_many.
+      const fanOutProblem = relationshipChangeProblem(
+         leg,
+         uniqueKeyAggregatePaths(q.prepared),
+         (path) => this.pathFansOut(q.struct, path),
+      );
+      if (fanOutProblem !== undefined) {
+         throw new RollupSkip("rollup_count_semantics", fanOutProblem);
+      }
       // Another join_one the query reads, known not to keep its key unique:
       // live's rows repeat through it, and re-pointing this join changes how
       // Malloy aggregates over those repeats, so the answers part (known
@@ -1063,6 +1086,41 @@ export class RollupVariantServe {
       return id === undefined
          ? undefined
          : this.host.catalog()?.bound[id]?.keyUniqueness?.unique;
+   }
+
+   /**
+    * What the build of `plan`'s table found of the query source's primary key
+    * (its parent key check): true when unique and never NULL, false when not,
+    * undefined when unknown (not checked, or a table a host's manifest binds).
+    */
+   private parentKeyUniqueness(
+      plan: RollupVariantPlan,
+      struct: unknown,
+   ): boolean | undefined {
+      const sourceID = (struct as { sourceID?: unknown } | undefined)?.sourceID;
+      const id = this.tableOf(plan)?.sourceEntityId;
+      if (typeof sourceID !== "string" || id === undefined) return undefined;
+      return this.host.catalog()?.bound[id]?.keyUniqueness?.parentKeys?.[
+         sourceID
+      ];
+   }
+
+   /**
+    * Whether a join path of the query's source passes through a join_many or
+    * join_cross; true when a hop cannot be traced (a join defined in place).
+    */
+   private pathFansOut(struct: unknown, path: readonly string[]): boolean {
+      let sourceID: unknown = (struct as { sourceID?: unknown } | undefined)
+         ?.sourceID;
+      const map = SourceMap.of(this.host.modelDef());
+      for (const name of path) {
+         if (typeof sourceID !== "string") return true;
+         const join = map.joinsOf(sourceID).find((j) => j.name === name);
+         if (!join) return true;
+         if (join.relationship !== "one") return true;
+         sourceID = join.sourceID;
+      }
+      return false;
    }
 
    /**

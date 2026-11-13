@@ -26,8 +26,11 @@ import { refuseCollidingMaterialize } from "./eligibility_collect";
 import {
    joinOneKey,
    joinOneKeysOf,
+   parentKeyNeedsOf,
+   type ParentKeyNeed,
    type RollupVariantPlan,
 } from "./rollup_plan";
+import { compileParentKeyChecks } from "./rollup_compile";
 import { SourceMap } from "./source_map";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import { Model } from "../../model";
@@ -44,6 +47,12 @@ export async function compilePackageBuildPlan(
    const parts = emptyBuildPlanParts();
    // Every join_one of every model, for the rollup key checks a build runs.
    const joinOneKeys = new Set<string>();
+   // Every source keyed on its primary key by a join, with the model that
+   // names it, for the query source key checks a rollup's build runs.
+   const parentKeyNeeds: {
+      need: ParentKeyNeed;
+      compile: (text: string) => Promise<string>;
+   }[] = [];
    const yielder = createEventLoopYielder();
 
    for (const modelPath of pkg.getModelPaths()) {
@@ -93,8 +102,15 @@ export async function compilePackageBuildPlan(
          buildView = keyedOverlay(view.overlay);
       }
       const { runtime, materializer, malloyModel } = loaded;
-      for (const key of joinOneKeysOf(SourceMap.of(malloyModel._modelDef))) {
+      const map = SourceMap.of(malloyModel._modelDef);
+      for (const key of joinOneKeysOf(map)) {
          joinOneKeys.add(key);
+      }
+      for (const need of parentKeyNeedsOf(map)) {
+         parentKeyNeeds.push({
+            need,
+            compile: (text) => materializer.loadQuery(text).getSQL(),
+         });
       }
       await collectModelBuildPlan(parts, {
          modelPath,
@@ -125,6 +141,13 @@ export async function compilePackageBuildPlan(
          delete rollup.keyCheck;
       }
    }
+
+   // A query source read through a join_many keyed on its primary key:
+   // the rollup's build checks that key unique and never NULL.
+   await compileParentKeyChecks(
+      Object.values(parts.preaggregatePlans) as RollupVariantPlan[],
+      parentKeyNeeds,
+   );
 
    const connections = await resolvePackageConnections(
       pkg,

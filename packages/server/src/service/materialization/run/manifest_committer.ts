@@ -22,7 +22,7 @@ import {
    ManifestReference,
    SourceFailure,
 } from "../types";
-import { keyUniquenessOf, type RollupKeyRecord } from "./inline_uniqueness";
+import { keyUniquenessAt, type RollupKeyRecord } from "./inline_uniqueness";
 import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 import type { RunLifecycle } from "./run_lifecycle";
 
@@ -112,8 +112,9 @@ export class ManifestCommitter {
          // table on the source's OWN connection, where it does not exist.
          // Storage entries serve via the bindings below.
          if (entry.physicalTableName && !entry.storageDestinationName) {
-            const keyUniqueness = keyUniquenessOf(
-               rollupKeys?.[sourceEntityId],
+            const keyUniqueness = keyUniquenessAt(
+               rollupKeys,
+               sourceEntityId,
                entry,
             );
             manifestEntries[sourceEntityId] = {
