@@ -407,6 +407,41 @@
       ]
     }
   },
+  "BuildPlanRefreshingError": {
+    "class": "BuildPlanRefreshingError",
+    "http": {
+      "status": 503,
+      "json": {
+        "code": 503,
+        "message": "build plan is being re-derived",
+        "reason": "BUILD_PLAN_REFRESHING"
+      },
+      "headers": {
+        "Retry-After": "5"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "build plan is being re-derived",
+      "suggestions": [
+        "Retry in a few seconds: the build plan is being re-derived after a connection change."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "build plan is being re-derived",
+      "suggestions": [
+        "Retry in a few seconds: the build plan is being re-derived after a connection change."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
   "NotImplementedError": {
     "class": "NotImplementedError",
     "http": {
@@ -1942,6 +1977,44 @@
     },
     "mcpSetup": {
       "message": "An unexpected internal error occurred during executeQuery (Setup).: shape not carried",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "WarehouseRecomputeRefusedError": {
+    "class": "WarehouseRecomputeRefusedError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "Internal server error."
+      },
+      "logged": true,
+      "logs": [
+        [
+          "error",
+          "Unhandled internal error"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: Failed to materialize source 'rollup' into storage destination 'lake': its only build recomputes its stored upstreams from the source warehouse, and the build instructions refuse that (warehouseReach: refuse): 'rollup' reads the source warehouse (regions) through 'via'",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Failed to materialize source 'rollup' into storage destination 'lake': its only build recomputes its stored upstreams from the source warehouse, and the build instructions refuse that (warehouseReach: refuse): 'rollup' reads the source warehouse (regions) through 'via'",
       "suggestions": [
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."

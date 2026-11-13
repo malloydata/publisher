@@ -22,8 +22,11 @@ import {
    createTableAndDescribe,
    dropStorageTable,
    dropStorageTableSql,
+   partitionKeySql,
+   partitionOrderSql,
    passthroughSourceType,
    wrapPassthrough,
+   writePartitionedTable,
 } from "./materialization_build_session";
 import {
    buildChainedStorageBuildModel,
@@ -746,6 +749,41 @@ describe.skipIf(process.platform === "win32")(
          }
       });
 
+      // ms2data/service#6642: a chained build casts to the DOWNSTREAM's own
+      // declared types, as a recompute would. DuckDB answers `date + 1 day`
+      // with a timestamp, which Malloy declares a date.
+      it("stores the downstream's columns as the types the downstream declares", async () => {
+         const dir = mkdtempSync(join(tmpdir(), "t3-types-"));
+         try {
+            await seedLake(dir);
+            const result = await buildDownstreamIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+               } as ApiConnection,
+               transientModel: buildChainedStorageBuildModel({
+                  upstreams: [parent],
+                  downstreamName: "next_days",
+                  downstreamDefText:
+                     "next_days is daily_orders -> {\n" +
+                     "  group_by: next_day is order_date + 1 day\n" +
+                     "  aggregate: t is total.sum()\n}",
+                  destinationName: "lake",
+               }),
+               downstreamName: "next_days",
+               virtualMap: buildVirtualMap([parent]),
+               physicalTableName: "next_days__m1",
+               environmentPath: dir,
+            });
+            expect(result.schema.find((c) => c.name === "next_day")?.type).toBe(
+               "DATE",
+            );
+         } finally {
+            rmSync(dir, { recursive: true, force: true });
+         }
+      });
+
       it("raises an infrastructure failure as itself, not as a shape refusal the caller would fall back on", async () => {
          // The model compiles, but the parent's stored table is not in the lake:
          // the CTAS fails against the destination, and recomputing from raw would
@@ -852,6 +890,132 @@ describe("createTableAndDescribe (schema read-back window)", () => {
    });
 });
 
+describe("partitionKeySql", () => {
+   it.each([
+      [{ column: "region", transform: "identity" }, `"region"`],
+      [{ column: "day", transform: "year" }, `year("day")`],
+      [{ column: "day", transform: "month" }, `month("day")`],
+      [{ column: "ts", transform: "day" }, `day("ts")`],
+      [{ column: "ts", transform: "hour" }, `hour("ts")`],
+      [{ column: "sku", transform: "bucket(16)" }, `bucket(16, "sku")`],
+      [{ column: "Mixed Case", transform: "identity" }, `"Mixed Case"`],
+   ])("renders %j as %s", (key, sql) => {
+      expect(partitionKeySql(key)).toBe(sql);
+   });
+
+   it.each(["upper", "bucket(x)", "bucket(16", "truncate(4)", ""])(
+      "refuses the transform %j rather than writing another layout",
+      (transform) => {
+         expect(() => partitionKeySql({ column: "c", transform })).toThrow(
+            BadRequestError,
+         );
+      },
+   );
+});
+
+describe("partitionOrderSql", () => {
+   it.each([
+      [[["region", "identity"]], [`"region"`]],
+      [
+         [
+            ["day", "year"],
+            ["category", "identity"],
+         ],
+         [`year("day")`, `"category"`, `"day"`],
+      ],
+      [
+         [
+            ["ts", "month"],
+            ["ts", "day"],
+         ],
+         [`month("ts")`, `day("ts")`, `"ts"`],
+      ],
+      // No scalar `bucket` exists, so a bucket key orders by its column only.
+      [
+         [
+            ["sku", "bucket(16)"],
+            ["region", "identity"],
+         ],
+         [`"region"`, `"sku"`],
+      ],
+   ] as [string[][], string[]][])("orders %j by %j", (keys, terms) => {
+      expect(
+         partitionOrderSql(
+            keys.map(([column, transform]) => ({ column, transform })),
+         ),
+      ).toEqual(terms);
+   });
+});
+
+describe("writePartitionedTable", () => {
+   const recordingSession = () => {
+      const issued: string[] = [];
+      const session = {
+         runSQL: async (sql: string) => {
+            issued.push(sql.trim());
+            return { rows: [] };
+         },
+      } as unknown as DuckDBConnection;
+      return { session, issued };
+   };
+
+   it("creates empty, lays out, then inserts in partition order, in one transaction", async () => {
+      const { session, issued } = recordingSession();
+
+      await writePartitionedTable(session, {
+         quotedTablePath: `"lake"."main"."events"`,
+         selectSQL: `SELECT * FROM "src"."main"."events"`,
+         keys: [
+            { column: "day", transform: "year" },
+            { column: "category", transform: "identity" },
+            { column: "day", transform: "month" },
+         ],
+         createStatement: "CREATE TABLE",
+         bounded: true,
+         read: async () => undefined,
+      });
+
+      const transaction = issued.slice(issued.indexOf("BEGIN TRANSACTION"));
+      expect(transaction[1]).toBe(
+         `CREATE TABLE "lake"."main"."events" AS (SELECT * FROM "src"."main"."events") WITH NO DATA`,
+      );
+      expect(transaction[2]).toBe(
+         `ALTER TABLE "lake"."main"."events" SET PARTITIONED BY (year("day"), "category", month("day"))`,
+      );
+      // Ordered by the keys as DuckLake partitions on them, then by the
+      // transformed column, so a year's categories are not interleaved.
+      expect(transaction[3]).toBe(
+         `INSERT INTO "lake"."main"."events" (SELECT * FROM (\nSELECT * FROM "src"."main"."events"\n) ` +
+            `AS partitioned_build ORDER BY year("day"), "category", month("day"), "day")`,
+      );
+      expect(transaction[4]).toBe("COMMIT");
+      // The bounds are set before the transaction and threads restored after.
+      expect(issued).toContain("SET threads = 1");
+      expect(issued[issued.length - 1]).toBe("RESET threads");
+   });
+
+   it("keeps the build's identity layout through createTableAndDescribe", async () => {
+      const { session, issued } = recordingSession();
+
+      await createTableAndDescribe(
+         session,
+         `"lake"."t"`,
+         "SELECT 1 AS region",
+         ["region"],
+      );
+
+      expect(issued).toContain(
+         `CREATE OR REPLACE TABLE "lake"."t" AS (SELECT 1 AS region) WITH NO DATA`,
+      );
+      expect(issued).toContain(
+         `ALTER TABLE "lake"."t" SET PARTITIONED BY ("region")`,
+      );
+      // A chained build (no passthrough source) inserts unordered, as before.
+      expect(issued).toContain(`INSERT INTO "lake"."t" (SELECT 1 AS region)`);
+      expect(issued).not.toContain("SET threads = 1");
+   });
+});
+
 /**
  * A plain-DuckDB file destination named `lake` in a fresh environment
  * directory, and a postgres source whose federation and read are stubbed, so
@@ -927,6 +1091,8 @@ describe("buildSourceIntoStorage (happy path, real DuckDB file destination)", ()
          ]);
          expect(result.storageDestinationName).toBe("lake");
          expect(result.schema.map((c) => c.name)).toEqual(["id", "category"]);
+         // Counted in the destination, for table stats.
+         expect(result.rowCount).toBe(3);
          // A postgres read reports no cost; null is "not reported", never free.
          expect(result.readCost).toBeNull();
          // A rebuild reports where the new snapshot reaches, and no refresh.
@@ -935,6 +1101,74 @@ describe("buildSourceIntoStorage (happy path, real DuckDB file destination)", ()
             value: "3",
          });
          expect(result.refresh).toBeUndefined();
+      } finally {
+         lake.cleanup();
+      }
+   });
+
+   // ms2data/service#6642: the warehouse's types, cast in DuckDB around the
+   // passthrough, so the warehouse still runs exactly the build SQL.
+   it("stores each column as the type Malloy declares where one DuckDB type is faithful", async () => {
+      const lake = fileLakeBuild(
+         "SELECT TIMESTAMP '2026-02-01 00:00:00' AS order_month, 1 AS is_open, 2.5 AS amount",
+      );
+      try {
+         const result = await buildSourceIntoStorage({
+            ...lake.params,
+            declaredColumns: [
+               { name: "order_month", type: "date" },
+               { name: "is_open", type: "boolean" },
+               { name: "amount", type: "number" },
+            ],
+         });
+         expect(lake.reads).toEqual(["SELECT * FROM orders"]);
+         expect(result.schema).toEqual([
+            { name: "order_month", type: "DATE" },
+            { name: "is_open", type: "BOOLEAN" },
+            { name: "amount", type: "DECIMAL(2,1)" },
+         ]);
+      } finally {
+         lake.cleanup();
+      }
+   });
+
+   // A cast that cannot convert a value must not fail a build that used to
+   // succeed: it stores what the warehouse returned, never TRY_CAST's NULLs.
+   it("stores the warehouse's types when a declared-type cast cannot convert a value", async () => {
+      const lake = fileLakeBuild("SELECT 'open' AS is_open, 1 AS n");
+      try {
+         const result = await buildSourceIntoStorage({
+            ...lake.params,
+            declaredColumns: [{ name: "is_open", type: "boolean" }],
+         });
+         expect(result.schema).toEqual([
+            { name: "is_open", type: "VARCHAR" },
+            { name: "n", type: "INTEGER" },
+         ]);
+      } finally {
+         lake.cleanup();
+      }
+   });
+
+   // Under a query time zone a date is not cast at build: an instant's date in
+   // the build session's UTC can be the day before the zone's.
+   it("does not cast a date at build when the source has a query time zone", async () => {
+      const lake = fileLakeBuild(
+         "SELECT TIMESTAMPTZ '2024-03-04 15:00:00+00' AS d, 1 AS is_open",
+      );
+      try {
+         const result = await buildSourceIntoStorage({
+            ...lake.params,
+            declaredColumns: [
+               { name: "d", type: "date" },
+               { name: "is_open", type: "boolean" },
+            ],
+            castOptions: { queryTimezone: "Asia/Tokyo" },
+         });
+         expect(result.schema).toEqual([
+            { name: "d", type: "TIMESTAMP WITH TIME ZONE" },
+            { name: "is_open", type: "BOOLEAN" },
+         ]);
       } finally {
          lake.cleanup();
       }

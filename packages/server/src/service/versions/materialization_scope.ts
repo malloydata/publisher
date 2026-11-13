@@ -199,19 +199,27 @@ export function tableIdentity(physicalTableName: string): string {
 export function storageBindingResolverFor(
    repository: Pick<ResourceRepository, "listMaterializations">,
    environmentId: string,
+   /**
+    * What the bind adds to the entries from the runs they came from: the
+    * rollup key records (known limitation 29, `withRollupKeyRecords`).
+    */
+   annotate?: (
+      entries: Record<string, ManifestEntry>,
+      runs: Materialization[],
+   ) => Record<string, ManifestEntry>,
 ): (
    packageName: string,
    reader: ServingReader,
 ) => Promise<Record<string, ManifestEntry>> {
-   return async (packageName, reader) =>
-      newestServingEntries(
-         await repository.listMaterializations(
-            environmentId,
-            packageName,
-            reader.owned !== undefined ? { version: reader.owned } : undefined,
-         ),
-         reader,
+   return async (packageName, reader) => {
+      const runs = await repository.listMaterializations(
+         environmentId,
+         packageName,
+         reader.owned !== undefined ? { version: reader.owned } : undefined,
       );
+      const entries = newestServingEntries(runs, reader);
+      return annotate ? annotate(entries, runs) : entries;
+   };
 }
 
 /**
@@ -253,6 +261,35 @@ export function versionTableSuffix(owner: VersionTableOwner): string {
       owner.version,
    ]);
    return `__v${base}_${shortHash(owned)}`;
+}
+
+/** Whose an auto-run's shared tables are: one package of one environment. */
+export interface PackageTableOwner {
+   environmentName: string;
+   packageName: string;
+}
+
+/**
+ * The suffix that makes an auto-run's self-assigned table name this package's
+ * own, for an unversioned package or the shared tables of a `scope: package`
+ * one: `__p<8 hex>`, a hash of the environment and the package.
+ *
+ * Tables live on connections and storage destinations that packages, and
+ * environments, can share. Named after the source alone, two packages that
+ * each persist a source called `orders` on one schema would build one table,
+ * each overwriting the other's rows and serving whichever wrote last. An
+ * explicit `name=` is not suffixed (the author chose it, and an outside reader
+ * may rely on it); its table is checked for ownership before every build
+ * instead (table_ownership.ts). A `scope: version` table takes
+ * {@link versionTableSuffix}, which hashes the environment and package too.
+ *
+ * The hash keeps tables apart within one server. Two servers whose
+ * environments and packages have the same names must not share a schema.
+ */
+export function packageTableSuffix(owner: PackageTableOwner): string {
+   return `__p${shortHash(
+      JSON.stringify(["package", owner.environmentName, owner.packageName]),
+   )}`;
 }
 
 /**

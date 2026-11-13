@@ -1,0 +1,90 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "monthly@<pkg>/m.malloy": []
+        },
+        "order": [
+          "monthly@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "monthly@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "monthly@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "monthly@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "monthly@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "monthly"
+        },
+        "columns": [
+          {
+            "name": "order_month",
+            "type": "date"
+          },
+          {
+            "name": "created_hour",
+            "type": "timestamp"
+          },
+          {
+            "name": "order_week",
+            "type": "date"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "discount_rate",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "monthly",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+        "sourceID": "monthly@<pkg>/m.malloy",
+        "sql": "sha256:66a70d0fec36cb34"
+      }
+    }
+  }
+}

@@ -15,7 +15,6 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
-import { versioningOnForSuite } from "../../harness/versioning";
 import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 
 const ENV_NAME = "package-versions-router-env";
@@ -71,8 +70,6 @@ async function answerOf(versionId?: string): Promise<number> {
 }
 
 describe("versions routes", () => {
-   versioningOnForSuite();
-
    beforeAll(async () => {
       root = fs.realpathSync(
          fs.mkdtempSync(path.join(os.tmpdir(), "package-versions-router-")),
@@ -279,13 +276,32 @@ describe("versions routes", () => {
       await call("PUT", "/latest", { version: "2.0.0" });
    });
 
-   it("binds a version's manifest, refuses an empty location, and clears it with null", async () => {
+   it("binds a version's manifest, refuses an empty location or another field, and clears it with null or {}", async () => {
       const empty = await call("PUT", "/versions/1.1.0/manifest", {
          manifestLocation: "",
       });
       expect(empty.status).toBe(400);
+
+      // A typo is refused naming the field, never read as a clear.
+      const typo = await call("PUT", "/versions/1.1.0/manifest", {
+         manifestUri: "gs://bucket/manifest.json",
+      });
+      expect(typo.status).toBe(400);
+      expect(JSON.stringify(typo.json)).toContain("manifestUri");
+      const extra = await call("PUT", "/versions/1.1.0/manifest", {
+         manifestLocation: null,
+         extra: true,
+      });
+      expect(extra.status).toBe(400);
+      expect(JSON.stringify(extra.json)).toContain("extra");
+
+      // {} clears, as null does: generated clients drop a null field.
       const missing = await call("PUT", "/versions/1.1.0/manifest", {});
-      expect(missing.status).toBe(400);
+      expect(missing.status).toBe(200);
+      expect(missing.json.versionId).toBe("1.1.0");
+      expect(
+         (await call("GET", "/versions/1.1.0")).json.manifestLocation,
+      ).toBeNull();
 
       const cleared = await call("PUT", "/versions/1.1.0/manifest", {
          manifestLocation: null,
@@ -727,7 +743,9 @@ describe("versions routes", () => {
       }
       for (const body of [
          { manifestLocation: 123 },
+         { manifestLocation: 5 },
          { manifestLocation: [] },
+         { manifestLocation: {} },
       ]) {
          expect(
             (await call("PUT", "/versions/1.0.0/manifest", body)).status,

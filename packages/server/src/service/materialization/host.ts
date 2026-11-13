@@ -25,6 +25,16 @@ export interface MaterializationPackage extends BuildPlanPackage {
    /** The published version this package is; undefined for an unversioned one. */
    getVersionId(): string | undefined;
    getBuildPlan(): BuildPlan | null;
+   /**
+    * Resolves once the plan reflects the current connections (a connection
+    * edit re-derives it). Optional: a stand-in package's plan never moves.
+    */
+   whenBuildPlanCurrent?(): Promise<void>;
+   /**
+    * Whether the plan could not be derived (at load, or re-derived after a
+    * connection edit). Optional, like whenBuildPlanCurrent.
+    */
+   isBuildPlanUnavailable?(): boolean;
    getPackageMetadata(): {
       scope?: string | null;
       manifestLocation?: string | null;
@@ -32,6 +42,12 @@ export interface MaterializationPackage extends BuildPlanPackage {
    };
    /** The publish-gate rejections the scheduler honours before it arms a cron. */
    persistencePolicyWarnings(): string[];
+   /**
+    * Drop the bound rollup key checks (known limitation 29) of the tables at
+    * these content addresses, which a run is about to write. Optional: a
+    * stand-in package binds none.
+    */
+   forgetKeyUniqueness?(sourceEntityIds: Iterable<string>): void;
 }
 
 /** The part of an environment's version registry a run consults. */
@@ -59,6 +75,15 @@ export interface MaterializationVersions {
  * where a source is READ, `getStorageDestination` where a table is WRITTEN.
  */
 export interface MaterializationEnvironment {
+   /**
+    * Publish again a configured package whose boot publish was refused, so a
+    * run resolves the version it makes (Environment.setConfiguredPublishRetry).
+    * Optional: a test double need not implement it.
+    */
+   publishRefusedConfiguredPackage?(
+      packageName: string,
+      requestedVersion?: string,
+   ): Promise<void>;
    getEnvironmentName(): string;
    getEnvironmentPath(): string;
    getApiConnection(connectionName: string): ApiConnection;

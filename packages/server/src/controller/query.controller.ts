@@ -53,13 +53,22 @@ export class QueryController {
    /**
     * Answer a query and emit its access record (`access_record.ts`), on
     * success and on refusal alike.
+    *
+    * `querySlotLabel` is for a caller that holds no slot of its own (the MCP
+    * report panel, which answers as this route does): the slot is then taken
+    * inside the record, so a refusal at the cap is recorded too. The REST
+    * route leaves it unset, because its middleware already holds one.
     */
-   public async getQuery(request: QueryRequest): Promise<ApiQuery> {
+   public async getQuery(
+      request: QueryRequest,
+      { querySlotLabel }: { querySlotLabel?: string } = {},
+   ): Promise<ApiQuery> {
       const { environmentName, packageName, modelPath } = request;
       return this.queryUseCase.run(
          { ...request, version: request.versionId },
          {
             ...REST_QUERY_OPTIONS,
+            ...(querySlotLabel !== undefined ? { querySlotLabel } : {}),
             // Serialize and byte-cap exactly the shape this request receives.
             shape: request.compactJson === true ? "compact" : "full",
          },
@@ -70,6 +79,7 @@ export class QueryController {
                rowLimitSource,
                queryCorrelationId,
                servedFrom,
+               path,
                executionTimeMs,
                queryCostBytes,
                renderLogs,
@@ -92,6 +102,8 @@ export class QueryController {
                // a declined transform both read `null`, like a live query. See the
                // field's description in `api-doc.yaml`.
                servedFrom,
+               // What answered and why, every tier included (D1).
+               ...(path ? { path } : {}),
                executionTimeMs,
                queryCostBytes,
             }) as ApiQuery,

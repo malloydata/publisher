@@ -2,11 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import type { PersistSource } from "@malloydata/malloy";
+import { RECOGNIZED_PERSIST_KEYS } from "../../annotation_reader";
+import { parseRouteTag } from "../../motly";
+import type { RollingWindow } from "./rolling_window";
 import type { Tag } from "@malloydata/malloy-tag";
 
 import type { IncrementalStrategy } from "../types";
 import { deriveColumns } from "./persist_source_fields";
 import { readTimeDynamicTerms } from "./persist_dynamic_terms";
+
+/** Persist-tag keys the publisher knows about, declared in the annotation reader's registry. */
+export { RECOGNIZED_PERSIST_KEYS };
 
 // Shared with the store: the strategy a declaration implies is what the ledger records.
 export type { IncrementalStrategy };
@@ -31,27 +37,6 @@ export type { IncrementalStrategy };
 
 /** The `refresh=` values the publisher recognizes; unset means "full". */
 const REFRESH_MODES = ["full", "incremental"] as const;
-
-/**
- * Persist-tag keys the publisher knows about; anything else is a load-time
- * WARNING, never a rejection, so a new directive needs no publisher change.
- * `sharing` and `schedule` are RETIRED and rejected by name in the
- * persistence-policy gate; listing them avoids a second, vaguer "unknown" message.
- */
-export const RECOGNIZED_PERSIST_KEYS: ReadonlySet<string> = new Set([
-   "persist",
-   "name",
-   "storage",
-   "realization",
-   "refresh",
-   "watermark",
-   "merge_key",
-   "freshness",
-   "queryMetadata",
-   "partition",
-   "sharing",
-   "schedule",
-]);
 
 /**
  * Malloy types a `<`/`>=` range can be built over. Struct/array columns never
@@ -133,12 +118,48 @@ export interface IncrementalDeclaration {
    calculateFields: string[];
    /** Output column names, for "did you mean" context in messages. */
    outputColumns: string[];
+   /**
+    * A `#(materialize)` source's rolling windows (rolling_window.ts), set from
+    * its plan's read-time terms by `collectIncrementalDeclarations`: each
+    * refresh deletes the rows below every window's new lower bound.
+    */
+   rollingWindow?: RollingWindow[];
+   /**
+    * An incremental pair table's parent key and parent-row flag column (a
+    * `#(materialize)` inlined join_many), set by
+    * `collectIncrementalDeclarations` from its plan: each refresh replaces
+    * every row of each parent whose watermark moved, by the key, rather than
+    * merging row by row (incremental_apply.ts).
+    */
+   pair?: PairDelta;
+}
+
+/**
+ * What a pair table's delta replaces rows by and checks after: the parent key
+ * and the parent-row flag, and, for a path of join_manys or a table of
+ * several blocks, every row flag the delta must leave exact, each with the
+ * stored keys it marks one row per distinct value of (from the source down
+ * to its level), and for a table of several blocks the block it is checked
+ * within (`lane`, a value of `laneColumn`). Absent `checks`: the parent-row
+ * flag over the parent key, as a one-hop table of one block has.
+ */
+export interface PairDelta {
+   parentKey: string;
+   parentRow: string;
+   checks?: { flag: string; keys: string[]; lane?: number }[];
+   laneColumn?: string;
+   /**
+    * For a table of several blocks: how many there are. Every parent has rows
+    * in each (a block is a LEFT JOIN from the parents), which the delta also
+    * checks.
+    */
+   lanes?: number;
 }
 
 /** The source's `#@` tag, or undefined when it does not parse. */
 function safeTag(source: PersistSource): Tag | undefined {
    try {
-      return source.annotations.parseAsTag("@").tag;
+      return parseRouteTag(source.annotations, "@").tag;
    } catch {
       return undefined;
    }

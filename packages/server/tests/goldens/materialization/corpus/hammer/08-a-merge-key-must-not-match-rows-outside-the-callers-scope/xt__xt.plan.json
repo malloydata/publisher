@@ -1,0 +1,95 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "order_rows@<hammer>/xt/xt.malloy": []
+        },
+        "order": [
+          "order_rows@<hammer>/xt/xt.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "order_rows@<hammer>/xt/xt.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "order_rows@<hammer>/xt/xt.malloy": "xt.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "order_rows@<hammer>/xt/xt.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "order_rows@<hammer>/xt/xt.malloy": {
+        "annotationFields": {
+          "merge_key": "order_id",
+          "name": "xt_rows",
+          "refresh": "incremental",
+          "watermark": "batch"
+        },
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "org_id",
+            "type": "number"
+          },
+          {
+            "name": "batch",
+            "type": "number"
+          },
+          {
+            "name": "amount_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "xt.malloy",
+        "name": "order_rows",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": "incremental",
+        "sourceEntityId": "a5362d1c70d80dd3e761f0cd761d1175187b5f2645fc76c5963d2b4202d554ba",
+        "sourceID": "order_rows@<hammer>/xt/xt.malloy",
+        "sql": "sha256:dce4bf71b8d66b9c",
+        "strippedTerms": [
+          {
+            "code": "org_id = $ORG_ID",
+            "givens": [
+              "ORG_ID"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

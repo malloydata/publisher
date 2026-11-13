@@ -16,6 +16,17 @@ env:
 permissions:
   contents: read
 
+# One run per pull request: a new push to a PR cancels that PR's run still in
+# flight, since only its newest commit can merge. Every other event (a push to
+# main, workflow_run, schedule, workflow_dispatch) gets a group of its own
+# keyed on the run id, so it is never cancelled and never replaced while it
+# waits: every merged commit is tested. (Keying those on github.ref with
+# cancel-in-progress off would still drop runs, because a group holds only one
+# pending run and a newer one cancels it.)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   playwright:
     name: Playwright (packages/app)
@@ -118,36 +129,7 @@ jobs:
           path: packages/app/test-results
           retention-days: 7
 
-      # The suite above runs against a server with package versioning off, so
-      # package-versions.spec.ts skips itself there. Run that spec again
-      # against a server of its own with versioning on: the playwright.config.ts
-      # webServer inherits this step's environment, and the server the step
-      # above started has stopped with it. EXPECT_PACKAGE_VERSIONING makes the
-      # spec fail rather than skip if the server reports versioning off. It
-      # runs whenever the suite above ran, passed or failed, so a failure
-      # there never hides one here; not when setup failed before either.
-      - name: Run the package-versions spec with versioning on
-        id: package-versions
-        if: ${{ !cancelled() && (steps.suite.outcome == 'success' || steps.suite.outcome == 'failure') }}
-        working-directory: packages/app
-        run: bunx playwright test --config=playwright.config.ts --output=test-results-versions tests/playwright/package-versions.spec.ts
-        env:
-          CI: "true"
-          DISABLE_RESPONSE_LOGGING: true
-          PUBLISHER_PACKAGE_VERSIONING: "on"
-          EXPECT_PACKAGE_VERSIONING: "on"
-
-      - name: Upload the package-versions report and results
-        if: failure() && steps.package-versions.outcome == 'failure'
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-package-versions
-          path: |
-            packages/app/playwright-report
-            packages/app/test-results-versions
-          retention-days: 7
-
-      # The model viewer's specs, the same way: the suite above runs against a
+      # The model viewer's specs: the suite above runs against a
       # server on the default model page, the Explorer, so they skip
       # themselves there. Run them again against a server of their own with
       # PUBLISHER_MODEL_PAGE=viewer; EXPECT_MODEL_PAGE makes them fail rather

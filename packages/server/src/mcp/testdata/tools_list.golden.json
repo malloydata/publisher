@@ -360,7 +360,7 @@
     },
     {
       "name": "reload_package",
-      "description": "Reload a package so edits to its model files on disk are picked up, making newly added or changed sources, views, and named queries resolvable by execute_query WITHOUT restarting the server. Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until the package is reloaded. Use this to close the edit -> run loop after saving a model change.\n\nReceipt: Publisher compiles a COPY under publisher_data/ unless the environment is watch-mounted, so a reload succeeds whether or not it saw your edit. sourceContentSha hashes the model, skill and agent files (and the manifest's agents), so if you edited one of those and it is unchanged, the edit never reached the server. Data, other publisher.json keys and retrieval settings are not hashed.\n\nA reload that fails to compile leaves your files on disk alone and keeps serving the previously compiled model, returning the compile errors. compile_model at scope \"package\" first is the faster way to see diagnostics. It reports the compile, render-tag and dashboard findings a reload would; every other package warning (storage, persist, materialization, explores, surface, discovery, deprecated .malloynb or #(filter), among others) appears only here.\n\n## Parameters\n- environmentName, packageName (required): the package to recompile. Use the names get_context returns.\n\n## Behavior\nRecompiles the package from its on-disk content under publisher_data/, the path every package from publisher.config.json takes. A package the server installed from a location (a publish or an update that supplied one) is re-fetched from that location instead, keeping its manifest binding, which overwrites on-disk edits.\n\n## Response\nA JSON object with status \"reloaded\", a mode, the package name, sourceContentSha and servedRevision, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). Mode \"in-place\" recompiled your on-disk edits; \"reinstalled\" re-fetched over them; \"unchanged\": an immutable published version. A hard compile error returns an error payload instead.",
+      "description": "Reload a package in a watched environment so edits to its model files on disk are picked up, making newly added or changed sources, views, and named queries resolvable by execute_query WITHOUT restarting the server. A package in a watched environment (--watch-env) is recompiled from your files. By default every other package is a published version, which is immutable: a reload answers it unchanged (mode \"unchanged\") and your edit is not applied. To ship an edit to one, bump the version in its publisher.json and publish it again.\n\nReceipt: a reload succeeds whether or not it saw your edit. sourceContentSha hashes the model, skill and agent files (and the manifest's agents), so if you edited one of those and it is unchanged, the edit never reached the server. Data, other publisher.json keys and retrieval settings are not hashed.\n\nA reload that fails to compile leaves your files on disk alone and keeps serving the previously compiled model, returning the compile errors. compile_model at scope \"package\" first is the faster way to see diagnostics. It reports the compile, render-tag and dashboard findings a reload would; every other package warning (storage, persist, materialization, explores, surface, discovery, deprecated .malloynb or #(filter), among others) appears only here.\n\n## Parameters\n- environmentName, packageName (required): the package to recompile. Use the names get_context returns.\n\n## Behavior\nWith versioning off (PUBLISHER_PACKAGE_VERSIONING=off), a configured package recompiles from its copy under publisher_data/, and one installed from a location is re-fetched, overwriting on-disk edits.\n\n## Response\nA JSON object with status \"reloaded\", a mode, the package name, sourceContentSha and servedRevision, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). Mode \"in-place\" recompiled your on-disk edits; \"reinstalled\" re-fetched over them; \"unchanged\" is a published version, with a message saying your edit was not applied. A hard compile error returns an error payload instead.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -386,7 +386,7 @@
     },
     {
       "name": "search_database_schema",
-      "description": "Find the tables in a database connection, by plain-English description. Use it to model a database you have not modelled yet, or to check schema, table and column names. To search an existing model, use get_context.\n\n## Drill down, one level at a time\nSupply what you know, omit the rest. No arguments lists the environments and their connections; + connectionName lists its schemas; + schemaName lists its tables (up to 80 columns each; add searchQuery to rank them); + tableName returns that one table with every column.\n\n## Contract rules\n- Use connectionName, tablePath and column names exactly as returned.\n- A connection with scope \"package\" (the \"duckdb\" sandbox) is per package: pass packageName too, from those it lists.\n- Schemas marked isHidden are system schemas; your tables are in the others.\n- malloySource is the ready-to-use `source:` line; its identifiers are already quoted, so paste it as-is.\n- Names and types only: no row value is returned. For a column's values, run execute_query against a model using this connection: `run: c.table('s.t') -> { group_by: col }`.\n- No tables for a searchQuery means nothing matched, not an empty schema. Broaden it, or list without one.\n- An empty schema may still hold data: DuckDB over CSV or Parquet addresses files by path, registering none.\n- Read warnings: they name anything omitted or ignored.\n\n## Response\nJSON: tables (connectionName, schemaName, tableName, tablePath, malloySource, columns, columnCount, and score on a search), plus totalAvailable and returned. A search adds matched and ranking; a listing adds nextOffset when more remain, to pass back as offset.\n\n## Worked example\nStart with no arguments and follow what it names. For connection \"warehouse\", schema \"sales\":\n{ \"environmentName\": \"examples\", \"connectionName\": \"warehouse\", \"schemaName\": \"sales\", \"searchQuery\": \"customer orders\" }\nThen paste that table's malloySource verbatim, e.g. source: `orders` is `warehouse`.table('sales.orders') extend { }",
+      "description": "Find the tables in a database connection, by plain-English description. Use it to model a database you have not modelled yet, or to check schema, table and column names. To search an existing model, use get_context.\n\n## Drill down, one level at a time\nSupply what you know, omit the rest. No arguments lists the environments and their connections; + connectionName lists its schemas; + schemaName lists its tables (up to 80 columns each; add searchQuery to rank them); + tableName returns that one table with every column.\n\n## Contract rules\n- Use connectionName, tablePath and column names exactly as returned.\n- A connection with scope \"package\" (the \"duckdb\" sandbox) is per package: pass packageName too, from those it lists.\n- Schemas marked isHidden are system schemas; your tables are in the others.\n- malloySource is the ready-to-use `source:` line; its identifiers are already quoted, so paste it as-is.\n- Names and types only: no row value is returned. For a column's values, run execute_query against a model using this connection: `run: c.table('s.t') -> { group_by: col }`.\n- No tables for a searchQuery means nothing matched, not an empty schema. Broaden it, or list without one.\n- An empty schema may still hold data: DuckDB over CSV or Parquet addresses files by path, registering none.\n- Read warnings: they name anything omitted or ignored.\n\n## Response\nJSON: tables (connectionName, schemaName, tableName, tablePath, malloySource, columns (a record's members follow it as delivery.city), columnCount, and score on a search), plus totalAvailable and returned. A search adds matched and ranking; a listing adds nextOffset when more remain, to pass back as offset.\n\n## Worked example\nStart with no arguments and follow what it names. For connection \"warehouse\", schema \"sales\":\n{ \"environmentName\": \"examples\", \"connectionName\": \"warehouse\", \"schemaName\": \"sales\", \"searchQuery\": \"customer orders\" }\nThen paste that table's malloySource verbatim, e.g. source: `orders` is `warehouse`.table('sales.orders') extend { }",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -589,6 +589,178 @@
       },
       "execution": {
         "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "list_reports",
+      "description": "List the reports in one package: each one's path (its identity, for show_report), layout (grid, a dashboard; linear, a story read top to bottom), title and description. A report is a .malloy file with an ## artifact tag, wherever it lives in the package. Takes the environment and package names list_packages gives.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentName": {
+            "type": "string",
+            "description": "The environment, as list_packages names it."
+          },
+          "packageName": {
+            "type": "string",
+            "description": "The package, as list_packages names it."
+          }
+        },
+        "required": [
+          "environmentName",
+          "packageName"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "show_report",
+      "title": "Show a report",
+      "description": "Show a report to the user: its tiles, charts and filter controls, drawn in a panel in the conversation by a host that supports MCP Apps (Claude Desktop and claude.ai among them), and runnable there. Use it when the user wants to see a dashboard or report, not to answer a question yourself: for numbers, run execute_query. Takes the report's path from list_reports and, optionally, starting filter values. The text result says what the report holds and gives its address in the Publisher Console, which works in any client, including one that draws no panel.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentName": {
+            "type": "string",
+            "description": "The environment, as list_packages names it."
+          },
+          "packageName": {
+            "type": "string",
+            "description": "The package, as list_packages names it."
+          },
+          "path": {
+            "type": "string",
+            "description": "The report's path in the package, including `.malloy`, exactly as list_reports gives it: `sales/q3.malloy`."
+          },
+          "givens": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Starting filter values, by given name, as the report's filter controls write them (`{\"CATEGORY\": \"Outerwear\"}`). They beat the report's own starting values. Omit to open it as its author left it."
+          }
+        },
+        "required": [
+          "environmentName",
+          "packageName",
+          "path"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "ui": {
+          "resourceUri": "ui://publisher/report.html"
+        },
+        "ui/resourceUri": "ui://publisher/report.html"
+      }
+    },
+    {
+      "name": "report_api",
+      "title": "Report panel API",
+      "description": "Used by the show_report panel to load the report it shows and run its tiles. Not for agents: use execute_query.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "status",
+              "listReports",
+              "getReport",
+              "query"
+            ],
+            "description": "Which read: status, listReports, getReport or query."
+          },
+          "environmentName": {
+            "type": "string"
+          },
+          "packageName": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "getReport: the report's path. query: the model's path."
+          },
+          "versionId": {
+            "type": "string"
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "queryName": {
+                "type": "string"
+              },
+              "sourceName": {
+                "type": "string"
+              },
+              "givens": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "compactJson": {
+                "type": "boolean"
+              },
+              "filterParams": {
+                "type": "object",
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                }
+              },
+              "queryMetadata": {},
+              "queryClass": {},
+              "versionId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "description": "query: the body POST …/models/{path}/query takes."
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "ui": {
+          "resourceUri": "ui://publisher/report.html",
+          "visibility": [
+            "app"
+          ]
+        }
       }
     }
   ],

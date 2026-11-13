@@ -1,0 +1,355 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "deals@<hammer>/frp/frp.malloy": [],
+          "deals_alias@<hammer>/frp/frp.malloy": [],
+          "pipeline_now@<hammer>/frp/frp.malloy": [],
+          "w@<hammer>/frp/frp.malloy": [
+            "deals@<hammer>/frp/frp.malloy",
+            "pipeline_now@<hammer>/frp/frp.malloy",
+            "deals_alias@<hammer>/frp/frp.malloy"
+          ],
+          "x@<hammer>/frp/frp.malloy": [
+            "deals@<hammer>/frp/frp.malloy",
+            "pipeline_now@<hammer>/frp/frp.malloy",
+            "deals_alias@<hammer>/frp/frp.malloy"
+          ],
+          "y@<hammer>/frp/frp.malloy": [
+            "deals@<hammer>/frp/frp.malloy",
+            "pipeline_now@<hammer>/frp/frp.malloy",
+            "deals_alias@<hammer>/frp/frp.malloy"
+          ],
+          "z@<hammer>/frp/frp.malloy": [
+            "deals@<hammer>/frp/frp.malloy",
+            "pipeline_now@<hammer>/frp/frp.malloy",
+            "deals_alias@<hammer>/frp/frp.malloy"
+          ]
+        },
+        "order": [
+          "deals@<hammer>/frp/frp.malloy",
+          "pipeline_now@<hammer>/frp/frp.malloy",
+          "deals_alias@<hammer>/frp/frp.malloy",
+          "x@<hammer>/frp/frp.malloy",
+          "y@<hammer>/frp/frp.malloy",
+          "z@<hammer>/frp/frp.malloy",
+          "w@<hammer>/frp/frp.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "deals@<hammer>/frp/frp.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "deals_alias@<hammer>/frp/frp.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "pipeline_now@<hammer>/frp/frp.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "w@<hammer>/frp/frp.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "x@<hammer>/frp/frp.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "y@<hammer>/frp/frp.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "z@<hammer>/frp/frp.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "deals@<hammer>/frp/frp.malloy": "frp.malloy",
+      "deals_alias@<hammer>/frp/frp.malloy": "frp.malloy",
+      "pipeline_now@<hammer>/frp/frp.malloy": "frp.malloy",
+      "w@<hammer>/frp/frp.malloy": "frp.malloy",
+      "x@<hammer>/frp/frp.malloy": "frp.malloy",
+      "y@<hammer>/frp/frp.malloy": "frp.malloy",
+      "z@<hammer>/frp/frp.malloy": "frp.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "deals@<hammer>/frp/frp.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "pipeline_now@<hammer>/frp/frp.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "deals_alias@<hammer>/frp/frp.malloy"
+            },
+            {
+              "dependsOn": [
+                "deals@<hammer>/frp/frp.malloy",
+                "pipeline_now@<hammer>/frp/frp.malloy",
+                "deals_alias@<hammer>/frp/frp.malloy"
+              ],
+              "sourceID": "x@<hammer>/frp/frp.malloy"
+            },
+            {
+              "dependsOn": [
+                "deals@<hammer>/frp/frp.malloy",
+                "pipeline_now@<hammer>/frp/frp.malloy",
+                "deals_alias@<hammer>/frp/frp.malloy"
+              ],
+              "sourceID": "y@<hammer>/frp/frp.malloy"
+            },
+            {
+              "dependsOn": [
+                "deals@<hammer>/frp/frp.malloy",
+                "pipeline_now@<hammer>/frp/frp.malloy",
+                "deals_alias@<hammer>/frp/frp.malloy"
+              ],
+              "sourceID": "z@<hammer>/frp/frp.malloy"
+            },
+            {
+              "dependsOn": [
+                "deals@<hammer>/frp/frp.malloy",
+                "pipeline_now@<hammer>/frp/frp.malloy",
+                "deals_alias@<hammer>/frp/frp.malloy"
+              ],
+              "sourceID": "w@<hammer>/frp/frp.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "deals@<hammer>/frp/frp.malloy": {
+        "annotationFields": {
+          "name": "frp_deals",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "deal_id",
+            "type": "number"
+          },
+          {
+            "name": "is_deleted",
+            "type": "boolean"
+          },
+          {
+            "name": "is_open",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "frp.malloy",
+        "name": "deals",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "9dce68668f4c9afdd11326365c251098976f35118dcac86137845d120b1606eb",
+        "sourceID": "deals@<hammer>/frp/frp.malloy",
+        "sql": "sha256:74410f416dfdb875"
+      },
+      "deals_alias@<hammer>/frp/frp.malloy": {
+        "annotationFields": {
+          "name": "frp_deals",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "deal_id",
+            "type": "number"
+          },
+          {
+            "name": "is_deleted",
+            "type": "boolean"
+          },
+          {
+            "name": "is_open",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "frp.malloy",
+        "name": "deals_alias",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "9dce68668f4c9afdd11326365c251098976f35118dcac86137845d120b1606eb",
+        "sourceID": "deals_alias@<hammer>/frp/frp.malloy",
+        "sql": "sha256:74410f416dfdb875"
+      },
+      "pipeline_now@<hammer>/frp/frp.malloy": {
+        "annotationFields": {
+          "name": "frp_deals",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "deal_id",
+            "type": "number"
+          },
+          {
+            "name": "is_deleted",
+            "type": "boolean"
+          },
+          {
+            "name": "is_open",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "frp.malloy",
+        "name": "pipeline_now",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "9dce68668f4c9afdd11326365c251098976f35118dcac86137845d120b1606eb",
+        "sourceID": "pipeline_now@<hammer>/frp/frp.malloy",
+        "sql": "sha256:74410f416dfdb875"
+      },
+      "w@<hammer>/frp/frp.malloy": {
+        "annotationFields": {
+          "name": "frp_w",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "frp.malloy",
+        "name": "w",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "cf4461896a5a940f45f0c599155081dacaa0ffd03f1f54e78e9b2c8d7548daa2",
+        "sourceID": "w@<hammer>/frp/frp.malloy",
+        "sql": "sha256:a5125726ba95fc51"
+      },
+      "x@<hammer>/frp/frp.malloy": {
+        "annotationFields": {
+          "name": "frp_x",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "frp.malloy",
+        "name": "x",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "83831f3a9aa8a6acd61b001f72557a76b91abf07a388b09cfb13f139d4188f7d",
+        "sourceID": "x@<hammer>/frp/frp.malloy",
+        "sql": "sha256:787c119fc325a94c"
+      },
+      "y@<hammer>/frp/frp.malloy": {
+        "annotationFields": {
+          "name": "frp_y",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "frp.malloy",
+        "name": "y",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "d256b2d677d1669f14fabbc68e182911b847491cc66693b57dc1ea147546bd71",
+        "sourceID": "y@<hammer>/frp/frp.malloy",
+        "sql": "sha256:867732553290df63"
+      },
+      "z@<hammer>/frp/frp.malloy": {
+        "annotationFields": {
+          "name": "frp_z",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "frp.malloy",
+        "name": "z",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "7fb062ba34fdf1e0f477bf692648688cde2a49d50e1465ea3cb238400364d387",
+        "sourceID": "z@<hammer>/frp/frp.malloy",
+        "sql": "sha256:3ec65c68bd07eb44"
+      }
+    }
+  }
+}

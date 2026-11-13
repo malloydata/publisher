@@ -2,13 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import {
+   existsSync,
+   promises as fsPromises,
+   mkdirSync,
+   rmSync,
+   writeFileSync,
+} from "fs";
+import { randomUUID } from "crypto";
 import * as path from "path";
 import { TEMP_DIR_PATH } from "../constants";
 import {
    emptyRepository,
    stubStorageManager,
 } from "../test_helpers/storage_manager_stub";
+import { inMemoryVersionRegistry } from "../test_helpers/in_memory_version_registry";
 import { logger } from "../logger";
 import { EnvironmentStore } from "./environment_store";
 import { GIT_CLONE_OPTIONS } from "./package_sources";
@@ -26,7 +34,13 @@ import { startedStore } from "../test_helpers/started_store";
  * A fake simple-git and storage manager are injected into each store.
  */
 
-const serverRootPath = path.join(TEMP_DIR_PATH, "clone-spec-server-root");
+// Unique per run: a fixed name in the shared temp directory let two runs at
+// once (two worktrees, or the suite beside a single spec) delete each other's
+// tree mid-test.
+const serverRootPath = path.join(
+   TEMP_DIR_PATH,
+   `clone-spec-server-root-${randomUUID()}`,
+);
 
 const ENV_NAME = "clone-env";
 const PKG_NAME = "pkg-a";
@@ -75,7 +89,7 @@ const fakeSimpleGit = ((factoryOpts?: typeof lastFactoryOpts) => {
             mkdirSync(pkgDir, { recursive: true });
             writeFileSync(
                path.join(pkgDir, "publisher.json"),
-               JSON.stringify({ name }),
+               JSON.stringify({ name, version: "1.0.0" }),
             );
          }
          // Drive the progress handler the way the real plugin would.
@@ -95,8 +109,12 @@ const storageManager = stubStorageManager({
    initialize: async () => {
       if (storageInitFails) throw new Error(storageInitMessage);
    },
-   getRepository: () => emptyRepository(),
+   // A configured package is published as a version at boot, so the store
+   // records it in a registry: fresh for each test (beforeEach).
+   getRepository: () => emptyRepository(versionRegistry),
 });
+
+let versionRegistry = inMemoryVersionRegistry();
 
 const newStore = () =>
    startedStore(
@@ -114,6 +132,7 @@ describe("git clone wiring", () => {
       rmSync(serverRootPath, { recursive: true, force: true });
       mkdirSync(serverRootPath, { recursive: true });
       recordedClones = [];
+      versionRegistry = inMemoryVersionRegistry();
       lastFactoryOpts = null;
       storageInitFails = false;
       storageInitMessage = "storage init failed (test)";
@@ -177,7 +196,8 @@ describe("git clone wiring", () => {
          `[${ENV_NAME}] cloning example/repo (${PKG_NAME}): receiving 50% (1/2)`,
       );
 
-      // The package extracted from the (fake) clone and mounted.
+      // The package extracted from the (fake) clone and was published as
+      // the version its publisher.json declares.
       expect(
          existsSync(
             path.join(
@@ -185,6 +205,7 @@ describe("git clone wiring", () => {
                "publisher_data",
                ENV_NAME,
                PKG_NAME,
+               "1.0.0",
                "publisher.json",
             ),
          ),
@@ -240,6 +261,103 @@ describe("git clone wiring", () => {
          .map((m) => m.slice(m.lastIndexOf("(")));
       expect(counters).toEqual(["(1/2)", "(2/2)"]);
       expect(stderrWrites.join("")).toContain("packages=2");
+   });
+
+   it("publishes a local package from where it is and mounts only the remote one", async () => {
+      // A local location is copied once, into its version's own staging, as
+      // a publish from that location copies it. Only a remote location goes
+      // through the shared mount, under the environment's `.staging`.
+      const localSource = path.join(serverRootPath, "local-src");
+      mkdirSync(localSource, { recursive: true });
+      writeFileSync(
+         path.join(localSource, "publisher.json"),
+         JSON.stringify({ name: "pkg-local", version: "1.0.0" }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: ENV_NAME,
+                  packages: [
+                     { name: "pkg-local", location: localSource },
+                     {
+                        name: PKG_NAME,
+                        location: `https://github.com/example/repo/tree/main/${PKG_NAME}`,
+                     },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const fetchSpy = spyOn(EnvironmentStore.prototype, "downloadPackageInto");
+      const store = newStore();
+      await store.finishedInitialization;
+      const fetchedFrom = new Map(
+         fetchSpy.mock.calls.map((call) => [call[1], call[2]]),
+      );
+      fetchSpy.mockRestore();
+
+      const envPath = path.join(serverRootPath, "publisher_data", ENV_NAME);
+      expect(fetchedFrom.get("pkg-local")).toBe(localSource);
+      const remoteMount = fetchedFrom.get(PKG_NAME)!;
+      expect(
+         remoteMount.startsWith(path.join(envPath, ".staging") + path.sep),
+      ).toBe(true);
+      expect(recordedClones).toHaveLength(1);
+      for (const name of ["pkg-local", PKG_NAME]) {
+         expect(
+            existsSync(path.join(envPath, name, "1.0.0", "publisher.json")),
+         ).toBe(true);
+      }
+      expect(existsSync(remoteMount)).toBe(false);
+   });
+
+   it("the next boot removes a mount a server stopped mid-boot left behind", async () => {
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: ENV_NAME,
+                  packages: [
+                     {
+                        name: PKG_NAME,
+                        location: `https://github.com/example/repo/tree/main/${PKG_NAME}`,
+                     },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      // The first boot never removes its mount, as a server killed mid-clone
+      // would not.
+      const realRm = fsPromises.rm;
+      const rmSpy = spyOn(fsPromises, "rm").mockImplementation(
+         async (target, options) => {
+            const holdsClone = recordedClones.some((clone) =>
+               clone.dir.startsWith(String(target) + path.sep),
+            );
+            if (!holdsClone) await realRm(target, options);
+         },
+      );
+      try {
+         await newStore().finishedInitialization;
+      } finally {
+         rmSpy.mockRestore();
+      }
+      expect(recordedClones).toHaveLength(1);
+      const leftover = path.dirname(recordedClones[0].dir);
+      expect(existsSync(leftover)).toBe(true);
+
+      await newStore().finishedInitialization;
+      expect(existsSync(leftover)).toBe(false);
    });
 
    it("direct download extracts the subdirectory and labels by repo alone", async () => {

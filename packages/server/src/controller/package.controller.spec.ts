@@ -10,6 +10,7 @@ import {
    FrozenConfigError,
    PackageAdmissionRefusedError,
    PackageVersionError,
+   BuildPlanRefreshingError,
    BuildPlanUnavailableError,
    internalErrorToHttpError,
    ServiceUnavailableError,
@@ -57,6 +58,7 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
+         formatUnparseableAnnotations: () => "",
          formatInvalidIncrementalPolicy: () => "",
          formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
@@ -106,6 +108,7 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
+         formatUnparseableAnnotations: () => "",
          formatInvalidIncrementalPolicy: () => "",
          formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
@@ -158,6 +161,7 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
+         formatUnparseableAnnotations: () => "",
          formatInvalidIncrementalPolicy: () => "",
          formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
@@ -218,6 +222,7 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => "",
+         formatUnparseableAnnotations: () => "",
          formatInvalidIncrementalPolicy: () => "",
          formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
@@ -264,6 +269,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
+         formatUnparseableAnnotations: () => "",
          formatInvalidIncrementalPolicy: () => "",
          formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
@@ -304,6 +310,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
+         formatUnparseableAnnotations: () => "",
          formatInvalidIncrementalPolicy: () => "",
          formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
@@ -342,6 +349,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
+         formatUnparseableAnnotations: () => "",
          formatInvalidIncrementalPolicy: () => "",
          formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
@@ -403,6 +411,7 @@ describe("PackageController.addPackage incremental policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
+         formatUnparseableAnnotations: () => "",
          formatInvalidIncrementalPolicy: () => incrementalMsg,
          formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
@@ -443,6 +452,7 @@ describe("PackageController.addPackage incremental policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => "",
+         formatUnparseableAnnotations: () => "",
          formatInvalidIncrementalPolicy: () => "",
          formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
@@ -486,6 +496,7 @@ describe("deprecated: explores — PackageController.updatePackage validation", 
          formatInvalidExplores: (override?: string[]) =>
             override?.includes("nope.malloy") ? invalidMsg : "",
          formatInvalidPersistencePolicy: () => "",
+         formatUnparseableAnnotations: () => "",
          formatInvalidIncrementalPolicy: () => "",
          formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
@@ -779,6 +790,7 @@ describe("PackageController.updatePackage reinstall decision", () => {
                   getPackageMetadata: () => fetched,
                   formatInvalidExplores: () => "",
                   formatInvalidPersistencePolicy: () => "",
+                  formatUnparseableAnnotations: () => "",
                   formatInvalidIncrementalPolicy: () => "",
                   formatInvalidPreaggregatePolicy: () => "",
                   formatPersistenceCollisionRejections: () => "",
@@ -1325,6 +1337,7 @@ describe("PackageController.addPackage manifestLocation", () => {
    const installedPackage = {
       formatInvalidExplores: () => "",
       formatInvalidPersistencePolicy: () => "",
+      formatUnparseableAnnotations: () => "",
       formatInvalidIncrementalPolicy: () => "",
       formatInvalidPreaggregatePolicy: () => "",
       formatPersistenceCollisionRejections: () => "",
@@ -1402,6 +1415,7 @@ describe("PackageController.addPackage manifestLocation", () => {
       const installPackage = sinon.stub().resolves({
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => "",
+         formatUnparseableAnnotations: () => "",
          formatInvalidIncrementalPolicy: () => "",
          formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
@@ -1616,6 +1630,7 @@ describe("PackageController.addPackage with package versioning off or on", () =>
    const installedPackage = {
       formatInvalidExplores: () => "",
       formatInvalidPersistencePolicy: () => "",
+      formatUnparseableAnnotations: () => "",
       formatInvalidIncrementalPolicy: () => "",
       formatInvalidPreaggregatePolicy: () => "",
       formatPersistenceCollisionRejections: () => "",
@@ -1654,11 +1669,11 @@ describe("PackageController.addPackage with package versioning off or on", () =>
          String(message).includes("Package versioning is off"),
       );
 
-   it("off (the default): installs in place as before, whatever the tree declares, and warns", async () => {
+   it("off: installs in place as before, whatever the tree declares, and warns", async () => {
       // What every publish from a location did before versions, with the
       // install's own arguments. The version service is never asked: off, a
       // publisher.json's version is not read.
-      versioning();
+      versioning("off");
       const versions = versionsPublishing(installedPackage);
       const installPackage = sinon.stub().resolves(installedPackage);
       const warn = spyOnWarn();
@@ -1688,7 +1703,7 @@ describe("PackageController.addPackage with package versioning off or on", () =>
    });
 
    it("off: warns once per package, not on every republish", async () => {
-      versioning();
+      versioning("off");
       const controller = controllerWith(
          versionsPublishing(installedPackage),
          sinon.stub().resolves(installedPackage),
@@ -1803,10 +1818,14 @@ describe("PackageController.getPackageBuildPlan", () => {
    function controllerServing(pkg: {
       getBuildPlan: () => unknown;
       isBuildPlanUnavailable: () => boolean;
+      whenBuildPlanCurrent?: () => Promise<void>;
    }): PackageController {
       const environmentStore = fakeOf<PackageAdmin>({
          getEnvironment: sinon.stub().resolves({
-            getPackage: sinon.stub().resolves(pkg),
+            getPackage: sinon.stub().resolves({
+               whenBuildPlanCurrent: () => Promise.resolve(),
+               ...pkg,
+            }),
          }),
       });
       return new PackageController(
@@ -1823,6 +1842,48 @@ describe("PackageController.getPackageBuildPlan", () => {
          isBuildPlanUnavailable: () => false,
       });
       expect(await controller.getPackageBuildPlan("env", "pkg")).toBe(plan);
+   });
+
+   it("waits for a re-derivation a connection edit started (ms2data/service#6145)", async () => {
+      // A connection edit can move content addresses; the route must never
+      // hand out the plan from before it.
+      const stale = { graphs: [], sources: { s: { sourceEntityId: "old" } } };
+      const fresh = { graphs: [], sources: { s: { sourceEntityId: "new" } } };
+      let current: unknown = stale;
+      let finish!: () => void;
+      const refreshed = new Promise<void>((resolve) => {
+         finish = () => {
+            current = fresh;
+            resolve();
+         };
+      });
+      const controller = controllerServing({
+         getBuildPlan: () => current,
+         isBuildPlanUnavailable: () => false,
+         whenBuildPlanCurrent: () => refreshed,
+      });
+      const read = controller.getPackageBuildPlan("env", "pkg");
+      // Let the route reach the plan read before the refresh lands.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      finish();
+      expect(await read).toBe(fresh as unknown as Awaited<typeof read>);
+   });
+
+   it("answers 503 with Retry-After when the re-derivation outlasts the wait (BuildPlanRefreshingError)", async () => {
+      const controller = controllerServing({
+         getBuildPlan: () => null,
+         isBuildPlanUnavailable: () => false,
+         whenBuildPlanCurrent: () =>
+            Promise.reject(new BuildPlanRefreshingError("refreshing")),
+      });
+      const err = await controller
+         .getPackageBuildPlan("env", "pkg")
+         .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(BuildPlanRefreshingError);
+      const answer = internalErrorToHttpError(err as Error, { log: false });
+      expect(answer.status).toBe(503);
+      expect(answer.headers).toEqual({ "Retry-After": "5" });
+      expect(answer.json.reason).toBe("BUILD_PLAN_REFRESHING");
    });
 
    it("is an empty plan when the package declares no persist source", async () => {
@@ -1895,6 +1956,8 @@ describe("PackageController.dryRunPackage", () => {
 
    const loadedPackage = {
       getPackageMetadata: () => ({ name: "pkg", warnings: [] }),
+      previewServeVerdicts: async () => [],
+      getBuildPlan: () => null,
    };
    const body = { name: "pkg", location: "gs://bucket/pkg.zip" };
 
@@ -1919,6 +1982,31 @@ describe("PackageController.dryRunPackage", () => {
          location: "gs://bucket/pkg.zip",
       });
       expect(seen[0].readVersion).toBe(false);
+   });
+
+   // ms2data/service#7090: what a publish would build and serve.
+   it("adds the build plan and the previewed serve verdicts when the package materializes", async () => {
+      const buildPlan = { graphs: [], sources: {} };
+      const verdict = {
+         sourceName: "orders",
+         sourceID: "orders@file:///pkg/m.malloy",
+         origin: "persist",
+         tier: "colocated",
+         verdict: "not_built",
+         message: "`orders` will serve from its table once a build binds it.",
+      };
+      const { controller } = controllerWith(async (options) =>
+         options.describe(
+            {
+               ...loadedPackage,
+               previewServeVerdicts: async () => [verdict],
+               getBuildPlan: () => buildPlan,
+            },
+            undefined,
+         ),
+      );
+      const answer = await controller.dryRunPackage("env", body);
+      expect(answer).toMatchObject({ buildPlan, serveVerdicts: [verdict] });
    });
 
    it("with versioning on, reads the tree's version and names it in the answer", async () => {
@@ -1960,6 +2048,7 @@ describe("PackageController.dryRunPackage", () => {
    });
 
    it("does not read a version when versioning is off", async () => {
+      versioning("off");
       const { controller, seen } = controllerWith(
          async (options) => options.describe(loadedPackage, undefined),
          { versioned: true },

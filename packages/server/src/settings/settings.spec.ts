@@ -52,6 +52,7 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    "mcp.port": "PUBLISHER_MCP_PORT",
    "mcp.host": "PUBLISHER_MCP_HOST",
    "mcp.corsOrigins": "PUBLISHER_MCP_CORS_ORIGINS",
+   "mcp.appOrigin": "PUBLISHER_MCP_APP_ORIGIN",
    "mcp.configFileEnabled": "PUBLISHER_MCP_CONFIG_FILE_ENABLED",
    "mcp.includeHiddenFilesAndSources":
       "PUBLISHER_MCP_INCLUDE_HIDDEN_FILES_AND_SOURCES",
@@ -81,14 +82,20 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    "packageLoad.schemaCacheBytes": "PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES",
    "duckdb.extensionFetchPolicy": "PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY",
    "duckdb.memoryLimit": "PUBLISHER_DUCKDB_MEMORY_LIMIT",
+   "duckdb.threads": "PUBLISHER_DUCKDB_THREADS",
    "duckdb.tempDirectory": "PUBLISHER_DUCKDB_TEMP_DIRECTORY",
    "duckdb.partitionedWriteFlushThreshold":
       "PUBLISHER_DUCKDB_PARTITIONED_WRITE_FLUSH_THRESHOLD",
    "ducklake.rowGroupSizeBytes": "PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES",
    "ducklake.targetFileSizeBytes": "PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES",
    "persist.storageMode": "PUBLISHER_PERSIST_STORAGE_MODE",
+   "persist.addressIncludesDestination":
+      "PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION",
    "persist.collisionEnforcementEnabled":
       "PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED",
+   "materialize.enabled": "PUBLISHER_MATERIALIZE_ENABLED",
+   "materialize.gatedSources": "PUBLISHER_MATERIALIZE_GATED_SOURCES",
+   "materialize.v1ServedCopy": "PUBLISHER_MATERIALIZE_V1_SERVED_COPY",
    "materialization.schedulerEnabled":
       "PUBLISHER_MATERIALIZATION_SCHEDULER_ENABLED",
    "materialization.schedulerIntervalMs":
@@ -105,6 +112,9 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    "shutdown.drainDurationSeconds": "PUBLISHER_SHUTDOWN_DRAIN_DURATION_SECONDS",
    "shutdown.gracefulCloseTimeoutSeconds":
       "PUBLISHER_SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS",
+   "workloadLog.store": "PUBLISHER_WORKLOAD_LOG_STORE",
+   "workloadLog.retentionDays": "PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS",
+   "workloadLog.maxRows": "PUBLISHER_WORKLOAD_LOG_MAX_ROWS",
    "retrieval.embedding.apiKey": "PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY",
    "retrieval.embedding.model": "PUBLISHER_RETRIEVAL_EMBEDDING_MODEL",
    "retrieval.embedding.baseUrl": "PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL",

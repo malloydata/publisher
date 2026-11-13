@@ -1,0 +1,444 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "daily",
+        "tier": "colocated"
+      }
+    ],
+    "verdicts": [
+      "daily:serves",
+      "daily_ext:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "big"
+          },
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "big",
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "2802c4065c3f3b21",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "daily",
+          "stages": 1
+        },
+        "source": "daily"
+      },
+      "equalToLive": true,
+      "malloy": "run: daily -> { group_by: region, big; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "b5f87ec0aa79359dd819028840930acbc84c500ea8364a54bb7f54c323188829"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region",
+            "big"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "daily"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "b5f87ec0aa79359dd819028840930acbc84c500ea8364a54bb7f54c323188829"
+        },
+        "warnings": []
+      },
+      "query": "group by a stored dimension",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "98b991832c4bd851",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "daily",
+          "stages": 1
+        },
+        "source": "daily"
+      },
+      "equalToLive": true,
+      "malloy": "run: daily -> by_region",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "b5f87ec0aa79359dd819028840930acbc84c500ea8364a54bb7f54c323188829"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "daily"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "b5f87ec0aa79359dd819028840930acbc84c500ea8364a54bb7f54c323188829"
+        },
+        "warnings": []
+      },
+      "query": "a declared view",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "avg_total"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "bb87794751d4c00c",
+          "kind": "reduce",
+          "measures": [
+            "avg_total"
+          ],
+          "source": "daily_ext",
+          "stages": 1
+        },
+        "source": "daily_ext"
+      },
+      "equalToLive": true,
+      "malloy": "run: daily_ext -> { group_by: region; aggregate: avg_total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "b5f87ec0aa79359dd819028840930acbc84c500ea8364a54bb7f54c323188829"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "avg_total"
+          ],
+          "sourceName": "daily_ext"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "b5f87ec0aa79359dd819028840930acbc84c500ea8364a54bb7f54c323188829"
+        },
+        "warnings": []
+      },
+      "query": "an extension's measure",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "big"
+          },
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "big",
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "2802c4065c3f3b21",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "daily",
+          "stages": 1
+        },
+        "source": "daily"
+      },
+      "equalToLive": true,
+      "malloy": "run: daily -> { group_by: region, big; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "b5f87ec0aa79359dd819028840930acbc84c500ea8364a54bb7f54c323188829"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region",
+            "big"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "daily"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "b5f87ec0aa79359dd819028840930acbc84c500ea8364a54bb7f54c323188829"
+        },
+        "warnings": []
+      },
+      "query": "group by a stored dimension",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "98b991832c4bd851",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "daily",
+          "stages": 1
+        },
+        "source": "daily"
+      },
+      "equalToLive": true,
+      "malloy": "run: daily -> by_region",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "b5f87ec0aa79359dd819028840930acbc84c500ea8364a54bb7f54c323188829"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "daily"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "b5f87ec0aa79359dd819028840930acbc84c500ea8364a54bb7f54c323188829"
+        },
+        "warnings": []
+      },
+      "query": "a declared view",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "avg_total"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "bb87794751d4c00c",
+          "kind": "reduce",
+          "measures": [
+            "avg_total"
+          ],
+          "source": "daily_ext",
+          "stages": 1
+        },
+        "source": "daily_ext"
+      },
+      "equalToLive": true,
+      "malloy": "run: daily_ext -> { group_by: region; aggregate: avg_total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "b5f87ec0aa79359dd819028840930acbc84c500ea8364a54bb7f54c323188829"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "avg_total"
+          ],
+          "sourceName": "daily_ext"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "b5f87ec0aa79359dd819028840930acbc84c500ea8364a54bb7f54c323188829"
+        },
+        "warnings": []
+      },
+      "query": "an extension's measure",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

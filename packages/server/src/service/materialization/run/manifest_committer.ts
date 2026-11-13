@@ -16,12 +16,15 @@ import type { MaterializationHost } from "../host";
 import {
    BuildInstruction,
    BuildManifestResult,
+   boundNativeSchemaOf,
+   boundSchemaOf,
    FreshnessManifest,
    isLegacyFailedEntry,
    ManifestEntry,
    ManifestReference,
    SourceFailure,
 } from "../types";
+import { keyUniquenessAt, type RollupKeyRecord } from "./inline_uniqueness";
 import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 import type { RunLifecycle } from "./run_lifecycle";
 
@@ -92,6 +95,8 @@ export class ManifestCommitter {
       entries: Record<string, ManifestEntry>,
       // The version the run built; undefined for an unversioned package.
       versionId?: string,
+      // The rollup key checks this run stands behind (known limitation 29).
+      rollupKeys?: Readonly<Record<string, RollupKeyRecord>>,
    ): Promise<void> {
       // Bound un-gated: freshness is stamped only on the control plane's wire
       // manifest. A failed source mirrored into `entries` (the
@@ -109,12 +114,22 @@ export class ManifestCommitter {
          // table on the source's OWN connection, where it does not exist.
          // Storage entries serve via the bindings below.
          if (entry.physicalTableName && !entry.storageDestinationName) {
+            const keyUniqueness = keyUniquenessAt(
+               rollupKeys,
+               sourceEntityId,
+               entry,
+            );
             manifestEntries[sourceEntityId] = {
                tableName: entry.physicalTableName,
                // For dialect quoting at bind (Package.quoteBoundTableNames): the
                // build CREATEd it quoted, so an unquoted read misses on a
                // case-folding engine.
                connectionName: entry.connectionName,
+               // The columns a colocated build captured (v1 cutover), which
+               // the served copy binds a v1 table with.
+               ...boundSchemaOf(entry.schema),
+               ...boundNativeSchemaOf(entry.nativeSchema),
+               ...(keyUniqueness ? { keyUniqueness } : {}),
             };
          }
       }
@@ -126,9 +141,21 @@ export class ManifestCommitter {
          );
          // Storage sources serve cross-connection via the virtual-source
          // transform. No-op without storage= sources.
+         // A stored table's own primary key check rides on its entry, from
+         // this run's records alone (the join-to-rollup leg in a destination).
          await environment.bindPackageStorageServeBindings(
             packageName,
-            builtEntries,
+            Object.fromEntries(
+               Object.entries(builtEntries).map(([id, entry]) => {
+                  const keyUniqueness = entry.storageDestinationName
+                     ? keyUniquenessAt(rollupKeys, id, entry)
+                     : undefined;
+                  return [
+                     id,
+                     keyUniqueness ? { ...entry, keyUniqueness } : entry,
+                  ];
+               }),
+            ),
             versionId,
          );
          recordAutoLoadOutcome("success");
@@ -395,6 +422,9 @@ export function referenceManifestToEntries(
          sourceEntityId: ref.sourceEntityId,
          physicalTableName: ref.physicalTableName,
          connectionName: ref.connectionName,
+         ...(ref.storageDestinationName
+            ? { storageDestinationName: ref.storageDestinationName }
+            : {}),
       };
    }
    return entries;

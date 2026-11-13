@@ -21,12 +21,17 @@
  */
 
 import type { ModelDef } from "@malloydata/malloy";
+import { isOnRoute, marksAgentHidden } from "../../service/annotation_reader";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import { compareText as comparePaths } from "../../compare_text";
 import { splitSourceId } from "../../service/source_id";
 import {
+   collectRecordMembers,
    entityDocs,
    enterJoin,
+   type FieldType,
+   MAX_RECORD_MEMBERS_PER_SOURCE,
+   memberSegment,
    modelPathOfUrl,
    sourceContextKey,
 } from "./package_entities";
@@ -68,6 +73,8 @@ export interface CatalogNode {
     */
    joinedSourceKey?: string;
    relationship?: Relationship;
+   /** See Entity.joinRelationship. */
+   joinRelationship?: Relationship;
    aliases?: string[];
    /** Keys of the nodes this node's expression reads. */
    dependsOn: string[];
@@ -596,10 +603,6 @@ function ownNoteTexts(
    return own.map((n) => n.text ?? "").filter(Boolean);
 }
 
-/** `#(agent-hidden)` on a source; any bracket pair Malloy routes, as hosted reads it. */
-const AGENT_HIDDEN_SOURCE = /^#\|?\s*[([{<]?\s*agent-hidden\b/;
-/** `##(agent-hidden)` on a model file: hides the sources served through that file. */
-const AGENT_HIDDEN_FILE = /^##\|?\s*[([{<]?\s*agent-hidden\b/;
 /** An access gate a source writes itself: it changes which rows a caller sees. */
 const OWN_GATE = /^#\|?\s*[([{<]?\s*(access_filter|authorize)\b/;
 
@@ -616,7 +619,7 @@ function isAgentHidden(
 ): boolean {
    if (!compiled) return false;
    return ownNoteTexts(models, compiled).some((t) =>
-      AGENT_HIDDEN_SOURCE.test(t),
+      marksAgentHidden(t, "source"),
    );
 }
 
@@ -646,7 +649,7 @@ function agentHiddenFiles(
          if (modelPathOfUrl(url, modelPaths) !== model.modelPath) continue;
          if (
             (entry.ownNotes?.notes ?? []).some((n) =>
-               AGENT_HIDDEN_FILE.test(n.text ?? ""),
+               marksAgentHidden(n.text ?? "", "file"),
             )
          ) {
             files.add(model.modelPath);
@@ -800,7 +803,7 @@ function hasIndexTag(field: {
    annotations?: Array<string | { value: string }>;
 }): boolean {
    return (field.annotations ?? []).some((a) =>
-      /^\s*#\(index\b/.test(typeof a === "string" ? a : a.value),
+      isOnRoute(typeof a === "string" ? a : a.value, "index"),
    );
 }
 
@@ -810,7 +813,7 @@ interface InfoField {
    annotations?: Array<string | { value: string }>;
    schema?: { fields?: InfoField[] };
    relationship?: Relationship;
-   type?: { kind?: string };
+   type?: FieldType;
 }
 
 /**
@@ -883,6 +886,8 @@ function unservedCopies(args: {
          walked.add(sourceKey);
          const sourceName = sources.get(sourceKey)?.name ?? info.name;
          let paths = 0;
+         // Record members this source's unserved copies may still add.
+         const memberBudget = { left: MAX_RECORD_MEMBERS_PER_SOURCE };
          const visit = (
             fields: readonly InfoField[],
             compiled: readonly CompiledField[] | undefined,
@@ -962,6 +967,40 @@ function unservedCopies(args: {
                      ...(dataType ? { dataType } : {}),
                   } as Entity,
                });
+               // A record's members, as the entity index walks them on a
+               // joined source (collectRecordMembers): `customer.profile.tier`.
+               if (f.kind !== "dimension") continue;
+               const members: Entity[] = [];
+               collectRecordMembers({
+                  type: f.type,
+                  path: `${joinPath}.${memberSegment(f.name)}`,
+                  recordPath: memberSegment(f.name),
+                  joinPath,
+                  sourceName,
+                  modelPath: model.modelPath,
+                  fanout,
+                  depth: 1,
+                  nextId: () => "",
+                  out: members,
+                  budget: memberBudget,
+               });
+               for (const m of members) {
+                  m.id = `unserved:${sourceKey}:${m.name}`;
+                  if (locked) {
+                     m.doc = "";
+                     m.embedDoc = "";
+                     delete m.docSource;
+                  }
+                  const field = m.name.slice(joinPath.length + 1);
+                  found.push({
+                     field: m.name,
+                     identity: [owner, ...rest, m.kind, field].join("\u0000"),
+                     sourceKey,
+                     exists: hasNode(m.kind, sourceKey, m.name),
+                     depth: path.length,
+                     entity: m,
+                  });
+               }
             }
          };
          visit(
@@ -1153,6 +1192,9 @@ export function buildCatalog(input: CatalogInput): Catalog {
          ...(e.code ? { code: e.code } : {}),
          ...(e.joinPath ? { joinPath: e.joinPath } : {}),
          ...(e.relationship ? { relationship: e.relationship } : {}),
+         ...(e.joinRelationship
+            ? { joinRelationship: e.joinRelationship }
+            : {}),
          ...(e.aliases ? { aliases: e.aliases } : {}),
          dependsOn: [],
          uses: [],

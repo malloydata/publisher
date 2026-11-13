@@ -80,6 +80,7 @@ import {
    resolveStructRef,
    sqlTargetRef,
    structRefName,
+   queryGivenUsageIds,
 } from "./ir/prepared_query";
 import {
    mintGovernedRunnable,
@@ -183,6 +184,24 @@ function denyUnlessAdmitted(
 }
 
 /**
+ * Whether two {@link EnforcedGates} hold the same gates: per route, the same
+ * set of expressions. A gate reached twice (own and inherited, or by two
+ * checks) counts once; order does not matter. Givens are read by name from
+ * the expression text and bound from the one request, so equal text is the
+ * same gate with the same givens.
+ */
+export function sameGateSet(a: EnforcedGates, b: EnforcedGates): boolean {
+   const same = (x: readonly string[], y: readonly string[]) => {
+      const xs = new Set(x);
+      const ys = new Set(y);
+      return xs.size === ys.size && [...xs].every((e) => ys.has(e));
+   };
+   return (
+      same(a.authorize, b.authorize) && same(a.accessFilter, b.accessFilter)
+   );
+}
+
+/**
  * Budget for a walk over a request's own derivation declarations. Exceeding it
  * fails the proof (and so denies), so it only has to exceed any real chain.
  *
@@ -232,6 +251,15 @@ export interface GovernRequest {
    proveGraft?: (recompiled: QueryMaterializer) => Promise<void>;
    /** See `authorizeAndBindRunnable`'s options. */
    graftScope?: GraftScope;
+   /**
+    * The router let `compiled.runnable`, a variant that keeps the author's
+    * text (the served copy, R3), past a gate on the query's entry point. The
+    * veto read the gate off the LIVE compile; this re-proves it on the routed
+    * one: the request must carry that variant's own `graftScope` and the
+    * `live` compile, and governing must enforce there exactly the gates the
+    * live entry point carries (see `sameGateSet`), or the query is denied.
+    */
+   routedPastEntryPointGate?: boolean;
    /** See `authorizeAndBindRunnable`'s options. */
    bypassAlreadyNoted?: boolean;
    /**
@@ -253,6 +281,17 @@ export interface GovernRequest {
       source: (
          governed: GovernedRunnable,
       ) => string | undefined | Promise<string | undefined>;
+      /**
+       * `"served_copy"` when the router answered from the served copy (the
+       * author's text re-rooted on stored tables), so the ceiling is read on
+       * {@link CompiledQuery.runnable}, the compile that answers: the live
+       * compile is a cross-connection model's build view, which lacks the
+       * joins it leaves out, so a query through one does not compile there.
+       * The live compile is still checked whenever it compiles. Any other
+       * routed shape carries no annotations to read a ceiling from, so it
+       * stays on the live compile.
+       */
+      answeredBy?: "served_copy";
    };
 }
 
@@ -618,6 +657,15 @@ export class QueryGovernor {
             await this.assertCallerJoinsQueryable(live, request.callerRegion);
          }
       }
+      if (
+         request.routedPastEntryPointGate &&
+         !request.bypassAuthorize &&
+         !request.graftScope
+      ) {
+         // Grafting on the author's scope would recompile against the live
+         // model and silently answer live under a routed answer record.
+         await this.denyRoutedPastGate(compiled.runnable, "no_graft_scope");
+      }
       const runnable = await this.authorizeAndBindRunnable(
          compiled.runnable,
          request.givens ?? {},
@@ -637,15 +685,42 @@ export class QueryGovernor {
             bypassAlreadyNoted: request.bypassAlreadyNoted,
          },
       );
+      if (request.routedPastEntryPointGate && !request.bypassAuthorize) {
+         // The routed compile must enforce EXACTLY the gates the live entry
+         // point does, by route and expression, own and inherited. One gate
+         // found is not the gate set: a routed form that kept the lock but
+         // lost the filter would answer rows live refuses. A live set that
+         // cannot be read, or is empty, denies too.
+         const expected = live
+            ? await this.liveEntryPointGateSet(live)
+            : undefined;
+         const enforced = this.enforcedGatesByRunnable.get(runnable);
+         if (!expected || !enforced) {
+            await this.denyRoutedPastGate(compiled.runnable, "no_gate_found");
+         } else if (!sameGateSet(expected, enforced)) {
+            await this.denyRoutedPastGate(
+               compiled.runnable,
+               "gate_set_differs",
+            );
+         }
+      }
       if (request.ceiling && !request.bypassAuthorize) {
-         await this.assertWithinCarriesCeiling(
-            request.ceiling.audit,
-            live ?? runnable,
+         const source = await request.ceiling.source(runnable);
+         for (const target of await this.ceilingTargets(
+            request.ceiling,
+            compiled,
             runnable,
-            await request.ceiling.source(runnable),
-            request.givens,
-            request.callerRegion,
-         );
+         )) {
+            await this.assertWithinCarriesCeiling(
+               request.ceiling.audit,
+               target.compile,
+               runnable,
+               source,
+               request.givens,
+               request.callerRegion,
+               target.servedCopy,
+            );
+         }
       }
       return {
          runnable,
@@ -654,6 +729,44 @@ export class QueryGovernor {
             grafts: this.rowLevelFilteredRunnables.get(runnable) ?? [],
          },
       };
+   }
+
+   /**
+    * Deny a routed answer that {@link GovernRequest.routedPastEntryPointGate}
+    * could not re-prove; opaque to the caller, like every gate denial.
+    */
+   private async denyRoutedPastGate(
+      routed: QueryMaterializer,
+      why: "no_graft_scope" | "no_gate_found" | "gate_set_differs",
+   ): Promise<never> {
+      const source = await this.resolveAuthorizeSourceFromRunnable(routed);
+      recordRowLevelGateDecision("denied_by_gate", "entry_point");
+      logger.warn(
+         "A routed answer past an entry-point gate could not be re-proven on its own compile; denying",
+         { modelPath: this.modelPath, source, why },
+      );
+      throw AccessDeniedError.forSource(source ?? "unknown");
+   }
+
+   /**
+    * The gates governing the LIVE compile would evaluate on its entry point:
+    * the walk ({@link entryPointGatesInForce}: own, inherited, a derivation's
+    * base, a composite's resolved branch) plus this model's on-disk gates for
+    * the run target's name, which {@link probeEntryPointGates} folds in the
+    * same way. `undefined` (deny) when the walk cannot read the run target or
+    * finds no gate, since a routed answer past a gate implies live has one.
+    */
+   private async liveEntryPointGateSet(
+      live: QueryMaterializer,
+   ): Promise<EnforcedGates | undefined> {
+      const walked = await this.entryPointGatesInForce(live);
+      if (!walked) return undefined;
+      const name = await this.resolveAuthorizeSourceFromRunnable(live);
+      const onDisk = name ? (this.entryPointGatesBySource.get(name) ?? []) : [];
+      const gates = enforcedGatesOf([...walked, ...onDisk]);
+      return gates.authorize.length + gates.accessFilter.length === 0
+         ? undefined
+         : gates;
    }
 
    /**
@@ -671,6 +784,7 @@ export class QueryGovernor {
          modelDef: this.modelDef,
          materializer: this.modelMaterializer,
          cacheScope: "model",
+         runtime: this.gateRuntime,
       };
    }
 
@@ -700,6 +814,7 @@ export class QueryGovernor {
                modelDef: prior.modelDef,
                materializer: prior.modelMaterializer,
                cacheScope: `cell:${i}`,
+               runtime: this.gateRuntime,
             };
          }
       }
@@ -721,6 +836,7 @@ export class QueryGovernor {
          modelDef: cell.modelDef,
          materializer: cell.modelMaterializer,
          cacheScope: `cell-self:${cellIndex}`,
+         runtime: this.gateRuntime,
       };
    }
 
@@ -861,12 +977,12 @@ export class QueryGovernor {
       } catch {
          return names;
       }
-      const usage = prepared._query?.givenUsage;
+      const usage = queryGivenUsageIds(prepared);
       if (!usage) {
          for (const name of candidates) names.add(name);
          return names;
       }
-      const usedIds = new Set(usage.map((g) => g.id));
+      const usedIds = new Set(usage);
       const namedIds = new Set<string>();
       const modelDef = prepared._modelDef ?? this.modelDef;
       // Separate visited sets: a struct seen outside a source argument must
@@ -1506,6 +1622,24 @@ export class QueryGovernor {
       /** Where caller text sits, so a caller join into a gated source counts. */
       callerRegion?: CallerRegion,
    ): Promise<boolean> {
+      return (await this.rowLevelGateVeto(runnable, callerRegion)) !== "none";
+   }
+
+   /**
+    * {@link queryEntryPointHasRowLevelGate}, saying which gate it found:
+    * `entry_point` when only the run target's own chain is gated, so a
+    * routed shape that keeps the author's gates (the served copy, R3) can
+    * have them grafted and proven by `govern()`; `caller_join` when a caller
+    * join reaches a gated source, which `govern()` refuses on any routed
+    * compile (`routed_past_caller_join_gate`); `unproven` when the walk could
+    * not decide. Only `entry_point` may let a routed shape through.
+    */
+   public async rowLevelGateVeto(
+      runnable: {
+         getPreparedQuery(): Promise<unknown>;
+      },
+      callerRegion?: CallerRegion,
+   ): Promise<"none" | "entry_point" | "caller_join" | "unproven"> {
       try {
          const { struct, modelDef, compositeResolvedSourceDef } =
             await this.resolveRunTargetStruct(runnable);
@@ -1513,7 +1647,7 @@ export class QueryGovernor {
          // swallows a live compile failure as `modelDef: undefined`, while the
          // annotation-free serve shape may still compile and answer from
          // unfiltered rows.
-         if (!modelDef) return true;
+         if (!modelDef) return "unproven";
          const seen = new Set<SourceDef>();
          const gates = this.collectEntryPointGates(
             struct,
@@ -1536,18 +1670,20 @@ export class QueryGovernor {
                ),
             );
          }
-         if (gates.length > 0) return true;
-         if (!callerRegion) return false;
+         const entryGated = gates.length > 0;
+         if (!callerRegion) return entryGated ? "entry_point" : "none";
          // The serve shape carries no annotation for a caller join's gate
-         // either, so the same route-blind question is asked of each one.
+         // either, so the same route-blind question is asked of each one,
+         // even when the entry point is gated too: the served copy may answer
+         // past an entry-point gate, never past a caller join's.
          const callerJoins = await this.resolvedCallerJoins(
             runnable,
             callerRegion,
          );
-         if (!callerJoins) return true;
+         if (!callerJoins) return "unproven";
          const gated = (name: string) =>
             (this.entryPointGatesBySource.get(name)?.length ?? 0) > 0;
-         return callerJoins.some(
+         const joinGated = callerJoins.some(
             ({ resolution, compiledModelDef }) =>
                resolution.kind === "unproven" ||
                Array.from(resolution.names).some(gated) ||
@@ -1563,10 +1699,11 @@ export class QueryGovernor {
                      ).length > 0,
                ),
          );
+         return joinGated ? "caller_join" : entryGated ? "entry_point" : "none";
       } catch {
          // Fail closed: a false positive costs a live query; a false negative
          // serves unfiltered rows with nothing downstream to catch it.
-         return true;
+         return "unproven";
       }
    }
 
@@ -1815,6 +1952,42 @@ export class QueryGovernor {
    }
 
    /**
+    * The compiles the `#(carries)` ceiling is read on, in order. Live (or the
+    * governed runnable, when there is no separate live compile) unless the
+    * served copy answered. When it did, the served copy's own compile (the
+    * routed runnable, before any graft, as the live check reads the live
+    * compile before any graft), and live as well whenever live compiles: a
+    * live compile that does not compile is a cross-connection model's build
+    * view without the join the query goes through, which has nothing to
+    * read, and is never what answers. A served-copy claim with no separate
+    * routed compile is not one: the live compile is what runs, so it is read.
+    */
+   private async ceilingTargets(
+      ceiling: NonNullable<GovernRequest["ceiling"]>,
+      compiled: CompiledQuery,
+      governed: GovernedRunnable,
+   ): Promise<{ compile: QueryMaterializer; servedCopy: boolean }[]> {
+      const { live } = compiled;
+      if (
+         ceiling.answeredBy !== "served_copy" ||
+         !live ||
+         compiled.runnable === live
+      ) {
+         return [{ compile: live ?? governed, servedCopy: false }];
+      }
+      const served = { compile: compiled.runnable, servedCopy: true };
+      let liveCompiles = true;
+      try {
+         await live.getPreparedQuery();
+      } catch {
+         liveCompiles = false;
+      }
+      return liveCompiles
+         ? [{ compile: live, servedCopy: false }, served]
+         : [served];
+   }
+
+   /**
     * Refuse a query whose entry carries a `#(carries)` ceiling when it reads a
     * field past it, so a source's list holds for what a caller reads and not
     * only for what the author declared. The entry's ceiling is read off the
@@ -1828,11 +2001,27 @@ export class QueryGovernor {
       source: string | undefined,
       givens: Record<string, GivenValue> | undefined,
       region: CallerRegion | undefined,
+      /**
+       * `live` is the served copy's compile: its own model is the one read
+       * (the build view's lacks what it left out), and a ceiling declared
+       * only there still counts.
+       */
+      servedCopy = false,
    ): Promise<void> {
       // Only a model that declares a ceiling pays for reading the query.
-      if (!modelDeclaresCarries(this.modelDef)) return;
+      if (!servedCopy && !modelDeclaresCarries(this.modelDef)) return;
       const prepared = await readPreparedQuery(live);
-      const modelDef = prepared.modelDef ?? this.modelDef;
+      const modelDef = servedCopy
+         ? prepared.modelDef
+         : (prepared.modelDef ?? this.modelDef);
+      if (
+         servedCopy &&
+         modelDef &&
+         !modelDeclaresCarries(this.modelDef) &&
+         !modelDeclaresCarries(modelDef)
+      ) {
+         return;
+      }
       let refusal: string | undefined;
       try {
          const joins = region
@@ -1840,7 +2029,12 @@ export class QueryGovernor {
                  (r) => r.callerJoin.join,
               )
             : [];
-         refusal = ceilingRefusal(modelDef, prepared.query, joins);
+         // The served copy's compile without its own model cannot be read
+         // against anything: refused rather than read against the build view.
+         refusal =
+            servedCopy && !modelDef
+               ? "this query's source cannot be read completely"
+               : ceilingRefusal(modelDef, prepared.query, joins);
       } catch (err) {
          if (!(err instanceof CallerJoinWalkError)) throw err;
          refusal = "this query's joins cannot be read completely";
@@ -2752,7 +2946,7 @@ export class QueryGovernor {
          this.graftedMaterializerCache.set(key, materializer);
          return materializer;
       }
-      const built = this.buildGraftedMaterializer(grafts, graftScope.modelDef);
+      const built = this.buildGraftedMaterializer(grafts, graftScope);
       this.graftedMaterializerCache.set(key, built);
       // Evict after inserting, so the entry just built is never dropped.
       while (
@@ -2768,7 +2962,8 @@ export class QueryGovernor {
 
    /**
     * Deep-copy `modelDef`, append each grafted condition to its target's
-    * `filterList`, and reload the copy through {@link gateRuntime}.
+    * `filterList`, and reload the copy through the scope's own runtime
+    * ({@link GraftScope.runtime}).
     *
     * `modelDef` itself is NEVER mutated (concurrent requests with other gate
     * sets keep compiling against it).
@@ -2785,9 +2980,9 @@ export class QueryGovernor {
          graftTarget: string;
          condition: FilterCondition;
       }>,
-      modelDef: ModelDef,
+      { modelDef, runtime }: GraftScope,
    ): ModelMaterializer {
-      if (!this.gateRuntime) {
+      if (!runtime) {
          throw new Error(
             "no retained runtime to graft a row-level gate through",
          );
@@ -2811,7 +3006,7 @@ export class QueryGovernor {
             condition,
          );
       }
-      return this.gateRuntime._loadModelFromModelDef(copy);
+      return runtime._loadModelFromModelDef(copy);
    }
 
    /**

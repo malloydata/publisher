@@ -79,6 +79,49 @@ describe("compile scopes (compileSource)", () => {
       expect(problems.filter((p) => p.severity === "error")).toEqual([]);
    });
 
+   it("file: warns on an annotation reaching for a Publisher route, at its line", async () => {
+      const edited = TRACKS_MODEL.replace(
+         "  measure: total is n.sum()",
+         '  #(clasification) "none"\n  measure: total is n.sum()',
+      );
+      const { problems } = await compile("tracks.malloy", edited, "file");
+      const nearMiss = problems.filter(
+         (p) => p.code === "annotation-near-miss",
+      );
+      expect(nearMiss).toHaveLength(1);
+      expect(nearMiss[0]).toMatchObject({ severity: "warn" });
+      expect(nearMiss[0]?.message).toContain("`#(classification)`");
+      expect(nearMiss[0]?.at?.range.start.line).toBe(2);
+      // Append text is not scanned: its positions are in the joined file.
+      const appended = await compile(
+         "tracks.malloy",
+         `#(clasification) "none"\nsource: t2 is tracks`,
+         "append",
+      );
+      expect(
+         appended.problems.filter((p) => p.code === "annotation-near-miss"),
+      ).toEqual([]);
+   });
+
+   it("file: reports a misspelled gate as an error, since the load refuses it", async () => {
+      const edited = TRACKS_MODEL.replace(
+         "source: tracks is",
+         "#(authorise) 'finance' = 'finance'\nsource: tracks is",
+      );
+      const { problems } = await compile("tracks.malloy", edited, "file");
+      const gate = problems.filter(
+         (p) => p.code === "annotation-gate-near-miss",
+      );
+      expect(gate).toHaveLength(1);
+      expect(gate[0]).toMatchObject({ severity: "error" });
+      expect(gate[0]?.message).toContain("never enforced");
+      expect(gate[0]?.message).toContain("(meant `#(authorize)`?)");
+      // Not also reported as an ordinary near-miss warning.
+      expect(problems.filter((p) => p.code === "annotation-near-miss")).toEqual(
+         [],
+      );
+   });
+
    it("file: diagnostics land at true coordinates in the submitted text", async () => {
       // Error deliberately on 0-based line 2 of the submitted text. Append
       // scope would offset this by the on-disk file's line count; file scope

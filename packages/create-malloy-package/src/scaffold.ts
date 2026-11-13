@@ -589,9 +589,11 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
    assertWithinWorkspace(dataDir, options.cwd, `${name}/data`);
    fs.mkdirSync(dataDir, { recursive: true });
 
+   // A version, because a server outside watch mode publishes the package
+   // as the version its publisher.json declares, and refuses one with none.
    writeFile(
       path.join(packageDir, "publisher.json"),
-      JSON.stringify({ name }, null, 2) + "\n",
+      JSON.stringify({ name, version: "0.1.0" }, null, 2) + "\n",
       options.cwd,
    );
 

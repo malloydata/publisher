@@ -1,0 +1,116 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/iob/iob.malloy": [],
+          "rollup@<hammer>/iob/iob.malloy": [
+            "daily@<hammer>/iob/iob.malloy"
+          ]
+        },
+        "order": [
+          "daily@<hammer>/iob/iob.malloy",
+          "rollup@<hammer>/iob/iob.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/iob/iob.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollup@<hammer>/iob/iob.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/iob/iob.malloy": "iob.malloy",
+      "rollup@<hammer>/iob/iob.malloy": "iob.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/iob/iob.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/iob/iob.malloy"
+              ],
+              "sourceID": "rollup@<hammer>/iob/iob.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/iob/iob.malloy": {
+        "annotationFields": {
+          "name": "iob_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "iob.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "0416b96383e1693279bed5c6e6571eb4dc9d61869c7d0d21d4b3de0f37952c3c",
+        "sourceID": "daily@<hammer>/iob/iob.malloy",
+        "sql": "sha256:f5d8c102b7116ac7"
+      },
+      "rollup@<hammer>/iob/iob.malloy": {
+        "annotationFields": {
+          "name": "iob_rollup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "grand_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "iob.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "f2fb2227eff44a9017d6606a3f354fd44ea476f4aba3bc952a9cf144acaa30cc",
+        "sourceID": "rollup@<hammer>/iob/iob.malloy",
+        "sql": "sha256:f1d2e5a65741c38b"
+      }
+    }
+  }
+}

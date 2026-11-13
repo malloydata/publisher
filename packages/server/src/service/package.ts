@@ -1,12 +1,15 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
+import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
 
 import "@malloydata/db-duckdb/native";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { findingSeverity } from "./annotation_reader";
 import {
    Connection,
    ConnectionRuntime,
@@ -104,6 +107,7 @@ import type {
    SourceEligibility,
 } from "./materialization/plan/build_plan";
 import {
+   type DeploymentFacts,
    PackageMaterialization,
    toTableNameManifest,
 } from "./materialization/package_materialization";
@@ -250,6 +254,7 @@ interface ReportDiscovery {
 export type ApiPackage = components["schemas"]["Package"];
 type ApiModelEntities = components["schemas"]["ModelEntities"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
+type ApiServeVerdict = components["schemas"]["ServeVerdict"];
 
 interface ClassificationMemo {
    forModels: Map<string, Model>;
@@ -291,6 +296,30 @@ function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
    }
    return "error";
 }
+
+/**
+ * The fields `Package.getPackageMetadata` computes and overlays on what the
+ * package declares: what this server holds now (the load, its manifest
+ * binding, the sources it serves from storage), the build plan and agents,
+ * the secure givens, and the warnings. Never stored, so a caller that
+ * round-trips a response (a version load, a manifest rebind) cannot freeze
+ * them: the next read computes them again, and omits the inline ones while
+ * PUBLISHER_PACKAGE_INLINE_FIELDS is off.
+ */
+const COMPUTED_PACKAGE_FIELDS = [
+   "manifestBindingStatus",
+   "manifestEntryCount",
+   "boundManifestUri",
+   "servedRevision",
+   "sourceContentSha",
+   "storageServeBindings",
+   "serveVerdicts",
+   "buildPlan",
+   "agents",
+   "secureGivens",
+   "exploresWarnings",
+   "warnings",
+] as const satisfies readonly (keyof ApiPackage)[];
 
 /** Why a join-bypass finding is a warning and not a refusal (docs/authorize.md, "Gates are edge controls"). */
 const JOIN_BYPASS_NOTE =
@@ -360,6 +389,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       packagePath: () => this.packagePath,
       malloyConfig: () => this.malloyConfig,
       buildPlanPackage: this,
+      publishedSurface: () => this.publishedSurface(),
    });
    // The load path is the only writer of these; the accessors let a spec that
    // isolates a filter set them on the package, where they used to live
@@ -665,6 +695,40 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /** Decide discovery curation (`explores` listing, `export {}` filtering) for every model. */
    private applyDiscoveryPolicyToModels(): void {
       this.modelPolicy.setDiscoveryCuration(this.exploresDeclared());
+   }
+
+   /**
+    * The sources a caller may query, by the model that publishes them, or
+    * undefined when every source is queryable (no surface resolved, or
+    * `queryableSources: "all"`). The same files
+    * {@link applyQueryBoundaryToModels} admits: the surface's `.malloy` files,
+    * not its reports, each with the names its export closure lists.
+    */
+   private publishedSurface():
+      | { modelPath: string; names: string[]; queries: string[] }[]
+      | undefined {
+      if (this.packageMetadata.queryableSources === "all") return undefined;
+      const exploreSet = this.exploreSet();
+      if (!this.exploresDeclared() || !exploreSet) return undefined;
+      const out: { modelPath: string; names: string[]; queries: string[] }[] =
+         [];
+      for (const [modelPath, model] of this.models) {
+         if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+         if (!exploreSet.has(modelPath) || this.isServedReport(modelPath)) {
+            continue;
+         }
+         out.push({
+            modelPath,
+            names: (model.getSources() ?? []).flatMap((source) =>
+               source.name ? [source.name] : [],
+            ),
+            // Named queries are published too (packageCuratedQueries).
+            queries: (model.getQueries() ?? []).flatMap((query) =>
+               query.name ? [query.name] : [],
+            ),
+         });
+      }
+      return out;
    }
 
    /**
@@ -1286,6 +1350,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          schemaFetchDurationMs: outcome.timings.schemaFetchDurationMs,
          schemaFetchCount: outcome.timings.schemaFetchCount,
          schemaCacheHits: outcome.timings.schemaCacheHits,
+         translationsStored: outcome.timings.translationsStored,
+         translationsReused: outcome.timings.translationsReused,
          modelCount: outcome.models.length,
          databaseCount: databases.length,
       });
@@ -1858,8 +1924,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             severity: "warn" as const,
          })),
          ...this.materialization.storageWarnings(),
+         ...this.materialization.storedColumnTypeWarnings(),
+         ...this.materialization.servedCopyWarnings(),
          ...this.materialization.droppedPersistWarnings(),
+         ...this.materialization.rollupsOverStoredBaseWarnings(),
+         ...this.materialization.repeatedJoinOneKeyWarnings(),
+         ...this.materialization.annotationFindingWarnings(),
+         ...this.annotationNearMissWarnings(),
          ...this.materialization.persistRefusalWarnings(),
+         // One verdict pass: unreachable, and the deployment facts (P13).
+         ...this.materialization.verdictWarnings(),
          // Not in exploresWarnings: an import-only file must not block publish.
          ...this.emptyDiscoveryWarnings(),
          ...deprecatedFormatWarnings(this.models),
@@ -1953,6 +2027,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.materialization.bindColocatedServeManifest(entries);
    }
 
+   /** See {@link PackageMaterialization.forgetKeyUniqueness}. */
+   public forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
+      this.materialization.forgetKeyUniqueness(sourceEntityIds);
+   }
+
    /** See {@link PackageMaterialization.bindStorageServeBindings}. */
    public bindStorageServeBindings(
       entries: Record<string, ManifestEntry>,
@@ -1967,6 +2046,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.materialization.setServeDestinationSchema(resolver);
    }
 
+   /** See {@link PackageMaterialization.setDeploymentFacts}. */
+   public setDeploymentFacts(facts: DeploymentFacts): void {
+      this.materialization.setDeploymentFacts(facts);
+   }
+
    /** See {@link PackageMaterialization.setServeDestinationConfig}. */
    public setServeDestinationConfig(provider: () => MalloyConfig): void {
       this.materialization.setServeDestinationConfig(provider);
@@ -1975,6 +2059,60 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /** See {@link PackageMaterialization.invalidateServeShapes}. */
    public invalidateServeShapes(): void {
       this.materialization.invalidateServeShapes();
+   }
+
+   /** See {@link PackageMaterialization.markBuildPlanStale}. */
+   public markBuildPlanStale(changedConnections: Iterable<string> = []): void {
+      this.materialization.markBuildPlanStale(changedConnections);
+   }
+
+   /** See {@link PackageMaterialization.lastBuildPlanRefreshFailedTransiently}. */
+   public lastBuildPlanRefreshFailedTransiently(): boolean {
+      return this.materialization.lastBuildPlanRefreshFailedTransiently();
+   }
+
+   /** See {@link PackageMaterialization.isBuildPlanStale}. */
+   public isBuildPlanStale(): boolean {
+      return this.materialization.isBuildPlanStale();
+   }
+
+   /** See {@link PackageMaterialization.planConnectionNames}. */
+   public planConnectionNames(): ReadonlySet<string> | null {
+      return this.materialization.planConnectionNames();
+   }
+
+   /**
+    * Re-derive a stale build plan (see {@link PackageMaterialization.refreshBuildPlan})
+    * in the load worker pool, as a load derives it, so a connection edit's
+    * recompile stays off the main thread, at background priority.
+    * `retryFailed` re-derives a plan a failed re-derivation left unavailable.
+    * Resolves true when it was derived.
+    */
+   public refreshBuildPlan(
+      options: { retryFailed?: boolean } = {},
+   ): Promise<boolean> {
+      return this.materialization.refreshBuildPlan(async () => {
+         const outcome = await loadOutcomeOrThrow(
+            getPackageLoadPool().loadPackage({
+               packagePath: this.packagePath,
+               packageName: this.packageName,
+               environmentName: this.environmentName,
+               malloyConfig: this.malloyConfig,
+               defaultConnectionName: "duckdb",
+               computeBuildPlan: true,
+               // Behind publishes, reloads and compiles: a connection edit's
+               // re-derivations never hold a user's load up for more than
+               // the one already running.
+               background: true,
+            }),
+         );
+         return outcome.buildPlan;
+      }, options);
+   }
+
+   /** See {@link PackageMaterialization.whenBuildPlanCurrent}. */
+   public whenBuildPlanCurrent(timeoutMs?: number): Promise<void> {
+      return this.materialization.whenBuildPlanCurrent(timeoutMs);
    }
 
    /**
@@ -2143,6 +2281,79 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /** See {@link PackageMaterialization.formatInvalidPreaggregatePolicy}. */
    public formatInvalidPreaggregatePolicy(): string {
       return this.materialization.formatInvalidPreaggregatePolicy();
+   }
+
+   /** See {@link PackageMaterialization.formatUnparseableAnnotations}. */
+   public formatUnparseableAnnotations(): string {
+      return this.materialization.formatUnparseableAnnotations();
+   }
+
+   /**
+    * The coded `#@` annotation findings this package carries, as the warnings
+    * clients see, for the findings metric: derived from the warnings so the
+    * codes are declared once, where each warning is made.
+    */
+   public annotationFindingWarnings(): ApiPackageWarning[] {
+      return [
+         ...this.materialization.droppedPersistWarnings(),
+         ...this.materialization.annotationFindingWarnings(),
+         ...this.materialization.rollupsOverStoredBaseWarnings(),
+         // Not materialization-unreachable: it reports what the surface
+         // curates, not an annotation finding.
+         ...this.preaggregateAccessWarnings(),
+         ...this.annotationNearMissWarnings(),
+         // The incremental declaration's own advisory is about the annotation;
+         // the shared-address one is about the SQL, so it is not counted.
+         ...this.materialization
+            .incrementalPolicyAdvisories()
+            .filter((w) => w.code === INCREMENTAL_NO_MERGE_KEY_CODE),
+      ].filter((warning) => warning.code !== undefined);
+   }
+
+   /**
+    * Annotations the package's model files wrote that do nothing: a near miss
+    * of a route Publisher owns (`annotation-near-miss`), or a prefix Malloy
+    * cannot route (`annotation-malformed-route`). Warnings, never refusals.
+    * Each model reports only the notes in its own file, so a shared import
+    * is reported once.
+    */
+   public annotationNearMissWarnings(): ApiPackageWarning[] {
+      const warnings: ApiPackageWarning[] = [];
+      for (const [modelPath, model] of this.models) {
+         // Optional: a model a spec stands in for need not implement it.
+         for (const finding of model.annotationNearMisses?.() ?? []) {
+            const line = finding.at
+               ? ` (line ${finding.at.range.start.line + 1})`
+               : "";
+            warnings.push({
+               model: modelPath,
+               ...(finding.subject ? { subject: finding.subject } : {}),
+               message: `${finding.message}${line}; ${finding.rewrite}`,
+               code: finding.code,
+               severity: findingSeverity(finding),
+            });
+         }
+      }
+      return warnings;
+   }
+
+   /**
+    * Each materialized source's serve verdict, as the binding stands now (see
+    * {@link PackageMaterialization.serveVerdicts}). Served at
+    * `GET …/packages/{pkg}/status`: the entry-point walk is memoized per load,
+    * so a poll only loops over the plan.
+    */
+   public getServeVerdicts(): ApiServeVerdict[] {
+      return this.materialization.serveVerdicts();
+   }
+
+   /**
+    * {@link getServeVerdicts} with each stored source's named views compiled
+    * against a serve shape declared from the plan, before anything is built
+    * (ms2data/service#7090). For a dry run: it compiles.
+    */
+   public async previewServeVerdicts(): Promise<ApiServeVerdict[]> {
+      return this.materialization.previewServeVerdicts();
    }
 
    /** See {@link PackageMaterialization.preaggregateAccessWarnings}. */
@@ -2927,6 +3138,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       }[] = [];
       for (const tile of queryTiles(manifest.tiles)) {
          checks.push({
+            // malloy-text: a report tile's query, the author's Malloy, run as written
             request: { query: `run: ${tile.query}` },
             describe: (source) =>
                `Tile ${tile.query} on ${manifest.layout === "grid" ? "dashboard" : "notebook"} ${manifest.name} reads ` +
@@ -2940,7 +3152,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             ? { queryName: suggest.query }
             : suggest.source && suggest.dimension
               ? {
-                   query: `run: ${suggest.source} -> { group_by: ${suggest.dimension} }`,
+                   query: `run: ${quotedIdentifier(suggest.source)} -> { group_by: ${quotedPath(suggest.dimension)} }`,
                 }
               : undefined;
          if (!request) continue;
@@ -3456,10 +3668,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // in as a single-quoted SQL literal, which the check accepts and
       // canonicalizes to the same SQL a bare path gets.
       const tableLiteral = `'${sqlLiteral(normalizedPath, "duckdb")}'`;
-      // That literal sits in a Malloy double-quoted string, so `\` and `"` are
-      // escaped for it. Normalizing above left no backslash, but escaping it
-      // keeps this step correct on its own.
-      const malloyString = `"${tableLiteral.replace(/[\\"]/g, "\\$&")}"`;
+      // That literal sits in a Malloy string, so the module escapes it
+      // (quotes, backslashes and any control character a file name holds).
+      const malloyString = stringLiteral(tableLiteral);
       const model = runtime.loadModel(
          `source: temp is duckdb.table(${malloyString})`,
       );
@@ -3481,16 +3692,15 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
-    * `packageMetadata` without the fields computed from the installed models,
-    * so a caller that round-trips `getPackageMetadata()` (or a PATCH body)
-    * cannot store a snapshot that outlives the models it describes.
+    * `packageMetadata` without the fields computed from the loaded package
+    * (COMPUTED_PACKAGE_FIELDS), so a caller that round-trips
+    * `getPackageMetadata()` (or a PATCH body) cannot store a snapshot that
+    * outlives the load it describes.
     */
    private static storableMetadata(packageMetadata: ApiPackage): ApiPackage {
-      if (!("secureGivens" in packageMetadata)) {
-         return packageMetadata;
-      }
-      const { secureGivens: _computed, ...stored } = packageMetadata;
-      return stored;
+      const stored: Record<string, unknown> = { ...packageMetadata };
+      for (const key of COMPUTED_PACKAGE_FIELDS) delete stored[key];
+      return stored as ApiPackage;
    }
 
    public setPackageMetadata(packageMetadata: ApiPackage) {

@@ -139,7 +139,18 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
        * finds a persisted upstream MISSING from the destination; or fails on
        * infrastructure.
        */
-      stackOnParent: "ok" | "raw" | "uncarried" | "missing" | "infra";
+      stackOnParent:
+         | "ok"
+         | "raw"
+         | "uncarried"
+         | "missing"
+         | "infra"
+         | "wrongTier"
+         | "wrongTierAndMissing";
+      /** The host instructed the run (orchestrated). */
+      hostInstructed?: boolean;
+      /** The host's `warehouseReach` (ms2data/service#6756). */
+      warehouseReach?: "recompute" | "refuse";
    }): Promise<{
       physicalTableName: string;
       storageDestinationName?: string;
@@ -175,6 +186,7 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
             buildSQL: string;
             builtEntries: Record<string, unknown>;
             dependsOnStorageUpstream: boolean;
+            planFacts?: unknown;
          }) => Promise<{
             physicalTableName: string;
             storageDestinationName?: string;
@@ -214,6 +226,36 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
                   "'monthly' reads only stored upstreams ('daily') but could not be built over them: Reference to undefined object 'r'",
                ),
             ),
+         // The parent's entry was supplied at the wrong tier (#7087): an
+         // unlabeled reference for a parent declared `storage=`.
+         wrongTier: sinon
+            .stub()
+            .rejects(
+               new ChainedUpstreamMissingError(
+                  ["daily"],
+                  "'daily' is declared in storage destination 'lake', but its manifest entry is a warehouse table, or a reference that does not say where it lives: supplied at the wrong tier, so this build does not use it",
+               ),
+            ),
+         // Two upstreams: one supplied at the wrong tier, one simply not
+         // materialized here. Each carries its own reason.
+         wrongTierAndMissing: sinon.stub().rejects(
+            new ChainedUpstreamMissingError(
+               ["daily", "weekly"],
+               "persisted upstream of 'monthly': both — the build cannot stack on it",
+               [
+                  {
+                     name: "daily",
+                     detail:
+                        "'daily' is declared in storage destination 'lake', but its manifest entry is a warehouse table, or a reference that does not say where it lives: supplied at the wrong tier, so this build does not use it",
+                  },
+                  {
+                     name: "weekly",
+                     detail:
+                        "'weekly' is not materialized in destination 'lake' for this build",
+                  },
+               ],
+            ),
+         ),
          // A dispatch miss: a persisted upstream this build cannot see.
          missing: sinon
             .stub()
@@ -242,6 +284,20 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
             },
          },
          dependsOnStorageUpstream: true,
+         ...(opts.hostInstructed || opts.warehouseReach
+            ? {
+                 planFacts: {
+                    persistSourceIds: new Set<string>(),
+                    aliasesBySourceName: {},
+                    addressBySourceId: {},
+                    compilerKeyBySourceId: {},
+                    hostInstructed: true,
+                    ...(opts.warehouseReach
+                       ? { warehouseReach: opts.warehouseReach }
+                       : {}),
+                 },
+              }
+            : {}),
       });
    }
 
@@ -257,11 +313,12 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       // The orchestrator meant to pin that upstream; recomputing it here would
       // rebuild a table it did not ask for. The refusal carries the upstream's
       // name so the dispatch, not the model, is what gets fixed.
-      await expect(
-         callInto({ strict: true, stackOnParent: "missing" }),
-      ).rejects.toThrow(
+      const call = callInto({ strict: true, stackOnParent: "missing" });
+      await expect(call).rejects.toThrow(
          /strict upstreams forbid.*persisted upstream 'daily'/is,
       );
+      // Typed, so the run can attribute it to an upstream that failed.
+      await expect(call).rejects.toBeInstanceOf(ChainedUpstreamMissingError);
    });
 
    it("strict + a downstream that reaches the warehouse falls through to recompute-from-raw", async () => {
@@ -280,11 +337,12 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       // Every upstream was handed to the build; recomputing them would rebuild
       // pinned tables because of a limit in the carrying, which is not the
       // source's doing and not a licence strict grants.
-      await expect(
-         callInto({ strict: true, stackOnParent: "uncarried" }),
-      ).rejects.toThrow(
+      const call = callInto({ strict: true, stackOnParent: "uncarried" });
+      await expect(call).rejects.toThrow(
          /strict upstreams forbid.*could not be built over them/is,
       );
+      // Typed, so the run classifies it deterministic.
+      await expect(call).rejects.toBeInstanceOf(ChainedShapeNotCarriedError);
    });
 
    it("non-strict + a persisted upstream the build cannot see, or an uncarried shape, falls through to recompute-from-raw", async () => {
@@ -293,6 +351,54 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
             callInto({ strict: false, stackOnParent }),
          ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
       }
+   });
+
+   // Decided 2026-11-12: a host-instructed build refuses a host-supplied
+   // upstream entry at the wrong tier, strict or not, instead of recomputing.
+   it("host-instructed + a parent supplied at the wrong tier: refuses, strict or not, and never recomputes", async () => {
+      const { HostSuppliedWrongTierError } = await import(
+         "./materialization_run_support"
+      );
+      for (const strict of [false, true]) {
+         const call = callInto({
+            strict,
+            stackOnParent: "wrongTier",
+            hostInstructed: true,
+         });
+         await expect(call).rejects.toBeInstanceOf(HostSuppliedWrongTierError);
+         await expect(call).rejects.toThrow(
+            /the host supplied an upstream entry.*declared in storage destination 'lake'/is,
+         );
+      }
+   });
+
+   it("host-instructed: names only the upstream supplied at the wrong tier, each with its own reason", async () => {
+      const { HostSuppliedWrongTierError } = await import(
+         "./materialization_run_support"
+      );
+      const err = await callInto({
+         strict: false,
+         stackOnParent: "wrongTierAndMissing",
+         hostInstructed: true,
+      }).then(
+         () => undefined,
+         (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(HostSuppliedWrongTierError);
+      const message = (err as Error).message;
+      expect((err as { missing: string[] }).missing).toEqual(["daily"]);
+      expect(message).toContain("'daily' is declared in storage destination");
+      expect(message).not.toContain("'weekly'");
+      // One reason per upstream, not the whole joined message repeated.
+      expect(message.split("supplied at the wrong tier").length).toBe(2);
+   });
+
+   it("self-instructed + a parent supplied at the wrong tier still recomputes when not strict", async () => {
+      // The recompute runs for real and fails for its own reason (no
+      // destination file): the single-source path's message proves it ran.
+      await expect(
+         callInto({ strict: false, stackOnParent: "wrongTier" }),
+      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
    });
 
    it("an INFRA failure fails rather than recomputing from raw, strict or not", async () => {
@@ -305,6 +411,61 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
             callInto({ strict, stackOnParent: "infra" }),
          ).rejects.toThrow(/Failed to materialize chained source/i);
       }
+   });
+
+   // ms2data/service#6756: the orchestrator can refuse the one recompute
+   // strict permits.
+   it("strict + warehouseReach refuse + a downstream that reaches the warehouse: refuses with the reason, never recomputing", async () => {
+      const { WarehouseRecomputeRefusedError } = await import(
+         "../../../errors"
+      );
+      const call = callInto({
+         strict: true,
+         stackOnParent: "raw",
+         warehouseReach: "refuse",
+      });
+      await expect(call).rejects.toBeInstanceOf(WarehouseRecomputeRefusedError);
+      // The reason the entry would have carried, and the knob that refused it.
+      await expect(call).rejects.toThrow(
+         /warehouseReach: refuse.*reads the source warehouse \(regions\) through 'daily_regional'/is,
+      );
+   });
+
+   it("warehouseReach recompute is today's behaviour: strict recomputes a downstream that reaches the warehouse", async () => {
+      await expect(
+         callInto({
+            strict: true,
+            stackOnParent: "raw",
+            warehouseReach: "recompute",
+         }),
+      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   });
+
+   it("a non-strict build ignores warehouseReach refuse, as it ignores strictUpstreams", async () => {
+      await expect(
+         callInto({
+            strict: false,
+            stackOnParent: "raw",
+            warehouseReach: "refuse",
+         }),
+      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   });
+
+   it("warehouseReach refuse changes no other rung: a missing upstream and an uncarried shape still refuse as before", async () => {
+      const missing = callInto({
+         strict: true,
+         stackOnParent: "missing",
+         warehouseReach: "refuse",
+      });
+      await expect(missing).rejects.toBeInstanceOf(ChainedUpstreamMissingError);
+      const uncarried = callInto({
+         strict: true,
+         stackOnParent: "uncarried",
+         warehouseReach: "refuse",
+      });
+      await expect(uncarried).rejects.toBeInstanceOf(
+         ChainedShapeNotCarriedError,
+      );
    });
 
    it("non-strict + a downstream that reaches the warehouse falls through to recompute-from-raw", async () => {
@@ -342,11 +503,17 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
          await callInto({ strict: true, stackOnParent: "infra" }).catch(
             () => undefined,
          );
+         // The refused recompute is a strict refusal, not a fallback.
+         await callInto({
+            strict: true,
+            stackOnParent: "raw",
+            warehouseReach: "refuse",
+         }).catch(() => undefined);
          for (const [outcome, n] of [
             ["parent_reuse", 1],
             ["strict_shape_fallback", 1],
             ["inline_fallback", 1],
-            ["strict_refused", 2],
+            ["strict_refused", 3],
             ["infra_failure", 1],
          ] as const) {
             expect(await harness.collectCounter(COUNTER, { outcome })).toBe(n);

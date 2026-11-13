@@ -1,0 +1,238 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "d_plus@<pkg>/dash.malloy": [],
+          "daily@<pkg>/facts.malloy": []
+        },
+        "order": [
+          "daily@<pkg>/facts.malloy",
+          "d_plus@<pkg>/dash.malloy"
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "daily@<pkg>/facts.malloy": [],
+          "daily_ext@<pkg>/facts.malloy": []
+        },
+        "order": [
+          "daily@<pkg>/facts.malloy",
+          "daily_ext@<pkg>/facts.malloy"
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "d_plus@<pkg>/dash.malloy": [],
+          "daily@<pkg>/facts.malloy": [],
+          "daily_ext@<pkg>/facts.malloy": []
+        },
+        "order": [
+          "daily@<pkg>/facts.malloy",
+          "daily_ext@<pkg>/facts.malloy",
+          "d_plus@<pkg>/dash.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "d_plus@<pkg>/dash.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "daily@<pkg>/facts.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "daily_ext@<pkg>/facts.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "d_plus@<pkg>/dash.malloy": "index.malloy",
+      "daily@<pkg>/facts.malloy": "index.malloy",
+      "daily_ext@<pkg>/facts.malloy": "index.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<pkg>/facts.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "d_plus@<pkg>/dash.malloy"
+            }
+          ]
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<pkg>/facts.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "daily_ext@<pkg>/facts.malloy"
+            }
+          ]
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<pkg>/facts.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "daily_ext@<pkg>/facts.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "d_plus@<pkg>/dash.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "d_plus@<pkg>/dash.malloy": {
+        "annotationFields": {
+          "name": "daily"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "index.malloy",
+        "name": "d_plus",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "59d4ddddd6f5bab96fa706a9cfdc282e29caaf772da4c47b93b896997392a632",
+        "sourceID": "d_plus@<pkg>/dash.malloy",
+        "sql": "sha256:5ae37af8450dc240"
+      },
+      "daily@<pkg>/facts.malloy": {
+        "annotationFields": {
+          "name": "daily"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "index.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "59d4ddddd6f5bab96fa706a9cfdc282e29caaf772da4c47b93b896997392a632",
+        "sourceID": "daily@<pkg>/facts.malloy",
+        "sql": "sha256:5ae37af8450dc240"
+      },
+      "daily_ext@<pkg>/facts.malloy": {
+        "annotationFields": {
+          "name": "daily"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "index.malloy",
+        "name": "daily_ext",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "59d4ddddd6f5bab96fa706a9cfdc282e29caaf772da4c47b93b896997392a632",
+        "sourceID": "daily_ext@<pkg>/facts.malloy",
+        "sql": "sha256:5ae37af8450dc240"
+      }
+    }
+  }
+}

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type {
-   ConnectionBuild,
+   BuildTarget,
    MalloyConfig,
    Connection as MalloyConnection,
    Model as MalloyModel,
@@ -11,9 +11,16 @@ import type {
    PersistSource,
    Runtime,
    SourceDef,
-   UnbuildableSource,
 } from "@malloydata/malloy";
-import { Annotations } from "@malloydata/malloy";
+import * as path from "path";
+import { fileURLToPath, pathToFileURL } from "url";
+import {
+   persistAnnotationFindings,
+   persistUnparseableFinding,
+   type PackageAnnotationFinding,
+} from "../../annotation_reader";
+import { routeHasKey } from "../../motly";
+import { Annotations, isSourceDef } from "@malloydata/malloy";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
 import { logger } from "../../../logger";
@@ -30,10 +37,12 @@ import { malloyGivenToApi, type MalloyGiven } from "../../given";
 import {
    resolveIncrementalDeclaration,
    type IncrementalDeclaration,
+   type PairDelta,
 } from "./incremental_declaration";
 import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
+   assertRollupNameUnshared,
    assertTierEligible,
    isAuthorizeAttributedToEntryPoint,
 } from "./materialization_eligibility";
@@ -45,9 +54,22 @@ import {
 } from "./preaggregation_compile";
 import type { RollupPlan } from "./preaggregation_synthesis";
 import {
-   classifyDynamicTerms,
-   type DynamicTerm,
-} from "./persist_dynamic_terms";
+   materializeRefusalFinding,
+   pairFullRefreshFinding,
+   pairKeyColumns,
+   pairLevelRowColumn,
+   type MaterializePlan,
+} from "./build_file_generator";
+import { tryCompileMaterializeCompanion } from "./materialize_compile";
+import { persistedViewRefusalFinding } from "./persisted_view";
+import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
+import { deletingWindowsOf } from "./rolling_window";
+import { tryCompileRollupCompanion } from "./rollup_compile";
+import { compileV1BuildCompanion } from "./v1_build_companion";
+import { rollupGateEnforcedAtRead } from "./rollup_plan";
+import { rollupRefusalFinding } from "./rollup_plan";
+import { getMaterializeEnabled, getV1ServedCopyMode } from "../../../config";
+import { admitGivenPositions, type DynamicTerm } from "./persist_dynamic_terms";
 import { resolvePartitionColumns } from "./persist_partition";
 import {
    deriveAnnotationFields,
@@ -56,12 +78,65 @@ import {
    type PersistSourceGateOutcome,
 } from "./persist_source_fields";
 import { quoteIdentifier } from "../../quoting";
+import {
+   addressSQL,
+   computeSourceEntityId,
+   plannedSources,
+   presentAs,
+   recordTarget,
+   renameBuildSourceIDs,
+   withoutSourceIDs,
+   sourceBuildsOf,
+   type SourceBuild,
+} from "./addressing";
+import {
+   collectColocatedSourceEligibility,
+   collectSourceEligibility,
+   collidingRollups,
+   refuseCollidingMaterialize,
+   storedBaseOfRollup,
+   type ColocatedSourceEligibility,
+   type SourceEligibility,
+} from "./eligibility_collect";
+import { resolveFreshness, resolveQueryMetadata } from "./plan_layers";
+
+// Addressing, plan layers and eligibility collection live in their own
+// modules; re-exported so every existing import of build_plan keeps working.
+export {
+   addressSQL,
+   addressText,
+   buildSQLOf,
+   buildTargetOf,
+   compilerBuildId,
+   computeSourceEntityId,
+   plannedSources,
+   resolveConnectionDigests,
+   setTestAddressForTarget,
+   sourceBuildOf,
+   sourceBuildsOf,
+   sourcesInBuildOrder,
+   type SourceBuild,
+} from "./addressing";
+export {
+   collidingRollups,
+   storedBaseOfRollup,
+   tierGateInputs,
+   type ColocatedSourceEligibility,
+   type SourceEligibility,
+} from "./eligibility_collect";
+export {
+   composeDeclaredQueryMetadata,
+   resolveFreshness,
+   resolveQueryMetadata,
+   type ReadableTag,
+} from "./plan_layers";
 
 export {
    deriveAnnotationFields,
    deriveColumns,
    type PersistSourceGateOutcome,
 } from "./persist_source_fields";
+import type { WirePackageMaterialization } from "./plan_layers";
 
 type WireBuildGraph = components["schemas"]["BuildGraph"];
 type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
@@ -69,30 +144,7 @@ type WireRefusedSource = components["schemas"]["RefusedSource"];
 type WireStrippedTerm = components["schemas"]["StrippedTerm"];
 type WireJoinedTerms = components["schemas"]["JoinedTerms"];
 type BuildPlan = components["schemas"]["BuildPlan"];
-type WireFreshness = components["schemas"]["Freshness"];
-export type WirePackageMaterialization =
-   components["schemas"]["PackageMaterializationConfig"];
-type QueryMetadata = components["schemas"]["QueryMetadata"];
-
-/** The freshness `fallback` values the publisher recognizes; others are dropped. */
-const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
-type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
-
-/** One layer's contribution to the resolved freshness (all optional). */
-interface FreshnessLayer {
-   window?: string;
-   fallback?: FreshnessFallback;
-}
-
-/**
- * Minimal reader over a Malloy `Tag`: scalar reads by path, plus the subtree read
- * a property collection like `queryMetadata { … }` needs.
- */
-export interface ReadableTag {
-   text(...path: string[]): string | undefined;
-   tag(...path: string[]): ReadableTag | undefined;
-   entries?(): Iterable<[string, { text(): string | undefined }]>;
-}
+export type { WirePackageMaterialization };
 
 /**
  * Minimal surface a package must expose to compile its build plan; satisfied by
@@ -119,6 +171,12 @@ export interface BuildPlanPackage {
 export interface CompiledBuildPlan {
    builds: SourceBuild[];
    sources: Record<string, PersistSource>;
+   /**
+    * sourceID -> the build target the source maps onto, for every keyable
+    * source in `sources` (an unkeyable one has none). Pass it to the
+    * addressing helpers to address a source without the fallback lookup.
+    */
+   targets?: Record<string, BuildTarget>;
    connectionDigests: Record<string, string>;
    connections: Map<string, MalloyConnection>;
    /**
@@ -134,12 +192,23 @@ export interface CompiledBuildPlan {
     * silent no-op.
     */
    droppedPersistSources?: { name: string; modelPath: string }[];
+   /** Findings on the authored `#@` annotations (see annotation_reader). */
+   annotationFindings?: PackageAnnotationFinding[];
    /**
     * sourceID -> the rollup it was synthesized from; absent for an authored
     * `#@ persist` source. The provenance behind the wire plan's
     * `origin`/`preaggregate` fields.
     */
    preaggregatePlans?: Record<string, RollupPlan>;
+   /**
+    * sourceID -> the declared primary key of a planned source whose stored
+    * table a build checks for a repeated or NULL key, when it is stored in a
+    * destination: set when a `storage=` rollup is read through a join keyed
+    * on a source's primary key as a join_many (`readsAsJoinMany`), so the
+    * join-to-rollup leg in a destination (#1704) can read the stored rows'
+    * key as unique. Absent when no such leg exists.
+    */
+   storedKeyChecks?: Record<string, string>;
    /**
     * sourceID -> entry-point `#(authorize)` gate classification, computed at
     * compile time where the `{modelDef, materializer}` pair exists (see
@@ -148,6 +217,13 @@ export interface CompiledBuildPlan {
     * source.
     */
    sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
+   /**
+    * sourceID -> the `#(materialize)` declaration a generated build source was
+    * written from; absent for an authored `#@ persist` source and a rollup.
+    * Read by the re-root rewriter, which serves the author's source from the
+    * generated source's table (materialization v2, phase 3).
+    */
+   materializePlans?: Record<string, MaterializePlan>;
 }
 
 function wireTerm(term: DynamicTerm): WireStrippedTerm {
@@ -176,7 +252,7 @@ function planDynamicFields(
    if (partition.ok && partition.columns.length > 0) {
       out.partition = partition.columns;
    }
-   const classified = classifyDynamicTerms(source);
+   const classified = admitGivenPositions(source);
    if (classified.ok && classified.terms.length > 0) {
       out.strippedTerms = classified.terms.map(wireTerm);
    }
@@ -194,7 +270,7 @@ function planDynamicFields(
  * A source's PUBLIC column names, or a throw. The strict counterpart to
  * {@link deriveColumns}: this list decides what gets WRITTEN, so "unknown" must
  * not read as "nothing to narrow". Empty throws too — it means everything
- * `getSQL` projects is hidden.
+ * the build SQL projects is hidden.
  */
 function publicColumnNames(persistSource: PersistSource): string[] {
    let names: string[];
@@ -215,8 +291,9 @@ function publicColumnNames(persistSource: PersistSource): string[] {
 }
 
 /**
- * Wrap a source's build SQL to project only its PUBLIC columns. `getSQL` emits
- * every underlying column, including hidden ones (`except:`, non-public access).
+ * Wrap a source's build SQL to project only its PUBLIC columns. The build SQL
+ * emits every underlying column, including hidden ones (`except:`, non-public
+ * access).
  *
  * A `storage=` build must not put a hidden column's values AT REST in the
  * destination, where direct catalog access reaches them past the source's
@@ -253,343 +330,6 @@ export function projectToPublicColumns(
       .map((n) => quoteIdentifier(n, persistSource.dialectName))
       .join(", ");
    return `SELECT ${projection} FROM (${buildSQL}) AS __public`;
-}
-
-/**
- * Read `freshness.window` / `freshness.fallback` from one tag layer, keeping only
- * recognized values. Nested keys, so {@link deriveAnnotationFields} misses them.
- * Per-source `sharing`/`schedule` are rejected at publish
- * (Package.persistencePolicyWarnings), not resolved here.
- */
-function tagFreshnessLayer(tag: ReadableTag | undefined): FreshnessLayer {
-   if (!tag || typeof tag.text !== "function") return {};
-   const layer: FreshnessLayer = {};
-   const window = tag.text("freshness", "window");
-   if (typeof window === "string") layer.window = window;
-   const fallback = tag.text("freshness", "fallback");
-   if (
-      typeof fallback === "string" &&
-      (FRESHNESS_FALLBACKS as readonly string[]).includes(fallback)
-   ) {
-      layer.fallback = fallback as FreshnessFallback;
-   }
-   return layer;
-}
-
-/**
- * The two homes a model-file (`##`) knob can be declared in: the
- * `materialization` envelope (mirroring the manifest's shape), then the bare form
- * (`## freshness.window="24h"`), still read so already-published packages keep
- * resolving. Callers resolve per property, so each home can set different knobs.
- */
-function modelTagLayers(
-   tag: ReadableTag | undefined,
-): (ReadableTag | undefined)[] {
-   const envelope =
-      tag && typeof tag.tag === "function"
-         ? tag.tag("materialization")
-         : undefined;
-   return [envelope, tag];
-}
-
-/** The package-level `materialization.freshness` as a resolution layer. */
-function packageFreshnessLayer(
-   cfg: WirePackageMaterialization | null | undefined,
-): FreshnessLayer {
-   if (!cfg) return {};
-   const layer: FreshnessLayer = {};
-   if (cfg.freshness?.window) layer.window = cfg.freshness.window;
-   const fallback = cfg.freshness?.fallback;
-   if (
-      typeof fallback === "string" &&
-      (FRESHNESS_FALLBACKS as readonly string[]).includes(fallback)
-   ) {
-      layer.fallback = fallback as FreshnessFallback;
-   }
-   return layer;
-}
-
-/** The source's `#@` tag, or undefined if it fails to parse (degrade to unset). */
-function safeSourceTag(source: PersistSource): ReadableTag | undefined {
-   try {
-      return source.annotations.parseAsTag("@").tag as ReadableTag;
-   } catch {
-      return undefined;
-   }
-}
-
-/**
- * The model-file-level (`##`) tag resolved for the source, or undefined on a
- * parse failure. The model-file layer sits between the source annotation and
- * the package default in most-specific-wins resolution.
- */
-function safeModelTag(source: PersistSource): ReadableTag | undefined {
-   try {
-      return source.modelAnnotations.parseAsTag().tag as ReadableTag;
-   } catch {
-      return undefined;
-   }
-}
-
-/**
- * Resolve a source's EFFECTIVE freshness, most-specific-wins per field: source >
- * model-file > package. Null when unset everywhere, so the control plane can tell
- * "unset" from a declaration. Invalid `fallback` values are dropped, never
- * defaulted.
- */
-export function resolveFreshness(
-   source: PersistSource,
-   packageMaterialization: WirePackageMaterialization | null | undefined,
-): WireFreshness | null {
-   const layers: FreshnessLayer[] = [
-      // `#@ persist` declares knobs bare: it IS the materialization declaration.
-      tagFreshnessLayer(safeSourceTag(source)),
-      ...modelTagLayers(safeModelTag(source)).map(tagFreshnessLayer),
-      packageFreshnessLayer(packageMaterialization),
-   ];
-
-   const window = layers.map((l) => l.window).find((v) => v !== undefined);
-   const fallback = layers.map((l) => l.fallback).find((v) => v !== undefined);
-
-   if (window === undefined && fallback === undefined) return null;
-   const freshness: WireFreshness = {};
-   if (window !== undefined) freshness.window = window;
-   if (fallback !== undefined) freshness.fallback = fallback;
-   return freshness;
-}
-
-/**
- * Read the `queryMetadata` property collection (block or dotted form) from one
- * tag layer. Every string property is kept verbatim, even ones violating Malloy's
- * bag contract: publish warns and the runtime clamps, so a typo stays visible.
- */
-function tagQueryMetadataLayer(tag: ReadableTag | undefined): QueryMetadata {
-   const subtree =
-      tag && typeof tag.tag === "function"
-         ? tag.tag("queryMetadata")
-         : undefined;
-   if (!subtree || typeof subtree.entries !== "function") return {};
-   const layer: QueryMetadata = {};
-   try {
-      for (const [name, value] of subtree.entries()) {
-         const text = value.text();
-         if (text !== undefined) layer[name] = text;
-      }
-   } catch {
-      return {};
-   }
-   return layer;
-}
-
-/**
- * Resolve a source's EFFECTIVE per-query metadata for the build path (see
- * {@link composeDeclaredQueryMetadata} for precedence). Attached to every
- * statement the build issues, and deliberately absent from the content address:
- * changing a tag must never re-address a table.
- */
-export function resolveQueryMetadata(
-   source: PersistSource,
-   packageMaterialization: WirePackageMaterialization | null | undefined,
-): QueryMetadata | null {
-   return composeDeclaredQueryMetadata({
-      packageDeclaration: packageMaterialization?.queryMetadata ?? null,
-      modelTag: safeModelTag(source),
-      sourceTag: safeSourceTag(source),
-   });
-}
-
-/**
- * The author-declared layers of one statement's metadata, composed
- * most-specific-wins PER PROPERTY: source `#@ queryMetadata.*` > model-file
- * `## queryMetadata.*` > package `queryMetadata`. Each of the latter two has a
- * deprecated `materialization.`-prefixed spelling that sits UNDERNEATH its
- * canonical form — the opposite of freshness (see the body).
- *
- * Takes tags rather than a {@link PersistSource} so the serve path can compose
- * the same layers from a loaded model. An absent layer contributes nothing, so a
- * package-wide `team` survives a source that only overrides `workload`. Null when
- * no layer declares anything.
- */
-export function composeDeclaredQueryMetadata(layers: {
-   /** The package's declared bag, not the materialization policy carrying it. */
-   packageDeclaration?: QueryMetadata | null;
-   modelTag?: ReadableTag;
-   sourceTag?: ReadableTag;
-}): QueryMetadata | null {
-   // Least specific first, so later layers overwrite property by property.
-   //
-   // `modelTagLayers` yields [envelope, bare]. For query metadata the bare form
-   // is canonical and the envelope deprecated, so it is consumed as-is, NOT
-   // reversed: reversing would let the deprecated spelling override the
-   // canonical one.
-   const ordered: QueryMetadata[] = [
-      layers.packageDeclaration ?? {},
-      ...modelTagLayers(layers.modelTag).map(tagQueryMetadataLayer),
-      tagQueryMetadataLayer(layers.sourceTag),
-   ];
-   const resolved: QueryMetadata = Object.assign({}, ...ordered);
-   return Object.keys(resolved).length > 0 ? resolved : null;
-}
-
-/**
- * One connection's persist sources in the order they build, from Malloy's
- * `Runtime.getBuildTargets`: every source on every table, the tables a source
- * reads before it. Sources whose SQL does not compile on their own come last;
- * they have no table, and are refused per source like any other.
- *
- * Holds sourceIDs, resolved against a plan's `sources` when walked, so a
- * pre-aggregation companion that reaches an author's persisted source walks
- * the author's own `PersistSource` for it.
- */
-export interface SourceBuild {
-   connectionName: string;
-   /** sourceIDs, dependencies first; the sources of one table are adjacent */
-   order: string[];
-   /**
-    * sourceID -> the sourceIDs on the tables it reads. Sources on one table
-    * read none of each other: an extension is its base's table, not a reader
-    * of it. An unbuildable source lists none.
-    */
-   dependsOn: Record<string, string[]>;
-}
-
-/** Project Malloy's targets for one connection into a {@link SourceBuild}. */
-export function sourceBuildOf(
-   build: ConnectionBuild,
-   unbuildable: UnbuildableSource[],
-): SourceBuild {
-   const order: string[] = [];
-   const dependsOn: Record<string, string[]> = {};
-   for (const target of build.targets) {
-      const reads = target.dependsOn.flatMap((t) =>
-         t.sources.map((s) => s.sourceID),
-      );
-      for (const source of target.sources) {
-         order.push(source.sourceID);
-         dependsOn[source.sourceID] = reads;
-      }
-   }
-   // Malloy reports an unbuildable source without the tables it reads.
-   for (const { source } of unbuildable) {
-      if (source.connectionName !== build.connectionName) continue;
-      order.push(source.sourceID);
-      dependsOn[source.sourceID] = [];
-   }
-   return { connectionName: build.connectionName, order, dependsOn };
-}
-
-/**
- * {@link sourceBuildOf} for every connection `getBuildTargets` answered,
- * including one whose only persist sources were unbuildable.
- */
-export function sourceBuildsOf(targets: {
-   connections: ConnectionBuild[];
-   unbuildable: UnbuildableSource[];
-}): SourceBuild[] {
-   const builds = targets.connections.map((c) =>
-      sourceBuildOf(c, targets.unbuildable),
-   );
-   const planned = new Set(builds.map((b) => b.connectionName));
-   for (const { source } of targets.unbuildable) {
-      if (planned.has(source.connectionName)) continue;
-      planned.add(source.connectionName);
-      builds.push(
-         sourceBuildOf(
-            { connectionName: source.connectionName, targets: [] },
-            targets.unbuildable,
-         ),
-      );
-   }
-   return builds;
-}
-
-/** Every persist source `getBuildTargets` named, planned or unbuildable. */
-export function plannedSources(targets: {
-   connections: ConnectionBuild[];
-   unbuildable: UnbuildableSource[];
-}): PersistSource[] {
-   return [
-      ...targets.connections.flatMap((c) =>
-         c.targets.flatMap((t) => t.sources),
-      ),
-      ...targets.unbuildable.map((u) => u.source),
-   ];
-}
-
-/** The sources of `build` in build order, skipping any absent from `sources`. */
-export function* sourcesInBuildOrder(
-   build: SourceBuild,
-   sources: Record<string, PersistSource>,
-): Iterable<PersistSource> {
-   for (const sourceID of build.order) {
-      const source = sources[sourceID];
-      if (source) yield source;
-   }
-}
-
-/**
- * The sourceEntityId for a persist source: a stable content address of its
- * connection identity and canonical SQL. The only place the publisher derives
- * the id, so planning, build and serve-time manifest resolution all agree.
- *
- * The connection digest is fingerprint-aware (see applyConnectionFingerprint in
- * connection.ts), so ids survive credential rotation.
- */
-export function computeSourceEntityId(
-   source: PersistSource,
-   connectionDigests: Record<string, string>,
-): string {
-   // The no-options `getSQL()` is load-bearing: this address keys the
-   // covered_through ledger (incremental_build.ts), so it must describe WHAT the
-   // source computes, never HOW FAR a run got. A boundary value in this SQL would
-   // re-address the table every refresh and re-seed forever. A declaration alone
-   // must not move it either (fact 1 in incremental_compiler_contract.spec.ts).
-   return source.makeBuildId(
-      connectionDigests[source.connectionName],
-      addressPartitionLayout(source, source.getSQL()),
-   );
-}
-
-/**
- * The key the compiler itself files a source's table under: like
- * {@link computeSourceEntityId} but without the partition layout. For a
- * partitioned source the two differ, so a manifest handed to the compiler
- * carries the entry under both (see `manifestForCompiler`).
- */
-export function compilerBuildId(
-   source: PersistSource,
-   connectionDigests: Record<string, string>,
-): string {
-   return source.makeBuildId(
-      connectionDigests[source.connectionName],
-      source.getSQL(),
-   );
-}
-
-/**
- * Fold a source's `partition=` into the text its address is computed from.
- * `getSQL()` carries no annotation bytes, so without this a `partition=` change
- * would be skipped as unchanged and the table would keep the old layout.
- *
- * Derived here rather than passed in so every caller agrees
- * (`build_targets_address_equality` pins it). No `partition=` appends nothing,
- * keeping unpartitioned addresses stable; a change moves the address once, which
- * is the rebuild the author asked for.
- */
-function addressPartitionLayout(source: PersistSource, sql: string): string {
-   let columns: string[] = [];
-   try {
-      const resolved = resolvePartitionColumns(
-         source,
-         deriveAnnotationFields(source),
-      );
-      // A refusal contributes nothing: such a source cannot build at all.
-      if (resolved.ok) columns = resolved.columns;
-   } catch {
-      // An unreadable annotation addresses as unpartitioned.
-   }
-   if (columns.length === 0) return sql;
-   return `${sql}\n-- partitioned by: ${columns.join(", ")}`;
 }
 
 /**
@@ -646,9 +386,13 @@ function detectDroppedPersistSources(
          if (!def || !def.annotations) continue;
          let isPersist = false;
          try {
-            isPersist = new Annotations(def.annotations)
-               .parseAsTag("@")
-               .tag.has("persist");
+            // Presence only, read over every line as Malloy reads it, so a
+            // `#@ persist` line carrying an `@env.` reference is still caught.
+            isPersist = routeHasKey(
+               new Annotations(def.annotations),
+               "@",
+               "persist",
+            );
          } catch {
             continue;
          }
@@ -680,7 +424,7 @@ function detectDroppedPersistSources(
  * only warnings).
  */
 export async function classifyPersistSourceGate(
-   persistSource: PersistSource,
+   persistSource: { _sourceDef: SourceDef; sourceID: string },
    modelDef: ModelDef,
    materializer: ModelMaterializer,
    deps: GateClassificationDeps,
@@ -731,20 +475,28 @@ export async function classifyPersistSourceGate(
 export interface BuildPlanParts {
    builds: SourceBuild[];
    sources: Record<string, PersistSource>;
+   /** See {@link CompiledBuildPlan.targets}. */
+   targets: Record<string, BuildTarget>;
    sourceModelPaths: Record<string, string>;
    droppedPersistSources: { name: string; modelPath: string }[];
    preaggregatePlans: Record<string, RollupPlan>;
+   materializePlans: Record<string, MaterializePlan>;
    sourceGateOutcomes: Record<string, PersistSourceGateOutcome>;
+   /** Findings on the `#@` annotations of this model's sources (see annotation_reader). */
+   annotationFindings: PackageAnnotationFinding[];
 }
 
 export function emptyBuildPlanParts(): BuildPlanParts {
    return {
       builds: [],
       sources: {},
+      targets: {},
       sourceModelPaths: {},
       droppedPersistSources: [],
       preaggregatePlans: {},
+      materializePlans: {},
       sourceGateOutcomes: {},
+      annotationFindings: [],
    };
 }
 
@@ -759,10 +511,383 @@ export function mergeBuildPlanParts(
 ): void {
    into.builds.push(...from.builds);
    Object.assign(into.sources, from.sources);
+   Object.assign(into.targets, from.targets);
    Object.assign(into.sourceModelPaths, from.sourceModelPaths);
    into.droppedPersistSources.push(...from.droppedPersistSources);
    Object.assign(into.preaggregatePlans, from.preaggregatePlans);
+   Object.assign(into.materializePlans, from.materializePlans);
    Object.assign(into.sourceGateOutcomes, from.sourceGateOutcomes);
+   for (const finding of from.annotationFindings) {
+      addAnnotationFinding(into, finding);
+   }
+}
+
+/**
+ * Add a finding once. A model that imports another walks the imported persist
+ * sources again, and each walk would otherwise report the same finding, so a
+ * finding is keyed by what it says and where (findings are attributed to the
+ * DECLARING model, so both walks produce the same key).
+ */
+function addAnnotationFinding(
+   parts: Pick<BuildPlanParts, "annotationFindings">,
+   finding: PackageAnnotationFinding,
+): void {
+   const key = (f: PackageAnnotationFinding) =>
+      [f.code, f.model ?? "", f.subject ?? "", f.message].join("\u0000");
+   const k = key(finding);
+   if (!parts.annotationFindings.some((f) => key(f) === k)) {
+      parts.annotationFindings.push(finding);
+   }
+}
+
+/** Whether a parse error at `at` falls on `note`, a `#@` line of a source. */
+function noteCovers(
+   note: {
+      text: string;
+      at: { url: string; range: { start: { line: number } } };
+   },
+   at: { url: string; range: { start: { line: number } } },
+): boolean {
+   if (note.at.url !== at.url) return false;
+   const first = note.at.range.start.line;
+   const last = first + note.text.split("\n").length - 1;
+   return at.range.start.line >= first && at.range.start.line <= last;
+}
+
+/** Whether a persist source declares an incremental refresh, read like the planner does. */
+function isIncrementalSource(source: PersistSource): boolean {
+   try {
+      return deriveAnnotationFields(source).refresh === "incremental";
+   } catch {
+      return false;
+   }
+}
+
+/**
+ * The package-relative path of the file `url` names, for attributing a
+ * finding to the model that declares the annotation rather than one that
+ * imports it; `fallback` when the URL is not a file under the package.
+ */
+function declaringModelPath(
+   url: string | undefined,
+   packagePath: string,
+   fallback: string,
+): string {
+   if (!url?.startsWith("file:")) return fallback;
+   try {
+      const relative = path.relative(packagePath, fileURLToPath(url));
+      return relative &&
+         !relative.startsWith("..") &&
+         !path.isAbsolute(relative)
+         ? relative.split(path.sep).join("/")
+         : fallback;
+   } catch {
+      return fallback;
+   }
+}
+
+/** The declaring file's URL in a Malloy `sourceID` (`<name>@<url>`). */
+function sourceIDFileURL(sourceID: string): string | undefined {
+   const at = sourceID.indexOf("@file:");
+   return at >= 0 ? sourceID.slice(at + 1) : undefined;
+}
+
+/**
+ * Add the generated `#(materialize)` build sources of one author model to
+ * `parts`, as the rollup companion's are added: whole builds (so a generated
+ * source orders after a persisted source it reads), and only the generated
+ * sources as planned sources, under the AUTHOR's model path, where the
+ * annotation is changed. Each is judged by the same gates as any persist source.
+ */
+async function collectGeneratedMaterialize(
+   parts: BuildPlanParts,
+   args: {
+      modelPath: string;
+      packagePath: string;
+      getRuntime: SynthesizedRuntimeFactory;
+      /** The author's compiled model, and the materializer that compiled it. */
+      malloyModel: MalloyModel;
+      materializer: ModelMaterializer;
+   },
+): Promise<void> {
+   const authorDef: ModelDef = args.malloyModel._modelDef;
+   const { generated, refused } = await tryCompileMaterializeCompanion({
+      ...args,
+      contents: authorDef.contents ?? {},
+      givens: authorDef.givens ?? {},
+      // P9's probes compile against the author's model, never run.
+      probe: args.materializer,
+   });
+   for (const refusal of refused) {
+      addAnnotationFinding(
+         parts,
+         materializeRefusalFinding(refusal, args.modelPath),
+      );
+   }
+   if (!generated) return;
+   for (const plan of generated.plans) {
+      if (plan.pairFullRefresh) {
+         addAnnotationFinding(
+            parts,
+            pairFullRefreshFinding(plan, plan.pairFullRefresh, args.modelPath),
+         );
+      }
+   }
+   const targets = await generated.runtime.getBuildTargets(generated.model);
+   const planByName = new Map(
+      generated.plans.map((p) => [p.buildSourceName, p]),
+   );
+   // Each generated source is presented as the author's source it builds: its
+   // name and sourceID are the author's everywhere past this point, and
+   // `<src>__mat` stays inside the companion file. The author's sourceID is
+   // free: a source that is both `#@ persist` and `#(materialize)` is refused.
+   const generatedPlans = new Map<PersistSource, MaterializePlan>();
+   const rename = new Map<string, string>();
+   for (const source of plannedSources(targets)) {
+      const plan = planByName.get(source.name);
+      if (!plan) continue;
+      generatedPlans.set(source, plan);
+      rename.set(source.sourceID, plan.sourceID);
+   }
+   // A source declared in a generated file that no plan names (a parent an
+   // extension's build copy re-roots on its build source, and the extension
+   // over it, P10) is on that build source's table: not a build of its own.
+   const unplannedGenerated = (id: string) =>
+      !rename.has(id) &&
+      generated.generatedURLs.has(id.slice(id.indexOf("@") + 1));
+   parts.builds.push(
+      ...sourceBuildsOf(targets).map((b) =>
+         renameBuildSourceIDs(withoutSourceIDs(b, unplannedGenerated), rename),
+      ),
+   );
+   // The gate is the author's, on the author's source, reading the author's
+   // givens: classified there. The companion imports the source but declares
+   // none of its givens, so a gate reading one never lifts in it.
+   const givens = Array.from(
+      args.malloyModel.givens.values(),
+   ) as unknown as MalloyGiven[];
+   const deps = createGateClassificationDeps(
+      givens.map(malloyGivenToApi),
+      args.modelPath,
+   );
+   for (const [generatedSource, plan] of generatedPlans) {
+      const source = presentAs(generatedSource, {
+         name: plan.sourceName,
+         sourceID: plan.sourceID,
+      });
+      const sourceID = plan.sourceID;
+      parts.sources[sourceID] = source;
+      recordTarget(parts, sourceID, source);
+      parts.sourceModelPaths[sourceID] = args.modelPath;
+      parts.materializePlans[sourceID] = plan;
+      // By sourceID (the keying rule), never by name.
+      const authorSource = Object.values(authorDef.contents ?? {}).find(
+         (object): object is SourceDef =>
+            isSourceDef(object) && object.sourceID === sourceID,
+      );
+      parts.sourceGateOutcomes[sourceID] = authorSource
+         ? await classifyPersistSourceGate(
+              { _sourceDef: authorSource, sourceID },
+              authorDef,
+              args.materializer,
+              deps,
+              args.modelPath,
+           )
+         : { classification: "rejected", attributed: false };
+   }
+}
+
+/**
+ * The `#(preaggregate)` rollups (materialization v2, phase 4) a model declares:
+ * one build source per rollup, planned only in the model that declares its
+ * base, so a rollup is listed once however many models import the base. Each
+ * keeps its compiled `sourceID` (`<rollup>@<declaring model>.preaggregate.malloy`)
+ * and is reported under the declaring model's path.
+ *
+ * A rollup whose build reads a given is left out with a warning: its table
+ * would hold one given value's rows, served to every caller.
+ */
+async function collectGeneratedRollups(
+   parts: BuildPlanParts,
+   args: {
+      modelPath: string;
+      packagePath: string;
+      getRuntime: SynthesizedRuntimeFactory;
+      modelDef: unknown;
+   },
+): Promise<void> {
+   const { generated, refused } = await tryCompileRollupCompanion(args);
+   for (const refusal of refused) {
+      addAnnotationFinding(
+         parts,
+         rollupRefusalFinding(refusal, args.modelPath),
+      );
+   }
+   if (!generated) return;
+   const all = await generated.runtime.getBuildTargets(generated.model);
+   const planByName = new Map(
+      generated.plans.map((p) => [p.rollupSourceName, p]),
+   );
+   for (const target of all.connections.flatMap((c) => c.targets)) {
+      if (!target.readsGivens) continue;
+      for (const source of target.sources) {
+         const plan = planByName.get(source.name);
+         if (!plan) continue;
+         addAnnotationFinding(
+            parts,
+            rollupRefusalFinding(
+               {
+                  tier: "unservable",
+                  code: "preaggregate-reads-given",
+                  message:
+                     `#(preaggregate) rollup of source "${plan.baseSourceName}" at ` +
+                     `(${plan.grainDimensions.join(", ")}) is not built, so its measures ` +
+                     "are served live: its rows read a given, and a table holds one " +
+                     "value's rows.",
+                  sourceName: plan.baseSourceName,
+               },
+               args.modelPath,
+            ),
+         );
+      }
+   }
+   const targets = {
+      ...all,
+      connections: all.connections.map((c) => ({
+         ...c,
+         targets: c.targets.filter((t) => !t.readsGivens),
+      })),
+   };
+   const kept = new Set<string>();
+   for (const source of plannedSources(targets)) {
+      const plan = planByName.get(source.name);
+      if (!plan) continue;
+      kept.add(source.sourceID);
+      parts.sources[source.sourceID] = source;
+      recordTarget(parts, source.sourceID, source);
+      parts.sourceModelPaths[source.sourceID] = args.modelPath;
+      parts.preaggregatePlans[source.sourceID] = plan;
+   }
+   parts.builds.push(...sourceBuildsOf(targets));
+   if (kept.size === 0) return;
+   const givens = Array.from(
+      generated.model.givens.values(),
+   ) as unknown as MalloyGiven[];
+   const deps = createGateClassificationDeps(
+      givens.map(malloyGivenToApi),
+      `${args.modelPath}#preaggregate`,
+   );
+   for (const source of plannedSources(targets)) {
+      if (!kept.has(source.sourceID)) continue;
+      parts.sourceGateOutcomes[source.sourceID] =
+         await classifyPersistSourceGate(
+            source,
+            generated.model._modelDef,
+            generated.materializer,
+            deps,
+            `${args.modelPath}#preaggregate`,
+         );
+   }
+}
+
+/**
+ * The `#@ persist` views (materialization v2, phase 4, P14) a model declares:
+ * one generated build source per view, planned only in the model that
+ * declares the view's source, so a view is listed once however many models
+ * import it. Each keeps its compiled `sourceID`
+ * (`<source>__<view>__view@<declaring model>.persist-view.malloy`) and is
+ * reported under the declaring model's path. Its gate is its source's,
+ * classified on the author's model, where the source's givens are declared.
+ *
+ * A view whose build reads a given is left out with a warning: its table
+ * would hold one caller's result, served to every caller.
+ */
+async function collectGeneratedPersistedViews(
+   parts: BuildPlanParts,
+   args: {
+      modelPath: string;
+      packagePath: string;
+      getRuntime: SynthesizedRuntimeFactory;
+      malloyModel: MalloyModel;
+      materializer: ModelMaterializer;
+   },
+): Promise<void> {
+   const authorDef: ModelDef = args.malloyModel._modelDef;
+   const { generated, refused } = await tryCompilePersistedViewCompanion({
+      packagePath: args.packagePath,
+      modelPath: args.modelPath,
+      modelDef: authorDef,
+      materializer: args.materializer,
+      getRuntime: args.getRuntime,
+   });
+   for (const refusal of refused) {
+      addAnnotationFinding(
+         parts,
+         persistedViewRefusalFinding(refusal, args.modelPath),
+      );
+   }
+   if (!generated) return;
+   const all = await generated.runtime.getBuildTargets(generated.model);
+   const planByName = new Map(
+      generated.plans.map((p) => [p.buildSourceName, p]),
+   );
+   for (const target of all.connections.flatMap((c) => c.targets)) {
+      if (!target.readsGivens) continue;
+      for (const source of target.sources) {
+         const plan = planByName.get(source.name);
+         if (!plan) continue;
+         addAnnotationFinding(
+            parts,
+            persistedViewRefusalFinding(
+               {
+                  ...plan,
+                  reason:
+                     "its result reads a given, so it differs per caller and a table holds one caller's result",
+               },
+               args.modelPath,
+            ),
+         );
+      }
+   }
+   const targets = {
+      ...all,
+      connections: all.connections.map((c) => ({
+         ...c,
+         targets: c.targets.filter((t) => !t.readsGivens),
+      })),
+   };
+   const givens = Array.from(
+      args.malloyModel.givens.values(),
+   ) as unknown as MalloyGiven[];
+   const deps = createGateClassificationDeps(
+      givens.map(malloyGivenToApi),
+      args.modelPath,
+   );
+   let kept = 0;
+   for (const source of plannedSources(targets)) {
+      const plan = planByName.get(source.name);
+      if (!plan) continue;
+      kept++;
+      parts.sources[source.sourceID] = source;
+      recordTarget(parts, source.sourceID, source);
+      parts.sourceModelPaths[source.sourceID] = args.modelPath;
+      // The view's rows are its source's: its gate is the source's, read on
+      // the author's model, by sourceID (the keying rule).
+      const authorSource = Object.values(authorDef.contents ?? {}).find(
+         (object): object is SourceDef =>
+            isSourceDef(object) && object.sourceID === plan.sourceID,
+      );
+      parts.sourceGateOutcomes[source.sourceID] = authorSource
+         ? await classifyPersistSourceGate(
+              { _sourceDef: authorSource, sourceID: plan.sourceID },
+              authorDef,
+              args.materializer,
+              deps,
+              args.modelPath,
+           )
+         : { classification: "rejected", attributed: false };
+   }
+   if (kept > 0) parts.builds.push(...sourceBuildsOf(targets));
 }
 
 /**
@@ -800,19 +925,23 @@ export async function collectModelBuildPlan(
       runtime,
       getRuntime,
    } = args;
+   const v1Cutover = getV1ServedCopyMode() === "on";
    // Pre-aggregation runs BEFORE the early `return`s below: a model may declare
    // `#@ preaggregate` with no persist source and no `experimental.persistence`
    // flag — the SYNTHESIZED model carries both — and must still get its rollup.
-   const synthesized =
-      args.synthesized !== undefined
-         ? args.synthesized
-         : await tryCompileSynthesizedPreaggregation({
-              packagePath,
-              modelPath,
-              getRuntime,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              contents: (malloyModel as any)._modelDef?.contents ?? {},
-           });
+   // Under the v1 cutover a v1 rollup is planned by the rollup leg instead
+   // (`#(preaggregate)`'s, below; G4), so v1's own synthesis is skipped.
+   const synthesized = v1Cutover
+      ? null
+      : args.synthesized !== undefined
+        ? args.synthesized
+        : await tryCompileSynthesizedPreaggregation({
+             packagePath,
+             modelPath,
+             getRuntime,
+             // eslint-disable-next-line @typescript-eslint/no-explicit-any
+             contents: (malloyModel as any)._modelDef?.contents ?? {},
+          });
    if (synthesized) {
       const rollupTargets = await synthesized.runtime.getBuildTargets(
          synthesized.model,
@@ -832,6 +961,7 @@ export async function collectModelBuildPlan(
          if (!planByName.has(source.name)) continue;
          const sourceID = source.sourceID;
          parts.sources[sourceID] = source;
+         recordTarget(parts, sourceID, source);
          // The AUTHOR's model path: that is where the annotation is changed.
          parts.sourceModelPaths[sourceID] = modelPath;
          const rollup = planByName.get(source.name);
@@ -858,24 +988,118 @@ export async function collectModelBuildPlan(
       }
    }
 
-   // getBuildTargets() THROWS on a model without `##! experimental.persistence`,
-   // which would abort the whole package's plan. Such a model cannot carry a
-   // persist source anyway, so skip it, mirroring Malloy's own guard.
-   const modelTag = malloyModel.modelAnnotations.parseAsTag("!").tag;
-   if (!modelTag.has("experimental", "persistence")) return;
+   // `#(materialize)` (materialization v2, phase 3), behind
+   // PUBLISHER_MATERIALIZE: off, nothing here runs and the plan is exactly what
+   // it was. Like pre-aggregation, BEFORE the early `return`s below: the
+   // author's model needs no persistence flag, since the generated companion
+   // carries it.
+   if (getMaterializeEnabled()) {
+      await collectGeneratedMaterialize(parts, {
+         modelPath,
+         packagePath,
+         getRuntime,
+         malloyModel,
+         materializer,
+      });
+      // `#@ persist` on a view (phase 4, P14), under the same switch.
+      await collectGeneratedPersistedViews(parts, {
+         modelPath,
+         packagePath,
+         getRuntime,
+         malloyModel,
+         materializer,
+      });
+   }
+   // `#(preaggregate)` (phase 4), under the same switch, and under the v1
+   // cutover, which reads v1 `#@ preaggregate` lines as its declarations.
+   if (getMaterializeEnabled() || v1Cutover) {
+      await collectGeneratedRollups(parts, {
+         modelPath,
+         packagePath,
+         getRuntime,
+         modelDef: malloyModel._modelDef,
+      });
+   }
 
-   const targets = await runtime.getBuildTargets(malloyModel);
-   for (const msg of targets.tagParseLog) {
+   // getBuildTargets() THROWS on a model without `##! experimental.persistence`,
+   // which would abort the whole package's plan. Before the v1 cutover such a
+   // model plans no persist source, mirroring Malloy's own guard (guard 1).
+   // Under it, its build copy carries the flag instead (D3), so the author's
+   // file need not. Presence only, decided as Malloy decides it.
+   let planModel = malloyModel;
+   let planRuntime = runtime;
+   if (
+      !routeHasKey(
+         malloyModel.modelAnnotations,
+         "!",
+         "experimental",
+         "persistence",
+      )
+   ) {
+      const companion = v1Cutover
+         ? await compileV1BuildCompanion({ packagePath, modelPath, getRuntime })
+         : undefined;
+      if (!companion) return;
+      planModel = companion.model;
+      planRuntime = companion.runtime;
+   }
+
+   const targets = await planRuntime.getBuildTargets(planModel);
+   const parseErrors = targets.tagParseLog.filter((msg) => {
       logger.warn("Persist annotation issue", {
          modelPath,
          message: msg.message,
          severity: msg.severity,
       });
-   }
+      return msg.severity === "error";
+   });
 
    // BEFORE the empty-plan `return`, so a model whose only persist source is
    // a dropped shape is still caught.
    const planned = plannedSources(targets);
+   // A `#@` line that does not parse is reported by what it cost. Malloy drops
+   // a source only when none of its `#@` lines parse; when another does, the
+   // source is still planned, built without the broken line's directives.
+   // A location in the build copy (D3) sits one line below the author's,
+   // since the copy opens with the flag: the finding names the author's line.
+   // The copy's own location still matches the planned sources' notes.
+   const companionURL =
+      planModel !== malloyModel
+         ? pathToFileURL(path.resolve(packagePath, modelPath)).href
+         : undefined;
+   const authorAt = (at: (typeof parseErrors)[number]["at"]) =>
+      at && companionURL && at.url === companionURL
+         ? {
+              ...at,
+              range: {
+                 start: { ...at.range.start, line: at.range.start.line - 1 },
+                 end: { ...at.range.end, line: at.range.end.line - 1 },
+              },
+           }
+         : at;
+   for (const msg of parseErrors) {
+      const at = msg.at;
+      const onPlanned = at
+         ? planned
+              .map((source) => ({
+                 source,
+                 note: source.annotations
+                    .forRoute("@")
+                    .find((note) => noteCovers(note, at)),
+              }))
+              .find((hit) => hit.note !== undefined)
+         : undefined;
+      addAnnotationFinding(
+         parts,
+         persistUnparseableFinding(
+            { ...msg, at: authorAt(msg.at) },
+            declaringModelPath(at?.url, packagePath, modelPath),
+            onPlanned?.note
+               ? { subject: onPlanned.source.name, line: onPlanned.note.text }
+               : undefined,
+         ),
+      );
+   }
    const recognizedNames = new Set(planned.map((s) => s.name));
    for (const name of detectDroppedPersistSources(
       malloyModel,
@@ -894,7 +1118,29 @@ export async function collectModelBuildPlan(
    for (const source of planned) {
       const sourceID = source.sourceID;
       parts.sources[sourceID] = source;
+      recordTarget(parts, sourceID, source);
       parts.sourceModelPaths[sourceID] = modelPath;
+      // Unknown and retired keys, on the lines that parsed (a line that did
+      // not is reported above). Attributed to the declaring model, so a model
+      // importing this source repeats nothing. Never lets the reader break the
+      // plan (mirrors deriveAnnotationFields).
+      try {
+         const declaredIn = declaringModelPath(
+            sourceIDFileURL(sourceID),
+            packagePath,
+            modelPath,
+         );
+         for (const finding of persistAnnotationFindings(
+            source.annotations,
+            source.name,
+            declaredIn,
+            { incremental: isIncrementalSource(source) },
+         )) {
+            addAnnotationFinding(parts, finding);
+         }
+      } catch {
+         // No findings for a source whose annotations cannot be read.
+      }
       if (!classificationCtx) {
          const givens = Array.from(
             malloyModel.givens.values(),
@@ -917,32 +1163,6 @@ export async function collectModelBuildPlan(
    }
 }
 
-/**
- * Digest each connection the builds run on. A connection that does not
- * resolve is reported through `onSkipped` and left out, so its sources'
- * entity ids are computed without a digest.
- */
-export async function resolveConnectionDigests(
-   connections: Map<string, { getDigest(): string | Promise<string> }>,
-   builds: { connectionName: string }[],
-   onSkipped: (connectionName: string) => void,
-): Promise<Record<string, string>> {
-   const connectionDigests: Record<string, string> = {};
-   for (const build of builds) {
-      const conn = connections.get(build.connectionName);
-      if (!conn) {
-         onSkipped(build.connectionName);
-         continue;
-      }
-      if (!connectionDigests[build.connectionName]) {
-         // Fingerprint-aware (applyConnectionFingerprint), so credential
-         // rotation does not re-address sources.
-         connectionDigests[build.connectionName] = await conn.getDigest();
-      }
-   }
-   return connectionDigests;
-}
-
 /** Project the compiled plan into the trimmed wire BuildPlan. */
 export function deriveBuildPlan(
    builds: SourceBuild[],
@@ -953,6 +1173,7 @@ export function deriveBuildPlan(
    packageMaterialization?: WirePackageMaterialization | null,
    options?: {
       preaggregatePlans?: Record<string, RollupPlan>;
+      materializePlans?: Record<string, MaterializePlan>;
       sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
    },
 ): BuildPlan {
@@ -961,13 +1182,27 @@ export function deriveBuildPlan(
    // One level holding every source with every table it reads. A host walks
    // these edges for a rerun's upstream closure, freshness inheritance and
    // lineage, so none may be left out.
+   // A rollup over a stored base is left out of the plan (storedBaseOfRollup),
+   // so of its graph too: every node is in `sources` or `refusedSources`.
+   const leftOut = new Set(
+      Object.keys(sources).filter((sourceID) =>
+         storedBaseOfRollup(
+            { sources, preaggregatePlans: options?.preaggregatePlans },
+            sourceID,
+         ),
+      ),
+   );
    const wireGraphs: WireBuildGraph[] = builds.map((build) => ({
       connectionName: build.connectionName,
       nodes: [
-         build.order.map((sourceID) => ({
-            sourceID,
-            dependsOn: build.dependsOn[sourceID] ?? [],
-         })),
+         build.order
+            .filter((sourceID) => !leftOut.has(sourceID))
+            .map((sourceID) => ({
+               sourceID,
+               dependsOn: (build.dependsOn[sourceID] ?? []).filter(
+                  (upstream) => !leftOut.has(upstream),
+               ),
+            })),
       ],
    }));
 
@@ -975,13 +1210,13 @@ export function deriveBuildPlan(
    const refusedSources: Record<string, WireRefusedSource> = {};
    for (const [sourceID, source] of Object.entries(sources)) {
       if (include && !include.has(source.name)) continue;
-      // One unreadable source must not cost the package its plan: getSQL()
+      // One unreadable source must not cost the package its plan: addressing
       // throws for a colocated source referencing a given with no default, and
       // an escaping throw would drop EVERY colocated binding for the package.
       try {
          const annotationFields = deriveAnnotationFields(source);
 
-         // Tier-appropriate eligibility BEFORE getSQL()/computeSourceEntityId(),
+         // Tier-appropriate eligibility BEFORE computeSourceEntityId(),
          // which fail for a refused source. Mirrors the build path: `storage=`
          // gets the storage-destination gate; plain `#@ persist` gets the
          // colocated gate, which admits a resolved, fully-attributed gate. The
@@ -1017,6 +1252,32 @@ export function deriveBuildPlan(
                continue;
             }
          } else {
+            // A storage rollup over a storage= base can neither build nor
+            // serve (see storedBaseOfRollup): out of the plan, warned on.
+            if (leftOut.has(sourceID)) continue;
+            // Before the other gates: a rollup sharing its table with another
+            // model's must neither build nor serve, so it leaves `sources`.
+            try {
+               assertRollupNameUnshared(source, {
+                  collidingRollups: collidingRollups({
+                     sources,
+                     connectionDigests,
+                     preaggregatePlans: options?.preaggregatePlans,
+                     sourceModelPaths,
+                  }),
+               });
+            } catch (err) {
+               if (!(err instanceof MaterializationEligibilityError)) throw err;
+               refusedSources[sourceID] = {
+                  name: source.name,
+                  sourceID: source.sourceID,
+                  modelPath: sourceModelPaths?.[sourceID],
+                  tier: "preaggregate",
+                  reason: err.reason || "rollup_name_collision",
+                  message: errMessage(err),
+               };
+               continue;
+            }
             // A storage rollup runs BOTH gates; neither subsumes the other. The
             // authorize refusal is unconditional for rollups (they group ACROSS
             // the gated column, so cannot be row-filtered afterwards).
@@ -1028,18 +1289,24 @@ export function deriveBuildPlan(
             // otherwise treat it as materialized/buildable.
             let storageRefused = false;
             try {
+               // A `#(preaggregate)` rollup over a gated base whose gates
+               // the variant grafts at read (rows 1 and 21) is not refused
+               // for them; a v1 rollup always is.
+               const keepsGate = rollupGateEnforcedAtRead(rollup);
                assertColocatedPersistNotAuthorizeGated(
                   source,
                   source.name,
                   "preaggregate",
                   options?.sourceGateOutcomes?.[sourceID],
                   annotationFields,
+                  { gateEnforcedAtRead: keepsGate },
                );
                if (declaresStorage) {
                   storageRefused = true;
                   assertMaterializationEligible(
                      source,
                      deriveAnnotationFields(source),
+                     { gateEnforcedAtRead: keepsGate },
                   );
                   storageRefused = false;
                }
@@ -1077,7 +1344,7 @@ export function deriveBuildPlan(
                  }
                : null,
             sourceEntityId: computeSourceEntityId(source, connectionDigests),
-            sql: source.getSQL(),
+            sql: addressSQL(source),
             // Verbatim; the resolved declaration is deliberately not a wire field
             // (see resolveIncrementalDeclaration).
             refresh: annotationFields.refresh ?? null,
@@ -1106,9 +1373,37 @@ export function deriveBuildPlan(
 export interface BuildPlanOutcome {
    plan: BuildPlan | null;
    droppedPersistSources: { name: string; modelPath: string }[];
+   /**
+    * Storage rollups left out because their base is itself `storage=`
+    * persisted (see storedBaseOfRollup). Optional: a worker that predates it
+    * sends none.
+    */
+   rollupsOverStoredBase?: { baseName: string; modelPath?: string }[];
+   annotationFindings: PackageAnnotationFinding[];
    sourceEligibility: SourceEligibility;
    colocatedSourceEligibility: ColocatedSourceEligibility;
    incrementalDeclarations: Record<string, IncrementalDeclaration>;
+   /**
+    * Every connection a persist source builds on, including sources the plan
+    * skipped (a connection that did not resolve) or refused, so a connection
+    * edit that creates or fixes one re-derives the plan. Optional: a worker
+    * that predates it sends none.
+    */
+   buildConnectionNames?: string[];
+   /**
+    * The generated `#(materialize)` build sources, by their sourceID (see
+    * {@link CompiledBuildPlan.materializePlans}), for the served copy to
+    * re-root each author source on its build source's table. Optional: a
+    * worker that predates it sends none.
+    */
+   materializePlans?: Record<string, MaterializePlan>;
+   /**
+    * The `#(preaggregate)` rollups over a gated base whose gates are grafted
+    * on their variant at read ({@link rollupGateEnforcedAtRead}), by their
+    * sourceID, so the serve verdict does not call them gated out. Optional:
+    * a worker that predates it sends none.
+    */
+   rollupsKeepingGates?: string[];
 }
 
 /**
@@ -1117,12 +1412,16 @@ export interface BuildPlanOutcome {
  * package-load worker as on the main thread.
  */
 export function deriveBuildPlanOutcome(
-   compiled: Omit<CompiledBuildPlan, "connections">,
+   collected: Omit<CompiledBuildPlan, "connections">,
    materializationConfig: WirePackageMaterialization | null,
 ): BuildPlanOutcome {
+   // Before anything reads the plan: a refused source is neither built nor
+   // served, and its warning replaces it (#6644).
+   const compiled = refuseCollidingMaterialize(collected);
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
    const incrementalDeclarations = collectIncrementalDeclarations(
       compiled.sources,
+      compiled.materializePlans,
    );
    const plan =
       compiled.builds.length === 0
@@ -1136,16 +1435,105 @@ export function deriveBuildPlanOutcome(
               materializationConfig,
               {
                  preaggregatePlans: compiled.preaggregatePlans,
+                 materializePlans: compiled.materializePlans,
                  sourceGateOutcomes: compiled.sourceGateOutcomes,
               },
            );
+   // One entry per base: its grains share the reason.
+   const overStoredBase = new Map<
+      string,
+      { baseName: string; modelPath?: string }
+   >();
+   for (const sourceID of Object.keys(compiled.sources)) {
+      const base = storedBaseOfRollup(compiled, sourceID);
+      if (!base || overStoredBase.has(base.sourceID)) continue;
+      const modelPath = compiled.sourceModelPaths?.[base.sourceID];
+      overStoredBase.set(base.sourceID, {
+         baseName: base.name,
+         ...(modelPath ? { modelPath } : {}),
+      });
+   }
    return {
       plan,
       droppedPersistSources,
-      sourceEligibility: collectSourceEligibility(compiled.sources),
+      rollupsOverStoredBase: [...overStoredBase.values()],
+      annotationFindings: compiled.annotationFindings ?? [],
+      sourceEligibility: collectSourceEligibility(compiled),
       colocatedSourceEligibility: collectColocatedSourceEligibility(compiled),
       incrementalDeclarations,
+      buildConnectionNames: [
+         ...new Set(compiled.builds.map((b) => b.connectionName)),
+      ].sort(),
+      materializePlans: compiled.materializePlans ?? {},
+      rollupsKeepingGates: Object.entries(compiled.preaggregatePlans ?? {})
+         .filter(([, rollup]) => rollupGateEnforcedAtRead(rollup))
+         .map(([sourceID]) => sourceID)
+         .sort(),
    };
+}
+
+/**
+ * What an incremental pair table's plan adds to its declaration: the parent
+ * key each refresh replaces rows by, and its two generated windows taken off
+ * `calculateFields`. Both are partitioned by that key, and the watermark is
+ * one value per parent, so a delta holds whole parents and the windows over
+ * it compute what the full build's do; the window gate exists for frames that
+ * reach outside a delta, which these cannot. Nothing for any other source.
+ */
+function pairDeclaration(
+   declaration: IncrementalDeclaration,
+   plan: MaterializePlan | undefined,
+): Partial<IncrementalDeclaration> {
+   const pair = plan?.pair;
+   const blocks = plan?.pairBlocks;
+   const watermark = blocks?.watermark ?? pair?.watermark;
+   if (!pair || !watermark) return {};
+   const delta = pairDelta(pair, blocks);
+   const generated = new Set([
+      pair.parentRowColumn,
+      watermark.column,
+      ...(delta.checks ?? []).map((c) => c.flag),
+   ]);
+   return {
+      pair: delta,
+      calculateFields: declaration.calculateFields.filter(
+         (name) => !generated.has(name),
+      ),
+   };
+}
+
+/**
+ * The flags a pair table's delta checks, as the build writes them
+ * (`pairFlags`): one table of one hop checks its parent-row flag alone (the
+ * default); a path checks each level's flag over the keys down to it; a table
+ * of several blocks checks every flag within each block, over that block's
+ * own keys (a flag past a block's own leaf partitions on every key it has).
+ */
+export function pairDelta(
+   pair: NonNullable<MaterializePlan["pair"]>,
+   blocks: MaterializePlan["pairBlocks"],
+): PairDelta {
+   const base = { parentKey: pair.parentKey, parentRow: pair.parentRowColumn };
+   const flagsOf = (p: typeof pair, levels: number, lane?: number) => {
+      const keys = pairKeyColumns(p);
+      return Array.from({ length: levels }, (_, level) => ({
+         flag: level === 0 ? p.parentRowColumn : pairLevelRowColumn(level),
+         keys: keys.slice(0, Math.min(level, keys.length - 1) + 1),
+         ...(lane !== undefined ? { lane } : {}),
+      }));
+   };
+   if (blocks) {
+      return {
+         ...base,
+         checks: blocks.blocks.flatMap((p, lane) =>
+            flagsOf(p, blocks.levels, lane),
+         ),
+         laneColumn: blocks.laneColumn,
+         lanes: blocks.blocks.length,
+      };
+   }
+   if (!pair.hops || pair.hops.length === 0) return base;
+   return { ...base, checks: flagsOf(pair, 1 + pair.hops.length) };
 }
 
 /**
@@ -1156,14 +1544,28 @@ export function deriveBuildPlanOutcome(
  */
 export function collectIncrementalDeclarations(
    sources: Record<string, PersistSource>,
+   /**
+    * The generated `#(materialize)` sources' plans by sourceID: a plan's
+    * rolling window rides on its declaration, for the refresh's delete.
+    */
+   materializePlans: Readonly<Record<string, MaterializePlan>> = {},
 ): Record<string, IncrementalDeclaration> {
    const declarations: Record<string, IncrementalDeclaration> = {};
    for (const [sourceID, source] of Object.entries(sources)) {
       try {
-         declarations[sourceID] = resolveIncrementalDeclaration(
+         const declaration = resolveIncrementalDeclaration(
             source,
             deriveAnnotationFields(source),
          );
+         const plan = materializePlans[sourceID];
+         // Only a lower bound deletes; an upper bound is left out of the
+         // build, so every refresh appends and keeps every row.
+         const window = deletingWindowsOf(plan?.readTimeTerms);
+         declarations[sourceID] = {
+            ...declaration,
+            ...(window.length ? { rollingWindow: window } : {}),
+            ...pairDeclaration(declaration, plan),
+         };
       } catch (err) {
          // One unreadable source must not cost the package its plan. "No
          // declaration" is safe: the build path dispatches a delta only for a
@@ -1175,115 +1577,4 @@ export function collectIncrementalDeclarations(
       }
    }
    return declarations;
-}
-
-/**
- * Which sources may be served from a materialized table, decided here where the
- * compiled sources exist: binding a host's manifest skips the recompile, so the
- * serve side cannot re-derive this.
- *
- * Carries the ELIGIBLE names so the serve side requires a positive result.
- * Absence is not eligibility: a `#@ persist` filtered pass-through (the
- * row-level-access shape) never reaches this record, and a refusal-only view
- * would read that silence as consent. Keyed by source NAME, as serve bindings are.
- */
-export type SourceEligibility = {
-   /** Sources compiled, examined, and found eligible. */
-   eligible: string[];
-   /** Source name -> why it was refused; for the operator-facing log. */
-   refused: Record<string, string>;
-};
-
-function collectSourceEligibility(
-   sources: Record<string, PersistSource>,
-): SourceEligibility {
-   const eligible: string[] = [];
-   const refused: Record<string, string> = {};
-   for (const source of Object.values(sources)) {
-      try {
-         assertMaterializationEligible(source, deriveAnnotationFields(source));
-         eligible.push(source.name);
-      } catch (err) {
-         refused[source.name] = errMessage(err);
-      }
-   }
-   return { eligible, refused };
-}
-
-/**
- * Which sources may be served from a COLOCATED materialized table, decided here
- * for the same reason as {@link SourceEligibility}.
- *
- * Keyed by `sourceEntityId`, not name: a colocated binding carries only the id,
- * and two models may declare same-named sources, so a name key would let one's
- * eligibility authorize the other.
- *
- * Two DIFFERENT sources can share an id (identical SQL, different gates, since
- * `getSQL()` excludes annotations). Refusal therefore dominates: one refusal
- * retracts the id for good, regardless of iteration order.
- */
-export type ColocatedSourceEligibility = {
-   /** sourceEntityId of colocated sources examined and found eligible. */
-   eligibleEntityIds: Set<string>;
-   /** sourceEntityId -> why it was refused; for the operator-facing log. */
-   refused: Record<string, string>;
-};
-
-function collectColocatedSourceEligibility(
-   compiled: Omit<CompiledBuildPlan, "connections">,
-): ColocatedSourceEligibility {
-   const eligibleEntityIds = new Set<string>();
-   const refused: Record<string, string> = {};
-   for (const [sourceID, source] of Object.entries(compiled.sources)) {
-      try {
-         assertTierEligible(source, false, compiled);
-      } catch (err) {
-         // Gated BEFORE computeSourceEntityId: the gate never calls getSQL(),
-         // so it refuses cleanly even when getSQL() would throw.
-         let sourceEntityId: string;
-         try {
-            sourceEntityId = computeSourceEntityId(
-               source,
-               compiled.connectionDigests,
-            );
-         } catch (idErr) {
-            // No id to key the refusal under; the log is the only record that
-            // it was examined and refused.
-            logger.warn(
-               "Dropping a refused colocated source: its content address could not be computed",
-               {
-                  sourceID,
-                  sourceName: source.name,
-                  refusal: errMessage(err),
-                  error: errMessage(idErr),
-               },
-            );
-            continue;
-         }
-         refused[sourceEntityId] = errMessage(err);
-         // Refusal dominates: retract any earlier same-id eligibility.
-         eligibleEntityIds.delete(sourceEntityId);
-         continue;
-      }
-      // A given-referencing colocated source's getSQL() can throw; contain it
-      // to this source's binding.
-      let sourceEntityId: string;
-      try {
-         sourceEntityId = computeSourceEntityId(
-            source,
-            compiled.connectionDigests,
-         );
-      } catch (err) {
-         logger.warn(
-            "Dropping an eligible colocated source: its content address could not be computed",
-            { sourceID, sourceName: source.name, error: errMessage(err) },
-         );
-         continue;
-      }
-      // A refusal for this id (earlier or later) must win.
-      if (!(sourceEntityId in refused)) {
-         eligibleEntityIds.add(sourceEntityId);
-      }
-   }
-   return { eligibleEntityIds, refused };
 }

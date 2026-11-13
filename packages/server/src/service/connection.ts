@@ -6,6 +6,15 @@ import "@malloydata/db-bigquery";
 import type { BigQueryConnection } from "@malloydata/db-bigquery";
 import "@malloydata/db-databricks";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { errMessage } from "../utils";
+import {
+   installDuckDBInstanceSharing,
+   mayHoldAttachments,
+   recordAttachments,
+   recordedAttachments,
+   type RecordedAttachment,
+   serializeAttachRun,
+} from "./duckdb_instance_sharing";
 import "@malloydata/db-duckdb/native";
 import "@malloydata/db-mysql";
 import type { MySQLConnection } from "@malloydata/db-mysql";
@@ -89,6 +98,9 @@ import {
 } from "./gcs_s3_utils";
 import { openProxy, type ProxyEndpoint } from "./proxy";
 import { quoteIdentifier } from "./quoting";
+
+// One DuckDB instance per database file (duckdb_instance_sharing.ts).
+installDuckDBInstanceSharing();
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 type ApiConnection = components["schemas"]["Connection"];
@@ -396,7 +408,12 @@ export function escapeSQL(value: string): string {
 }
 
 function handleAlreadyAttachedError(error: unknown, dbName: string): void {
-   if (error instanceof Error && error.message.includes("already exists")) {
+   if (
+      error instanceof Error &&
+      error.message.includes("already exists") &&
+      // A DuckLake catalog create that lost a race attached nothing.
+      !isDuckLakeInitRace(error)
+   ) {
       logger.info(`Database ${dbName} is already attached, skipping`);
    } else {
       throw error;
@@ -1062,6 +1079,76 @@ async function preflightDuckLakeCatalogFormat(
    return "present";
 }
 
+/** How many times an attach that lost a catalog-create race is tried in all. */
+export const DUCKLAKE_INIT_RACE_ATTEMPTS = 3;
+
+/**
+ * Whether `error` is a DuckLake attach that lost a race to create the same
+ * catalog. DuckLake creates its metadata tables with a plain CREATE TABLE, so
+ * when two sessions (two builds, on one server or two) attach a catalog that
+ * does not exist yet, both create it and Postgres refuses the slower one: a
+ * duplicate key on `pg_type`, or the relation already existing.
+ */
+export function isDuckLakeInitRace(error: unknown): boolean {
+   const message = errMessage(error);
+   return (
+      message.includes("Failed to initialize DuckLake") &&
+      (message.includes("already exists") ||
+         message.includes("duplicate key value"))
+   );
+}
+
+/**
+ * Whether a database is attached under `alias`, compared as DuckDB resolves
+ * it: case-insensitively. An `ATTACH OR REPLACE … AS "lake"` over `"Lake"`
+ * keeps the stored name `Lake`, so an exact match would miss it.
+ */
+async function isAliasAttached(
+   connection: DuckDBConnection,
+   alias: string,
+): Promise<boolean> {
+   try {
+      const rows = runSQLRows(
+         await connection.runSQL(
+            `SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('${escapeSQL(alias)}')`,
+         ),
+      );
+      return rows.length > 0;
+   } catch {
+      return false;
+   }
+}
+
+/**
+ * Run a DuckLake ATTACH, trying again, up to `attempts` tries in all, when it
+ * lost a race to create the catalog. Postgres reports the duplicate only once
+ * the other create has committed, so the catalog exists by then and the next
+ * attach opens it as any attach of an existing catalog does. Any other failure,
+ * and the last try's, is thrown.
+ */
+async function runDuckLakeAttach(
+   connection: DuckDBConnection,
+   dbName: string,
+   attachCommand: string,
+   attempts: number,
+): Promise<void> {
+   for (let attempt = 1; ; attempt++) {
+      try {
+         await connection.runSQL(attachCommand);
+         return;
+      } catch (error) {
+         if (!isDuckLakeInitRace(error) || attempt >= attempts) {
+            throw error;
+         }
+         logger.info(
+            "Another session created the DuckLake catalog first; attaching it again",
+            { dbName, attempt },
+         );
+         await new Promise((resolve) => setTimeout(resolve, 25 * attempt));
+      }
+   }
+}
+
 /**
  * Attach a DuckLake catalog. `readOnly: true` is the live user-facing path;
  * `readOnly: false` is the build variant, used only on a transient build
@@ -1212,7 +1299,20 @@ async function attachDuckLakeWithMode(
       `Attaching DuckLake database using command: ${redactPgSecrets(attachCommand)}`,
    );
    try {
-      await connection.runSQL(attachCommand);
+      // A create (the admin API's, the only caller with first-attach settings)
+      // that lost is not tried again: the retry would open the other creator's
+      // catalog, with that creator's settings and data path, and the create
+      // would report it as its own. It fails, and the caller answers that the
+      // catalog exists.
+      const creating =
+         options.encrypted !== undefined ||
+         options.dataInliningRowLimit !== undefined;
+      await runDuckLakeAttach(
+         connection,
+         dbName,
+         attachCommand,
+         creating ? 1 : DUCKLAKE_INIT_RACE_ATTEMPTS,
+      );
       logger.info(
          `Successfully attached DuckLake database in ${mode} mode: ${dbName}`,
       );
@@ -1221,10 +1321,16 @@ async function attachDuckLakeWithMode(
          await applyDuckLakeTargetFileSize(connection, dbName);
       }
    } catch (error) {
+      // Skipped only when the alias really is attached. A catalog create that
+      // lost a race also says "already exists", and skipping that one left
+      // nothing attached: the build's next statement failed with "Schema with
+      // name <alias> does not exist".
       if (
          error instanceof Error &&
          (error.message.includes("already exists") ||
-            error.message.includes("already attached"))
+            error.message.includes("already attached")) &&
+         !isDuckLakeInitRace(error) &&
+         (await isAliasAttached(connection, dbName))
       ) {
          logger.info(
             `DuckLake database ${dbName} is already attached, skipping`,
@@ -1380,6 +1486,54 @@ export async function recordedSchemaPath(
    )[0];
    if (!row || typeof row.path !== "string") return undefined;
    return { path: row.path, relative: row.path_is_relative !== false };
+}
+
+/**
+ * One key of a DuckLake table's partition spec: a column, and the transform
+ * DuckLake records for it (`identity`, `year`, `month`, `day`, `hour`, or
+ * `bucket(N)`).
+ */
+export interface PartitionKey {
+   column: string;
+   transform: string;
+}
+
+/**
+ * The partition spec `schemaName.tableName` has now, in the catalog attached as
+ * `alias`, in key order. Empty when the table is not partitioned, including a
+ * table whose spec was reset (DuckLake records that as a spec with no keys), and
+ * when no such table exists.
+ */
+export async function tablePartitionKeys(
+   connection: DuckDBConnection,
+   alias: string,
+   metadataSchema: string | undefined,
+   schemaName: string,
+   tableName: string,
+): Promise<PartitionKey[]> {
+   const meta = metadataCatalogRef(alias, metadataSchema);
+   const rows = runSQLRows(
+      await connection.runSQL(
+         `SELECT c.column_name, pc.transform
+            FROM ${meta}.ducklake_table t
+            JOIN ${meta}.ducklake_schema s
+              ON s.schema_id = t.schema_id AND s.end_snapshot IS NULL
+            JOIN ${meta}.ducklake_partition_info pi
+              ON pi.table_id = t.table_id AND pi.end_snapshot IS NULL
+            JOIN ${meta}.ducklake_partition_column pc
+              ON pc.partition_id = pi.partition_id AND pc.table_id = t.table_id
+            JOIN ${meta}.ducklake_column c
+              ON c.table_id = t.table_id AND c.column_id = pc.column_id AND c.end_snapshot IS NULL
+           WHERE s.schema_name = '${escapeSQL(schemaName)}'
+             AND t.table_name = '${escapeSQL(tableName)}'
+             AND t.end_snapshot IS NULL
+           ORDER BY pc.partition_key_index`,
+      ),
+   );
+   return rows.map((row) => ({
+      column: String(row.column_name),
+      transform: String(row.transform),
+   }));
 }
 
 /** `url` without its trailing slashes. A loop, not `/\/+$/`, which backtracks on a long run of them. */
@@ -2307,9 +2461,40 @@ async function doesSecretExistInDuckDB(
    return Number(rows?.[0]?.count ?? 0) > 0;
 }
 
+/**
+ * A digest of the settings one database is attached with. Keys are sorted, so
+ * the same settings digest the same whatever order they arrive in: an echoed
+ * update has its withheld credentials put back after the other fields
+ * (mergeConnectionUpdate), and a JSON column may store keys in its own order.
+ * An order-sensitive digest would re-attach every such database on an edit
+ * that did not touch it, failing queries in flight against it.
+ */
+export function attachmentDigest(attachedDb: AttachedDatabase): string {
+   const canonical = JSON.stringify(attachedDb, (_key, value: unknown) =>
+      value !== null && typeof value === "object" && !Array.isArray(value)
+         ? Object.fromEntries(
+              Object.entries(value as Record<string, unknown>).sort(
+                 ([a], [b]) => (a < b ? -1 : a > b ? 1 : 0),
+              ),
+           )
+         : value,
+   );
+   return createHash("sha256").update(canonical).digest("hex");
+}
+
+/**
+ * @param connectionName The Publisher connection the databases belong to. An
+ *   earlier generation of it on the same DuckDB instance may have attached
+ *   some already (duckdb_instance_sharing.ts, `recordedAttachments`): one whose
+ *   settings changed is re-attached, and one no longer declared is detached.
+ * @param generation The environment config build this connection belongs to.
+ *   A draining older generation never undoes what a newer one attached.
+ */
 async function attachDatabasesToDuckDB(
    duckdbConnection: DuckDBConnection,
    attachedDatabases: AttachedDatabase[],
+   connectionName: string,
+   generation: number,
 ): Promise<void> {
    const attachHandlers = {
       bigquery: attachBigQuery,
@@ -2329,39 +2514,125 @@ async function attachDatabasesToDuckDB(
       await installAndLoadExtension(duckdbConnection, "httpfs");
    }
 
-   for (const attachedDb of attachedDatabases) {
-      try {
-         if (
-            await isDatabaseAttached(duckdbConnection, attachedDb.name || "")
-         ) {
-            logger.info(
-               `Database ${attachedDb.name} is already attached, skipping`,
-            );
-            continue;
-         }
-
-         const handler =
-            attachHandlers[attachedDb.type as keyof typeof attachHandlers];
-         if (!handler) {
-            throw new Error(`Unsupported database type: ${attachedDb.type}`);
-         }
-
-         try {
-            await handler(duckdbConnection, attachedDb);
-         } catch (attachError) {
-            handleAlreadyAttachedError(attachError, attachedDb.name || "");
-         }
-      } catch (error) {
-         // Attach errors echo the connection string (DuckDB embeds the DSN).
-         logger.error(`Failed to attach database ${attachedDb.name}`, {
-            error: redactPgSecrets(
-               error instanceof Error ? error.message : String(error),
-            ),
-         });
-         throw new Error(
-            `Failed to attach database ${attachedDb.name}: ${(error as Error).message}`,
+   // The extensions above opened the connection, so its instance is known.
+   await serializeAttachRun(duckdbConnection, connectionName, async () => {
+      const previous = recordedAttachments(duckdbConnection, connectionName);
+      if (previous && previous.generation > generation) {
+         // A newer generation owns this connection's attachments here now.
+         logger.info(
+            `Connection ${connectionName} was edited since; leaving its attached databases to the newer connection`,
          );
+         return;
       }
+      // What the instance holds for this connection, kept current as each
+      // database is replaced, so a run that fails partway leaves a record a
+      // retry can finish from.
+      const held = new Map<string, RecordedAttachment>(previous?.databases);
+      const declared = new Set(attachedDatabases.map((db) => db.name || ""));
+      try {
+         for (const [name, recorded] of previous?.databases ?? []) {
+            if (declared.has(name)) continue;
+            // An earlier generation attached it and this one no longer
+            // declares it.
+            try {
+               await detachAttachment(duckdbConnection, name, recorded.type);
+               held.delete(name);
+            } catch (error) {
+               // Kept in the record, so the next generation tries again.
+               logger.warn(`Failed to detach removed database ${name}`, {
+                  error: redactPgSecrets(errMessage(error)),
+               });
+            }
+         }
+
+         for (const attachedDb of attachedDatabases) {
+            const name = attachedDb.name || "";
+            const digest = attachmentDigest(attachedDb);
+            try {
+               const recorded = held.get(name);
+               if (recorded !== undefined && recorded.digest !== digest) {
+                  // Attached by an earlier generation with other settings:
+                  // replace it, or the edit would not take effect until a
+                  // restart.
+                  await detachAttachment(duckdbConnection, name, recorded.type);
+                  held.delete(name);
+               } else if (await isDatabaseAttached(duckdbConnection, name)) {
+                  held.set(
+                     name,
+                     recorded ?? { digest, type: attachedDb.type ?? "" },
+                  );
+                  logger.info(
+                     `Database ${attachedDb.name} is already attached, skipping`,
+                  );
+                  continue;
+               }
+
+               const handler =
+                  attachHandlers[
+                     attachedDb.type as keyof typeof attachHandlers
+                  ];
+               if (!handler) {
+                  throw new Error(
+                     `Unsupported database type: ${attachedDb.type}`,
+                  );
+               }
+
+               try {
+                  await handler(duckdbConnection, attachedDb);
+               } catch (attachError) {
+                  handleAlreadyAttachedError(
+                     attachError,
+                     attachedDb.name || "",
+                  );
+               }
+               held.set(name, { digest, type: attachedDb.type ?? "" });
+            } catch (error) {
+               // Attach errors echo the connection string (DuckDB embeds the
+               // DSN).
+               logger.error(`Failed to attach database ${attachedDb.name}`, {
+                  error: redactPgSecrets(errMessage(error)),
+               });
+               throw new Error(
+                  `Failed to attach database ${attachedDb.name}: ${(error as Error).message}`,
+               );
+            }
+         }
+      } finally {
+         // Whatever the instance holds for this connection now, so the next
+         // generation, or a retry of this one, replaces it.
+         recordAttachments(duckdbConnection, connectionName, {
+            generation,
+            databases: held,
+         });
+      }
+   });
+}
+
+/**
+ * Remove one database an earlier generation attached: the catalog, and the
+ * secret its attach created, which is instance-wide too and is all a `gcs`,
+ * `s3` or `azure` entry creates. Leaving the secret would keep a removed
+ * entry's credentials in force on every later query of the instance.
+ */
+async function detachAttachment(
+   duckdbConnection: DuckDBConnection,
+   name: string,
+   type: string,
+): Promise<void> {
+   await duckdbConnection.runSQL(
+      `DETACH DATABASE IF EXISTS ${quoteIdentifier(name, "duckdb")};`,
+   );
+   const secret =
+      type === "snowflake"
+         ? `${name}_secret`
+         : type === "bigquery" ||
+             type === "gcs" ||
+             type === "s3" ||
+             type === "azure"
+           ? sanitizeSecretName(`${type}_${name}`)
+           : undefined;
+   if (secret !== undefined) {
+      await duckdbConnection.runSQL(`DROP SECRET IF EXISTS ${secret};`);
    }
 }
 
@@ -2616,6 +2887,85 @@ export function restrictMalloyConfigToConnections(
       },
    }));
    return restricted;
+}
+
+/**
+ * The SQL dialect of every storage destination: DuckLake, the one declarable
+ * destination type (DECLARABLE_STORAGE_DESTINATION_TYPES), is DuckDB.
+ */
+export const STORAGE_DESTINATION_DIALECT = "duckdb";
+
+/**
+ * A DuckLake lookup refusing only because its catalog does not exist yet: an
+ * attach never creates one, so before the first build the catalog is absent.
+ */
+const CATALOG_NOT_CREATED_YET =
+   /creating a new DuckLake is explicitly disabled|DuckLake .*does not exist/i;
+
+/**
+ * `base` for a compile that never runs SQL, such as the dry-run preview of a
+ * stored source's views. Malloy learns a connection's dialect by looking the
+ * connection up, and looking up a DuckLake destination attaches its catalog,
+ * which fails before the first build has created it (an attach never creates
+ * a catalog) or while it is unreachable. The lookup error would leave the
+ * dialect unknown and every view of a stored source would preview as `live`
+ * ("Cannot determine dialect"), though serving it needs only the dialect at
+ * compile. So a destination whose lookup fails answers with a stand-in that
+ * carries the destination dialect and refuses anything that would run SQL.
+ */
+export function compileOnlyDestinationConfig(base: MalloyConfig): MalloyConfig {
+   const config = new MalloyConfig({ connections: {} });
+   config.wrapConnections(() => ({
+      lookupConnection: async (name?: string) => {
+         try {
+            return await base.connections.lookupConnection(name);
+         } catch (error) {
+            // A name no destination holds stays unknown: the preview must not
+            // serve a view from a destination that does not exist.
+            const message =
+               error instanceof Error ? error.message : String(error);
+            if (
+               !name ||
+               error instanceof ConnectionNotFoundError ||
+               /No connection named/.test(message)
+            ) {
+               throw error;
+            }
+            // Only a catalog the first build has not created yet compiles
+            // against the dialect alone. Anything else (bad credentials, an
+            // unreachable catalog host, a wrong path) would fail serving too,
+            // so the preview must say so rather than predict `serves`.
+            if (!CATALOG_NOT_CREATED_YET.test(message)) throw error;
+            const refuse = () => {
+               throw new Error(
+                  `Destination ${name} could not be reached, so the preview compiles against its dialect only and cannot run SQL: ${
+                     error instanceof Error ? error.message : String(error)
+                  }`,
+               );
+            };
+            return {
+               name,
+               dialectName: STORAGE_DESTINATION_DIALECT,
+               getDigest: async () => `compile-only:${name}`,
+               runSQL: refuse,
+               runSQLStream: refuse,
+               fetchSchemaForTables: refuse,
+               fetchSchemaForSQLStruct: refuse,
+               estimateQueryCost: refuse,
+               close: async () => {},
+               canPersist: () => false,
+               canStream: () => false,
+               isPool: () => false,
+               get supportsNesting() {
+                  return true;
+               },
+            } as unknown as Awaited<
+               ReturnType<MalloyConfig["connections"]["lookupConnection"]>
+            >;
+         }
+      },
+   }));
+   return config;
 }
 
 export type EnvironmentMalloyConfig = {
@@ -2956,6 +3306,9 @@ function isDuckDBConnection(
    return connection instanceof DuckDBConnection;
 }
 
+/** Environment config builds so far, numbering each one's generation. */
+let environmentConfigGenerations = 0;
+
 /**
  * @param isUpdateConnectionRequest Forces a DuckLake re-ATTACH even when the
  *   catalog is already attached, so a generation replacing one after a config
@@ -2978,6 +3331,9 @@ export function buildEnvironmentMalloyConfig(
       environmentPath,
       origin,
    );
+   // Orders this build's attachments against other builds' on a shared
+   // DuckDB instance (attachDatabasesToDuckDB).
+   const generation = ++environmentConfigGenerations;
    // Promises are cached so concurrent lookups share one build and never leak a
    // losing instance's pool. One cache per branch keeps the concrete subtype.
    const duckLakeCache = new Map<string, Promise<DuckLakeConnection>>();
@@ -3018,9 +3374,12 @@ export function buildEnvironmentMalloyConfig(
       connection: Connection,
       metadata: EnvironmentConnectionMetadata,
    ): Promise<void> {
+      const connectionName = metadata.apiConnection.name ?? "";
       if (
-         metadata.attachedDatabases.length === 0 ||
-         !isDuckDBConnection(connection)
+         !isDuckDBConnection(connection) ||
+         // Declaring none still detaches what an earlier generation attached.
+         (metadata.attachedDatabases.length === 0 &&
+            !mayHoldAttachments(connectionName))
       ) {
          return;
       }
@@ -3031,6 +3390,8 @@ export function buildEnvironmentMalloyConfig(
          attachPromise = attachDatabasesToDuckDB(
             connection,
             metadata.attachedDatabases,
+            connectionName,
+            generation,
          );
          // Evict a rejected run so a later lookup can retry: every attach handler
          // reaches the network, and a cached failure would make one transient

@@ -31,6 +31,9 @@
 //                                        redaction check can name a secret only the harness knows]
 //   ## Compile <label> (pkg=P[, refused]) + ```malloy (appended source) + `cites:` -> /compile
 //   ## Warns [<pkg>]                     [body: `cites: <substring>`]  -> package warning
+//   ## Preview [<pkg>]                   + `- <source>[.<view>]: serves|live|not_built` lines ->
+//                                        POST /packages?dryRun=true on the package's own tree,
+//                                        asserting each source's serve verdict, or one view's
 //   ## Republish [refused] [<pkg>]       [body: `cites: <substring>`]  -> POST /packages (the
 //                                        author-in-the-loop publish gate); `refused` asserts a 4xx
 //   ## Bind [<pkg>] [(empty|clear|bad|from=<publisher>)]  -> orchestrator manifestLocation PATCH
@@ -146,6 +149,8 @@ type Step =
         mode: PersistStorageMode;
         refused: boolean;
         strict: boolean;
+        /** `(reach=recompute|refuse)`: the body's `warehouseReach`; omitted, absent. */
+        warehouseReach?: string;
         sources: {
            src: string;
            name: string;
@@ -190,6 +195,11 @@ type Step =
         deleted?: number;
         /** `tables` only: an expected non-200 status, in place of an `Expect:` table. */
         status?: number;
+        /**
+         * `tables` only: how long the listing may take to settle. Re-read until
+         * it matches `expect` or the time is up; the last listing is compared.
+         */
+        withinMs?: number;
         expect?: Table;
      }
    | {
@@ -313,6 +323,15 @@ type Step =
         extraEnv?: Record<string, string>;
      }
    | {
+        /** `## Preview <pkg>`: a dry-run publish and the verdicts it predicts. */
+        kind: "preview";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        expects: { source: string; view?: string; verdict: string }[];
+     }
+   | {
         kind: "republish";
         pub?: string;
         env: string;
@@ -404,11 +423,11 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    delete: {},
    reclaim: {},
    destination: {
-      attrs: ["dest", "schema", "snapshots", "files"],
+      attrs: ["dest", "schema", "snapshots", "files", "within"],
       keys: ["deleted", "status"],
    },
    build: {
-      attrs: ["orchestrated", "strict", "pkg", "version"],
+      attrs: ["orchestrated", "strict", "reach", "pkg", "version"],
       // `reference:` is an orchestrated-build body line, not an assertion key.
       keys: ["cites", "excludes", "reference"],
    },
@@ -754,6 +773,14 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                schema: (attrs.schema as string) || "main",
             };
             const status = firstKey(sec.body, "status");
+            if (attrs.within !== undefined && action !== "tables")
+               throw new Error(
+                  `## Destination ${action}: (within=) applies only to ## Destination tables`,
+               );
+            if (attrs.within !== undefined && status !== undefined)
+               throw new Error(
+                  `## Destination tables: (within=) waits for an Expect: table, not a status:`,
+               );
             if (status !== undefined && action !== "tables")
                throw new Error(
                   `## Destination ${action}: status: applies only to ## Destination tables`,
@@ -774,6 +801,9 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                steps.push({
                   ...base,
                   action,
+                  ...(attrs.within !== undefined
+                     ? { withinMs: parseWithin(attrs.within) }
+                     : {}),
                   expect: requireExpectTable(sec.body, sec.header),
                });
             } else if (action === "drop") {
@@ -869,6 +899,9 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   mode,
                   refused,
                   strict: !!attrs.strict,
+                  ...(typeof attrs.reach === "string"
+                     ? { warehouseReach: attrs.reach }
+                     : {}),
                   sources,
                   references,
                   cites: firstKey(sec.body, "cites"),
@@ -1074,6 +1107,42 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                pkg: arg.trim() || defaultPackage,
                mode,
                cites: firstKey(sec.body, "cites") ?? "",
+            });
+            break;
+         }
+         case "preview": {
+            // A dry-run publish of the package's own tree, asserting the serve
+            // verdict it predicts for each source, or for one source's view.
+            const expects: {
+               source: string;
+               view?: string;
+               verdict: string;
+            }[] = [];
+            for (const line of sec.body) {
+               const m =
+                  /^\s*-\s*([A-Za-z_][\w]*)(?:\.([A-Za-z_][\w]*))?\s*:\s*(serves|live|not_built)\s*$/.exec(
+                     line,
+                  );
+               if (m) {
+                  expects.push({
+                     source: m[1],
+                     ...(m[2] ? { view: m[2] } : {}),
+                     verdict: m[3],
+                  });
+               }
+            }
+            if (expects.length === 0) {
+               throw new Error(
+                  `## Preview ${arg}: expected at least one \`- <source>[.<view>]: serves|live|not_built\` line`,
+               );
+            }
+            steps.push({
+               kind: "preview",
+               pub,
+               env,
+               pkg: arg.trim() || defaultPackage,
+               mode,
+               expects,
             });
             break;
          }
@@ -1364,6 +1433,18 @@ function parseAge(raw: string | boolean | undefined, what: string): number {
       m[2] as "s" | "m" | "h" | "d"
    ];
    return Number(m[1]) * unit;
+}
+
+/** `(within=<n>s)` -> milliseconds: a bound of a minute at most, so a listing
+ * that never settles fails in seconds rather than hanging the run. */
+function parseWithin(raw: string | boolean | undefined): number {
+   const m = typeof raw === "string" ? raw.match(/^(\d+)s$/) : null;
+   const ms = m ? Number(m[1]) * 1e3 : NaN;
+   if (!(ms > 0 && ms <= 60_000))
+      throw new Error(
+         `## Destination tables: (within=<n>s) takes 1s to 60s, got ${String(raw)}`,
+      );
+   return ms;
 }
 
 function splitConnTable(arg: string): [string, string] {
@@ -1885,28 +1966,39 @@ function compareRows(
    expect: Table,
    actual: Record<string, unknown>[],
 ): void {
+   const mismatch = rowsMismatch(expect, actual);
+   if (mismatch) {
+      assert.fail(`${label}: ${mismatch.check}`, mismatch.detail);
+      return;
+   }
+   assert.ok(`${label}: ${expect.rows.length} row(s) match`, true);
+}
+
+/** The first way `actual` differs from `expect`, or undefined when it matches. */
+function rowsMismatch(
+   expect: Table,
+   actual: Record<string, unknown>[],
+): { check: string; detail: string } | undefined {
    const cols = expect.cols.map((c) => c.name);
    if (expect.rows.length !== actual.length) {
-      assert.fail(
-         `${label}: row count`,
-         `expected ${expect.rows.length} rows, got ${actual.length}: ${JSON.stringify(actual).slice(0, 200)}`,
-      );
-      return;
+      return {
+         check: "row count",
+         detail: `expected ${expect.rows.length} rows, got ${actual.length}: ${JSON.stringify(actual).slice(0, 200)}`,
+      };
    }
    for (let r = 0; r < expect.rows.length; r++) {
       for (let c = 0; c < cols.length; c++) {
          const exp = normalizeCell(expect.rows[r][c]);
          const act = normalizeCell(actual[r]?.[cols[c]]);
          if (JSON.stringify(exp) !== JSON.stringify(act)) {
-            assert.fail(
-               `${label}: row ${r + 1} col ${cols[c]}`,
-               `expected ${JSON.stringify(exp)}, got ${JSON.stringify(act)}`,
-            );
-            return;
+            return {
+               check: `row ${r + 1} col ${cols[c]}`,
+               detail: `expected ${JSON.stringify(exp)}, got ${JSON.stringify(act)}`,
+            };
          }
       }
    }
-   assert.ok(`${label}: ${expect.rows.length} row(s) match`, true);
+   return undefined;
 }
 
 // ─────────────────────────── build helpers ───────────────────────────
@@ -1926,6 +2018,7 @@ interface OrchestratedBody {
          physicalTableName: string;
       }[];
       strictUpstreams: boolean;
+      warehouseReach?: string;
    };
 }
 
@@ -1941,6 +2034,7 @@ async function buildOrchestratedBody(
    step: {
       pkg: string;
       strict: boolean;
+      warehouseReach?: string;
       sources: {
          src: string;
          name: string;
@@ -2004,6 +2098,9 @@ async function buildOrchestratedBody(
             sources,
             ...(referenceManifest.length ? { referenceManifest } : {}),
             strictUpstreams: step.strict,
+            ...(step.warehouseReach
+               ? { warehouseReach: step.warehouseReach }
+               : {}),
          },
       },
       failedEids,
@@ -2900,7 +2997,9 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                if (step.variant === "clear") {
                   // manifestLocation:null → drop the orchestrator binding; the publisher
                   // reverts to its own local-store rebind (from the latest build).
-                  await rest.patchPackage(step.pkg, { manifestLocation: null });
+                  // A versioned package clears through its version's manifest
+                  // route (see RestClient.clearManifest).
+                  await rest.clearManifest(step.pkg);
                } else if (step.variant === "bad") {
                   // Bind an unreachable manifestLocation (a file:// URI that does
                   // not exist). The publisher must fetch-fail and fall back to
@@ -2974,16 +3073,26 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      body,
                   );
                } else if (step.action === "tables") {
-                  const names = await rest.listDestinationTables(
-                     step.dest,
-                     step.schema,
-                  );
-                  compareRows(
-                     assert,
-                     label,
-                     step.expect!,
-                     names.map((name) => ({ name })),
-                  );
+                  const list = async () =>
+                     (
+                        await rest.listDestinationTables(step.dest, step.schema)
+                     ).map((name) => ({ name }));
+                  let names = await list();
+                  // A bounded wait for work the server finishes just after it
+                  // reports a run terminal: re-read until the listing matches
+                  // or the time is up, then compare the last one, so a listing
+                  // that never settles still fails with what it held.
+                  if (step.withinMs !== undefined) {
+                     const deadline = Date.now() + step.withinMs;
+                     while (
+                        rowsMismatch(step.expect!, names) &&
+                        Date.now() < deadline
+                     ) {
+                        await sleep(100);
+                        names = await list();
+                     }
+                  }
+                  compareRows(assert, label, step.expect!, names);
                } else if (step.action === "drop") {
                   const status = await rest.dropDestinationTable(
                      step.dest,
@@ -3056,6 +3165,50 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                activeRest = await ctx.usePublisher(activeName, activeMode, {
                   extraEnv: step.extraEnv,
                });
+               break;
+            }
+            case "preview": {
+               // POST /packages?dryRun=true on the package's own tree: what a
+               // publish would build and serve, with nothing installed.
+               const rest = await serverFor(step.pub, step.env);
+               const location = ctx.packageDir(step.pkg, step.env);
+               const res = await rest.dryRunFrom(step.pkg, location);
+               assert.ok(
+                  `preview ${step.pkg}: answered`,
+                  res.ok,
+                  res.ok
+                     ? undefined
+                     : `expected the dry run to answer 200, got ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`,
+               );
+               const verdicts = (res.body.serveVerdicts ?? []) as {
+                  sourceName?: string;
+                  verdict?: string;
+                  reason?: string;
+                  views?: { view: string; verdict: string; detail?: string }[];
+               }[];
+               for (const want of step.expects) {
+                  const source = verdicts.find(
+                     (v) => v.sourceName === want.source,
+                  );
+                  if (want.view === undefined) {
+                     assert.ok(
+                        `preview ${want.source}: ${want.verdict}`,
+                        source?.verdict === want.verdict,
+                        source?.verdict === want.verdict
+                           ? undefined
+                           : `got ${source ? `${source.verdict}${source.reason ? ` (${source.reason})` : ""}` : "no verdict"}`,
+                     );
+                     continue;
+                  }
+                  const view = source?.views?.find((v) => v.view === want.view);
+                  assert.ok(
+                     `preview ${want.source}.${want.view}: ${want.verdict}`,
+                     view?.verdict === want.verdict,
+                     view?.verdict === want.verdict
+                        ? undefined
+                        : `got ${view ? `${view.verdict}${view.detail ? `: ${view.detail}` : ""}` : "no view verdict"}`,
+                  );
+               }
                break;
             }
             case "republish": {

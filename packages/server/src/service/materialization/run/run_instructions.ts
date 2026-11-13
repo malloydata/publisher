@@ -9,6 +9,7 @@ import {
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
 import {
+   tableIdentity,
    versionedTableName,
    type WriteTarget,
 } from "../../versions/materialization_scope";
@@ -16,6 +17,8 @@ import {
    CompiledBuildPlan,
    computeSourceEntityId,
    sourcesInBuildOrder,
+   tierGateInputs,
+   storedBaseOfRollup,
 } from "../plan/build_plan";
 import { assertTierEligible } from "../plan/materialization_eligibility";
 import {
@@ -39,6 +42,26 @@ import {
    STAGING_ID_LEN,
    tableKeyOf,
 } from "./materialization_run_support";
+import { hasAuthorTableName } from "./table_ownership";
+
+/**
+ * The suffixes auto-run's self-assigned table names take (see
+ * deriveSelfInstructions). Neither: the names as written, as only a test
+ * seam asks for.
+ */
+export interface SelfTableNaming {
+   /**
+    * A `scope: version` version's own (versionTableSuffix): on every name,
+    * `name=` included.
+    */
+   versionSuffix?: string;
+   /**
+    * The package's own (packageTableSuffix): on every name the author did
+    * not choose. A `name=` keeps its name and is checked for ownership
+    * instead (table_ownership.ts).
+    */
+   packageSuffix?: string;
+}
 
 /*
  * A run's build instructions: derived by auto-run from the compiled plan, or
@@ -67,18 +90,23 @@ export function deriveSelfInstructions(
    sourceNames: string[] | undefined,
    priorEntries: Record<string, ManifestEntry>,
    incremental?: IncrementalRunContext,
-   // Appended to every self-assigned name: a `scope: version` package's
-   // version builds into tables of its own (see versionTableSuffix).
-   tableSuffix: string = "",
+   naming: SelfTableNaming = {},
 ): {
    instructions: BuildInstruction[];
    carried: Record<string, ManifestEntry>;
    refused: Record<string, RefusedSource>;
    cleared: Map<string, EligibilityTier>;
+   /**
+    * Carried tables at a `name=` the author chose, by content address, with
+    * the instruction that rebuilds each: carried only while the table is
+    * still marked as this package's (see uncarryUnownedTables).
+    */
+   recheck: Record<string, BuildInstruction>;
 } {
    const include = sourceNames ? new Set(sourceNames) : null;
    const instructions: BuildInstruction[] = [];
    const carried: Record<string, ManifestEntry> = {};
+   const recheck: Record<string, BuildInstruction> = {};
    const refused: Record<string, RefusedSource> = {};
    const refusals: MaterializationEligibilityError[] = [];
    const cleared = new Map<string, EligibilityTier>();
@@ -104,6 +132,9 @@ export function deriveSelfInstructions(
             continue;
          }
 
+         // Never buildable today (#6293); the package warning says so.
+         if (storedBaseOfRollup(compiled, persistSource.sourceID)) continue;
+
          const destination = resolveStorageDestination(persistSource);
          const isRollup =
             !!compiled.preaggregatePlans?.[persistSource.sourceID];
@@ -118,7 +149,11 @@ export function deriveSelfInstructions(
          // an authorize-gated source materialized there would be served to
          // every caller.
          try {
-            assertTierEligible(persistSource, !!destination, compiled);
+            assertTierEligible(
+               persistSource,
+               !!destination,
+               tierGateInputs(compiled),
+            );
          } catch (err) {
             if (!(err instanceof MaterializationEligibilityError)) throw err;
             if (include) throw err;
@@ -158,19 +193,22 @@ export function deriveSelfInstructions(
          if (seen.has(sourceEntityId)) continue;
          seen.add(sourceEntityId);
 
-         // Self-assign the name from `name=` (or the source name) verbatim
-         // for both destinations. No generational decoration is needed: a
-         // storage build replaces the table atomically (`CREATE OR REPLACE`,
-         // or the partition create/alter/insert trio in ONE transaction, so a
+         // Self-assign the name from `name=` (or the source name) for both
+         // destinations. No generational decoration is needed: a storage
+         // build replaces the table atomically (`CREATE OR REPLACE`, or the
+         // partition create/alter/insert trio in ONE transaction, so a
          // rebuild never empties the table it serves). Orchestrated builds
          // use the host-supplied `physicalTableName`. A `scope: version`
-         // run's name gains its version's suffix.
-         const logicalName = tableSuffix
-            ? versionedTableName(
-                 selfAssignTableName(persistSource),
-                 tableSuffix,
-              )
-            : selfAssignTableName(persistSource);
+         // run's name gains its version's suffix; any other name the author
+         // did not choose gains the package's, so two packages on one schema
+         // never build one table (packageTableSuffix).
+         const baseName = selfAssignTableName(persistSource);
+         const logicalName = naming.versionSuffix
+            ? versionedTableName(baseName, naming.versionSuffix)
+            : naming.packageSuffix &&
+                !hasAuthorTableName(compiled, persistSource)
+              ? versionedTableName(baseName, naming.packageSuffix)
+              : baseName;
 
          // The SAME predicate the build's dispatch uses, so the two never
          // disagree about which sources are incremental. A declaration the
@@ -183,21 +221,7 @@ export function deriveSelfInstructions(
                sourceEntityId,
             }) !== undefined;
 
-         const prior = priorEntries[sourceEntityId];
-         // Carry forward only within the SAME destination: sourceEntityId
-         // does not encode it, so a source that changes `storage=` must
-         // rebuild rather than reuse a table its serve cannot resolve.
-         if (
-            !deltaEligible &&
-            prior &&
-            prior.physicalTableName &&
-            (prior.storageDestinationName ?? undefined) === destination
-         ) {
-            carried[sourceEntityId] = prior;
-            continue;
-         }
-
-         instructions.push({
+         const instruction: BuildInstruction = {
             sourceEntityId,
             materializedTableId: `local-${sourceEntityId.substring(
                0,
@@ -206,7 +230,40 @@ export function deriveSelfInstructions(
             physicalTableName: logicalName,
             realization: "COPY",
             ...(destination ? { destination } : {}),
-         });
+         };
+         const prior = priorEntries[sourceEntityId];
+         // Carry forward only within the SAME destination: sourceEntityId
+         // does not encode it, so a source that changes `storage=` must
+         // rebuild rather than reuse a table its serve cannot resolve.
+         // Never the unsuffixed table a run before package-owned names
+         // built: another package on the same schema may have written it
+         // since, so the source is rebuilt under its own name.
+         if (
+            !deltaEligible &&
+            prior &&
+            prior.physicalTableName &&
+            (prior.storageDestinationName ?? undefined) === destination &&
+            !(
+               logicalName !== baseName &&
+               tableIdentity(prior.physicalTableName) ===
+                  tableIdentity(baseName)
+            )
+         ) {
+            carried[sourceEntityId] = prior;
+            // A table at the author's `name=` may have been written by
+            // another package since (or before the mark existed).
+            if (
+               naming.packageSuffix &&
+               logicalName === baseName &&
+               prior.physicalTableName === logicalName &&
+               hasAuthorTableName(compiled, persistSource)
+            ) {
+               recheck[sourceEntityId] = instruction;
+            }
+            continue;
+         }
+
+         instructions.push(instruction);
       }
    }
 
@@ -218,7 +275,7 @@ export function deriveSelfInstructions(
       throw allSourcesRefusedError(refusals);
    }
 
-   return { instructions, carried, refused, cleared };
+   return { instructions, carried, refused, cleared, recheck };
 }
 
 /**

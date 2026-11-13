@@ -152,7 +152,7 @@ export type PublisherConfig = {
 };
 
 /**
- * `PUBLISHER_PACKAGE_VERSIONING`: `on` or `off` (the default). A TRANSITION
+ * `PUBLISHER_PACKAGE_VERSIONING`: `on` (the default) or `off`. A TRANSITION
  * flag, read from the environment only, and checked in one place: the publish
  * from a location. Off, that publish installs the package in place as before
  * versions; on, it publishes the version its publisher.json declares and
@@ -272,6 +272,19 @@ export const getDuckDBMemoryLimit = (): string | undefined => {
 };
 
 /**
+ * Threads each Publisher-owned DuckDB instance starts with, unless its
+ * connection sets its own `threads`, as DuckDB's option string; undefined
+ * under `off`, which leaves DuckDB's one-thread-per-core default. A default,
+ * not opt-in like the memory limit: DuckDB sizes its pool per INSTANCE, so N
+ * instances start N pools of one thread per core, and enough of them exhaust
+ * the process's threads and abort it. See docs/configuration.md.
+ */
+export const getDuckDBThreads = (): string | undefined => {
+   const raw = settings.get("duckdb.threads");
+   return raw.toLowerCase() === "off" ? undefined : raw;
+};
+
+/**
  * Bytes DuckLake buffers per column before flushing a Parquet row group
  * (`PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES`, e.g. `16MB`); unset issues
  * nothing on attach. Write memory scales with table WIDTH and sits outside
@@ -384,6 +397,13 @@ export function assertDuckDBResourceConfig(): void {
          `Invalid value for PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: expected a ` +
             `row count like "8192" (up to nine digits), or "off" to turn the ` +
             `partitioned-insert bounds off, got "${flushThreshold}"`,
+      );
+   }
+   const threads = settings.get("duckdb.threads");
+   if (threads.toLowerCase() !== "off" && !/^[1-9]\d{0,3}$/.test(threads)) {
+      throw new Error(
+         `Invalid value for PUBLISHER_DUCKDB_THREADS: expected a thread count ` +
+            `like "4", or "off" for DuckDB's one-per-core default, got "${threads}"`,
       );
    }
    const tempDirectory = getDuckDBTempDirectory();
@@ -888,13 +908,54 @@ export const getPersistStorageMode = (): PersistStorageMode =>
    settings.get("persist.storageMode");
 
 /**
+ * Whether a `storage=` source's destination is folded into its content
+ * address (materialization v2's P12), from
+ * `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` (default `false`). Turning
+ * it on re-addresses every `storage=` table once, so it is a scheduled rollout.
+ */
+export const getPersistAddressIncludesDestination = (): boolean =>
+   settings.get("persist.addressIncludesDestination");
+
+/**
+ * Whether `#(materialize)` is read and its generated `#@ persist` sources built
+ * (materialization v2, phase 3), from `PUBLISHER_MATERIALIZE` (default
+ * `false`). Off, the build plan is exactly what it was without it.
+ */
+export const getMaterializeEnabled = (): boolean =>
+   settings.get("materialize.enabled");
+
+/**
+ * Whether the served copy may answer a query through a row-level gate, with
+ * the gate grafted on it (materialization v2's R3), from
+ * `PUBLISHER_MATERIALIZE_GATED_SOURCES` (default `false`). Only with
+ * {@link getMaterializeEnabled}.
+ */
+export const getMaterializeGatedSources = (): boolean =>
+   getMaterializeEnabled() && settings.get("materialize.gatedSources");
+
+/**
+ * How v1 `#@ persist` tables are served (materialization v2's v1 cutover),
+ * from `PUBLISHER_V1_SERVED_COPY` (default `off`):
+ *
+ *  - `off`: today's storage serve shape, `#@ preaggregate` composite and
+ *    colocated build manifest, unchanged;
+ *  - `shadow`: served as `off`, with the `on` answer computed beside it and
+ *    any difference logged;
+ *  - `on`: the served copy, the rollup and persisted-view legs, or live.
+ */
+export type V1ServedCopyMode = "off" | "shadow" | "on";
+
+/** See {@link V1ServedCopyMode}. Case-insensitive; throws on an unknown value. */
+export const getV1ServedCopyMode = (): V1ServedCopyMode =>
+   settings.get("materialize.v1ServedCopy");
+
+/**
  * Whether a within-package persist-target COLLISION (two distinct persist
  * sources resolving to the same physical table in the same destination) is a
- * hard publish rejection, from `PERSIST_COLLISION_ENFORCE` (default `false`).
- *
- * Warn-only by default because existing packages may carry a latent
- * collision; set `true` only after remediating them, so routine re-publishes
- * do not break. Load is ALWAYS warn-only; the flag governs publish only.
+ * hard publish (and build) rejection, from `PERSIST_COLLISION_ENFORCE`
+ * (default `true`). `false` opts out, for a deployment whose existing packages
+ * carry a latent collision it cannot fix yet: the collision is then a warning,
+ * and still never served from (`sharedTables`). Load is ALWAYS warn-only.
  */
 export const getPersistCollisionEnforce = (): boolean =>
    settings.get("persist.collisionEnforcementEnabled");
@@ -1161,7 +1222,7 @@ export const isPackageInlineFieldsEnabled = (): boolean =>
 
 /**
  * Whether a publish from a location publishes versions
- * (`PUBLISHER_PACKAGE_VERSIONING=on`; off when unset).
+ * (`PUBLISHER_PACKAGE_VERSIONING`, on unless set to `off`).
  */
 export const isVersioningEnabled = (): boolean =>
    settings.get("packageVersioning") === "on";

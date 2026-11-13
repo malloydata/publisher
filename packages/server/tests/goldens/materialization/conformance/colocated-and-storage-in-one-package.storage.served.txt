@@ -1,0 +1,39 @@
+// conformance: colocated and storage= in one package [storage]: files generated while serving
+
+// ==== <pkg>/joined.malloy
+##! experimental { persistence }
+import "m.malloy"
+
+source: fact_joined is fact_s extend {
+                                       
+}
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: fact_s__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   amount::number
+}
+
+import "raw.malloy"
+
+#@ persist name="dim_colocated"
+source: dim_c is customers_raw -> {
+  select: id, segment
+} extend {
+  primary_key: id
+}
+
+#@ persist name="fact_stored" storage="lake"
+source: fact_s is __served_copy_alias_of_lake.virtual('f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee')::fact_s__served extend {
+  internal rename:
+    id__stored is id
+    customer_id__stored is customer_id
+  dimension:
+    id is id__stored::"HUGEINT"
+    customer_id is customer_id__stored::"HUGEINT"
+  measure: total is amount.sum()
+}

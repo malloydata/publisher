@@ -19,6 +19,7 @@ import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError, EnvironmentNotFoundError } from "../errors";
 import { withSettings, type SettingsInput } from "../test_helpers/settings_env";
 import { stubStorageManager } from "../test_helpers/storage_manager_stub";
+import { inMemoryVersionRegistry } from "../test_helpers/in_memory_version_registry";
 import { RetrievalService } from "../retrieval/service";
 import { Environment } from "./environment";
 import { EnvironmentStore, formatReadinessLine } from "./environment_store";
@@ -36,6 +37,7 @@ import {
    type EnvironmentName,
 } from "./identity";
 import { startedStore } from "../test_helpers/started_store";
+import type { simpleGit } from "simple-git";
 
 type MockData = Record<string, unknown>;
 
@@ -88,6 +90,15 @@ function managedDestination(name = "managed"): Connection {
 // the cleanup (it can queue for minutes behind a bulk embed).
 const embeddingCleanupRuns: Array<{ sql: string; params: unknown[] }> = [];
 let embeddingCleanupBlocks = false;
+
+// The package rows and version registry the mock database holds. A configured
+// package is published as a version at boot, so the store records it here.
+// Fresh for every test (the file-level beforeEach below); two stores in one
+// test share it, as a restart shares publisher.db.
+let versionRegistry = inMemoryVersionRegistry();
+beforeEach(() => {
+   versionRegistry = inMemoryVersionRegistry();
+});
 
 const storageManager = stubStorageManager({
    getDuckDbConnection: () => ({
@@ -162,40 +173,8 @@ const storageManager = stubStorageManager({
          updatedAt: new Date(),
       }),
 
-      getPackageByName: async (
-         _environmentId: string,
-         _name: string,
-      ): Promise<MockData | null> => null,
-
-      // ===== VERSION METHODS: no package here has versions =====
-      listVersions: async (): Promise<unknown[]> => [],
-      listVersionsByEnvironment: async (): Promise<unknown[]> => [],
-      hasVersions: async (): Promise<boolean> => false,
-      getVersion: async (): Promise<null> => null,
-
-      createPackage: async (data: MockData): Promise<MockData> => ({
-         id: "test-package-id",
-         environmentId: data.environmentId,
-         name: data.name,
-         description: data.description,
-         manifestPath: data.manifestPath,
-         metadata: data.metadata,
-         createdAt: new Date(),
-         updatedAt: new Date(),
-      }),
-
-      updatePackage: async (id: string, data: MockData): Promise<MockData> => ({
-         id,
-         environmentId: "test-project-id",
-         name: "test-package",
-         description: data.description,
-         manifestPath: "/test/manifest.json",
-         metadata: data.metadata || {},
-         createdAt: new Date(),
-         updatedAt: new Date(),
-      }),
-
-      deletePackage: async (_id: string): Promise<void> => {},
+      // ===== PACKAGE ROWS AND VERSIONS: an in-memory registry =====
+      ...versionRegistry,
 
       // ===== CONNECTION METHODS =====
       listConnections: async (_environmentId: string): Promise<unknown[]> => [],
@@ -365,6 +344,7 @@ describe("EnvironmentStore Service", () => {
          writeFileSync(
             path.join(projectPath, "publisher.json"),
             JSON.stringify({
+               version: "1.0.0",
                name: projectName,
                description: "Test package",
             }),
@@ -491,6 +471,7 @@ describe("EnvironmentStore Service", () => {
       writeFileSync(
          path.join(validProjectPath, "publisher.json"),
          JSON.stringify({
+            version: "1.0.0",
             name: validProjectName,
             description: "Valid project",
          }),
@@ -498,6 +479,7 @@ describe("EnvironmentStore Service", () => {
       writeFileSync(
          path.join(invalidProjectPath, "publisher.json"),
          JSON.stringify({
+            version: "1.0.0",
             name: invalidProjectName,
             description: "Invalid project",
          }),
@@ -576,7 +558,11 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(projectPath, { recursive: true });
       writeFileSync(
          path.join(projectPath, "publisher.json"),
-         JSON.stringify({ name: projectName, description: "Test package" }),
+         JSON.stringify({
+            version: "1.0.0",
+            name: projectName,
+            description: "Test package",
+         }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -618,7 +604,7 @@ describe("EnvironmentStore Service", () => {
          mkdirSync(dir, { recursive: true });
          writeFileSync(
             path.join(dir, "publisher.json"),
-            JSON.stringify({ name: path.basename(dir) }),
+            JSON.stringify({ version: "1.0.0", name: path.basename(dir) }),
          );
       }
       writeFileSync(
@@ -676,7 +662,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(source, { recursive: true });
       writeFileSync(
          path.join(source, "publisher.json"),
-         JSON.stringify({ name: "zipped" }),
+         JSON.stringify({ version: "1.0.0", name: "zipped" }),
       );
       const mount = path.join(serverRootPath, "mount");
       mkdirSync(mount, { recursive: true });
@@ -730,7 +716,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(projectPath, { recursive: true });
       writeFileSync(
          path.join(projectPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(projectPath, "model.malloy"),
@@ -750,22 +736,17 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const store = startedStore(
-         new EnvironmentStore(serverRootPath, { storageManager }),
-      );
+      // A reload recompiles a package mounted in place (a watched
+      // environment's); a published version is immutable and answers a
+      // reload unchanged. So the environment is mounted in place, and the
+      // break lands in the package's own source.
+      const store = new EnvironmentStore(serverRootPath, { storageManager });
+      store.markInPlace(projectName);
+      startedStore(store);
       await store.finishedInitialization;
       expect((await store.getStatus()).loadErrors).toBeUndefined();
 
-      // Without a watch env the package is served from its copy under
-      // publisher_data, and that copy is what a reload recompiles, so the
-      // break has to land there.
-      const servedModel = path.join(
-         serverRootPath,
-         "publisher_data",
-         projectName,
-         projectName,
-         "model.malloy",
-      );
+      const servedModel = path.join(projectPath, "model.malloy");
       writeFileSync(servedModel, "source: s1 is duckdb.sql(\n"); // parse error
 
       const environment = await store.getEnvironment(
@@ -807,7 +788,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(projectPath, { recursive: true });
       writeFileSync(
          path.join(projectPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(projectPath, "model.malloy"),
@@ -830,9 +811,11 @@ describe("EnvironmentStore Service", () => {
       const loaded: Array<{ environmentName: string; packageName: string }> =
          [];
       const instances: unknown[] = [];
-      const store = startedStore(
-         new EnvironmentStore(serverRootPath, { storageManager }),
-      );
+      // Mounted in place, as a watched environment is: only such a package
+      // recompiles on a reload (a published version answers it unchanged).
+      const store = new EnvironmentStore(serverRootPath, { storageManager });
+      store.markInPlace(projectName);
+      startedStore(store);
       store.setPackageLoadedHook((environmentName, pkg) => {
          loaded.push({ environmentName, packageName: pkg.getPackageName() });
          instances.push(pkg);
@@ -865,7 +848,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(projectPath, { recursive: true });
       writeFileSync(
          path.join(projectPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -917,12 +900,26 @@ describe("EnvironmentStore Service", () => {
       // siblings queued behind it: the group-level catch used to wrap the whole
       // loop, so with three packages from one repo a throw on the second meant
       // the third was never copied even though nothing was wrong with it.
-      const shared = path.join(serverRootPath, "shared-src");
-      mkdirSync(shared, { recursive: true });
-      writeFileSync(
-         path.join(shared, "publisher.json"),
-         JSON.stringify({ name: "shared" }),
-      );
+      // A repository, because a local location is published without the
+      // shared download (publishConfiguredPackages).
+      const packageNames = ["first", "middle", "last"];
+      const fakeGit = (() => ({
+         clone: (
+            _repoUrl: string,
+            dir: string,
+            _opts: unknown,
+            cb: (err: Error | null) => void,
+         ) => {
+            for (const name of packageNames) {
+               mkdirSync(path.join(dir, name), { recursive: true });
+               writeFileSync(
+                  path.join(dir, name, "publisher.json"),
+                  JSON.stringify({ version: "1.0.0", name }),
+               );
+            }
+            cb(null);
+         },
+      })) as unknown as typeof simpleGit;
 
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -930,21 +927,20 @@ describe("EnvironmentStore Service", () => {
             environments: [
                {
                   name: projectName,
-                  packages: [
-                     { name: "first", location: shared },
-                     { name: "middle", location: shared },
-                     { name: "last", location: shared },
-                  ],
+                  packages: packageNames.map((name) => ({
+                     name,
+                     location: `https://github.com/example/repo/tree/main/${name}`,
+                  })),
                   connections: [],
                },
             ],
          }),
       );
 
-      // Fail exactly one package's copy. Everything reachable from config is
-      // shared across the group (same location, hence the same source path), so
-      // the copy is the only per-package step that can realistically fail on
-      // its own — the same shape as a GitHub subdirectory that isn't there.
+      // Fail exactly one package's copy. Everything before it is shared across
+      // the group (one clone), so the copy is the only per-package step that
+      // can realistically fail on its own — the same shape as a GitHub
+      // subdirectory that isn't there.
       const realCp = fsPromises.cp;
       const cpStub = sinon.stub(fsPromises, "cp").callsFake((async (
          src: Parameters<typeof realCp>[0],
@@ -961,6 +957,7 @@ describe("EnvironmentStore Service", () => {
          const newEnvironmentStore = startedStore(
             new EnvironmentStore(serverRootPath, {
                storageManager,
+               simpleGit: fakeGit,
             }),
          );
          await newEnvironmentStore.finishedInitialization;
@@ -994,7 +991,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(good, { recursive: true });
       writeFileSync(
          path.join(good, "publisher.json"),
-         JSON.stringify({ name: "good" }),
+         JSON.stringify({ version: "1.0.0", name: "good" }),
       );
 
       writeFileSync(
@@ -1013,11 +1010,14 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = startedStore(
-         new EnvironmentStore(serverRootPath, {
-            storageManager,
-         }),
-      );
+      // Mounted in place, as a watched environment is: the one mount whose
+      // root is the environment directory itself. Elsewhere a local package is
+      // published without a mount, and a remote one mounts into `.staging`.
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
+      newEnvironmentStore.markInPlace(projectName);
+      startedStore(newEnvironmentStore);
       await newEnvironmentStore.finishedInitialization;
 
       // Boot pre-validates the names and skips the environment, so reach the
@@ -1041,7 +1041,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(projectPath, { recursive: true });
       writeFileSync(
          path.join(projectPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1138,7 +1138,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
 
       writeFileSync(
@@ -1200,7 +1200,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1274,7 +1274,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1320,7 +1320,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1389,7 +1389,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       // Config declares nothing, so the fallback on a failed read is an empty list.
       writeFileSync(
@@ -1452,7 +1452,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1493,7 +1493,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1542,7 +1542,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(goodPackagePath, { recursive: true });
       writeFileSync(
          path.join(goodPackagePath, "publisher.json"),
-         JSON.stringify({ name: goodPackageName }),
+         JSON.stringify({ version: "1.0.0", name: goodPackageName }),
       );
       // The directory exists, so the environment mounts; the package inside it
       // has no manifest, so only that package fails. This is the second, and
@@ -1597,7 +1597,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(goodPackagePath, { recursive: true });
       writeFileSync(
          path.join(goodPackagePath, "publisher.json"),
-         JSON.stringify({ name: goodPackageName }),
+         JSON.stringify({ version: "1.0.0", name: goodPackageName }),
       );
       mkdirSync(badPackagePath, { recursive: true });
 
@@ -1670,11 +1670,14 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = startedStore(
-         new EnvironmentStore(serverRootPath, {
-            storageManager,
-         }),
-      );
+      // Mounted in place, as a watched environment is: only such a package
+      // is fixed where it is served and re-added (a published version is
+      // immutable; it is fixed by publishing another).
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
+      newEnvironmentStore.markInPlace(projectName);
+      startedStore(newEnvironmentStore);
       await newEnvironmentStore.finishedInitialization;
 
       const environment = await newEnvironmentStore.getEnvironment(
@@ -1712,6 +1715,7 @@ describe("EnvironmentStore Service", () => {
       writeFileSync(
          path.join(projectPath, "publisher.json"),
          JSON.stringify({
+            version: "1.0.0",
             name: projectName,
             description: "Test package",
          }),
@@ -1774,6 +1778,7 @@ describe("EnvironmentStore Service", () => {
          writeFileSync(
             path.join(projectPath, "publisher.json"),
             JSON.stringify({
+               version: "1.0.0",
                name: projectName,
                description: "Test package",
             }),
@@ -1997,6 +2002,7 @@ describe("EnvironmentStore Service", () => {
       writeFileSync(
          path.join(validProjectPath, "publisher.json"),
          JSON.stringify({
+            version: "1.0.0",
             name: "valid-project",
             description: "Valid project",
          }),
@@ -2076,6 +2082,7 @@ describe("EnvironmentStore Service", () => {
          writeFileSync(
             path.join(projectPath, "publisher.json"),
             JSON.stringify({
+               version: "1.0.0",
                name: projectName,
                description: "Test package",
             }),
@@ -2225,6 +2232,7 @@ describe("Project Service Error Recovery", () => {
             writeFileSync(
                path.join(projectPath, "publisher.json"),
                JSON.stringify({
+                  version: "1.0.0",
                   name: projectName,
                   description: "Test package",
                }),
@@ -2282,6 +2290,7 @@ describe("Project Service Error Recovery", () => {
             writeFileSync(
                path.join(projectPath, "publisher.json"),
                JSON.stringify({
+                  version: "1.0.0",
                   name: projectName,
                   description: "Test package",
                }),
@@ -2848,7 +2857,10 @@ describe("readiness line emission", () => {
    const writePackage = (name: string) => {
       const dir = path.join(readinessRoot, "src-packages", name);
       mkdirSync(dir, { recursive: true });
-      writeFileSync(path.join(dir, "publisher.json"), JSON.stringify({ name }));
+      writeFileSync(
+         path.join(dir, "publisher.json"),
+         JSON.stringify({ version: "1.0.0", name }),
+      );
       return dir;
    };
 

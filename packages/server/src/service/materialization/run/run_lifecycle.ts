@@ -6,6 +6,7 @@ import {
    MaterializationConflictError,
    MaterializationNotFoundError,
 } from "../../../errors";
+import { classifyRunFailure } from "./build_failure_class";
 import { logger } from "../../../logger";
 import {
    MaterializationMode,
@@ -20,6 +21,7 @@ import {
 import { errMessage } from "../../../utils";
 import { MaterializationStatus } from "../types";
 import { VALID_TRANSITIONS } from "./materialization_run_support";
+import { runFailureReported } from "./run_telemetry";
 
 /**
  * A run's state machine and its life in this process: every status change goes
@@ -134,8 +136,12 @@ export class RunLifecycle {
             const cancelled = abortController.signal.aborted;
             const next = cancelled ? "CANCELLED" : "FAILED";
             // A background throw answers no request, so log it (with the stack)
-            // or it is invisible in the server's output.
-            if (cancelled) {
+            // or it is invisible in the server's output, unless the run's own
+            // `materialization.run.finished` reported it already, with its
+            // code; the message is on the run's record either way.
+            if (runFailureReported(err)) {
+               // Logged once already, by the run.
+            } else if (cancelled) {
                // An abort racing a genuine failure records "Cancelled"; this log
                // is then the only place the real error appears.
                logger.info("Materialization run cancelled", {
@@ -150,10 +156,37 @@ export class RunLifecycle {
                });
             }
             try {
+               // Whether retrying the run could help, for a consumer that
+               // decides on retries: a failed run commits no manifest, so no
+               // per-source `failures` carry it. Omitted when unclassified,
+               // and for a cancel, which was asked for.
+               const retryable = cancelled
+                  ? undefined
+                  : classifyRunFailure(err);
+               let metadata: Record<string, unknown> | undefined;
+               if (retryable !== undefined) {
+                  // Its own try: a failed read must never cost the status
+                  // transition, which would leave the run active and block
+                  // the package's next one.
+                  try {
+                     const current =
+                        await this.repository().getMaterializationById(id);
+                     metadata = {
+                        ...(current?.metadata ?? {}),
+                        errorRetryable: retryable,
+                     };
+                  } catch (readErr) {
+                     logger.warn(
+                        "Could not read a failed run's metadata; recording its status without errorRetryable",
+                        { materializationId: id, error: errMessage(readErr) },
+                     );
+                  }
+               }
                await this.repository().updateMaterialization(id, {
                   status: next,
                   completedAt: new Date(),
                   error: cancelled ? "Cancelled" : message,
+                  ...(metadata ? { metadata } : {}),
                });
             } catch (transitionErr) {
                logger.error("Failed to record materialization failure", {

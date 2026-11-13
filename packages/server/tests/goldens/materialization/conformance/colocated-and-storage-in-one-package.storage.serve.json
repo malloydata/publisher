@@ -1,0 +1,433 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "dim_c",
+        "tier": "colocated"
+      },
+      {
+        "name": "fact_s",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "dim_c:serves",
+      "fact_s:serves",
+      "fact_joined:serves"
+    ],
+    "warnings": [
+      {
+        "code": "served-copy-not-served",
+        "message": "This source is stored in a destination its join `c` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or keep this source colocated.",
+        "subject": "fact_joined"
+      }
+    ]
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "segment"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "7d710d22ba364f32",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()"
+          ],
+          "source": "dim_c",
+          "stages": 1
+        },
+        "source": "dim_c"
+      },
+      "equalToLive": true,
+      "malloy": "run: dim_c -> { group_by: segment; aggregate: n is count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [],
+          "sourceName": "dim_c"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280"
+        },
+        "warnings": []
+      },
+      "query": "the colocated source alone",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "eff5d3b6be404aa4",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "fact_s",
+          "stages": 1
+        },
+        "source": "fact_s"
+      },
+      "equalToLive": true,
+      "malloy": "run: fact_s -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "fact_s"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
+        },
+        "warnings": []
+      },
+      "query": "the storage= source alone",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "c.segment"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "c.segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3f4ef3caab1bf020",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "fact_joined",
+          "stages": 1
+        },
+        "source": "fact_joined"
+      },
+      "equalToLive": true,
+      "malloy": "run: fact_joined -> { group_by: c.segment; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "MISSING_FIELD",
+            "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "c.segment"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "fact_joined"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the storage= source joined to the colocated one",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "segment"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "7d710d22ba364f32",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()"
+          ],
+          "source": "dim_c",
+          "stages": 1
+        },
+        "source": "dim_c"
+      },
+      "equalToLive": true,
+      "malloy": "run: dim_c -> { group_by: segment; aggregate: n is count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [],
+          "sourceName": "dim_c"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280"
+        },
+        "warnings": []
+      },
+      "query": "the colocated source alone",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "eff5d3b6be404aa4",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "fact_s",
+          "stages": 1
+        },
+        "source": "fact_s"
+      },
+      "equalToLive": true,
+      "malloy": "run: fact_s -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "fact_s"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the storage= source alone",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "c.segment"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "c.segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3f4ef3caab1bf020",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "fact_joined",
+          "stages": 1
+        },
+        "source": "fact_joined"
+      },
+      "equalToLive": true,
+      "malloy": "run: fact_joined -> { group_by: c.segment; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "CROSS_CONNECTION",
+            "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "c.segment"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "fact_joined"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the storage= source joined to the colocated one",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

@@ -49,6 +49,12 @@
  */
 
 import { Annotations } from "@malloydata/malloy";
+import { parseRouteTag } from "../../motly";
+import {
+   annotationValue,
+   doubleQuotedString,
+   identifier,
+} from "../../malloy_text";
 import { createHash } from "node:crypto";
 import {
    readPreaggregateAnnotation,
@@ -59,6 +65,7 @@ import {
    type ReaggregateFunction,
 } from "./preaggregation_classifier";
 import { isSpliceableNamespace } from "./preaggregation_namespace";
+import { fieldNotes, noteSource } from "../field_notes";
 import type { ValidatableSource } from "./preaggregation_validation";
 
 /** The alias the base is imported under, and the last compose() member. */
@@ -75,6 +82,13 @@ interface RollupMeasure {
    partialName: string;
    /** The aggregate applied to `partialName` to merge it. */
    reaggregate: ReaggregateFunction;
+   /**
+    * The measure's annotation lines (`#(classification)`, `#(doc)`, a render
+    * tag such as `# currency`), written again on the merged measure so a
+    * rollup's result column carries what live's does. `#@` directives are
+    * left out: they declare builds, not the column.
+    */
+   notes?: string[];
 }
 
 /** One synthesized rollup: one base, one grain, one table, one `GROUP BY`. */
@@ -109,6 +123,13 @@ export interface RollupPlan {
    grainDimensions: string[];
    /** The measures served here, sorted by name. */
    measures: RollupMeasure[];
+   /**
+    * The base's Malloy `sourceID`, `<declared name>@<declaring file URL>`. A
+    * model that only imports the base (an `index.malloy` re-export) cannot
+    * rename-import it from itself, so the companion imports it from the file
+    * that declares it (#6646). Absent when the compiler gave none.
+    */
+   baseSourceID?: string;
 }
 
 /**
@@ -230,11 +251,14 @@ export function compareRollupBreadth(a: RollupPlan, b: RollupPlan): number {
  * Not the NAMESPACE, because the base's `name=` is a name in the destination's
  * catalog and means nothing in the source warehouse where the rollup is built.
  */
-function basePersistNamespace(source: ValidatableSource): string | undefined {
+export function basePersistNamespace(
+   source: ValidatableSource,
+): string | undefined {
    if (!source.annotations) return undefined;
    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const tag = new Annotations(source.annotations as any).parseAsTag(
+      const tag = parseRouteTag(
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         new Annotations(source.annotations as any),
          "@",
       ).tag;
       if (!tag.has("persist")) return undefined;
@@ -319,6 +343,7 @@ export function planSourcePreaggregation(
             name,
             partialName: `${name}${PARTIAL_SUFFIX}`,
             reaggregate: additivity.reaggregate,
+            notes: fieldNotes(field).filter((n) => !n.startsWith("#@")),
          });
          // First one named wins. Safe only because differing values at ONE
          // grain are refused at publish (`conflicting_namespace`,
@@ -356,20 +381,57 @@ export function planModelPreaggregation(
       .sort(([a], [b]) => a.localeCompare(b))
       .flatMap(([name, object]) => {
          if (!object || typeof object !== "object") return [];
-         return planSourcePreaggregation(name, object as ValidatableSource);
+         const sourceID = (object as { sourceID?: unknown }).sourceID;
+         if (typeof sourceID !== "string") {
+            return planSourcePreaggregation(name, object as ValidatableSource);
+         }
+         // Named by the base's DECLARED name, not the name this model gives
+         // it: a model that imports `o is orders` plans the same rollup as the
+         // declaring model (one target, one address, one table), and a base
+         // imported under a name another model declares does not collide
+         // with that model's rollup.
+         const declaredName = splitSourceID(sourceID)?.name ?? name;
+         return planSourcePreaggregation(name, object as ValidatableSource).map(
+            (plan) => ({
+               ...plan,
+               rollupSourceName: rollupSourceName(
+                  declaredName,
+                  plan.grainDimensions,
+               ),
+               baseSourceID: sourceID,
+            }),
+         );
       });
+}
+
+/** A Malloy `sourceID`'s declared name and declaring file, or undefined. */
+function splitSourceID(
+   sourceID: string | undefined,
+): { name: string; url: string } | undefined {
+   // The '@' before the URL's scheme: a backtick name may contain '@'.
+   const match = /^(.+)@([a-z][a-z0-9+.-]*:.*)$/i.exec(sourceID ?? "");
+   return match ? { name: match[1], url: match[2] } : undefined;
 }
 
 /** One rollup's `#@ persist source: …` declaration. */
 function emitRollup(plan: RollupPlan): string {
-   const alias = baseAlias(plan.baseSourceName);
+   const alias = identifier(baseAlias(plan.baseSourceName));
    const partials = plan.measures
-      .map((m) => `    ${m.partialName} is ${m.name}`)
+      .map((m) => `    ${identifier(m.partialName)} is ${identifier(m.name)}`)
       .join("\n");
    // The re-declared measure keeps the base's NAME, so a query asking for
    // `total` finds it on the member; only the stored column is renamed.
+   // Each merged measure carries the author's measure's notes, so a result
+   // column read from the rollup has the annotations live's does. Notes sit
+   // on the source's `extend`, which the build SQL (and so the BuildID)
+   // never reads.
    const merged = plan.measures
-      .map((m) => `    ${m.name} is ${m.partialName}.${m.reaggregate}()`)
+      .map(
+         (m) =>
+            // malloy-text: the author's own notes, then the re-aggregate method, a fixed name from RollupPlan (sum, min, max), not a value
+            (m.notes ?? []).map((n) => noteSource(n, "    ")).join("") +
+            `    ${identifier(m.name)} is ${identifier(m.partialName)}.${m.reaggregate}()`,
+      )
       .join("\n");
    // The destination is QUOTED: unquoted, the tag parser silently splits at
    // the first non-identifier character (`storage=my-lake` becomes
@@ -383,14 +445,14 @@ function emitRollup(plan: RollupPlan): string {
    // Colocated: `name=` only when a namespace was named or inherited;
    // otherwise the build self-assigns from the source name.
    const persist = plan.storage
-      ? `#@ persist storage=${JSON.stringify(plan.storage)}`
+      ? `#@ persist storage=${annotationValue(plan.storage)}`
       : plan.namespace
-        ? `#@ persist name="${plan.namespace}.${plan.rollupSourceName}"`
+        ? `#@ persist name=${annotationValue(`${plan.namespace}.${plan.rollupSourceName}`)}`
         : "#@ persist";
    return `${persist}
-source: ${plan.rollupSourceName} is ${alias} -> {
+source: ${identifier(plan.rollupSourceName)} is ${alias} -> {
   group_by:
-${plan.grainDimensions.map((d) => `    ${d}`).join("\n")}
+${plan.grainDimensions.map((d) => `    ${identifier(d)}`).join("\n")}
   aggregate:
 ${partials}
 } extend {
@@ -413,17 +475,36 @@ ${merged}
 export function synthesizePreaggregationModel(
    plans: RollupPlan[],
    importPath: string,
-   experimentalFlags = "persistence composite_sources",
+   {
+      experimentalFlags = "persistence composite_sources",
+      importPathForFile,
+   }: {
+      experimentalFlags?: string;
+      /**
+       * Where to import a base declared in ANOTHER file, given that file's
+       * URL: a path the synthesized model resolves. Returning undefined, or
+       * no resolver, imports from `importPath`, which is right only for a
+       * base the model declares.
+       */
+      importPathForFile?: (declaringURL: string) => string | undefined;
+   } = {},
 ): string | undefined {
    if (plans.length === 0) return undefined;
 
    // One import line per base, even when it has several grains.
    const bases = [...new Set(plans.map((p) => p.baseSourceName))].sort();
    const imports = bases
-      .map(
-         (base) =>
-            `import { ${baseAlias(base)} is ${base} } from ${JSON.stringify(importPath)}`,
-      )
+      .map((base) => {
+         const declared = splitSourceID(
+            plans.find((p) => p.baseSourceName === base)?.baseSourceID,
+         );
+         const fromDeclaring = declared && importPathForFile?.(declared.url);
+         // A re-exported base is imported under the name its own file gives
+         // it, which an `index.malloy` rename (`o is orders`) does not change.
+         return fromDeclaring
+            ? `import { ${identifier(baseAlias(base))} is ${identifier(declared.name)} } from ${doubleQuotedString(fromDeclaring)}`
+            : `import { ${identifier(baseAlias(base))} is ${identifier(base)} } from ${doubleQuotedString(importPath)}`;
+      })
       .join("\n");
 
    // The base LAST in every compose(), so it is the fallback member: the resolver
@@ -439,11 +520,12 @@ export function synthesizePreaggregationModel(
       .map((base) => {
          const members = plans
             .filter((p) => p.baseSourceName === base && !p.storage)
-            .map((p) => p.rollupSourceName);
-         return `source: ${base} is compose(${[...members, baseAlias(base)].join(", ")})`;
+            .map((p) => identifier(p.rollupSourceName));
+         return `source: ${identifier(base)} is compose(${[...members, identifier(baseAlias(base))].join(", ")})`;
       })
       .join("\n");
 
+   // malloy-text: experimental flag names, a fixed set the caller passes, not a value
    return `##! experimental { ${experimentalFlags} }
 ${imports}
 

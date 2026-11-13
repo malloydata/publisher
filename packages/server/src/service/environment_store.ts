@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { localPackageFingerprint } from "./configured_publish_retry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
 import * as fs from "fs";
@@ -44,13 +45,18 @@ import {
 } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { extractErrorDataFromError, validateAzureUrl } from "./db_utils";
-import { Environment, type PackageListingOptions } from "./environment";
+import {
+   Environment,
+   STAGING_DIR_NAME,
+   type PackageListingOptions,
+} from "./environment";
 import { formatPublishRejections } from "./publish_checks";
 import type { Package } from "./package";
 import { environmentResource } from "../api_resource";
 import { type EnvironmentName, parseEnvironmentName } from "./identity";
 import { VersionStore } from "./versions/version_store";
 import { storageBindingResolverFor } from "./versions/materialization_scope";
+import { withRollupKeyRecords } from "./materialization/run/inline_uniqueness";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { SERVER_VERSION } from "../version";
 import type {
@@ -573,61 +579,144 @@ export class EnvironmentStore
 
    /**
     * Publish each configured package as the version its publisher.json
-    * declares (see addConfiguredEnvironment). One that cannot be published
-    * (no version, a refused check, a conflict) is recorded as that package's
-    * load error, as a configured package that does not mount is, and the
-    * others still load.
+    * declares (see addConfiguredEnvironment). A local location (a directory
+    * or a .zip) is published straight from where it is, so it is copied
+    * once. The remote ones (GitHub, gs://, s3://) are mounted first, by the
+    * loop an unversioned environment mounts its packages with
+    * (loadEnvironmentIntoDisk), into a folder under the environment's
+    * `.staging`: a location holding several packages is downloaded once, with
+    * labelled progress, and one that does not mount is recorded as that
+    * package's load error. Each is then published from its mount. A server
+    * stopped mid-mount leaves that folder behind, and the next boot's sweep of
+    * `.staging` removes it (Environment.sweepStaleInstallDirs), whether that
+    * boot reads the config or restores from the database. A package that
+    * cannot be published (no version, a refused check, a conflict) is recorded
+    * as its load error too, and the others still load.
     */
    private async publishConfiguredPackages(
       environment: Environment,
       packages: ProcessedEnvironment["packages"],
    ): Promise<void> {
+      if (packages.length === 0) return;
       const environmentName = environment.getEnvironmentName();
       const versions = environment.getVersionService();
-      for (const configured of packages) {
-         try {
-            if (!versions) {
-               throw new Error(
-                  "package versions are not available in this environment",
-               );
-            }
-            // A relative or `~/` location is the config's, resolved against
-            // its folder as an unversioned load resolves it (resolveLocalPath).
-            // downloadPackageInto stages only an absolute local path, and the
-            // recorded source location has to name the same folder when a
-            // later boot restores the version from it.
-            const location = isLocalPath(configured.location)
-               ? this.resolveLocalPath(configured.location)
-               : configured.location;
-            await versions.publish(
-               configured.name,
-               (stagingPath) =>
-                  this.downloadPackageInto(
-                     environmentName,
-                     configured.name,
-                     location,
-                     stagingPath,
-                  ),
-               {
-                  sourceLocation: location,
-                  promotion: getVersionPromotionMode(),
-                  validate: (loaded) => formatPublishRejections(loaded),
-               },
-            );
-         } catch (error) {
-            const message = redactPgSecrets(
-               error instanceof Error ? error.message : String(error),
-            );
-            logger.error(
-               `Failed to publish configured package "${configured.name}" as a version; skipping it`,
-               {
+      const remote = packages.filter((p) => !isLocalPath(p.location));
+      // Dot-prefixed, so no package's own staging (`<pkg>-<uuid>`) shares it.
+      const mountRoot = safeJoinUnderRoot(
+         environment.getEnvironmentPath(),
+         STAGING_DIR_NAME,
+         `.configured-${crypto.randomUUID()}`,
+      );
+      try {
+         let mountErrors: ReadonlyMap<string, string> = new Map();
+         if (remote.length > 0) {
+            try {
+               ({ mountErrors } = await this.loadEnvironmentIntoDisk(
                   environmentName,
-                  packageName: configured.name,
-                  error: message,
-               },
-            );
-            environment.setPackageMountError(configured.name, message);
+                  remote,
+                  mountRoot,
+               ));
+            } catch (error) {
+               // Nothing could be staged (the environment's folder refused
+               // the staging folder, say): each remote package is a load
+               // error, as a location that does not mount is, and the
+               // environment serves.
+               const failed = new Map<string, string>();
+               this.recordMountFailure(
+                  error,
+                  mountRoot,
+                  remote.map((p) => p.name),
+                  failed,
+               );
+               mountErrors = failed;
+            }
          }
+         for (const configured of packages) {
+            const mountError = mountErrors.get(configured.name);
+            if (mountError !== undefined) {
+               environment.setPackageMountError(configured.name, mountError);
+               continue;
+            }
+            try {
+               if (!versions) {
+                  throw new Error(
+                     "package versions are not available in this environment",
+                  );
+               }
+               // A relative or `~/` location is the config's, resolved against
+               // its folder (resolveLocalPath), so a later boot that restores
+               // the version from its recorded source location finds the same
+               // folder.
+               const local = isLocalPath(configured.location);
+               const sourceLocation = local
+                  ? this.resolveLocalPath(configured.location)
+                  : configured.location;
+               const fetchFrom = local
+                  ? sourceLocation
+                  : safeJoinUnderRoot(mountRoot, configured.name);
+               const publish = () =>
+                  versions.publish(
+                     configured.name,
+                     (stagingPath) =>
+                        this.downloadPackageInto(
+                           environmentName,
+                           configured.name,
+                           fetchFrom,
+                           stagingPath,
+                        ),
+                     {
+                        sourceLocation,
+                        promotion: getVersionPromotionMode(),
+                        validate: (loaded) => formatPublishRejections(loaded),
+                     },
+                  );
+               try {
+                  await publish();
+               } catch (error) {
+                  // A refused publish places nothing. A local location can be
+                  // read again, so the package's next access publishes it
+                  // again (Environment.setConfiguredPublishRetry); a remote
+                  // one's mount is removed below, so its reads answer this
+                  // error until the next --init.
+                  if (local) {
+                     environment.setConfiguredPublishRetry(
+                        configured.name,
+                        publish,
+                        () => localPackageFingerprint(sourceLocation),
+                     );
+                  } else {
+                     environment.setConfiguredPublishRefused(
+                        configured.name,
+                        error,
+                     );
+                  }
+                  throw error;
+               }
+            } catch (error) {
+               const message = redactPgSecrets(
+                  error instanceof Error ? error.message : String(error),
+               );
+               logger.error(
+                  `Failed to publish configured package "${configured.name}" as a version; skipping it`,
+                  {
+                     environmentName,
+                     packageName: configured.name,
+                     error: message,
+                  },
+               );
+               environment.setPackageMountError(configured.name, message);
+            }
+         }
+      } finally {
+         await fs.promises
+            .rm(mountRoot, { recursive: true, force: true })
+            .catch((error) =>
+               logger.warn("Could not remove a package staging folder", {
+                  environmentName,
+                  stagingRoot: mountRoot,
+                  error,
+               }),
+            );
       }
    }
 
@@ -941,7 +1030,11 @@ export class EnvironmentStore
       // A version of a `scope: version` package reads only its own runs;
       // everything else reads the package's shared runs.
       environment.setStorageBindingResolver(
-         storageBindingResolverFor(repository, environmentId),
+         storageBindingResolverFor(
+            repository,
+            environmentId,
+            withRollupKeyRecords,
+         ),
       );
       this.attachHooks(environment, VERSION_HOOKS);
       environment.bindVersions(repository, environmentId, {
@@ -2156,16 +2249,25 @@ export class EnvironmentStore
       }
    }
 
+   /**
+    * Mount an environment's packages, each at `<targetRoot>/<name>`:
+    * `targetRoot` is the environment's own folder when its packages are served
+    * from where they are mounted, or a staging folder they are published from
+    * (publishConfiguredPackages).
+    */
    private async loadEnvironmentIntoDisk(
       environmentName: string,
       packages: ApiEnvironment["packages"],
+      targetRoot?: string,
    ) {
       assertSafePackageName(environmentName);
-      const absoluteTargetPath = safeJoinUnderRoot(
-         this.serverRootPath,
-         PUBLISHER_DATA_DIR,
-         environmentName,
-      );
+      const absoluteTargetPath =
+         targetRoot ??
+         safeJoinUnderRoot(
+            this.serverRootPath,
+            PUBLISHER_DATA_DIR,
+            environmentName,
+         );
       const mountErrors = new Map<string, string>();
 
       await fs.promises.mkdir(absoluteTargetPath, { recursive: true });

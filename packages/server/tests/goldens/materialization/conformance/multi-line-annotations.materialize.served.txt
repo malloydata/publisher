@@ -1,0 +1,31 @@
+// conformance: multi-line annotations [materialize]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+## renderer_hint=table
+##! experimental { virtual_source }
+type: annotated__served is {
+   #(doc) "The order's region"
+   # label="Region"
+   region::string,
+   order_month::date,
+   # currency
+   total::number
+}
+
+import "raw.malloy"
+
+#(doc) "Orders per region and month."
+#(doc) "Rebuilt nightly."
+#(materialize) storage="lake"
+# dashboard
+source: annotated is __served_copy_alias_of_lake.virtual('f1dee6fcac5854ef5cbc18ffe4c360fd800e9d68696ddab1c2c15deef9e85584')::annotated__served extend {
+  internal rename:
+    order_month__stored is order_month
+  dimension:
+    order_month is order_month__stored.month
+  #(doc) "Total over every row"
+  # currency
+  # number="#,##0.00"
+  measure: grand is total.sum()
+}

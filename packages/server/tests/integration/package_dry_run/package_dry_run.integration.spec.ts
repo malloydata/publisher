@@ -19,7 +19,6 @@ import { logger } from "../../../src/logger";
 import { Package } from "../../../src/service/package";
 import { startRestE2E } from "../../harness/rest_e2e";
 import { bootMainServer } from "../../harness/main_server";
-import { installVariables } from "../../../src/test_helpers/settings_env";
 import { parseEnvironmentName } from "../../../src/service/identity";
 
 const ENV_NAME = "package-dry-run-env";
@@ -30,11 +29,15 @@ describe("a dry-run publish", () => {
    let api: string;
    let tempDir: string;
 
-   const writePackage = (name: string, files: Record<string, string>) => {
+   const writePackage = (
+      name: string,
+      files: Record<string, string>,
+      version = "1.0.0",
+   ) => {
       const dir = fs.mkdtempSync(path.join(tempDir, `${name}-`));
       fs.writeFileSync(
          path.join(dir, "publisher.json"),
-         JSON.stringify({ name }),
+         JSON.stringify({ name, version }),
       );
       for (const [file, text] of Object.entries(files)) {
          fs.writeFileSync(path.join(dir, file), text);
@@ -108,6 +111,54 @@ describe("a dry-run publish", () => {
       ).toBe(404);
    }, 60_000);
 
+   // ms2data/service#7090: what a publish would build and serve, before it.
+   it("previews what the package would build and serve, and the status of a published one agrees", async () => {
+      const files = {
+         "orders.malloy": `##! experimental.persistence
+#@ persist name="orders_t"
+source: orders is ${ROWS} -> { select: * }
+
+#@ persist name="staging_t"
+source: staging is ${ROWS} -> { group_by: channel }
+
+source: orders_public is orders extend { measure: n is count() }
+`,
+         "index.malloy": `import "orders.malloy"\nexport { orders_public }\n`,
+      };
+      const { status, json } = await post(
+         "preview",
+         writePackage("preview", files),
+         true,
+      );
+      expect(status).toBe(200);
+      const verdicts = json.serveVerdicts as {
+         sourceName: string;
+         verdict: string;
+         reason?: string;
+      }[];
+      const staging = verdicts.find((v) => v.sourceName === "staging");
+      expect(staging).toMatchObject({ verdict: "live", reason: "unreachable" });
+      expect(verdicts.find((v) => v.sourceName === "orders")?.verdict).toBe(
+         "not_built",
+      );
+      const plan = json.buildPlan as { sources: Record<string, unknown> };
+      expect(Object.keys(plan.sources).length).toBe(verdicts.length);
+      expect(await listed()).not.toContain("preview");
+
+      // Published, its serving state carries the same verdicts.
+      expect(
+         (await post("preview", writePackage("preview", files), false)).status,
+      ).toBe(200);
+      const served = (
+         await get(`/environments/${ENV_NAME}/packages/preview/status`)
+      ).json;
+      expect(
+         (
+            served.serveVerdicts as { sourceName: string; reason?: string }[]
+         ).map((v) => [v.sourceName, v.reason]),
+      ).toEqual(verdicts.map((v) => [v.sourceName, v.reason]));
+   }, 60_000);
+
    it("answers a tree that does not compile with the refusal a publish would give", async () => {
       const location = writePackage("broken", {
          "orders.malloy": `source: orders is ${ROWS} extend { dimension: x is nope }\n`,
@@ -135,10 +186,14 @@ describe("a dry-run publish", () => {
          await get(`/environments/${ENV_NAME}/packages/live/models`)
       ).json;
 
-      const next = writePackage("live", {
-         "orders.malloy": `source: orders is ${ROWS}\n`,
-         "extra.malloy": `source: extra is ${ROWS}\n`,
-      });
+      const next = writePackage(
+         "live",
+         {
+            "orders.malloy": `source: orders is ${ROWS}\n`,
+            "extra.malloy": `source: extra is ${ROWS}\n`,
+         },
+         "1.1.0",
+      );
       expect((await post("live", next, true)).status).toBe(200);
       const after = (
          await get(`/environments/${ENV_NAME}/packages/live/models`)
@@ -201,7 +256,11 @@ describe("a dry-run publish", () => {
       });
       fs.writeFileSync(
          path.join(dir, "publisher.json"),
-         JSON.stringify({ name: "refused", explores: ["missing.malloy"] }),
+         JSON.stringify({
+            name: "refused",
+            version: "1.0.0",
+            explores: ["missing.malloy"],
+         }),
       );
       const closed = await closesDuring(async () =>
          expect((await post("refused", dir, true)).status).toBe(400),
@@ -295,23 +354,15 @@ describe("a dry-run publish", () => {
       expect((await post("other", source, true)).status).toBe(200);
    }, 60_000);
 
-   describe("with package versioning on", () => {
-      // Settings are read once at startup, so the in-process server gets the
-      // variable as a restart with it would.
-      let restoreSettings: (() => void) | undefined;
-      beforeAll(() => {
-         restoreSettings = installVariables({
-            PUBLISHER_PACKAGE_VERSIONING: "on",
-         });
-      });
-      afterAll(() => {
-         restoreSettings?.();
-      });
-
+   describe("of a versioned publish", () => {
       it("refuses a tree whose publisher.json declares no version, as a versioned publish does", async () => {
          const location = writePackage("unversioned", {
             "orders.malloy": `source: orders is ${ROWS}\n`,
          });
+         fs.writeFileSync(
+            path.join(location, "publisher.json"),
+            JSON.stringify({ name: "unversioned" }),
+         );
          const dry = await post("unversioned", location, true);
          expect(dry.status).toBe(400);
          expect(dry.json.reason).toBe("MANIFEST_VERSION_MISSING");

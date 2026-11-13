@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { registerReloadPackageTool } from "./reload_package_tool";
+import {
+   registerReloadPackageTool,
+   VERSION_RELOAD_UNCHANGED,
+} from "./reload_package_tool";
 import type { EnvironmentStore } from "../../service/environment_store";
 import {
    EnvironmentNotFoundError,
@@ -274,6 +277,34 @@ describe("reload_package tool", () => {
       expect(result.isError).toBe(false);
       expect(installCalls).toEqual(["ecommerce"]);
       expect(parse(result).mode).toBe("reinstalled");
+   });
+
+   it("tells the caller a published version took no edit", async () => {
+      // A version is immutable, so a reload answers it as it is, and still as
+      // a success: the message is the only thing that tells an agent its
+      // saved edit went nowhere. (The in-place cases above pin its absence.)
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({
+               getVersionService: () => ({
+                  resolve: async () => ({ versionId: "1.0.0" }),
+               }),
+               getPackage: async () =>
+                  ({ getOperationalFields: () => ({}) }) as never,
+               describePackage: async () => ({
+                  name: "ecommerce",
+                  versionId: "1.0.0",
+               }),
+            }) as never,
+      });
+      const result = await handler(args);
+      expect(result.isError).toBe(false);
+      expect(parse(result)).toEqual({
+         status: "reloaded",
+         mode: "unchanged",
+         message: VERSION_RELOAD_UNCHANGED,
+         name: "ecommerce",
+      });
    });
 
    it("never echoes the package location back to the caller", async () => {

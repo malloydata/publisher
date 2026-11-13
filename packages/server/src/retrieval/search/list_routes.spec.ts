@@ -141,6 +141,7 @@ describe("route keys", () => {
             from: "parcels@deep.malloy",
             path: ["shipment", "shipped_order", "customer", "region"],
             fanout: "one",
+            joinFanout: "one",
             node: REGION,
             id: "dimension:parcels:shipment.shipped_order.customer.region.region_name",
          },

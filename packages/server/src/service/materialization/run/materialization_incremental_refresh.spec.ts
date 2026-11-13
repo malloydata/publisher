@@ -5,6 +5,7 @@ import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import { BuildInstruction, LedgerEntry } from "../types";
+import { NATIVE_SCHEMA_ROW_LIMIT } from "./colocated_native_types";
 import { indexCallerLedger } from "./incremental_build";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
@@ -164,7 +165,6 @@ describe("buildOneSource: incremental refresh", () => {
          source,
          instruction,
          { runSQL: params.runSQL },
-         { wh: "dig" },
          params.manifest ?? new Manifest(),
          {
             getApiConnection: () => {
@@ -229,6 +229,20 @@ describe("buildOneSource: incremental refresh", () => {
          strategy: "range_replace",
          sourceEntityId: "abcdef1234567890",
       });
+   });
+
+   it("reads a delta's table types past runSQL's default row limit, as a full build does", async () => {
+      // DuckDB's runSQL returns ten rows unless told otherwise, so a catalog
+      // read under it records a wide table's first ten columns only, and the
+      // rest of its big-integer columns would answer live after every delta.
+      const runSQL = probeAwareRunSQL();
+      const { context } = incrementalContext({});
+      await callBuildOneSource({ runSQL, context });
+      const read = runSQL
+         .getCalls()
+         .find((c) => String(c.args[0]).includes("pg_attribute"));
+      expect(read).toBeDefined();
+      expect(read?.args[1]?.rowLimit).toBe(NATIVE_SCHEMA_ROW_LIMIT);
    });
 
    it("re-seeds the ONE source whose instruction says so", async () => {
@@ -393,6 +407,8 @@ describe("buildOneSource: incremental refresh", () => {
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
          // Postgres: the swap is one implicit transaction in one call.
          'DROP TABLE IF EXISTS "orders_v1";\nALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1";',
+         // Then the built table's column types (colocated_native_types.ts).
+         "SELECT row_to_json(c) AS row FROM (SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, a.attnum FROM pg_attribute a WHERE a.attrelid = to_regclass('\"orders_v1\"') AND a.attnum > 0 AND NOT a.attisdropped) c ORDER BY c.attnum",
       ]);
       expect(upsert.called).toBe(false);
       expect(remove.called).toBe(false);
@@ -423,7 +439,6 @@ describe("buildOneSource: incremental refresh", () => {
             realization: "COPY",
          } as BuildInstruction,
          { runSQL },
-         { duckdb: "dig" },
          new Manifest(),
          {
             getApiConnection: () => {
@@ -436,8 +451,9 @@ describe("buildOneSource: incremental refresh", () => {
          context,
          "abcdef1234567890",
       );
-      // The staging drop, the CTAS and the one-transaction swap.
-      expect(runSQL.getCalls().map((c) => c.args[0])).toHaveLength(3);
+      // The staging drop, the CTAS, the one-transaction swap, and the read of
+      // the built table's column types.
+      expect(runSQL.getCalls().map((c) => c.args[0])).toHaveLength(4);
       expect(upsert.called).toBe(false);
    });
 
