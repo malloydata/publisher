@@ -23,23 +23,27 @@ export const UPDATING = process.env.UPDATE_GOLDENS === "1";
 const REGENERATE =
    "cd packages/server && UPDATE_GOLDENS=1 bun test --timeout 200000 tests/component/materialization_goldens";
 
-/** Lines of context and of each side shown in a mismatch. */
-const CONTEXT = 3;
-const SHOWN = 40;
-
 /** Text as stored: LF line endings and one trailing newline. */
 function canonical(text: string): string {
    return `${text.replace(/\r\n/g, "\n").replace(/\n+$/, "")}\n`;
 }
 
+/** Lines of context around each change, and changed lines shown in all. */
+const CONTEXT = 3;
+const SHOWN = 80;
+/** Past this many lines between the common ends, the diff is one block. */
+const LCS_LIMIT = 4000;
+
+/** One line of a diff: kept (` `), removed (`-`) or added (`+`). */
+type DiffLine = { op: " " | "-" | "+"; text: string; a: number; b: number };
+
 /**
- * The differing region of two texts, as a short unified-style hunk: the
- * common leading and trailing lines are trimmed, and what is left is shown
- * with a few lines of context, each side capped.
+ * The line edit script from `a` to `b`: a longest common subsequence over
+ * what lies between the common leading and trailing lines, so two separate
+ * changes read as two changes. A middle too long for the table is shown as
+ * one removed and one added block.
  */
-export function lineDiff(expected: string, actual: string): string {
-   const a = expected.split("\n");
-   const b = actual.split("\n");
+function editScript(a: string[], b: string[]): DiffLine[] {
    let start = 0;
    while (start < a.length && start < b.length && a[start] === b[start]) {
       start++;
@@ -50,21 +54,100 @@ export function lineDiff(expected: string, actual: string): string {
       endA--;
       endB--;
    }
-   const from = Math.max(0, start - CONTEXT);
-   const out: string[] = [
-      `@@ golden lines ${start + 1}-${endA}, actual lines ${start + 1}-${endB} @@`,
-   ];
-   for (let i = from; i < start; i++) out.push(`  ${a[i]}`);
-   const removed = a.slice(start, endA);
-   const added = b.slice(start, endB);
-   for (const line of removed.slice(0, SHOWN)) out.push(`- ${line}`);
-   if (removed.length > SHOWN) {
-      out.push(`- … ${removed.length - SHOWN} more`);
+   const out: DiffLine[] = [];
+   for (let i = 0; i < start; i++) {
+      out.push({ op: " ", text: a[i], a: i, b: i });
    }
-   for (const line of added.slice(0, SHOWN)) out.push(`+ ${line}`);
-   if (added.length > SHOWN) out.push(`+ … ${added.length - SHOWN} more`);
-   for (let i = endA; i < Math.min(a.length, endA + CONTEXT); i++) {
-      out.push(`  ${a[i]}`);
+   const n = endA - start;
+   const m = endB - start;
+   if (n > LCS_LIMIT || m > LCS_LIMIT) {
+      for (let i = start; i < endA; i++) {
+         out.push({ op: "-", text: a[i], a: i, b: start });
+      }
+      for (let j = start; j < endB; j++) {
+         out.push({ op: "+", text: b[j], a: endA, b: j });
+      }
+   } else {
+      // lcs[i][j]: the common subsequence length of a[start+i..] and b[start+j..].
+      const lcs = Array.from({ length: n + 1 }, () =>
+         new Uint32Array(m + 1),
+      );
+      for (let i = n - 1; i >= 0; i--) {
+         for (let j = m - 1; j >= 0; j--) {
+            lcs[i][j] =
+               a[start + i] === b[start + j]
+                  ? lcs[i + 1][j + 1] + 1
+                  : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+         }
+      }
+      let i = 0;
+      let j = 0;
+      while (i < n || j < m) {
+         const ai = start + i;
+         const bj = start + j;
+         if (i < n && j < m && a[ai] === b[bj]) {
+            out.push({ op: " ", text: a[ai], a: ai, b: bj });
+            i++;
+            j++;
+         } else if (i < n && (j === m || lcs[i + 1][j] >= lcs[i][j + 1])) {
+            out.push({ op: "-", text: a[ai], a: ai, b: bj });
+            i++;
+         } else {
+            out.push({ op: "+", text: b[bj], a: ai, b: bj });
+            j++;
+         }
+      }
+   }
+   for (let i = endA, j = endB; i < a.length; i++, j++) {
+      out.push({ op: " ", text: a[i], a: i, b: j });
+   }
+   return out;
+}
+
+/**
+ * The differing lines of two texts as unified-style hunks, each with a few
+ * lines of context and its golden and actual line numbers; the changed lines
+ * shown are capped across all hunks.
+ */
+export function lineDiff(expected: string, actual: string): string {
+   const script = editScript(expected.split("\n"), actual.split("\n"));
+   const changed = script
+      .map((line, k) => (line.op === " " ? -1 : k))
+      .filter((k) => k >= 0);
+   if (changed.length === 0) return "(no line differs)";
+   // Group the changes into hunks whose context windows touch.
+   const hunks: [number, number][] = [];
+   for (const k of changed) {
+      const last = hunks[hunks.length - 1];
+      if (last && k - last[1] <= 2 * CONTEXT + 1) last[1] = k;
+      else hunks.push([k, k]);
+   }
+   const out: string[] = [
+      `${changed.length} line(s) differ in ${hunks.length} place(s):`,
+   ];
+   let shown = 0;
+   for (const [first, last] of hunks) {
+      if (shown >= SHOWN) {
+         const rest = changed.filter((k) => k >= first).length;
+         out.push(`… ${rest} more changed line(s) not shown`);
+         break;
+      }
+      const from = Math.max(0, first - CONTEXT);
+      const to = Math.min(script.length - 1, last + CONTEXT);
+      out.push(
+         `@@ golden line ${script[from].a + 1}, actual line ${script[from].b + 1} @@`,
+      );
+      for (let k = from; k <= to; k++) {
+         const line = script[k];
+         if (line.op !== " ") {
+            if (shown >= SHOWN) {
+               out.push("  …");
+               break;
+            }
+            shown++;
+         }
+         out.push(`${line.op} ${line.text}`);
+      }
    }
    return out.join("\n");
 }
