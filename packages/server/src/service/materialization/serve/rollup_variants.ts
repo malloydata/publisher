@@ -49,12 +49,15 @@
  *
  * - a named view the query runs, refines, starts from or nests (row 11), as
  *   the author wrote it (read at its compiled location), so the view's own
- *   query is what compiles and is checked; a persisted view of the name is
- *   the router's earlier leg (R1);
+ *   query is what compiles and is checked; one that no longer compiles to
+ *   the view the author's model holds (its file edited since) or that reads
+ *   raw SQL declines (`MISSING_FIELD`); a persisted view of the name is the
+ *   router's earlier leg (R1);
  * - for a query on an extension or rename of the rolled-up source (row 22,
  *   found through the source map's base edges), the extension's dimensions
- *   over the grain alone. One that adds a `where:` (`GRAIN_TOO_COARSE`) or a
- *   `timezone:` (`TIME_ZONE`) declines; one that adds a gate is the router's
+ *   over the grain alone. One that adds a `where:` (`GRAIN_TOO_COARSE`), a
+ *   `timezone:` (`TIME_ZONE`), or binds a base field's name to another field
+ *   (`MISSING_FIELD`) declines; one that adds a gate is the router's
  *   `CONTRACT`.
  *
  * Rollups are offered coarsest first; the first that answers is used. Behind
@@ -102,6 +105,7 @@ import {
    queryFieldUsagePaths,
    queryLevelFacts,
    readPreparedQuery,
+   readsRawSql,
    resolveStructRefSource,
    setsTimezone,
    type QueryLevelFacts,
@@ -214,6 +218,11 @@ interface RollupQuery {
    shape: ReturnType<typeof queryShapeOf>;
    /** The views of the run target the query reads by name (row 11). */
    views: string[];
+   /**
+    * Whether the query, its views expanded, holds raw SQL (`sql_*`): its text
+    * names columns the compiler does not record, which a rollup may lack.
+    */
+   rawSql: boolean;
    /**
     * Set when the run target extends or renames the source the rollups
     * aggregate (row 22): that base's definition, and what the run target
@@ -426,6 +435,7 @@ export class RollupVariantServe {
          struct,
          shape,
          views,
+         rawSql: readsRawSql(prepared.query),
          ...(extension ? { extension } : {}),
       };
       for (const plan of ownPlans) {
@@ -720,6 +730,15 @@ export class RollupVariantServe {
       args: Parameters<RollupVariantServe["attempt"]>[0],
    ): Promise<RollupAnswer> {
       const { localName, shape } = query;
+      // A view's `where: sql_boolean("${TABLE}.region = …")` reads a column
+      // no field reference names, so no grain check sees it.
+      if (query.rawSql) {
+         throw new RollupSkip(
+            "rollup_missing_field",
+            "the query reads raw SQL (`sql_*`), whose columns the rollup may not keep",
+            true,
+         );
+      }
       const measures = new Set(plan.rollupMeasures.map((m) => m.name));
       // An extension's dimensions over the grain alone are re-declared on the
       // variant (row 22), and read as grain dimensions here.
@@ -994,7 +1013,30 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
          { overlay },
       );
       const materializer = runtime.loadModel(queryModelURL, { importBaseURL });
-      await materializer.getModel();
+      const compiled = await materializer.getModel();
+      // Each view read back from the author's file must compile to the view
+      // the author's model holds: the file may have changed since it
+      // compiled (an edit not yet reloaded), and the variant would then
+      // answer a query the caller did not run.
+      if (use.kind === "base") {
+         const variantDef = (
+            compiled as { _modelDef?: { contents?: Record<string, unknown> } }
+         )._modelDef?.contents?.[localName];
+         for (const view of use.views) {
+            const theirs = turtleNamed(use.struct, view);
+            const ours = turtleNamed(variantDef, view);
+            if (
+               !theirs ||
+               !ours ||
+               pipelineSignature(theirs.pipeline) !==
+                  pipelineSignature(ours.pipeline)
+            ) {
+               return {
+                  error: `view \`${view}\` does not read back as the model compiled it`,
+               };
+            }
+         }
+      }
       return { materializer };
    }
 
@@ -1122,6 +1164,41 @@ ${gates}${over}`;
    }
 }
 
+/** The view `name` of a compiled source, if it declares one. */
+function turtleNamed(
+   struct: unknown,
+   name: string,
+): { pipeline?: unknown } | undefined {
+   const fields = (struct as { fields?: unknown[] } | undefined)?.fields;
+   if (!Array.isArray(fields)) return undefined;
+   return (fields as { type?: unknown; name?: unknown; as?: unknown }[]).find(
+      (f) => f.type === "turtle" && (f.as ?? f.name) === name,
+   ) as { pipeline?: unknown } | undefined;
+}
+
+/**
+ * What a compiled pipeline records of its context rather than of the query:
+ * where it was written, the notes its fields inherit, and the result's shape
+ * over the source it ran on (a stored column's connection and number type).
+ */
+const PIPELINE_CONTEXT_KEYS = new Set([
+   "location",
+   "at",
+   "referencedAt",
+   "annotations",
+   "outputStruct",
+]);
+
+/**
+ * A view's compiled pipeline without where it was written: the same view
+ * text compiled in two models differs only in its locations.
+ */
+function pipelineSignature(pipeline: unknown): string {
+   return JSON.stringify(pipeline, (key, value) =>
+      PIPELINE_CONTEXT_KEYS.has(key) ? undefined : value,
+   );
+}
+
 /**
  * What an extension adds over the base its rollups aggregate (row 22), or a
  * {@link RollupSkip} when that is more than fields: a `where:` of its own
@@ -1169,11 +1246,18 @@ function extensionDimensions(
    const delta = extension.delta;
    if (!delta) return [];
    const grain = new Set(plan.grainDimensions);
-   const clash = delta.changed.find((n) => grain.has(n) || measures.has(n));
+   // Any name the extension binds to another field, not only a grain
+   // dimension or stored measure: those read their base's fields by name, so
+   // `rename: reg is region; dimension: region is 'east'` changes what a
+   // stored `amount.sum() { where: region = 'east' }` reads on the extension,
+   // while the rollup stores it as the base defines it.
+   const clash =
+      delta.changed.find((n) => grain.has(n) || measures.has(n)) ??
+      delta.changed[0];
    if (clash !== undefined) {
       throw new RollupSkip(
          "rollup_missing_field",
-         `the query's source redefines \`${clash}\`, which the rollup stores as its base defines it`,
+         `the query's source redefines \`${clash}\`, which the rollup's fields read as its base defines it`,
          true,
       );
    }
@@ -1186,12 +1270,15 @@ function extensionDimensions(
       expressionType?: unknown;
       accessModifier?: unknown;
       annotations?: Parameters<typeof viewNoteTexts>[0];
+      e?: unknown;
    }
    const candidates = (delta.added as AddedField[]).filter(
       (f) =>
          f.type !== "turtle" &&
          f.join === undefined &&
          typeof f.code === "string" &&
+         // Raw SQL names columns the compiler records no read of.
+         !readsRawSql(f.e) &&
          (f.expressionType === undefined || f.expressionType === "scalar") &&
          (f.accessModifier == null || f.accessModifier === "public"),
    );

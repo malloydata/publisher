@@ -12,6 +12,7 @@ import {
    aggregateWrittenThroughJoin,
    joinGrainAggregatePaths,
    namedViewsRead,
+   readsRawSql,
    preparedQueryView,
    probeFilterList,
    queryFieldUsagePaths,
@@ -343,5 +344,25 @@ describe("join-to-rollup readers (A7)", () => {
       expect(
          aggregateWrittenThroughJoin(named, parent, "segments"),
       ).toBeUndefined();
+   });
+});
+
+describe("readsRawSql", () => {
+   it("finds an sql_* expression in a stage's filters or fields, not in its output shape", () => {
+      const raw = { node: "genericSQLExpr", kids: { args: [] }, src: ["1"] };
+      expect(readsRawSql([{ type: "reduce", filterList: [{ e: raw }] }])).toBe(
+         true,
+      );
+      expect(readsRawSql({ node: "and", kids: { left: raw } })).toBe(true);
+      expect(
+         readsRawSql([
+            {
+               type: "reduce",
+               queryFields: [{ type: "fieldref", path: ["a"] }],
+               outputStruct: { fields: [{ e: raw }] },
+            },
+         ]),
+      ).toBe(false);
+      expect(readsRawSql(undefined)).toBe(false);
    });
 });

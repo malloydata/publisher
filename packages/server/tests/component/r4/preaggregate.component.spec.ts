@@ -12,6 +12,8 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as path from "path";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
@@ -41,7 +43,7 @@ const seedSql = [
 
 /** `#(preaggregate)` lines, colocated or into the scenario's destination. */
 function model(placement: string): string {
-   return `##! experimental.givens
+   return `##! experimental { givens sql_functions }
 given: MIN_AMOUNT :: number is 0
 
 source: carriers is duckdb.table('carriers_raw') extend { primary_key: code }
@@ -85,6 +87,11 @@ source: orders is duckdb.table('orders_raw') extend {
   view: categories_by_day is { group_by: category; nest: by_day }
   view: by_region is { group_by: region; aggregate: total }
   view: counted is { group_by: category; aggregate: c is count() }
+  view: east_by_sql is {
+    where: sql_boolean("\${TABLE}.region = 'east'")
+    group_by: category
+    aggregate: total
+  }
 }
 
 // Extensions of orders (row 22): what each adds decides whether orders's
@@ -100,6 +107,19 @@ source: orders_ext is orders extend {
 source: orders_alias is orders
 source: orders_east is orders extend { where: region = 'east' }
 source: orders_west_coast is orders extend { timezone: 'America/Los_Angeles' }
+// Each binds a name the base's stored fields read to another field: the
+// rollup stores them as the base defines them.
+source: orders_region_rebound is orders extend {
+  rename: region_was is region
+  dimension: region is 'east'
+}
+source: orders_amount_rebound is orders extend {
+  rename: amount_was is amount
+  dimension: amount is 1.0
+}
+source: orders_raw_sql is orders extend {
+  dimension: region_sql is sql_string("lower(\${TABLE}.region)")
+}
 `;
 }
 
@@ -334,6 +354,26 @@ const LIVE = [
       "an extension that filters its rows (row 22)",
       "run: orders_east -> { group_by: category; aggregate: total }",
       "GRAIN_TOO_COARSE",
+   ],
+   [
+      "an extension that binds a name a stored filtered measure reads to another field (row 22)",
+      "run: orders_region_rebound -> { group_by: category; aggregate: east_total }",
+      "MISSING_FIELD",
+   ],
+   [
+      "an extension that binds a name a stored sum reads to another field (row 22)",
+      "run: orders_amount_rebound -> { group_by: category; aggregate: total }",
+      "MISSING_FIELD",
+   ],
+   [
+      "an extension's dimension written in raw SQL (row 22)",
+      "run: orders_raw_sql -> { group_by: region_sql; aggregate: total }",
+      "GRAIN_TOO_COARSE",
+   ],
+   [
+      "a named view that filters in raw SQL (row 11)",
+      "run: orders -> east_by_sql",
+      "MISSING_FIELD",
    ],
    [
       "an extension in its own time zone (row 22)",
@@ -928,5 +968,62 @@ source: orders is duckdb.table('orders_raw') extend {
             malloy: "run: orders -> by_category_too",
          }),
       );
+   });
+});
+
+describe("R4: a named view whose file changed since the model compiled (row 11)", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `source: orders is duckdb.table('orders_raw') extend {
+  #(preaggregate) grain=["category"]
+  measure: total is amount.sum()
+  #(preaggregate) grain=["category"]
+  measure: east_ is amount.sum() { where: region = 'east' }
+  view: by_category is { group_by: category; aggregate: total }
+}
+`,
+         },
+         seedSql,
+         preaggregate: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("answers live, never the view as the file now reads", async () => {
+      // An edit not yet reloaded: the served model still runs \`total\`.
+      const file = path.join(fixture.packagePath, "m.malloy");
+      fs.writeFileSync(
+         file,
+         fs
+            .readFileSync(file, "utf8")
+            .replace(
+               "group_by: category; aggregate: total }",
+               "group_by: category; aggregate: east_ }",
+            ),
+      );
+      const malloy = "run: orders -> by_category";
+      const run = await fixture.run({ name: "stale view", malloy });
+      expectLive(run);
+      expect(run.live).toEqual(
+         expect.arrayContaining([
+            expect.objectContaining({ category: "A", total: 30 }),
+         ]),
+      );
+      fixture.setBindings(fixture.bindings);
+      const { path: report } = await fixture.runAsIs(malloy);
+      expect(
+         report?.considered
+            .filter((c) => c.kind === "rollup")
+            .map((c) => c.reason),
+      ).toContain("MISSING_FIELD");
    });
 });
