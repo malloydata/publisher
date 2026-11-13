@@ -10,6 +10,7 @@ import { join } from "node:path";
 import type { components } from "../../../api";
 import {
    packageTableSuffix,
+   versionedTableName,
    versionTableSuffix,
 } from "../../versions/materialization_scope";
 import type { BuildInstruction, ManifestEntry } from "../types";
@@ -23,6 +24,7 @@ import { nameViewComment } from "./name_view_sql";
 import {
    assertTableOwnable,
    hasAuthorTableName,
+   hasReservedTableSuffix,
    markOwnedTable,
    ownedElsewhere,
    ownedTableComment,
@@ -218,6 +220,34 @@ describe("whose name a table is", () => {
             source("defaulted", '#@ persist name="defaulted"\n'),
          ),
       ).toBe(false);
+   });
+
+   it("never a name= that ends the way Publisher names a package's or a version's own tables", () => {
+      const own = packageTableSuffix({
+         environmentName: "e",
+         packageName: "p",
+      });
+      const version = versionTableSuffix({
+         environmentName: "e",
+         packageName: "p",
+         version: "1.2.0-rc.1",
+      });
+      for (const name of [
+         `orders${own}`,
+         `s.orders${own.toUpperCase()}`,
+         `orders${version}`,
+         versionedTableName("x".repeat(80), own),
+      ]) {
+         expect(hasReservedTableSuffix(name)).toBe(true);
+      }
+      for (const name of [
+         "orders",
+         "orders__p",
+         "orders_p1a2b3c4d",
+         "p1a2b3c4d.t",
+      ]) {
+         expect(hasReservedTableSuffix(name)).toBe(false);
+      }
    });
 
    it("this package's by its records only for exactly that table, there", () => {

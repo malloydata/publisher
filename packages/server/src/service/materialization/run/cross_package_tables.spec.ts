@@ -307,4 +307,46 @@ describe("two packages on one warehouse connection", () => {
       // the legacy records.
       expect(await tables()).toContain("summary");
    });
+
+   it("two packages building one name= at once: one builds it, the other is refused", async () => {
+      for (let i = 0; i < 3; i++) {
+         await sql("DROP TABLE IF EXISTS named_t");
+         const [a, b] = await Promise.all([build("pa"), build("pb")]);
+         const refused = [a, b].filter((m) =>
+            failureReasons(m).join(" ").includes(TABLE_OWNED_ELSEWHERE),
+         );
+         expect(refused).toHaveLength(1);
+         // The table holds the rows of the package its mark names.
+         const holder = refused[0] === a ? "pb" : "pa";
+         expect(await comment("named_t")).toBe(
+            ownedTableComment(`${ENV}/${holder}`),
+         );
+         expect((await sql("SELECT who FROM named_t"))[0].who).toBe(holder);
+         expect(await who("pa", "named")).toBe("pa");
+         expect(await who("pb", "named")).toBe("pb");
+      }
+   });
+
+   it("a name= spelled as another package's own table name is refused", async () => {
+      fs.writeFileSync(
+         path.join(envPath, "pa", "model.malloy"),
+         [
+            "##! experimental.persistence",
+            `source: base1 is warehouse.sql("SELECT 'pa' AS who, 1 AS k")`,
+            `#@ persist name="summary${suffix("pb")}"`,
+            "source: summary is base1 -> { group_by: who }",
+            "",
+         ].join("\n"),
+      );
+      await env.getPackage(parsePackageName("pa"), true);
+      // pa goes first, onto a free name: it would have built pb's table.
+      const a = await build("pa");
+      expect(failureReasons(a).join(" ")).toContain(TABLE_OWNED_ELSEWHERE);
+      expect(await tables()).toEqual([]);
+      await build("pb");
+      await build("pa");
+      expect(await who("pa", "summary")).toBe("pa");
+      expect(await who("pb", "summary")).toBe("pb");
+      expect(await tables()).toEqual([`named_t`, `summary${suffix("pb")}`]);
+   });
 });

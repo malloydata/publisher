@@ -93,6 +93,7 @@ import {
 } from "./name_view";
 import { nameViewOwner } from "./name_view_sql";
 import {
+   acquireOwnedNameLock,
    assertTableOwnable,
    hasAuthorTableName,
    markOwnedTable,
@@ -659,6 +660,9 @@ export class InstructedBuild {
       );
       let replacedView: { target: string } | undefined;
       let entry;
+      // Held from the ownership check until the mark is written, so another
+      // package building the same `name=` at once waits, then sees the mark.
+      let releaseOwnedName: (() => void) | undefined;
       try {
          // An instructed destination that cannot be honored REFUSES, never
          // falls through to a colocated build: that would write the caller's
@@ -672,6 +676,9 @@ export class InstructedBuild {
          // A `name=` another package holds fails the source before anything
          // is written, the uniqueness check included.
          if (ownedTarget) {
+            releaseOwnedName = await acquireOwnedNameLock(
+               ownedTarget.physicalTableName,
+            );
             await this.assertOwnable(
                run,
                persistSource,
@@ -811,6 +818,8 @@ export class InstructedBuild {
             buildErr,
          );
          return;
+      } finally {
+         releaseOwnedName?.();
       }
       run.builtSources.push(persistSource.name);
       run.entries[sourceEntityId] = entry;

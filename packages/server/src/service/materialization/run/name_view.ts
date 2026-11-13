@@ -456,9 +456,27 @@ export function ownedSlot(slot: NameViewSlot, owner: string): OwnedSlot {
       case "taken":
          return {
             state: "taken",
-            holder: `a ${slot.kind.toLowerCase()} Publisher did not create`,
+            holder:
+               slot.tableOwner !== undefined && slot.tableOwner !== owner
+                  ? `a table package '${slot.tableOwner}' built`
+                  : `a ${slot.kind.toLowerCase()} Publisher did not create`,
          };
    }
+}
+
+/**
+ * Whether `slot` is a table this package's records may claim as its own: a
+ * table, and not one another package has marked as its own since
+ * (table_ownership.ts). The records say this package wrote a table at the
+ * name once; another package's mark says that package has built there
+ * since, so the table is no longer this package's to replace.
+ */
+function claimableTable(slot: NameViewSlot, owner: string): boolean {
+   return (
+      slot.state === "taken" &&
+      slot.kind !== "VIEW" &&
+      (slot.tableOwner === undefined || slot.tableOwner === owner)
+   );
 }
 
 /** Make or repoint the view to read `mark.target`, mark and all. */
@@ -969,9 +987,10 @@ export async function preflightNameView(
       probed = await atNameViewSite(intent, context, async (site) => {
          if (!nameViewDialectSupported(site.dialect)) return undefined;
          const raw = await probeNameView(site, intent.viewName);
-         // A table this package's own run wrote at the name: the view
-         // replaces it once this build is done.
-         if (raw.state === "taken" && raw.kind !== "VIEW") {
+         // A table this package's own run wrote at the name, and no other
+         // package has marked as its own since: the view replaces it once
+         // this build is done.
+         if (claimableTable(raw, intent.owner)) {
             const table = await context.ownTableAt?.(intent);
             if (table) {
                return {
@@ -1097,7 +1116,7 @@ async function publishNameView(
                };
             }
             const raw = await probeNameView(site, intent.viewName);
-            if (ownTable && raw.state === "taken" && raw.kind !== "VIEW") {
+            if (ownTable && claimableTable(raw, intent.owner)) {
                const asideTableName = await replaceOwnTableWithView(
                   site,
                   intent,

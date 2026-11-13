@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { PersistSource } from "@malloydata/malloy";
+import { Mutex } from "async-mutex";
 import { BadRequestError } from "../../../errors";
 import { logger } from "../../../logger";
 import type { Materialization } from "../../../storage/DatabaseInterface";
@@ -13,9 +14,13 @@ import { isLegacyFailedEntry, type ManifestEntry } from "../types";
 import {
    nameViewDialectSupported,
    nameViewProbeSql,
+   OWNED_TABLE_MARK,
    parseNameViewComment,
+   parseOwnedTableComment,
    sqlString,
 } from "./name_view_sql";
+
+export { OWNED_TABLE_MARK, parseOwnedTableComment };
 import {
    atNameViewSite,
    type NameViewContext,
@@ -49,6 +54,13 @@ import type { BuildInstruction } from "../types";
  * way to ask) is refused too, `table-ownership-unverified`: building would
  * overwrite whatever is there.
  *
+ * A `name=` spelled like one of Publisher's own names (ending `__p<hash>` or
+ * `__v<version>_<hash>`, see hasReservedTableSuffix) is refused,
+ * `table-owned-elsewhere`: it may be another package's default-named table,
+ * which carries no mark. And one server builds one `name=` at a time
+ * (acquireOwnedNameLock), from the check until the mark is written, so two
+ * packages that find the name free at once never both build it.
+ *
  * The mark is a comment on the table, `malloy-publisher:table owner=<env>/<pkg>`
  * (URI-encoded), the warehouse half of ownership: it is what decides between
  * two packages whose records both name the table (a collision from before the
@@ -66,9 +78,6 @@ import type { BuildInstruction } from "../types";
  * Within one server only: two servers whose environments and packages have
  * the same names write the same mark.
  */
-
-/** The prefix of a Publisher table's ownership mark. */
-export const OWNED_TABLE_MARK = "malloy-publisher:table";
 
 /** The code of a build refused because another holds its `name=`. */
 export const TABLE_OWNED_ELSEWHERE = "table-owned-elsewhere";
@@ -88,6 +97,60 @@ export class TableOwnershipError extends BadRequestError {
    ) {
       super(message);
    }
+}
+
+/**
+ * The table-segment endings Publisher gives the names it chooses: a
+ * package's own (`__p<8 hex>`, packageTableSuffix) and a version's own
+ * (`__v<version>_<8 hex>`, versionTableSuffix). Those tables carry no mark
+ * and are built without a probe, since no other package's name ends that
+ * way. An author's `name=` spelled with one could be another package's
+ * default name, which that package would then build over (and the other way
+ * round), so it is refused. Case-insensitive, as DuckDB, MySQL and SQL
+ * Server resolve names.
+ */
+const RESERVED_TABLE_SUFFIX = /__(?:p[0-9a-f]{8}|v[a-z0-9_]*_[0-9a-f]{8})$/i;
+
+/** Whether `name`'s table segment ends the way Publisher's own names do. */
+export function hasReservedTableSuffix(name: string): boolean {
+   return RESERVED_TABLE_SUFFIX.test(name.slice(name.lastIndexOf(".") + 1));
+}
+
+/**
+ * One server's builds at the author's `name=`, serialized by name: two
+ * packages that probe one free name at once would both build it, and each
+ * serve whichever wrote last. Held from the ownership check until the mark is
+ * written, so the second build's check sees the first one's mark. Keyed by
+ * the table segment, lower-cased: two connections or environments may reach
+ * one schema under different names, and an over-wide key only serializes.
+ */
+const ownedNameLocks = new Map<string, { mutex: Mutex; holders: number }>();
+
+/**
+ * Wait for, and take, the lock on builds at `physicalTableName`. Returns the
+ * release, which must be called exactly once.
+ */
+export async function acquireOwnedNameLock(
+   physicalTableName: string,
+): Promise<() => void> {
+   const key = physicalTableName
+      .slice(physicalTableName.lastIndexOf(".") + 1)
+      .toLowerCase();
+   let lock = ownedNameLocks.get(key);
+   if (!lock) {
+      lock = { mutex: new Mutex(), holders: 0 };
+      ownedNameLocks.set(key, lock);
+   }
+   lock.holders++;
+   const held = lock;
+   const release = await held.mutex.acquire();
+   let released = false;
+   return () => {
+      if (released) return;
+      released = true;
+      release();
+      if (--held.holders === 0) ownedNameLocks.delete(key);
+   };
 }
 
 /**
@@ -114,29 +177,6 @@ function encodeMarkValue(value: string): string {
 /** The ownership mark for a table `owner` (`<environment>/<package>`) wrote. */
 export function ownedTableComment(owner: string): string {
    return `${OWNED_TABLE_MARK} owner=${encodeMarkValue(owner)}`;
-}
-
-/**
- * The owner a table's comment names, or undefined when the comment is not an
- * ownership mark: exactly the prefix, then `owner=` once. Accepts BigQuery's
- * double-quoted TABLE_OPTIONS spelling.
- */
-export function parseOwnedTableComment(comment: unknown): string | undefined {
-   if (typeof comment !== "string") return undefined;
-   let text = comment.trim();
-   if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) {
-      text = text.slice(1, -1);
-   }
-   const fields = text.split(" ");
-   if (fields.length !== 2 || fields[0] !== OWNED_TABLE_MARK) return undefined;
-   if (!fields[1].startsWith("owner=")) return undefined;
-   const encoded = fields[1].slice("owner=".length);
-   if (encoded === "") return undefined;
-   try {
-      return decodeURIComponent(encoded);
-   } catch {
-      return undefined;
-   }
 }
 
 /** The dialects whose tables' holders can be read (and marked). */
@@ -355,6 +395,16 @@ export async function assertTableOwnable(
             `by another package could not be read (${why}), and the build ` +
             `would overwrite whatever is there. It is answered live.`,
       );
+   if (hasReservedTableSuffix(target.physicalTableName)) {
+      throw new TableOwnershipError(
+         TABLE_OWNED_ELSEWHERE,
+         `'${sourceName}' is not built (${TABLE_OWNED_ELSEWHERE}): its name= ` +
+            `'${target.physicalTableName}' ends the way Publisher names a ` +
+            `package's or a version's own tables (__p<hash>, __v<version>_<hash>), ` +
+            `so it may be another package's table. It is answered live. ` +
+            `Give the source another name=.`,
+      );
+   }
    if (!site) throw unverified("the connection could not be reached");
    if (!tableOwnershipDialectSupported(site.dialect)) {
       throw unverified(`dialect '${site.dialect}' is not supported`);
