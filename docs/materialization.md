@@ -490,7 +490,10 @@ no cast reads exactly (one stored as a float, whose digits are already gone) is 
 a query that reads it is answered live, every other query still reads the table. Served never
 exceeds live: on a source whose live answer itself rounds such values (Postgres returns its rows
 through JSON), a `storage=` table reads the column as a plain number, which rounds the same way,
-and a colocated one reads it through Postgres's own `bigint` cast, on live's own path.
+and a colocated one reads it through Postgres's own `bigint` cast, on live's own path. A colocated
+cast can be narrower than the stored column: a Postgres sum of `BIGINT`s past 2^63 (stored as
+`NUMERIC`), or a DuckDB `UHUGEINT` above 2^127 − 1, fails the query rather than answering it
+([known limitation 12](materialization-v2-plan.md#known-limitations-to-revisit)).
 
 ## Will it serve? The serve verdict
 
