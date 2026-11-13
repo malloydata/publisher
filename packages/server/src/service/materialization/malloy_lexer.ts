@@ -123,6 +123,28 @@ export function statementStarts(tokens: readonly Token[]): number[] {
    return starts;
 }
 
+/** The access modifiers a statement can be labelled with. */
+const ACCESS_LABELS: ReadonlySet<string> = new Set([
+   "public",
+   "private",
+   "internal",
+]);
+
+/**
+ * Where the statement whose keyword is `tokens[k]` begins: its access label
+ * (`internal dimension: …`) when it has one, else its keyword. The end of the
+ * statement before it is here, so a cut or a replacement of that statement
+ * never takes this one's label with it (which would expose or hide this one).
+ */
+export function statementHead(tokens: readonly Token[], k: number): Token {
+   const label = tokens[k - 1];
+   return label?.kind === "word" &&
+      label.depth === tokens[k].depth &&
+      ACCESS_LABELS.has(label.text)
+      ? label
+      : tokens[k];
+}
+
 /** Whether `t` can name a definition: a word or a quoted identifier. */
 export function isName(t: Token | undefined): t is Token {
    return !!t && (t.kind === "word" || t.text.startsWith("`"));

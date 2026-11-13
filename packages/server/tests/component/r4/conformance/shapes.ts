@@ -792,6 +792,56 @@ source: orders_j is orders_raw extend {
       ],
    },
    {
+      name: "joined persisted source with hidden fields, from an index",
+      issue: "#1666",
+      about: "A persisted dimension source with an internal column, and measures over it (one private), held by the index only as a join of a persisted fact in another file (P3 with #6643's shape)",
+      files: {
+         "index.malloy": `import "facts.malloy"
+export { order_facts }
+`,
+         "dims.malloy": `##! experimental { persistence access_modifiers }
+import "raw.malloy"
+
+@PERSIST(customer_dim)
+source: customer_dim is customers_raw -> {
+  select: id, segment, home_region
+} include { internal: home_region; public: * } extend {
+  primary_key: id
+  private measure: west_rows is count() { where: home_region = 'west' }
+  measure: west_n is west_rows + 0
+}
+`,
+         "facts.malloy": `${HEADER}
+import "raw.malloy"
+import "dims.malloy"
+
+@PERSIST(order_facts)
+source: order_facts is orders_raw -> {
+  select: id, customer_id, region, amount
+} extend {
+  join_one: c is customer_dim on customer_id = c.id
+}
+`,
+      },
+      queries: [
+         {
+            name: "a measure over the joined source's internal column, from the index",
+            malloy:
+               "run: order_facts -> { group_by: c.segment; aggregate: w is c.west_n, t is amount.sum() }",
+            expect: { storage: "live" },
+         },
+         {
+            name: "the joined source's measure, in its own file",
+            model: "dims.malloy",
+            malloy:
+               "run: customer_dim -> { group_by: segment; aggregate: west_n }",
+            // v1 stores a persisted table's public columns only, so a measure
+            // reading `home_region` is answered live there.
+            expect: { storage: "live" },
+         },
+      ],
+   },
+   {
       name: "keyed join_one with",
       issue: "#6983",
       about: "A persisted source with primary_key: joined by `join_one: … with`, from a persisted source and from a warehouse source",
