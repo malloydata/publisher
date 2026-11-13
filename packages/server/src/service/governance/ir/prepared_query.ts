@@ -395,6 +395,76 @@ export function queryLevelFacts(
 }
 
 /**
+ * The views of `struct` a compiled query reads by name: `called` (a view the
+ * query's text runs, `src -> v`, which the compiled pipeline holds expanded,
+ * without its name), then every `nest: v` in the first stage of the query or
+ * of a view it reads, at any depth (a nest under a view's name counts as that
+ * view, so a reader may declare one view more than it needs, never one
+ * fewer). Each comes after the views it nests; a view that nests itself is
+ * read once.
+ */
+export function namedViewsRead(
+   view: PreparedQueryView,
+   struct: unknown,
+   called?: string,
+): string[] {
+   const turtles = new Map<string, { pipeline?: unknown }>();
+   for (const f of ((struct as { fields?: unknown[] } | undefined)?.fields ??
+      []) as {
+      type?: unknown;
+      name?: unknown;
+      as?: unknown;
+      pipeline?: unknown;
+   }[]) {
+      const n =
+         typeof f.as === "string"
+            ? f.as
+            : typeof f.name === "string"
+              ? f.name
+              : undefined;
+      if (n !== undefined && f.type === "turtle") turtles.set(n, f);
+   }
+   const out: string[] = [];
+   const seen = new Set<string>();
+   // Each view after the views it nests, so they can be declared in order.
+   const add = (name: string, depth: number) => {
+      const turtle = turtles.get(name);
+      if (!turtle || seen.has(name)) return;
+      seen.add(name);
+      visit(firstStage(turtle.pipeline), depth + 1);
+      out.push(name);
+   };
+   const visit = (stage: IrStageLike | undefined, depth: number): void => {
+      if (!stage || depth > 64) return;
+      for (const field of stage.queryFields ?? []) {
+         if (
+            field.type === "fieldref" &&
+            Array.isArray(field.path) &&
+            field.path.length === 1 &&
+            typeof field.path[0] === "string"
+         ) {
+            add(field.path[0], depth);
+         } else if (field.type === "turtle") {
+            // `nest: v` compiles to a turtle named `v`, the view expanded. A
+            // nest of the query's own under a view's name reads as that view
+            // too: one more view declared, never one fewer.
+            if (typeof field.name === "string") add(field.name, depth);
+            visit(firstStage(field.pipeline), depth + 1);
+         }
+      }
+   };
+   if (called !== undefined) add(called, 0);
+   visit(firstStage(view.pipeline), 0);
+   return out;
+}
+
+function firstStage(pipeline: unknown): IrStageLike | undefined {
+   return Array.isArray(pipeline)
+      ? (pipeline[0] as IrStageLike | undefined)
+      : undefined;
+}
+
+/**
  * Whether a compiled query sets a `timezone:` anywhere in it: a stage, a later
  * stage, or a `nest:` at any depth. A stored table truncated or filtered its
  * times in the model's zone, so a leg that reads one declines any of these.
