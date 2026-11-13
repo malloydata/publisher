@@ -495,6 +495,66 @@ source: orders is ${ROWS} extend {
    });
 });
 
+describe("a source that sets its own time zone (#1686)", () => {
+   it("plans its rollup only where the join leg reads it: joined from a source in the same zone", async () => {
+      const zoned = (
+         name: string,
+         storage = "",
+      ) => `source: ${name} is ${ROWS} extend {
+  timezone: 'America/New_York'
+  primary_key: id
+  dimension: order_day is order_time.day
+  #(preaggregate) grain=["id", "order_day"]${storage}
+  measure: total is amount.sum()
+}`;
+      const { plans, refused } = await plan({
+         "m.malloy": `${zoned("lonely")}
+${zoned("joined")}
+${zoned("joined_stored", ' storage="lake"')}
+${zoned("joined_elsewhere")}
+source: inherits is lonely extend {
+  #(preaggregate) grain=["category"]
+  measure: total2 is amount.sum()
+}
+source: plain is ${ROWS} extend {
+  #(preaggregate) grain=["category"]
+  measure: total is amount.sum()
+}
+source: parent is ${ROWS} extend {
+  timezone: 'America/New_York'
+  join_one: j is joined on j.id = id
+  join_one: js is joined_stored on js.id = id
+}
+source: parent_utc is ${ROWS} extend {
+  join_one: je is joined_elsewhere on je.id = id
+}`,
+      });
+      // A storage= rollup joined from the same zone is planned too: the join
+      // leg reads it when the joining source is stored in that destination
+      // (#1704), and declines at read when it is not.
+      expect(plans.map((p) => p.baseSourceID.split("@")[0]).sort()).toEqual([
+         "joined",
+         "joined_stored",
+         "plain",
+      ]);
+      expect(
+         refused
+            .filter((r) => r.code === "preaggregate-time-zone")
+            .map((r) => [r.sourceName, r.measure])
+            .sort(),
+      ).toEqual([
+         ["inherits", "total2"],
+         ["joined_elsewhere", "total"],
+         ["lonely", "total"],
+      ]);
+      const message = refused.find((r) => r.sourceName === "lonely")?.message;
+      expect(message).toContain("timezone: 'America/New_York'");
+      expect(refused.find((r) => r.sourceName === "lonely")?.tier).toBe(
+         "unservable",
+      );
+   });
+});
+
 describe("the rollup build file", () => {
    it("declares one persisted rollup per grain over the imported base", async () => {
       const { plans } = await plan({

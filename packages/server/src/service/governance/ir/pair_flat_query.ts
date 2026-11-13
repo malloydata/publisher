@@ -23,12 +23,13 @@
  *    level: a flagged row is one of its level's rows, so a deeper value would
  *    place it in that row's group alone, where live places it in every group
  *    one of its rows is in;
- *  - an aggregate at a level between the source and the leaf is exact only
- *    when the query reads nothing deeper: live then joins down to that level
- *    and aggregates its rows plainly, which the flag marks, but once the query
- *    reads deeper live aggregates that level symmetrically, keyed by its
- *    primary key (a childless parent then counts as no row), which no flag
- *    reproduces.
+ *  - an aggregate at a level between the source and the leaf is exact when
+ *    the query reads nothing deeper: live then joins down to that level and
+ *    aggregates its rows plainly, which the flag marks. Once the query reads
+ *    deeper live aggregates that level symmetrically, keyed by its primary key
+ *    (a childless parent then counts as no row): the flag reproduces that only
+ *    for a sum or average of a stored column, where each row of the level has
+ *    one parent row ({@link FlatPair.oneParentLevels}).
  *
  * {@link pairMeasureLevels} says which measures the served copy re-declares
  * under the flag; {@link flatPairQueryRefusal} says whether one compiled query
@@ -67,6 +68,21 @@ export interface FlatPair {
     * rows, so a query that reads one is never answered from this block.
     */
    otherRecords?: readonly string[];
+   /**
+    * For a path of more than one hop: the levels between the source and the
+    * leaf each of whose rows has exactly one row of every level above it
+    * (each join down to it keyed on its parent level's primary key, which the
+    * build checks unique and never null). Under that level's flag such a row
+    * is flagged once whichever parent groups it, so a sum or average of one
+    * of its stored columns there equals live's symmetric aggregate by its key
+    * beside deeper fields.
+    */
+   oneParentLevels?: readonly number[];
+   /**
+    * The path's computed fields the pair table stores (`items.flag`), whose
+    * value on a childless row's null-extended row need not be null.
+    */
+   computedFields?: readonly string[];
 }
 
 /**
@@ -324,7 +340,7 @@ class Walker {
    aggregates(
       n: Node,
       ctx: AggregateContext,
-      visit: (level: PairLevel, ctx: AggregateContext) => void,
+      visit: (level: PairLevel, ctx: AggregateContext, aggregate: Node) => void,
       depth: number,
    ): void {
       if (depth > MAX_DEPTH) throw new Refusal("an expression nests too deep");
@@ -385,7 +401,7 @@ class Walker {
                }
                level = deepest(reads);
             }
-            visit(level, ctx);
+            visit(level, ctx, n);
             return;
          }
          case "filteredExpr": {
@@ -702,7 +718,7 @@ function checkSegment(
       walker.aggregates(
          a,
          { flagged: undefined, filterLevel: 0, inAggregate: false },
-         (level, ctx) => {
+         (level, ctx, aggregate) => {
             if (level === leaf) {
                if (ctx.flagged !== undefined) {
                   throw new Refusal(
@@ -725,7 +741,11 @@ function checkSegment(
                      : "an aggregate above the inlined path's last join, grouped or filtered by a level below it",
                );
             }
-            if (level > 0 && reach > level) {
+            if (
+               level > 0 &&
+               reach > level &&
+               !besideDeeperExact(pair, level, aggregate)
+            ) {
                throw new Refusal(
                   "an aggregate above the inlined path's last join beside fields below it, which live aggregates by that join's key",
                );
@@ -746,6 +766,37 @@ function checkSegment(
          depth + 1,
       );
    }
+}
+
+/**
+ * Whether a middle level's aggregate (under its flag, grouped and filtered by
+ * nothing below it) equals live's beside fields below it, where live
+ * aggregates that level symmetrically by its primary key: the level and
+ * every level above it is one whose rows have one parent row each
+ * ({@link FlatPair.oneParentLevels}), so its flag marks one row per row of
+ * the level in any group; and the aggregate is a sum or an average of one of
+ * the level's stored columns (not a computed one), which is null on a
+ * childless row's null-extended row, so it reads nothing there under the
+ * flag or live. A count is not: the flag marks that null row, which live's
+ * count by key skips. Nor is a computed column, which need not be null on
+ * that row, where whether live's symmetric aggregate reads a null key's row
+ * depends on the dialect (DuckDB's hash of a null key is not null).
+ */
+function besideDeeperExact(
+   pair: FlatPair,
+   level: number,
+   aggregate: Node,
+): boolean {
+   const proven = pair.oneParentLevels ?? [];
+   for (let l = 1; l <= level; l++) if (!proven.includes(l)) return false;
+   // The aggregates Malloy places at a join are sums, averages and counts;
+   // a count reads no field (`items.count()`), so the argument check below
+   // refuses it.
+   const arg = (aggregate.e ?? {}) as Node;
+   const path = arg.node === "field" ? pathOf(arg) : undefined;
+   if (!path || path.length !== level + 1) return false;
+   if (levelOfNames(path, pair) !== level) return false;
+   return !(pair.computedFields ?? []).includes(path.join("."));
 }
 
 function pipelineOf(f: Field): Segment[] {

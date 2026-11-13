@@ -12,6 +12,11 @@ import { errMessage } from "../../../utils";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import type { ApiConnection } from "../../model";
 import { quoteTablePath } from "../../quoting";
+import {
+   SUPERSEDED_TABLES_KEY,
+   tableIdentity,
+   tableNamesIn,
+} from "../../versions/materialization_scope";
 import type { CompiledBuildPlan } from "../plan/build_plan";
 import {
    isLegacyFailedEntry,
@@ -245,7 +250,8 @@ export interface OwnNameTable {
  * whose manifest names a table at exactly `intent.viewName`, on the same
  * connection and destination, for the source of the same name. And no
  * committed run made a view at that name after it: then the table there now
- * is not the one the record describes.
+ * is not the one the record describes. An entry its run's metadata retires
+ * (`SUPERSEDED_TABLES_KEY`) is never read.
  *
  * The records carry the source's name, not its sourceID (whose model URL is
  * a version's own path): within one package, one source writes one `name=`
@@ -270,9 +276,16 @@ export function ownNameTableIn(
    let viewMadeAt = -Infinity;
    for (const run of runs) {
       if (run.status !== "MANIFEST_FILE_READY") continue;
+      // An entry a later run retired (SUPERSEDED_TABLES_KEY: its table was
+      // replaced by a view, or is held by another package) no longer
+      // describes the table there.
+      const retired = new Set(
+         tableNamesIn(run.metadata, SUPERSEDED_TABLES_KEY).map(tableIdentity),
+      );
       for (const entry of Object.values(run.manifest?.entries ?? {})) {
          if (
             isLegacyFailedEntry(entry) ||
+            retired.has(tableIdentity(entry.physicalTableName)) ||
             entry.physicalTableName !== intent.viewName ||
             entry.sourceName !== intent.sourceName ||
             entry.connectionName !== intent.connectionName ||
