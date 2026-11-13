@@ -347,7 +347,6 @@ describe("index build", () => {
    });
 
    describe("value vectors", () => {
-      beforeEach(() => setRetrievalConfig({ egress: { preset: "full" } }));
       afterEach(() => setRetrievalConfig(undefined));
       const withValues = (
          settings = DEFAULT_FCJ_SETTINGS,
@@ -372,25 +371,20 @@ describe("index build", () => {
          "Chicago O'Hare (ORD)",
       ];
 
-      it("embeds no stored value under the default egress preset, and says why", async () => {
-         setRetrievalConfig(undefined);
-         const built = await withValues();
+      it("embeds no stored value when there is no embedding provider, and says why", async () => {
+         const built = await withValues(DEFAULT_FCJ_SETTINGS, null as never);
          expect(built.values.embedded).toBe(0);
          expect(built.report.valueVectors).toMatchObject({
             values: 4,
             embedded: 0,
-            skipped:
-               'egress.preset is "default": stored values are sent to the embedding provider only under "full"',
+            skipped: "no embedding provider is configured",
          });
          const rows = await db.all("SELECT * FROM value_embeddings");
          expect(rows).toEqual([]);
       });
 
       it("reads no stored value when the operator turned value search off", async () => {
-         setRetrievalConfig({
-            egress: { preset: "full" },
-            dimensionValues: { enabled: false },
-         });
+         setRetrievalConfig({ dimensionValues: { enabled: false } });
          const built = await withValues();
          expect(built.values.size).toBe(0);
          expect(built.report.values).toEqual({
@@ -580,18 +574,21 @@ describe("index build", () => {
          '"questions": ["...", "...", "...", "...", "..."]',
       );
       seen.length = 0;
-      // Under the default egress preset the values wording shows no stored
-      // value: they are data, and leave the server only under `full`.
-      await run({ ...DEFAULT_FCJ_SETTINGS, questionsPrompt: "values" });
+      // With value search off there are no stored values, so the values
+      // wording shows none.
+      await run({
+         ...DEFAULT_FCJ_SETTINGS,
+         questionsPrompt: "values",
+         values: false,
+      });
       expect(seen.every((p) => !p.includes(" Values: "))).toBe(true);
       seen.length = 0;
-      // Under `full`, an #(index) dimension shows its stored values on its
+      // With it on, an #(index) dimension shows its stored values on its
       // line, so only those two lines are written again.
-      setRetrievalConfig({ egress: { preset: "full" } });
       const withValues = await run({
          ...DEFAULT_FCJ_SETTINGS,
          questionsPrompt: "values",
-      }).finally(() => setRetrievalConfig(undefined));
+      });
       expect(withValues.report.questions).toMatchObject({
          written: 2,
          reused: 37,
@@ -698,7 +695,6 @@ source: imported_ext is authorized extend {
       );
       const { db, close } = await openTempDb(createCatalogTables);
       const asked: string[] = [];
-      setRetrievalConfig({ egress: { preset: "full" } });
       try {
          const built = await buildFcjIndex({
             pkgIndex,

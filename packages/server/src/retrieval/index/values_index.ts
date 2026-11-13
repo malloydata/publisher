@@ -15,11 +15,12 @@
  * so a source the query path would refuse contributes nothing. A gated
  * source's values are never stored here and never embedded; they are
  * reachable only through the query-time lookup with the caller's givens
- * (../search/values.ts). The values read from ungated sources leave the
- * server only under `egress.preset: "full"`: then the judge sees them, the
- * `values` question wording shows them to the LLM, and
- * `retrieval.fcj.valueEmbeddings` (on by default) embeds them. Under
- * `default` they are matched by spelling alone and sent nowhere.
+ * (../search/values.ts). Tagging a dimension `#(index)` is the author's
+ * consent for its values to be searched, so the values read from ungated
+ * sources go to whatever provider the operator configured: the judge sees
+ * them, the `values` question wording shows them to the LLM, and
+ * `retrieval.fcj.valueEmbeddings` (on by default) embeds them. With no
+ * provider configured they are matched by spelling alone and sent nowhere.
  *
  * Two ways to match, each giving the find stage its own ranked list:
  *

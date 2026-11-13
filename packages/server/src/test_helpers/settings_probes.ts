@@ -54,7 +54,6 @@ import {
 } from "../package_load/package_load_pool";
 import {
    getDimensionValueSettings,
-   getEgressPreset,
    loadedRetrievalConfig,
    setRetrievalConfig,
    type RetrievalLlmConfig,
@@ -246,8 +245,9 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
       getRetrievalConfig(context.serverRoot)?.embedding?.queryPrefix ?? "",
    "retrieval.embedding.documentPrefix": (context) =>
       getRetrievalConfig(context.serverRoot)?.embedding?.documentPrefix ?? "",
+   // Retired: the one effect left is that a set preset is ignored, with a warning.
    "retrieval.egress.preset": (context) =>
-      inForce(context, () => getEgressPreset()),
+      inForce(context, () => loadedRetrievalConfig()?.egressIgnored === true),
    "retrieval.dimensionValues.enabled": (context) =>
       inForce(context, () => getDimensionValueSettings().enabled),
 };

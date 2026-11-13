@@ -32,7 +32,7 @@ export const retrieval = [
       type: structured(),
       kind: "structured",
       description:
-         "Semantic retrieval: indexing limits, the LLM, the embedding provider and egress.",
+         "Semantic retrieval: indexing limits, the LLM, the embedding provider and value search.",
       aliases: { file: ["retrieval"] },
    }),
    setting({
@@ -140,10 +140,10 @@ export const retrieval = [
    setting({
       key: "retrieval.egress.preset",
       type: oneOf(EGRESS_PRESETS),
-      default: "default",
       description:
-         "What may be sent to the LLM: default (names, doc text, schema context) or full (also code and dimension values).",
-      notes: "`default` sends entity names, doc text (`#(doc)`, `#\"`, and the database's descriptions on a connection with `dbmeta` on) and schema context. `full` also sends code and dimension values. Access predicates (`#(access_filter)`, `#(authorize)`) never leave, whatever this says.",
+         "No longer read: #(index) alone decides whether a dimension's values reach the embedding provider and LLM. Setting it logs a startup warning.",
+      notes: "Retired. An earlier release sent `#(index)` values to the embedding provider and the LLM only under `full`. Now the `#(index)` tag decides, as it does on a hosted index. To keep values on the machine, leave `EMBEDDING_API_KEY` unset, set `retrieval.fcj.valueEmbeddings` to `false` in the package's `publisher.json`, or set `retrieval.dimensionValues.enabled` to `false`. Access predicates (`#(access_filter)`, `#(authorize)`) never leave.",
+      defaultText: "_ignored_",
       aliases: { file: ["retrieval.egress.preset"] },
    }),
    setting({

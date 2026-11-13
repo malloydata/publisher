@@ -184,7 +184,7 @@ and this table is generated from it. The names are today's; the configuration de
 | `retrieval.embedding.location` | `PUBLISHER_RETRIEVAL_EMBEDDING_LOCATION` | `--retrieval-embedding-location <value>` |  | _unset_ | Google Cloud region of a vertex embedding model. |
 | `retrieval.embedding.queryPrefix` | `PUBLISHER_RETRIEVAL_EMBEDDING_QUERY_PREFIX` | `--retrieval-embedding-query-prefix <value>` |  | empty | Text put before a search query, as written (spaces included). |
 | `retrieval.embedding.documentPrefix` | `PUBLISHER_RETRIEVAL_EMBEDDING_DOCUMENT_PREFIX` | `--retrieval-embedding-document-prefix <value>` |  | empty | Text put before indexed text, as written; a change re-embeds every package. |
-| `retrieval.egress.preset` | `PUBLISHER_RETRIEVAL_EGRESS_PRESET` | `--retrieval-egress-preset <value>` |  | `default` | `default` sends entity names, doc text (`#(doc)`, `#"`, and the database's descriptions on a connection with `dbmeta` on) and schema context. `full` also sends code and dimension values. Access predicates (`#(access_filter)`, `#(authorize)`) never leave, whatever this says. |
+| `retrieval.egress.preset` | `PUBLISHER_RETRIEVAL_EGRESS_PRESET` | `--retrieval-egress-preset <value>` |  | _ignored_ | Retired. An earlier release sent `#(index)` values to the embedding provider and the LLM only under `full`. Now the `#(index)` tag decides, as it does on a hosted index. To keep values on the machine, leave `EMBEDDING_API_KEY` unset, set `retrieval.fcj.valueEmbeddings` to `false` in the package's `publisher.json`, or set `retrieval.dimensionValues.enabled` to `false`. Access predicates (`#(access_filter)`, `#(authorize)`) never leave. |
 | `retrieval.dimensionValues.enabled` | `PUBLISHER_RETRIEVAL_DIMENSION_VALUES_ENABLED` | `--retrieval-dimension-values-enabled`, `--no-retrieval-dimension-values-enabled` |  | `true` | Value search: off reads no #(index) value and answers a dimensional_value target with "No index". |
 | `retrieval.embedding.apiKey` | `PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY` |  | `EMBEDDING_API_KEY` | _unset_ | Turns on embedding closeness in `get_context`'s search, and embedding ranking in `search_database_schema` (see below). Sent as a bearer token to the embedding endpoint. Unset: `get_context` ranks by keyword and stored values only. Must be set explicitly; an ambient `OPENAI_API_KEY` is deliberately not read. See "How get_context searches" below. |
 | `retrieval.embedding.model` | `PUBLISHER_RETRIEVAL_EMBEDDING_MODEL` | `--retrieval-embedding-model <value>` | `EMBEDDING_MODEL` | `text-embedding-3-small` for OpenAI | Embedding model name sent to the endpoint. Precedence is the same as for every setting: a flag, then a variable, then `retrieval.embedding.model` in `publisher.config.json`. |
@@ -340,8 +340,8 @@ What to know before turning it on:
 
 - What leaves the machine: for each field, its name, its doc text (`#(doc)`, else `#"`, else the database's
   description on a connection with `dbmeta` on) and the sentences derived from
-  them; under `egress.preset: "full"` only, the values of `#(index)` dimensions on ungated sources
-  (`fcj.valueEmbeddings: false` stops that too); and the query strings agents pass to `get_context`. Model source code, other data and query
+  them; the values of `#(index)` dimensions on ungated sources (`fcj.valueEmbeddings: false` in a
+  package, or `retrieval.dimensionValues.enabled: false`, stops that); and the query strings agents pass to `get_context`. Model source code, other data and query
   results are never sent. Point `EMBEDDING_API_BASE` at a local OpenAI-compatible server (Ollama, vLLM)
   to keep everything on the machine; with a local server also set `EMBEDDING_MODEL` to a model that
   server actually serves, since the default names an OpenAI model.
@@ -405,8 +405,7 @@ credentials, what may leave the machine and the spend ceilings are all in the op
       "dimensions": 512,
       "queryPrefix": "",
       "documentPrefix": ""
-    },
-    "egress": { "preset": "default" }
+    }
   }
 }
 ```
@@ -423,7 +422,6 @@ credentials, what may leave the machine and the spend ceilings are all in the op
 | `embedding.provider`                                                | One of `openai`, `openai-compatible`, `ollama`, `google`, `vertex` (Anthropic has no embeddings API). Omitted: the `EMBEDDING_*` variables decide, as before.                                                                          |
 | `embedding.model`, `dimensions`, `baseUrl`, `projectId`, `location` | As for `llm`. `model` defaults to `text-embedding-3-small` for `openai` and is required for the other providers. `dimensions` is omitted from requests when unset.                                                                     |
 | `embedding.queryPrefix` / `documentPrefix`                          | Text put before a search query / before indexed text (default empty). `nomic-embed-text` wants `search_query: ` and `search_document: `. Changing `documentPrefix` re-embeds; changing `queryPrefix` does not.                         |
-| `egress.preset`                                                     | `default`: entity names, doc text (an entity's `#(doc)` lines, else its `#"` doc strings, else the database's description of its table or column on a connection with `dbmeta` on) and schema context may be sent to the LLM. `full`: also the field's code and matched dimension values. Access predicates (`#(access_filter)`, `#(authorize)`) are never sent, and there is no setting for that. |
 | `dimensionValues.enabled`                                           | See "Dimension value search".                                                                                                                                                                                                          |
 
 **Keys.** Secrets are environment variables only, never file entries: `LLM_API_KEY` for the chat
@@ -445,8 +443,9 @@ answers without the judge, the index-time questions and the source summaries.
 **Validation.** A bad value stops the server at startup with a message that names the key, what
 was expected and a fix, for example `Invalid retrieval.llm.provider: expected one of openai,
 openai-compatible, ollama, anthropic, google, vertex, got "cohere". Fix: ...`. Inside `llm`,
-`embedding`, `egress` and `dimensionValues`, and at the top of the `retrieval` block, an unknown key is an
-error that lists the valid ones, so a typo stops the server instead of being ignored.
+`embedding` and `dimensionValues`, and at the top of the `retrieval` block, an unknown key is an
+error that lists the valid ones, so a typo stops the server instead of being ignored. The one exception is
+`egress`, which an earlier release read: it loads, does nothing, and logs a warning at startup.
 
 **Providers.** Each provider is called directly over HTTPS, with no vendor SDK. Failed calls retry
 the same way for every provider: a 429, 408, 5xx or timeout is retried up to five times with
@@ -515,8 +514,8 @@ between releases.
 | `fcj.perTarget`        | `30`          | Candidates kept per target after the find step.                                                                                                                                                                                                                                                                                                      |
 | `fcj.keyword`          | `true`        | Rank by keyword (BM25) beside embedding closeness.                                                                                                                                                                                                                                                                                                   |
 | `fcj.values`           | `true`        | Use the value index of `#(index)` dimensions and the value lists docs give.                                                                                                                                                                                                                                                                          |
-| `fcj.valueCap`         | `50000`       | Most values indexed per dimension, the most frequent kept.                                                                                                                                                                                                                                                                                           |
-| `fcj.valueEmbeddings`  | `true`        | Provisional. Also embed the stored values at index time, so a phrase finds a dimension by the meaning of its values (`sneakers` finds the dimension that stores `Athletic Shoes`). Only under `egress.preset: "full"`; a gated source's values are never embedded.                                                                                                                       |
+| `fcj.valueCap`         | `5000`        | Most values indexed per dimension, the most frequent kept.                                                                                                                                                                                                                                                                                           |
+| `fcj.valueEmbeddings`  | `true`        | Provisional. Also embed the stored values at index time, so a phrase finds a dimension by the meaning of its values (`sneakers` finds the dimension that stores `Athletic Shoes`). A gated source's values are never embedded.                                                                                                                       |
 | `fcj.connect`          | `list`        | Provisional. `list`: one judge call sees every target's best `fcj.listTopK` candidates, grouped by source. `clusters`: candidates are first grouped into at most `fcj.maxClusters` sources whose joins explain the targets together, and the judge picks inside each group.                                                                           |
 | `fcj.listTopK`         | `30`          | Provisional. With `connect: "list"`, candidates per target the judge sees.                                                                                                                                                                                                                                                                           |
 | `fcj.listUnion`        | `30`          | Provisional. With `connect: "list"`, a candidate ranked this high or better in the meaning list or the keyword list alone is also shown to the judge. `0` shows the fused top alone.                                                                                                                                                                 |
@@ -531,7 +530,7 @@ between releases.
 | `fcj.collapseCopies`   | `false`       | Provisional. A field an extension inherits unchanged is searched once, as the same field on the source it extends, but only when both sources hold the same rows.                                                                                                                                                                                      |
 | `fcj.splitBundles`     | `false`       | Provisional. A target whose `search_text` is a list ("state, city and zip of the venue") is also searched item by item. `fcj.splitItemPicks` (`0`, no cap) caps the picks kept per item.                                                                                                                                                              |
 | `fcj.dateRange`        | `false`       | Provisional. When the request names a date or time range, add up to two date or time fields of each source a returned measure sits on.                                                                                                                                                                                                               |
-| `fcj.questions`        | `auto`        | Index-time questions written by the LLM for each field, embedded as extra rows. As for `sourceSummary.enabled`. `fcj.questionsPrompt` (`questions`, `phrases` or `values`) picks the wording (`values` shows a field's stored values to the LLM only under `egress.preset: "full"`) and `fcj.questionsPerNode` (`3`) the count.                                                                                                              |
+| `fcj.questions`        | `auto`        | Index-time questions written by the LLM for each field, embedded as extra rows. As for `sourceSummary.enabled`. `fcj.questionsPrompt` (`questions`, `phrases` or `values`) picks the wording (`values` shows a field's stored values to the LLM) and `fcj.questionsPerNode` (`3`) the count.                                                                                                              |
 | `fcj.docParts`         | `auto`        | Index-time split of long docs by the LLM; by rules otherwise. As for `fcj.questions`.                                                                                                                                                                                                                                                                |
 | `fcj.judgeLlm`         | none          | Provisional. Send the judge's calls to this model (`{ "model": "..." }`) instead of `retrieval.llm.model`. Only the model name: the provider, host and key are always the server's `retrieval.llm`.                                                                                                                                                   |
 | `fcj.maxClusters`      | `3`           | With `connect: "clusters"`, most source groups (and so judge calls) per request.                                                                                                                                                                                                                                                                     |
@@ -542,17 +541,15 @@ between releases.
 
 The judge is one chat call per request (one per group with `connect: "clusters"`). It sees the targets
 verbatim, and for each target the candidates with their kind, type, source, route and full doc
-text, rules included. It never sees an access predicate or a field's code (unless `egress.preset` is
-`full`). A target the judge picks nothing for comes back in `unresolved_targets`, which is the agent's
+text, rules included. It never sees an access predicate or a field's code. A target the judge picks nothing for comes back in `unresolved_targets`, which is the agent's
 signal to ask or to search again.
 
 For a `dimensional_value` target, each candidate field says how its stored values matched (exact, words,
-typo or meaning) and their scores. Under the `full` preset it also lists the values themselves, each with
-a label, and the judge names the ones it means. A listed value it does not name is left out of the
+typo or meaning), their scores, and the values themselves, each with a label, and the judge names the
+ones it means. A listed value it does not name is left out of the
 answer; a value that holds a named one as whole words, and a value past the five it was shown, stay. It
 picks nothing when no listed value is the target's value or a form of it (a typo, a different case, an
-abbreviation, a synonym). Below `full` it never sees a value, so it names none and every matched value is
-returned.
+abbreviation, a synonym).
 
 **A search has 90 seconds.** One that runs out of time answers every target in `unresolved_targets`, with a
 warning that names a narrower scope to retry with (`scopes[].source`, and for a value
@@ -664,8 +661,9 @@ still be offered for it. Its card then carries no `values`, and a warning says i
 ungated sources, and the value lists a doc gives ("one of DTC, B2B, Amazon"), once, through the same
 call `execute_query` uses, and matches a phrase against them: the same string, the same after case,
 accents, punctuation and spacing, a partial phrase, and a typo (one edit in a word of 4 or 5 letters,
-two in a longer one). With an embedding provider, `fcj.valueEmbeddings` and `egress.preset: "full"` they
-are also matched by meaning; under the `default` preset no stored value leaves the server. A dimension no one tagged `#(index)` has no stored values to match.
+two in a longer one). With an embedding provider they are also matched by meaning: tagging a dimension
+`#(index)` is what allows its values to be sent to that provider, and `fcj.valueEmbeddings: false` keeps
+them on the server. A dimension no one tagged `#(index)` has no stored values to match.
 
 Reads run one at a time, at most 60 seconds each and 5 minutes for the whole build. A read the server
 refuses because it is at `PUBLISHER_MAX_CONCURRENT_QUERIES`, one that times out, and one the 5 minutes did

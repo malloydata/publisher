@@ -48,7 +48,7 @@ import {
    resolveDocParts,
    type DocParts,
 } from "./doc_parts";
-import { getDimensionValueSettings, getEgressPreset } from "../config";
+import { getDimensionValueSettings } from "../config";
 import { KeywordIndex } from "./keyword";
 import {
    promptShowsValues,
@@ -148,18 +148,15 @@ interface FcjLlm {
 
 /**
  * The values each dimension's question line shows (the `values` wording): the
- * list its doc gives, then, with `storedValues`, its most frequent stored
- * values, distinct, at most QUESTION_LINE_MAX_VALUES. Dimensions with neither
- * are absent. Stored values are data, so the build passes `storedValues` only
- * under the `full` egress preset; a doc's list is model text and always shown.
+ * list its doc gives, then its most frequent stored values, distinct, at most
+ * QUESTION_LINE_MAX_VALUES. Dimensions with neither are absent.
  */
 function questionLineValues(
    index: ValueIndex,
    parts: ReadonlyMap<string, DocParts>,
-   storedValues = true,
 ): Map<string, string[]> {
    const stored = new Map<string, Array<{ value: string; count: number }>>();
-   for (const v of storedValues ? index.values : []) {
+   for (const v of index.values) {
       if (v.origin !== "data") continue;
       const list = stored.get(v.dimension) ?? [];
       list.push({ value: v.value, count: v.count });
@@ -328,11 +325,8 @@ export async function buildFcjIndex(args: {
    // Questions.
    const perNode = settings.questionsPerNode ?? QUESTIONS_PER_NODE;
    const variant = settings.questionsPrompt ?? "questions";
-   // Stored values leave the server (to the LLM here, to the embedding
-   // provider below) only under the `full` egress preset.
-   const valuesLeave = getEgressPreset() === "full";
    const lineValues = promptShowsValues(variant)
-      ? questionLineValues(values, parts, valuesLeave)
+      ? questionLineValues(values, parts)
       : undefined;
    const questions = new Map<string, string[]>();
    const qLlm = llmFor(settings.questions);
@@ -451,7 +445,6 @@ export async function buildFcjIndex(args: {
       packageName,
       values,
       enabled: settings.values && settings.valueEmbeddings,
-      egressFull: valuesLeave,
       ...(args.shouldStop ? { shouldStop: args.shouldStop } : {}),
    });
 
@@ -540,8 +533,6 @@ async function embedValues(args: {
    packageName: string;
    values: ValueIndex;
    enabled: boolean;
-   /** Whether `egress.preset` is `full`: values are data, embedded only then. */
-   egressFull: boolean;
    shouldStop?: () => boolean;
 }): Promise<FcjBuildReport["valueVectors"]> {
    const started = Date.now();
@@ -556,13 +547,6 @@ async function embedValues(args: {
    };
    if (!args.enabled) {
       return { ...report, skipped: "retrieval.fcj.valueEmbeddings is false" };
-   }
-   if (!args.egressFull) {
-      return {
-         ...report,
-         skipped:
-            'egress.preset is "default": stored values are sent to the embedding provider only under "full"',
-      };
    }
    if (!args.provider) {
       return { ...report, skipped: "no embedding provider is configured" };
