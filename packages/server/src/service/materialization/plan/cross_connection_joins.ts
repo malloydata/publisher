@@ -48,6 +48,7 @@ import {
    isName,
    lexAll,
    offsetOf,
+   statementHead,
    statementStarts,
    type Token,
 } from "../malloy_lexer";
@@ -286,7 +287,8 @@ function statementsOf(text: string, tokens: readonly Token[]): Statement[] {
             tokens[j + 1].start === t.end &&
             tokens[j + 2]?.text !== ":"
          ) {
-            end = t.start;
+            // The next statement's access label is its own (statementHead).
+            end = statementHead(tokens, j).start;
             break;
          }
       }
@@ -385,13 +387,15 @@ export function definitionCutAt(text: string, offset: number): Cut | undefined {
       ...(declaration && declaration !== name ? { declaration } : {}),
    };
    if (defs.length === 1) {
-      // The whole statement, with the annotation lines written on it.
-      const before = tokens.filter((t) => t.end <= stmt.keyword.start);
+      // The whole statement, with its access label and the annotation lines
+      // written on it.
+      const head = statementHead(tokens, tokens.indexOf(stmt.keyword));
+      const before = tokens.filter((t) => t.end <= head.start);
       return {
          start: annotationsStart(
             text,
             before[before.length - 1]?.end ?? 0,
-            stmt.keyword.start,
+            head.start,
          ),
          end: stmtLast.end,
          left,

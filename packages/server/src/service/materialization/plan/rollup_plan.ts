@@ -154,6 +154,12 @@ export interface RollupVariantPlan extends RollupPlan {
     * reads the rollup only when each is fixed at every aggregating level.
     */
    fanOutDimensions: string[];
+   /**
+    * Whether the base declares a row-level gate (`#(access_filter)` or
+    * `#(authorize)`): the join-to-rollup leg (A7) reads the rollup through a
+    * join, where no gate is grafted, so it declines such a base.
+    */
+   baseGated: boolean;
 }
 
 /**
@@ -580,7 +586,7 @@ export function planSourceRollups(
       }
       // Row 1 (CONTRACT): a query on a gated source is never read from a
       // rollup, so a rollup of one would be built for nothing.
-      if (gate.gated && !(ctx.readUnderGates ?? rollupsReadUnderGates())) {
+      if (gate.declared && !(ctx.readUnderGates ?? rollupsReadUnderGates())) {
          refused.push(
             unservable(
                "preaggregate-access-filter",
@@ -743,6 +749,7 @@ export function planSourceRollups(
                reaggregate: reaggregateOf(m.partials[0]?.leaf),
             })),
             rollupMeasures: sorted,
+            baseGated: gate.declared,
             fanOutDimensions: decl.grain.filter((g) => {
                const usage = joinUsage.get(g);
                if (usage === undefined) return joinUsage.has(g);
@@ -819,14 +826,14 @@ function reaggregateOf(leaf: AggregateLeaf | undefined): Reaggregate {
 function gateFieldNames(
    def: SourceLike,
    byName: ReadonlyMap<string, FieldLike>,
-): { gated: boolean; dimensions: string[]; unkeepable: string[] } {
+): { dimensions: string[]; unkeepable: string[]; declared: boolean } {
    const texts = annotationTexts(def.annotations) ?? [];
    const dimensions = new Set<string>();
    const unkeepable = new Set<string>();
-   let gated = false;
+   let declared = false;
    for (const route of ["access_filter", "authorize"]) {
       for (const payload of payloadsOnRoute(texts, route)) {
-         gated = true;
+         declared = true;
          for (const id of malloyIdentifiers(payload)) {
             const f = byName.get(id);
             if (!f) continue;
@@ -836,9 +843,9 @@ function gateFieldNames(
       }
    }
    return {
-      gated,
       dimensions: [...dimensions].sort(byCodepoint),
       unkeepable: [...unkeepable].sort(byCodepoint),
+      declared,
    };
 }
 

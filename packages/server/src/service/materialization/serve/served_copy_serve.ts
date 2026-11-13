@@ -44,9 +44,10 @@ import {
 } from "../../model_runtime";
 import { SourceMap } from "../plan/source_map";
 import { givenReadingFilterTerms } from "../plan/persist_dynamic_terms";
-import type {
-   MaterializePair,
-   MaterializePlan,
+import {
+   hiddenAccess,
+   type MaterializePair,
+   type MaterializePlan,
 } from "../plan/build_file_generator";
 import { rollingWindowsOf } from "../plan/rolling_window";
 import { evaluateManifestFreshness } from "../run/freshness";
@@ -818,8 +819,9 @@ export class ServedCopyServe {
       let inlinedJoins: InlinedJoin[] = [];
       if (plan) {
          // Exactly what the build stored: the plan's columns (the source's
-         // public atomic dimensions, computed ones too, each under its own
-         // name), typed as stored, with each field's annotations.
+         // atomic dimensions, computed ones too, each under its own name, a
+         // hidden one with its access modifier), typed as stored, with each
+         // field's annotations.
          const stored = new Map(binding.schema.map((c) => [c.name, c.type]));
          // Each field's class as the compile of record reads it, so a stored
          // column whose field infers its class (a dimension computed from a
@@ -849,6 +851,7 @@ export class ServedCopyServe {
                type,
                ...(notes.length > 0 ? { notes } : {}),
                ...timeframeOf(c.dimension),
+               ...(c.access ? { access: c.access } : {}),
             });
          }
          const joined = inlinedJoinsOf(plan, def.fields, stored, lineage);
@@ -1291,10 +1294,35 @@ export class ServedCopyServe {
                   .filter((l) => chain.has(l.declaration ?? l.name))
                   .map((l) => l.name),
             );
+            // A private field the table does not hold (one private on a
+            // source this one extends, which the build never selects, P3)
+            // cannot be read by the source, its extensions or a caller, so
+            // its absence changes no answer: a served text that read it
+            // would not compile.
+            const unreadable = privateFieldNames(c.reroot.authorDef);
             return [...author].some(
-               (name) => !served.has(name) && !excused.has(name),
+               (name) =>
+                  !served.has(name) &&
+                  !excused.has(name) &&
+                  !unreadable.has(name),
             );
          });
+         // Fail closed on access (P3): every field the re-rooted source has
+         // must be exactly as hidden as on the author's, so a stored private
+         // or internal column never becomes selectable. One that is not is
+         // not carried, and its source is left as written.
+         const exposed = candidates.filter(
+            (c) =>
+               !lost.includes(c) &&
+               !keepsAccess(
+                  c.reroot.authorDef,
+                  // A source the served compile holds only as a join
+                  // (#6643) is read from that join, as the given-term
+                  // check below reads it.
+                  servedDefOf(servedMap, c.reroot.sourceID),
+               ),
+         );
+         lost.push(...exposed);
          // Fail closed on tenant isolation: every `where:` term that reads a
          // given (re-applied per caller at read, never in the table) must be
          // applied by the served source too. One written where the re-root
@@ -1718,6 +1746,43 @@ export function keepsGivenTerms(author: unknown, served: unknown): boolean {
 }
 
 /**
+ * Whether every field of the served source has the access modifier the
+ * author's field of that name has (P3): `public` and none read alike, and a
+ * modifier it does not know reads as private, so it never matches a public
+ * one. A field only the served copy has (a timeframe column's internal
+ * rename, `order_month__stored`) is the re-root's own and must not be public,
+ * so a stored column never surfaces under a name the author's source lacks.
+ * Unreadable sources fail closed.
+ */
+export function keepsAccess(author: unknown, served: unknown): boolean {
+   const accessByName = (def: unknown) => {
+      const fields = (def as { fields?: unknown } | undefined)?.fields;
+      if (!Array.isArray(fields)) return undefined;
+      const out = new Map<string, string>();
+      for (const f of fields as {
+         name?: unknown;
+         as?: unknown;
+         accessModifier?: unknown;
+      }[]) {
+         const name = typeof f.as === "string" ? f.as : f.name;
+         if (typeof name !== "string") continue;
+         out.set(name, hiddenAccess(f) ?? "public");
+      }
+      return out;
+   };
+   const before = accessByName(author);
+   const after = accessByName(served);
+   if (!before || !after) return false;
+   for (const [name, access] of after) {
+      const was = before.get(name);
+      if (was === undefined ? access === "public" : was !== access) {
+         return false;
+      }
+   }
+   return true;
+}
+
+/**
  * A declaration's definition in the served copy's compile: its node, or, for
  * a source this model reaches only as a join (an index that imports the file
  * joining it, not the file declaring it, #6643), the joined definition a join
@@ -1752,6 +1817,21 @@ function modelFieldNames(map: SourceMap): string[] {
       for (const n of fieldNames(node.def)) names.add(n);
    }
    return [...names];
+}
+
+/** The names of a compiled source's private fields. */
+function privateFieldNames(def: unknown): Set<string> {
+   const fields = (
+      def as {
+         fields?: { name?: unknown; as?: unknown; accessModifier?: unknown }[];
+      }
+   )?.fields;
+   return new Set(
+      (fields ?? [])
+         .filter((f) => hiddenAccess(f) === "private")
+         .map((f) => (typeof f.as === "string" ? f.as : f.name))
+         .filter((n): n is string => typeof n === "string"),
+   );
 }
 
 /** The names of a compiled source's fields. */

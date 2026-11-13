@@ -403,7 +403,9 @@ function verdictFor(
 
    // `#(materialize)` is served by the served copy alone (never the serve
    // shape, which drops its bindings, nor the colocated manifest, which Malloy
-   // never substitutes for it), so the served copy decides its verdict.
+   // never substitutes for it), so the served copy decides its verdict. A
+   // colocated one is refused at plan time (`materialize-not-built`), so the
+   // colocated branch below only answers a plan made before that refusal.
    const materialized = facts.materialize?.(sourceID);
    if (materialized !== undefined && tier === "colocated") {
       return live(

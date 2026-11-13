@@ -82,14 +82,9 @@ const QUERIES = [
    ["the ancestor's view through the join", "run: long_flights -> by_carrier"],
 ] as const;
 
+// `storage=` only: a colocated `#(materialize)` is not built
+// (`COLOCATED_NOT_SERVED`, #1666), so there is no colocated extension table.
 for (const [label, storage, parentInline, problems] of [
-   ["colocated, the parent inlining it too", "", 'inline=["carriers"] ', []],
-   [
-      "colocated, the parent not inlining it",
-      "",
-      "",
-      [["flights", "cross_connection_join", "carriers"]],
-   ],
    [
       "storage=, the parent inlining it too",
       'storage="lake" ',
@@ -130,15 +125,13 @@ for (const [label, storage, parentInline, problems] of [
          );
       });
 
-      if (storage) {
-         // The stored-chain build cannot read the joined source over the
-         // parent's stored table (the join's target is not in it), so the
-         // extension builds over the raw chain, which is correct.
-         it("builds the extension over the raw chain", () => {
-            expect(fixture.storedBuildSQL.long_flights).toBeUndefined();
-            expect(fixture.tableIds.long_flights).toBeDefined();
-         });
-      }
+      // The stored-chain build cannot read the joined source over the
+      // parent's stored table (the join's target is not in it), so the
+      // extension builds over the raw chain, which is correct.
+      it("builds the extension over the raw chain", () => {
+         expect(fixture.storedBuildSQL.long_flights).toBeUndefined();
+         expect(fixture.tableIds.long_flights).toBeDefined();
+      });
 
       for (const [name, malloy] of QUERIES) {
          it(`serves ${name} from the extension's table`, async () => {

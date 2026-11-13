@@ -22,6 +22,7 @@
 import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
 import {
    fieldJoinUsage,
+   filterJoinReads,
    inferredExtendedSource,
    joinedSourceReads,
    nextSourceInChain,
@@ -247,6 +248,17 @@ export class SourceMap {
    fieldJoinsOf(sourceID: string): Map<string, FieldJoinReads | undefined> {
       const node = this.nodesById.get(sourceID);
       return node ? fieldJoinUsage(node.def) : new Map();
+   }
+
+   /**
+    * The joins a declaration's own `where:` reads (see {@link filterJoinReads});
+    * undefined when unknown.
+    */
+   filterJoinsOf(sourceID: string): FieldJoinReads | undefined {
+      const node = this.nodesById.get(sourceID);
+      return node
+         ? filterJoinReads(node.def)
+         : { joins: new Set(), nested: false };
    }
 
    /**

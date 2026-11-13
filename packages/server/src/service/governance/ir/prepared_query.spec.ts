@@ -9,10 +9,12 @@
 import { describe, expect, it } from "bun:test";
 import type { ModelDef } from "@malloydata/malloy";
 import {
+   aggregateWrittenThroughJoin,
    joinGrainAggregatePaths,
    namedViewsRead,
    preparedQueryView,
    probeFilterList,
+   queryFieldUsagePaths,
    resolveStructRef,
    resolveStructRefSource,
    sqlTargetRef,
@@ -207,5 +209,139 @@ describe("namedViewsRead", () => {
 
    it("reads a view that nests itself once", () => {
       expect(namedViewsRead(view(), struct, "loop")).toEqual(["loop"]);
+   });
+});
+
+describe("join-to-rollup readers (A7)", () => {
+   const view = (stage: unknown) =>
+      preparedQueryView({ _query: { pipeline: [stage] } });
+   const field = (...path: string[]) => ({ node: "field", path });
+   const parent = {
+      fields: [
+         {
+            name: "tot",
+            expressionType: "aggregate",
+            e: field("segments", "seg_miles"),
+         },
+         {
+            name: "bad",
+            expressionType: "aggregate",
+            e: {
+               node: "aggregate",
+               function: "count",
+               e: {},
+               structPath: ["segments"],
+            },
+         },
+         {
+            name: "worse",
+            expressionType: "aggregate",
+            e: {
+               node: "*",
+               kids: { left: field("bad"), right: { node: "numberLiteral" } },
+            },
+         },
+         {
+            name: "fc",
+            expressionType: "aggregate",
+            e: { node: "aggregate", function: "count", e: {} },
+         },
+      ],
+   };
+
+   it("queryFieldUsagePaths reads every expanded path, nests included, and fails closed", () => {
+      const v = view({
+         expandedFieldUsage: [
+            { path: ["segments", "seg_miles"] },
+            { path: ["id"] },
+         ],
+         queryFields: [
+            {
+               type: "turtle",
+               pipeline: [{ expandedFieldUsage: [{ path: ["carrier"] }] }],
+            },
+         ],
+      });
+      expect(queryFieldUsagePaths(v)).toEqual([
+         ["segments", "seg_miles"],
+         ["id"],
+         ["carrier"],
+      ]);
+      expect(
+         queryFieldUsagePaths(view({ expandedFieldUsage: [{ path: [1] }] })),
+      ).toBeUndefined();
+   });
+
+   it("aggregateWrittenThroughJoin finds an aggregate the query writes over the join", () => {
+      const at = view({
+         queryFields: [
+            {
+               name: "c",
+               e: {
+                  node: "aggregate",
+                  function: "count",
+                  e: {},
+                  structPath: ["segments"],
+               },
+            },
+         ],
+         expandedFieldUsage: [],
+      });
+      expect(aggregateWrittenThroughJoin(at, parent, "segments")).toBe("c");
+      const over = view({
+         queryFields: [
+            {
+               name: "d",
+               e: {
+                  node: "aggregate",
+                  function: "distinct",
+                  e: field("segments", "flight_id"),
+               },
+            },
+         ],
+         expandedFieldUsage: [],
+      });
+      expect(aggregateWrittenThroughJoin(over, parent, "segments")).toBe("d");
+      // A count over the source's own rows is not through the join.
+      const own = view({
+         queryFields: [
+            { name: "n", e: { node: "aggregate", function: "count", e: {} } },
+         ],
+         expandedFieldUsage: [],
+      });
+      expect(
+         aggregateWrittenThroughJoin(own, parent, "segments"),
+      ).toBeUndefined();
+   });
+
+   it("aggregateWrittenThroughJoin follows the source's measures the query reads", () => {
+      const reads = (name: string) =>
+         view({
+            queryFields: [{ type: "fieldref", path: [name] }],
+            expandedFieldUsage: [{ path: [name] }],
+         });
+      expect(
+         aggregateWrittenThroughJoin(reads("tot"), parent, "segments"),
+      ).toBeUndefined();
+      expect(
+         aggregateWrittenThroughJoin(reads("fc"), parent, "segments"),
+      ).toBeUndefined();
+      expect(
+         aggregateWrittenThroughJoin(reads("bad"), parent, "segments"),
+      ).toBe("bad");
+      expect(
+         aggregateWrittenThroughJoin(reads("worse"), parent, "segments"),
+      ).toBe("worse");
+      // A joined measure read by name is the joined source's own.
+      const named = view({
+         queryFields: [{ type: "fieldref", path: ["segments", "seg_miles"] }],
+         expandedFieldUsage: [
+            { path: ["segments", "seg_miles"] },
+            { path: ["segments"], uniqueKeyRequirement: { isCount: false } },
+         ],
+      });
+      expect(
+         aggregateWrittenThroughJoin(named, parent, "segments"),
+      ).toBeUndefined();
    });
 });

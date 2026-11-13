@@ -16,25 +16,32 @@
  * incremental and hosted builds all apply unchanged, and `addressing.ts`
  * addresses the generated target like any other persist source.
  *
- * What is stored: every public atomic dimension of `src`, each under its own
- * name, computed or not (decided 2026-11-12), so the stored table carries the
+ * What is stored: every atomic dimension of `src`, each under its own name,
+ * computed or not (decided 2026-11-12), so the stored table carries the
  * author's names and an outside reader sees `order_month`, not a suffixed
  * column. The served copy (the re-root rewriter) drops a stored computed
  * dimension's definition, so the column stands in for it, and carries the
  * dimension's annotations onto the served `type:` declaration. Measures, views
  * and joins are not stored: the served copy keeps them as written, re-bound
- * over the stored columns. A field that is not public (`internal`, `private`)
- * is never stored, matching today's narrowing of a `storage=` table to the
- * public surface.
+ * over the stored columns.
+ *
+ * Hidden fields (P3, decided 2026-11-12). A query cannot select a `private`
+ * or `internal` field, so the source's own and its inherited `internal`
+ * fields are built from a copy of its file with its own access modifiers
+ * lifted ({@link buildCopyText}), and stored under their own names, each
+ * column marked with its `access`; `materialize_compile.ts` keeps only the
+ * ones the compiled copy lets the build select, so a field private on a
+ * source it extends, which the source cannot read, is never stored, nor is
+ * an `except:`ed field. The served copy writes the modifiers again, so a
+ * caller cannot select a stored hidden column.
  *
  * The table: named after the author's source (`src`), or the declaration's
  * `name=`. `src__mat` is only the generated build source's internal name in
  * the companion model. Without a `name=`, a `storage=` source's table defaults
  * to the source's own name (the destination is Publisher's, and the existing
- * collision checks refuse two sources on one table). A colocated source, built
- * into the author's own warehouse, must name its table: its default would be
- * the source's own name, which for a source over `conn.table('orders')` is
- * very often the very table it reads, and the build would replace it.
+ * collision checks refuse two sources on one table). A colocated source (no
+ * `storage=`) is not built at all until the served copy can serve it
+ * ({@link COLOCATED_NOT_SERVED}); v1's colocated `#@ persist` is unchanged.
  *
  * Joins (phase 3 PR 4). A join is a reference by default: it is not stored,
  * the served copy keeps it as written, and it reads the joined source (its own
@@ -127,8 +134,9 @@
  * sources then sit in level files (`<model>.<n>.materialize-level.malloy`),
  * one per depth of the chain, which the companion imports, since a build
  * copy imports its parent's level and the companion cannot be imported by
- * what it imports. Only a pair on one tier (both colocated, or both in one
- * `storage=` destination) with no incremental keys chains. A `storage=`
+ * what it imports. Only a pair in one `storage=` destination with no
+ * incremental keys chains (a colocated `#(materialize)` is not built at all,
+ * {@link COLOCATED_NOT_SERVED}, so no colocated pair is planned). A `storage=`
  * extension's warehouse cannot read its parent's stored table, so its build
  * runs in the destination from a text of its own ({@link storedChainText},
  * {@link extensionOverStoredModel}): the parent's build source declared as
@@ -157,11 +165,14 @@ import {
 import { annotationValue, identifier, stringLiteral } from "../../malloy_text";
 import { parseRouteTag, routeHasKey } from "../../motly";
 import {
+   accessLiftEdits,
    afterModelHeader,
+   applyEdits,
    declarationSpans,
    documentFlagLines,
    dropDimensions,
    inverseRenameBlocks,
+   type TextEdit,
 } from "../declaration_text";
 import { offsetOf } from "../malloy_lexer";
 import {
@@ -222,6 +233,14 @@ const CARRIED_GROUPS = ["freshness", "queryMetadata"] as const;
 /** A property name inside a carried group that the persist line can hold bare. */
 const PLAIN_PROPERTY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/**
+ * Why a colocated `#(materialize)` (one with no `storage=`) is not built: the
+ * served copy reads only a storage destination, so the table would be built
+ * and never served.
+ */
+export const COLOCATED_NOT_SERVED =
+   "colocated #(materialize) is not served yet; use storage= or #@ persist";
+
 /** A table name `#@ persist name=` accepts (see persist_annotation_validation.ts). */
 const PLAIN_TABLE_NAME = /^[A-Za-z0-9_-]+$/;
 
@@ -279,6 +298,14 @@ export interface MaterializeColumn {
     * the stored column stands in) or reads it from its table.
     */
    computed: boolean;
+   /**
+    * The access modifier the author's source gives the field, when it is not
+    * public (P3). The build reads a copy of the source with its own access
+    * modifiers lifted so it can select the field (see
+    * {@link buildCopyText}); the served copy keeps the modifier, so a caller
+    * still cannot select it.
+    */
+   access?: "private" | "internal";
    /**
     * For a column of an inlined join's joined source: the join's name, with
     * {@link dimension} the joined source's field. The served copy declares
@@ -377,7 +404,11 @@ export interface MaterializePlan {
     * again over the stored table at every read. Absent when it has none.
     */
    readTimeTerms?: MaterializeReadTimeTerm[];
-   /** The declaration's range in its declaring file, when it has given terms. */
+   /**
+    * The declaration's range in its declaring file, when it has given terms
+    * or hidden columns: where its build copy takes the terms out and lifts
+    * its own access modifiers.
+    */
    declaration?: TermUse;
    /** The givens its given-reading terms read, for the generated file to import. */
    givenDeclarations?: MaterializeGivenDeclaration[];
@@ -418,7 +449,9 @@ export interface MaterializeParent {
    /**
     * For a `storage=` pair, set with the build copy: the text the extension's
     * build compiles in its destination over the parent's stored table
-    * ({@link extensionOverStoredModel}). Absent for a colocated pair.
+    * ({@link extensionOverStoredModel}). Absent until the build copy is
+    * written; every chained pair is a `storage=` pair, since a colocated
+    * `#(materialize)` is not built ({@link COLOCATED_NOT_SERVED}).
     */
    overStored?: StoredChain;
 }
@@ -491,13 +524,23 @@ const ATOMIC_TYPES = new Set([
    "sql native",
 ]);
 
-/** Fails closed, as `isHidden` in preaggregation_synthesis.ts does. */
-function isHidden(field: FieldLike): boolean {
-   return field.accessModifier != null && field.accessModifier !== "public";
+/**
+ * A compiled field's access modifier when it is not public, or undefined. Fails
+ * closed, as `isHidden` in preaggregation_synthesis.ts does: a modifier it does
+ * not know reads as private. The one reader of `accessModifier` for P3: the
+ * plan, the build copy's selectable set and the served copy's access check.
+ */
+export function hiddenAccess(field: {
+   accessModifier?: unknown;
+}): "private" | "internal" | undefined {
+   if (field.accessModifier == null || field.accessModifier === "public") {
+      return undefined;
+   }
+   return field.accessModifier === "internal" ? "internal" : "private";
 }
 
 /** A Malloy `sourceID`'s declared name and declaring file, or undefined. */
-function splitSourceID(
+export function splitSourceID(
    sourceID: string,
 ): { name: string; url: string } | undefined {
    const match = /^(.+)@([a-z][a-z0-9+.-]*:.*)$/i.exec(sourceID);
@@ -659,7 +702,10 @@ function carriedPersistKeys(
    return { persist };
 }
 
-/** Whether a compiled field is a public atomic dimension a table can hold. */
+/**
+ * A compiled field's name when it is an atomic dimension a table can hold,
+ * public or not (see {@link hiddenAccess}).
+ */
 function storableDimension(field: FieldLike): string | undefined {
    const dimension =
       typeof field.as === "string"
@@ -679,7 +725,6 @@ function storableDimension(field: FieldLike): string | undefined {
    ) {
       return undefined;
    }
-   if (isHidden(field)) return undefined;
    return dimension;
 }
 
@@ -687,11 +732,11 @@ function storableDimension(field: FieldLike): string | undefined {
  * Whether a compiled field is a public array its table can hold as it is: a
  * persisted query's `nest:` (a repeated record) or an array column the source
  * reads, neither computed. A declared `join_many:` is the joined source's
- * type, never `array`, so it is not one.
+ * type, never `array`, so it is not one. A hidden array is not stored.
  */
 function storableArray(field: FieldLike): string | undefined {
    if (field.type !== "array" || field.e !== undefined) return undefined;
-   if (isHidden(field)) return undefined;
+   if (hiddenAccess(field)) return undefined;
    const dimension =
       typeof field.as === "string"
          ? field.as
@@ -702,12 +747,19 @@ function storableArray(field: FieldLike): string | undefined {
 }
 
 /**
- * The stored columns of a source: its public atomic dimensions and arrays
- * ({@link storableArray}), less any
- * whose value reads through a join that is not inlined (a reference join is
- * read at query time, so what reads through it is computed at read). A field
- * whose join usage is unknown is stored only when the source has no join.
- * `inline` names the inlined joins; `joins` comes from the source map.
+ * The stored columns of a source: its atomic dimensions and public arrays
+ * ({@link storableArray}), less any whose value reads through a join that is
+ * not inlined (a reference join is read at query time, so what reads through
+ * it is computed at read). A field whose join usage is unknown is stored only
+ * when the source has no join. `inline` names the inlined joins; `joins` comes
+ * from the source map.
+ *
+ * A private or internal dimension is a candidate too, marked with its
+ * `access` (P3): whether the build can select it is settled on the build
+ * copy (`materialize_compile.ts`), which drops the ones it cannot, such as a
+ * field private on a source this one extends. One with a timeframe is not
+ * stored: the served copy restores a timeframe by redefining the field
+ * publicly, which would expose it.
  */
 export function materializeColumns(
    def: SourceDefLike,
@@ -729,6 +781,13 @@ export function materializeColumns(
       const dimension = storableDimension(field);
       if (dimension === undefined) continue;
       if (perRead.has(dimension)) continue;
+      const access = hiddenAccess(field);
+      if (
+         access &&
+         typeof (field as { timeframe?: unknown }).timeframe === "string"
+      ) {
+         continue;
+      }
       const computed = field.e !== undefined;
       if (computed && options.joinReads) {
          const reads = options.joinReads.get(dimension);
@@ -745,6 +804,7 @@ export function materializeColumns(
          dimension,
          column: dimension,
          computed,
+         ...(access ? { access } : {}),
       });
    }
    return out;
@@ -764,7 +824,7 @@ function columnType(def: SourceDefLike, dimension: string): string {
 
 /**
  * The columns of one inlined join's joined source: its public atomic
- * dimensions that read no join of their own (one hop), each stored as
+ * dimensions (never a hidden one) that read no join of their own (one hop), each stored as
  * `<join>__<field>`.
  */
 function inlinedJoinColumns(
@@ -781,6 +841,9 @@ function inlinedJoinColumns(
       const field = raw as FieldLike;
       const dimension = storableDimension(field);
       if (dimension === undefined) continue;
+      // The joined source's exposed dimensions only: its hidden fields are
+      // its own, not this source's to store.
+      if (hiddenAccess(field)) continue;
       if (perRead.has(dimension)) continue;
       if (field.e !== undefined) {
          const r = reads.get(dimension);
@@ -947,6 +1010,13 @@ function rangeWithin(inner: MalloyRange, outer: MalloyRange): boolean {
    return before(outer.start, inner.start) && before(inner.end, outer.end);
 }
 
+/** `{ declaration }` when there is one, else nothing. */
+function withDeclaration(declaration: TermUse | undefined): {
+   declaration?: TermUse;
+} {
+   return declaration ? { declaration } : {};
+}
+
 /** A compiled declaration's location, or undefined when it has none. */
 function declarationOf(def: SourceDefLike): TermUse | undefined {
    const location = def.location as
@@ -1035,7 +1105,7 @@ export function readTimeTermsOf(
             ok: false,
             reason:
                `${shown} reads a given and a field the table does not store ` +
-               `(only public dimensions of this source are stored), so it ` +
+               `(only dimensions of this source are stored), so it ` +
                `could not be re-applied over the table at read`,
          };
       }
@@ -1216,6 +1286,26 @@ export function planModelMaterialize(
          });
          continue;
       }
+      // A private or internal join cannot be read by the generated build
+      // (its query selects `<join>.<field>`), and the served record would not
+      // carry its access: refused here, so this source serves live and the
+      // companion still compiles for every other source in the model.
+      const hiddenJoin = inline.find((j) =>
+         (def.fields ?? []).some((raw) => {
+            const f = raw as FieldLike;
+            return (f.as ?? f.name) === j && hiddenAccess(f) !== undefined;
+         }),
+      );
+      if (hiddenJoin !== undefined) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason:
+               `inline= names ${quotedName(hiddenJoin)}, a join that is not ` +
+               "public, which cannot be inlined yet",
+         });
+         continue;
+      }
       // An inlined join_many is a pair table (P5): at most one per source.
       const fanned = inline.filter(
          (j) => joins.find((x) => x.name === j)?.relationship === "many",
@@ -1257,7 +1347,7 @@ export function planModelMaterialize(
          refused.push({
             sourceName: name,
             sourceID: def.sourceID,
-            reason: "the source has no public dimension to store",
+            reason: "the source has no dimension to store",
          });
          continue;
       }
@@ -1293,21 +1383,22 @@ export function planModelMaterialize(
          continue;
       }
       const { persist } = carried;
+      // Colocated (no `storage=`): the served copy reads only a storage
+      // destination, so a table built into the source's own warehouse would
+      // be built and never read. Not built until it can be served; a v1
+      // `#@ persist` is colocated as before.
+      if (persist.storage === undefined) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: COLOCATED_NOT_SERVED,
+         });
+         continue;
+      }
       // A source is planned in the model that declares it (see `declaredHere`),
       // so its name here is the name its author gave it.
       const tableName = name;
       if (persist.name === undefined) {
-         if (persist.storage === undefined) {
-            refused.push({
-               sourceName: name,
-               sourceID: def.sourceID,
-               reason:
-                  "a #(materialize) source built into its own warehouse needs name=: " +
-                  `without one its table would be \`${tableName}\`, which may be the very ` +
-                  "table it reads",
-            });
-            continue;
-         }
          if (!PLAIN_TABLE_NAME.test(tableName)) {
             refused.push({
                sourceName: name,
@@ -1366,7 +1457,9 @@ export function planModelMaterialize(
                  declaration: readTime.declaration,
                  givenDeclarations: readTime.givenDeclarations,
               }
-            : {}),
+            : columns.some((c) => c.access)
+              ? withDeclaration(declarationOf(def))
+              : {}),
          ...(inline.length > 0 ? { inline } : {}),
          ...(uniquenessChecks.length > 0 ? { uniquenessChecks } : {}),
          ...(pair ? { pair } : {}),
@@ -1390,8 +1483,9 @@ const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key", "partition"];
  * the chain, reached through `extend` and renames only (a query-shaped hop
  * starts a new segment, which the build cannot re-root on a table), declared
  * in the same file (the build copy re-roots it in that file's text), as is
- * every declaration between them (`path`). Both must be on one tier (both
- * colocated, or both `storage=` the same destination), carry no incremental
+ * every declaration between them (`path`). Both must be `storage=` the same
+ * destination (a colocated `#(materialize)` is refused before this, and a
+ * colocated pair never chains), carry no incremental
  * key, and the parent no given-reading `where:` (its build source's own
  * `extend` re-applies that term, which would scope the extension's build to
  * one caller). A plan that does not qualify builds over the raw chain, as
@@ -1424,8 +1518,10 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
       ) {
          continue;
       }
-      // One tier on both sides: colocated, or one storage destination, whose
-      // build reads the parent's table there (see `overStored`).
+      // One storage destination on both sides, whose build reads the
+      // parent's table there (see `overStored`). A colocated plan is refused
+      // before this (COLOCATED_NOT_SERVED); never chained should one reach it.
+      if (plan.persist.storage === undefined) continue;
       if (plan.persist.storage !== parent.persist.storage) continue;
       const incremental = (p: MaterializePlan) =>
          Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));
@@ -1573,6 +1669,13 @@ export function generatedNameOwner(
  * copy's source applies every `where:` but those, or why a term cannot be
  * placed (see {@link termSpans}), which refuses the source rather than guess.
  *
+ * With `liftAccess` (P3), the source's own access modifiers are lifted too
+ * ({@link accessLiftEdits}) and the declaration is wrapped in
+ * `include { public: * }`, which lifts the `internal` fields it inherits, so
+ * the build can select its hidden fields. A field private on a source it
+ * extends stays private, and is never stored. The copy then needs the
+ * `access_modifiers` flag, which its first line adds.
+ *
  * One copy per source, never one for the file: a copy with two sources' terms
  * taken out would let the one source's build read the other (a join to it, a
  * query over it) without that other's term, and store its rows for every
@@ -1589,10 +1692,12 @@ export function buildCopyText(
    text: string,
    plan: MaterializePlan,
    chain?: { parent: MaterializePlan; importFrom: string },
+   options: { liftAccess?: boolean } = {},
 ): { copy: string } | { reason: string } {
-   const edits = copyEdits(text, plan, chain?.parent);
+   const edits = copyEdits(text, plan, chain?.parent, options.liftAccess);
    if ("reason" in edits) return edits;
    let copy = applyEdits(text, edits.edits);
+   if (copy === undefined) return { reason: NOT_FOUND };
    if (chain) {
       const at = afterModelHeader(copy);
       const line = `import { ${identifier(chain.parent.buildSourceName)} } from ${stringLiteral(chain.importFrom)}\n`;
@@ -1601,30 +1706,38 @@ export function buildCopyText(
    return { copy };
 }
 
-/** One splice of a file's text: `[start, end)` replaced by `insert`. */
-interface TextEdit {
-   start: number;
-   end: number;
-   insert: string;
-}
+/** Lifts the `internal` fields a build copy's source inherits (P3). */
+const LIFT_INHERITED = " include { public: * }";
+
+/** The compiler flag `include { … }` needs, as the build copy's first line. */
+const ACCESS_FLAG = "##! experimental.access_modifiers";
+
+const ACCESS_NOT_LIFTED =
+   "the source's declaration could not be read to lift its access " +
+   "modifiers for the build";
 
 /**
  * The edits {@link buildCopyText} makes to `text`: the plan's given-reading
- * terms replaced by `true` (P2), and, with `parent`, the parent's
- * declaration re-rooted on its build source (P10).
+ * terms replaced by `true` (P2); with `parent`, the parent's declaration
+ * re-rooted on its build source (P10); and with `liftAccess`, the plan's own
+ * declaration's access modifiers lifted and the declaration wrapped in
+ * `include { public: * }` (P3), with the flag `include` needs as the copy's
+ * first line. The lift edits only the plan's own declaration, so a chained
+ * extension's build sees its hidden fields lifted over its parent's re-root
+ * exactly as over the raw chain.
  */
 function copyEdits(
    text: string,
    plan: MaterializePlan,
    parent?: MaterializePlan,
+   liftAccess = false,
 ): { edits: TextEdit[] } | { reason: string } {
    const edits: TextEdit[] = [];
    const given = givenReadTerms(plan);
-   if (given.length > 0 || !parent) {
-      const found =
-         plan.declaration && given.length > 0
-            ? termSpans(text, plan.declaration, given)
-            : { reason: NOT_FOUND };
+   if (given.length > 0) {
+      const found = plan.declaration
+         ? termSpans(text, plan.declaration, given)
+         : { reason: NOT_FOUND };
       if ("reason" in found) return found;
       for (const span of found.spans) edits.push({ ...span, insert: "true" });
    }
@@ -1644,16 +1757,30 @@ function copyEdits(
       }
       edits.push({ start: from, end: to, insert: rerooted });
    }
-   return { edits };
-}
-
-/** `text` with `edits` applied; none may overlap. */
-function applyEdits(text: string, edits: readonly TextEdit[]): string {
-   let out = text;
-   for (const edit of [...edits].sort((a, b) => b.start - a.start)) {
-      out = `${out.slice(0, edit.start)}${edit.insert}${out.slice(edit.end)}`;
+   if (liftAccess) {
+      const from = plan.declaration
+         ? offsetOf(text, plan.declaration.range.start)
+         : -1;
+      const to = plan.declaration
+         ? offsetOf(text, plan.declaration.range.end)
+         : -1;
+      const lifted =
+         from >= 0 && to >= from
+            ? accessLiftEdits(text.slice(from, to))
+            : undefined;
+      if (!lifted) return { reason: ACCESS_NOT_LIFTED };
+      edits.push(
+         ...lifted.map((e) => ({
+            start: from + e.start,
+            end: from + e.end,
+            insert: e.insert,
+         })),
+         { start: to, end: to, insert: LIFT_INHERITED },
+         { start: 0, end: 0, insert: `${ACCESS_FLAG}\n` },
+      );
    }
-   return out;
+   if (edits.length === 0) return { reason: NOT_FOUND };
+   return { edits };
 }
 
 /**
@@ -1669,10 +1796,11 @@ export function storedChainText(
    text: string,
    plan: MaterializePlan,
    parent: MaterializePlan,
+   options: { liftAccess?: boolean } = {},
 ): StoredChain | undefined {
    const over = plan.buildsOver;
    if (!over) return undefined;
-   const edits = copyEdits(text, plan, parent);
+   const edits = copyEdits(text, plan, parent, options.liftAccess);
    if ("reason" in edits) return undefined;
    const statements: string[] = [];
    for (const { range } of [over.declaration, ...over.path]) {
@@ -1682,12 +1810,18 @@ export function storedChainText(
       const inside = edits.edits
          .filter((e) => e.start >= from && e.end <= to)
          .map((e) => ({ ...e, start: e.start - from, end: e.end - from }));
+      const edited = applyEdits(text.slice(from, to), inside);
+      if (edited === undefined) return undefined;
       // malloy-text: the author's own declaration, edited as its build copy edits it
-      statements.push(`source: ${applyEdits(text.slice(from, to), inside)}`);
+      statements.push(`source: ${edited}`);
    }
    return {
       parentBuildSourceName: parent.buildSourceName,
-      flags: documentFlagLines(text),
+      // The lift's `include { public: * }` needs its flag here too (P3).
+      flags: [
+         ...documentFlagLines(text),
+         ...(options.liftAccess ? [ACCESS_FLAG] : []),
+      ],
       declarations: statements.join("\n"),
    };
 }
@@ -1915,9 +2049,10 @@ function termSpans(
  * model under another name). The experimental flag lives here, so the
  * author's file needs none (D3).
  *
- * A plan with read-time terms (P2), or one built over its parent's build
- * source (P10), is imported from its own build copy,
- * `buildCopyPaths` by sourceID, together with the givens its terms read,
+ * A plan with a build copy, `buildCopyPaths` by sourceID (given-reading terms
+ * taken out, P2; built over its parent's build source, P10; or its own access
+ * modifiers lifted, P3), is imported from that copy; one with given-reading
+ * terms also imports the givens they read,
  * which the re-written `where:` needs in scope: each from the file that
  * declares it (`from`), or the author's model. A model with no such plan
  * generates exactly the text it did before P2.
@@ -1929,10 +2064,7 @@ export function generateBuildFile(
    buildCopyPaths: ReadonlyMap<string, string> = new Map(),
 ): string | undefined {
    if (plans.length === 0) return undefined;
-   const copyOf = (plan: MaterializePlan) =>
-      givenReadTerms(plan).length > 0 || plan.buildsOver
-         ? buildCopyPaths.get(plan.sourceID)
-         : undefined;
+   const copyOf = (plan: MaterializePlan) => buildCopyPaths.get(plan.sourceID);
    const imports = plans.map((plan) => {
       const own = `import { ${identifier(importAlias(plan))} is ${identifier(plan.sourceName)} } from ${stringLiteral(copyOf(plan) ?? importPath)}`;
       const checks = (plan.uniquenessChecks ?? []).map((check) => {

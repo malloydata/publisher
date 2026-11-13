@@ -166,7 +166,7 @@ const SUMMARY_QUERY =
    "run: summary -> { group_by: region; aggregate: t is total.sum() }";
 
 describe("the path report names exactly the tables the SQL read", () => {
-   it("a colocated #(materialize) source, after a build, reports live and reads the warehouse", async () => {
+   it("a colocated #(materialize) source is not built, reports live and reads the warehouse", async () => {
       const { fixture, live } = await loadBuilt(
          {
             "m.malloy": `import "raw.malloy"
@@ -181,8 +181,15 @@ source: summary is orders_raw -> {
          { q: { model: "m.malloy", query: SUMMARY_QUERY } },
       );
       try {
-         expect(fixture.built).toEqual([
-            { name: "summary", tier: "colocated" },
+         // Not built until the served copy can serve it: a coded warning
+         // says why, and no table is written (decided 2026-11-12).
+         expect(fixture.built).toEqual([]);
+         expect(
+            codes(fixture, "materialize-not-built").map((w) => w.message),
+         ).toEqual([
+            expect.stringContaining(
+               "colocated #(materialize) is not served yet; use storage= or #@ persist",
+            ),
          ]);
          const ran = await run(fixture, "m.malloy", SUMMARY_QUERY);
          expect(rowDifference(live.q, ran.rows)).toBeUndefined();
@@ -628,10 +635,11 @@ source: colocated is orders_raw -> {
       );
       try {
          // Before: "summary:live:shadowed" although the served copy answers it.
-         expect(fixture.verdicts.sort()).toEqual([
-            "colocated:live:served_copy",
-            "summary:serves",
-         ]);
+         // A colocated one is not planned at all (`materialize-not-built`).
+         expect(fixture.verdicts.sort()).toEqual(["summary:serves"]);
+         expect(
+            codes(fixture, "materialize-not-built").map((w) => w.subject),
+         ).toEqual(["colocated"]);
          const ran = await run(fixture, "m.malloy", SUMMARY_QUERY);
          expect(ran.servedBy).toBe("materialized");
          const colocated = await run(
