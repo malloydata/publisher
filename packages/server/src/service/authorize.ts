@@ -37,6 +37,7 @@
  */
 
 import { createRequire } from "module";
+import type { FieldDef, ModelDef } from "@malloydata/malloy";
 import {
    editDistance,
    foldRouteName,
@@ -877,8 +878,92 @@ export interface CompiledGateCondition {
 }
 
 /** Minimal materializer surface needed to compile (not run) the probe. */
-interface AuthorizeProbeCompiler {
+export interface AuthorizeProbeCompiler {
    loadQuery(query: string): { getPreparedQuery(): Promise<unknown> };
+}
+
+/** The runtime surface a gate probe reloads its own-scope model copy through. */
+interface GateScopeRuntime {
+   _loadModelFromModelDef(modelDef: ModelDef): AuthorizeProbeCompiler;
+}
+
+/**
+ * The runtime `materializer` was loaded through, or undefined when it cannot
+ * be read. Malloy keeps it as `FluentState`'s protected `runtime`; it is the
+ * runtime the model (its connections, its finalized givens) was compiled in,
+ * which the own-scope copy must reload through. Read in this one place.
+ */
+function runtimeOf(materializer: unknown): GateScopeRuntime | undefined {
+   const runtime = (materializer as { runtime?: unknown } | null)?.runtime;
+   return typeof (runtime as GateScopeRuntime | undefined)
+      ?._loadModelFromModelDef === "function"
+      ? (runtime as GateScopeRuntime)
+      : undefined;
+}
+
+/**
+ * `modelDef` with `sourceName`'s own `private` fields made readable, for a
+ * gate probe only; undefined when the source has none (or is not a source).
+ *
+ * A gate is the author's, and is evaluated where it was declared: on the
+ * source it governs, whose own fields it may read whatever their access
+ * modifier. A probe written as `<source> extend { where: … }` reads at a
+ * caller's level instead, where Malloy refuses a `private` field, so the
+ * probe compiles against this copy. Only the top-level fields' modifiers are
+ * lifted: a field a JOINED source keeps private is that source's own, and stays
+ * unreadable (the probe fails, and the gate denies).
+ *
+ * Nothing but the gate probe ever compiles against the copy. The governed
+ * query, the caller's text included, compiles against the unlifted model, so
+ * a caller can no more read a private field than before. The copy is shallow
+ * and never mutates `modelDef`: the source and every lifted field are new
+ * objects, and the rest is shared.
+ */
+export function gateOwnScopeModelDef(
+   modelDef: ModelDef,
+   sourceName: string,
+): ModelDef | undefined {
+   const target = modelDef.contents[sourceName] as
+      | { type?: unknown; fields?: unknown }
+      | undefined;
+   if (!target || !Array.isArray(target.fields)) return undefined;
+   const fields = target.fields as FieldDef[];
+   if (!fields.some((f) => f.accessModifier === "private")) return undefined;
+   return {
+      ...modelDef,
+      contents: {
+         ...modelDef.contents,
+         [sourceName]: {
+            ...(target as object),
+            fields: fields.map((f) => {
+               if (f.accessModifier !== "private") return f;
+               const { accessModifier: _lifted, ...readable } = f;
+               return readable as FieldDef;
+            }),
+         } as ModelDef["contents"][string],
+      },
+   };
+}
+
+/**
+ * What a gate probe on `sourceName` compiles through: `compiler` itself when
+ * the source has no private field, else a copy of `modelDef` with the
+ * source's own private fields readable ({@link gateOwnScopeModelDef}),
+ * reloaded through `compiler`'s own runtime so the gate's givens keep the
+ * identities the graft resolves them by.
+ *
+ * Fails closed: without a `modelDef` or a readable runtime it is `compiler`,
+ * whose probe refuses a private field exactly as before, and the gate denies.
+ */
+export function gateProbeCompiler(
+   compiler: AuthorizeProbeCompiler,
+   modelDef: ModelDef | undefined,
+   sourceName: string,
+): AuthorizeProbeCompiler {
+   const lifted = modelDef && gateOwnScopeModelDef(modelDef, sourceName);
+   if (!lifted) return compiler;
+   const runtime = runtimeOf(compiler);
+   return runtime ? runtime._loadModelFromModelDef(lifted) : compiler;
 }
 
 /**
@@ -888,7 +973,8 @@ interface AuthorizeProbeCompiler {
  * — renames, `except:`/`accept:` drops, and projections included. Must stay
  * the same shape as `gate_classification.ts`'s `liftGateCondition` probe:
  * both read the compiled `FilterCondition` back from
- * `_query.structRef.filterList`.
+ * `_query.structRef.filterList`. Every site compiles it through
+ * {@link gateProbeCompiler}, so it reads the source's own `private` fields.
  */
 export function buildRowLevelProbe(
    graftTarget: string,
@@ -957,11 +1043,12 @@ export function gateFilterText(exprs: readonly string[]): string {
  */
 async function liftRowLevelCondition(
    compiler: AuthorizeProbeCompiler,
+   modelDef: ModelDef,
    sourceName: string,
    exprs: string[],
 ): Promise<CompiledGateCondition> {
    const filterText = gateFilterText(exprs);
-   const prepared = await compiler
+   const prepared = await gateProbeCompiler(compiler, modelDef, sourceName)
       .loadQuery(buildRowLevelProbe(sourceName, filterText))
       .getPreparedQuery();
    return liftProbeFilterCondition<CompiledGateCondition>(
@@ -993,6 +1080,9 @@ async function liftRowLevelCondition(
 export async function validateAuthorizeProbes(
    compiler: AuthorizeProbeCompiler,
    options: {
+      /** The model `compiler` compiled; each probe reads its source's own
+       *  private fields through a copy of it ({@link gateProbeCompiler}). */
+      modelDef: ModelDef;
       authorizeMap?: AuthorizeMap;
       /**
        * Per-route own notes (from `extractSourcesFromModelDef`); empty for a
@@ -1045,6 +1135,7 @@ export async function validateAuthorizeProbes(
          try {
             condition = await liftRowLevelCondition(
                compiler,
+               options.modelDef,
                sourceName,
                exprs,
             );

@@ -216,6 +216,29 @@ source: ops is ${TABLE} extend {
          expect(findings.some((m) => m.includes("limit:"))).toBe(true);
          expect(findings.some((m) => m.includes("all()"))).toBe(true);
       });
+
+      it("reads a private access-filter column the source hides, as it reads a public one", async () => {
+         // The gate is read where it was declared, so a `private` tenant
+         // column is as readable to it as a public one (it was refused before:
+         // the probe read at a caller's level).
+         const c = await compiled(
+            gated
+               .replace(
+                  "experimental { persistence givens }",
+                  "experimental { persistence givens access_modifiers }",
+               )
+               .replace(
+                  `source: ops is ${TABLE} extend {`,
+                  `source: ops is ${TABLE} include { private: tenant; public: * } extend {`,
+               ),
+         );
+         expect(viewSources(c)).toEqual(["ops__by_tenant__view"]);
+         const findings = viewFindings(c);
+         expect(findings.some((m) => m.includes("`tenant`"))).toBe(true);
+         expect(findings.some((m) => m.includes("could not be read"))).toBe(
+            false,
+         );
+      });
    });
 });
 

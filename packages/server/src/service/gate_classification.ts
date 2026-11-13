@@ -34,6 +34,7 @@ import {
 } from "./annotations";
 import {
    buildRowLevelProbe,
+   gateProbeCompiler,
    gateFilterText,
    isLegacyQuotedPayload,
    liftProbeFilterCondition,
@@ -322,6 +323,7 @@ export async function resolveGateShape(
             graftTarget,
             filterText,
             graftScope.materializer,
+            graftScope.modelDef,
          );
       } catch (err) {
          // A legacy quoted-string gate (`#(authorize) "org_id = 999"`) that
@@ -612,6 +614,11 @@ export function findSourceByOwnAnnotationIdentity(
  * load mints new given identities even for identical text, so a condition
  * lifted elsewhere would reference a given the real model never surfaced and
  * fail at request time. Hence callers supply a live materializer per call.
+ * The probe compiles through {@link gateProbeCompiler}: a copy of `modelDef`
+ * (the one the materializer compiled) in which `graftTarget`'s own `private`
+ * fields are readable, reloaded through the same runtime, so the givens keep
+ * their identities. Only the lift reads that copy; the condition is grafted
+ * onto the unlifted model.
  *
  * Reading the last `filterList` entry is made safe by the checks in
  * {@link liftProbeFilterCondition} (see its doc). A failure throws, which the
@@ -621,13 +628,16 @@ async function liftGateCondition(
    graftTarget: string,
    filterText: string,
    materializer: ModelMaterializer,
+   modelDef: ModelDef,
 ): Promise<FilterCondition> {
    // The probe shape and lift are shared with load-time validation: reading
    // the condition back from `filterList` only works while both probes stay
    // byte-identical, and the checks on that read must not drift apart.
-   const probe = materializer.loadQuery(
-      buildRowLevelProbe(graftTarget, filterText),
-   );
+   const probe = gateProbeCompiler(
+      materializer,
+      modelDef,
+      graftTarget,
+   ).loadQuery(buildRowLevelProbe(graftTarget, filterText));
    const prepared = await probe.getPreparedQuery();
    return liftProbeFilterCondition<FilterCondition>(
       prepared,

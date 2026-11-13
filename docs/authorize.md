@@ -259,6 +259,55 @@ is owner } ` compiles — there is once again a field named `org_id` for the gat
 > different column under the gated name fails that check and is refused with the same 403 the gate
 > itself uses, rather than served filtered on the wrong values.
 
+### A gate reads the private columns of the source it governs
+
+A gate is the author's, and it is read where it was declared: on the source it governs, with that
+source's own fields readable whatever their access modifier. So a tenant column you hide with
+`private:` is a column a gate can filter on, which is what you want — `private:`, not `internal:`,
+is the modifier that keeps a caller from re-exposing it (see
+[Recommended pattern](#recommended-pattern-locked-base-and-curated-extensions)):
+
+```malloy
+##! experimental { givens access_modifiers }
+
+#(secure)
+given: GROUPS :: string[]
+
+#(access_filter) org_id in $GROUPS
+source: orders is duckdb.table('orders.parquet') include {
+  private: org_id
+  public: *
+} extend {
+  measure: order_count is count()
+}
+```
+
+`run: orders -> { aggregate: order_count }` answers each caller with its own groups' rows, and
+`run: orders -> { group_by: org_id }` is still refused (`'org_id' is private`): the caller's query
+compiles against the source as you hid it, so no select, filter, `group_by`, `nest`, `extend`,
+`include`, wildcard or join of the caller's reaches the column. Only the gate reads it. The same
+holds for a gate an extension inherits from a base whose column is public, when the extension hides
+it (`include { public: …; private: * }`), and for a gate through a join the source makes private.
+
+The gate stays bound to the column it was written against: a caller that `except:`s `org_id` and
+defines its own `org_id` is denied, as for a public column (see the binding check above).
+
+Two edges, both fail-closed or no wider than a gate:
+
+- **A field a _joined_ source keeps private is that source's own.** A gate on `orders` reading
+  `customer.org_id`, where `customers` declares `org_id` private, cannot read it: the load refuses
+  the gate (`'org_id' is private`), as before. Make the join itself private on `orders`
+  (`private join_one: customer is …`), or the field visible on `customers`, instead.
+- **An extension's own gate can read a column its base made private.** Malloy would not let the
+  extension's own `where:` read it, but compiled models record a field's modifier, not which
+  declaration applied it, so the gate is given every top-level field of the source it governs. The
+  gate is still the package author's (a caller can never write one), it can only narrow rows, and
+  the caller still reads nothing.
+
+Before this release, a gate was compiled as a caller-level `extend`, which reads `internal` fields
+and never `private` ones, so a gate over a private column failed the load (its own gate) or denied
+every caller (an inherited one).
+
 ### Row-level gates and colocated persistence
 
 A row-level gate proven attributed to its entry point (see
@@ -705,7 +754,7 @@ Two more counters cover row filters specifically:
 - **A caller-declared derivation is refused when its chain cannot be proven.** That covers a named query with no source of its own (one reached through an import), a chain of more than 64 names, and a composite whose resolved member carries a row filter. These deny rather than admit: they cost an authorized caller a 403, never a refused caller a read.
 - **A gate does not follow an author join** (see [Gates are edge controls](#gates-are-edge-controls)). This is a design property the author controls, and the one with the largest practical consequence: any model source that joins gated data and is itself ungated hands that data to every caller it admits. The `join-bypass` warning is its check. It names each such join at load, in every package; the server never refuses one, so a compliance review run in CI is the hard stop. (A join the caller writes is gated.) Treat "which sources can a caller enter through, and what does each of them reach" as part of modelling, not as something the gate handles for you.
 - **`except:`-ing, projecting away, or `accept:`-not-relisting the column a gate reads fails CLOSED** (see [Row-level gates](#row-level-gates)) — the graft cannot resolve, so the affected entry point warns at load and denies every request at 403. This is the reverse of the retired dimension form's own known gap, where the equivalent derivation dropped the gate as a plain field and served every row silently. A derivation that then re-populates the exact gated name with a _different_ column — `except:`-ing it and `rename:`-ing another field onto that name, an `accept:` list doing the equivalent, or a join (author-written or caller-written) reintroducing the name — is checked at request time against the field the declaring source actually named, not merely against the name, and is denied rather than served misbound; the same check covers a gate's condition inherited transitively through a dimension, and a plain author `where:` or a join's own filter, not only a graft. A gate on a joined field (`child.org_id in $GROUPS`) also depends on which joined row each row reaches, so the check covers the columns that join's `ON` or `with` reads and the joined source's own `where:` too. Redefining one of those in a derivation or a caller's `extend` is denied, even to an equivalent expression (`rename: raw_id is id; dimension: id is raw_id`), because the check compares definitions, not values; renaming, `except:`-ing or not re-listing one fails closed the same way. The author rule remains not to recycle a gated column's name, nor the name of a column a gated join reads — the check is the backstop, not a reason to rely on it.
-- **An extension's own gate replaces the base's** (see [above](#the-entry-point-and-only-the-entry-point)) — that is the curated-extension idiom, so pair locked bases with `private:` fields (not `internal:`, which a caller's query can re-expose) to keep the re-exposed column surface deliberate. (An extension with no gate of its own carries the base's.)
+- **An extension's own gate replaces the base's** (see [above](#the-entry-point-and-only-the-entry-point)) — that is the curated-extension idiom, so pair locked bases with `private:` fields (not `internal:`, which a caller's query can re-expose) to keep the re-exposed column surface deliberate. A gate reads a `private:` column of the source it governs, so the tenant column can be private too (see [A gate reads the private columns of the source it governs](#a-gate-reads-the-private-columns-of-the-source-it-governs)). (An extension with no gate of its own carries the base's.)
 - **A source gated ONLY by `#(access_filter)` is a schema oracle.** A filter is grafted into the query and evaluated with it, so compilation happens first, and a caller gets Malloy's own compile errors for the source even when the filter then admits them no rows: a malformed probe (`group_by: no_such_field`) returns "field is not defined", confirming whether a column exists. A `#(authorize)` lock closes this for the caller it refuses — it is decided before their query compiles — so a source that should not answer schema questions to outsiders wants a lock, not only a filter. Behind the trusted tier the exposure is a column name, not data — see [security-posture.md](security-posture.md#row-level-access-rows-are-protected-the-schema-is-not).
 - **`/compile` raw SQL is gated at `append` only.** The gate covers named Malloy sources. `/compile` at the default `append` scope now compiles under Malloy's restricted mode, the same refusal `/query` applies, so raw `duckdb.sql(...)`, `connection.table(...)`, `import` and the raw-SQL function forms are refused there, as are a `given:` declaration (a `$NAME` reference to a given the model already declares is still accepted) and a `##!` compiler-flag annotation. Text that parses only as a continuation of the model's last statement is refused too, since the check reads the fragment by itself. `file` and `package` still compile unrestricted, and `scope` is a caller-chosen request field with no authorization difference between its values, so a caller refused at `append` can ask for `file`. Restricting those two would make an ordinary package un-authorable, since that is where a model legitimately declares what it reads; containing them means authorizing the scope, which is separate work. Keep `/compile` behind the trusted tier.
 - **A wrong-shape gate can fail loud at load, or fail confusingly at request time, depending on exactly what it does** (see [Row-level gates](#row-level-gates)). A scalar comparison against an array-typed given loads cleanly and only crashes when the warehouse executes it; a negated membership test loads with a warning rather than being refused. Both are new relative to the retired string form's stricter, load-time-only grammar.

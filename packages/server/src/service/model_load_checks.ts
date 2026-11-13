@@ -134,6 +134,7 @@ export async function extractCheckedModel(
    // fails at load, not on first request. An inherited gate this entry point
    // cannot express only warns: every query against it is denied.
    await validateAuthorizeProbes(materializer, {
+      modelDef,
       authorizeMap,
       authorizeOwnNotes: extracted.attributedAuthorizeOwnNotes,
       onRowLevelGateRejected: recordRowLevelGateRejected,
