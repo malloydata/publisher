@@ -432,6 +432,46 @@ for (const placement of ["colocated", "storage"] as const) {
          }
       });
 
+      it("redeclares an internal gate field internal on the rollup's variant", async () => {
+         await fixture.run({
+            name: "internal",
+            malloy:
+               "run: by_internal -> { group_by: category; aggregate: total }",
+            givens: EAST.givens,
+         });
+         const compiled = (
+            fixture.model as unknown as {
+               rollupVariants: {
+                  compiled: Map<
+                     string,
+                     Promise<{
+                        modelDef?: { contents?: Record<string, unknown> };
+                     }>
+                  >;
+               };
+            }
+         ).rollupVariants.compiled;
+         const defs = await Promise.all([...compiled.values()]);
+         const fields = defs
+            .map(
+               (d) =>
+                  (
+                     d.modelDef?.contents?.by_internal as
+                        | {
+                             fields?: {
+                                name?: string;
+                                as?: string;
+                                accessModifier?: string;
+                             }[];
+                          }
+                        | undefined
+                  )?.fields,
+            )
+            .find((f) => f !== undefined);
+         const tenant = fields?.find((f) => (f.as ?? f.name) === "tenant");
+         expect(tenant?.accessModifier).toBe("internal");
+      });
+
       it("answers a named view on a gated source from the rollup", async () => {
          for (const caller of [EAST, WEST]) {
             expectRollup(

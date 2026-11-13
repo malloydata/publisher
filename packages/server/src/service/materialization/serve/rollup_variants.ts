@@ -1602,13 +1602,18 @@ function baseFieldNotes(
 
 /**
  * ` include { internal: … public: * }`: the partial columns, readable by the
- * merged measures and by no query, so a caller cannot aggregate them.
+ * merged measures and by no query, so a caller cannot aggregate them; and an
+ * `internal` grain dimension a gate reads (A4), redeclared with the author's
+ * modifier, readable by the grafted gate and by no query, as on live.
  */
 function internalPartials(plan: RollupVariantPlan): string {
-   const partials = plan.rollupMeasures
-      .flatMap((m) => m.partials.map((p) => identifier(p.column)))
+   const hidden = [
+      ...plan.rollupMeasures.flatMap((m) => m.partials.map((p) => p.column)),
+      ...(plan.internalGrain ?? []),
+   ]
+      .map((n) => identifier(n))
       .join(", ");
-   return ` include { internal: ${partials} public: * }`;
+   return ` include { internal: ${hidden} public: * }`;
 }
 
 /**
