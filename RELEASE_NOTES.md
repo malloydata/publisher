@@ -43,6 +43,47 @@ Fixed on the way, on paths the cutover makes default: the served copy shares one
 
 Introduced off by default (6a to 6e); the section above turns it on (6f). Materialization v2's v1 cutover: v1 `#@ persist` and `#@ preaggregate` tables are served by the served copy and the rollup and persisted-view legs instead of today's storage serve shape, `#@ preaggregate` composite and Malloy's build manifest on the live compile. `on`: a colocated `#@ persist` table is bound on the served copy with the columns its build captured (or, for a table built before, the persisted query's own output), read past a row-level gate with the gate grafted and proven, since it never leaves the author's warehouse (a `storage=` table still needs `PUBLISHER_MATERIALIZE_GATED_SOURCES`); its hidden columns, and those its `extend` block drops or renames, are kept for the author's own text to drop and hide again; a column an older build typed is cast on read, or left out so only a query reading it answers live; a `#@ preaggregate` rollup is the rollup leg's, `storage=` included, under the v2 rollup's table name, so it rebuilds once and answers with its measures' annotations; and a model file needs no `##! experimental.persistence` for its `#@ persist` sources to be planned (a build copy carries it, with every address unchanged). `shadow`: served as `off`, and each query a retiring path answered is answered again as `on` would, off the request path, at most two at once per server within a 30-second budget, recording no metric of the caller's query; the outcome is counted in `publisher_v1_served_copy_shadow_total` and a difference logged by place, never by value. A dry run (`POST …/packages?dryRun=true`) with the switch past `off` adds `cutoverPath` and `cutoverReason` (open strings) to each serve verdict, the path that will serve the source after the cutover. `scripts/v1-cutover-conformance.ts` runs the cutover's conformance check over a package snapshot. Behind `PUBLISHER_MATERIALIZE`, separately: a `#(materialize)` source over a base in its own file that declares measures, views or joins is now served (it kept the base's blocks). No enum is added. Publisher does not authenticate callers: a gate holds only behind the gateway that sets the givens from a verified identity.
 
+## [Unreleased] — (BREAKING) Materialization build metrics: one build counter, and structured run and build events
+
+Three materialization metrics are replaced, and one loses a label. Dashboards or alerts on the old
+names stop receiving data.
+
+- `publisher_materialization_sources_total{outcome, mode}` and
+  `publisher_storage_build_failures_total{destination, reason}` fold into
+  `publisher_materialization_build_total{kind, tier, outcome, failure_class}`, counted once per
+  source per run. `kind` is `materialize`, `persist`, `rollup`, `view` or `pair`; `tier` is
+  `colocated` or `storage`; `outcome` is `built`, `reused`, `refused`, `failed` or `cancelled`; and
+  `failure_class` is `none` unless the build failed, then `deterministic`, `transient`,
+  `unclassified` (the per-source `retryable` false, true and absent) or `billed_read_lost` (the old
+  `reason="billed_read_not_captured"`: the warehouse read was charged and its rows were lost, so a
+  retry pays again). Colocated failures are now counted too, not only `storage=` ones. The run's
+  `mode` stays on `publisher_materialization_runs_total`. A failed build is counted even when the
+  whole run then fails, where the old counter counted nothing for such a run; a reused source is
+  counted only when its run commits.
+- `publisher_materialization_source_build_duration_ms{engine}` becomes
+  `publisher_materialization_build_duration_ms{kind, tier, method}`, with explicit buckets from
+  100 ms to an hour. The old `engine` maps as `in_warehouse` to colocated/full, `storage` to
+  storage/full, `delta` to colocated/delta and `delta_storage` to storage/delta. A failed build that
+  started is timed too.
+- New: `publisher_materialization_build_read_bytes{tier}`, the warehouse bytes a build scanned,
+  recorded only when the warehouse reported a count.
+- `publisher_storage_tables_retained_total` drops its `destination` label; the destination is on
+  the warn log beside each count.
+
+The run's log lines change with them. `materialization.run.started` (info) and
+`materialization.run.finished` (info, warn when partial, error when failed) replace "Materialization
+build started" and "Materialization build complete…", and `materialization.build.finished` (info) and
+`materialization.build.failed` (warn, error when unclassified) replace "Source failed to
+materialize". Each carries `runId` (the run's id), the source's `sourceEntityId`, `kind`, `tier`,
+`method` and, for a failure, `failureClass` and `code`. A failure's message is no longer logged, since
+a driver error can quote SQL or a value: it stays on the run's record (`error`, and each
+`failures[].reason`), and the log carries its code. A whole-run failure is logged once, by
+`materialization.run.finished`, rather than again as "Materialization run failed".
+
+## [Unreleased] — In development: `PUBLISHER_V1_SERVED_COPY`, the v1 cutover's switch (off, shadow, on)
+
+Off by default, and off serves exactly as before. Materialization v2's v1 cutover: v1 `#@ persist` and `#@ preaggregate` tables are served by the served copy and the rollup and persisted-view legs instead of today's storage serve shape, `#@ preaggregate` composite and Malloy's build manifest on the live compile. `on`: a colocated `#@ persist` table is bound on the served copy with the columns its build captured (or, for a table built before, the persisted query's own output), read past a row-level gate with the gate grafted and proven, since it never leaves the author's warehouse (a `storage=` table still needs `PUBLISHER_MATERIALIZE_GATED_SOURCES`); its hidden columns, and those its `extend` block drops or renames, are kept for the author's own text to drop and hide again; a column an older build typed is cast on read, or left out so only a query reading it answers live; a `#@ preaggregate` rollup is the rollup leg's, `storage=` included, under the v2 rollup's table name, so it rebuilds once and answers with its measures' annotations; and a model file needs no `##! experimental.persistence` for its `#@ persist` sources to be planned (a build copy carries it, with every address unchanged). `shadow`: served as `off`, and each query a retiring path answered is answered again as `on` would, off the request path, at most two at once per server within a 30-second budget, recording no metric of the caller's query; the outcome is counted in `publisher_v1_served_copy_shadow_total` and a difference logged by place, never by value. A dry run (`POST …/packages?dryRun=true`) with the switch past `off` adds `cutoverPath` and `cutoverReason` (open strings) to each serve verdict, the path that will serve the source after the cutover. `scripts/v1-cutover-conformance.ts` runs the cutover's conformance check over a package snapshot. Behind `PUBLISHER_MATERIALIZE`, separately: a `#(materialize)` source over a base in its own file that declares measures, views or joins is now served (it kept the base's blocks). No enum is added. Publisher does not authenticate callers: a gate holds only behind the gateway that sets the givens from a verified identity.
+
 ## [Unreleased] — In development: integers past 2^53 served from storage come back exact
 
 A wrong answer is fixed. A query answered from a stored table (`storage=`, colocated
@@ -53,16 +94,24 @@ shape) read a big-integer column through the table's plain
 known limitation 12, which said answers were equal and only metadata differed).
 
 A column whose field Malloy types as a big integer (`BIGINT`, `HUGEINT`, `UBIGINT`, `INT64`,
-`NUMBER(p,0)`, a sum or max over one) is now read through a native cast (`::"HUGEINT"` in a
-`storage=` table, the warehouse's own big-integer type in a colocated one), so it stays served from
-storage and comes back exact, with live's `bigint` subtype. Selecting, grouping, filtering and
-aggregating it, a `primary_key:` and the author's own measures over it all keep serving. A column
-no cast reads exactly (stored as a float) is left out per query and answered live. On Postgres,
-whose live answer itself rounds such values (its rows come back through JSON), served equals live,
-never more precise. `count()`, 32-bit integers and decimals are unchanged.
+`NUMBER(p,0)`, a sum or max over one) is now read through a native cast, so it stays served from
+storage and comes back exact, with live's `bigint` subtype. In a `storage=` table the cast is
+`::"HUGEINT"`. In a colocated one it is the column's own warehouse type, which each colocated build
+now reads from the warehouse's catalog, so no value is narrowed (a DuckDB `UHUGEINT` past
+2^127 − 1, SQL Server's `decimal(38,0)`). Selecting, grouping, filtering and aggregating it, a
+`primary_key:` and the author's own measures over it all keep serving. A column no cast reads
+exactly is left out per query and answered live: one stored as a float, a colocated column whose
+warehouse type Malloy does not read as a big integer (Postgres stores a sum of `BIGINT`s as
+`numeric`; a MySQL integer, which MySQL's `CAST` cannot name), and a colocated column whose build did
+not record its type (a table built before this release, or an unqualified name the warehouse's
+`information_schema` finds in more than one schema). On Postgres, whose live answer itself rounds such values (its rows come back through
+JSON), served equals live, never more precise. `count()`, 32-bit integers and decimals are
+unchanged.
 
-No API change. See docs/materialization.md, "Stored column types follow the model, not the
-warehouse".
+API: a build manifest entry gains `nativeSchema`, each colocated column with its warehouse type,
+recorded by every colocated build and incremental refresh. A host that stores and replays manifests
+should keep it; without it, a colocated table's big-integer columns are answered live. See
+docs/materialization.md, "Stored column types follow the model, not the warehouse".
 
 ## [Unreleased] — In development: join-to-rollup checks the querying source's primary key, and declines a count beside a re-pointed join
 

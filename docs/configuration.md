@@ -741,10 +741,19 @@ Under the same `publisher` meter, with bounded labels.
 | `publisher_interrupted_run_sweep_failures_total`                                 | Counter            | Startup sweeps of interrupted materialization runs that threw. The server still starts, logging the error.                             |
 | `publisher_mcp_row_limit_hits_total`                                             | Counter            | `execute_query` answers that landed on the server's default row limit, so the agent saw a sample.                                      |
 | `publisher_storage_bindings_withheld_total`                                      | Counter            | Storage bindings the freshness gate withheld from a routed query, which was then read live.                                            |
+| `publisher_materialization_build_total{kind,tier,outcome,failure_class}`         | Counter            | Source builds per run, by outcome. `failure_class`: `none` unless failed, else its class (retryable or not, `billed_read_lost`).       |
+| `publisher_materialization_build_duration_ms{kind,tier,method}`                  | Histogram          | How long each source build ran (`full` or `delta`), failed ones included; a skipped incremental refresh is not timed.                  |
+| `publisher_materialization_build_read_bytes{tier}`                               | Histogram          | Warehouse bytes a build scanned, when the warehouse reported a count.                                                                  |
 
 Every REST error is logged once: a 4xx at `warn` (`Request refused`, with the path and status), a 5xx
 at `error`. Each MCP tool call logs one `MCP tool call` line at `info` with the tool, outcome and
 duration; per-request transport detail is at `debug`.
+
+A materialization run logs `materialization.run.started` and `materialization.run.finished` (`info`;
+`warn` when partial, `error` when failed), and each source it builds `materialization.build.finished`
+or `materialization.build.failed` (`warn`; `error` when nothing recognized the failure). Each carries
+`runId`, the run's id, to join it to the run's record, which holds the failure's message: the log
+carries only its code, since a driver's message can quote SQL or a value.
 
 With `OTEL_EXPORTER_OTLP_ENDPOINT` set, queries are traced as a `publisher.query` span (package,
 model path, the tier it was served from) with `publisher.query.execute` beneath it, and compiles as

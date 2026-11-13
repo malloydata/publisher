@@ -4,6 +4,7 @@
 import { decodeDottedTablePath } from "@malloydata/malloy";
 
 import { logger } from "../../../logger";
+import type { IncrementalStepReason } from "../../../materialization_metrics";
 import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface";
 import type { IncrementalStrategy } from "../types";
 import { errMessage } from "../../../utils";
@@ -295,7 +296,11 @@ export function deltaSelect(params: {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** How a probe or DML statement reaches the warehouse. */
-export type SqlRunner = (sql: string) => Promise<{ rows: unknown[] }>;
+export type SqlRunner = (
+   sql: string,
+   /** A row limit past the connection's default (as few as ten rows). */
+   options?: { rowLimit?: number },
+) => Promise<{ rows: unknown[] }>;
 
 /**
  * Per-dialect table-path decoding. The physical name arrives as SQL (bare or
@@ -1101,23 +1106,7 @@ export function ledgerLineageMismatch(
  * `reason` label — the free-text `reason` names specifics (columns, versions,
  * boundary values) that a metric label cannot carry.
  */
-export type IncrementalStepReasonCode =
-   // Seeds.
-   | "forced"
-   | "no_boundary"
-   | "lineage_changed"
-   | "table_renamed"
-   | "merge_unsupported"
-   | "table_unreadable"
-   | "table_emptied"
-   | "shape_mismatch"
-   | "ledger_unreadable"
-   | "plan_error"
-   | "chained_storage"
-   | "pair_parent_row"
-   // Skips.
-   | "frontier_unreadable"
-   | "not_advanced";
+export type IncrementalStepReasonCode = IncrementalStepReason;
 
 /** What one source's refresh should do. */
 export type IncrementalStep =

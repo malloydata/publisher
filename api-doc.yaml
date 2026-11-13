@@ -11517,6 +11517,19 @@ components:
             execution error, which is why the post-build capture is authoritative.
           items:
             $ref: "#/components/schemas/Column"
+        nativeSchema:
+          type: array
+          description: >-
+            For a colocated entry (no `storageDestinationName`): each column of
+            the built table with its type as the warehouse's own catalog names it
+            (`bigint`, `numeric`, `NUMBER(38,0)`, `UHUGEINT`), captured after the
+            build. The served copy reads a big-integer column through a cast to
+            exactly this type, so a value past 2^53 comes back with every digit
+            and no wider value is narrowed; a column whose type it does not know
+            is answered live instead. Absent when the capture failed or the
+            producer did not record it.
+          items:
+            $ref: "#/components/schemas/Column"
         realization:
           $ref: "#/components/schemas/Realization"
         rowCount:

@@ -12,8 +12,6 @@ import { logger } from "../../../logger";
 import {
    recordStoredColumnTypeMismatch,
    recordChainedStorageBuild,
-   recordSourceBuildDuration,
-   recordStorageBuildFailure,
 } from "../../../materialization_metrics";
 import { errMessage } from "../../../utils";
 import type { ApiConnection } from "../../model";
@@ -313,7 +311,6 @@ export class StorageBuildStrategy
                !(err instanceof MaterializationEligibilityError)
             ) {
                recordChainedStorageBuild("infra_failure");
-               recordStorageBuildFailure(destinationName);
                throw new Error(
                   `Failed to materialize chained source '${persistSource.name}' ` +
                      `into storage destination '${destinationName}': ${safeDetail}`,
@@ -343,7 +340,6 @@ export class StorageBuildStrategy
                   : [];
             if (wrongTierUpstreams.length > 0) {
                recordChainedStorageBuild("strict_refused");
-               recordStorageBuildFailure(destinationName);
                throw new HostSuppliedWrongTierError(
                   persistSource.name,
                   wrongTierUpstreams,
@@ -351,7 +347,6 @@ export class StorageBuildStrategy
             }
             if (manifest.strict && pinnedRecompute) {
                recordChainedStorageBuild("strict_refused");
-               recordStorageBuildFailure(destinationName);
                const message =
                   `Failed to materialize chained source '${persistSource.name}' ` +
                   `into storage destination '${destinationName}' by reading ` +
@@ -373,7 +368,6 @@ export class StorageBuildStrategy
                err instanceof MaterializationEligibilityError
             ) {
                recordChainedStorageBuild("strict_refused");
-               recordStorageBuildFailure(destinationName);
                throw new WarehouseRecomputeRefusedError(
                   persistSource.name,
                   destinationName,
@@ -463,17 +457,9 @@ export class StorageBuildStrategy
             // Whether the warehouse read was already BILLED must survive the
             // rewrap: a scheduled retry re-pays for it every occurrence, unlike a
             // free-to-retry attach failure.
+            // The run counts and logs the failure once, by its class
+            // (`billed_read_lost` for this one; run_telemetry.ts).
             const alreadyBilled = err instanceof BilledReadNotCapturedError;
-            recordStorageBuildFailure(
-               destinationName,
-               alreadyBilled ? "billed_read_not_captured" : "build_failed",
-            );
-            logger.warn("Storage materialization build failed", {
-               sourceName: persistSource.name,
-               destinationName,
-               alreadyBilled,
-               error: safeDetail,
-            });
             const failure =
                `Failed to materialize source '${persistSource.name}' into ` +
                `storage destination '${destinationName}': ${safeDetail}`;
@@ -565,14 +551,9 @@ export class StorageBuildStrategy
       manifest.update(sourceEntityId, { tableName: physicalTableName });
 
       const durationMs = Math.round(performance.now() - startTime);
-      // Deltas and rebuilds get separate series; a SKIP did no work and is not
-      // timed.
-      if (result.refresh?.refresh === "delta") {
-         recordSourceBuildDuration(durationMs, "delta_storage");
-      } else if (!result.refresh) {
-         recordSourceBuildDuration(durationMs, "storage");
-      }
-      logger.info(
+      // Debug: the run's `materialization.build.finished` is the build's
+      // event, and the build histogram times it (a SKIP is not timed).
+      logger.debug(
          result.refresh
             ? `Refreshed materialized source ${persistSource.name} in storage`
             : `Built materialized source ${persistSource.name} into storage`,
