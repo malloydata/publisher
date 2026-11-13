@@ -137,6 +137,14 @@ const buildTargets = new WeakMap<PersistSource, BuildTarget>();
 const unkeyable = new WeakMap<PersistSource, string>();
 
 /**
+ * Whether `getBuildTargets` could not key `source` (it came from
+ * {@link plannedSources} as unbuildable), so addressing it throws.
+ */
+export function isUnkeyable(source: PersistSource): boolean {
+   return unkeyable.has(source);
+}
+
+/**
  * Test doubles' chosen addresses, keyed by their TARGET. A fake target names
  * the address its fixture asserts, where a real one is hashed; a partitioned
  * source still folds its layout over it (see {@link computeSourceEntityId}),

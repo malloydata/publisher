@@ -42,6 +42,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {
       "daily@<hammer>/az/az.malloy": {
         "message": "Source 'daily' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",

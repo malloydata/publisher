@@ -53,6 +53,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {
       "scoped_rollup@<hammer>/rss/rss.malloy": {
         "message": "Source 'scoped_rollup' cannot be materialized into a storage destination: a given is read while the persisted relation is BUILT, so its value is substituted at build time — from the declaration's default, the only value available then — and every caller is served that one slice. Move the given out of the persisted query and into the source's extend block (`where: …`), where it is left out of the build and applied per caller when the artifact is read.",

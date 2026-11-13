@@ -85,6 +85,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "daily@<hammer>/cmx/cmx.malloy": {

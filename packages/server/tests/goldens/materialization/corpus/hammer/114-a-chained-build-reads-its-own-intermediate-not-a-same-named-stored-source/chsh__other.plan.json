@@ -42,6 +42,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "mid@<hammer>/chsh/other.malloy": {

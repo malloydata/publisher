@@ -42,6 +42,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "order_rows@<hammer>/xt/xt.malloy": {

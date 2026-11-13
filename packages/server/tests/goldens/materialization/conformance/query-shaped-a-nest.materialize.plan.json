@@ -83,6 +83,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "nested@<pkg>/m.malloy": {

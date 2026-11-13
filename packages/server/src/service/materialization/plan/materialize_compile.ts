@@ -21,6 +21,11 @@ import {
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
+import {
+   omittedByID,
+   omittedFromFile,
+   type OmittedSource,
+} from "./omitted_sources";
 import { registerUniquenessCheckCompiler } from "../run/inline_uniqueness";
 import {
    buildCopyDeclarationAt,
@@ -118,9 +123,14 @@ export async function tryCompileMaterializeCompanion(args: {
 }): Promise<{
    generated?: GeneratedMaterialize;
    refused: MaterializeRefusal[];
+   /** The sources a failure left out of the plan (see omitted_sources). */
+   omitted?: OmittedSource[];
 }> {
    const modelFile = path.resolve(args.packagePath, args.modelPath);
    const refused: MaterializeRefusal[] = [];
+   // The author's sourceIDs each generated source is presented as, once
+   // planned; until then a failure cannot name them.
+   let plannedIDs: string[] | undefined;
    try {
       const declaredHere = (declaringURL: string) => {
          try {
@@ -150,6 +160,7 @@ export async function tryCompileMaterializeCompanion(args: {
          probed?.zoneFreeRows,
       );
       refused.push(...planned.refused);
+      plannedIDs = planned.plans.map((p) => p.sourceID);
       // The text the author's model was compiled from, through the reader
       // the companion compiles with: a package's build view (joins across
       // connections left out) or a worker's file map, not necessarily the
@@ -304,7 +315,21 @@ export async function tryCompileMaterializeCompanion(args: {
             error: error instanceof Error ? error.message : String(error),
          },
       );
-      return { refused };
+      return {
+         refused,
+         omitted: plannedIDs
+            ? omittedByID(
+                 plannedIDs.filter(
+                    (id) => !refused.some((r) => r.sourceID === id),
+                 ),
+                 "materialize_companion_failed",
+              )
+            : omittedFromFile(
+                 pathToFileURL(modelFile).href,
+                 undefined,
+                 "materialize_companion_failed",
+              ),
+      };
    }
 }
 

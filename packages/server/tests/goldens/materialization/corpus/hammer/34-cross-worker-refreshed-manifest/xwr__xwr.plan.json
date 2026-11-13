@@ -57,6 +57,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "daily@<hammer>/xwr/xwr.malloy": {

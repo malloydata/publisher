@@ -388,6 +388,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": {

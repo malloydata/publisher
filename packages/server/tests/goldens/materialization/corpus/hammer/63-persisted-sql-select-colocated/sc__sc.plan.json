@@ -42,6 +42,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "raw@<hammer>/sc/sc.malloy": {

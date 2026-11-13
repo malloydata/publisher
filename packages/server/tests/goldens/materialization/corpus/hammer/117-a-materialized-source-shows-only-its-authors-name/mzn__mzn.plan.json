@@ -103,6 +103,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "mzn_orders@<hammer>/mzn/mzn.malloy": {

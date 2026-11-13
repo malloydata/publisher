@@ -70,6 +70,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "daily@<hammer>/owr/owr.malloy": {

@@ -53,6 +53,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "big_orders@<hammer>/ufw/ufw.malloy": {

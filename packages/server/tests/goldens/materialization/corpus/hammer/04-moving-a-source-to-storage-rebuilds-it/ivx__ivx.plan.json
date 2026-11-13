@@ -42,6 +42,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "batch_totals@<hammer>/ivx/ivx.malloy": {

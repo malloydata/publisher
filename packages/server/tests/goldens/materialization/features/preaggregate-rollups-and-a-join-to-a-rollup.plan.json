@@ -291,6 +291,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "lines__rollup__order_id__906dde44@<pkg>/m.malloy.preaggregate.malloy": {

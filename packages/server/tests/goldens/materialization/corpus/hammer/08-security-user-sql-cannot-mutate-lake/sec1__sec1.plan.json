@@ -42,6 +42,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "daily_orders@<hammer>/sec1/sec1.malloy": {

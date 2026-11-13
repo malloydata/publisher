@@ -157,6 +157,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "east_west@<pkg>/m.malloy": {

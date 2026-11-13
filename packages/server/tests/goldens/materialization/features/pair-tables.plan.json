@@ -886,6 +886,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "customers_blocks@<pkg>/m.malloy": {

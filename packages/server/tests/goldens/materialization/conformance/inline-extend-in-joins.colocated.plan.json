@@ -71,6 +71,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "by_customer@<pkg>/m.malloy": {

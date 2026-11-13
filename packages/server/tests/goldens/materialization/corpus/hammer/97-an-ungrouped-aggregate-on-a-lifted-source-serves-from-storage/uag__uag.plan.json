@@ -53,6 +53,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "daily@<hammer>/uag/uag.malloy": {

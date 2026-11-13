@@ -10470,6 +10470,71 @@ components:
             former.
           additionalProperties:
             $ref: "#/components/schemas/RefusedSource"
+        omittedSources:
+          type: array
+          description: >-
+            The sources this plan would have listed but left out because
+            planning them FAILED, sorted by `sourceID`: a generated companion
+            (a pre-aggregation rollup, a `#(materialize)` build source, a
+            persisted view, the v1 build copy) that did not compile, or a
+            source whose plan entry could not be projected. Each is a planner
+            failure, not a decision: a source the plan decides not to build is
+            in `refusedSources` or reported as a package warning, and is not
+            listed here. Never names a sourceID that is in `sources`.
+
+            Lets a host tell "this source left the plan" from "this plan could
+            not say": empty means every source the package's declarations
+            plan is in `sources` or `refusedSources`, so a host may retire an
+            anchor whose source is absent from both; a non-empty list means
+            the plan is incomplete, and an anchor whose source matches an
+            entry (or, for a `*@<url>` entry, any source declared in that
+            file) must be kept. Always present on a plan from a Publisher
+            that reports it; absent on one from an older Publisher, which
+            must be read as "completeness unknown".
+          items:
+            $ref: "#/components/schemas/OmittedSource"
+
+    OmittedSource:
+      type: object
+      description: >-
+        One source a build plan left out because planning it failed, and a
+        code for the failure. Carries names and a code only: never the
+        failure's message, which could quote the source's SQL or a value.
+        The failure itself is logged at the Publisher, under the same
+        sourceID.
+      required: [sourceID, reason]
+      properties:
+        sourceID:
+          type: string
+          description: >-
+            "sourceName@modelURL", the key the source would have had in
+            `sources`. When the failure came before the sources could be
+            named (the companion's planning itself failed), the name is `*`:
+            `*@<companion file URL>` stands for every source that file would
+            have planned.
+        reason:
+          type: string
+          description: >-
+            Why the source was left out, as a code. An OPEN set: a client must
+            accept a code it does not know (read it as a failure) rather than
+            reject the plan. Today's codes: `unkeyable` (Malloy could not key
+            the source's build: an unbound parameter or a given with no
+            value); `eligibility_check_failed` (an eligibility gate failed
+            with an error rather than a refusal); `projection_failed` (the
+            plan entry could not otherwise be computed);
+            `preaggregate_companion_failed` (the synthesized `#@ preaggregate`
+            companion did not compile); `rollup_companion_failed` (the
+            generated `#(preaggregate)` rollup companion, which also plans v1
+            `#@ preaggregate` rollups under the v1 cutover, did not plan or
+            compile); `rollup_companion_blanking_failed` (that companion was
+            not built because a `#@` line of the author's files could not be
+            set aside); `materialize_companion_failed` (the generated
+            `#(materialize)` companion did not plan or compile);
+            `persisted_view_companion_failed` (the persisted-view companion
+            did not plan or compile); `v1_build_companion_failed` (under the
+            v1 cutover, the build copy of a model file without
+            `##! experimental.persistence` did not compile, so none of its
+            `#@ persist` sources were planned).
 
     RefusedSource:
       type: object

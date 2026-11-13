@@ -946,6 +946,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "by_given@<pkg>/m.malloy": {

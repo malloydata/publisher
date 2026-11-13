@@ -51,6 +51,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "dropped@<pkg>/m.malloy": {

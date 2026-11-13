@@ -51,6 +51,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "daily@<pkg>/m.malloy": {

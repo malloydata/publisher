@@ -53,6 +53,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "by_date@<hammer>/mspb/mspb.malloy": {

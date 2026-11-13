@@ -64,6 +64,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "orders_all@<hammer>/qts/qts.malloy": {

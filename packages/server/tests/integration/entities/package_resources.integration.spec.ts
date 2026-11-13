@@ -244,7 +244,12 @@ source: shown is ${ROWS} extend {
       const plan = await get(pkgUrl("shop", "/build-plan"));
       expect(plan.status).toBe(200);
       // The package declares no persist source: an empty plan.
-      expect(plan.json).toEqual({ graphs: [], sources: {} });
+      expect(plan.json).toEqual({
+         graphs: [],
+         sources: {},
+         refusedSources: {},
+         omittedSources: [],
+      });
 
       const index = await get(pkgUrl("shop", "/embedding-index"));
       expect(index.status).toBe(200);

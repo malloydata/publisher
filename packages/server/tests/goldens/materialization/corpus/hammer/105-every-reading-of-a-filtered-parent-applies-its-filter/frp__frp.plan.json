@@ -140,6 +140,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "deals@<hammer>/frp/frp.malloy": {

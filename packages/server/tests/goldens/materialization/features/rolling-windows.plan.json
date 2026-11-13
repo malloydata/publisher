@@ -628,6 +628,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "between@<pkg>/m.malloy": {

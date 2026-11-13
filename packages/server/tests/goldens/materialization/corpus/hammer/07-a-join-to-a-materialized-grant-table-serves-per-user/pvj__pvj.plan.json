@@ -68,6 +68,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "accounts@<hammer>/pvj/pvj.malloy": {

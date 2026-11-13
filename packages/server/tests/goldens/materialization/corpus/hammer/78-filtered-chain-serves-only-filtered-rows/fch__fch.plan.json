@@ -53,6 +53,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "deals@<hammer>/fch/fch.malloy": {

@@ -44,6 +44,7 @@ import {
 } from "./rollup_plan";
 import { splitSourceID } from "./persisted_view";
 import { SourceMap } from "./source_map";
+import { omittedFromFile, type OmittedSource } from "./omitted_sources";
 
 export interface GeneratedRollups {
    /** The rollups the companion declares. Never empty. */
@@ -113,9 +114,20 @@ export async function tryCompileRollupCompanion(args: {
    modelPath: string;
    modelDef: unknown;
    getRuntime: SynthesizedRuntimeFactory;
-}): Promise<{ generated?: GeneratedRollups; refused: RollupRefusal[] }> {
+}): Promise<{
+   generated?: GeneratedRollups;
+   refused: RollupRefusal[];
+   /** The rollups a failure left out of the plan (see omitted_sources). */
+   omitted?: OmittedSource[];
+}> {
    const modelFile = path.resolve(args.packagePath, args.modelPath);
+   const companionHref = rollupCompanionURL(
+      args.packagePath,
+      args.modelPath,
+   ).href;
    let refused: RollupRefusal[] = [];
+   // Named once planned; until then a failure cannot name them.
+   let plannedNames: string[] | undefined;
    try {
       const planned = planModelRollups(
          SourceMap.of(args.modelDef),
@@ -132,6 +144,7 @@ export async function tryCompileRollupCompanion(args: {
          },
       );
       refused = planned.refused;
+      plannedNames = planned.plans.map((p) => p.rollupSourceName);
       const text = generateRollupBuildFile(
          planned.plans,
          path.basename(args.modelPath),
@@ -156,7 +169,14 @@ export async function tryCompileRollupCompanion(args: {
             "A #(preaggregate) companion was not built: a `#@` line of the author's files could not be left out of it",
             { modelPath: args.modelPath },
          );
-         return { refused };
+         return {
+            refused,
+            omitted: omittedFromFile(
+               companionHref,
+               plannedNames,
+               "rollup_companion_blanking_failed",
+            ),
+         };
       }
       overlay.set(overlayKey(url.href), text);
       const { runtime, importBaseURL } = await args.getRuntime(overlay);
@@ -181,7 +201,14 @@ export async function tryCompileRollupCompanion(args: {
             error: error instanceof Error ? error.message : String(error),
          },
       );
-      return { refused };
+      return {
+         refused,
+         omitted: omittedFromFile(
+            companionHref,
+            plannedNames,
+            "rollup_companion_failed",
+         ),
+      };
    }
 }
 

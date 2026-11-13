@@ -92,6 +92,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "from_view@<pkg>/m.malloy": {

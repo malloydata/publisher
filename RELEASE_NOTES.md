@@ -25,6 +25,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — The build plan says when it is incomplete: `omittedSources`
+
+A build plan (`GET …/packages/{pkg}/build-plan`, the dry run, and the deprecated `Package.buildPlan`) now carries `omittedSources`, a list of `{ sourceID, reason }`: each source the plan would have held but left out because planning it failed, where before such a source vanished from the plan with only a log line. Failures it reports: a generated companion (the `#@ preaggregate` composite, the `#(preaggregate)` rollup companion, `#(materialize)`, persisted views, the v1 cutover's build copy) that did not compile, and a source whose plan entry could not be projected. `reason` is an open string, a code such as `rollup_companion_failed`, never the failure's message. Empty means every source the package plans is in `sources` or `refusedSources`, so a host can retire a table whose source is absent from both; a non-empty list means keep the tables its entries name. A plan whose only sources were lost this way is now returned rather than read as no plan. A plan from an older Publisher has no `omittedSources`; read that as completeness unknown. See [docs/materialization.md](docs/materialization.md#retiring-tables-the-plan-no-longer-lists). No enum is added.
+
 ## [Unreleased] — (BREAKING) Materialization build metrics: one build counter, and structured run and build events
 
 Three materialization metrics are replaced, and one loses a label. Dashboards or alerts on the old

@@ -81,6 +81,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "daily@<hammer>/ctp/ctp.malloy": {

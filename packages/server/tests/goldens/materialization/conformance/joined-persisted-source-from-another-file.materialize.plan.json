@@ -159,6 +159,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "customer_dim@<pkg>/dims.malloy": {

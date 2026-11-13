@@ -75,6 +75,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "big_orders@<hammer>/fmj/fmj.malloy": {

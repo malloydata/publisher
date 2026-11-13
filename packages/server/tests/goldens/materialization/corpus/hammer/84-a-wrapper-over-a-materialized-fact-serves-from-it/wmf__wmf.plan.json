@@ -42,6 +42,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "_orders_fact@<hammer>/wmf/wmf.malloy": {

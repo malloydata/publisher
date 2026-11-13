@@ -57,6 +57,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "a@<hammer>/prt/prt.malloy": {

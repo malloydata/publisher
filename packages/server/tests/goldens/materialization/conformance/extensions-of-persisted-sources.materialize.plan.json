@@ -110,6 +110,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "base_daily@<pkg>/m.malloy": {

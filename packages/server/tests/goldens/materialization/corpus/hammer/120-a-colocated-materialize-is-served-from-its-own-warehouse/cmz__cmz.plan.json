@@ -93,6 +93,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "big_orders@<hammer>/cmz/cmz.malloy": {

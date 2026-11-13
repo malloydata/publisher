@@ -60,6 +60,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "orders__preagg__category__edb2cd3b@<hammer>/pf/pf.malloy.preagg.malloy": {

@@ -141,8 +141,13 @@ source: orders_public is orders extend { measure: n is count() }
       expect(verdicts.find((v) => v.sourceName === "orders")?.verdict).toBe(
          "not_built",
       );
-      const plan = json.buildPlan as { sources: Record<string, unknown> };
+      const plan = json.buildPlan as {
+         sources: Record<string, unknown>;
+         omittedSources?: unknown[];
+      };
       expect(Object.keys(plan.sources).length).toBe(verdicts.length);
+      // Every source planned: a complete plan says so.
+      expect(plan.omittedSources).toEqual([]);
       expect(await listed()).not.toContain("preview");
 
       // Published, its serving state carries the same verdicts.

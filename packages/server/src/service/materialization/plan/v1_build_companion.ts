@@ -51,6 +51,11 @@ export async function compileV1BuildCompanion(args: {
    modelPath: string;
    getRuntime: SynthesizedRuntimeFactory;
    readText?: (file: string) => string | undefined;
+   /**
+    * Called when the file declares `#@ persist` but its build copy does not
+    * compile, the one undefined that leaves declared sources out of the plan.
+    */
+   onCompileFailed?: (error: unknown) => void;
 }): Promise<{ model: MalloyModel; runtime: Runtime } | undefined> {
    const file = path.resolve(args.packagePath, args.modelPath);
    const text = (
@@ -71,7 +76,8 @@ export async function compileV1BuildCompanion(args: {
       );
       const model = await runtime.loadModel(url, { importBaseURL }).getModel();
       return { model, runtime };
-   } catch {
+   } catch (error) {
+      args.onCompileFailed?.(error);
       return undefined;
    }
 }

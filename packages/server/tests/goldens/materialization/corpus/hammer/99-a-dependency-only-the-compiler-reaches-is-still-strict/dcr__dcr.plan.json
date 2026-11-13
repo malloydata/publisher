@@ -72,6 +72,7 @@
         ]
       }
     ],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "counts@<hammer>/dcr/dcr.malloy": {
