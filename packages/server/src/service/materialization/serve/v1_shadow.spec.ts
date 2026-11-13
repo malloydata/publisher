@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { shadowOutcome } from "./v1_shadow";
+import { installSettings } from "../../../test_helpers/settings_env";
+import {
+   SHADOW_BUDGET_MS,
+   SHADOW_MAX_IN_FLIGHT,
+   shadowBudgetMs,
+   shadowOutcome,
+   ShadowScheduler,
+} from "./v1_shadow";
 
 const field = (
    name: string,
@@ -98,5 +105,60 @@ describe("shadowOutcome", () => {
             },
          ),
       ).toEqual({ outcome: "metadata_differ", detail: "m.type" });
+   });
+});
+
+describe("ShadowScheduler", () => {
+   it("compares a text once, and skips a new one past the server's cap", async () => {
+      const releases: (() => void)[] = [];
+      const run = () =>
+         new Promise<void>((resolve) => {
+            releases.push(resolve);
+         });
+      const a = new ShadowScheduler();
+      const b = new ShadowScheduler();
+      const started = [];
+      for (let i = 0; i < SHADOW_MAX_IN_FLIGHT; i++) {
+         started.push(a.schedule(`q${i}`, run));
+      }
+      expect(started.every((s) => s === "started")).toBe(true);
+      expect(a.schedule("q0", run)).toBe("seen");
+      // The cap is the server's: another model's new text waits its turn.
+      expect(b.schedule("other", run)).toBe("skipped");
+      expect(ShadowScheduler.inFlightForTests()).toBe(SHADOW_MAX_IN_FLIGHT);
+      for (const release of releases.splice(0)) release();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(ShadowScheduler.inFlightForTests()).toBe(0);
+      // Skipped, so not remembered: compared on a later run.
+      expect(b.schedule("other", async () => {})).toBe("started");
+      await new Promise((r) => setTimeout(r, 0));
+   });
+
+   it("frees its place when a comparison fails", async () => {
+      const s = new ShadowScheduler();
+      expect(s.schedule("x", () => Promise.reject(new Error("boom")))).toBe(
+         "started",
+      );
+      await new Promise((r) => setTimeout(r, 0));
+      expect(ShadowScheduler.inFlightForTests()).toBe(0);
+   });
+});
+
+describe("shadowBudgetMs", () => {
+   it("is the shadow budget, or the query timeout when that is shorter", () => {
+      for (const [timeout, want] of [
+         ["0", SHADOW_BUDGET_MS],
+         ["5000", 5000],
+         [String(SHADOW_BUDGET_MS * 4), SHADOW_BUDGET_MS],
+      ] as const) {
+         const { restore } = installSettings({
+            env: { PUBLISHER_QUERY_TIMEOUT_MS: timeout },
+         });
+         try {
+            expect(shadowBudgetMs()).toBe(want);
+         } finally {
+            restore();
+         }
+      }
    });
 });

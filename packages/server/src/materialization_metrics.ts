@@ -207,7 +207,8 @@ const v1ServedCopyShadowCounter = lazyCounter(
       "answered, comparing that answer with the one the v1 cutover would give. " +
       "Label: outcome ('equal' served by the cutover and equal; 'live' the " +
       "cutover would answer live; 'rows_differ'; 'metadata_differ'; 'error' the " +
-      "cutover's run failed). Anything but 'equal' and an expected 'live' is a " +
+      "cutover's run failed or ran past its budget; 'skipped' not compared, past " +
+      "the cap on comparisons at once). Anything but 'equal' and an expected 'live' is a " +
       "shape to fix before the cutover.",
 );
 const queryVariantRoutingCounter = lazyCounter(
@@ -660,7 +661,13 @@ export function recordStorageServeRouting(
 
 /** One shadow comparison's outcome (see v1ServedCopyShadowCounter). */
 export function recordV1ServedCopyShadow(
-   outcome: "equal" | "live" | "rows_differ" | "metadata_differ" | "error",
+   outcome:
+      | "equal"
+      | "live"
+      | "rows_differ"
+      | "metadata_differ"
+      | "error"
+      | "skipped",
 ): void {
    v1ServedCopyShadowCounter().add(1, { outcome });
 }

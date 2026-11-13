@@ -19,8 +19,67 @@
  * and key), never by a value, since the description is logged.
  */
 
+import { getQueryTimeoutMs } from "../../../config";
+
 /** How many query texts a model remembers having compared. */
 export const SHADOW_SEEN_LIMIT = 1000;
+
+/**
+ * How many comparisons run at once on one server; a new query text past it
+ * is left uncompared and counted `skipped`.
+ */
+export const SHADOW_MAX_IN_FLIGHT = 2;
+
+/** The longest a comparison's run may take, in ms. */
+export const SHADOW_BUDGET_MS = 30_000;
+
+/**
+ * Which query texts one model compares, and how many comparisons run at once
+ * on the server: a text is compared once (the most recent
+ * {@link SHADOW_SEEN_LIMIT} are remembered), and a new one past
+ * {@link SHADOW_MAX_IN_FLIGHT} comparisons in flight is skipped, not
+ * remembered, so a later run of it is compared.
+ */
+export class ShadowScheduler {
+   private static inFlight = 0;
+   private readonly seen = new Set<string>();
+
+   /** For specs: the comparisons running on the server now. */
+   static inFlightForTests(): number {
+      return ShadowScheduler.inFlight;
+   }
+
+   /**
+    * Start `run` for `key` unless it was compared already (`seen`) or the
+    * server is at its cap (`skipped`); `started` otherwise. Never throws, and
+    * `run`'s rejection is the caller's to catch.
+    */
+   schedule(
+      key: string,
+      run: () => Promise<void>,
+   ): "started" | "seen" | "skipped" {
+      if (this.seen.has(key)) return "seen";
+      if (ShadowScheduler.inFlight >= SHADOW_MAX_IN_FLIGHT) return "skipped";
+      if (this.seen.size >= SHADOW_SEEN_LIMIT) {
+         const oldest = this.seen.values().next().value;
+         if (oldest !== undefined) this.seen.delete(oldest);
+      }
+      this.seen.add(key);
+      ShadowScheduler.inFlight++;
+      void run()
+         .catch(() => {})
+         .finally(() => {
+            ShadowScheduler.inFlight--;
+         });
+      return "started";
+   }
+}
+
+/** A comparison's budget: {@link SHADOW_BUDGET_MS}, or the query timeout when shorter. */
+export function shadowBudgetMs(): number {
+   const timeout = getQueryTimeoutMs();
+   return timeout > 0 ? Math.min(timeout, SHADOW_BUDGET_MS) : SHADOW_BUDGET_MS;
+}
 
 /** One side of a comparison. */
 export interface ShadowSide {

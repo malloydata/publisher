@@ -248,8 +248,9 @@ import {
 import { type ApiQueryPath } from "./materialization/serve/query_path";
 import { PersistedViewServe } from "./materialization/serve/view_variants";
 import {
-   SHADOW_SEEN_LIMIT,
+   shadowBudgetMs,
    shadowOutcome,
+   ShadowScheduler,
 } from "./materialization/serve/v1_shadow";
 import { sourceChain } from "./materialization/plan/source_map";
 import type { ViewServeVerdict } from "./materialization/serve/serve_verdict";
@@ -471,8 +472,8 @@ export class Model {
    private servedCopyContext:
       | Parameters<ServedCopyServe["setContext"]>
       | undefined;
-   /** Query texts the shadow comparison has run for (bounded; see shadowCompare). */
-   private shadowSeen = new Set<string>();
+   /** The shadow comparisons this model starts (see scheduleShadowCompare). */
+   private shadowScheduler = new ShadowScheduler();
    /**
     * The `#(preaggregate)` rollup leg (materialization v2, phase 4): a router
     * candidate only when `materialize.enabled` is on and a source this model
@@ -4057,9 +4058,9 @@ export class Model {
 
    /**
     * Compare a query a retiring v1 path answered with the v1 cutover's answer
-    * (`PUBLISHER_V1_SERVED_COPY=shadow`), once per query text and model (the
-    * most recent 1,000 texts are remembered), after the caller has its
-    * answer. The second run is governed exactly as the first, writes no
+    * (`PUBLISHER_V1_SERVED_COPY=shadow`), once per query text and model, at
+    * most a few at once per server ({@link ShadowScheduler}), after the
+    * caller has its answer. The second run is governed exactly as the first, writes no
     * access record and records no query metrics; its outcome is logged, with
     * the first difference's place and never a value, and counted
     * (`publisher_v1_served_copy_shadow_total`). Never throws.
@@ -4074,13 +4075,10 @@ export class Model {
          request.queryName ?? null,
          request.query ?? null,
       ]);
-      if (this.shadowSeen.has(key)) return;
-      if (this.shadowSeen.size >= SHADOW_SEEN_LIMIT) {
-         const oldest = this.shadowSeen.values().next().value;
-         if (oldest !== undefined) this.shadowSeen.delete(oldest);
-      }
-      this.shadowSeen.add(key);
-      void this.shadowCompare(request, privileges, today);
+      const scheduled = this.shadowScheduler.schedule(key, () =>
+         this.shadowCompare(request, privileges, today),
+      );
+      if (scheduled === "skipped") recordV1ServedCopyShadow("skipped");
    }
 
    private async shadowCompare(
@@ -4097,11 +4095,15 @@ export class Model {
       try {
          // No metric of the caller's query is counted again (its security,
          // governance, routing and query metrics belong to the run that
-         // answered).
+         // answered), and the run is bounded by its own budget, at most the
+         // query timeout.
          const cut = await withoutMetrics(() =>
             this.runQueryResults(
                shadowRunAudit(),
-               { ...request, abortSignal: undefined },
+               {
+                  ...request,
+                  abortSignal: AbortSignal.timeout(shadowBudgetMs()),
+               },
                privileges,
                { v1Mode: "on", shadowRun: true },
             ),
