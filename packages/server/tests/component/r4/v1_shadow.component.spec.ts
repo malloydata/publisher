@@ -108,8 +108,10 @@ describe("v1 served copy: shadow", () => {
       ["baseline", "storage", "equal"],
       ["baseline", "colocated", "equal"],
       // The cutover reads a v1 rollup as the rollup leg's, under its v2 name
-      // (decision 3), which a package built before it has not built: it
-      // answers live until its next build, and the shadow says so.
+      // (decision 3). Only a build under `on` builds that table: a build under
+      // `shadow` plans and builds the v1 rollup alone, so under `shadow` the
+      // cutover's answer for a v1 rollup is always live, and the shadow says
+      // so. G4 is checked under `on` (the fixture, Credible's CI), not here.
       ["v1 rollup on annotated measures", "colocated", "live"],
    ] as [string, Variant, "equal" | "live"][]) {
       it(`serves ${shapeName} [${variant}] as today and finds the cutover's answer ${outcome}`, async () => {

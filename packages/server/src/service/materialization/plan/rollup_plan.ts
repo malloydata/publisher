@@ -71,6 +71,7 @@ import {
    getV1ServedCopyMode,
 } from "../../../config";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
+import { basePersistNamespace } from "./preaggregation_synthesis";
 import { collectEntryPointGates } from "../../gate_classification";
 import { createHash } from "node:crypto";
 import { ownLevelNotes, type AnnotationNote } from "../../annotations";
@@ -603,6 +604,11 @@ export function planSourceRollups(
    // composite is not. A line v1 reports as unusable is left to v1's own
    // validation.
    if (ctx.readsV1 ?? getV1ServedCopyMode() === "on") {
+      // As v1 places it: a grain naming no namespace (and no storage=) is
+      // created beside its base's own `#@ persist name=`.
+      const inheritedNamespace = basePersistNamespace({
+         annotations: def.annotations,
+      });
       for (const field of fields) {
          const name = fieldNameOf(field);
          if (name === undefined || !isMeasure(field)) continue;
@@ -625,7 +631,10 @@ export function planSourceRollups(
                   : {}),
                ...(grain.namespace !== undefined
                   ? { namespace: grain.namespace }
-                  : {}),
+                  : grain.storage === undefined &&
+                      inheritedNamespace !== undefined
+                    ? { namespace: inheritedNamespace }
+                    : {}),
             });
          }
       }

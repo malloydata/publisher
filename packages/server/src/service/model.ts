@@ -2476,6 +2476,12 @@ export class Model {
          this.modelDef.contents as Record<string, unknown>,
       );
       this.preaggregatePlansVersion += 1;
+      // Under the v1 cutover nothing routes to the composite (G4), so it is
+      // not compiled.
+      if (getV1ServedCopyMode() === "on") {
+         this.preparedPreaggregateCompanion = undefined;
+         return;
+      }
       // The first build after hydration loads the worker-compiled companion
       // (the manifest is read only at prepare time, so this is equivalent).
       // Taken once; later rebuilds compile here.

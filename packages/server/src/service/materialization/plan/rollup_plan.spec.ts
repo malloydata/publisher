@@ -810,3 +810,43 @@ source: orders is ${ROWS} extend {
       expect((await planV1(false)).plans).toEqual([]);
    });
 });
+
+describe("a v1 rollup's namespace under the v1 cutover (second review of #1703)", () => {
+   it("inherits its base's #@ persist name= namespace when its line names none, as v1 places it", async () => {
+      const modelDef = await compile({
+         "orders.malloy": `##! experimental.persistence
+#@ persist name="analytics.orders_tbl"
+source: orders is ${ROWS} -> {
+  select: category, region, amount
+} extend {
+  measure:
+    #@ preaggregate grain="region" namespace="rollups"
+    regional is amount.sum()
+  measure:
+    #@ preaggregate grain="category"
+    total is amount.sum()
+  measure:
+    #@ preaggregate grain="category, region" storage="lake"
+    both is amount.sum()
+}`,
+      });
+      const { plans, refused } = planModelRollups(SourceMap.of(modelDef), {
+         packageRelativeSourceID: (id) => id.replace("file:///pkg/", ""),
+         readsV1: true,
+      });
+      expect(refused).toEqual([]);
+      expect(
+         plans
+            .map((p) => [
+               p.grainDimensions.join(","),
+               p.namespace ?? null,
+               p.storage ?? null,
+            ])
+            .sort(),
+      ).toEqual([
+         ["category", "analytics", null],
+         ["category,region", null, "lake"],
+         ["region", "rollups", null],
+      ]);
+   });
+});
