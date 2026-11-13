@@ -40,7 +40,9 @@ const MAX_DEPTH = 64;
 
 /**
  * The first output column of a compiled query that is one of `annotated`'s
- * joined fields (`annotated` maps a join's name to its annotated fields),
+ * joined fields (`annotated` maps a join's name to its annotated fields,
+ * each named from below the join: `f`, or `k.f` for a field of a record
+ * nested in the join's),
  * with `unreadable` set when a part of the pipeline cannot be read, so a
  * caller fails closed. `pipeline` is the prepared query's `_query.pipeline`
  * (governance/ir/prepared_query.ts reads it); `sourceFields` the queried
@@ -91,7 +93,12 @@ export function annotatedJoinedOutput(
                continue;
             }
             const path = p as string[];
-            if (path.length === 2 && annotated.get(path[0])?.has(path[1])) {
+            // `j.f`, or `j.k.f` through a record nested in `j`'s (a path of
+            // join_manys stored as one pair table), named from below `j`.
+            if (
+               path.length >= 2 &&
+               annotated.get(path[0])?.has(path.slice(1).join("."))
+            ) {
                return { path };
             }
             // A view read by name: its own columns are the query's.

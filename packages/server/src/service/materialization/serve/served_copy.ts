@@ -189,6 +189,47 @@ export interface PairReroot {
     * at build (so a query that sets a timezone over them is answered live).
     */
    childStoredDimensions: readonly string[];
+   /**
+    * For a path of more than one hop (`items.options`): each join past the
+    * first, in order, with its joined source's stored fields, each a record
+    * nested in the one before (`items.options.kind`).
+    */
+   hops?: readonly PairHopColumns[];
+   /**
+    * For a path of more than one hop: the row flag of each level between the
+    * source and the leaf (level 1 first), its stored column and the internal
+    * name it is read under.
+    */
+   levelRows?: readonly { column: ServedColumn; field: string }[];
+   /**
+    * For a table that stores more than one inlined path: which block this
+    * served source reads, and the other blocks' records.
+    */
+   block?: PairBlockReroot;
+}
+
+/** The stored fields of one join past the first of an inlined path. */
+export interface PairHopColumns {
+   join: string;
+   columns: readonly (JoinedColumn & { internalName: string })[];
+}
+
+/**
+ * The block of a multi-path pair table a served source reads: only the rows
+ * marked with its number, so every row is a row of its own path's table.
+ * The other paths' joins are records too, over columns that are null on this
+ * block's rows, so the author's text over them compiles; a query that reads
+ * one is answered from that one's block, never this one's.
+ */
+export interface PairBlockReroot {
+   lane: number;
+   laneColumn: ServedColumn;
+   laneField: string;
+   others: readonly {
+      join: string;
+      childColumns: readonly (JoinedColumn & { internalName: string })[];
+      hops?: readonly PairHopColumns[];
+   }[];
 }
 
 /**
@@ -244,6 +285,12 @@ export interface PairMeasure {
    notes?: readonly string[];
    /** The author's access modifier; absent for a public measure. */
    access?: "internal";
+   /**
+    * The level it aggregates at, when it is a level between the source and
+    * the leaf of a path of more than one hop: re-declared under that level's
+    * row flag. Absent: the source's own fields, under the parent-row flag.
+    */
+   level?: number;
 }
 
 /** One stored column of a re-rooted source. */
@@ -641,7 +688,19 @@ export function rerootDeclaration(
    }
    let pairHead = "";
    if (r.pair) {
-      const replaced = replacePairJoin(extend, r.pair.join, pairRecord(r.pair));
+      let replaced: string | undefined = replacePairJoin(
+         extend,
+         r.pair.join,
+         pairRecord(r.pair.join, r.pair.childColumns, r.pair.hops),
+      );
+      for (const other of r.pair.block?.others ?? []) {
+         if (replaced === undefined) break;
+         replaced = replacePairJoin(
+            replaced,
+            other.join,
+            pairRecord(other.join, other.childColumns, other.hops),
+         );
+      }
       if (replaced === undefined) return undefined;
       pairHead = ` ${pairRenames(r.pair)}`;
       extend = `${replaced}${pairMeasures(r.pair)}`;
@@ -716,50 +775,100 @@ function servedExtend(
    return extend;
 }
 
+/** Every stored column a pair table's served source renames internally. */
+function pairStoredColumns(
+   pair: PairReroot,
+): { column: string; internalName: string }[] {
+   const joined = (
+      childColumns: readonly (JoinedColumn & { internalName: string })[],
+      hops: readonly PairHopColumns[] | undefined,
+   ) => [...childColumns, ...(hops ?? []).flatMap((h) => h.columns)];
+   return [
+      { column: pair.parentRowColumn.name, internalName: pair.parentRowField },
+      ...(pair.levelRows ?? []).map((l) => ({
+         column: l.column.name,
+         internalName: l.field,
+      })),
+      ...(pair.block
+         ? [
+              {
+                 column: pair.block.laneColumn.name,
+                 internalName: pair.block.laneField,
+              },
+           ]
+         : []),
+      ...joined(pair.childColumns, pair.hops),
+      ...(pair.block?.others ?? []).flatMap((o) =>
+         joined(o.childColumns, o.hops),
+      ),
+   ];
+}
+
 /**
- * The extend block that opens a pair table's served source: the flag and each
- * child column renamed internally, so the record and the re-declared measures
- * read them and no query does.
+ * The extend block that opens a pair table's served source: the flags and
+ * each child column renamed internally, so the record and the re-declared
+ * measures read them and no query does; for a block of a multi-path table,
+ * the rows of that block only.
  */
 function pairRenames(pair: PairReroot): string {
-   const renames = [
-      `    ${identifier(pair.parentRowField)} is ${identifier(pair.parentRowColumn.name)}`,
-      ...pair.childColumns.map(
+   const renames = pairStoredColumns(pair)
+      .map(
          (c) => `    ${identifier(c.internalName)} is ${identifier(c.column)}`,
-      ),
-   ].join("\n");
-   return `extend {\n  internal rename:\n${renames}\n}`;
+      )
+      .join("\n");
+   const lane = pair.block
+      ? `\n  where: ${identifier(pair.block.laneField)} = ${Math.trunc(pair.block.lane)}`
+      : "";
+   return `extend {\n  internal rename:\n${renames}${lane}\n}`;
 }
 
 /**
  * The record a pair table's join_many is replaced by: `<join> is { <field> is
  * <internal column>, … }`, a timeframe field truncated again as its stored
- * value was.
+ * value was, and for a path of more than one hop each further join a record
+ * nested in the one before.
  */
-function pairRecord(pair: PairReroot): string {
-   // malloy-text: names through identifier and a timeframe from TIMEFRAMES
-   const kids = pair.childColumns
-      .map(
-         (c) =>
-            `    ${identifier(c.name)} is ${identifier(c.internalName)}` +
-            (c.timeframe && TIMEFRAMES.has(c.timeframe)
-               ? `.${c.timeframe}`
-               : ""),
-      )
-      .join(",\n");
-   return `dimension: ${identifier(pair.join)} is {\n${kids}\n  }`;
+function pairRecord(
+   join: string,
+   childColumns: readonly (JoinedColumn & { internalName: string })[],
+   hops: readonly PairHopColumns[] | undefined,
+): string {
+   const field = (c: JoinedColumn & { internalName: string }, pad: string) =>
+      // malloy-text: names through identifier and a timeframe from TIMEFRAMES
+      `${pad}${identifier(c.name)} is ${identifier(c.internalName)}` +
+      (c.timeframe && TIMEFRAMES.has(c.timeframe) ? `.${c.timeframe}` : "");
+   const level = (k: number, pad: string): string => {
+      const columns = k === 0 ? childColumns : (hops ?? [])[k - 1].columns;
+      const items = columns.map((c) => field(c, pad));
+      if (k < (hops?.length ?? 0)) {
+         const next = (hops ?? [])[k];
+         items.push(
+            `${pad}${identifier(next.join)} is {\n${level(k + 1, `${pad}  `)}\n${pad}}`,
+         );
+      }
+      return items.join(",\n");
+   };
+   return `dimension: ${identifier(join)} is {\n${level(0, "    ")}\n  }`;
 }
 
 /**
  * The extend block that closes a pair table's served source: each measure
- * over the source's own fields renamed internally and declared again, under
- * its own name, annotations and access, over the rows the parent-row flag
- * marks. A measure that reads it by name (a ratio of two, a view) reads the
- * re-declared one. Empty when there is none.
+ * over one level above the leaf (the source's own fields, or a level between
+ * it and the leaf of a longer path) renamed internally and declared again,
+ * under its own name, annotations and access, over the rows that level's
+ * flag marks. A measure that reads it by name (a ratio of two, a view) reads
+ * the re-declared one. Empty when there is none.
  */
 function pairMeasures(pair: PairReroot): string {
    if (pair.parentMeasures.length === 0) return "";
-   const flag = identifier(pair.parentRowField);
+   const flagOf = (m: PairMeasure) => {
+      const level = m.level ?? 0;
+      return identifier(
+         level === 0
+            ? pair.parentRowField
+            : ((pair.levelRows ?? [])[level - 1]?.field ?? pair.parentRowField),
+      );
+   };
    const renames = pair.parentMeasures
       .map((m) => `    ${identifier(m.internalName)} is ${identifier(m.name)}`)
       .join("\n");
@@ -771,7 +880,7 @@ function pairMeasures(pair: PairReroot): string {
          .map(
             (m) =>
                notes(m) +
-               `    ${identifier(m.name)} is ${identifier(m.internalName)} { where: ${flag} }`,
+               `    ${identifier(m.name)} is ${identifier(m.internalName)} { where: ${flagOf(m)} }`,
          )
          .join("\n");
    const visible = pair.parentMeasures.filter((m) => m.access === undefined);
@@ -1093,6 +1202,37 @@ export function typeDeclaration(
 }
 
 /**
+ * The stored columns a pair table's served source reads, beside the
+ * source's own: its flags, its block column, and every child column of every
+ * path it records, each carrying its field's annotations, so the record's
+ * fields, derived from it, keep its classification (a record's own fields
+ * cannot be annotated).
+ */
+function pairTypedColumns(pair: PairReroot): ServedColumn[] {
+   const joined = (c: JoinedColumn): ServedColumn => ({
+      name: c.column,
+      type: c.type,
+      ...(c.notes ? { notes: c.notes } : {}),
+   });
+   const record = (
+      childColumns: readonly JoinedColumn[],
+      hops: readonly PairHopColumns[] | undefined,
+   ) => [
+      ...childColumns.map(joined),
+      ...(hops ?? []).flatMap((h) => h.columns.map(joined)),
+   ];
+   return [
+      pair.parentRowColumn,
+      ...(pair.levelRows ?? []).map((l) => l.column),
+      ...(pair.block ? [pair.block.laneColumn] : []),
+      ...record(pair.childColumns, pair.hops),
+      ...(pair.block?.others ?? []).flatMap((o) =>
+         record(o.childColumns, o.hops),
+      ),
+   ];
+}
+
+/**
  * Insert the compiler flag and the `type:` declarations after the file's
  * leading model annotations (`##` lines), blank lines and comments, so no
  * statement's own annotations (`#@ persist`, `#(authorize)`) are separated
@@ -1125,15 +1265,7 @@ function withTypes(text: string, applied: readonly Reroot[]): string {
                     // the record's fields, derived from it, keep its
                     // classification (a record's own fields cannot be
                     // annotated).
-                    columns: [
-                       ...r.columns,
-                       r.pair.parentRowColumn,
-                       ...r.pair.childColumns.map((c) => ({
-                          name: c.column,
-                          type: c.type,
-                          ...(c.notes ? { notes: c.notes } : {}),
-                       })),
-                    ],
+                    columns: [...r.columns, ...pairTypedColumns(r.pair)],
                  }
                : r,
          ),
