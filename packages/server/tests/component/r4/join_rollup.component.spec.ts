@@ -783,7 +783,7 @@ source: legs is duckdb.table('legs_raw') extend {
    });
 });
 
-describe("R4: join-to-rollup (A7) declines a joined source's rollup in a storage destination", () => {
+describe("R4: join-to-rollup (A7) declines a joined source's rollup in a storage destination the query source is not stored in", () => {
    let restore: () => void;
    let fixture: R4Fixture;
    beforeAll(async () => {
@@ -1009,6 +1009,12 @@ source: flights_la is flights extend { timezone: 'America/Los_Angeles' }
       [
          "a non-unique join_one's own measure, by parent dimensions",
          "run: flights -> { group_by: carrier, id; aggregate: crew_dup.crew_size }",
+      ],
+      // A source with its own time zone keeps its rollup only for this read
+      // (#1686's decision 1): a join from a source in the same zone.
+      [
+         "a joined source with its own time zone, from a query source in the same zone",
+         "run: flights_la -> { group_by: segs_la.seg_day; aggregate: segs_la.seg_miles }",
       ],
    ] as const) {
       it(`serves ${name}`, async () => {

@@ -45,6 +45,9 @@ const seedSql = [
       ('globex', 'tin', 'G-tin'),
       ('initech', 'gold', 'I-gold')
     ) AS t(org, tier, label)`,
+   `CREATE TABLE labels AS SELECT * FROM (VALUES
+      ('acme', 'A'), ('globex', 'G'), ('initech', 'I')
+    ) AS t(org, letter)`,
 ];
 
 const HEAD = `##! experimental { givens access_modifiers }
@@ -59,15 +62,28 @@ source: far_base is duckdb.sql("select * from ev") extend {
 }
 `;
 
+// A same-named base in a third file, over the same table with a narrower term:
+// imported under another name and renamed here, its term is in another file.
+const thirdFile = `##! experimental { givens access_modifiers }
+import "other.malloy"
+
+source: base is duckdb.table('ev') extend {
+  where: org = $ORG and tier = 'gold'
+}
+`;
+
 // The given is declared once, in other.malloy, which this file imports.
 const modelOver = (
    ev: string,
    tiers: string,
+   labels: string,
 ) => `##! experimental { givens access_modifiers }
 import "other.malloy"
+import { obase is base } from "third.malloy"
 
 source: ev is ${ev}
 source: tiers is ${tiers}
+source: labels is ${labels}
 
 source: base is ev extend {
   where: org = $ORG
@@ -167,6 +183,36 @@ source: three_terms is mid extend {
   measure: total is amt.sum()
 }
 
+// A middle source's own join, and the source's own join, over the scoped
+// base; and a rename of a middle source with its own term.
+source: with_join is base extend {
+  join_one: l is labels on l.org = org
+}
+#(materialize) storage="lake" inline=["l"]
+source: own_join is with_join extend { measure: total is amt.sum() }
+#(materialize) storage="lake" inline=["l"]
+source: own_join_direct is b2 extend {
+  join_one: l is labels on l.org = org
+  measure: total is amt.sum()
+}
+source: mid_r is mid
+#(materialize) storage="lake"
+source: rename_where is mid_r extend { measure: total is amt.sum() }
+
+// A chain of bare renames, a rename of an extension that adds no term, and
+// a rename of a same-named base declared in another file.
+source: b5 is b2
+source: b6 is b5
+#(materialize) storage="lake"
+source: bare_chain is b6 extend { measure: total is amt.sum() }
+source: mid2 is base extend { dimension: q is 1 }
+source: mid2_r is mid2
+#(materialize) storage="lake"
+source: rename_ext is mid2_r extend { measure: total is amt.sum() }
+source: ob2 is obase
+#(materialize) storage="lake"
+source: other_base is ob2 extend { measure: total is amt.sum() }
+
 // A rolling window of the source's own over the scoped base.
 #(materialize) storage="lake"
 source: rolling is base extend {
@@ -232,27 +278,41 @@ async function asEachCaller(
 
 // Over a table and over a SQL source: Malloy records an extension's base
 // differently for each, and the kept walk reads both.
-// What each shape builds. Over a table, Malloy records no base edge for an
-// extension, and the walk infers it only while the extension adds no
-// `where:` or join and is not a rename (`b2 is base`), so those are refused
-// and served live there, fail closed.
-const BUILT_EVERYWHERE = ["hidden", "mixed", "plain", "two_blocks"];
-for (const [shape, ev, tiers, expectedBuilt] of [
-   ["table", "duckdb.table('ev')", "duckdb.table('tiers')", BUILT_EVERYWHERE],
+// Each shape builds the same: over a table, Malloy records no base edge for
+// an extension, and the walk infers it, through a rename (`b2 is base`) and
+// past an extension's own `where:` or join, as it reads the SQL source's.
+const BUILT = [
+   "bare_chain",
+   "rename_ext",
+   "hidden",
+   "mixed",
+   "own_join",
+   "own_join_direct",
+   "plain",
+   "rename_chain",
+   "rename_where",
+   "renamed_ext",
+   "rolling",
+   "three_terms",
+   "two_blocks",
+];
+for (const [shape, ev, tiers, labels, expectedBuilt] of [
+   [
+      "table",
+      "duckdb.table('ev')",
+      "duckdb.table('tiers')",
+      "duckdb.table('labels')",
+      BUILT,
+   ],
    [
       "sql",
       'duckdb.sql("select * from ev")',
       'duckdb.sql("select * from tiers")',
-      [
-         ...BUILT_EVERYWHERE,
-         "rename_chain",
-         "renamed_ext",
-         "rolling",
-         "three_terms",
-      ],
+      'duckdb.sql("select * from labels")',
+      BUILT,
    ],
 ] as const) {
-   const model = modelOver(ev, tiers);
+   const model = modelOver(ev, tiers, labels);
    describe(`R4 adversarial: a base scoped by a given, with a defaulted given (over a ${shape})`, () => {
       let restore: () => void;
       let fixture: R4Fixture;
@@ -262,7 +322,11 @@ for (const [shape, ev, tiers, expectedBuilt] of [
             env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
          }).restore;
          fixture = await buildScenario({
-            files: { "m.malloy": model, "other.malloy": otherFile },
+            files: {
+               "m.malloy": model,
+               "other.malloy": otherFile,
+               "third.malloy": thirdFile,
+            },
             seedSql,
             materialize: true,
             clock: B,
@@ -374,6 +438,36 @@ for (const [shape, ev, tiers, expectedBuilt] of [
          [
             "rolling",
             "run: rolling -> { group_by: org; aggregate: total }",
+            true,
+         ],
+         [
+            "own_join",
+            "run: own_join -> { group_by: org, l.letter, mine; aggregate: total }",
+            true,
+         ],
+         [
+            "own_join_direct",
+            "run: own_join_direct -> { group_by: org, l.letter, tag; aggregate: total, mine_total }",
+            true,
+         ],
+         [
+            "rename_where",
+            "run: rename_where -> { group_by: org, tier, mine; aggregate: total }",
+            true,
+         ],
+         [
+            "bare_chain",
+            "run: bare_chain -> { group_by: org, mine, tag; aggregate: total, mine_total }",
+            true,
+         ],
+         [
+            "rename_ext",
+            "run: rename_ext -> { group_by: org, q, mine; aggregate: total }",
+            true,
+         ],
+         [
+            "other_base",
+            "run: other_base -> { group_by: org, tier; aggregate: total }",
             true,
          ],
          [

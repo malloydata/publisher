@@ -72,6 +72,7 @@ import {
    type ServedCopyProblem,
 } from "./serve/served_copy_serve";
 import { deriveColocatedServeBindings } from "./serve/colocated_bindings";
+import { namesServedCopyAlias } from "./serve/served_copy_config";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import {
    computeServeVerdicts,
@@ -168,6 +169,13 @@ export const BUILD_PLAN_REFRESH_WAIT_MS = 10_000;
  * annotation finding: the annotation is well formed.
  */
 export const PERSIST_SOURCE_REFUSED_CODE = "persist-source-refused";
+
+/**
+ * The code on the warning for a rollup whose build found its join_one key
+ * repeated ({@link PackageMaterialization.repeatedJoinOneKeyWarnings}).
+ */
+export const PREAGGREGATE_JOIN_ONE_KEY_REPEATED_CODE =
+   "preaggregate-join-one-key-repeated";
 
 /** The live serve verdicts the path report reads, by table and by source. */
 interface LiveVerdicts {
@@ -1271,6 +1279,47 @@ export class PackageMaterialization {
    }
 
    /**
+    * One warning per bound `#(preaggregate)` rollup whose last build found its
+    * join_one key repeated (known limitation 29's check, `keyUniqueness`
+    * false): the data breaks a `join_one` declared on that key, so queries
+    * that read it beside other aggregates are answered live, and live itself
+    * counts each parent once per repeated row. Recomputed from what is bound,
+    * so it clears once a build finds the key unique, or forgets the check.
+    */
+   repeatedJoinOneKeyWarnings(): ApiPackageWarning[] {
+      const warnings: ApiPackageWarning[] = [];
+      const bySourceEntity = new Map(
+         Object.values(this.buildPlan?.sources ?? {}).flatMap((source) =>
+            source.sourceEntityId ? [[source.sourceEntityId, source]] : [],
+         ),
+      );
+      for (const [sourceEntityId, entry] of Object.entries(
+         this.freshnessEntries ?? {},
+      )) {
+         const check = entry.keyUniqueness;
+         if (!check || check.unique) continue;
+         const rollup = bySourceEntity.get(sourceEntityId)?.preaggregate;
+         if (!rollup) continue;
+         const source = bySourceEntity.get(sourceEntityId);
+         warnings.push({
+            ...(source?.modelPath ? { model: source.modelPath } : {}),
+            subject: rollup.baseSourceName,
+            code: PREAGGREGATE_JOIN_ONE_KEY_REPEATED_CODE,
+            severity: "warn",
+            message:
+               `holds \`${check.keyColumn}\` more than once, found by its ` +
+               `#(preaggregate) rollup's last build (grain ` +
+               `${rollup.grainDimensions.join(", ")}): a join_one keyed on it ` +
+               `is not unique in the data, so live repeats each joining row ` +
+               `once per match. Queries that read that join_one beside other ` +
+               `aggregates are answered live. Fix the data or declare the ` +
+               `join as join_many.`,
+         });
+      }
+      return warnings;
+   }
+
+   /**
     * Warnings for the `#@ persist` sources the compile-time gates refused,
     * coded {@link PERSIST_SOURCE_REFUSED_CODE}. Not an annotation finding: the
     * annotation is well formed; the source it sits on cannot be materialized.
@@ -2207,12 +2256,14 @@ function withoutChangedConnections(
 /**
  * The compiler's own reasons in a compile error, as `: <reason>; <reason>.`:
  * each diagnostic's message without its file and source excerpt, so a package
- * warning names why without the server's paths. `.` when there are none.
+ * warning names why without the server's paths. A reason that names a
+ * served-copy alias (a join refused across connections) is left out: the
+ * alias stays in the server log. `.` when there are none.
  */
 function compilerReasons(detail: string | undefined): string {
-   const reasons = [...(detail ?? "").matchAll(/^line \d+: (.+)$/gm)].map((m) =>
-      m[1].trim(),
-   );
+   const reasons = [...(detail ?? "").matchAll(/^line \d+: (.+)$/gm)]
+      .map((m) => m[1].trim())
+      .filter((reason) => !namesServedCopyAlias(reason));
    return reasons.length > 0 ? `: ${reasons.join("; ")}.` : ".";
 }
 
@@ -2237,6 +2288,11 @@ function servedCopyProblemMessage(
          return "This source inlines a join_many that is not declared on its own in its own trailing `extend` (a source it is built from declares it, or its `join_many:` statement declares other joins too), so its pair table cannot be read with the join as a record and the served copy leaves it as written.";
       case "pair_not_compiled":
          return "This source's pair table (an inlined join_many) could not be read as the source with its join as a record (its text reads a measure or view of the joined source through the join, which the record does not carry), so the served copy leaves it as written.";
+      case "reroot_not_compiled":
+         return (
+            "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message)." +
+            " The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it."
+         );
       case "read_terms_not_kept":
          return "This source filters by a given in a place its stored table cannot keep, or is filtered and reached here only through a join, so the served copy leaves it as written rather than answer every caller alike.";
       case "fields_not_carried":

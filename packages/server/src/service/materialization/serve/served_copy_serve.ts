@@ -99,6 +99,12 @@ import {
    storedMalloyType,
 } from "./served_copy";
 import { servedCopyConfig, servedCopyAlias } from "./served_copy_config";
+import {
+   failingReroots,
+   rerootKey,
+   type TraceMode,
+} from "./served_copy_containment";
+import { logger } from "../../../logger";
 import { lexAll, offsetOf } from "../malloy_lexer";
 import { confirmedAncestors, keptAncestorChain } from "../kept_ancestors";
 import { classificationFindingsBySource } from "../../classification_findings";
@@ -245,6 +251,7 @@ export interface ServedCopyProblem {
       | "read_terms_not_kept"
       | "cross_connection_join"
       | "inline_join_kept"
+      | "reroot_not_compiled"
       | "classification_not_kept";
    /**
     * For `cross_connection_join`: the join the served copy leaves out, because
@@ -362,6 +369,13 @@ interface Compiled {
     * with reason `cross_connection`.
     */
    leftOut?: readonly LeftOutDefinition[];
+   /**
+    * The overlay the copy compiled from (the re-rooted files, by overlay
+    * key) and the connections it compiled with: the join-to-rollup leg
+    * compiles a variant over the same files (see {@link ServedCopyServe.joinRollupBasis}).
+    */
+   files?: ReadonlyMap<string, string>;
+   config?: ModelConnectionInput;
 }
 
 /**
@@ -380,6 +394,36 @@ type AuthorReroot = Reroot & {
     */
    storesZonedDimension?: true;
 };
+
+/**
+ * What the join-to-rollup leg reads of a compiled served copy, to answer a
+ * query in a storage destination (see {@link ServedCopyServe.joinRollupBasis}).
+ */
+export interface ServedCopyJoinBasis {
+   /** The compiled copy's identity: a variant over it is cached under this. */
+   key: string;
+   /** The re-rooted files, by overlay key, as the copy compiled them. */
+   files: ReadonlyMap<string, string>;
+   /** The connections the copy compiled with: the package's and its destinations under their aliases. */
+   config: ModelConnectionInput;
+   /** The copy's compiled model, for reading only. */
+   modelDef: unknown;
+   /** The bindings the copy re-rooted. */
+   rerooted: readonly ServeBinding[];
+   /** The same, each under the connection the copy reads it through (for the virtual map). */
+   aliased: readonly ServeBinding[];
+   /** The definitions the copy left out because a join they read crosses connections. */
+   leftOut: readonly LeftOutDefinition[];
+   /** The copy's checks on a query a variant over it answers; throws a {@link ServedCopyDecline}. */
+   check(args: {
+      /** The query source's author `sourceID`. */
+      sourceID: string;
+      runnable: QueryMaterializer;
+      queryString: string;
+      /** The re-rooted tables the variant's SQL reads. */
+      tablesRead: readonly ServeBinding[];
+   }): Promise<void>;
+}
 
 /** How many declined queries one compiled copy remembers before starting over. */
 const DECLINED_LIMIT = 1000;
@@ -697,42 +741,14 @@ export class ServedCopyServe {
       for (const p of pairsRead) {
          annotated.set(p.pair.join, p.annotatedChildFields);
       }
-      if (inlined.size > 0) {
-         const grain = joinGrainAggregatePaths(await prepared());
-         if (
-            grain.unreadable ||
-            grain.paths.some((p) => p.some((name) => inlined.has(name))) ||
-            readsJoinStar(queryString, inlined)
-         ) {
-            decline(
-               "the query aggregates at the grain of a join the served copy answers from stored columns",
-               "count_semantics",
-               JOIN_GRAIN_DETAIL,
-            );
-         }
-      }
-      // A record literal's field carries no annotation onto a result, so a
-      // query that returns an annotated joined field as a column (its
-      // `#(doc)`, `#(classification)`, render tags) is answered live, and
-      // every other query keeps the table: one check for both legs, before
-      // the pair table's own.
-      if ([...annotated.values()].some((f) => f.size > 0)) {
-         const { structRef, pipeline } = await prepared();
-         const struct = resolveStructRefSource<{ fields?: unknown }>(
-            structRef,
-            compiled.modelDef as never,
-         );
-         const out = annotatedJoinedOutput(pipeline, struct?.fields, annotated);
-         if (out.unreadable || out.output) {
-            decline(
-               out.output
-                  ? `the query returns ${out.output.path.join(".")}, whose annotations the served copy's record of stored columns cannot carry`
-                  : "the query's output columns cannot be read",
-               "joined_annotations",
-               JOINED_ANNOTATIONS_DETAIL,
-            );
-         }
-      }
+      await checkRecordJoins({
+         inlined,
+         annotated,
+         prepared,
+         modelDef: compiled.modelDef,
+         queryString,
+         decline,
+      });
       // A pair table (an inlined join_many) is read flat: exact only for the
       // aggregates pair_flat_query.ts proves, and only as the queried
       // source's own table, never through a join to it (its rows would fan
@@ -829,6 +845,113 @@ export class ServedCopyServe {
             runtime: compiled.runtime,
          },
       };
+   }
+
+   /**
+    * What the join-to-rollup leg (A7) builds on to answer a query in a
+    * storage destination (known limitation 26): the copy's re-rooted files
+    * and connections, over which it compiles the query's source with one
+    * join re-pointed at a joined source's rollup in the same destination,
+    * and the checks this copy runs on a query it answers, for the tables
+    * that variant reads. Undefined when the copy re-roots nothing.
+    */
+   async joinRollupBasis(): Promise<ServedCopyJoinBasis | undefined> {
+      const compiled = await this.ensureCompiled();
+      const { materializer, files, config } = compiled;
+      if (
+         !materializer ||
+         !files ||
+         !config ||
+         compiled.rerooted.length === 0
+      ) {
+         return undefined;
+      }
+      return {
+         key: `${compiled.generation}\u0000${compiled.key}`,
+         files,
+         config,
+         modelDef: compiled.modelDef,
+         rerooted: compiled.rerooted,
+         aliased: compiled.aliased,
+         leftOut: compiled.leftOut ?? [],
+         check: (args) => this.checkJoinVariant(compiled, args),
+      };
+   }
+
+   /**
+    * The served copy's own checks on a query a join-to-rollup variant
+    * compiled over it answers (see {@link joinRollupBasis}): the queried
+    * source must not opt out of persist or be one whose served surface the
+    * load-time classification checks flag; a pair table is never read
+    * through it (its rows fan out per child, and the join would read the
+    * rollup once per pair row); a join the copy answers from stored columns
+    * keeps its grain and annotation rules. The copy's time-zone rule needs
+    * no check here: the join leg declines every query that sets a
+    * `timezone:` (`TIME_ZONE`) before it compiles one. Throws a
+    * {@link ServedCopyDecline}.
+    */
+   private async checkJoinVariant(
+      compiled: Compiled,
+      args: {
+         sourceID: string;
+         runnable: QueryMaterializer;
+         queryString: string;
+         tablesRead: readonly ServeBinding[];
+      },
+   ): Promise<void> {
+      const decline = (
+         reason: string,
+         code: ServedCopyDeclineCode,
+         callerDetail?: string,
+      ): never => {
+         throw new ServedCopyDecline(reason, code, callerDetail);
+      };
+      const map = SourceMap.of(compiled.modelDef);
+      const node = map.node(args.sourceID);
+      const chain = node ? map.chainOf(node.def) : [args.sourceID];
+      if (chain.some((id) => compiled.unsafeIDs?.has(id))) {
+         decline(
+            "the query reads a source whose served copy exposes a field the compile of record does not classify or carry",
+            "not_served",
+         );
+      }
+      if (chain.some((id) => compiled.optOutIDs?.has(id))) {
+         decline(
+            "the query reads a source that opts out of persist",
+            "opt_out",
+         );
+      }
+      const { tablesRead } = args;
+      if (
+         (compiled.pairs ?? []).some((p) =>
+            tablesRead.some((b) => b.tablePath === p.tablePath),
+         )
+      ) {
+         decline(
+            "the query reads a pair table, which holds its source once per child of its inlined join_many",
+            "pair_shape",
+         );
+      }
+      let preparedRead: ReturnType<typeof readPreparedQuery> | undefined;
+      const prepared = () =>
+         (preparedRead ??= readPreparedQuery(args.runnable));
+      const inlined = new Set<string>();
+      const annotated = new Map<string, ReadonlySet<string>>();
+      for (const b of tablesRead) {
+         for (const [join, fields] of compiled.inlinedJoins?.get(b.tablePath) ??
+            []) {
+            inlined.add(join);
+            annotated.set(join, fields);
+         }
+      }
+      await checkRecordJoins({
+         inlined,
+         annotated,
+         prepared,
+         modelDef: (await prepared()).modelDef ?? compiled.modelDef,
+         queryString: args.queryString,
+         decline,
+      });
    }
 
    /** Whether a binding stores a `#(materialize)` source with a rolling window. */
@@ -1245,11 +1368,14 @@ export class ServedCopyServe {
       // cause).
       let inlinedKept: ServedCopyProblem[] = [];
       let pairsDropped: ServedCopyProblem[] = [];
-      // At most one pass per candidate: each pass either compiles with every
-      // remaining source whole, or drops the sources it lost fields on; and
-      // one more each that keeps inlined joins as written and drops the pair
-      // tables.
-      for (let pass = 0; pass <= candidates.length + 2; pass++) {
+      // At most three passes per candidate: each pass either compiles with
+      // every remaining source whole, or takes one step down a source's
+      // ladder (its inlined joins kept as written, its kept blocks dropped,
+      // the source dropped: see `contain`), or drops the sources it lost
+      // fields on; and one more each that keeps every inlined join as written
+      // and drops the pair tables.
+      const maxPasses = 3 * candidates.length + 3;
+      for (let pass = 0; pass <= maxPasses; pass++) {
          const copy = buildServedCopy(
             candidates.map((c) => c.reroot),
             (u) => lift.fileText(u),
@@ -1320,6 +1446,7 @@ export class ServedCopyServe {
          let servedDef: unknown;
          let servedRuntime: GraftRuntime;
          let leftOut: LeftOutDefinition[] = [];
+         let files: ReadonlyMap<string, string> = overlay;
          // The record that replaces an inlined join is the one text the
          // served copy writes over a join's place; when the copy does not
          // compile with it (the source's own text reads the join in a way
@@ -1331,20 +1458,105 @@ export class ServedCopyServe {
             if (!candidates.some((c) => c.reroot.inlinedJoins)) return false;
             const detail =
                error instanceof Error ? error.message : String(error);
-            inlinedKept = candidates.flatMap((c) =>
-               (c.reroot.inlinedJoins ?? []).map((j) => ({
-                  sourceName: c.reroot.sourceName,
-                  reason: "inline_join_kept" as const,
-                  join: j.join,
-                  detail,
-               })),
+            // Added to, not replaced: a join containment already kept as
+            // written for its own source (see `contain`) stays reported.
+            const reported = new Set(
+               inlinedKept.map((p) => `${p.sourceName}\u0000${p.join}`),
             );
+            inlinedKept = [
+               ...inlinedKept,
+               ...candidates.flatMap((c) =>
+                  (c.reroot.inlinedJoins ?? [])
+                     .filter(
+                        (j) =>
+                           !reported.has(
+                              `${c.reroot.sourceName}\u0000${j.join}`,
+                           ),
+                     )
+                     .map((j) => ({
+                        sourceName: c.reroot.sourceName,
+                        reason: "inline_join_kept" as const,
+                        join: j.join,
+                        detail,
+                     })),
+               ),
+            ];
             candidates = candidates.map((c) => {
                if (!c.reroot.inlinedJoins) return c;
                const { inlinedJoins: _kept, ...reroot } = c.reroot;
                return { ...c, reroot };
             });
             return true;
+         };
+         // Containment (served_copy_containment.ts): a failure traced to one
+         // re-root's own text costs that source alone. Its ladder: a source
+         // that inlines join_ones keeps them as written first (the record is
+         // the one text the copy writes over a join's place, as
+         // keepInlinedJoins below, but for this source only); an extension
+         // table falls back to its own blocks (or to as written); any other
+         // source is dropped and answers live, with a coded warning. Each
+         // step is one pass; the rest of the model compiles again.
+         const contain = (
+            error: unknown,
+            files: ReadonlyMap<string, string>,
+            mode: TraceMode,
+         ): boolean => {
+            const failing = new Map(
+               failingReroots(error, files, copy.spans, mode).map((f) => [
+                  rerootKey(f.url, f.sourceName),
+                  f,
+               ]),
+            );
+            if (failing.size === 0) return false;
+            const detail =
+               error instanceof Error ? error.message : String(error);
+            let changed = false;
+            candidates = candidates.flatMap((c) => {
+               const f = failing.get(
+                  rerootKey(c.reroot.url, c.reroot.sourceName),
+               );
+               if (!f) return [c];
+               changed = true;
+               logger.warn(
+                  "A re-root does not compile in the served copy; that source alone steps back",
+                  {
+                     modelPath: this.host.modelPath(),
+                     sourceName: c.reroot.sourceName,
+                     problem: f.message,
+                  },
+               );
+               if (c.reroot.inlinedJoins?.length) {
+                  inlinedKept.push(
+                     ...c.reroot.inlinedJoins.map((j) => ({
+                        sourceName: c.reroot.sourceName,
+                        reason: "inline_join_kept" as const,
+                        join: j.join,
+                        detail,
+                     })),
+                  );
+                  const { inlinedJoins: _kept, ...reroot } = c.reroot;
+                  const next = { ...c, reroot };
+                  if (withoutKept.has(c)) {
+                     withoutKept.set(next, withoutKept.get(c));
+                     withoutKept.delete(c);
+                  }
+                  return [next];
+               }
+               problems.push({
+                  sourceName: c.reroot.sourceName,
+                  reason: c.reroot.pair
+                     ? "pair_not_compiled"
+                     : "reroot_not_compiled",
+                  detail,
+               });
+               if (withoutKept.has(c)) {
+                  const fallback = withoutKept.get(c);
+                  withoutKept.delete(c);
+                  return fallback ? [fallback] : [];
+               }
+               return [];
+            });
+            return changed;
          };
          try {
             ({
@@ -1353,6 +1565,7 @@ export class ServedCopyServe {
                runtime: servedRuntime,
             } = await load(overlay));
          } catch (err) {
+            if (contain(err, copy.files, "precise")) continue;
             // A reference join the re-root moved across connections (question
             // 11): leave it out, with what reads it, so every other query
             // still reads the table.
@@ -1405,6 +1618,7 @@ export class ServedCopyServe {
                   withoutKept.clear();
                   continue;
                }
+               if (contain(err, copy.files, "last_resort")) continue;
                problems.push({
                   reason: classifyServedCopyFailure(err),
                   detail,
@@ -1419,16 +1633,19 @@ export class ServedCopyServe {
                };
             }
             try {
+               files = keyedOverlay(kept.overlay);
                ({
                   materializer,
                   def: servedDef,
                   runtime: servedRuntime,
-               } = await load(keyedOverlay(kept.overlay)));
+               } = await load(files));
             } catch (again) {
+               if (contain(again, kept.overlay, "precise")) continue;
                if (keepInlinedJoins(again)) continue;
                const detail =
                   again instanceof Error ? again.message : String(again);
                if (withoutPairs(detail)) continue;
+               if (contain(again, kept.overlay, "last_resort")) continue;
                problems.push({ reason: "compile_failed", detail });
                return {
                   key,
@@ -1441,7 +1658,12 @@ export class ServedCopyServe {
             }
             leftOut = kept.leftOut;
          }
-         problems.push(...inlinedKept);
+         // Only a join of a source still re-rooted was kept for it.
+         problems.push(
+            ...inlinedKept.filter((p) =>
+               candidates.some((c) => c.reroot.sourceName === p.sourceName),
+            ),
+         );
          inlinedKept = [];
          problems.push(...pairsDropped);
          pairsDropped = [];
@@ -1509,6 +1731,13 @@ export class ServedCopyServe {
          // joined source's filters against its declaring file's live compile,
          // whose text the re-root changed, so it would refuse every caller
          // (403) where live answers. Left as written, what reads it is live.
+         // The same for a rolling window the re-root leaves to the kept text
+         // (one over a hidden dimension computed at read): it must be in the
+         // served source's compiled filters as the author wrote it.
+         const keptAsWritten = (c: (typeof candidates)[number]) =>
+            (copy.spans.get(c.reroot.url) ?? []).find(
+               (s) => s.sourceName === c.reroot.sourceName,
+            )?.termsKeptAsWritten ?? [];
          const unscoped = candidates.filter(
             (c) =>
                !lost.includes(c) &&
@@ -1516,6 +1745,10 @@ export class ServedCopyServe {
                   c.reroot.authorDef,
                   servedDefOf(servedMap, c.reroot.sourceID),
                ) ||
+                  !keepsTermsAsWritten(
+                     servedDefOf(servedMap, c.reroot.sourceID),
+                     keptAsWritten(c),
+                  ) ||
                   (!hasOwnNode(servedMap, c.reroot.sourceID) &&
                      appliesFilters(c.reroot.authorDef))),
          );
@@ -1623,9 +1856,71 @@ export class ServedCopyServe {
                   : [],
             ),
             ...(leftOut.length > 0 ? { leftOut } : {}),
+            files,
+            config,
          };
       }
       return { key, generation, lane, rerooted: [], aliased: [], problems };
+   }
+}
+
+/**
+ * The checks for a join the copy answers from a record of stored columns (an
+ * inlined join_one, or a pair table's join_many read flat), on one query
+ * compiled over the copy: an aggregate at such a join's grain is declined
+ * (`count_semantics`), and so is a query that returns one of its annotated
+ * fields as a column (`joined_annotations`). `inlined` are the inlined
+ * join_ones the query's tables answer from records, `annotated` each record
+ * join's annotated fields; `modelDef` resolves the query's source.
+ */
+async function checkRecordJoins(args: {
+   inlined: ReadonlySet<string>;
+   annotated: ReadonlyMap<string, ReadonlySet<string>>;
+   prepared: () => ReturnType<typeof readPreparedQuery>;
+   modelDef: unknown;
+   queryString: string;
+   decline: (
+      reason: string,
+      code: ServedCopyDeclineCode,
+      callerDetail?: string,
+   ) => never;
+}): Promise<void> {
+   const { inlined, annotated, prepared, decline } = args;
+   if (inlined.size > 0) {
+      const grain = joinGrainAggregatePaths(await prepared());
+      if (
+         grain.unreadable ||
+         grain.paths.some((p) => p.some((name) => inlined.has(name))) ||
+         readsJoinStar(args.queryString, inlined)
+      ) {
+         decline(
+            "the query aggregates at the grain of a join the served copy answers from stored columns",
+            "count_semantics",
+            JOIN_GRAIN_DETAIL,
+         );
+      }
+   }
+   // A record literal's field carries no annotation onto a result, so a
+   // query that returns an annotated joined field as a column (its
+   // `#(doc)`, `#(classification)`, render tags) is answered live, and
+   // every other query keeps the table: one check for both legs, before
+   // the pair table's own.
+   if ([...annotated.values()].some((f) => f.size > 0)) {
+      const { structRef, pipeline } = await prepared();
+      const struct = resolveStructRefSource<{ fields?: unknown }>(
+         structRef,
+         args.modelDef as never,
+      );
+      const out = annotatedJoinedOutput(pipeline, struct?.fields, annotated);
+      if (out.unreadable || out.output) {
+         decline(
+            out.output
+               ? `the query returns ${out.output.path.join(".")}, whose annotations the served copy's record of stored columns cannot carry`
+               : "the query's output columns cannot be read",
+            "joined_annotations",
+            JOINED_ANNOTATIONS_DETAIL,
+         );
+      }
    }
 }
 
@@ -1705,6 +2000,14 @@ function flatPairOf(pair: PairReroot): FlatPair {
       ...(pair.hops ? { hops: pair.hops.map((h) => h.join) } : {}),
       ...(pair.levelRows
          ? { levelRowFields: pair.levelRows.map((l) => l.field) }
+         : {}),
+      ...(pair.oneParentLevels
+         ? {
+              oneParentLevels: pair.oneParentLevels,
+              computedFields: pair.childStoredDimensions.map(
+                 (d) => `${pair.join}.${d}`,
+              ),
+           }
          : {}),
       ...(pair.block
          ? { otherRecords: pair.block.others.map((o) => o.join) }
@@ -1921,6 +2224,9 @@ function pairRerootOf(
       childStoredDimensions,
       ...(own.hops ? { hops: own.hops } : {}),
       ...(levelRows.length > 0 ? { levelRows } : {}),
+      ...(block.oneParentLevels && block.oneParentLevels.length > 0
+         ? { oneParentLevels: block.oneParentLevels }
+         : {}),
       ...(blockReroot ? { block: blockReroot } : {}),
       ...(own.access ? { access: own.access } : {}),
    };
@@ -2034,6 +2340,27 @@ export function keepsGivenTerms(author: unknown, served: unknown): boolean {
    } catch {
       return false;
    }
+}
+
+/**
+ * Whether the served source's compiled filters hold each of `codes` (the
+ * author's text of a `where:` term), whitespace aside. True for none;
+ * unreadable filters fail closed.
+ */
+export function keepsTermsAsWritten(
+   served: unknown,
+   codes: readonly string[],
+): boolean {
+   if (codes.length === 0) return true;
+   const filters = (served as { filterList?: unknown } | undefined)?.filterList;
+   if (!Array.isArray(filters)) return false;
+   const norm = (code: string) => code.replace(/\s+/g, " ").trim();
+   const held = new Set(
+      (filters as { code?: unknown }[])
+         .map((f) => (typeof f?.code === "string" ? norm(f.code) : ""))
+         .filter((c) => c !== ""),
+   );
+   return codes.every((c) => norm(c) !== "" && held.has(norm(c)));
 }
 
 /**

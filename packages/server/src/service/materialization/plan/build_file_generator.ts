@@ -94,9 +94,9 @@
  * join_one is refused: live aggregates past it by the joined row's key,
  * however many parents share the row, which no stored row reproduces.
  *
- * An incremental one-hop pair table refreshes whole parents over a per-parent
- * watermark ({@link pairIncremental}), or is rebuilt in full with a warning;
- * a path's table and a table of several blocks are always rebuilt in full.
+ * An incremental pair table, of one hop, a path or several blocks, refreshes
+ * whole parents over a per-parent watermark ({@link pairIncremental}; across
+ * blocks, {@link PAIR_BLOCK_WATERMARK}), or is rebuilt in full with a warning.
  *
  * Not yet (each is a later pull request's, and is refused or left out here
  * rather than built wrong):
@@ -415,6 +415,18 @@ export interface MaterializePair {
     * at least one of the source's own and one of the joined source's.
     */
    watermark?: { column: string; parts: string[] };
+   /**
+    * For a path of more than one hop: the levels between the source and the
+    * leaf (1 for the path's first join) each of whose rows has exactly one
+    * row of every level above it, so its row flag marks one row per row of
+    * that level whichever parent it is read under. Proven from the joins and
+    * the build's key check ({@link pairKeyChecks}): each join down to the
+    * level is keyed on its parent level's primary key, which the build checks
+    * unique and never null, so a row meets at most one parent row. A middle
+    * level's aggregate beside a deeper level is served only at these levels
+    * (see `governance/ir/pair_flat_query.ts`). Absent: none.
+    */
+   oneParentLevels?: number[];
 }
 
 /**
@@ -437,6 +449,12 @@ export interface MaterializePairBlocks {
    columnTypes: Record<string, string>;
    /** The number of level flags every block writes: the deepest path's depth. */
    levels: number;
+   /**
+    * For an incremental table: its watermark ({@link PAIR_WATERMARK}), per
+    * parent the greatest of `parts` over the parent's rows in every block,
+    * so a range selects a parent's rows in all of them or none.
+    */
+   watermark?: { column: string; parts: string[] };
 }
 
 /**
@@ -515,10 +533,10 @@ export interface InlineUniquenessCheck {
     */
    sql?: string;
    /**
-    * Set on a pair table's key check (a path of join_manys, or a table of
-    * several blocks): the level of the path whose key it checks, 0 for the
-    * source's own. Such a check also fails on a null key, since a level's row
-    * flag marks one row per distinct key, where live counts each row
+    * Set on a pair table's key check: the level of the path whose key it
+    * checks, 0 for the source's own. Such a check also fails on a null key,
+    * since a level's row flag marks one row per distinct key, where live
+    * counts each row
     * ({@link pairKeyChecks}). `join` is then the path down to that level
     * (empty for the source).
     */
@@ -1625,6 +1643,17 @@ function pairRefusal(
             "source's dimensions",
       };
    }
+   // A middle level whose join, and every join above it, is keyed on its
+   // parent level's primary key: each of its rows has one parent row.
+   const oneParentLevels: number[] = [];
+   for (let k = 1; k < path.length; k++) {
+      const parentLevelKey = k === 1 ? parentKey : path[k - 2].primaryKey;
+      const keyed =
+         path[k - 1].baseKey !== undefined &&
+         path[k - 1].baseKey === parentLevelKey;
+      if (!keyed) break;
+      oneParentLevels.push(k);
+   }
    return {
       pair: {
          join: join.name,
@@ -1632,6 +1661,7 @@ function pairRefusal(
          childKey: join.primaryKey as string,
          childSourceID: join.sourceID as string,
          parentRowColumn: PAIR_PARENT_ROW,
+         ...(oneParentLevels.length > 0 ? { oneParentLevels } : {}),
          ...(path.length > 1
             ? {
                  hops: path.slice(1).map((j, k) => ({
@@ -1693,6 +1723,7 @@ function pairBlocksOf(
    const taken = new Set(columns.map((c) => c.column));
    const clash = [
       PAIR_LANE_COLUMN,
+      PAIR_BLOCK_WATERMARK,
       ...Array.from({ length: levels - 1 }, (_, k) =>
          pairLevelRowColumn(k + 1),
       ),
@@ -1768,13 +1799,23 @@ const PAIR_WATERMARK_TYPES: ReadonlySet<string> = new Set([
  * key (the unit is the parent), and a rolling window over a child field
  * (its delete would remove part of a parent).
  *
+ * A path or a table of several blocks needs a field at every level of every
+ * path: a row added at a level with nothing below it moves its parent only
+ * through its own level's field. Each level's row flag partitions on the keys
+ * from the parent down, so replacing whole parents keeps it exact too.
+ *
  * Returns nothing to do when no watermark is named: the incremental gate
  * refuses that as it refuses it on any source.
  */
 function pairIncremental(args: {
-   pair: MaterializePair;
+   /** The table's paths: one, or one per block of a table of several. */
+   pairs: readonly MaterializePair[];
    persist: Readonly<Record<string, string>>;
-   /** The watermark fields as declared: a source field, or `<join>.<field>`. */
+   /**
+    * The watermark fields as declared: a source field, or a path to a field
+    * of a level of the inlined path (`items.loaded_at`,
+    * `items.options.loaded_at`).
+    */
    names: readonly string[];
    columns: readonly MaterializeColumn[];
    columnTypeOf: (c: MaterializeColumn) => string;
@@ -1784,26 +1825,42 @@ function pairIncremental(args: {
    | { watermark: { column: string; parts: string[] } }
    | { fullRefresh: string }
    | { none: true } {
-   const { pair, names, columns } = args;
-   if (names.length === 0) return { none: true };
-   const join = quotedName(pair.join);
+   const { pairs, names, columns } = args;
+   const [pair] = pairs;
+   if (names.length === 0 || !pair) return { none: true };
+   const paths = pairs.map((p) => [
+      p.join,
+      ...(p.hops ?? []).map((h) => h.join),
+   ]);
+   const join = quotedName(pairs.map((p) => p.join).join("`, `"));
+   const pathName = paths.map((p) => quotedName(p.join("."))).join(", ");
+   // The level a stored column sits at: 0 for the source's own, k for a
+   // path's k-th join's joined source.
+   const levelOf = (c: MaterializeColumn): number => {
+      if (c.join === undefined) return 0;
+      const at = c.path ?? [c.join];
+      return paths.some((path) => at.every((n, i) => path[i] === n))
+         ? at.length
+         : -1;
+   };
    const parts: MaterializeColumn[] = [];
    for (const name of names) {
-      const dot = name.indexOf(".");
-      const column =
-         dot < 0
-            ? columns.find((c) => c.join === undefined && c.dimension === name)
-            : columns.find(
-                 (c) =>
-                    c.join === pair.join &&
-                    c.join === name.slice(0, dot) &&
-                    c.dimension === name.slice(dot + 1),
-              );
+      const segments = name.split(".");
+      const field = segments[segments.length - 1];
+      const at = segments.slice(0, -1);
+      const column = columns.find(
+         (c) =>
+            c.dimension === field &&
+            (at.length === 0
+               ? c.join === undefined
+               : levelOf(c) === at.length &&
+                 (c.path ?? [c.join]).join(".") === at.join(".")),
+      );
       if (!column) {
          return {
             fullRefresh:
                `watermark= names \`${name}\`, which is not a stored dimension ` +
-               `of the source or of the inlined join ${join}`,
+               `of the source or of a level of the inlined path ${pathName}`,
          };
       }
       parts.push(column);
@@ -1825,6 +1882,22 @@ function pairIncremental(args: {
             `no children would not move it; name one of the source's own ` +
             `fields as well`,
       };
+   }
+   // A row added at a level moves its parent only through a field of that
+   // level: a new middle row with no rows below it carries nulls in every
+   // deeper column. Each block's path, each of its levels.
+   for (const path of paths) {
+      for (let level = 1; level <= path.length; level++) {
+         const at = path.slice(0, level).join(".");
+         if (parts.some((c) => (c.path ?? [c.join]).join(".") === at)) continue;
+         return {
+            fullRefresh:
+               `watermark= names no field of \`${at}\`, so a row added there ` +
+               `under a stored parent would not move the parent's watermark and ` +
+               `would never be stored; name one of its fields as well, such as ` +
+               `"${at}.loaded_at"`,
+         };
+      }
    }
    const types = new Set(parts.map((c) => args.columnTypeOf(c)));
    const [type] = [...types];
@@ -2429,40 +2502,33 @@ export function planModelMaterialize(
          continue;
       }
       let pairFullRefresh: string | undefined;
-      if (
-         pair &&
-         persist.refresh === "incremental" &&
-         (pair.hops !== undefined || pairBlocks !== undefined)
-      ) {
-         // The parent-replace rule keeps one `__parent_row` per parent in one
-         // path's table; a path's level flags and a table of several blocks
-         // have no increment rule yet, so they are rebuilt in full.
-         pairFullRefresh =
-            pairBlocks !== undefined
-               ? "the pair table stores more than one inlined join_many, one block each, which an increment cannot replace parent by parent yet"
-               : "the pair table stores a path of join_manys, whose level row flags an increment cannot keep unique yet";
-         for (const key of INCREMENTAL_KEYS) {
-            if (key !== "partition") delete persist[key];
-         }
-      } else if (pair && persist.refresh === "incremental") {
+      if (pair && persist.refresh === "incremental") {
          const incremental = pairIncremental({
-            pair,
+            pairs: pairBlocks?.blocks ?? [pair],
             persist,
             names:
                carried.watermarks ??
                (persist.watermark !== undefined ? [persist.watermark] : []),
             columns,
-            columnTypeOf: (c) =>
-               c.join === undefined
-                  ? columnType(def, c.dimension)
-                  : joinedColumnType(
-                       joins.find((x) => x.name === c.join) as SourceJoin,
-                       c.dimension,
-                    ),
+            // A column of a path's k-th join is typed on that join's joined
+            // source.
+            columnTypeOf: (c) => {
+               if (c.join === undefined) return columnType(def, c.dimension);
+               const at = c.path ?? [c.join];
+               const path = paths.find((p) =>
+                  at.every((n, i) => p[i]?.name === n),
+               );
+               const hop = path?.[at.length - 1];
+               return hop ? joinedColumnType(hop, c.dimension) : "";
+            },
             windowFields: window.terms.map((t) => t.window.field),
          });
          if ("watermark" in incremental) {
-            pair = { ...pair, watermark: incremental.watermark };
+            if (pairBlocks) {
+               pairBlocks = { ...pairBlocks, watermark: incremental.watermark };
+            } else {
+               pair = { ...pair, watermark: incremental.watermark };
+            }
             persist.watermark = incremental.watermark.column;
             persist.merge_key = pair.parentKey;
          } else if ("fullRefresh" in incremental) {
@@ -2726,7 +2792,7 @@ function emitBuildSource(plan: MaterializePlan): string {
  * the source's primary key, then each joined source's key as stored
  * (`items__item_id`, `items__options__option_id`).
  */
-function pairKeyColumns(pair: MaterializePair): string[] {
+export function pairKeyColumns(pair: MaterializePair): string[] {
    const names = [pair.join];
    const keys = [pair.parentKey, `${pair.join}__${pair.childKey}`];
    for (const hop of pair.hops ?? []) {
@@ -2805,11 +2871,19 @@ function pairBlocksSource(
       const listed = items.join(",\n");
       // malloy-text: pairFlags writes every name through identifier
       const flags = pairFlags(pair, blocks.levels);
+      // An incremental table's block writes its own parents' greatest
+      // watermark; the query over the union takes the greatest across blocks.
+      const watermark = blocks.watermark
+         ? `\n    ${pairWatermarkCalculation(
+              { ...blocks.watermark, column: PAIR_BLOCK_WATERMARK },
+              parent,
+           )}`
+         : "";
       return `%{ ${identifier(importAlias(plan))} -> {
   group_by:
 ${listed}
   calculate:
-${flags}
+${flags}${watermark}
   order_by: ${parent}
 } }`;
    };
@@ -2819,8 +2893,36 @@ ${flags}
             `SELECT * FROM (${block(pair, lane)}) AS ${PAIR_LANE_COLUMN}_${lane}`,
       )
       .join("\nUNION ALL\n");
-   return `${identifier(blocks.connection)}.sql("""\n${union}\n""")`;
+   const sql = `${identifier(blocks.connection)}.sql("""\n${union}\n""")`;
+   if (!blocks.watermark) return sql;
+   // Every column the blocks write: distinct rows already (each block's are,
+   // and the block column tells blocks apart). The block watermark is kept:
+   // Malloy's window reads an output field.
+   const stored = [
+      ...plan.columns.map((c) => c.column),
+      blocks.laneColumn,
+      plan.pair?.parentRowColumn ?? PAIR_PARENT_ROW,
+      ...Array.from({ length: blocks.levels - 1 }, (_, k) =>
+         pairLevelRowColumn(k + 1),
+      ),
+      PAIR_BLOCK_WATERMARK,
+   ];
+   const parent = identifier(blocks.blocks[0].parentKey);
+   return `${sql} -> {
+  group_by:
+${stored.map((c) => `    ${identifier(c)}`).join(",\n")}
+  calculate:
+    ${identifier(blocks.watermark.column)} is max_window(${identifier(PAIR_BLOCK_WATERMARK)}) { partition_by: ${parent} }
+  order_by: ${parent}
+}`;
 }
+
+/**
+ * An incremental table of several blocks: each block's own greatest watermark
+ * per parent, which the build takes the greatest of across blocks into
+ * {@link PAIR_WATERMARK}. Stored beside it, and read by nothing.
+ */
+export const PAIR_BLOCK_WATERMARK = "__pair_watermark_block";
 
 /**
  * An incremental pair table's watermark (see {@link pairIncremental}): the
@@ -2844,15 +2946,15 @@ function pairWatermarkCalculation(
 }
 
 /**
- * The key checks of a pair table whose rows carry a flag below the parent's
- * (a path of join_manys) or more than one block, run before each build like
- * an inlined join_one's (P8): the source's primary key, and the key of each
- * level between it and the leaf, must be unique and never null. A level's row
- * flag marks one row per distinct key down to that level, so two rows of one
- * key (or two null keys) share one flagged row, where live aggregates that
- * level over each row: a middle-level measure, and a parent measure beside a
- * deeper level, would come up short. The leaf needs no check: its aggregates
- * read every row. A one-hop table of one block checks nothing, as before.
+ * The key checks of a pair table, run before each build like an inlined
+ * join_one's (P8): the source's primary key, and the key of each level between
+ * it and the leaf (a path of join_manys), must be unique and never null. A
+ * level's row flag marks one row per distinct key down to that level, so two
+ * rows of one key (or two null keys) share one flagged row, where live
+ * aggregates that level over each row: a parent measure, and a middle-level
+ * measure beside a deeper level, would come out wrong. A one-hop table of one
+ * block checks only the source's key. The leaf needs no check: its aggregates
+ * read every row.
  */
 function pairKeyChecks(
    pair: MaterializePair,
@@ -2862,7 +2964,6 @@ function pairKeyChecks(
    connection: string | undefined,
 ): InlineUniquenessCheck[] {
    const all = blocks?.blocks ?? [pair];
-   if (!blocks && !(pair.hops && pair.hops.length > 0)) return [];
    const on = connection ? { connectionName: connection } : {};
    const out: InlineUniquenessCheck[] = [
       {
@@ -2926,6 +3027,30 @@ function emitUniquenessCheck(check: InlineUniquenessCheck): string {
   having: matches > 1
   limit: 1
 }`;
+}
+
+/**
+ * The import of one uniqueness check's source. A joined source's check reads
+ * it from the file that declares it. A pair table's own key check (level 0)
+ * reads the source from the file its build reads it from, its build copy when
+ * it has one: the copy leaves out the terms the build leaves out (a given's,
+ * a rolling window's upper bound), so the check counts the rows the table
+ * stores. Over the author's source it would count only the rows those terms
+ * keep, and pass while the table holds a key twice.
+ */
+function checkImport(
+   check: InlineUniquenessCheck,
+   plan: MaterializePlan,
+   importPath: string,
+   importPathForFile: ((url: string) => string | undefined) | undefined,
+   buildCopyPaths: ReadonlyMap<string, string>,
+): string {
+   const joined = splitSourceID(check.joinedSourceID);
+   const own = check.pairLevel === 0 && check.joinedSourceID === plan.sourceID;
+   const path = own
+      ? (buildCopyPaths.get(plan.sourceID) ?? importPath)
+      : ((joined && importPathForFile?.(joined.url)) ?? importPath);
+   return `import { ${identifier(checkAlias(check))} is ${identifier(joined?.name ?? check.join)} } from ${stringLiteral(path)}`;
 }
 
 /** The alias a generated file imports a uniqueness check's joined source under. */
@@ -3670,11 +3795,15 @@ export function generateBuildFile(
    const copyOf = (plan: MaterializePlan) => buildCopyPaths.get(plan.sourceID);
    const imports = plans.map((plan) => {
       const own = `import { ${identifier(importAlias(plan))} is ${identifier(plan.sourceName)} } from ${stringLiteral(copyOf(plan) ?? importPath)}`;
-      const checks = (plan.uniquenessChecks ?? []).map((check) => {
-         const joined = splitSourceID(check.joinedSourceID);
-         const path = (joined && importPathForFile?.(joined.url)) ?? importPath;
-         return `import { ${identifier(checkAlias(check))} is ${identifier(joined?.name ?? check.join)} } from ${stringLiteral(path)}`;
-      });
+      const checks = (plan.uniquenessChecks ?? []).map((check) =>
+         checkImport(
+            check,
+            plan,
+            importPath,
+            importPathForFile,
+            buildCopyPaths,
+         ),
+      );
       return [own, ...checks].join("\n");
    });
    const givensByPath = new Map<string, Set<string>>();
@@ -3775,12 +3904,18 @@ export function generateBuildFiles(
       );
    }
    const checks = plans.flatMap((plan) => plan.uniquenessChecks ?? []);
-   for (const check of checks) {
-      const joined = splitSourceID(check.joinedSourceID);
-      const path = (joined && importPathForFile?.(joined.url)) ?? importPath;
-      imports.push(
-         `import { ${identifier(checkAlias(check))} is ${identifier(joined?.name ?? check.join)} } from ${stringLiteral(path)}`,
-      );
+   for (const plan of plans) {
+      for (const check of plan.uniquenessChecks ?? []) {
+         imports.push(
+            checkImport(
+               check,
+               plan,
+               importPath,
+               importPathForFile,
+               buildCopyPaths,
+            ),
+         );
+      }
    }
    const queries = checks.map(emitUniquenessCheck).join("\n\n");
    return {

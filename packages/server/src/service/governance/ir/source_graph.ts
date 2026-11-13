@@ -201,17 +201,37 @@ export interface SourceBaseEdge {
    def: unknown;
 }
 
-/** A model's definition for a sourceID, through its source registry. */
+/**
+ * A model's definition for a sourceID, through its source registry, or, when
+ * the registry holds no entry for it (a model read as its `contents` alone,
+ * as the materialize planner reads it), the source in `contents` declared
+ * with that sourceID. Without the second, a rename's referent did
+ * not resolve there, so a rename alike its referent left every later
+ * extension of either with no base edge.
+ */
 function registryDef(
    model: BaseEdgeModel | undefined,
    id: string,
 ): BaseEdgeDef | undefined {
    const entry = model?.sourceRegistry?.[id]?.entry;
-   if (!entry) return undefined;
+   if (!entry) return declaredInContents(model, id);
    if (entry.type === "source_registry_reference" && entry.name) {
       return model?.contents?.[entry.name] as BaseEdgeDef | undefined;
    }
    return entry;
+}
+
+/** The source in a model's `contents` declared with sourceID `id`. */
+function declaredInContents(
+   model: BaseEdgeModel | undefined,
+   id: string,
+): BaseEdgeDef | undefined {
+   return Object.values(model?.contents ?? {}).find(
+      (value): value is BaseEdgeDef =>
+         !!value &&
+         typeof value === "object" &&
+         (value as BaseEdgeDef).sourceID === id,
+   );
 }
 
 /** The sourceID a `structRef` names: itself, or an embedded definition's. */

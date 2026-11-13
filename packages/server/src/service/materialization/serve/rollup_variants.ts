@@ -166,7 +166,16 @@ import { sameGateSet } from "../../governance/query_governor";
 import { fieldNotes, noteSource } from "../field_notes";
 import { timeframeRestatements, typeDeclaration } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
-import type { ServeBinding } from "./materialization_serve_transform";
+import {
+   boundTablePath,
+   buildVirtualMap,
+   sqlReadsTable,
+   type ServeBinding,
+} from "./materialization_serve_transform";
+import {
+   ServedCopyDecline,
+   type ServedCopyJoinBasis,
+} from "./served_copy_serve";
 import type { MaterializedTableCatalog } from "./query_path";
 import { queryShapeOf } from "./query_path";
 
@@ -205,6 +214,13 @@ export interface RollupVariantHost {
    serveDestinationConfig(): (() => MalloyConfig) | undefined;
    /** The package's planned tables, to find each rollup's address. */
    catalog(): MaterializedTableCatalog | undefined;
+   /**
+    * The served copy's compiled basis, while the served copy serves this
+    * model: the join leg answers a query on a source stored in a storage
+    * destination there, through a joined source's rollup in the same one
+    * (known limitation 26).
+    */
+   joinRollupBasis?(): Promise<ServedCopyJoinBasis | undefined>;
 }
 
 /** A rollup's answer, for the router. */
@@ -216,6 +232,13 @@ export interface RollupAnswer {
    virtualMap?: VirtualMap;
    /** For a `storage=` rollup: its binding. */
    binding?: ServeBinding;
+   /**
+    * Every stored table the answer reads, when that is more than the
+    * rollup's: a join leg answered in a storage destination reads the query
+    * source's table there too, whose binding decides whether a failed run
+    * may be retried live.
+    */
+   bindings?: ServeBinding[];
    /**
     * Where `govern()` grafts the run target's gates on the variant (R3): set
     * for every base variant, and the one an answer past an entry-point gate
@@ -231,7 +254,19 @@ export interface RollupAnswer {
  */
 type VariantUse =
    | ({ kind: "base" } & VariantTarget)
-   | { kind: "join"; localName: string; leg: JoinRollupLeg };
+   | {
+        kind: "join";
+        localName: string;
+        leg: JoinRollupLeg;
+        /**
+         * Set when the query's source is read from the rollup's storage
+         * destination through the served copy (known limitation 26): the
+         * variant is compiled over the copy's files, and `keepsJoin` says
+         * whether the copy's source still declares the join (it leaves a
+         * join to a source not stored there out across connections).
+         */
+        destination?: { basis: ServedCopyJoinBasis; keepsJoin: boolean };
+     };
 
 /** A join leg that does not apply to this query: it reads nothing through the join. */
 class JoinNotRead extends Error {}
@@ -515,6 +550,7 @@ export class RollupVariantServe {
          try {
             return await this.attemptJoin(leg, refusal, {
                localName,
+               sourceID,
                shape,
                prepared,
                struct,
@@ -633,6 +669,7 @@ export class RollupVariantServe {
       refusal: ReturnType<typeof joinRollupLegs>[number]["refusal"],
       q: {
          localName: string;
+         sourceID: string;
          shape: ReturnType<typeof queryShapeOf>;
          prepared: Awaited<ReturnType<typeof readPreparedQuery>>;
          struct: unknown;
@@ -649,15 +686,18 @@ export class RollupVariantServe {
       if (refusal) {
          throw new RollupSkip(refusal.code, refusal.callerDetail, true);
       }
-      if (plan.storage !== undefined) {
-         // The source reads its own warehouse and the rollup its destination;
-         // Malloy joins within one connection (malloy#3032).
-         throw new RollupSkip(
-            "rollup_cross_connection",
-            `the rollup of \`${name}\` is in a storage destination, and the query's source reads its own connection`,
-            true,
-         );
-      }
+      // A rollup in a storage destination is joined there, so only to a
+      // query source the served copy reads from that destination too; Malloy
+      // joins within one connection (malloy#3032).
+      // The destination is the rollup's table's, when it has a fresh one.
+      const inDestination =
+         plan.storage !== undefined
+            ? await this.destinationOf(
+                 this.tableOf(plan)?.binding?.destinationName ?? plan.storage,
+                 q.struct,
+                 name,
+              )
+            : undefined;
       // The build truncated and filtered times in the joined source's time
       // zone; live reads the joined rows in the query source's.
       const childDef = SourceMap.of(this.host.modelDef()).node(
@@ -829,6 +869,9 @@ export class RollupVariantServe {
             "the rollup has no fresh table",
          );
       }
+      if (inDestination) {
+         return this.answerJoinInDestination(leg, q, table, inDestination);
+      }
       const variant = await this.compiledVariant(
          plan,
          { kind: "join", localName: q.localName, leg },
@@ -881,6 +924,173 @@ export class RollupVariantServe {
          );
       }
       return { runnable, rollupSourceName: plan.rollupSourceName };
+   }
+
+   /**
+    * The served copy's basis and the query source's table in `destination`,
+    * when the served copy reads the query's source (or a source it is built
+    * on) from that destination's table; else a `CROSS_CONNECTION` skip. A
+    * table that is not fresh is not re-rooted, so a stale one declines too.
+    */
+   private async destinationOf(
+      destination: string,
+      struct: unknown,
+      join: string,
+   ): Promise<{ basis: ServedCopyJoinBasis; source: ServeBinding }> {
+      const across = () =>
+         new RollupSkip(
+            "rollup_cross_connection",
+            `the rollup of \`${join}\` is in a storage destination, and the query's source is not read from that destination (it reads its own connection, or its table there is not built or not fresh)`,
+            true,
+         );
+      let basis: ServedCopyJoinBasis | undefined;
+      try {
+         basis = await this.host.joinRollupBasis?.();
+      } catch {
+         basis = undefined;
+      }
+      if (!basis) throw across();
+      const chain = new Set(
+         SourceMap.of(this.host.modelDef()).chainOf(struct as never),
+      );
+      const source = basis.rerooted.find(
+         (b) =>
+            !b.colocated &&
+            b.destinationName === destination &&
+            (b.sourceIDs ?? []).some((id) => chain.has(id)),
+      );
+      if (!source) throw across();
+      return { basis, source };
+   }
+
+   /**
+    * Answer a join leg in a storage destination (known limitation 26): the
+    * query's source as the served copy declares it, over its table there,
+    * with the join re-pointed at the joined source's rollup in the same
+    * destination, so the whole query runs on that one connection. Every
+    * check of the leg ran before; this adds the served copy's own checks for
+    * the tables the variant reads, and that its SQL reads both tables.
+    */
+   private async answerJoinInDestination(
+      leg: JoinRollupLeg,
+      q: Parameters<RollupVariantServe["attemptJoin"]>[2],
+      table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
+      at: { basis: ServedCopyJoinBasis; source: ServeBinding },
+   ): Promise<RollupAnswer> {
+      const { plan, join } = leg;
+      const name = join.name;
+      const { basis, source } = at;
+      const across = (why: string) =>
+         new RollupSkip(
+            "rollup_cross_connection",
+            `the rollup of \`${name}\` is in a storage destination, and ${why}`,
+         );
+      if (
+         !table.binding ||
+         !table.virtualMap ||
+         !table.quotedPath ||
+         table.binding.destinationName !== source.destinationName
+      ) {
+         throw across("the query's source is stored in another one");
+      }
+      // The copy leaves out a join to a source not stored in its destination
+      // (and every definition that reads it); the variant then adds the join
+      // back, re-pointed, instead of replacing it.
+      const servedSource = (
+         basis.modelDef as {
+            contents?: Record<string, { fields?: unknown[] }>;
+         }
+      )?.contents?.[q.localName];
+      const keepsJoin = (
+         (servedSource?.fields ?? []) as { name?: unknown; as?: unknown }[]
+      ).some((f) => (f.as ?? f.name) === name);
+      const variant = await this.compiledVariant(
+         plan,
+         {
+            kind: "join",
+            localName: q.localName,
+            leg,
+            destination: { basis, keepsJoin },
+         },
+         table,
+      );
+      // A definition the copy left out reads a join across connections: a
+      // query that reads one does not compile over the copy.
+      const leftOutHere = basis.leftOut.length > 0;
+      if (!variant.materializer) {
+         logger.warn(
+            "A #(preaggregate) join-to-rollup variant in a storage destination did not compile",
+            {
+               modelPath: this.host.modelPath(),
+               rollup: plan.rollupSourceName,
+               join: name,
+               error: variant.error,
+            },
+         );
+         throw new RollupSkip(
+            "rollup_missing_field",
+            "the query does not compile against the rollup",
+         );
+      }
+      const runnable = variant.materializer.loadRestrictedQuery(
+         q.args.queryString,
+      );
+      const virtualMap = buildVirtualMap([...basis.aliased]);
+      for (const [connection, handles] of table.virtualMap) {
+         const inner = virtualMap.get(connection) ?? new Map<string, string>();
+         for (const [handle, tablePath] of handles)
+            inner.set(handle, tablePath);
+         virtualMap.set(connection, inner);
+      }
+      let sql: string;
+      try {
+         sql = (
+            await runnable.getPreparedResult({
+               virtualMap,
+               ...(q.args.givens ? { givens: q.args.givens as never } : {}),
+            } as never)
+         ).sql;
+      } catch {
+         if (leftOutHere) {
+            throw across(
+               "the query reads a definition its source's stored copy leaves out, since it reads a join to a source on another connection",
+            );
+         }
+         throw new RollupSkip(
+            "rollup_missing_field",
+            "the query does not compile against the rollup",
+         );
+      }
+      const tablesRead = basis.rerooted.filter((b) =>
+         sqlReadsTable(sql, boundTablePath(b)),
+      );
+      if (!sqlReadsTable(sql, table.quotedPath)) {
+         throw new RollupSkip(
+            "rollup_not_built",
+            "the rollup has no fresh table",
+         );
+      }
+      if (!tablesRead.includes(source)) {
+         throw across("the query's source is not read from it");
+      }
+      try {
+         await basis.check({
+            sourceID: q.sourceID,
+            runnable,
+            queryString: q.args.queryString,
+            tablesRead,
+         });
+      } catch (error) {
+         if (!(error instanceof ServedCopyDecline)) throw error;
+         throw servedCopySkip(error, name);
+      }
+      return {
+         runnable,
+         rollupSourceName: plan.rollupSourceName,
+         virtualMap,
+         binding: table.binding,
+         bindings: [...tablesRead, table.binding],
+      };
    }
 
    private async attemptOne(
@@ -1146,7 +1356,9 @@ export class RollupVariantServe {
       const key = [
          plan.rollupSourceName,
          use.localName,
-         use.kind === "join" ? `join:${use.leg.join.name}` : "base",
+         use.kind === "join"
+            ? `join:${use.leg.join.name}${use.destination ? `\u0000${use.destination.basis.key}\u0000${use.destination.keepsJoin}` : ""}`
+            : "base",
          table.binding
             ? `${table.binding.destinationName}/${table.binding.virtualHandle}`
             : "colocated",
@@ -1176,9 +1388,12 @@ export class RollupVariantServe {
       use: VariantUse,
       table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
    ): Promise<CompiledVariant> {
-      // A join leg reads a colocated rollup only (attemptJoin).
-      if (use.kind === "join" && table.binding) {
-         return { error: "a join leg reads a colocated rollup only" };
+      // A join leg reads a storage rollup only over the served copy
+      // (answerJoinInDestination).
+      if (use.kind === "join" && table.binding && !use.destination) {
+         return {
+            error: "a join leg reads a storage rollup over the served copy only",
+         };
       }
       const packagePath = this.packagePath;
       const packageConfig = this.packageConfig;
@@ -1195,6 +1410,19 @@ export class RollupVariantServe {
                  new Set([table.binding.destinationName]),
               )
             : packageConfig;
+      if (use.kind === "join" && use.destination && table.binding) {
+         return this.compileJoinInDestination(
+            plan,
+            { ...use, destination: use.destination },
+            table.binding,
+            {
+               packagePath,
+               modelPath,
+               queryModelURL,
+               modelFile,
+            },
+         );
+      }
       if (use.kind === "base") {
          return this.compileBase(plan, use, table, {
             packagePath,
@@ -1273,6 +1501,64 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
    }
 
    /**
+    * Compile a join leg in a storage destination (known limitation 26): the
+    * query model imports every name from the served copy's files (so the
+    * query's source is the copy's, over its stored table), declares the
+    * rollup over its table in the same destination, and declares the query's
+    * source as the copy's with the join re-pointed at the rollup. Compiled
+    * with the copy's own connections, so the source and the rollup read one.
+    */
+   private async compileJoinInDestination(
+      plan: RollupVariantPlan,
+      use: Extract<VariantUse, { kind: "join" }> & {
+         destination: NonNullable<
+            Extract<VariantUse, { kind: "join" }>["destination"]
+         >;
+      },
+      binding: ServeBinding,
+      ctx: {
+         packagePath: string;
+         modelPath: string;
+         queryModelURL: URL;
+         modelFile: string;
+      },
+   ): Promise<CompiledVariant> {
+      const modelDef = this.host.modelDef();
+      const { basis } = use.destination;
+      const servedName = `${plan.rollupSourceName}__served`;
+      const declaration = `${storedRollupDeclaration(plan, binding, servedName, modelDef)}
+${sourceOverRollup(plan, use, servedName, "")}`;
+      // The served copy's names, imported from its files: a definition it
+      // left out across connections is not one of them.
+      const imports = authorNameImports(
+         basis.modelDef,
+         ctx.queryModelURL,
+         pathToFileURL(ctx.modelFile).href,
+         { alias: new Map([[use.localName, parentAlias(plan)]]) },
+      );
+      const overlay = new Map(basis.files);
+      overlay.set(
+         overlayKey(ctx.queryModelURL.href),
+         `${flagLine(modelDef)}
+${imports}
+
+${declaration}
+`,
+      );
+      const { runtime, importBaseURL } = await createModelRuntime(
+         ctx.packagePath,
+         ctx.modelPath,
+         basis.config,
+         { overlay },
+      );
+      const materializer = runtime.loadModel(ctx.queryModelURL, {
+         importBaseURL,
+      });
+      await materializer.getModel();
+      return { materializer };
+   }
+
+   /**
     * Compile a base variant: the query's run target redeclared over the
     * rollup in an overlay of ITS OWN DECLARING FILE
     * (`declaring_file_variant.ts`), so it keeps the author's `sourceID` and
@@ -1337,30 +1623,13 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
                added.text,
             );
             if (table.binding) {
-               const typeName = `${plan.rollupSourceName}__type`;
-               const grain = grainColumns(plan, modelDef);
-               // A grain column carries its dimension's notes, as the served
-               // copy's stored columns do: a `type:` field keeps its
-               // annotations, so a result column reads them as live's does.
-               // A timeframe column's go on its redefined field
-               // (timeframeRestatements) instead.
-               const grainNotes = new Map(
-                  grain.map((g) => [g.name, g.timeframe ? [] : g.notes]),
+               const stored = storedRollupDeclaration(
+                  plan,
+                  table.binding,
+                  servedName,
+                  modelDef,
                );
-               const columns = table.binding.schema.map((c) => {
-                  const notes = grainNotes.get(c.name);
-                  return {
-                     name: c.name,
-                     type: c.type,
-                     ...(notes && notes.length > 0 ? { notes } : {}),
-                  };
-               });
-               // malloy-text: the served copy's timeframe emitter, names through identifier
-               const timeframes = timeframeRestatements(grain);
-               // malloy-text: the served copy's type emitter; rollupStatements re-emits the grammar's parse through malloy_text
-               return `${typeDeclaration({ typeName, columns })}
-source: ${identifier(servedName)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)} extend {${timeframes}${rollupStatements(plan, modelDef)}
-}
+               return `${stored}
 ${gates}${over}`;
             }
             // Colocated: the build source from the base's companion, so the
@@ -1687,6 +1956,71 @@ export function rollupSourceID(plan: RollupVariantPlan): string | undefined {
    return companion ? `${plan.rollupSourceName}@${companion.href}` : undefined;
 }
 
+/**
+ * A `storage=` rollup declared over its table in the destination, as
+ * `servedName`: a `type:` of its stored columns (each grain column with its
+ * dimension's notes, as the served copy's stored columns carry theirs), the
+ * `virtual()` source on the destination's served-copy alias, its
+ * timeframes restated and its merged measures.
+ */
+function storedRollupDeclaration(
+   plan: RollupVariantPlan,
+   binding: ServeBinding,
+   servedName: string,
+   modelDef: unknown,
+): string {
+   const typeName = `${plan.rollupSourceName}__type`;
+   const grain = grainColumns(plan, modelDef);
+   // A `type:` field keeps its annotations, so a result column reads them as
+   // live's does. A timeframe column's go on its redefined field
+   // (timeframeRestatements) instead.
+   const grainNotes = new Map(
+      grain.map((g) => [g.name, g.timeframe ? [] : g.notes]),
+   );
+   const columns = binding.schema.map((c) => {
+      const notes = grainNotes.get(c.name);
+      return {
+         name: c.name,
+         type: c.type,
+         ...(notes && notes.length > 0 ? { notes } : {}),
+      };
+   });
+   // malloy-text: the served copy's timeframe emitter, names through identifier
+   const timeframes = timeframeRestatements(grain);
+   // malloy-text: the served copy's type emitter; rollupStatements re-emits the grammar's parse through malloy_text
+   return `${typeDeclaration({ typeName, columns })}
+source: ${identifier(servedName)} is ${identifier(servedCopyAlias(binding.destinationName))}.virtual(${stringLiteral(binding.virtualHandle)})::${identifier(typeName)} extend {${timeframes}${rollupStatements(plan, modelDef)}
+}`;
+}
+
+/**
+ * The served copy's decline of a join leg's query in a storage destination,
+ * as the rollup skip the path report reads: a query its rules send live
+ * keeps their reason (`COUNT_SEMANTICS`, `MISSING_FIELD`); a
+ * source it does not answer from the destination (opted out, or flagged by
+ * the load-time checks) leaves the rollup across connections.
+ */
+function servedCopySkip(error: ServedCopyDecline, join: string): RollupSkip {
+   switch (error.code) {
+      case "count_semantics":
+      case "pair_shape":
+         return new RollupSkip(
+            "rollup_count_semantics",
+            `the query's source is read from a stored table that cannot answer it exactly with \`${join}\` joined to its rollup`,
+         );
+      case "joined_annotations":
+         return new RollupSkip(
+            "rollup_missing_field",
+            "the query returns a field whose annotations the stored table cannot carry",
+         );
+      default:
+         return new RollupSkip(
+            "rollup_cross_connection",
+            `the rollup of \`${join}\` is in a storage destination, and the query's source is not answered from it`,
+         );
+   }
+}
+
 /** A source's declared primary key, if it has one. */
 function primaryKeyOf(def: unknown): string | undefined {
    const key = (def as { primaryKey?: unknown } | undefined)?.primaryKey;
@@ -1720,8 +2054,14 @@ function sourceOverRollup(
    const keyword = use.leg.relationship === "one" ? "join_one" : "join_many";
    const joined = `${plan.rollupSourceName}__joined`;
    const j = identifier(join.name);
+   // Over the served copy, a join it left out across connections is not
+   // there to leave out.
+   const kept =
+      use.destination && !use.destination.keepsJoin
+         ? ""
+         : ` include { *; except: ${j} }`;
    return `source: ${identifier(joined)} is ${identifier(servedName)}${internalPartials(plan)}
-source: ${identifier(use.localName)} is ${identifier(parentAlias(plan))} include { *; except: ${j} } extend {
+source: ${identifier(use.localName)} is ${identifier(parentAlias(plan))}${kept} extend {
   ${keyword}: ${j} is ${identifier(joined)} on ${j}.${identifier(join.keyColumn)} = ${identifier(join.baseKey)}
 }`;
 }

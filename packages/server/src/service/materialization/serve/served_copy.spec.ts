@@ -877,7 +877,7 @@ describe("hidden stored columns (P3)", () => {
       );
    });
 
-   it("refuses a re-root whose include would come just before the inverse renames (known limitation 25)", () => {
+   it("refuses a re-root whose include would come just before the inverse renames (known limitation 30)", () => {
       // Malloy refuses a rename just after an include: written, the whole
       // served copy would not compile. Refused, only this source is live.
       expect(
