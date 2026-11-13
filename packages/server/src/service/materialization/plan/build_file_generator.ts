@@ -162,7 +162,12 @@ import {
    routeOfNote,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
-import { annotationValue, identifier, stringLiteral } from "../../malloy_text";
+import {
+   annotationValue,
+   identifier,
+   nowComparison,
+   stringLiteral,
+} from "../../malloy_text";
 import { parseRouteTag, routeHasKey } from "../../motly";
 import {
    accessLiftEdits,
@@ -182,7 +187,12 @@ import {
    type MalloyRange,
    type TermUse,
 } from "./persist_dynamic_terms";
-import { rollingWindowTerms, type CurrentTimeReadTerm } from "./rolling_window";
+import {
+   buildQueryWindows,
+   leftOutWindowTerms,
+   rollingWindowTerms,
+   type CurrentTimeReadTerm,
+} from "./rolling_window";
 import { SourceMap, type FieldJoinReads, type SourceJoin } from "./source_map";
 
 /** The route `#(materialize)` is on. */
@@ -356,10 +366,12 @@ export interface GivenReadTerm {
  * A `where:` term of a materialized source that depends on the read, so the
  * served copy applies it again over the stored table, by what it reads
  * (`classifyWhereTerms`, the one term classifier), told apart by `kind`. A
- * current-time term (rolling_window.ts) is built as written, since the
+ * current-time lower bound (rolling_window.ts) is built as written, since the
  * build's own `now` stores the widest set, and is also the bound an
- * incremental refresh deletes below. A given-reading term (P2) is left out of
- * the build and kept by the served copy as the author wrote it.
+ * incremental refresh deletes below; a current-time term holding an upper
+ * bound is left out of the build (`leftOut`), since with no refresh interval
+ * the widest set is every row. A given-reading term (P2) is left out of the
+ * build and kept by the served copy as the author wrote it.
  */
 export type MaterializeReadTimeTerm = CurrentTimeReadTerm | GivenReadTerm;
 
@@ -1488,7 +1500,8 @@ const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key", "partition"];
  * colocated pair never chains), carry no incremental
  * key, and the parent no given-reading `where:` (its build source's own
  * `extend` re-applies that term, which would scope the extension's build to
- * one caller). A plan that does not qualify builds over the raw chain, as
+ * one caller) and no current-time `where:` its build leaves out (the
+ * re-rooted parent keeps it as written). A plan that does not qualify builds over the raw chain, as
  * before: the same rows.
  */
 function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
@@ -1527,6 +1540,9 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
          Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));
       if (incremental(plan) || incremental(parent)) continue;
       if (givenReadTerms(parent).length > 0) continue;
+      // The re-rooted parent keeps its `where:` as written, so a term its
+      // table leaves out would be applied to the extension's build.
+      if (leftOutWindowTerms(parent.readTimeTerms).length > 0) continue;
       plan.buildsOver = {
          sourceID: parent.sourceID,
          sourceName: parent.sourceName,
@@ -1586,7 +1602,12 @@ function buildSourceBody(plan: MaterializePlan): string {
             : `    ${identifier(c.column)} is ${identifier(c.join)}.${identifier(c.dimension)}`,
       )
       .join(",\n");
-   return plan.pair ? pairBody(plan.pair, select) : `  select:\n${select}`;
+   // A two-sided window's lower bound, its term left out of the build copy,
+   // written again from its parts: no literal, so the address never moves.
+   const where = buildQueryWindows(plan.readTimeTerms)
+      .map((w) => `  where: ${nowComparison(w.field, w.op, w.offset)}\n`)
+      .join("");
+   return `${where}${plan.pair ? pairBody(plan.pair, select) : `  select:\n${select}`}`;
 }
 
 /** One generated build source. */
@@ -1665,7 +1686,8 @@ export function generatedNameOwner(
 
 /**
  * The build copy of one planned source's declaring file: `text` with that
- * source's read-time terms replaced by `true` (P2), so a query over the
+ * source's left-out read-time terms replaced by `true` (P2, and a current-time
+ * upper bound), so a query over the
  * copy's source applies every `where:` but those, or why a term cannot be
  * placed (see {@link termSpans}), which refuses the source rather than guess.
  *
@@ -1718,7 +1740,8 @@ const ACCESS_NOT_LIFTED =
 
 /**
  * The edits {@link buildCopyText} makes to `text`: the plan's given-reading
- * terms replaced by `true` (P2); with `parent`, the parent's declaration
+ * terms (P2) and its current-time terms that hold an upper bound (Rolling
+ * windows), its own or inherited, replaced by `true`; with `parent`, the parent's declaration
  * re-rooted on its build source (P10); and with `liftAccess`, the plan's own
  * declaration's access modifiers lifted and the declaration wrapped in
  * `include { public: * }` (P3), with the flag `include` needs as the copy's
@@ -1740,6 +1763,16 @@ function copyEdits(
          : { reason: NOT_FOUND };
       if ("reason" in found) return found;
       for (const span of found.spans) edits.push({ ...span, insert: "true" });
+   }
+   for (const term of leftOutWindowTerms(plan.readTimeTerms)) {
+      const span = writtenSpan(text, term);
+      if (
+         span === undefined ||
+         edits.some((e) => e.start < span.end && span.start < e.end)
+      ) {
+         return { reason: WINDOW_NOT_FOUND };
+      }
+      edits.push({ ...span, insert: "true" });
    }
    if (parent) {
       const range = plan.buildsOver?.declaration.range;
@@ -1975,6 +2008,42 @@ export function withoutParent(plan: MaterializePlan): MaterializePlan {
 const NOT_FOUND =
    "a `where:` reading a given could not be found as written in the " +
    "source's declaration, so it cannot be left out of the build";
+
+const WINDOW_NOT_FOUND =
+   "a `where:` keeping rows older than a moving cut-off could not be found " +
+   "as written in the source's file, so it cannot be left out of the build";
+
+/**
+ * Where a left-out current-time term is written in `text`, the file that
+ * declares it: the one occurrence of its verbatim text that covers every
+ * place the compiler says it reads a field, or undefined when there is none
+ * or more than one. Unlike a given term it may sit anywhere in the file (a
+ * base this source extends wrote it): the served copy writes it again from
+ * its parts, never from this text. The caller checks the file is the one
+ * the term was compiled from.
+ */
+function writtenSpan(
+   text: string,
+   term: { code: string; at: readonly TermUse[] },
+): { start: number; end: number } | undefined {
+   if (term.code === "" || term.at.length === 0) return undefined;
+   const uses = term.at.map((use) => ({
+      start: offsetOf(text, use.range.start),
+      end: offsetOf(text, use.range.end),
+   }));
+   if (uses.some((u) => u.start < 0 || u.end < u.start)) return undefined;
+   const matches: number[] = [];
+   for (
+      let at = text.indexOf(term.code);
+      at >= 0;
+      at = text.indexOf(term.code, at + 1)
+   ) {
+      const end = at + term.code.length;
+      if (uses.every((u) => u.start >= at && u.end <= end)) matches.push(at);
+   }
+   if (matches.length !== 1) return undefined;
+   return { start: matches[0], end: matches[0] + term.code.length };
+}
 
 /**
  * Each term's span in `text`, or why one cannot be taken out.

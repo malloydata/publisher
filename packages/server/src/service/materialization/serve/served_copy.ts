@@ -791,7 +791,9 @@ function readTimeTermText(term: MaterializeReadTimeTerm): string | undefined {
    switch (term.kind) {
       case "current_time":
          // Written from the classified parts, never the author's text: a term
-         // inherited from a base is re-applied here, outside its own file.
+         // inherited from a base is re-applied here, outside its own file. A
+         // lower bound trims what the build's `now` kept; an upper bound, left
+         // out of the build, is applied here alone (a two-sided term is two).
          return nowComparison(
             term.window.field,
             term.window.op,

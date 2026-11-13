@@ -41,6 +41,7 @@ import {
    type StoredColumnType,
 } from "./build_file_generator";
 import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
+import { leftOutWindowTerms } from "./rolling_window";
 
 export interface GeneratedMaterialize {
    /** The sources the generator planned. Never empty. */
@@ -230,7 +231,10 @@ export async function tryCompileMaterializeCompanion(args: {
          for (const plan of plans) {
             const names = leaked.get(plan.sourceID);
             if (!names) continue;
-            if (givenReadTerms(plan).length === 0) {
+            if (
+               givenReadTerms(plan).length === 0 &&
+               leftOutWindowTerms(plan.readTimeTerms).length === 0
+            ) {
                // A copy made only to store hidden columns (P3): build from the
                // author's file instead, storing the public ones.
                copies.delete(plan.sourceID);
@@ -253,8 +257,10 @@ export async function tryCompileMaterializeCompanion(args: {
                sourceName: plan.sourceName,
                sourceID: plan.sourceID,
                reason:
-                  givenReadTerms(plan).length > 0
-                     ? "a `where:` reading a given cannot yet be left out of the " +
+                  givenReadTerms(plan).length > 0 ||
+                  leftOutWindowTerms(plan.readTimeTerms).length > 0
+                     ? "a `where:` reading a given or keeping rows older than a " +
+                       "moving cut-off cannot yet be left out of the " +
                        "build of a source that reads a #@ persist source " +
                        `(${names.join(", ")}): its build would declare that source ` +
                        "a second time"
@@ -548,8 +554,9 @@ async function copyDeclaredBuilds(
 
 /**
  * Give each plan that needs one a build copy of the author's model, whose
- * text is read back here: a plan with given-reading terms (P2), which the
- * copy takes out; an extension table that builds over its parent's build
+ * text is read back here: a plan with given-reading terms (P2) or
+ * current-time terms holding an upper bound (Rolling windows), which the copy
+ * takes out; an extension table that builds over its parent's build
  * source (P10), whose copy re-roots the parent on it; and a plan with hidden
  * columns (P3), whose own access modifiers the copy lifts. One copy does all
  * three a plan needs.
@@ -559,6 +566,10 @@ async function copyDeclaredBuilds(
  * term not placed in it, the plan is refused (fail closed: built from the
  * author's file, the term would be baked into the table with the given's
  * default). Each given declared in another file is imported from that file.
+ * A current-time term the build leaves out must be written in the model file
+ * itself, its own declaration or a base declared there; otherwise the plan is
+ * refused the same way (built from the author's file, the table would hold
+ * only the rows older than the build's cut-off).
  *
  * Extension tables: one whose copy cannot be written (its parent no longer
  * planned, a declaration that does not re-root) builds over the raw chain
@@ -601,6 +612,7 @@ async function withBuildCopies(
       !plans.some(
          (p) =>
             givenReadTerms(p).length > 0 ||
+            leftOutWindowTerms(p.readTimeTerms).length > 0 ||
             p.buildsOver ||
             hiddenOf(p).length > 0,
       )
@@ -735,6 +747,31 @@ async function withBuildCopies(
          );
          continue;
       }
+      // An upper-bound current-time term (option A): taken out of the copy
+      // wherever this file writes it, the source's own or a base's.
+      const windowsOut = leftOutWindowTerms(plan.readTimeTerms);
+      const elsewhere = windowsOut.find((t) =>
+         t.at.some((use) => localPath(use.url) !== modelFile),
+      );
+      if (elsewhere) {
+         refuse(
+            plan,
+            `\`where: ${elsewhere.code}\` keeps rows older than a moving ` +
+               "cut-off and is written in another file than this source's " +
+               "model, so the build cannot leave it out. Write it in this " +
+               "file, or materialize the source in the file that writes it",
+         );
+         continue;
+      }
+      if (windowsOut.length > 0 && text === undefined) {
+         refuse(
+            plan,
+            "the model file could not be read to leave its `where:` keeping " +
+               `rows older than a moving cut-off out of the build: ${unreadable}`,
+         );
+         continue;
+      }
+      const leftOut = given || windowsOut.length > 0;
       const parent = plan.buildsOver
          ? kept.get(plan.buildsOver.sourceID)
          : undefined;
@@ -757,7 +794,7 @@ async function withBuildCopies(
             ? { ...plan, buildsOver: { ...plan.buildsOver, overStored } }
             : withoutParent(plan);
       }
-      if (!given && !plan.buildsOver && !liftAccess) {
+      if (!leftOut && !plan.buildsOver && !liftAccess) {
          kept.set(plan.sourceID, plan);
          levels.set(plan.sourceID, 0);
          continue;
@@ -778,7 +815,7 @@ async function withBuildCopies(
       );
       if ("reason" in copy && plan.buildsOver) {
          plan = withoutParent(plan);
-         if (!given && !liftAccess) {
+         if (!leftOut && !liftAccess) {
             kept.set(plan.sourceID, plan);
             levels.set(plan.sourceID, 0);
             continue;

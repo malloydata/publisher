@@ -59,7 +59,7 @@ import {
 import { tryCompileMaterializeCompanion } from "./materialize_compile";
 import { persistedViewRefusalFinding } from "./persisted_view";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
-import { rollingWindowsOf } from "./rolling_window";
+import { deletingWindowsOf } from "./rolling_window";
 import { tryCompileRollupCompanion } from "./rollup_compile";
 import { rollupRefusalFinding } from "./rollup_plan";
 import { getMaterializeEnabled } from "../../../config";
@@ -1419,7 +1419,9 @@ export function collectIncrementalDeclarations(
             source,
             deriveAnnotationFields(source),
          );
-         const window = rollingWindowsOf(
+         // Only a lower bound deletes; an upper bound is left out of the
+         // build, so every refresh appends and keeps every row.
+         const window = deletingWindowsOf(
             materializePlans[sourceID]?.readTimeTerms,
          );
          declarations[sourceID] = window.length
