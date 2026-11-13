@@ -70,10 +70,12 @@ import {
    physicalTargetKey,
    refusalRecord,
    reportRetainedStorageTables,
+   selfAssignTableName,
    type WarehouseReach,
 } from "./materialization_run_support";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import {
+   atNameViewSite,
    nameViewIntentFor,
    nameViewKey,
    ownNameTableIn,
@@ -91,6 +93,15 @@ import {
    type SwapDependents,
 } from "./name_view";
 import { nameViewOwner } from "./name_view_sql";
+import {
+   acquireOwnedNameLock,
+   assertTableOwnable,
+   hasAuthorTableName,
+   markOwnedTable,
+   packageRecordsName,
+   TableOwnershipError,
+   type OwnedTableTarget,
+} from "./table_ownership";
 import type { SourceBuilder } from "./source_build";
 
 /** sourceID -> the sourceIDs it reads, merged across every connection's build. */
@@ -135,6 +146,18 @@ export class InstructedBuild {
             environmentName: string,
             packageName: string,
          ) => Promise<Materialization[]>;
+         /**
+          * An auto-run refused a table at the author's `name=` because it is
+          * not provably this package's (table_ownership.ts): the package's
+          * older entries for that table are retired and the package rebound,
+          * so it answers the source live instead of from rows another
+          * package may have written. Absent: nothing is retired.
+          */
+         tableNotOwned?: (
+            environmentName: string,
+            packageName: string,
+            target: OwnedTableTarget,
+         ) => Promise<void>;
       },
    ) {}
 
@@ -401,6 +424,51 @@ export class InstructedBuild {
    }
 
    /**
+    * Refuse an auto-run's build at the author's `name=` unless the name is
+    * free or this package's (assertTableOwnable). This package's records are
+    * read only for a table with no mark.
+    */
+   private async assertOwnable(
+      run: InstructedRun,
+      persistSource: PersistSource,
+      target: OwnedTableTarget,
+      connection: MalloyConnection,
+   ): Promise<void> {
+      const packageRuns = this.seams.packageRuns;
+      const pkg = runPackageOf(run);
+      let reached = false;
+      await atNameViewSite(
+         target,
+         nameViewContext(run, connection),
+         async (site) => {
+            reached = true;
+            await assertTableOwnable(
+               site,
+               target,
+               nameViewOwnerOf(run),
+               persistSource.name,
+               async () =>
+                  !!packageRuns &&
+                  !!pkg &&
+                  packageRecordsName(
+                     await packageRuns(pkg.environmentName, pkg.packageName),
+                     target,
+                  ),
+            );
+         },
+      );
+      if (!reached) {
+         await assertTableOwnable(
+            undefined,
+            target,
+            nameViewOwnerOf(run),
+            persistSource.name,
+            async () => false,
+         );
+      }
+   }
+
+   /**
     * Whether a run of this package other than this one is building, read
     * fresh from the package's records: this run is itself active, so more
     * than one active run means another. Unknown counts as yes.
@@ -582,8 +650,20 @@ export class InstructedBuild {
               sourceEntityId,
               nameViewOwnerOf(run),
            );
+      // An auto-run's table at the author's own `name=`, which another
+      // package on the same schema may hold (table_ownership.ts). Every other
+      // auto-run name is the package's own by construction.
+      const ownedTarget = authorNamedTarget(
+         run,
+         persistSource,
+         instruction,
+         orchestrated,
+      );
       let replacedView: { target: string } | undefined;
       let entry;
+      // Held from the ownership check until the mark is written, so another
+      // package building the same `name=` at once waits, then sees the mark.
+      let releaseOwnedName: (() => void) | undefined;
       try {
          // An instructed destination that cannot be honored REFUSES, never
          // falls through to a colocated build: that would write the caller's
@@ -593,6 +673,40 @@ export class InstructedBuild {
             instruction,
             compiled,
          );
+
+         // A `name=` another package holds fails the source before anything
+         // is written, the uniqueness check included.
+         if (ownedTarget) {
+            releaseOwnedName = await acquireOwnedNameLock(
+               ownedTarget.physicalTableName,
+            );
+            await this.assertOwnable(
+               run,
+               persistSource,
+               ownedTarget,
+               connection,
+            ).catch(async (err) => {
+               const pkg = runPackageOf(run);
+               if (err instanceof TableOwnershipError && pkg) {
+                  await this.seams
+                     .tableNotOwned?.(
+                        pkg.environmentName,
+                        pkg.packageName,
+                        ownedTarget,
+                     )
+                     .catch((retireErr) =>
+                        logger.warn(
+                           "Could not retire a package's entries for a table it does not own",
+                           {
+                              sourceName: persistSource.name,
+                              error: errMessage(retireErr),
+                           },
+                        ),
+                     );
+               }
+               throw err;
+            });
+         }
 
          // An inlined join_one must match at most one row (P8): checked on
          // the source's own connection before anything is written.
@@ -687,6 +801,23 @@ export class InstructedBuild {
          if (compiled.preaggregatePlans?.[persistSource.sourceID]) {
             entry = { ...entry, origin: "preaggregate" as const };
          }
+         if (ownedTarget) {
+            await atNameViewSite(
+               ownedTarget,
+               nameViewContext(run, connection),
+               (site) =>
+                  markOwnedTable(
+                     site,
+                     ownedTarget.physicalTableName,
+                     nameViewOwnerOf(run),
+                  ),
+            ).catch((err) =>
+               logger.warn("Could not reach a built table to mark it", {
+                  sourceName: persistSource.name,
+                  error: errMessage(err),
+               }),
+            );
+         }
       } catch (buildErr) {
          recordInstructedBuildFailure(
             run,
@@ -696,6 +827,8 @@ export class InstructedBuild {
             buildErr,
          );
          return;
+      } finally {
+         releaseOwnedName?.();
       }
       run.builtSources.push(persistSource.name);
       run.entries[sourceEntityId] = entry;
@@ -801,6 +934,47 @@ export class InstructedBuild {
       }
       return false;
    }
+}
+
+/**
+ * Where an auto-run writes a source's table at the author's own `name=`, or
+ * undefined: a host-instructed build (the host chose the name), a name
+ * Publisher chose (suffixed for the package or the version, so no other
+ * package writes it), or a run that cannot say whose it is.
+ */
+function authorNamedTarget(
+   run: InstructedRun,
+   persistSource: PersistSource,
+   instruction: BuildInstruction,
+   orchestrated: boolean,
+): OwnedTableTarget | undefined {
+   if (orchestrated || run.planFacts.hostInstructed) return undefined;
+   if (!runPackageOf(run)) return undefined;
+   if (!hasAuthorTableName(run.compiled, persistSource)) return undefined;
+   if (instruction.physicalTableName !== selfAssignTableName(persistSource)) {
+      return undefined;
+   }
+   return {
+      physicalTableName: instruction.physicalTableName,
+      connectionName: persistSource.connectionName,
+      ...(instruction.destination
+         ? { storageDestinationName: instruction.destination }
+         : {}),
+   };
+}
+
+/** The environment and package a run builds, when it says. */
+function runPackageOf(
+   run: InstructedRun,
+): { environmentName: string; packageName: string } | undefined {
+   const environmentName =
+      run.buildMetadata?.context.environment ??
+      run.environment.getEnvironmentName?.();
+   const packageName =
+      run.buildMetadata?.context.package ?? run.owner?.packageName;
+   return environmentName && packageName
+      ? { environmentName, packageName }
+      : undefined;
 }
 
 /** The package a run's `name=` views are marked as made by. */

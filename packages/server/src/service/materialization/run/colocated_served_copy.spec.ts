@@ -418,8 +418,11 @@ source: ev_own is ev extend {
                   ?.failures ?? {},
             ) as { sourceName?: string; reason?: string }[];
             expect(failures.map((f) => f.sourceName)).toEqual(["ev_taken"]);
+            // Refused by the ownership check (table_ownership.ts), which
+            // runs before the colocated name= preflight.
+            expect(failures[0].reason).toContain("table-owned-elsewhere");
             expect(failures[0].reason).toContain(
-               "held by a table no run of this package wrote",
+               "a table with no Publisher mark",
             );
             // The author's table is untouched, and the other source built.
             expect(

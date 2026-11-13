@@ -139,7 +139,8 @@ SELECT table_name FROM information_schema.tables WHERE table_name = 'prt_a__g1'
 > exact shape caused a cross-environment data-loss incident on the hosted side.
 > Generational (host-assigned) names remove the collision instead of racing it, and
 > auto-run's stable names are overwritten in place by the next build, so skipping
-> them forgoes little. The durable fix is refusing a colliding persist target at
-> validation time — today `persistenceCollisionWarnings` only looks WITHIN a
-> package, so a cross-package or cross-environment collision is undetected (see
-> `cross-environment-same-name`).
+> them forgoes little. Auto-run itself no longer collides across packages or
+> environments: a name the author did not choose carries the package
+> (`<source>__p<hash>`), and a `name=` another package holds is refused at build
+> (`table-owned-elsewhere`, see `cross-environment-same-name`). Host-assigned
+> names are still the host's to keep distinct.
