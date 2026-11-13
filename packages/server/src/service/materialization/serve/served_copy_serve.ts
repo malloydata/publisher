@@ -910,9 +910,7 @@ export class ServedCopyServe {
             // cannot be read by the source, its extensions or a caller, so
             // its absence changes no answer: a served text that read it
             // would not compile.
-            const unreadable = privateFieldNames(
-               map.node(c.reroot.sourceID)?.def,
-            );
+            const unreadable = privateFieldNames(c.reroot.authorDef);
             return [...author].some(
                (name) =>
                   !served.has(name) &&
@@ -928,8 +926,11 @@ export class ServedCopyServe {
             (c) =>
                !lost.includes(c) &&
                !keepsAccess(
-                  map.node(c.reroot.sourceID)?.def,
-                  servedMap.node(c.reroot.sourceID)?.def,
+                  c.reroot.authorDef,
+                  // A source the served compile holds only as a join
+                  // (#6643) is read from that join, as the given-term
+                  // check below reads it.
+                  servedDefOf(servedMap, c.reroot.sourceID),
                ),
          );
          lost.push(...exposed);
@@ -1115,7 +1116,8 @@ export function keepsGivenTerms(author: unknown, served: unknown): boolean {
  * author's field of that name has (P3): `public` and none read alike, and a
  * modifier it does not know reads as private, so it never matches a public
  * one. A field only the served copy has (a timeframe column's internal
- * rename, `order_month__stored`) is the re-root's own and is not compared.
+ * rename, `order_month__stored`) is the re-root's own and must not be public,
+ * so a stored column never surfaces under a name the author's source lacks.
  * Unreadable sources fail closed.
  */
 export function keepsAccess(author: unknown, served: unknown): boolean {
@@ -1147,7 +1149,9 @@ export function keepsAccess(author: unknown, served: unknown): boolean {
    if (!before || !after) return false;
    for (const [name, access] of after) {
       const was = before.get(name);
-      if (was !== undefined && was !== access) return false;
+      if (was === undefined ? access === "public" : was !== access) {
+         return false;
+      }
    }
    return true;
 }
