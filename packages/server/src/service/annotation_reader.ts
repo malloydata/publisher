@@ -104,7 +104,10 @@ export function payloadsOnRoute(
  * deletion (`-key`) mean what they mean to every MOTLY reader. Only key names
  * leave, so an `@env.` value is never hydrated into a result. A payload that
  * does not parse is read word by word, so one broken property cannot hide a
- * sibling's key.
+ * sibling's key, and a word that does not parse on its own still names the
+ * key before its `=` (`sharing=`, `sharing="a`, `sharing=x)`), as the
+ * whitespace split this replaced did: a malformed value must not hide the
+ * knob it sets.
  */
 export function tagPayloadKeys(payload: string): string[] {
    const declared = (text: string): string[] | undefined => {
@@ -114,12 +117,16 @@ export function tagPayloadKeys(payload: string): string[] {
          .filter(([key]) => tag.has(key))
          .map(([key]) => key.toLowerCase());
    };
+   const assigned = (word: string): string[] => {
+      const key = /^(['"]?)([A-Za-z_]\w*)\1=/.exec(word)?.[2];
+      return key === undefined ? [] : [key.toLowerCase()];
+   };
    const keys =
       declared(payload) ??
       payload
          .split(/[ \t\r\n]+/)
          .filter(Boolean)
-         .flatMap((word) => declared(word) ?? []);
+         .flatMap((word) => declared(word) ?? assigned(word));
    return [...new Set(keys)];
 }
 

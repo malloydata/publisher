@@ -117,3 +117,27 @@ describe("findForbiddenIndexPolicyKeys: payload edges", () => {
       });
    }
 });
+
+// A payload that does not parse is read word by word, and a word that does
+// not parse on its own still names the key before its `=`, as the whitespace
+// split did: a malformed value must not hide the knob it sets.
+describe("findForbiddenIndexPolicyKeys: a word that does not parse", () => {
+   const cases: Array<[string, string[]]> = [
+      ["#(index) sharing=", ["sharing"]],
+      ["#(index) sharing={a=1}", ["sharing"]],
+      ["#(index) sharing==x", ["sharing"]],
+      ["#(index) 'sharing'=x", ["sharing"]],
+      ["#(index) n=200 sharing=x)", ["sharing"]],
+      ["#( index n=(1) sharing=x)", ["sharing"]],
+      ['#(index) sharing="a b" n=', ["sharing"]],
+      ["#(index) n= -sharing", []],
+   ];
+   for (const [tagline, expected] of cases) {
+      test(tagline, () => {
+         assert.deepStrictEqual(
+            findForbiddenIndexPolicyKeys([tagline]),
+            expected,
+         );
+      });
+   }
+});

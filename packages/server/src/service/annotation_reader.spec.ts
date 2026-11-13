@@ -414,7 +414,19 @@ describe("tagPayloadKeys", () => {
    });
 
    it("reads an unparseable payload word by word", () => {
-      expect(tagPayloadKeys("sharing=private n=")).toEqual(["sharing"]);
+      expect(tagPayloadKeys("sharing=private n=")).toEqual(["sharing", "n"]);
       expect(tagPayloadKeys('"sharing=x"')).toEqual([]);
+   });
+
+   it("names the key of a word that does not parse on its own", () => {
+      expect(tagPayloadKeys("sharing=")).toEqual(["sharing"]);
+      expect(tagPayloadKeys('n=1 Sharing="a b" m=')).toEqual([
+         "n",
+         "sharing",
+         "m",
+      ]);
+      expect(tagPayloadKeys("n=(1 sharing=x)")).toEqual(["n", "sharing"]);
+      expect(tagPayloadKeys("'sharing'=x")).toEqual(["sharing"]);
+      expect(tagPayloadKeys("@env.X= n=")).toEqual(["n"]);
    });
 });
