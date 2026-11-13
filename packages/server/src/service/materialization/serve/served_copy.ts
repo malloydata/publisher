@@ -1052,7 +1052,6 @@ function pairRecord(record: {
    const { join, childColumns, hops, access } = record;
    const present = (record.levelPresent ?? [])
       .filter((p) => p !== undefined)
-      // malloy-text: names through identifier
       .map(
          (p) =>
             `    ${identifier(p.field)} is ${identifier(p.keyColumn)} is not null`,
