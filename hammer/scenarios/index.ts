@@ -53,6 +53,7 @@ function malformedScenario(dir: string, err: unknown): Scenario {
       title: `MALFORMED scenario (${name})`,
       requires: [],
       packages: [],
+      loadError: message,
       run: async (_ctx, assert) => {
          assert.fail(`${name} failed to load`, message);
       },
@@ -92,9 +93,9 @@ function collisionMessages(scenarios: Scenario[]): Map<string, string[]> {
          for (const id of ids) {
             const others = [...ids].filter((o) => o !== id).sort();
             if (!out.has(id)) out.set(id, []);
-            out
-               .get(id)!
-               .push(`${label} "${key}" is also used by ${others.join(", ")}`);
+            out.get(id)!.push(
+               `${label} "${key}" is also used by ${others.join(", ")}`,
+            );
          }
       }
       return out;
@@ -153,6 +154,7 @@ export async function loadScenarios(
             packages: [],
             sourceTables: [],
             connections: [],
+            loadError: msgs.join("; "),
             run: async (_ctx, assert) => {
                assert.fail(
                   `${s.id}: shares state with another scenario`,

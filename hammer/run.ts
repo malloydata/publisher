@@ -454,6 +454,8 @@ async function main(): Promise<void> {
       const listed = await loadScenarios(args.scenarios, args.tags);
       for (const s of listed) {
          console.log(`${s.id}\t[${s.tags.join(",")}]\t${s.title}`);
+         // The reason, or a CI step that stops here would say only that it failed.
+         if (s.loadError) console.log(`\t${s.loadError}`);
       }
       const broken = listed.filter((s) =>
          s.tags.some((t) => t === "malformed" || t === "collision"),
