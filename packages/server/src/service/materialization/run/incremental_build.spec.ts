@@ -124,6 +124,27 @@ describe("incrementalLineage", () => {
       expect(lineage()?.storageDestinationName).toBeUndefined();
    });
 
+   it("describes a pair table, replaced by its parent key in DuckDB", () => {
+      const pair = declaration({
+         declaredMergeKey: true,
+         mergeKeys: [{ name: "id", ...DIMENSION, malloyType: "number" }],
+         strategy: "merge",
+         pair: { parentKey: "id", parentRow: "__parent_row" },
+      });
+      expect(
+         lineage({ declaration: pair, targetDialect: "duckdb" })?.pair,
+      ).toEqual({ parentKey: "id", parentRow: "__parent_row" });
+      // Anywhere else, or keyed on anything but the parent, it seeds.
+      expect(lineage({ declaration: pair })).toBeUndefined();
+      expect(
+         lineage({
+            declaration: { ...pair, mergeKeys: [] },
+            targetDialect: "duckdb",
+         }),
+      ).toBeUndefined();
+      expect(lineage()).not.toHaveProperty("pair");
+   });
+
    it("declines a target engine whose transactional apply is unproven", () => {
       expect(lineage({ targetDialect: "mysql" })).toBeUndefined();
    });
