@@ -1013,30 +1013,7 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
          { overlay },
       );
       const materializer = runtime.loadModel(queryModelURL, { importBaseURL });
-      const compiled = await materializer.getModel();
-      // Each view read back from the author's file must compile to the view
-      // the author's model holds: the file may have changed since it
-      // compiled (an edit not yet reloaded), and the variant would then
-      // answer a query the caller did not run.
-      if (use.kind === "base") {
-         const variantDef = (
-            compiled as { _modelDef?: { contents?: Record<string, unknown> } }
-         )._modelDef?.contents?.[localName];
-         for (const view of use.views) {
-            const theirs = turtleNamed(use.struct, view);
-            const ours = turtleNamed(variantDef, view);
-            if (
-               !theirs ||
-               !ours ||
-               pipelineSignature(theirs.pipeline) !==
-                  pipelineSignature(ours.pipeline)
-            ) {
-               return {
-                  error: `view \`${view}\` does not read back as the model compiled it`,
-               };
-            }
-         }
-      }
+      await materializer.getModel();
       return { materializer };
    }
 
@@ -1068,7 +1045,7 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
       const servedName = `${plan.rollupSourceName}__served`;
       const base = splitSourceID(plan.baseSourceID);
       const companion = base ? rollupCompanionURLOf(base.url) : undefined;
-      return compileDeclaringFileVariant({
+      const variant = await compileDeclaringFileVariant({
          packagePath: ctx.packagePath,
          modelPath: ctx.modelPath,
          packageConfig: ctx.packageConfig,
@@ -1139,6 +1116,26 @@ source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatem
 ${gates}${over}`;
          },
       });
+      // Each view read back from the author's file must compile to the view
+      // the author's model holds: the file may have changed since it
+      // compiled (an edit not yet reloaded), and the variant would then
+      // answer a query the caller did not run.
+      const variantDef = variant.modelDef?.contents?.[use.localName];
+      for (const view of use.views) {
+         const theirs = turtleNamed(use.struct, view);
+         const ours = turtleNamed(variantDef, view);
+         if (
+            !theirs ||
+            !ours ||
+            pipelineSignature(theirs.pipeline) !==
+               pipelineSignature(ours.pipeline)
+         ) {
+            return {
+               error: `view \`${view}\` does not read back as the model compiled it`,
+            };
+         }
+      }
+      return variant;
    }
 
    /** A file of the author's package, read through the package's own reader. */
