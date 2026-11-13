@@ -24,6 +24,7 @@ import {
    buildCopyText,
    generateBuildFile,
    givenReadTerms,
+   hiddenAccess,
    MATERIALIZE_COMPANION_SUFFIX,
    planModelMaterialize,
    splitSourceID,
@@ -408,11 +409,7 @@ async function withBuildCopies(
             )?.fields;
             const selectable = new Set(
                (fields ?? [])
-                  .filter(
-                     (f) =>
-                        f.accessModifier == null ||
-                        f.accessModifier === "public",
-                  )
+                  .filter((f) => hiddenAccess(f) === undefined)
                   .map((f) => String(f.as ?? f.name)),
             );
             if (hidden.some((c) => selectable.has(c.dimension))) {

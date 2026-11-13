@@ -378,11 +378,14 @@ const ATOMIC_TYPES = new Set([
 ]);
 
 /**
- * A field's access modifier when it is not public, or undefined. Fails closed,
- * as `isHidden` in preaggregation_synthesis.ts does: a modifier it does not
- * know reads as private.
+ * A compiled field's access modifier when it is not public, or undefined. Fails
+ * closed, as `isHidden` in preaggregation_synthesis.ts does: a modifier it does
+ * not know reads as private. The one reader of `accessModifier` for P3: the
+ * plan, the build copy's selectable set and the served copy's access check.
  */
-function hiddenAccess(field: FieldLike): "private" | "internal" | undefined {
+export function hiddenAccess(field: {
+   accessModifier?: unknown;
+}): "private" | "internal" | undefined {
    if (field.accessModifier == null || field.accessModifier === "public") {
       return undefined;
    }

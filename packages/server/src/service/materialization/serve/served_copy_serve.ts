@@ -35,7 +35,10 @@ import {
 } from "../../model_runtime";
 import { SourceMap } from "../plan/source_map";
 import { givenReadingFilterTerms } from "../plan/persist_dynamic_terms";
-import type { MaterializePlan } from "../plan/build_file_generator";
+import {
+   hiddenAccess,
+   type MaterializePlan,
+} from "../plan/build_file_generator";
 import { rollingWindowsOf } from "../plan/rolling_window";
 import { evaluateManifestFreshness } from "../run/freshness";
 import {
@@ -1132,15 +1135,7 @@ export function keepsAccess(author: unknown, served: unknown): boolean {
       }[]) {
          const name = typeof f.as === "string" ? f.as : f.name;
          if (typeof name !== "string") continue;
-         const access = f.accessModifier;
-         out.set(
-            name,
-            access == null || access === "public"
-               ? "public"
-               : access === "internal"
-                 ? "internal"
-                 : "private",
-         );
+         out.set(name, hiddenAccess(f) ?? "public");
       }
       return out;
    };
@@ -1215,7 +1210,7 @@ function privateFieldNames(def: unknown): Set<string> {
    )?.fields;
    return new Set(
       (fields ?? [])
-         .filter((f) => f.accessModifier === "private")
+         .filter((f) => hiddenAccess(f) === "private")
          .map((f) => (typeof f.as === "string" ? f.as : f.name))
          .filter((n): n is string => typeof n === "string"),
    );
