@@ -169,6 +169,25 @@ export interface RollupVariantPlan extends RollupPlan {
     * reads), stored, and redeclared `internal` on the variant.
     */
    internalGrain: string[];
+   /**
+    * The uniqueness check of the grain's one dimension (known limitation 29):
+    * set when the grain is one dimension of the base, the rollup is
+    * colocated, and the companion compiled the check. A run builds it only
+    * when a join_one in the package is keyed on that dimension (see
+    * {@link joinOneKeysOf}); the join-to-rollup leg (A7) reads its outcome.
+    */
+   keyCheck?: RollupKeyCheck;
+}
+
+/**
+ * A rollup's key check: whether its base holds a value of its one grain
+ * dimension (a join_one's key) on more than one row. The SQL is compiled from
+ * the rollup companion, over the rows the rollup's build reads, and returns
+ * one row when a non-NULL value repeats.
+ */
+export interface RollupKeyCheck {
+   keyColumn: string;
+   sql: string;
 }
 
 /**
@@ -1088,6 +1107,58 @@ ${grain}
   aggregate:
 ${partials}
 }`;
+}
+
+/**
+ * The Malloy text of a rollup's key check (known limitation 29), or undefined
+ * when the rollup's grain is not one dimension or it is not colocated (the
+ * join-to-rollup leg reads a colocated rollup only). Run against the rollup
+ * companion, which imports the base under {@link rollupBaseAlias}, so it reads
+ * exactly the rows the rollup's build groups. A NULL key meets no joining
+ * row, so its repeats do not count.
+ */
+export function rollupKeyCheckQuery(
+   plan: RollupVariantPlan,
+): string | undefined {
+   const [key, ...rest] = plan.grainDimensions;
+   if (key === undefined || rest.length > 0 || plan.storage !== undefined) {
+      return undefined;
+   }
+   const k = identifier(key);
+   return `run: ${identifier(rollupBaseAlias(plan.baseDeclaredName))} -> {
+  where: ${k} != null
+  group_by: ${k}
+  aggregate: key_rows__check is count()
+  having: key_rows__check > 1
+  limit: 1
+}`;
+}
+
+/** The key {@link joinOneKeysOf} holds for a join_one on `keyColumn` of `sourceID`. */
+export function joinOneKey(sourceID: string, keyColumn: string): string {
+   return `${sourceID}\u0000${keyColumn}`;
+}
+
+/**
+ * The join_ones declared in `map` keyed on one column of a declared source,
+ * each as {@link joinOneKey}: the rollup key checks a run needs (known
+ * limitation 29). A rollup whose base and grain no join_one names is never
+ * read through a join_one, so its check would be a scan for nothing.
+ */
+export function joinOneKeysOf(map: SourceMap): Set<string> {
+   const keys = new Set<string>();
+   for (const node of map.nodes()) {
+      for (const join of map.joinsOf(node.sourceID)) {
+         if (
+            join.relationship === "one" &&
+            join.sourceID !== undefined &&
+            join.keyColumn !== undefined
+         ) {
+            keys.add(joinOneKey(join.sourceID, join.keyColumn));
+         }
+      }
+   }
+   return keys;
 }
 
 /**

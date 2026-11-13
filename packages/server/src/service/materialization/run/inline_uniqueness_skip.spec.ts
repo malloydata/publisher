@@ -467,15 +467,16 @@ describe("which run's passes an auto-run relies on", () => {
    async function relied(runs: Materialization[]) {
       const ctx = createMocks();
       ctx.repository.listMaterializations.resolves(runs);
-      return (
+      const prior = await (
          ctx.service as unknown as {
-            priorUniquenessPasses(
+            priorUniquenessMetadata(
                env: string,
                pkg: string,
                exclude: string,
-            ): Promise<unknown>;
+            ): Promise<Record<string, unknown> | undefined>;
          }
-      ).priorUniquenessPasses("env-1", "pkg", "now");
+      ).priorUniquenessMetadata("env-1", "pkg", "now");
+      return prior ? uniquenessPassesIn(prior) : undefined;
    }
 
    it("relies on the newest run when every other finished before it began", async () => {
@@ -549,13 +550,13 @@ describe("which run's passes an auto-run relies on", () => {
       expect(
          await (
             ctx.service as unknown as {
-               priorUniquenessPasses(
+               priorUniquenessMetadata(
                   env: string,
                   pkg: string,
                   exclude: string,
                ): Promise<unknown>;
             }
-         ).priorUniquenessPasses("env-1", "pkg", "now"),
+         ).priorUniquenessMetadata("env-1", "pkg", "now"),
       ).toBeUndefined();
    });
 });

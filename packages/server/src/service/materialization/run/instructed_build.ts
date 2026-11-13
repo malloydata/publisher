@@ -3,13 +3,16 @@
 
 import {
    assertInlinedJoinsUnique,
+   checkDigest,
+   runRollupKeyCheck,
+   tableIdentityKey,
    uniquenessCheckCompiler,
    type StoredJoin,
    type UniquenessLedger,
 } from "./inline_uniqueness";
+import type { RollupKeyCheck } from "../plan/rollup_plan";
 import type { InlineUniquenessCheck } from "../plan/build_file_generator";
 import { buildSQLOf } from "../plan/addressing";
-import { tableIdentity } from "../../versions/materialization_scope";
 import type {
    Connection as MalloyConnection,
    PersistSource,
@@ -389,6 +392,10 @@ export class InstructedBuild {
               )
             : []),
       ];
+
+      // A rollup this run carried keeps its key check's record while its
+      // table stands as that check found it (known limitation 29).
+      if (uniqueness) carryRollupKeys(run, uniqueness);
 
       return {
          entries: run.entries,
@@ -833,6 +840,19 @@ export class InstructedBuild {
       run.builtSources.push(persistSource.name);
       run.entries[sourceEntityId] = entry;
       run.builtAddresses.add(sourceEntityId);
+      // A rollup a join_one reads through its key (known limitation 29):
+      // check the key's uniqueness over the rows its build read, once the
+      // table is written. Auto-run only; never fails the build.
+      if (!orchestrated && run.uniqueness && !entry.storageDestinationName) {
+         await checkRollupKey(
+            run.uniqueness,
+            rollupKeyCheckOf(run.compiled, persistSource.sourceID),
+            connection,
+            persistSource.name,
+            sourceEntityId,
+            writtenTableIdentity(instruction, graphConnectionName),
+         );
+      }
       run.writtenTargets.set(target, {
          sourceEntityId,
          sourceName: persistSource.name,
@@ -1207,20 +1227,6 @@ function colocatedRefusalOn(
    return refusals.find((refusal) => refusal.sourceID !== sourceID);
 }
 
-/**
- * The identity a uniqueness pass names a table by: where it lives and its
- * name as {@link tableIdentity} reads it. Two names a warehouse may read as
- * one table get one identity, so a write to either loses the pass: the safe
- * direction.
- */
-function tableIdentityKey(
-   kind: "connection" | "destination",
-   where: string,
-   physicalTableName: string,
-): string {
-   return JSON.stringify([kind, where, tableIdentity(physicalTableName)]);
-}
-
 /** The table an instructed build writes, as {@link tableIdentityKey} names it. */
 function writtenTableIdentity(
    instruction: BuildInstruction,
@@ -1317,5 +1323,80 @@ async function storedJoinOf(
          { sourceName: parent.name, join: check.join, error: errMessage(err) },
       );
       return undefined;
+   }
+}
+
+/** The key check a run builds for the rollup `sourceID`, if any (known limitation 29). */
+function rollupKeyCheckOf(
+   compiled: CompiledBuildPlan,
+   sourceID: string,
+): RollupKeyCheck | undefined {
+   return (
+      compiled.preaggregatePlans?.[sourceID] as
+         | { keyCheck?: RollupKeyCheck }
+         | undefined
+   )?.keyCheck;
+}
+
+/**
+ * Run a built rollup's key check and record what it found. A check that does
+ * not run records nothing, so the rollup's join_one stays unknown.
+ */
+async function checkRollupKey(
+   ledger: UniquenessLedger,
+   check: RollupKeyCheck | undefined,
+   connection: MalloyConnection,
+   sourceName: string,
+   address: string,
+   table: string,
+): Promise<void> {
+   if (!check) return;
+   const record = await runRollupKeyCheck(check, connection, table);
+   if (!record) {
+      logger.warn(
+         "A #(preaggregate) rollup's key check did not run; queries through its join_one that need the key unique are answered live",
+         { rollup: sourceName, keyColumn: check.keyColumn },
+      );
+      return;
+   }
+   if (!record.unique) {
+      logger.warn(
+         "A #(preaggregate) rollup's base holds its join_one key more than once; queries that read that join_one beside other aggregates are answered live",
+         { rollup: sourceName, keyColumn: check.keyColumn },
+      );
+   }
+   ledger.recordRollupKey(address, record);
+}
+
+/**
+ * For each rollup with a key check whose entry this run carried rather than
+ * built, keep the previous run's record when it still describes the table
+ * ({@link UniquenessLedger.carryRollupKey}).
+ */
+function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
+   const { compiled } = run;
+   for (const sourceID of Object.keys(compiled.preaggregatePlans ?? {})) {
+      const check = rollupKeyCheckOf(compiled, sourceID);
+      const source = compiled.sources[sourceID];
+      if (!check || !source) continue;
+      const address = computeSourceEntityId(
+         source,
+         compiled.connectionDigests,
+         compiled.targets?.[sourceID],
+      );
+      const entry = run.entries[address];
+      if (
+         !entry?.physicalTableName ||
+         entry.storageDestinationName ||
+         run.builtAddresses.has(address)
+      ) {
+         continue;
+      }
+      const table = tableIdentityKey(
+         "connection",
+         source.connectionName,
+         entry.physicalTableName,
+      );
+      ledger.carryRollupKey(address, table, checkDigest(table, check.sql));
    }
 }

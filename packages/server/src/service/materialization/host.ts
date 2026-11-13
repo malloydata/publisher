@@ -42,6 +42,12 @@ export interface MaterializationPackage extends BuildPlanPackage {
    };
    /** The publish-gate rejections the scheduler honours before it arms a cron. */
    persistencePolicyWarnings(): string[];
+   /**
+    * Drop the bound rollup key checks (known limitation 29) of the tables at
+    * these content addresses, which a run is about to write. Optional: a
+    * stand-in package binds none.
+    */
+   forgetKeyUniqueness?(sourceEntityIds: Iterable<string>): void;
 }
 
 /** The part of an environment's version registry a run consults. */
