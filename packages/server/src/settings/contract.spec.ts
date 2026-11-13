@@ -2481,17 +2481,18 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("d: "),
       },
    ],
+   // Retired: a set preset is accepted and ignored, never in force.
    "retrieval.egress.preset": [
-      { name: "unset", expect: value("default") },
+      { name: "unset", expect: value(false) },
       {
          name: "the file",
          file: { retrieval: { egress: { preset: "full" } } },
-         expect: value("full"),
+         expect: value(true),
       },
       {
          name: "PUBLISHER_RETRIEVAL_EGRESS_PRESET",
          env: { PUBLISHER_RETRIEVAL_EGRESS_PRESET: "full" },
-         expect: value("full"),
+         expect: value(true),
       },
       {
          name: "not a preset",
