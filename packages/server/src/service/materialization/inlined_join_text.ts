@@ -45,7 +45,7 @@ export interface InlinedJoinColumnText {
     * the record's field is a `bigint` number that keeps every digit (known
     * limitation 12).
     */
-   castTo?: string;
+   nativeCast?: string;
 }
 
 /** One inlined join, as {@link inlinedJoinStatements} writes its record. */
@@ -193,8 +193,8 @@ function recordsOf(
          const fields = j.columns
             .map((c) => {
                const internal = identifier(internalOf.get(c.column) as string);
-               const read = c.castTo
-                  ? `${internal}::${doubleQuotedString(c.castTo)}`
+               const read = c.nativeCast
+                  ? `${internal}::${doubleQuotedString(c.nativeCast)}`
                   : c.timeframe && TIMEFRAMES.has(c.timeframe)
                     ? `${internal}.${c.timeframe}`
                     : internal;
@@ -248,9 +248,34 @@ export function intoFirstExtend(
    statements: string,
 ): string | undefined {
    if (extend === "") return `extend {${statements}\n}`;
-   const open = lexAll(extend)?.find(
-      (t) => t.kind === "open" && t.text === "{",
+   const tokens = lexAll(extend);
+   if (!tokens) return undefined;
+   // A run that carries the author's `include { … }` (a v1 re-root under the
+   // cutover keeps it, `keepsIncludes`): the statements go in the first
+   // extend block after the last one (or a block of their own when none
+   // follows), never inside an include's braces, and never ahead of an
+   // include whose `public: *` would make the internal names they rename to
+   // selectable again.
+   const include = tokens.findLastIndex(
+      (t) => t.depth === 0 && t.kind === "word" && t.text === "include",
    );
+   let from = 0;
+   if (include >= 0) {
+      const close = tokens.findIndex(
+         (t, i) => i > include && t.depth === 0 && t.kind === "close",
+      );
+      if (close < 0) return undefined;
+      from = close + 1;
+      if (
+         !tokens.slice(from).some((t) => t.kind === "open" && t.text === "{")
+      ) {
+         const head = extend.slice(0, tokens[close].end);
+         return head + " " + intoFirstExtend("", statements);
+      }
+   }
+   const open = tokens
+      .slice(from)
+      .find((t) => t.kind === "open" && t.text === "{");
    if (!open) return undefined;
    const rest = extend.slice(open.end);
    // On its own line, so the author's first statement keeps its own.

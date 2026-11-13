@@ -5151,6 +5151,24 @@ components:
           items:
             type: string
           description: For a `live` verdict, the changes that would let it serve.
+        cutoverPath:
+          type: string
+          description: >-
+            On a dry run while `PUBLISHER_V1_SERVED_COPY` is not `off`: the path
+            that will answer queries on this source after the v1 cutover,
+            judged by compiling the package's served copy over bindings declared
+            from the plan's output columns (no table is built): `served_copy`
+            (the served copy re-roots it on its table), `rollup` (a rollup the
+            rollup leg reads), or `live`, with `cutoverReason`. An open string,
+            so a later release can add a path; treat an unknown value as
+            `live`.
+        cutoverReason:
+          type: string
+          description: >-
+            With a `live` `cutoverPath`, why: the served copy's reason for
+            leaving the source as written (`column_types`, `fields_not_carried`,
+            `read_terms_not_kept`, `compile_failed`, and the like), or
+            `not_rerooted` when it names none. An open string.
         views:
           type: array
           description: >-

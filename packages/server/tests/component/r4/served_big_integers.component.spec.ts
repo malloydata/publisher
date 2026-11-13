@@ -18,7 +18,14 @@
 
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { shadowRowDifference } from "../../../src/service/materialization/serve/v1_shadow";
 import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   freshLoadPool,
+   loadFixture,
+   type Outcome,
+   withSwitch,
+} from "./conformance/package_harness";
 import {
    buildScenario,
    disposeScenarios,
@@ -453,3 +460,75 @@ source: s is base -> { select: * } extend {
       );
    });
 }
+
+/**
+ * The v1 cutover's colocated tables (`#@ persist` with no `storage=`, under
+ * `PUBLISHER_V1_SERVED_COPY=on`): the served copy reads them in the source's
+ * own warehouse, and a big-integer column through the warehouse's own bigint
+ * type, so it stays served and exact.
+ */
+describe("R4: integers past 2^53 served from storage equal live (v1 colocated #@ persist, PUBLISHER_V1_SERVED_COPY=on)", () => {
+   const values = seed("", true)[0].replace(/^CREATE TABLE big AS /, "");
+   const model = `##! experimental { persistence }
+source: base is duckdb.sql("""${values}""")
+
+#@ persist name="r4_big_v1"
+source: s is base -> { select: * } extend {
+  primary_key: id
+  dimension: id_next is id + 1
+  measure: id_total is id.sum()
+}
+`;
+   let restore: () => void;
+   let loader: Awaited<ReturnType<typeof loadFixture>>;
+   let fixture: Awaited<ReturnType<(typeof loader)["bind"]>>;
+   const live = new Map<string, Outcome>();
+   beforeAll(async () => {
+      await freshLoadPool();
+      restore = withSwitch("cutover");
+      loader = await loadFixture({ "m.malloy": model });
+      for (const c of duckdbCases) {
+         live.set(c.name, await loader.run("m.malloy", c.malloy));
+      }
+      fixture = await loader.bind();
+   }, 300_000);
+   afterAll(async () => {
+      restore();
+      await loader.dispose();
+      await freshLoadPool();
+   });
+
+   it("binds the table colocated", () => {
+      expect(fixture.built).toEqual([{ name: "s", tier: "colocated" }]);
+   });
+
+   for (const c of duckdbCases) {
+      it(c.name, async () => {
+         const l = live.get(c.name);
+         const s = await fixture.run("m.malloy", c.malloy);
+         if (!l || "error" in l)
+            throw new Error(`live errored: ${l && l.error}`);
+         if ("error" in s) throw new Error(`served errored: ${s.error}`);
+         expect(s.answer.via).toBe("served_copy");
+         expect(s.answer.servedBy).not.toBe("live");
+         expect(
+            shadowRowDifference(l.answer.rows, s.answer.rows),
+         ).toBeUndefined();
+         if (c.expect) {
+            expect(exact(l.answer.rows, c.expect.column)).toEqual(
+               c.expect.values,
+            );
+            expect(exact(s.answer.rows, c.expect.column)).toEqual(
+               c.expect.values,
+            );
+         }
+         const bigintFields = (fields: { name: string; type: unknown }[]) =>
+            fields
+               .filter((f) => JSON.stringify(f.type).includes('"bigint"'))
+               .map((f) => f.name);
+         expect(bigintFields(s.answer.fields)).toEqual(
+            bigintFields(l.answer.fields),
+         );
+      });
+   }
+});

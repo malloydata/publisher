@@ -1,0 +1,149 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "daily_nf",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "daily_nf:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "79c0fd85dea04e7e",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "daily_nf",
+          "stages": 1
+        },
+        "source": "daily_nf"
+      },
+      "equalToLive": true,
+      "malloy": "run: daily_nf -> { group_by: region; aggregate: grand }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "daily_nf"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a stored measure by region",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "79c0fd85dea04e7e",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "daily_nf",
+          "stages": 1
+        },
+        "source": "daily_nf"
+      },
+      "equalToLive": true,
+      "malloy": "run: daily_nf -> { group_by: region; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "e3515d44e6a5a2414323ff7eac03f531a4226ef892dce76fea0ee087c30a2a88"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "daily_nf"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "e3515d44e6a5a2414323ff7eac03f531a4226ef892dce76fea0ee087c30a2a88",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a stored measure by region",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

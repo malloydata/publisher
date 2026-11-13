@@ -1,0 +1,32 @@
+// conformance: persisted view [storage]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { access_modifiers givens persistence virtual_source }
+
+type: ov__by_region__view__type is {
+   region::string,
+   # currency
+   #(doc) "Revenue"
+   total::number
+}
+source: ov__by_region__view__stored is __served_copy_alias_of_lake.virtual('35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533')::ov__by_region__view__type
+source: ov is ov__by_region__view__stored extend {
+  view: by_region is { select: region, total; order_by: total desc }
+}
+
+// ==== <pkg>/m.malloy.view-author.malloy
+##! experimental { persistence }
+import "raw.malloy"
+
+source: ov is orders_raw extend {
+  # currency
+  #(doc) "Revenue"
+  measure: total is amount.sum()
+  #@ persist name="ov_by_region" storage="lake"
+  view: by_region is { group_by: region; aggregate: total }
+}
+
+// ==== <pkg>/m.malloy.view.malloy
+##! experimental { access_modifiers givens persistence virtual_source }
+import { orders_raw, customers_raw, lines_raw } from "raw.malloy"
+import { ov } from "m.malloy"

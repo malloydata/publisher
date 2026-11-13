@@ -481,7 +481,8 @@ reads through a JavaScript number, so 9007199254740993 would come back as 900719
 column whose field Malloy types as a big integer (a DuckDB `BIGINT`, `HUGEINT` or `UBIGINT`, a
 BigQuery `INT64`, a Snowflake `NUMBER(p,0)`, or a sum or max over one) is therefore read through a
 native cast: `::"HUGEINT"` in a `storage=` table, and the warehouse's own big-integer type in a
-colocated one. Malloy types the cast as a big integer, so the value comes back with every digit and
+colocated one (a colocated `#(materialize)` table, or a v1 `#@ persist` one under
+`PUBLISHER_V1_SERVED_COPY=on`). Malloy types the cast as a big integer, so the value comes back with every digit and
 the field keeps live's `bigint` subtype; selecting, grouping, filtering and aggregating it all stay
 served from storage, and a `primary_key:`, dimension or measure over it keeps compiling. A
 `count()` or a sum of 32-bit integers is an ordinary integer live too, and is not touched. A column

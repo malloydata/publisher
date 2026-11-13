@@ -162,6 +162,15 @@ export const storage = [
       aliases: { env: ["PUBLISHER_MATERIALIZE_GATED_SOURCES"] },
    }),
    setting({
+      key: "materialize.v1ServedCopy",
+      type: oneOf(["off", "shadow", "on"]),
+      default: "off",
+      description:
+         "Serve v1 #@ persist tables through the served copy instead of today's serve shape: off, shadow (compare only) or on (materialization v2's v1 cutover, in development).",
+      notes: "Materialization v2's v1 cutover (phase 3, pull request 6), rolled out separately from `PUBLISHER_MATERIALIZE`. `off` (default): v1 `#@ persist` tables serve exactly as before, through the storage serve shape, the `#@ preaggregate` composite and Malloy's build manifest for colocated tables. `on`: they serve through the served copy (the author's own files with each stored source re-rooted on its table), the rollup and persisted-view legs, or live: the router lists no storage serve shape, the live compile gets no build manifest, and a colocated `#@ persist` table is bound on the served copy with the schema its build captured (derived from the compiled source for a table built before). A colocated table is read past a row-level gate with the gate grafted and proven on the served compile (contracts at read), since it never leaves the author's warehouse; a `storage=` table still needs `PUBLISHER_MATERIALIZE_GATED_SOURCES`. `shadow`: serves as `off`, and for each query a v1 table answered also computes the `on` answer off the request path and logs any difference in rows or result metadata, or why `on` would have answered live, once per query text (`publisher_v1_served_copy_shadow_total` counts them by outcome). Read at startup.",
+      aliases: { env: ["PUBLISHER_V1_SERVED_COPY"] },
+   }),
+   setting({
       key: "persist.collisionEnforcementEnabled",
       type: boolean(),
       default: true,

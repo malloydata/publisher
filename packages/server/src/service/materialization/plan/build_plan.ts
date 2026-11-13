@@ -13,7 +13,7 @@ import type {
    SourceDef,
 } from "@malloydata/malloy";
 import * as path from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import {
    persistAnnotationFindings,
    persistUnparseableFinding,
@@ -65,9 +65,10 @@ import { persistedViewRefusalFinding } from "./persisted_view";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
 import { deletingWindowsOf } from "./rolling_window";
 import { tryCompileRollupCompanion } from "./rollup_compile";
+import { compileV1BuildCompanion } from "./v1_build_companion";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
 import { rollupRefusalFinding } from "./rollup_plan";
-import { getMaterializeEnabled } from "../../../config";
+import { getMaterializeEnabled, getV1ServedCopyMode } from "../../../config";
 import { admitGivenPositions, type DynamicTerm } from "./persist_dynamic_terms";
 import { resolvePartitionColumns } from "./persist_partition";
 import {
@@ -924,19 +925,23 @@ export async function collectModelBuildPlan(
       runtime,
       getRuntime,
    } = args;
+   const v1Cutover = getV1ServedCopyMode() === "on";
    // Pre-aggregation runs BEFORE the early `return`s below: a model may declare
    // `#@ preaggregate` with no persist source and no `experimental.persistence`
    // flag — the SYNTHESIZED model carries both — and must still get its rollup.
-   const synthesized =
-      args.synthesized !== undefined
-         ? args.synthesized
-         : await tryCompileSynthesizedPreaggregation({
-              packagePath,
-              modelPath,
-              getRuntime,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              contents: (malloyModel as any)._modelDef?.contents ?? {},
-           });
+   // Under the v1 cutover a v1 rollup is planned by the rollup leg instead
+   // (`#(preaggregate)`'s, below; G4), so v1's own synthesis is skipped.
+   const synthesized = v1Cutover
+      ? null
+      : args.synthesized !== undefined
+        ? args.synthesized
+        : await tryCompileSynthesizedPreaggregation({
+             packagePath,
+             modelPath,
+             getRuntime,
+             // eslint-disable-next-line @typescript-eslint/no-explicit-any
+             contents: (malloyModel as any)._modelDef?.contents ?? {},
+          });
    if (synthesized) {
       const rollupTargets = await synthesized.runtime.getBuildTargets(
          synthesized.model,
@@ -1004,7 +1009,10 @@ export async function collectModelBuildPlan(
          malloyModel,
          materializer,
       });
-      // `#(preaggregate)` (phase 4), under the same switch.
+   }
+   // `#(preaggregate)` (phase 4), under the same switch, and under the v1
+   // cutover, which reads v1 `#@ preaggregate` lines as its declarations.
+   if (getMaterializeEnabled() || v1Cutover) {
       await collectGeneratedRollups(parts, {
          modelPath,
          packagePath,
@@ -1014,9 +1022,12 @@ export async function collectModelBuildPlan(
    }
 
    // getBuildTargets() THROWS on a model without `##! experimental.persistence`,
-   // which would abort the whole package's plan. Such a model cannot carry a
-   // persist source anyway, so skip it, mirroring Malloy's own guard.
-   // Presence only, decided as Malloy decides it.
+   // which would abort the whole package's plan. Before the v1 cutover such a
+   // model plans no persist source, mirroring Malloy's own guard (guard 1).
+   // Under it, its build copy carries the flag instead (D3), so the author's
+   // file need not. Presence only, decided as Malloy decides it.
+   let planModel = malloyModel;
+   let planRuntime = runtime;
    if (
       !routeHasKey(
          malloyModel.modelAnnotations,
@@ -1025,10 +1036,15 @@ export async function collectModelBuildPlan(
          "persistence",
       )
    ) {
-      return;
+      const companion = v1Cutover
+         ? await compileV1BuildCompanion({ packagePath, modelPath, getRuntime })
+         : undefined;
+      if (!companion) return;
+      planModel = companion.model;
+      planRuntime = companion.runtime;
    }
 
-   const targets = await runtime.getBuildTargets(malloyModel);
+   const targets = await planRuntime.getBuildTargets(planModel);
    const parseErrors = targets.tagParseLog.filter((msg) => {
       logger.warn("Persist annotation issue", {
          modelPath,
@@ -1044,6 +1060,23 @@ export async function collectModelBuildPlan(
    // A `#@` line that does not parse is reported by what it cost. Malloy drops
    // a source only when none of its `#@` lines parse; when another does, the
    // source is still planned, built without the broken line's directives.
+   // A location in the build copy (D3) sits one line below the author's,
+   // since the copy opens with the flag: the finding names the author's line.
+   // The copy's own location still matches the planned sources' notes.
+   const companionURL =
+      planModel !== malloyModel
+         ? pathToFileURL(path.resolve(packagePath, modelPath)).href
+         : undefined;
+   const authorAt = (at: (typeof parseErrors)[number]["at"]) =>
+      at && companionURL && at.url === companionURL
+         ? {
+              ...at,
+              range: {
+                 start: { ...at.range.start, line: at.range.start.line - 1 },
+                 end: { ...at.range.end, line: at.range.end.line - 1 },
+              },
+           }
+         : at;
    for (const msg of parseErrors) {
       const at = msg.at;
       const onPlanned = at
@@ -1059,7 +1092,7 @@ export async function collectModelBuildPlan(
       addAnnotationFinding(
          parts,
          persistUnparseableFinding(
-            msg,
+            { ...msg, at: authorAt(msg.at) },
             declaringModelPath(at?.url, packagePath, modelPath),
             onPlanned?.note
                ? { subject: onPlanned.source.name, line: onPlanned.note.text }

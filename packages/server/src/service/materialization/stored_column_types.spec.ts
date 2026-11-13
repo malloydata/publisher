@@ -18,6 +18,7 @@ import {
    queryTimezoneOf,
    rebuildWouldRecast,
    serveTypePlan,
+   storedColumnsOfOutput,
    storedColumnTypeMismatches,
    storageBuildCasts,
    storedTypeServesAs,
@@ -585,5 +586,31 @@ describe("bigIntegerReads (known limitation 12)", () => {
       expect(liveKeepsBigIntegers("duckdb")).toBe(true);
       expect(liveKeepsBigIntegers("snowflake")).toBe(true);
       expect(liveKeepsBigIntegers(undefined)).toBe(true);
+   });
+});
+
+describe("storedColumnsOfOutput: a bigint read back from a table", () => {
+   it("is a BIGINT when asked (a schema read off a table), and a DOUBLE as before otherwise", () => {
+      // Malloy reads a 64-bit integer column back as numberType `bigint`
+      // (a captured colocated schema, the v1 cutover); a compiled output's
+      // integer says `integer`. A #(materialize) plan's compiled output keeps
+      // its mapping (`bigint` as DOUBLE).
+      const fields = [
+         { name: "a", type: "number", numberType: "bigint" },
+         { name: "b", type: "number", numberType: "integer" },
+         { name: "c", type: "number", numberType: "float" },
+      ];
+      expect(storedColumnsOfOutput(fields, { nested: true })).toEqual([
+         { name: "a", type: "DOUBLE" },
+         { name: "b", type: "BIGINT" },
+         { name: "c", type: "DOUBLE" },
+      ]);
+      expect(
+         storedColumnsOfOutput(fields, { nested: true, bigint: true }),
+      ).toEqual([
+         { name: "a", type: "BIGINT" },
+         { name: "b", type: "BIGINT" },
+         { name: "c", type: "DOUBLE" },
+      ]);
    });
 });

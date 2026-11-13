@@ -28,7 +28,17 @@ const seedSql = [
     ) AS t(id, region, amt, d)`,
 ];
 
-const model = `source: orders is duckdb.table('ev') extend {
+// `kept` is declared in another file: a re-root keeps a base's blocks only
+// for a base in its own file (G8), so `kept_west` would lose `grand` and is
+// left as written (call 2).
+const keptModel = `source: kept is duckdb.table('ev') extend {
+  measure: grand is amt.sum()
+}
+`;
+
+const model = `import "kept.malloy"
+
+source: orders is duckdb.table('ev') extend {
   dimension: tier is pick 'high' when amt > 10 else 'low'
 }
 
@@ -48,10 +58,6 @@ source: east_ext is east_orders extend {
   measure: n is count()
 }
 
-source: kept is duckdb.table('ev') extend {
-  measure: grand is amt.sum()
-}
-
 #(materialize) storage="lake"
 source: kept_west is kept extend {
   where: region = 'west'
@@ -66,7 +72,7 @@ describe("R4: the served copy over #(materialize) answers equal to live", () => 
          env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       }).restore;
       fixture = await buildScenario({
-         files: { "m.malloy": model },
+         files: { "m.malloy": model, "kept.malloy": keptModel },
          seedSql,
          materialize: true,
       });
@@ -138,7 +144,7 @@ describe("R4: the served copy over #(materialize) answers equal to live", () => 
       ]);
    });
 
-   it("leaves a source whose base declares a measure as written, and answers live", async () => {
+   it("leaves a source whose base in another file declares a measure as written, and answers live", async () => {
       const run = await fixture.run({
          name: "inherited measure",
          malloy: "run: kept_west -> { aggregate: grand }",

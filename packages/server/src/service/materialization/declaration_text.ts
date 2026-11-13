@@ -35,7 +35,17 @@ interface DeclarationRange {
  * `extend { … }` blocks begins, if any. Undefined when no top-level `is`
  * follows the name.
  */
-export function declarationSpans(declaration: string):
+export function declarationSpans(
+   declaration: string,
+   options: {
+      /**
+       * Walk back over trailing `include { … }` blocks too, so the run is
+       * everything after the base (a v1 query-shaped source's re-root under
+       * the cutover keeps its author's `include`, review F3).
+       */
+      throughIncludes?: boolean;
+   } = {},
+):
    | {
         nameEnd: number;
         extendStart?: number;
@@ -67,7 +77,8 @@ export function declarationSpans(declaration: string):
       if (
          open?.kind !== "open" ||
          kw?.kind !== "word" ||
-         kw.text !== "extend" ||
+         (kw.text !== "extend" &&
+            !(options.throughIncludes && kw.text === "include")) ||
          j - 2 <= isIndex
       ) {
          break;

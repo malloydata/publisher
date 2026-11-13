@@ -17,6 +17,7 @@ import {
    getPersistCollisionEnforce,
    getMaterializeEnabled,
    getPersistStorageMode,
+   getV1ServedCopyMode,
 } from "../../config";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
 import { BuildPlanRefreshingError } from "../../errors";
@@ -71,7 +72,10 @@ import {
    SERVED_COPY_WARNING_CODE,
    type ServedCopyProblem,
 } from "./serve/served_copy_serve";
-import { deriveColocatedServeBindings } from "./serve/colocated_bindings";
+import {
+   deriveColocatedServeBindings,
+   v1StoredColumnsOf,
+} from "./serve/colocated_bindings";
 import { namesServedCopyAlias } from "./serve/served_copy_config";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import {
@@ -969,13 +973,37 @@ export class PackageMaterialization {
       const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
       const sources = plan?.sources ?? {};
       const eligible = this.colocatedSourceEligibility?.eligibleEntityIds;
+      // The v1 cutover (G1): v1 colocated `#@ persist` tables too, once the
+      // switch is past `off` (under `shadow` the model keeps them off its own
+      // served copy; Model.setServeBindings).
+      const v1 = getV1ServedCopyMode() !== "off";
+      const viewBuilds = v1 ? this.persistedViewBuildIDs() : undefined;
       return deriveColocatedServeBindings({
          entries: this.freshnessEntries,
          planSources: sources,
          materializePlans: this.materializePlans,
          eligible: (sourceID) =>
             !!eligible?.has(sources[sourceID]?.sourceEntityId ?? ""),
+         ...(v1
+            ? {
+                 v1Schema: (sourceID: string) =>
+                    v1StoredColumnsOf(this.declarationOf(sourceID)),
+                 notV1: (sourceID: string) => !!viewBuilds?.has(sourceID),
+              }
+            : {}),
       });
+   }
+
+   /** Every model's persisted views' generated build sources, by sourceID. */
+   private persistedViewBuildIDs(): Set<string> {
+      const ids = new Set<string>();
+      for (const model of this.owner.models().values()) {
+         // Optional: a model a spec stands in for need not implement it.
+         for (const b of model.persistedViewBuilds?.() ?? []) {
+            ids.add(b.buildSourceID);
+         }
+      }
+      return ids;
    }
 
    /** What {@link pushStorageServeBindingsToModels} last pushed, colocated. */
@@ -1775,7 +1803,109 @@ export class PackageMaterialization {
             }
          }
       }
-      return this.serveVerdicts(views);
+      const verdicts = this.serveVerdicts(views);
+      if (getV1ServedCopyMode() === "off") return verdicts;
+      try {
+         return await this.withCutoverPaths(verdicts);
+      } catch (error) {
+         logger.warn("Could not preview the v1 cutover's serve paths", {
+            packageName: this.owner.packageName(),
+            error: errMessage(error),
+         });
+         return verdicts;
+      }
+   }
+
+   /**
+    * The v1 cutover's serve path on each verdict (6e, plan question 15): the
+    * served copy compiled over bindings declared from the plan's output
+    * columns, `storage=` ones as {@link previewServeBindings} declares them
+    * and colocated ones as the cutover binds them, names the sources it
+    * re-roots; a rollup is the rollup leg's. Nothing is built or read.
+    */
+   private async withCutoverPaths(
+      verdicts: ServeVerdict[],
+   ): Promise<ServeVerdict[]> {
+      const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
+      const sources = plan?.sources ?? {};
+      const eligible = this.colocatedSourceEligibility?.eligibleEntityIds;
+      const viewBuilds = this.persistedViewBuildIDs();
+      const entries: FreshnessManifest = {};
+      for (const source of Object.values(sources)) {
+         if (source.annotationFields?.storage?.trim()) continue;
+         entries[source.sourceEntityId] = {
+            tableName: `preview_${source.sourceEntityId}`,
+            connectionName: source.connectionName,
+         };
+      }
+      // A v1 `storage=` table stores the persisted query's own output (before
+      // an extend block's `rename:` or `except:`, nests included), as the
+      // bind will read it; a `#(materialize)` plan's columns are its own.
+      const bindings = [
+         ...this.previewServeBindings().map((b) => {
+            const sourceID = b.sourceIDs?.[0];
+            if (!sourceID || this.materializePlans?.[sourceID]) return b;
+            const schema = v1StoredColumnsOf(this.declarationOf(sourceID));
+            return schema?.length ? { ...b, schema } : b;
+         }),
+         ...deriveColocatedServeBindings({
+            entries,
+            planSources: sources,
+            materializePlans: this.materializePlans,
+            eligible: (sourceID) =>
+               !!eligible?.has(sources[sourceID]?.sourceEntityId ?? ""),
+            v1Schema: (sourceID) =>
+               v1StoredColumnsOf(this.declarationOf(sourceID)),
+            notV1: (sourceID) => viewBuilds.has(sourceID),
+         }),
+      ];
+      const rerooted = new Set<string>();
+      const throughBase = new Set<string>();
+      const gateDeclined = new Set<string>();
+      const problems = new Map<string, string>();
+      for (const model of this.owner.models().values()) {
+         const preview = await model.previewServedCopy?.(bindings);
+         for (const id of preview?.rerooted ?? []) rerooted.add(id);
+         for (const id of preview?.throughBase ?? []) throughBase.add(id);
+         for (const id of preview?.gateDeclined ?? []) gateDeclined.add(id);
+         for (const p of preview?.problems ?? []) {
+            if (p.sourceID && !problems.has(p.sourceID)) {
+               problems.set(p.sourceID, p.reason);
+            }
+         }
+      }
+      return verdicts.map((v) => {
+         if (v.origin === "preaggregate") {
+            return { ...v, cutoverPath: "rollup" };
+         }
+         // A row-level gate declared on a base the re-root replaces cannot
+         // be grafted on the served copy: its queries are answered live.
+         if (gateDeclined.has(v.sourceID)) {
+            return {
+               ...v,
+               cutoverPath: "live",
+               cutoverReason: "inherited_gate",
+            };
+         }
+         if (rerooted.has(v.sourceID)) {
+            return { ...v, cutoverPath: "served_copy" };
+         }
+         // An extension of a re-rooted source, left as written: it reads
+         // that source's table by name.
+         if (throughBase.has(v.sourceID) && !problems.has(v.sourceID)) {
+            return {
+               ...v,
+               cutoverPath: "served_copy",
+               cutoverReason: "through_base",
+            };
+         }
+         return {
+            ...v,
+            cutoverPath: "live",
+            cutoverReason:
+               problems.get(v.sourceID) ?? v.reason ?? "not_rerooted",
+         };
+      });
    }
 
    /**
