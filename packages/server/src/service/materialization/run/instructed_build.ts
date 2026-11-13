@@ -63,13 +63,21 @@ import {
    reportRetainedStorageTables,
    type WarehouseReach,
 } from "./materialization_run_support";
+import type { Materialization } from "../../../storage/DatabaseInterface";
 import {
    nameViewIntentFor,
+   nameViewKey,
+   ownNameTableIn,
+   ownViewAtTable,
    preflightNameView,
    publishNameViews,
    swapDependentsFor,
+   tableAtNameIntentFor,
+   viewToTableSwap,
    type NameViewContext,
+   type NameViewIntent,
    type NameViewRecord,
+   type OwnNameTable,
    type SwapDependents,
 } from "./name_view";
 import { nameViewOwner } from "./name_view_sql";
@@ -108,6 +116,15 @@ export class InstructedBuild {
             environment: BuildEnvironment,
             owner: { environmentId: string; packageName: string },
          ) => Promise<void>;
+         /**
+          * The package's runs, from its own records: what tells a table at a
+          * `name=` this package wrote from anyone else's (name_view.ts).
+          * Absent: no such table is ever recognized, and every one refuses.
+          */
+         packageRuns?: (
+            environmentName: string,
+            packageName: string,
+         ) => Promise<Materialization[]>;
       },
    ) {}
 
@@ -235,7 +252,10 @@ export class InstructedBuild {
          builtSources: [],
          writtenTargets: new Map(),
          nameViewIntents: [],
+         nameViewOwnTables: new Map(),
+         replacedNameViews: [],
       };
+      run.ownNameTableAt = this.ownNameTableLookup(run);
       assertNoTableCollisions(builds, sources, connectionDigests, index);
 
       let settled: ReturnType<typeof settleRefusals> = {
@@ -317,9 +337,16 @@ export class InstructedBuild {
 
       // Only once every source built, so a run that fails part-way never
       // points a view at a table its manifest will not name. Never throws.
-      const nameViews = run.nameViewIntents?.length
-         ? await publishNameViews(run.nameViewIntents, nameViewContext(run))
-         : [];
+      const nameViews = [
+         ...(run.replacedNameViews ?? []),
+         ...(run.nameViewIntents?.length
+            ? await publishNameViews(
+                 run.nameViewIntents,
+                 nameViewContext(run),
+                 run.nameViewOwnTables,
+              )
+            : []),
+      ];
 
       return {
          entries: run.entries,
@@ -327,6 +354,27 @@ export class InstructedBuild {
          sourcesRefused: run.refusals.length,
          ...settled,
          nameViews,
+      };
+   }
+
+   /**
+    * How the run asks whether this package's own records say it wrote the
+    * table at a `name=`: the package's runs, read once, on first ask.
+    */
+   private ownNameTableLookup(
+      run: InstructedRun,
+   ): (intent: NameViewIntent) => Promise<OwnNameTable | undefined> {
+      const packageRuns = this.seams.packageRuns;
+      const environmentName =
+         run.buildMetadata?.context.environment ??
+         run.environment.getEnvironmentName?.();
+      const packageName =
+         run.buildMetadata?.context.package ?? run.owner?.packageName;
+      let runs: Promise<Materialization[]> | undefined;
+      return async (intent) => {
+         if (!packageRuns || !environmentName || !packageName) return undefined;
+         runs ??= packageRuns(environmentName, packageName);
+         return ownNameTableIn(await runs, intent);
       };
    }
 
@@ -473,6 +521,18 @@ export class InstructedBuild {
          sourceEntityId,
          nameViewOwnerOf(run),
       );
+      // A table called `name=` itself, where this package's own view may
+      // stand from a build that named its table by generation.
+      const tableAtName = nameView
+         ? undefined
+         : tableAtNameIntentFor(
+              compiled,
+              persistSource,
+              instruction,
+              sourceEntityId,
+              nameViewOwnerOf(run),
+           );
+      let replacedView: { target: string } | undefined;
       let entry;
       try {
          // An instructed destination that cannot be honored REFUSES, never
@@ -498,12 +558,31 @@ export class InstructedBuild {
                nameView,
                nameViewContext(run, connection),
             );
-            if (probed && !instruction.destination) {
+            if (probed?.slot.state === "own_table") {
+               run.nameViewOwnTables?.set(
+                  nameViewKey(nameView),
+                  probed.slot.table,
+               );
+            } else if (probed && !instruction.destination) {
                swapDependents = swapDependentsFor(
                   nameView,
                   probed.slot,
                   probed.dialect,
                );
+            }
+         } else if (tableAtName) {
+            // This package's own view at the name: the table replaces it.
+            const ownView = await ownViewAtTable(
+               tableAtName,
+               nameViewContext(run, connection),
+            );
+            if (ownView) {
+               swapDependents = viewToTableSwap(
+                  tableAtName,
+                  ownView.target,
+                  ownView.dialect,
+               );
+               replacedView = ownView;
             }
          }
 
@@ -549,6 +628,21 @@ export class InstructedBuild {
          sourceName: persistSource.name,
       });
       if (nameView) run.nameViewIntents?.push(nameView);
+      if (tableAtName && replacedView) {
+         run.replacedNameViews?.push({
+            ...tableAtName,
+            outcome: "replaced_by_table",
+            previousTarget: replacedView.target,
+            message:
+               `the table replaced this package's view '${tableAtName.viewName}', ` +
+               `which read '${replacedView.target}'`,
+         });
+         logger.info("A built table replaced this package's name= view", {
+            sourceName: persistSource.name,
+            physicalTableName: instruction.physicalTableName,
+            previousTarget: replacedView.target,
+         });
+      }
       if (isReclaimableStorageTable(entry)) {
          run.builtThisRun.push(entry);
       } else if (entry.storageDestinationName) {
@@ -647,10 +741,11 @@ function nameViewOwnerOf(run: InstructedRun): string {
  * one this build holds, when given), or the destination the run builds into.
  */
 export function nameViewContext(
-   run: Pick<InstructedRun, "compiled" | "environment">,
+   run: Pick<InstructedRun, "compiled" | "environment" | "ownNameTableAt">,
    connection?: MalloyConnection,
 ): NameViewContext {
    return {
+      ...(run.ownNameTableAt ? { ownTableAt: run.ownNameTableAt } : {}),
       connectionFor: (name) =>
          (connection && connection.name === name ? connection : undefined) ??
          run.compiled.connections.get(name),

@@ -9,8 +9,10 @@ import {
    ownedSlot,
    pointNameView,
    probeNameView,
+   replaceOwnTableWithView,
    settleNameViewsBeforeDrop,
    swapDependentsFor,
+   viewToTableSwap,
    type NameViewIntent,
 } from "./name_view";
 
@@ -189,5 +191,69 @@ describe.skipIf(!url)("the name= view on Postgres", () => {
       expect(
          await probeNameView(colocatedNameViewSite(pg), intent.viewName),
       ).toEqual({ state: "empty" });
+   });
+
+   it("the view replaces a table the package's own run wrote at the name, in one transaction", async () => {
+      const site = colocatedNameViewSite(pg);
+      const own = { materializationId: "m1", sourceEntityId: "old" };
+      const replacing: NameViewIntent = {
+         ...intent,
+         viewName: "name_view_test.summary",
+         physicalTableName: "name_view_test.summary_g1",
+      };
+      await run("CREATE TABLE name_view_test.summary AS SELECT 1 AS x");
+      await run("CREATE TABLE name_view_test.summary_g1 AS SELECT 2 AS x");
+      const summary = async () =>
+         (
+            await run(
+               'SELECT row_to_json(v) AS "row" FROM name_view_test.summary v',
+            )
+         ).rows;
+
+      // A reader's own view over the old table refuses its drop: the whole
+      // transaction rolls back, and the table is as it was.
+      await run(
+         "CREATE VIEW name_view_test.summary_reader AS SELECT * FROM name_view_test.summary",
+      );
+      await expect(
+         replaceOwnTableWithView(site, replacing, own),
+      ).rejects.toThrow(/depend/);
+      expect(await summary()).toEqual([{ x: 1 }]);
+      expect(await probeNameView(site, "name_view_test.summary")).toEqual({
+         state: "taken",
+         kind: "TABLE",
+      });
+      await run("DROP VIEW name_view_test.summary_reader");
+
+      await replaceOwnTableWithView(site, replacing, own);
+      expect(await summary()).toEqual([{ x: 2 }]);
+      expect(await probeNameView(site, "name_view_test.summary")).toEqual({
+         state: "ours",
+         target: "name_view_test.summary_g1",
+         owner: intent.owner,
+      });
+
+      // The other way: a rebuild of a table called `name=` replaces the view
+      // in the swap's transaction.
+      await run("CREATE TABLE name_view_test.summary_s AS SELECT 3 AS x");
+      await swapIntoPlace({
+         connection: pg,
+         runOptions: {},
+         dialect: "postgres",
+         physicalTableName: "name_view_test.summary",
+         stagingTableName: "name_view_test.summary_s",
+         backupTableName: "name_view_test.summary_o",
+         connectionName: "pg",
+         swapDependents: viewToTableSwap(
+            { ...replacing, physicalTableName: "name_view_test.summary" },
+            "name_view_test.summary_g1",
+            "postgres",
+         ),
+      });
+      expect(await summary()).toEqual([{ x: 3 }]);
+      expect(await probeNameView(site, "name_view_test.summary")).toEqual({
+         state: "taken",
+         kind: "TABLE",
+      });
    });
 });

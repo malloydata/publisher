@@ -459,6 +459,183 @@ describe("the name= view through real builds", () => {
    );
 
    it(
+      "self-instructed, then orchestrated: the view replaces the table the package's own run wrote at name=",
+      async () => {
+         await publish("1.0.0", 1, "package");
+         const self = await build({ versionId: VersionRef.parse("1.0.0") });
+         expect(self.status).toBe("MANIFEST_FILE_READY");
+         // The self-instructed build names its table `name=` itself.
+         expect(await tables()).toEqual(["summary"]);
+         expect(await summaryView()).toBeUndefined();
+
+         // A later version, built by a host into a generation-named table.
+         await publish("2.0.0", 2, "package");
+         const g1 = await buildInstructed("2.0.0", "summary_g1");
+         expect(g1.status).toBe("MANIFEST_FILE_READY");
+         // The view reads the new generation, and the old table is gone.
+         expect(await tables()).toEqual(["summary_g1"]);
+         expect(await summaryView()).toEqual({
+            answer: 2,
+            comment: mark("summary_g1"),
+         });
+         expect(nameViewsIn(g1.metadata)).toEqual([
+            expect.objectContaining({
+               viewName: "summary",
+               physicalTableName: "summary_g1",
+               outcome: "replaced_own_table",
+            }),
+         ]);
+         // The self-instructed run's entry for the table is retired.
+         expect(
+            (await repo.getMaterializationById(self.id))?.metadata
+               ?.supersededTables,
+         ).toEqual(["summary"]);
+
+         // A later generation repoints the view as usual.
+         const g2 = await buildInstructed("2.0.0", "summary_g2");
+         expect(g2.status).toBe("MANIFEST_FILE_READY");
+         expect(nameViewsIn(g2.metadata)[0].outcome).toBe("repointed");
+         expect((await summaryView())?.comment).toBe(mark("summary_g2"));
+
+         // Deleting the self-instructed run: its table is already gone, so
+         // the drop is retired, not owed, and the view is untouched.
+         await service.deleteMaterialization(ENV, PKG, self.id, {
+            dropTables: true,
+            versionId: VersionRef.parse("1.0.0"),
+         });
+         expect(await repo.getMaterializationById(self.id)).toBeFalsy();
+         expect(await tables()).toEqual(["summary_g1", "summary_g2"]);
+         expect((await summaryView())?.comment).toBe(mark("summary_g2"));
+
+         // Deleting a generation the view does not read leaves it; deleting
+         // the one it reads falls back to the generation that replaced the
+         // table.
+         await service.deleteMaterialization(ENV, PKG, g2.id, {
+            dropTables: true,
+            versionId: VersionRef.parse("2.0.0"),
+         });
+         expect(await tables()).toEqual(["summary_g1"]);
+         expect(await summaryView()).toEqual({
+            answer: 2,
+            comment: mark("summary_g1"),
+         });
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
+      "a table at name= put there after this package's view replaced its own is refused",
+      async () => {
+         await publish("1.0.0", 1, "package");
+         await build({ versionId: VersionRef.parse("1.0.0") });
+         const g1 = await buildInstructed("1.0.0", "summary_g1");
+         expect(nameViewsIn(g1.metadata)[0].outcome).toBe("replaced_own_table");
+         // Someone drops the view and puts a table of their own there.
+         await sql('DROP VIEW "summary"');
+         await sql('CREATE TABLE "summary" AS SELECT 42 AS answer');
+         const g2 = await buildInstructed("1.0.0", "summary_g2");
+         expect(g2.status).toBe("FAILED");
+         expect(g2.error).toContain("held by a table Publisher did not create");
+         expect(await sql('SELECT answer FROM "summary"')).toEqual([
+            { answer: 42 },
+         ]);
+         expect(await tables()).toEqual(["summary", "summary_g1"]);
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
+      "orchestrated, then self-instructed: the table replaces this package's own view",
+      async () => {
+         await publish("1.0.0", 1, "package");
+         const g1 = await buildInstructed("1.0.0", "summary_g1");
+         expect((await summaryView())?.comment).toBe(mark("summary_g1"));
+
+         await publish("2.0.0", 2, "package");
+         const self = await build({
+            versionId: VersionRef.parse("2.0.0"),
+            forceRefresh: true,
+         });
+         expect(self.status).toBe("MANIFEST_FILE_READY");
+         expect(await summaryView()).toBeUndefined();
+         expect(await tables()).toEqual(["summary", "summary_g1"]);
+         expect(await sql('SELECT answer FROM "summary"')).toEqual([
+            { answer: 2 },
+         ]);
+         expect(nameViewsIn(self.metadata)).toEqual([
+            expect.objectContaining({
+               viewName: "summary",
+               physicalTableName: "summary",
+               previousTarget: "summary_g1",
+               outcome: "replaced_by_table",
+            }),
+         ]);
+
+         // A rebuild of the table is an ordinary rebuild.
+         const again = await build({
+            versionId: VersionRef.parse("2.0.0"),
+            forceRefresh: true,
+         });
+         expect(again.status).toBe("MANIFEST_FILE_READY");
+         expect(again.metadata?.[NAME_VIEWS_KEY]).toBeUndefined();
+
+         // The generation the view read goes with its run; the table stays.
+         await service.deleteMaterialization(ENV, PKG, g1.id, {
+            dropTables: true,
+            versionId: VersionRef.parse("1.0.0"),
+         });
+         expect(await tables()).toEqual(["summary"]);
+         expect(await sql('SELECT answer FROM "summary"')).toEqual([
+            { answer: 2 },
+         ]);
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
+      "self-instructed never replaces another package's view, nor one Publisher did not mark",
+      async () => {
+         await publish("1.0.0", 1, "package");
+         await sql("CREATE TABLE theirs AS SELECT 7 AS answer");
+         await sql(
+            `CREATE VIEW "summary" AS SELECT * FROM theirs; COMMENT ON VIEW "summary" IS '${nameViewComment(
+               { target: "theirs", owner: nameViewOwner(ENV, "other") },
+            )}'`,
+         );
+         const run = await build({
+            versionId: VersionRef.parse("1.0.0"),
+            forceRefresh: true,
+         });
+         expect(run.status).toBe("FAILED");
+         expect(await sql('SELECT answer FROM "summary"')).toEqual([
+            { answer: 7 },
+         ]);
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
+      "refuses the build when name= is held by another package's view, and writes nothing",
+      async () => {
+         await publish("1.0.0", 1, "package");
+         await sql("CREATE TABLE theirs AS SELECT 7 AS answer");
+         await sql(
+            `CREATE VIEW "summary" AS SELECT * FROM theirs; COMMENT ON VIEW "summary" IS '${nameViewComment(
+               { target: "theirs", owner: nameViewOwner(ENV, "other") },
+            )}'`,
+         );
+         const run = await buildInstructed("1.0.0", "summary_g1");
+         expect(run.status).toBe("FAILED");
+         expect(run.error).toContain(`a view package '${ENV}/other' made`);
+         expect(await tables()).toEqual(["theirs"]);
+         expect(await sql('SELECT answer FROM "summary"')).toEqual([
+            { answer: 7 },
+         ]);
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
       "a v1 #@ persist name= makes no view (only #(materialize) does)",
       async () => {
          await publish("1.0.0", 1, "version", persistModel);

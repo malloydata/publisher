@@ -43,7 +43,7 @@ import {
    type BuildQueryMetadata,
    type ChainedPlanFacts,
 } from "./materialization_run_support";
-import type { NameViewIntent } from "./name_view";
+import type { NameViewIntent, NameViewRecord, OwnNameTable } from "./name_view";
 
 /** The eligibility gate a source was cleared by. */
 export type EligibilityTier = "storage" | "colocated";
@@ -119,6 +119,17 @@ export interface InstructedRun {
    writtenTargets: Map<string, { sourceEntityId: string; sourceName: string }>;
    /** The `name=` views the sources this run built call for (name_view.ts). */
    nameViewIntents?: NameViewIntent[];
+   /**
+    * By view key: the `name=` views whose name preflight found held by a
+    * table this package's own run wrote, which the view replaces.
+    */
+   nameViewOwnTables?: Map<string, OwnNameTable>;
+   /** This package's own views a built table replaced at its name. */
+   replacedNameViews?: NameViewRecord[];
+   /** Whether this package's records say it wrote a table at a view's name. */
+   ownNameTableAt?: (
+      intent: NameViewIntent,
+   ) => Promise<OwnNameTable | undefined>;
 }
 
 /** One source the colocated gate refuses, as colocatedRefusalOn reports it. */

@@ -107,6 +107,11 @@ export interface StorageBuildRequest {
     * ({@link upstreamReuseFromManifest}).
     */
    baseReuse?: Pick<ManifestEntry, "upstreamReuse" | "upstreamRecomputeReason">;
+   /**
+    * The name holds this package's own `name=` view, which the table replaces
+    * in the transaction that creates it (see viewToTableSwap, name_view.ts).
+    */
+   replacesNameView?: boolean;
 }
 
 /**
@@ -253,6 +258,8 @@ export class StorageBuildStrategy
                      planFacts,
                      params.contentSourceEntityId ?? instruction.sourceEntityId,
                      lift,
+                     // Passed only when set, so a seam's recorded call is unchanged.
+                     ...(params.replacesNameView ? ([true] as const) : []),
                   ),
             );
             recordChainedStorageBuild("parent_reuse");
@@ -400,6 +407,9 @@ export class StorageBuildStrategy
                   environmentPath: environment.getEnvironmentPath(),
                   queryMetadata,
                   incremental: refresh,
+                  ...(params.replacesNameView
+                     ? { replacesNameView: true }
+                     : {}),
                });
             // A same-catalog build reads and writes only the store, so its seconds
             // are the store's; a passthrough build's are mostly the warehouse's.
@@ -618,6 +628,8 @@ export class StorageBuildStrategy
       /** The content address being built; a walk stop sharing it is this source's own table. */
       rootAddress: string,
       lift: ReturnType<typeof authorModelLiftContext>,
+      /** See StorageBuildRequest.replacesNameView. */
+      replacesNameView?: boolean,
    ): Promise<StorageBuildResult> {
       // Rebind every upstream in THIS destination under every name for its
       // table: a rename (`source: x is daily`) binds to the same handle, as on
@@ -814,6 +826,7 @@ export class StorageBuildStrategy
             physicalTableName,
             partitionColumns: partitionColumnsForBuild(persistSource),
             environmentPath: environment.getEnvironmentPath(),
+            ...(replacesNameView ? { replacesNameView } : {}),
          });
       // The parents' refinements in the serve shape's tiers
       // (`REFINEMENT_TIER_KINDS`): everything first, then progressively thinner,

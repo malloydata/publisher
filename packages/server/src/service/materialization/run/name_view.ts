@@ -9,10 +9,15 @@ import { getMaterializeEnabled } from "../../../config";
 import { BadRequestError } from "../../../errors";
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
+import type { Materialization } from "../../../storage/DatabaseInterface";
 import type { ApiConnection } from "../../model";
 import { quoteTablePath } from "../../quoting";
 import type { CompiledBuildPlan } from "../plan/build_plan";
-import type { BuildInstruction, ManifestEntry } from "../types";
+import {
+   isLegacyFailedEntry,
+   type BuildInstruction,
+   type ManifestEntry,
+} from "../types";
 import {
    STORAGE_TARGET_DIALECT,
    withStorageDestinationSession,
@@ -23,6 +28,7 @@ import {
    nameViewDropSql,
    nameViewProbeSql,
    nameViewReplaceDdl,
+   nameViewReplaceTableDdl,
    nameViewSlotOf,
    NameViewUnsupportedError,
    pathSegments,
@@ -30,6 +36,7 @@ import {
    type NameViewMark,
    type NameViewSlot,
 } from "./name_view_sql";
+import { backupSuffix } from "./materialization_run_support";
 import { destinationSchemaOf, storageTablePath } from "./storage_table_path";
 
 /**
@@ -49,7 +56,12 @@ import { destinationSchemaOf, storageTablePath } from "./storage_table_path";
  * Lifecycle:
  * - before a source builds, its `name=` is probed: a name held by anything
  *   Publisher did not mark, or by another package's view, fails that source's
- *   build (nothing is written);
+ *   build (nothing is written). One table is the exception: a table this
+ *   package's own committed run wrote at `name=` (a self-instructed build
+ *   names its table `name=` itself), as its run records show
+ *   ({@link ownNameTableIn}). The build goes ahead, and the view replaces
+ *   that table once the new generation is built
+ *   ({@link replaceOwnTableWithView});
  * - once every source of the run has built, each view is created or
  *   repointed, view and mark in one statement or transaction, the mark read
  *   back, and the outcome recorded on the run; a run whose commit then fails
@@ -58,6 +70,11 @@ import { destinationSchemaOf, storageTablePath } from "./storage_table_path";
  *   a view that still reads it is repointed to the newest other committed
  *   run's table for the same view, or dropped with its last generation. A
  *   view that reads another table, or that is not Publisher's, is left alone.
+ * - the other way round, a build that names its table `name=` itself finds
+ *   this package's own view there: its table replaces the view, in the same
+ *   transaction as the build's swap where the dialect allows
+ *   ({@link viewToTableSwap}); a table a view replaced is no longer there to
+ *   drop, and the dropper retires its entry ({@link heldByOwnNameView}).
  *
  * Only `#(materialize)`, behind `PUBLISHER_MATERIALIZE`. A v1 `#@ persist
  * name=` makes no view.
@@ -87,8 +104,11 @@ export interface NameViewIntent {
 
 /**
  * What became of one view, as the run records it. `outcome` is an open
- * string: `created`, `repointed`, `unchanged`, `name_taken`, `unsupported`,
- * `conflict` or `failed`.
+ * string: `created`, `repointed`, `unchanged`, `replaced_own_table` (the
+ * view took the place of a table this package's own run wrote at the name),
+ * `replaced_by_table` (this run's table took the place of this package's
+ * view; `physicalTableName` is that table, `previousTarget` what the view
+ * read), `name_taken`, `unsupported`, `conflict` or `failed`.
  */
 export interface NameViewRecord extends NameViewIntent {
    outcome: string;
@@ -102,6 +122,7 @@ const POINTED_OUTCOMES: ReadonlySet<string> = new Set([
    "created",
    "repointed",
    "unchanged",
+   "replaced_own_table",
 ]);
 
 /** A `name=` held by something Publisher did not make: the build is refused. */
@@ -181,6 +202,81 @@ export function nameViewKey(
    );
 }
 
+/**
+ * A table at a `name=` that this package's own committed run wrote: the run,
+ * and the content address its entry carries (which names the aside copy a
+ * non-transactional replacement keeps, `backupSuffix`, so the old run's
+ * reclaim drops one a crash left behind).
+ */
+export interface OwnNameTable {
+   materializationId: string;
+   sourceEntityId: string;
+}
+
+/**
+ * Whether this package's own records say the table at `intent`'s `name=` is
+ * one it wrote: among the package's committed runs (`runs`, the package's
+ * own listing, so another package's runs are never consulted), the newest
+ * whose manifest names a table at exactly `intent.viewName`, on the same
+ * connection and destination, for the source of the same name. And no
+ * committed run made a view at that name after it: then the table there now
+ * is not the one the record describes.
+ *
+ * The records carry the source's name, not its sourceID (whose model URL is
+ * a version's own path): within one package, one source writes one `name=`
+ * (assertNoTableCollisions refuses two), so the name and the exact table
+ * name, connection and destination identify it. Undefined whenever anything
+ * differs: that table is not provably this package's, and is refused.
+ */
+export function ownNameTableIn(
+   runs: Pick<
+      Materialization,
+      "id" | "status" | "manifest" | "metadata" | "completedAt" | "createdAt"
+   >[],
+   intent: Pick<
+      NameViewIntent,
+      "viewName" | "sourceName" | "connectionName" | "storageDestinationName"
+   >,
+): OwnNameTable | undefined {
+   const at = (r: (typeof runs)[number]) =>
+      (r.completedAt ?? r.createdAt ?? new Date(0)).getTime();
+   const key = nameViewKey(intent);
+   let written: { at: number; table: OwnNameTable } | undefined;
+   let viewMadeAt = -Infinity;
+   for (const run of runs) {
+      if (run.status !== "MANIFEST_FILE_READY") continue;
+      for (const entry of Object.values(run.manifest?.entries ?? {})) {
+         if (
+            isLegacyFailedEntry(entry) ||
+            entry.physicalTableName !== intent.viewName ||
+            entry.sourceName !== intent.sourceName ||
+            entry.connectionName !== intent.connectionName ||
+            (entry.storageDestinationName ?? undefined) !==
+               (intent.storageDestinationName ?? undefined)
+         ) {
+            continue;
+         }
+         if (!written || at(run) > written.at) {
+            written = {
+               at: at(run),
+               table: {
+                  materializationId: run.id,
+                  sourceEntityId: entry.sourceEntityId,
+               },
+            };
+         }
+      }
+      if (
+         nameViewsIn(run.metadata).some(
+            (r) => nameViewKey(r) === key && POINTED_OUTCOMES.has(r.outcome),
+         )
+      ) {
+         viewMadeAt = Math.max(viewMadeAt, at(run));
+      }
+   }
+   return written && written.at > viewMadeAt ? written.table : undefined;
+}
+
 /** Where a view's SQL runs, in its dialect. */
 export interface NameViewSite {
    dialect: string;
@@ -246,6 +342,13 @@ export interface NameViewContext {
    environmentPath: string;
    /** Options every colocated statement carries (query metadata). */
    runOptions?(connectionName: string): Record<string, unknown>;
+   /**
+    * Whether this package's own records say it wrote the table at a view's
+    * name ({@link ownNameTableIn}). Absent: no table is ever its own.
+    */
+   ownTableAt?(
+      intent: NameViewIntent,
+   ): Promise<OwnNameTable | undefined> | OwnNameTable | undefined;
 }
 
 /**
@@ -303,7 +406,9 @@ export async function probeNameView(
 export type OwnedSlot =
    | { state: "empty" }
    | { state: "ours"; target: string }
-   | { state: "taken"; holder: string };
+   | { state: "taken"; holder: string }
+   /** A table this package's own run wrote at the name (preflight only). */
+   | { state: "own_table"; table: OwnNameTable };
 
 export function ownedSlot(slot: NameViewSlot, owner: string): OwnedSlot {
    switch (slot.state) {
@@ -360,6 +465,142 @@ export async function dropNameView(
 }
 
 /**
+ * Put the view `intent` names in place of the table this package's own run
+ * wrote at that name (`table`), reading `intent.physicalTableName`, the
+ * generation the run just built. Called only once that generation stands.
+ *
+ * As one transaction on DuckDB (a file, or a DuckLake or DuckDB storage
+ * destination) and Postgres: the old table is gone only when the view
+ * reading the new one is in its place, and a failure leaves the table. On
+ * every other dialect the table is renamed aside, the view made and its mark
+ * read back, and only then is the aside copy dropped; a view that cannot be
+ * made puts the table back. Throws when the view is not in place; the run
+ * records `failed` with why.
+ */
+export async function replaceOwnTableWithView(
+   site: NameViewSite,
+   intent: NameViewIntent,
+   table: OwnNameTable,
+): Promise<void> {
+   const mark = { target: intent.physicalTableName, owner: intent.owner };
+   // The old entry's own backup name: its run's reclaim drops a copy a crash
+   // left there (reclaimer.ts drops `<table><backupSuffix>` with the table).
+   const aside = `${intent.viewName}${backupSuffix(table.sourceEntityId)}`;
+   const ddl = nameViewReplaceTableDdl(
+      site.segments(intent.viewName),
+      site.segments(aside),
+      site.targetSql(intent.physicalTableName),
+      mark,
+      site.dialect,
+   );
+   const markReadsBack = async () => {
+      const after = ownedSlot(
+         await probeNameView(site, intent.viewName),
+         intent.owner,
+      );
+      return (
+         after.state === "ours" && after.target === intent.physicalTableName
+      );
+   };
+   if (ddl.transactional) {
+      try {
+         await site.run(ddl.primary);
+      } catch (err) {
+         if (ddl.rollback) {
+            try {
+               await site.run(ddl.rollback);
+            } catch {
+               // Usually no transaction was left open, which is harmless.
+            }
+         }
+         throw err;
+      }
+      if (!(await markReadsBack())) {
+         throw new Error(
+            `the view's mark did not read back from '${intent.viewName}'`,
+         );
+      }
+      return;
+   }
+   // Not transactional: the old table is kept aside until the view stands.
+   await site.run(ddl.moveAside);
+   try {
+      try {
+         await site.run(ddl.create.primary);
+      } catch (err) {
+         if (!ddl.create.fallback) throw err;
+         await site.run(ddl.create.fallback);
+      }
+      if (!(await markReadsBack())) {
+         throw new Error(
+            `the view's mark did not read back from '${intent.viewName}'`,
+         );
+      }
+   } catch (err) {
+      try {
+         await site.run(
+            nameViewDropSql(site.segments(intent.viewName), site.dialect),
+         );
+         await site.run(ddl.restore);
+      } catch (restoreErr) {
+         logger.error(
+            "Failed to put back a table a name= view was to replace; it is kept under its aside name",
+            {
+               viewName: intent.viewName,
+               asideName: aside,
+               error: errMessage(err),
+               restoreError: errMessage(restoreErr),
+            },
+         );
+      }
+      throw err;
+   }
+   try {
+      await site.run(ddl.dropAside);
+   } catch (err) {
+      // The view stands; the old table's record drops the aside copy with it.
+      logger.warn(
+         "Failed to drop a table a name= view replaced; its run's reclaim drops it",
+         {
+            viewName: intent.viewName,
+            asideName: aside,
+            error: errMessage(err),
+         },
+      );
+   }
+}
+
+/**
+ * Whether `view`'s name is held by this package's own marked view, as the
+ * dropper asks when a table's `DROP TABLE` fails: a table a `name=` view
+ * replaced ({@link replaceOwnTableWithView}) is gone, and its entry is
+ * retired rather than owed. False when the name holds anything else or
+ * cannot be probed. Never throws.
+ */
+export async function heldByOwnNameView(
+   view: Pick<
+      NameViewIntent,
+      "viewName" | "owner" | "connectionName" | "storageDestinationName"
+   >,
+   context: NameViewContext,
+): Promise<boolean> {
+   try {
+      return (
+         (await atNameViewSite(view, context, async (site) => {
+            if (!nameViewDialectSupported(site.dialect)) return false;
+            const slot = ownedSlot(
+               await probeNameView(site, view.viewName),
+               view.owner,
+            );
+            return slot.state === "ours";
+         })) ?? false
+      );
+   } catch {
+      return false;
+   }
+}
+
+/**
  * What a Postgres swap does with a `name=` view over the very table it
  * replaces, which would otherwise refuse the swap's `DROP TABLE` (a Postgres
  * view binds to its table). Each attempt is run as the swap's whole
@@ -378,6 +619,18 @@ export async function dropNameView(
  */
 export interface SwapDependents {
    attempts(stagingTableName: string): { before: string[]; after: string[] }[];
+   /**
+    * For a swap that is not one transaction (it renames the served table
+    * aside): `before` runs first, and `restore` (best-effort) when the swap
+    * then fails. Only {@link viewToTableSwap} sets it.
+    */
+   aside?: { before: string[]; restore: string[] };
+   /**
+    * The name holds this package's own `name=` view, which the build's table
+    * replaces: a storage build drops the view in the transaction that
+    * creates its table ({@link viewToTableSwap}).
+    */
+   replacesView?: boolean;
 }
 
 export function swapDependentsFor(
@@ -414,6 +667,111 @@ export function swapDependentsFor(
 }
 
 /**
+ * The `name=` a build whose table IS called `name=` (a self-instructed,
+ * unversioned build of a `#(materialize)` source) must check for this
+ * package's own view, which an earlier build that named its table by
+ * generation made there: the same shape as {@link nameViewIntentFor}, with
+ * `viewName` and `physicalTableName` both the table. Undefined in every
+ * other case, including without `PUBLISHER_MATERIALIZE`.
+ */
+export function tableAtNameIntentFor(
+   compiled: Pick<CompiledBuildPlan, "materializePlans">,
+   persistSource: Pick<PersistSource, "sourceID" | "name" | "connectionName">,
+   instruction: Pick<BuildInstruction, "physicalTableName" | "destination">,
+   sourceEntityId: string,
+   owner: string,
+): NameViewIntent | undefined {
+   if (!getMaterializeEnabled()) return undefined;
+   const name =
+      compiled.materializePlans?.[persistSource.sourceID]?.persist.name;
+   if (!name) return undefined;
+   if (
+      nameViewName(name, instruction.physicalTableName) !==
+      instruction.physicalTableName
+   ) {
+      return undefined;
+   }
+   return {
+      sourceEntityId,
+      sourceName: persistSource.name,
+      owner,
+      viewName: instruction.physicalTableName,
+      physicalTableName: instruction.physicalTableName,
+      connectionName: persistSource.connectionName,
+      ...(instruction.destination
+         ? { storageDestinationName: instruction.destination }
+         : {}),
+   };
+}
+
+/**
+ * Before a build whose table is called `name=`: the table this package's own
+ * view at that name reads, and the site's dialect, or undefined when the name
+ * holds anything else (the build then meets it as it always has: a table is
+ * rebuilt, anything else fails the swap) or cannot be probed. Never throws.
+ */
+export async function ownViewAtTable(
+   intent: NameViewIntent,
+   context: NameViewContext,
+): Promise<{ target: string; dialect: string } | undefined> {
+   try {
+      return await atNameViewSite(intent, context, async (site) => {
+         if (!nameViewDialectSupported(site.dialect)) return undefined;
+         const slot = ownedSlot(
+            await probeNameView(site, intent.viewName),
+            intent.owner,
+         );
+         return slot.state === "ours"
+            ? { target: slot.target, dialect: site.dialect }
+            : undefined;
+      });
+   } catch (err) {
+      logger.warn("Could not check a name= table's name before the build", {
+         sourceName: intent.sourceName,
+         viewName: intent.viewName,
+         error: errMessage(err),
+      });
+      return undefined;
+   }
+}
+
+/**
+ * How a build replaces this package's own view at its table's name with the
+ * table (orchestrated, then self-instructed again). The view is dropped
+ * only in the step that puts the table in its place:
+ * - a colocated swap on DuckDB or Postgres drops it in the swap's
+ *   transaction, so a reader sees the view or the new table, and a failure
+ *   (a reader's own view over it, on Postgres) leaves the view;
+ * - a colocated swap elsewhere drops it just before, and remakes it, mark
+ *   and all, reading `previousTarget`, when the swap fails;
+ * - a storage build drops it in the transaction that creates the table.
+ * The generation the view read is left to the records that name it.
+ */
+export function viewToTableSwap(
+   intent: NameViewIntent,
+   previousTarget: string,
+   dialect: string,
+): SwapDependents {
+   const segments = pathSegments(intent.viewName);
+   const drop = nameViewDropSql(segments, dialect);
+   return {
+      replacesView: true,
+      attempts: () => [{ before: [drop], after: [] }],
+      aside: {
+         before: [drop],
+         restore: [
+            nameViewReplaceDdl(
+               segments,
+               quoteTablePath(previousTarget, dialect),
+               { target: previousTarget, owner: intent.owner },
+               dialect,
+            ).primary,
+         ],
+      },
+   };
+}
+
+/**
  * Before a source builds: what holds its `name=`. Throws
  * {@link NameViewTakenError} when something Publisher did not mark, or
  * another package's view, holds it, so the source fails before any table is
@@ -427,17 +785,22 @@ export async function preflightNameView(
 ): Promise<{ slot: OwnedSlot; dialect: string } | undefined> {
    let probed: { slot: OwnedSlot; dialect: string } | undefined;
    try {
-      probed = await atNameViewSite(intent, context, async (site) =>
-         nameViewDialectSupported(site.dialect)
-            ? {
-                 slot: ownedSlot(
-                    await probeNameView(site, intent.viewName),
-                    intent.owner,
-                 ),
-                 dialect: site.dialect,
-              }
-            : undefined,
-      );
+      probed = await atNameViewSite(intent, context, async (site) => {
+         if (!nameViewDialectSupported(site.dialect)) return undefined;
+         const raw = await probeNameView(site, intent.viewName);
+         // A table this package's own run wrote at the name: the view
+         // replaces it once this build is done.
+         if (raw.state === "taken" && raw.kind !== "VIEW") {
+            const table = await context.ownTableAt?.(intent);
+            if (table) {
+               return {
+                  slot: { state: "own_table", table },
+                  dialect: site.dialect,
+               };
+            }
+         }
+         return { slot: ownedSlot(raw, intent.owner), dialect: site.dialect };
+      });
    } catch (err) {
       logger.warn("Could not check a name= view's name before the build", {
          sourceName: intent.sourceName,
@@ -465,10 +828,15 @@ export async function preflightNameView(
  * Two sources of one run that ask for the same view for different tables get
  * neither (`conflict`): which one an outside reader would see would depend on
  * build order.
+ *
+ * `ownTables` holds, by {@link nameViewKey}, the views whose name preflight
+ * found held by a table this package's own run wrote: the view replaces
+ * that table ({@link replaceOwnTableWithView}) when a table is still there.
  */
 export async function publishNameViews(
    intents: NameViewIntent[],
    context: NameViewContext,
+   ownTables: ReadonlyMap<string, OwnNameTable> = new Map(),
 ): Promise<NameViewRecord[]> {
    const byKey = new Map<string, NameViewIntent[]>();
    for (const intent of intents) {
@@ -493,7 +861,13 @@ export async function publishNameViews(
          continue;
       }
       // A base and its extension share a table: one view, recorded once.
-      records.push(await publishNameView(group[0], context));
+      records.push(
+         await publishNameView(
+            group[0],
+            context,
+            ownTables.get(nameViewKey(group[0])),
+         ),
+      );
    }
    for (const record of records) {
       const failed = !POINTED_OUTCOMES.has(record.outcome);
@@ -514,6 +888,7 @@ export async function publishNameViews(
 async function publishNameView(
    intent: NameViewIntent,
    context: NameViewContext,
+   ownTable: OwnNameTable | undefined,
 ): Promise<NameViewRecord> {
    const mark = { target: intent.physicalTableName, owner: intent.owner };
    try {
@@ -528,10 +903,19 @@ async function publishNameView(
                   message: `a view in dialect '${site.dialect}' cannot carry Publisher's mark`,
                };
             }
-            const slot = ownedSlot(
-               await probeNameView(site, intent.viewName),
-               intent.owner,
-            );
+            const raw = await probeNameView(site, intent.viewName);
+            if (ownTable && raw.state === "taken" && raw.kind !== "VIEW") {
+               await replaceOwnTableWithView(site, intent, ownTable);
+               return {
+                  ...intent,
+                  outcome: "replaced_own_table",
+                  message:
+                     `the view replaced the table '${intent.viewName}' that ` +
+                     `materialization ${ownTable.materializationId} of this ` +
+                     `package wrote`,
+               };
+            }
+            const slot = ownedSlot(raw, intent.owner);
             if (slot.state === "taken") {
                return {
                   ...intent,

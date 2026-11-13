@@ -1,7 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { quoteIdentifier, quoteTablePath } from "../../quoting";
+import {
+   quoteIdentifier,
+   quoteRenameTarget,
+   quoteTablePath,
+} from "../../quoting";
 
 /**
  * The SQL of the `name=` view (materialization v2, phase 3): a view at the
@@ -406,6 +410,95 @@ export function nameViewReplaceDdl(
       default:
          throw unsupportedDialect(dialect);
    }
+}
+
+/**
+ * Dialects whose DDL is transactional and reached in one call, so a table
+ * can be dropped and a view made in its place as one change (as the
+ * colocated swap does, colocated_build_strategy.ts).
+ */
+const TRANSACTIONAL_REPLACE_DIALECTS: ReadonlySet<string> = new Set([
+   "duckdb",
+   "postgres",
+]);
+
+/** Whether a table at a name can be replaced by a view as one transaction. */
+export function nameViewReplaceIsTransactional(dialect: string): boolean {
+   return TRANSACTIONAL_REPLACE_DIALECTS.has(dialect);
+}
+
+/**
+ * How to put a marked view in place of a TABLE at the same name: a table
+ * this package's own committed run wrote there (a self-instructed build
+ * names its table `name=` itself), which a build that names its table by
+ * generation now replaces with the view reading that generation.
+ *
+ * - `transactional` (DuckDB, Postgres): `primary` drops the table, makes the
+ *   view and comments it, as one transaction in one call; `rollback` (when
+ *   given) closes a transaction a failed `primary` left open. A reader sees
+ *   the old table or the view, never neither, and a failure (a Postgres view
+ *   a reader built over the table refuses the drop) leaves the table as it
+ *   was.
+ * - otherwise: `moveAside` renames the table to `aside`; `create` makes the
+ *   view as {@link nameViewReplaceDdl} would; `restore` renames the table
+ *   back when the view cannot be made; `dropAside` drops the old table only
+ *   once the view reads the new generation. Between the rename and the view
+ *   a reader finds nothing at the name (a not-found, never a partial table).
+ */
+export type NameViewTableReplaceDdl =
+   | { transactional: true; primary: string; rollback?: string }
+   | {
+        transactional: false;
+        moveAside: string;
+        create: NameViewDdl;
+        restore: string;
+        dropAside: string;
+     };
+
+/**
+ * The DDL that replaces the table `segments` names with a view reading
+ * `targetSql`, carrying `mark`. `asideSegments` names where a dialect
+ * without transactional DDL keeps the old table until the view stands.
+ */
+export function nameViewReplaceTableDdl(
+   segments: string[],
+   asideSegments: string[],
+   targetSql: string,
+   mark: NameViewMark,
+   dialect: string,
+): NameViewTableReplaceDdl {
+   if (!nameViewDialectSupported(dialect)) throw unsupportedDialect(dialect);
+   if (dialect === "sqlserver") assertSqlServerShape(segments);
+   const view = quotedPath(segments, dialect);
+   if (nameViewReplaceIsTransactional(dialect)) {
+      const body = [
+         `DROP TABLE ${view}`,
+         `CREATE VIEW ${view} AS SELECT * FROM ${targetSql}`,
+         `COMMENT ON VIEW ${view} IS ${sqlString(nameViewComment(mark), dialect)}`,
+      ];
+      // DuckDB autocommits each statement of a string: bracketed. Postgres
+      // runs a multi-statement string as one implicit transaction.
+      return dialect === "duckdb"
+         ? {
+              transactional: true,
+              primary: ["BEGIN TRANSACTION", ...body, "COMMIT"]
+                 .map((s) => `${s};`)
+                 .join("\n"),
+              rollback: "ROLLBACK",
+           }
+         : {
+              transactional: true,
+              primary: body.map((s) => `${s};`).join("\n"),
+           };
+   }
+   const aside = quotedPath(asideSegments, dialect);
+   return {
+      transactional: false,
+      moveAside: `ALTER TABLE ${view} RENAME TO ${quoteRenameTarget(asideSegments.join("."), dialect)}`,
+      create: nameViewReplaceDdl(segments, targetSql, mark, dialect),
+      restore: `ALTER TABLE ${aside} RENAME TO ${quoteRenameTarget(segments.join("."), dialect)}`,
+      dropAside: `DROP TABLE IF EXISTS ${aside}`,
+   };
 }
 
 /** `DROP VIEW IF EXISTS` for the view `segments` names. Never drops a table. */

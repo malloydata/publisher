@@ -22,6 +22,7 @@ import {
 import { DuplicateActiveMaterializationError } from "../../../storage/duckdb/MaterializationRepository";
 import type { components } from "../../../api";
 import { withSpan } from "../../../telemetry";
+import { errMessage } from "../../../utils";
 import {
    parseEnvironmentName,
    parsePackageName,
@@ -909,6 +910,33 @@ export class MaterializationService {
             throw err;
          }
 
+         // A view that replaced a table this package's own run wrote at its
+         // name: the older entries for that table are retired.
+         const replacedTables = nameViews.filter(
+            (v) => v.outcome === "replaced_own_table",
+         );
+         if (replacedTables.length > 0) {
+            try {
+               await this.claims.markReplacedByView(
+                  environmentId,
+                  packageName,
+                  id,
+                  replacedTables.map((v) => ({
+                     physicalTableName: v.viewName,
+                     connectionName: v.connectionName,
+                     ...(v.storageDestinationName
+                        ? { storageDestinationName: v.storageDestinationName }
+                        : {}),
+                  })),
+               );
+            } catch (err) {
+               logger.warn(
+                  "Could not retire the entries of a table a name= view replaced",
+                  { materializationId: id, error: errMessage(err) },
+               );
+            }
+         }
+
          // Auto-run owns distribution; orchestrated leaves it to the caller
          // (manifestLocation).
          if (!orchestrated) {
@@ -1010,6 +1038,11 @@ export class MaterializationService {
          buildOneSource: (...a) => this.buildOneSource(...a),
          reclaimStorageTablesFromFailedRun: (...a) =>
             this.reclaimStorageTablesFromFailedRun(...a),
+         packageRuns: async (environmentName, packageName) =>
+            (await this.repository.listMaterializations(
+               await this.resolveEnvironmentId(environmentName),
+               packageName,
+            )) ?? [],
       }).run(...args);
    }
 
