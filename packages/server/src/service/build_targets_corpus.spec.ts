@@ -47,6 +47,13 @@ import {
    releasingEach,
 } from "../test_helpers/persist_corpus";
 import { declaredStorage } from "./materialization/plan/persist_source_fields";
+import {
+   admitGivenPositions,
+   classifyWhereTerms,
+   givenReadingFilterTerms,
+   givenTerms,
+   readTimeDynamicTerms,
+} from "./materialization/plan/persist_dynamic_terms";
 import { installSettings } from "../test_helpers/settings_env";
 
 afterAll(closeCorpus);
@@ -260,6 +267,131 @@ describe("build-target addresses over the repo's persist corpus", () => {
          expect(storageSources).toBeGreaterThan(0);
          expect(colocatedSources).toBeGreaterThan(0);
          expect(unexpected).toEqual([]);
+      },
+      { timeout: 180000 },
+   );
+});
+
+// v1 persistence reads its given-reading `where:` terms through the one
+// classifier (`givenTerms(classifyWhereTerms(…))`). Before that, a separate
+// walk returned every `filterList` entry that reads a given, in order. The
+// oracle below is that walk, frozen; every planned source's terms (and each
+// joined source's, which the position rule reads the same way) must agree with
+// it. Kept until v1 persistence retires.
+function legacyReadsAGiven(node: unknown, seen: WeakSet<object>): boolean {
+   if (node === null || typeof node !== "object") return false;
+   if (seen.has(node)) return false;
+   seen.add(node);
+   if (Array.isArray(node)) {
+      return node.some((item) => legacyReadsAGiven(item, seen));
+   }
+   const record = node as Record<string, unknown>;
+   if (record.node === "given" || record.node === "givenReference") return true;
+   if (record.givenRef !== undefined) return true;
+   const summary = record.refSummary as { givenUsage?: unknown[] } | undefined;
+   if (summary?.givenUsage && summary.givenUsage.length > 0) return true;
+   if (Array.isArray(record.givenUsage) && record.givenUsage.length > 0) {
+      return true;
+   }
+   return Object.values(record).some((v) => legacyReadsAGiven(v, seen));
+}
+
+function legacyGivenTermCodes(filterList: unknown): string[] {
+   if (!Array.isArray(filterList)) return [];
+   return filterList
+      .filter(
+         (entry): entry is { code?: unknown } =>
+            entry !== null &&
+            typeof entry === "object" &&
+            legacyReadsAGiven(entry, new WeakSet()),
+      )
+      .map((entry) => (typeof entry.code === "string" ? entry.code : ""));
+}
+
+/** The source and every source it joins, each with its dotted join path. */
+function defsOf(
+   def: unknown,
+   at = "",
+   depth = 0,
+): { at: string; def: { filterList?: unknown; fields?: unknown } }[] {
+   if (def === null || typeof def !== "object" || depth > 8) return [];
+   const record = def as { filterList?: unknown; fields?: unknown };
+   const out = [{ at, def: record }];
+   for (const field of Array.isArray(record.fields) ? record.fields : []) {
+      const f = field as { join?: unknown; as?: unknown; name?: unknown };
+      if (f?.join === undefined) continue;
+      const name = String(f.as ?? f.name);
+      out.push(...defsOf(f, at ? `${at}.${name}` : name, depth + 1));
+   }
+   return out;
+}
+
+describe("v1 given terms over the repo's persist corpus", () => {
+   it(
+      "the one classifier hands v1 exactly the terms the old walk did",
+      async () => {
+         const { models: corpus } = await corpusOnce();
+         const differ: string[] = [];
+         let sources = 0;
+         let withTerms = 0;
+         for await (const model of releasingEach(corpus)) {
+            let planned: PersistSource[];
+            try {
+               const runtime = new Runtime({
+                  urlReader: new InMemoryURLReader(model.files),
+                  connections: new FixedConnectionMap(
+                     new Map([...model.connections]),
+                     [...model.connections.keys()][0],
+                  ),
+               });
+               const compiled = await runtime
+                  .loadModel(new URL(model.entry))
+                  .getModel();
+               planned = plannedSources(
+                  await runtime.getBuildTargets(compiled),
+               );
+            } catch {
+               continue; // reported by the address test above
+            }
+            for (const source of planned) {
+               sources++;
+               const label = `${model.label} ${source.name}`;
+               const root = source._sourceDef as unknown as {
+                  filterList?: unknown;
+               };
+               const legacy = legacyGivenTermCodes(root.filterList);
+               if (legacy.length > 0) withTerms++;
+               const codes = (terms: { code: string }[]) =>
+                  terms.map((t) => t.code);
+               for (const { at, def } of defsOf(root)) {
+                  const now = codes(givenTerms(classifyWhereTerms(def)));
+                  const was = legacyGivenTermCodes(def.filterList);
+                  if (JSON.stringify(now) !== JSON.stringify(was)) {
+                     differ.push(`${label}${at ? ` (join ${at})` : ""}`);
+                  }
+               }
+               const readTime = codes(readTimeDynamicTerms(source));
+               const filters = codes(givenReadingFilterTerms(root));
+               const admitted = admitGivenPositions(source);
+               for (const [what, now] of [
+                  ["readTimeDynamicTerms", readTime],
+                  ["givenReadingFilterTerms", filters],
+                  ...(admitted.ok
+                     ? [["strippedTerms", codes(admitted.terms)] as const]
+                     : []),
+               ] as const) {
+                  if (JSON.stringify(now) !== JSON.stringify(legacy)) {
+                     differ.push(`${label}: ${what}`);
+                  }
+               }
+            }
+         }
+         console.log(
+            `v1 given terms: ${sources} planned sources, ${withTerms} with given terms`,
+         );
+         expect(sources).toBeGreaterThan(100);
+         expect(withTerms).toBeGreaterThan(0);
+         expect(differ).toEqual([]);
       },
       { timeout: 180000 },
    );

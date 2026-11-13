@@ -24,9 +24,11 @@
 
 import type { DocumentLocation, ModelDef, StructDef } from "@malloydata/malloy";
 import { isSourceDef } from "@malloydata/malloy";
+import { getMaterializeEnabled } from "../config";
 import {
    editDistance,
    foldRouteName,
+   MATERIALIZE_V2_ROUTES,
    payloadOfNote,
    PUBLISHER_ROUTES,
    publisherRouteOf,
@@ -41,7 +43,6 @@ import {
    type AnnotationNote,
 } from "./annotations";
 import { collectAuthorizeNearMissesAllRoutes } from "./authorize";
-import { getMaterializeEnabled } from "../config";
 
 /** The code of a finding for an annotation that was reaching for one of Publisher's routes. */
 export const ANNOTATION_NEAR_MISS_CODE = "annotation-near-miss";
@@ -55,10 +56,33 @@ export const ANNOTATION_MALFORMED_ROUTE_CODE = "annotation-malformed-route";
  */
 export const ANNOTATION_GATE_NEAR_MISS_CODE = "annotation-gate-near-miss";
 
-/** The bracketed app routes Publisher owns, as `#(name)`. */
+/** The bracketed app routes Publisher owns, as `#(name)`, v2's included. */
 const OWNED_ROUTES: readonly string[] = Object.keys(PUBLISHER_ROUTES)
    .filter((route) => !isReservedRoute(route))
    .sort();
+
+/** {@link OWNED_ROUTES} without the materialization v2 routes. */
+const OWNED_V1_ROUTES: readonly string[] = OWNED_ROUTES.filter(
+   (route) => !MATERIALIZE_V2_ROUTES.has(route),
+);
+
+/**
+ * The owned routes in force: the v2 routes only with the materialize switch
+ * on. Off, nothing reads `#(materialize)` or `#(preaggregate)`, so the scan
+ * reads them as it did before they were registered: `#(preaggregate)` is
+ * reaching for `#@ preaggregate`, which works there.
+ */
+function ownedRoutes(): readonly string[] {
+   return getMaterializeEnabled() ? OWNED_ROUTES : OWNED_V1_ROUTES;
+}
+
+/** Whether Publisher reads `route` now (a v2 route only with the switch on). */
+function routeIsRead(route: string): boolean {
+   return (
+      route in PUBLISHER_ROUTES &&
+      (!MATERIALIZE_V2_ROUTES.has(route) || getMaterializeEnabled())
+   );
+}
 
 /** The `#@` directives that make a source persist or roll up. */
 const PERSIST_DIRECTIVES: readonly string[] = ["persist", "preaggregate"];
@@ -90,7 +114,7 @@ function misspelledOwnedRoute(name: string): Intended | undefined {
    const folded = foldRouteName(name);
    if (folded === "") return undefined;
    let best: { route: string; distance: number } | undefined;
-   for (const route of OWNED_ROUTES) {
+   for (const route of ownedRoutes()) {
       const target = foldRouteName(route);
       const distance = editDistance(folded, target);
       const limit = target.length <= 5 ? 1 : 2;
@@ -163,15 +187,9 @@ function intendedRoute(text: string): Intended | "malformed" | undefined {
    }
    // On a route Publisher reads, or a sigil route such as a glued `#"…`
    // doc string, which Publisher reads too.
-   if (
-      read !== undefined &&
-      (read in PUBLISHER_ROUTES || isReservedRoute(read))
-   ) {
+   if (read !== undefined && (routeIsRead(read) || isReservedRoute(read))) {
       return undefined;
    }
-   // `#(preaggregate)` is read only with the materialize switch on; off, it
-   // is still reported as reaching for `#@ preaggregate`, which works there.
-   if (read === "preaggregate" && getMaterializeEnabled()) return undefined;
 
    const route = routeOfNote(trimmed);
    if (route === undefined) {

@@ -13,7 +13,7 @@ import {
    compilePersistSources,
    duckdbTestConnections,
 } from "../../../test_helpers/incremental_test_harness";
-import { classifyDynamicTerms } from "./persist_dynamic_terms";
+import { admitGivenPositions } from "./persist_dynamic_terms";
 
 let connections: FixedConnectionMap;
 
@@ -54,7 +54,7 @@ async function buildSQL(source: PersistSource): Promise<string> {
    }
 }
 
-describe("classifyDynamicTerms: positions that strip", () => {
+describe("admitGivenPositions: positions that strip", () => {
    it("admits an extend-block where:, and the build carries no trace of it", async () => {
       const source = await persistSource(
          `#@ persist name="p" storage=lake
@@ -65,7 +65,7 @@ source: p is raw -> { select: * } extend { where: org_id = $ORG_ID }`,
       // caller's and the term is the reader's to apply.
       expect(await buildSQL(source)).not.toContain('org_id"=1');
 
-      const result = classifyDynamicTerms(source);
+      const result = admitGivenPositions(source);
       expect(result).toEqual({
          ok: true,
          terms: [
@@ -85,7 +85,7 @@ source: p is scoped extend { where: s != 'zzz' }`,
       );
       expect(await buildSQL(source)).not.toContain('org_id"=1');
 
-      const result = classifyDynamicTerms(source);
+      const result = admitGivenPositions(source);
       expect(result.ok).toBe(true);
       // `filterList` accumulates through `extend`, so the base's term arrives
       // here as the source's own and is stripped like one. The source's OWN
@@ -108,11 +108,11 @@ source: p is scoped extend { where: s != 'zzz' }`,
          `#@ persist name="p" storage=lake
 source: p is raw -> { select: * } extend { where: s = 'a' }`,
       );
-      expect(classifyDynamicTerms(source)).toEqual({ ok: true, terms: [] });
+      expect(admitGivenPositions(source)).toEqual({ ok: true, terms: [] });
    });
 });
 
-describe("classifyDynamicTerms: positions the build bakes", () => {
+describe("admitGivenPositions: positions the build bakes", () => {
    it("refuses a given inside the persisted query, naming the value it baked", async () => {
       const source = await persistSource(
          `#@ persist name="p" storage=lake
@@ -122,7 +122,7 @@ source: p is raw -> { where: org_id = $ORG_ID; select: * }`,
       // default's value IS in the artifact, so no read-time term can undo it.
       expect(await buildSQL(source)).toContain('org_id"=1');
 
-      const result = classifyDynamicTerms(source);
+      const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.reason).toBe("given_in_persisted_query");
    });
@@ -134,7 +134,7 @@ source: p is raw -> { group_by: s, mine is org_id = $ORG_ID; aggregate: n is cou
       );
       expect(await buildSQL(source)).toContain('org_id"=1');
 
-      const result = classifyDynamicTerms(source);
+      const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.reason).toBe("given_in_persisted_query");
    });
@@ -150,13 +150,13 @@ source: p is scoped -> { group_by: s; aggregate: n is count() }`,
       );
       expect(await buildSQL(source)).toContain('org_id"=1');
 
-      const result = classifyDynamicTerms(source);
+      const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.reason).toBe("given_in_persisted_query");
    });
 });
 
-describe("classifyDynamicTerms: read-time positions the serve shape cannot reproduce", () => {
+describe("admitGivenPositions: read-time positions the serve shape cannot reproduce", () => {
    // These are NOT in the build either — each case asserts that — so none is a
    // leak at build time. They are refused because the serve shape has no way to
    // re-bind the given per caller in that position.
@@ -167,7 +167,7 @@ source: p is raw -> { select: * } extend { dimension: mine is org_id = $ORG_ID }
       );
       expect(await buildSQL(source)).not.toContain('org_id"=1');
 
-      const result = classifyDynamicTerms(source);
+      const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
          expect(result.reason).toBe("dynamic_projection");
@@ -184,7 +184,7 @@ source: p is raw -> { select: * } extend {
       );
       expect(await buildSQL(source)).not.toContain('org_id"=1');
 
-      const result = classifyDynamicTerms(source);
+      const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
          expect(result.reason).toBe("dynamic_join");
@@ -202,7 +202,7 @@ source: p is raw -> { select: * } extend {
       );
       expect(await buildSQL(source)).not.toContain('org_id"=1');
 
-      const result = classifyDynamicTerms(source);
+      const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
          expect(result.reason).toBe("dynamic_joined_where");
@@ -211,7 +211,7 @@ source: p is raw -> { select: * } extend {
    });
 });
 
-describe("classifyDynamicTerms: a join to a materialized given-scoped source", () => {
+describe("admitGivenPositions: a join to a materialized given-scoped source", () => {
    // The per-user visibility idiom: a persisted source joins a grant table that
    // is itself persisted and scoped by the caller's givens, and a dimension
    // decides visibility by null-checking the join. The join is not in the build,
@@ -259,7 +259,7 @@ source: p is raw -> { select: * } extend {
       expect(sql).not.toContain('user_id"=7');
       expect(sql).not.toContain('org_id"=1');
 
-      expect(classifyDynamicTerms(source)).toEqual({
+      expect(admitGivenPositions(source)).toEqual({
          ok: true,
          terms: [
             {
@@ -297,7 +297,7 @@ source: p is raw -> { select: * } extend {
   join_one: g is user_grants on s = g.s
 }`,
       );
-      const result = classifyDynamicTerms(source);
+      const result = admitGivenPositions(source);
       expect(result.ok).toBe(true);
       if (result.ok) {
          expect(result.joinedTerms?.[0]?.terms.map((t) => t.code)).toEqual([
@@ -316,7 +316,7 @@ source: p is raw -> { select: * } extend {
   join_many: g is grants on s = g.s
 }`,
       );
-      const result = classifyDynamicTerms(source);
+      const result = admitGivenPositions(source);
       expect(result.ok).toBe(true);
    });
 
@@ -330,7 +330,7 @@ source: p is raw -> { select: * } extend {
   join_one: g is live_grants on s = g.s
 }`,
       );
-      const result = classifyDynamicTerms(source);
+      const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
          expect(result.reason).toBe("dynamic_joined_where");
@@ -352,7 +352,7 @@ source: p is raw -> { select: * } extend {
   join_one: g is colo_grants on s = g.s
 }`,
       );
-      const result = classifyDynamicTerms(source);
+      const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.reason).toBe("dynamic_joined_where");
    });
@@ -366,7 +366,7 @@ source: p is raw -> { select: * } extend {
   join_one: g is baked_grants on s = g.s
 }`,
       );
-      const result = classifyDynamicTerms(source);
+      const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
          expect(result.reason).toBe("dynamic_joined_where");
@@ -386,7 +386,7 @@ source: team_grants is grants_raw -> { select: * } extend {
 source: p is raw -> { select: * } extend {
   join_one: g is team_grants on s = g.s
 }`;
-      const admitted = classifyDynamicTerms(
+      const admitted = admitGivenPositions(
          await persistSourceWithGrants(chain),
       );
       expect(admitted.ok).toBe(true);
@@ -399,7 +399,7 @@ source: p is raw -> { select: * } extend {
 
       // The same chain with the second hop left unmaterialized: the grant table
       // could not itself be admitted, so neither can the source joining it.
-      const refused = classifyDynamicTerms(
+      const refused = admitGivenPositions(
          await persistSourceWithGrants(
             chain.replace('#@ persist name="teams" storage=lake\n', ""),
          ),
@@ -419,7 +419,7 @@ source: p is raw -> { select: * } extend {
   dimension: mine is g.s is not null or user_id = $USER_ID
 }`,
       );
-      const result = classifyDynamicTerms(source);
+      const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.reason).toBe("dynamic_projection");
    });
@@ -431,7 +431,7 @@ source: p is raw -> { select: * } extend {
   join_one: g is grants on s = g.s and g.user_id = $USER_ID
 }`,
       );
-      const result = classifyDynamicTerms(source);
+      const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.reason).toBe("dynamic_join");
    });

@@ -185,8 +185,9 @@ in the package's `warnings`, at severity `warn`, with the line and the spelling 
 
 - `annotation-near-miss`: an annotation that reads as an attempt at a route Publisher reads
   (`#(doc)`, `#(markdown)`, `#(classification)`, `#(carries)`, `#(secure)`, `#(index)`,
-  `#(dbmeta)`, `#(authorize)`, `#(access_filter)`, `#@ persist`, `#@ preaggregate`) but does not
-  reach it.
+  `#(dbmeta)`, `#(authorize)`, `#(access_filter)`, `#@ persist`, `#@ preaggregate`, and, with
+  `PUBLISHER_MATERIALIZE` on, `#(materialize)` and `#(preaggregate)`, so `#(materialise)` and
+  `#(preaggregates)` are caught) but does not reach it.
 - `annotation-malformed-route`: a prefix Malloy cannot route at all, such as `#percent` (write
   `# percent` for a tag, or `#(name)` for an app route). Malloy warns about these when it compiles,
   and the package now carries the warning.

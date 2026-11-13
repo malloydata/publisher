@@ -62,6 +62,7 @@ import { createHash } from "node:crypto";
 import { ownLevelNotes } from "../../annotations";
 import {
    payloadsOnRoute,
+   PREAGGREGATE_ROUTE_KEYS,
    routeOfNote,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
@@ -100,13 +101,6 @@ export const PREAGGREGATE_ROUTE = "preaggregate";
 
 /** Appended to a declaring model's path to name its rollup build companion. */
 export const ROLLUP_COMPANION_SUFFIX = ".preaggregate.malloy";
-
-/** The keys `#(preaggregate)` reads; anything else is malformed (a closed set). */
-const ROLLUP_KEYS: ReadonlySet<string> = new Set([
-   "grain",
-   "storage",
-   "namespace",
-]);
 
 /** One stored partial of a measure. */
 export interface RollupPartial {
@@ -299,7 +293,7 @@ function readDeclaration(
       );
    }
    const keys = [...tag.entries()].map(([k]) => k);
-   const unknown = keys.filter((k) => !ROLLUP_KEYS.has(k));
+   const unknown = keys.filter((k) => !PREAGGREGATE_ROUTE_KEYS.has(k));
    if (unknown.length > 0) {
       return refuse(
          "preaggregate-unknown-key",
