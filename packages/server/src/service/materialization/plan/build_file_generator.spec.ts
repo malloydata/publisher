@@ -1002,6 +1002,51 @@ source: orders is orders_raw extend {
       { timeout: 30000 },
    );
 
+   for (const route of ['name="orders_all"', 'storage="lake"']) {
+      it(
+         `never builds an extension over a pair table, which holds each parent once per child (${route})`,
+         async () => {
+            const ext = route.startsWith("name")
+               ? 'name="orders_ext"'
+               : 'storage="lake"';
+            const pkg = await packages.create(`${PAIRED}
+#(materialize) ${route} inline=["lines"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+  measure: order_count is count()
+}
+
+#(materialize) ${ext}
+source: orders_ext is orders extend {
+  measure: twice is order_count * 2
+}
+`);
+            const c = await compilePackageBuildPlan(pkg);
+            const plan = (name: string) =>
+               generatedPlans(c).find((p) => p.sourceName === name)!;
+            expect(plan("orders").pair?.join).toBe("lines");
+            // Over the raw chain, one row per order, never the parent's
+            // build source, whose rows are the pairs.
+            expect(plan("orders_ext").buildsOver).toBeUndefined();
+            const [sourceID, source] = Object.entries(c.sources).find(
+               ([, s]) => s.name === "orders_ext",
+            )!;
+            const sql = buildSQLOf(
+               source,
+               { entries: {} },
+               c.targets?.[sourceID],
+            );
+            const duckdb = await pkg.getMalloyConnection("duckdb");
+            const rows = (
+               await duckdb.runSQL(`SELECT id FROM (${sql}) t ORDER BY id`)
+            ).rows.map((r) => Number(r.id));
+            expect(rows).toEqual([1, 2, 3]);
+         },
+         { timeout: 30000 },
+      );
+   }
+
    it(
       "inlines a path of join_manys as one pair table, with a row flag per level above the last",
       async () => {

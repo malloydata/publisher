@@ -1417,6 +1417,25 @@ function inlinedPathOf(
          };
       }
       if (next.relationship !== "many") return { reason: throughOne };
+      // A join the joined source hides is read by no source joining it, the
+      // build's included, so the build's query would not compile, and with it
+      // the companion every `#(materialize)` source of the model builds from.
+      const hidden = prev.fields.some((raw) => {
+         const f = raw as FieldLike;
+         return (
+            f.join !== undefined &&
+            (f.as ?? f.name) === names[k] &&
+            hiddenAccess(f) !== undefined
+         );
+      });
+      if (hidden) {
+         return {
+            reason:
+               `inline= names ${quoted}, whose ${quotedName(names[k])} is not ` +
+               `public on the source ${quotedName(prev.name)} joins, so no ` +
+               "source joining it reads through it",
+         };
+      }
       if (
          typeof connection === "string" &&
          next.connection !== undefined &&
@@ -2139,12 +2158,11 @@ export function planModelMaterialize(
          });
          continue;
       }
-      // A private or internal join's access, by name. An inlined join_one
-      // keeps it: its build reads the join through the build copy's lift
-      // (P3), and the served record carries the join's modifier. A pair
-      // table's record (an inlined join_many) does not carry one yet, so a
-      // hidden join_many is refused here, and this source serves live while
-      // the companion still compiles for every other source in the model.
+      // A private or internal join's access, by name. Its build reads the
+      // join through the build copy's lift (P3), and its joined columns carry
+      // the modifier: the served copy declares an inlined join_one's record,
+      // and a pair table's (an inlined join_many's), under it, and renames
+      // the stored columns behind it `private` in the record's own block.
       const joinAccess = new Map<string, "private" | "internal">();
       for (const raw of def.fields ?? []) {
          const f = raw as FieldLike;
@@ -2155,23 +2173,6 @@ export function planModelMaterialize(
          }
       }
       const entries = (resolved as { path: SourceJoin[] }[]).map((r) => r.path);
-      const hiddenMany = entries
-         .map((p) => p[0].name)
-         .find(
-            (j) =>
-               joinAccess.has(j) &&
-               joins.find((x) => x.name === j)?.relationship !== "one",
-         );
-      if (hiddenMany !== undefined) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason:
-               `inline= names ${quotedName(hiddenMany)}, a join_many that is ` +
-               "not public, which cannot be inlined as a pair table yet",
-         });
-         continue;
-      }
       const ones = entries
          .filter((p) => p[0].relationship !== "many")
          .map((p) => p[0].name);
@@ -2252,6 +2253,7 @@ export function planModelMaterialize(
                   map,
                   j,
                   p.slice(0, k + 1).map((x) => x.name),
+                  joinAccess.get(p[0].name),
                ),
             ),
          ),
@@ -2573,6 +2575,10 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
       // A table that stacks several inlined paths is a SQL source over the
       // author's model: neither builds over the other's build source.
       if (plan.pairBlocks || parent.pairBlocks) continue;
+      // A pair table holds its source once per child of the inlined
+      // join_many, not once per row: an extension built over it would store
+      // (and its served copy count) each parent once per child.
+      if (parent.pair) continue;
       if (givenReadTerms(parent).length > 0) continue;
       // The re-rooted parent keeps its `where:` as written, so a term its
       // table leaves out would be applied to the extension's build.
