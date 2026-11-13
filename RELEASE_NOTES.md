@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — In development: a `#(preaggregate)` rollup no query reads, over a source with its own time zone, is not built
+
+Behind `PUBLISHER_MATERIALIZE` (off by default). A query on a source that sets its own `timezone:` is never answered from a rollup (`TIME_ZONE`), yet the rollup was still planned and built. Now such a rollup, on a source that sets or inherits its own `timezone:`, is not built, with a `preaggregate-time-zone` warning, unless it is colocated and another source in the same zone joins it, which a query on that source still reads through the join. Answers are unchanged; the build no query read is gone. No API change. See docs/preaggregation.md.
+
 ## [Unreleased] — In development: a `#(materialize)` source over a table-backed base scoped by a given builds through a rename, its own `where:` or a join
 
 Behind `PUBLISHER_MATERIALIZE` (off by default). Over a base that reads a table (`duckdb.table('orders')`) and keeps one tenant's rows, a `#(materialize)` extension reached through a rename (`source: b2 is base`), or one that adds its own `where:` or join (or sits below a source that does), was refused (`materialize-not-built`) and answered live, though the same shapes built over a SQL base. Now each is built with every caller's rows and served per caller from its table, as over a SQL base. No API change. See docs/materialization.md, "A base scoped by a given".
