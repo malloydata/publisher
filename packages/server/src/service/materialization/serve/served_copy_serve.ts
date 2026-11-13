@@ -3253,7 +3253,7 @@ export function unnamedStoredColumns(
  * stored table (its root's rows) re-rooted with its own `extend` run kept
  * answers exactly as the source: nothing the base applies is lost.
  */
-function refinesUnfilteredBase(
+export function refinesUnfilteredBase(
    node: { base?: { hop: string; def?: unknown } } | undefined,
    map: SourceMap,
 ): boolean {
