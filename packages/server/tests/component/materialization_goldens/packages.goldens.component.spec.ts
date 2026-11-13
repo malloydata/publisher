@@ -52,7 +52,12 @@ const SUFFIXES: (keyof CaseGoldens)[] = [
 ];
 const AREAS = ["conformance", "features", "fixtures"];
 
-/** Every file under `dir`, by path relative to it with `/` separators. */
+/**
+ * Every file under `dir`, by path relative to it with `/` separators, with LF
+ * line endings: a Windows checkout (`core.autocrlf`) hands the fixtures over
+ * with CRLF, and a CRLF inside a `duckdb.sql("""…""")` moves the source's SQL
+ * and so its address, which would fail the goldens on that platform alone.
+ */
 function readTree(dir: string): Record<string, string> {
    const out: Record<string, string> = {};
    const walk = (at: string) => {
@@ -61,7 +66,7 @@ function readTree(dir: string): Record<string, string> {
          if (entry.isDirectory()) walk(full);
          else {
             out[path.relative(dir, full).split(path.sep).join("/")] =
-               fs.readFileSync(full, "utf8");
+               fs.readFileSync(full, "utf8").replace(/\r\n/g, "\n");
          }
       }
    };
