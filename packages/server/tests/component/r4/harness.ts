@@ -191,6 +191,8 @@ export interface R4Fixture {
    rollupTables: Record<string, string>;
    /** The model queries run against, for a test that reaches its internals. */
    model: Model;
+   /** The scenario's package directory, where its model files are written. */
+   packagePath: string;
    run(query: R4Query): Promise<R4Run>;
    /**
     * Point the model at `bindings` (`[]` for live), clearing the memoized
@@ -788,6 +790,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    );
    return {
       bindings,
+      packagePath: dir,
       tableIds: Object.fromEntries(
          Object.values(plan).map((p) => [p.name, p.sourceEntityId]),
       ),

@@ -44,6 +44,22 @@
  *   truncated in the model's default time zone, `TIME_ZONE`);
  * - its table is built and fresh, and the compiled SQL reads it.
  *
+ * The queried source's name in that model may also carry what the query
+ * reads beyond the rollup's fields, re-declared in an `extend`:
+ *
+ * - a named view the query runs, refines, starts from or nests (row 11), as
+ *   the author wrote it (read at its compiled location), so the view's own
+ *   query is what compiles and is checked; one that no longer compiles to
+ *   the view the author's model holds (its file edited since) or that reads
+ *   raw SQL declines (`MISSING_FIELD`); a persisted view of the name is the
+ *   router's earlier leg (R1);
+ * - for a query on an extension or rename of the rolled-up source (row 22,
+ *   found through the source map's base edges), the extension's dimensions
+ *   over the grain alone. One that adds a `where:` (`GRAIN_TOO_COARSE`), a
+ *   `timezone:` (`TIME_ZONE`), or binds a base field's name to another field
+ *   (`MISSING_FIELD`) declines; one that adds a gate is the router's
+ *   `CONTRACT`.
+ *
  * Rollups are offered coarsest first; the first that answers is used. Behind
  * `materialize.enabled`.
  */
@@ -72,8 +88,24 @@ import {
    stringLiteral,
 } from "../../malloy_text";
 import {
+   fieldNameReads,
+   sourceDelta,
+   type SourceDelta,
+} from "../../governance/ir/source_graph";
+import {
+   definitionTextAt,
+   extractRunViewCall,
+   type TextRange,
+} from "../../query_text";
+import { viewNoteTexts } from "../plan/persisted_view_compile";
+import {
+   aggregateOutsideJoin,
+   namedViewsRead,
+   aggregateWrittenThroughJoin,
+   queryFieldUsagePaths,
    queryLevelFacts,
    readPreparedQuery,
+   readsRawSql,
    resolveStructRefSource,
    setsTimezone,
    type QueryLevelFacts,
@@ -93,8 +125,21 @@ import {
    type RollupVariantPlan,
 } from "../plan/rollup_plan";
 import { SourceMap } from "../plan/source_map";
-import { authorNameImports, relativeImport } from "./author_imports";
-import { timeframeRestatements, typeDeclaration } from "./served_copy";
+import {
+   authorNameImports,
+   relativeImport,
+   type AuthorImportOptions,
+} from "./author_imports";
+import {
+   joinRollupLegs,
+   unmatchedRowProblem,
+   type JoinRollupLeg,
+} from "./join_rollup";
+import {
+   fieldNotes,
+   timeframeRestatements,
+   typeDeclaration,
+} from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import type { ServeBinding } from "./materialization_serve_transform";
 import type { MaterializedTableCatalog } from "./query_path";
@@ -108,7 +153,9 @@ export type RollupSkipCode =
    | "rollup_missing_field"
    | "rollup_count_semantics"
    | "rollup_time_zone"
-   | "rollup_not_built";
+   | "rollup_not_built"
+   | "rollup_contract"
+   | "rollup_cross_connection";
 
 /** A rollup that did not answer one query: expected, so logged quietly. */
 export class RollupSkip extends Error {
@@ -146,9 +193,59 @@ export interface RollupAnswer {
    binding?: ServeBinding;
 }
 
+/**
+ * How a variant model declares the query's source: as the rollup itself
+ * (`base`, the source's own rollup), or as the author's source with one join
+ * re-pointed at a joined source's rollup (`join`, A7).
+ */
+type VariantUse =
+   | ({ kind: "base" } & VariantTarget)
+   | { kind: "join"; localName: string; leg: JoinRollupLeg };
+
+/** A join leg that does not apply to this query: it reads nothing through the join. */
+class JoinNotRead extends Error {}
+
 interface CompiledVariant {
    materializer?: ModelMaterializer;
    error?: string;
+}
+
+/** One query, as every rollup it is offered to reads it. */
+interface RollupQuery {
+   /** The run target's name in the author's model. */
+   localName: string;
+   /** The run target's compiled definition. */
+   struct: object;
+   shape: ReturnType<typeof queryShapeOf>;
+   /** The views of the run target the query reads by name (row 11). */
+   views: string[];
+   /**
+    * Whether the query, its views expanded, holds raw SQL (`sql_*`): its text
+    * names columns the compiler does not record, which a rollup may lack.
+    */
+   rawSql: boolean;
+   /**
+    * Set when the run target extends or renames the source the rollups
+    * aggregate (row 22): that base's definition, and what the run target
+    * adds to it.
+    */
+   extension?: { baseDef: unknown; delta?: SourceDelta };
+}
+
+/** An extension's dimension, re-declared on the variant. */
+interface ExtensionDimension {
+   name: string;
+   /** The compiler's record of the author's expression. */
+   code: string;
+   notes: string[];
+}
+
+/** What a variant declares for the queried source beyond the rollup's fields. */
+interface VariantTarget {
+   localName: string;
+   struct: object;
+   views: readonly string[];
+   dimensions: readonly ExtensionDimension[];
 }
 
 /** One model's rollup variants. */
@@ -161,6 +258,8 @@ export class RollupVariantServe {
    private planMemo?: {
       modelDef: unknown;
       byBase: Map<string, RollupVariantPlan[]>;
+      /** A7: each source's join legs, by its `sourceID`. */
+      joinLegs?: Map<string, ReturnType<typeof joinRollupLegs>>;
    };
 
    constructor(private readonly host: RollupVariantHost) {}
@@ -278,10 +377,20 @@ export class RollupVariantServe {
       );
       const sourceID =
          typeof struct?.sourceID === "string" ? struct.sourceID : undefined;
-      const plans = sourceID ? this.plansByBase().get(sourceID) : undefined;
-      if (!localName || !sourceID || !plans || plans.length === 0) {
+      const target =
+         localName && sourceID ? this.rollupTarget(sourceID) : undefined;
+      // A7: the query source's joins whose joined source has rollups.
+      const legs = sourceID && localName ? this.joinLegsOf(sourceID) : [];
+      if (
+         !localName ||
+         !sourceID ||
+         !struct ||
+         (!target && legs.length === 0)
+      ) {
          throw new NoRollupForQuery("the query's source declares no rollup");
       }
+      const plans = target?.plans ?? [];
+      const extension = target?.extension;
       const shape = queryShapeOf(prepared.query, struct, {
          sourceName: localName,
       });
@@ -297,10 +406,60 @@ export class RollupVariantServe {
       // and measure check (the one closest to answering), else the first's.
       let first: RollupSkip | undefined;
       let closest: RollupSkip | undefined;
-      for (const plan of plans) {
+      // An extension that adds more than fields declines its base's rollups
+      // (row 22); its own joins' rollups (A7) are still tried.
+      let ownPlans = plans;
+      if (extension) {
          try {
-            return await this.attemptOne(plan, localName, shape, args);
+            extension.delta = checkExtension(struct, extension.baseDef);
          } catch (error) {
+            if (!(error instanceof RollupSkip)) throw error;
+            first = error;
+            ownPlans = [];
+         }
+      }
+      // The views the query reads by name (row 11): the one its text runs,
+      // and each it nests, carried onto the variant as the author wrote them,
+      // so the view's own query is what compiles against the rollup and is
+      // checked for coverage.
+      const call = extractRunViewCall(args.queryString);
+      const views = namedViewsRead(
+         prepared,
+         struct,
+         call && call.source === localName ? call.view : undefined,
+      );
+      const query: RollupQuery = {
+         localName,
+         struct,
+         shape,
+         views,
+         rawSql: readsRawSql(prepared.query),
+         ...(extension ? { extension } : {}),
+      };
+      for (const plan of ownPlans) {
+         try {
+            return await this.attemptOne(plan, query, args);
+         } catch (error) {
+            if (!(error instanceof RollupSkip)) throw error;
+            first ??= error;
+            if (!error.shapeCheck) closest ??= error;
+         }
+      }
+      // Then a joined source's rollup, read through the join (A7): R1's
+      // join legs, inside the rollup step.
+      const usage = legs.length > 0 ? queryFieldUsagePaths(prepared) : [];
+      for (const { leg, refusal } of legs) {
+         try {
+            return await this.attemptJoin(leg, refusal, {
+               localName,
+               shape,
+               prepared,
+               struct,
+               usage,
+               args,
+            });
+         } catch (error) {
+            if (error instanceof JoinNotRead) continue;
             if (!(error instanceof RollupSkip)) throw error;
             first ??= error;
             if (!error.shapeCheck) closest ??= error;
@@ -309,14 +468,321 @@ export class RollupVariantServe {
       throw closest ?? first ?? new NoRollupForQuery("no rollup");
    }
 
-   private async attemptOne(
-      plan: RollupVariantPlan,
-      localName: string,
-      shape: ReturnType<typeof queryShapeOf>,
-      args: Parameters<RollupVariantServe["attempt"]>[0],
+   /**
+    * The rollups that can answer a query on `sourceID`: its own, or (row 22)
+    * those of the nearest source it extends or renames, through `extend` and
+    * rename hops only, among the model's own declarations (a caller's
+    * `source:` in the query text is never one). A query-shaped hop starts new
+    * rows, so it ends the walk.
+    */
+   private rollupTarget(sourceID: string):
+      | {
+           plans: RollupVariantPlan[];
+           extension?: RollupQuery["extension"];
+        }
+      | undefined {
+      const byBase = this.plansByBase();
+      const own = byBase.get(sourceID);
+      if (own && own.length > 0) return { plans: own };
+      const map = SourceMap.of(this.host.modelDef());
+      let node = map.node(sourceID);
+      for (let hops = 0; node && hops < 64; hops++) {
+         const base = node.base;
+         if (
+            !base ||
+            (base.hop !== "extends" && base.hop !== "rename") ||
+            base.sourceID === undefined
+         ) {
+            return undefined;
+         }
+         const plans = byBase.get(base.sourceID);
+         const baseNode = map.node(base.sourceID);
+         if (plans && plans.length > 0 && baseNode) {
+            return { plans, extension: { baseDef: baseNode.def } };
+         }
+         node = baseNode;
+      }
+      return undefined;
+   }
+
+   /**
+    * The legs the joins of source `sourceID` offer (A7), each with why it
+    * cannot be used, if it cannot. Read through the source map's join
+    * readers; memoised with the plans.
+    */
+   private joinLegsOf(sourceID: string): ReturnType<typeof joinRollupLegs> {
+      const byBase = this.plansByBase();
+      const memo = this.planMemo;
+      const cached = memo?.joinLegs?.get(sourceID);
+      if (cached) return cached;
+      const map = SourceMap.of(this.host.modelDef());
+      const filter = map.filterJoinsOf(sourceID);
+      const joins = map.joinsOf(sourceID);
+      const legs = joinRollupLegs(
+         joins,
+         byBase,
+         // Unknown reads count as reading every join.
+         filter === undefined || filter.nested
+            ? new Set(joins.map((j) => j.name))
+            : filter.joins,
+      );
+      if (memo) {
+         memo.joinLegs ??= new Map();
+         memo.joinLegs.set(sourceID, legs);
+      }
+      return legs;
+   }
+
+   /**
+    * The base `sourceID`s of the rollups a query on `struct` could read
+    * through one of its joins (A7), for the path report.
+    */
+   joinedRollupBaseIDs(
+      struct: unknown,
+      prepared: Parameters<typeof queryFieldUsagePaths>[0],
+   ): Set<string> {
+      const sourceID = (struct as { sourceID?: unknown } | undefined)?.sourceID;
+      if (typeof sourceID !== "string" || !this.hasRollups()) return new Set();
+      const legs = this.joinLegsOf(sourceID);
+      if (legs.length === 0) return new Set();
+      // Only the joins the query reads (every one, when its reads are
+      // unreadable): the leg never tries a join the query does not read.
+      const usage = queryFieldUsagePaths(prepared);
+      return new Set(
+         legs
+            .filter(
+               ({ leg }) =>
+                  usage === undefined ||
+                  usage.some((p) => p[0] === leg.join.name),
+            )
+            .map(({ leg }) => leg.plan.baseSourceID),
+      );
+   }
+
+   /**
+    * Answer from a joined source's rollup, read at its grain through the
+    * re-pointed join (A7, see join_rollup.ts), or throw a {@link RollupSkip}
+    * ({@link JoinNotRead} when the query reads nothing through the join).
+    */
+   private async attemptJoin(
+      leg: JoinRollupLeg,
+      refusal: ReturnType<typeof joinRollupLegs>[number]["refusal"],
+      q: {
+         localName: string;
+         shape: ReturnType<typeof queryShapeOf>;
+         prepared: Awaited<ReturnType<typeof readPreparedQuery>>;
+         struct: unknown;
+         usage: string[][] | undefined;
+         args: Parameters<RollupVariantServe["attempt"]>[0];
+      },
    ): Promise<RollupAnswer> {
+      const { plan, join } = leg;
+      const name = join.name;
+      // Only a query that reads through the join (an unreadable one might).
+      if (q.usage && !q.usage.some((p) => p[0] === name)) {
+         throw new JoinNotRead(name);
+      }
+      if (refusal) {
+         throw new RollupSkip(refusal.code, refusal.callerDetail, true);
+      }
+      if (plan.storage !== undefined) {
+         // The source reads its own warehouse and the rollup its destination;
+         // Malloy joins within one connection (malloy#3032).
+         throw new RollupSkip(
+            "rollup_cross_connection",
+            `the rollup of \`${name}\` is in a storage destination, and the query's source reads its own connection`,
+            true,
+         );
+      }
+      // The build truncated and filtered times in the joined source's time
+      // zone; live reads the joined rows in the query source's.
+      const childDef = SourceMap.of(this.host.modelDef()).node(
+         plan.baseSourceID,
+      )?.def as
+         | {
+              queryTimezone?: unknown;
+              fields?: {
+                 name?: unknown;
+                 as?: unknown;
+                 e?: unknown;
+                 join?: unknown;
+              }[];
+           }
+         | undefined;
+      const parentZone = (q.struct as { queryTimezone?: unknown } | undefined)
+         ?.queryTimezone;
+      if ((childDef?.queryTimezone ?? "") !== (parentZone ?? "")) {
+         throw new RollupSkip(
+            "rollup_time_zone",
+            `\`${name}\` is read in the query source's time zone, and its rollup was built in its own`,
+            true,
+         );
+      }
       const grain = new Set(plan.grainDimensions);
       const measures = new Set(plan.rollupMeasures.map((m) => m.name));
+      const through = (paths: readonly string[]) =>
+         paths
+            .filter((p) => p.startsWith(`${name}.`))
+            .map((p) => p.slice(name.length + 1));
+      const coarse = through([
+         ...q.shape.groupedBy,
+         ...q.shape.filteredBy,
+      ]).find((f) => !grain.has(f) && !measures.has(f));
+      if (coarse !== undefined) {
+         throw new RollupSkip(
+            "rollup_grain_too_coarse",
+            `the query reads \`${name}.${coarse}\`, which the rollup's grain does not keep`,
+            true,
+         );
+      }
+      const missing = through(q.shape.measures).find(
+         (m) => !measures.has(m) && !grain.has(m),
+      );
+      if (missing !== undefined) {
+         throw new RollupSkip(
+            "rollup_missing_field",
+            `the query aggregates \`${name}.${missing}\`, which the rollup does not store`,
+            true,
+         );
+      }
+      // Every level reads rows by groups: a `select:` or `index:` stage would
+      // read the rollup's rows, one per group, not the joined rows.
+      const levels = queryLevelFacts(q.prepared);
+      const rowLevel = levels ? nonReduceLevel(levels) : "unreadable";
+      if (rowLevel !== undefined) {
+         throw new RollupSkip(
+            "rollup_count_semantics",
+            rowLevel === "unreadable"
+               ? "the query has no stage the rollup can answer"
+               : `a ${rowLevel} stage reads the joined rows, which the rollup does not keep`,
+         );
+      }
+      const written = aggregateWrittenThroughJoin(q.prepared, q.struct, name);
+      if (written !== undefined) {
+         throw new RollupSkip(
+            "rollup_count_semantics",
+            `\`${written}\` aggregates the rows of \`${name}\` itself, which its rollup does not keep`,
+         );
+      }
+      if (q.usage === undefined) {
+         throw new RollupSkip(
+            "rollup_count_semantics",
+            "the query's reads could not be traced",
+         );
+      }
+      const read = new Set(
+         q.usage
+            .filter((p) => p[0] === name && p.length === 2)
+            .map((p) => p[1] as string),
+      );
+      // A join_one the data does not keep unique repeats each parent row
+      // once per joined row live, and every aggregate not taken at the join
+      // counts the repeats; the rollup holds one row per key.
+      if (join.relationship === "one") {
+         const outside = aggregateOutsideJoin(q.prepared, q.struct, name);
+         if (outside !== undefined) {
+            throw new RollupSkip(
+               "rollup_count_semantics",
+               `${outside} aggregates rows outside the join_one \`${name}\`, which live repeats for each of its rows; its rollup holds one row per key`,
+            );
+         }
+      }
+      const childFields = new Map(
+         (childDef?.fields ?? []).map((f) => [String(f.as ?? f.name), f]),
+      );
+      const problem = unmatchedRowProblem(leg, read, (field) => {
+         const f = childFields.get(field);
+         return f !== undefined && f.e === undefined && f.join === undefined;
+      });
+      if (problem !== undefined) {
+         throw new RollupSkip("rollup_count_semantics", problem);
+      }
+      const table = this.tableOf(plan);
+      if (!table) {
+         throw new RollupSkip(
+            "rollup_not_built",
+            "the rollup has no fresh table",
+         );
+      }
+      const variant = await this.compiledVariant(
+         plan,
+         { kind: "join", localName: q.localName, leg },
+         table,
+      );
+      if (!variant.materializer) {
+         logger.warn(
+            "A #(preaggregate) join-to-rollup variant did not compile",
+            {
+               modelPath: this.host.modelPath(),
+               rollup: plan.rollupSourceName,
+               join: name,
+               error: variant.error,
+            },
+         );
+         throw new RollupSkip(
+            "rollup_missing_field",
+            "the query does not compile against the rollup",
+         );
+      }
+      const runnable = variant.materializer.loadRestrictedQuery(
+         q.args.queryString,
+      );
+      const colocatedTable =
+         table.sourceEntityId !== undefined
+            ? q.args.buildManifest?.entries[table.sourceEntityId]?.tableName
+            : undefined;
+      if (!colocatedTable) {
+         throw new RollupSkip(
+            "rollup_not_built",
+            "the rollup has no fresh table",
+         );
+      }
+      let result;
+      try {
+         result = await runnable.getPreparedResult({
+            ...(q.args.givens ? { givens: q.args.givens as never } : {}),
+            buildManifest: q.args.buildManifest,
+         } as never);
+      } catch {
+         throw new RollupSkip(
+            "rollup_missing_field",
+            "the query does not compile against the rollup",
+         );
+      }
+      if (!result.sql.includes(colocatedTable)) {
+         throw new RollupSkip(
+            "rollup_not_built",
+            "the rollup has no fresh table",
+         );
+      }
+      return { runnable, rollupSourceName: plan.rollupSourceName };
+   }
+
+   private async attemptOne(
+      plan: RollupVariantPlan,
+      query: RollupQuery,
+      args: Parameters<RollupVariantServe["attempt"]>[0],
+   ): Promise<RollupAnswer> {
+      const { localName, shape } = query;
+      // A view's `where: sql_boolean("${TABLE}.region = …")` reads a column
+      // no field reference names, so no grain check sees it.
+      if (query.rawSql) {
+         throw new RollupSkip(
+            "rollup_missing_field",
+            "the query reads raw SQL (`sql_*`), whose columns the rollup may not keep",
+            true,
+         );
+      }
+      const measures = new Set(plan.rollupMeasures.map((m) => m.name));
+      // An extension's dimensions over the grain alone are re-declared on the
+      // variant (row 22), and read as grain dimensions here.
+      const dimensions = query.extension
+         ? extensionDimensions(query.extension, plan, measures)
+         : [];
+      const grain = new Set([
+         ...plan.grainDimensions,
+         ...dimensions.map((d) => d.name),
+      ]);
       // Cheap first, from the caller's own compile: what it groups and filters
       // by must be in the grain, what it aggregates must be stored.
       const coarse = [...shape.groupedBy, ...shape.filteredBy].find(
@@ -344,7 +810,17 @@ export class RollupVariantServe {
             "the rollup has no fresh table",
          );
       }
-      const variant = await this.compiledVariant(plan, localName, table);
+      const variant = await this.compiledVariant(
+         plan,
+         {
+            kind: "base",
+            localName,
+            struct: query.struct,
+            views: query.views,
+            dimensions,
+         },
+         table,
+      );
       if (!variant.materializer) {
          // A generated model that does not compile is a publisher bug.
          logger.warn("A #(preaggregate) rollup variant did not compile", {
@@ -449,19 +925,23 @@ export class RollupVariantServe {
 
    private compiledVariant(
       plan: RollupVariantPlan,
-      localName: string,
+      use: VariantUse,
       table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
    ): Promise<CompiledVariant> {
       const key = [
          plan.rollupSourceName,
-         localName,
+         use.localName,
+         use.kind === "join" ? `join:${use.leg.join.name}` : "base",
          table.binding
             ? `${table.binding.destinationName}/${table.binding.virtualHandle}`
             : "colocated",
+         // The views vary by query; an extension's dimensions follow from
+         // its name and the plan.
+         ...(use.kind === "base" ? use.views : []),
       ].join("\u0000");
       let compiled = this.compiled.get(key);
       if (!compiled) {
-         compiled = this.compile(plan, localName, table).catch((error) => ({
+         compiled = this.compile(plan, use, table).catch((error) => ({
             error: error instanceof Error ? error.message : String(error),
          }));
          this.compiled.set(key, compiled);
@@ -471,13 +951,39 @@ export class RollupVariantServe {
 
    private async compile(
       plan: RollupVariantPlan,
-      localName: string,
+      use: VariantUse,
       table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
    ): Promise<CompiledVariant> {
+      const { localName } = use;
+      // A join leg reads a colocated rollup only (attemptJoin).
+      if (use.kind === "join" && table.binding) {
+         return { error: "a join leg reads a colocated rollup only" };
+      }
       const packagePath = this.packagePath;
       const packageConfig = this.packageConfig;
       if (!packagePath || !packageConfig) return { error: "no context" };
       const modelPath = this.host.modelPath();
+      // The package's own reader, made once and only when a file is read.
+      let reader: ReturnType<typeof createModelRuntime> | undefined;
+      const readText = async (url: string) => {
+         try {
+            reader ??= createModelRuntime(
+               packagePath,
+               modelPath,
+               packageConfig,
+            );
+            const { runtime } = await reader;
+            const read = await runtime.urlReader.readURL(new URL(url));
+            return typeof read === "string" ? read : read.contents;
+         } catch {
+            return undefined;
+         }
+      };
+      // What the queried source adds over the rollup's fields: an
+      // extension's dimensions over the grain, and the views the query reads.
+      const additions =
+         use.kind === "base" ? await variantAdditions(use, readText) : "";
+      if (typeof additions !== "string") return additions;
       const modelFile = path.join(packagePath, modelPath);
       const queryModelURL = pathToFileURL(`${modelFile}.rollup.malloy`);
       const overlay = new Map<string, string>();
@@ -487,19 +993,29 @@ export class RollupVariantServe {
       let declaration: string;
       if (table.binding) {
          const typeName = `${plan.rollupSourceName}__type`;
-         const columns = table.binding.schema.map((c) => ({
-            name: c.name,
-            type: c.type,
-         }));
-         // malloy-text: the served copy's timeframe emitter, names through identifier
-         const timeframes = timeframeRestatements(
-            grainColumns(plan, this.host.modelDef()),
+         const grain = grainColumns(plan, this.host.modelDef());
+         // A grain column carries its dimension's notes, as the served copy's
+         // stored columns do: a `type:` field keeps its annotations, so a
+         // result column reads them as live's does. A timeframe column's go
+         // on its redefined field (timeframeRestatements) instead.
+         const grainNotes = new Map(
+            grain.map((g) => [g.name, g.timeframe ? [] : g.notes]),
          );
+         const columns = table.binding.schema.map((c) => {
+            const notes = grainNotes.get(c.name);
+            return {
+               name: c.name,
+               type: c.type,
+               ...(notes && notes.length > 0 ? { notes } : {}),
+            };
+         });
+         // malloy-text: the served copy's timeframe emitter, names through identifier
+         const timeframes = timeframeRestatements(grain);
          // malloy-text: the served copy's type emitter; rollupStatements re-emits the grammar's parse through malloy_text
          declaration = `${typeDeclaration({ typeName, columns })}
-source: ${identifier(servedName)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)} extend {${timeframes}${rollupStatements(plan)}
+source: ${identifier(servedName)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)} extend {${timeframes}${rollupStatements(plan, this.host.modelDef())}
 }
-source: ${identifier(localName)} is ${identifier(servedName)}${internalPartials(plan)}`;
+${sourceOverRollup(plan, use, servedName, additions)}`;
       } else {
          // Colocated: import the build source from the declaring model's
          // companion, so the build manifest substitutes its table.
@@ -521,35 +1037,25 @@ source: ${identifier(localName)} is ${identifier(servedName)}${internalPartials(
          overlay.set(overlayKey(companion.href), text);
          // The shared, checked blanking (persist_blanking.ts), read through
          // the package's own reader, as the build companion reads them.
-         const { runtime: reader } = await createModelRuntime(
-            packagePath,
-            modelPath,
-            packageConfig,
-         );
          const blanked = await persistBlankedFiles(
             this.host.modelDef(),
-            async (url) => {
-               try {
-                  const read = await reader.urlReader.readURL(new URL(url));
-                  return typeof read === "string" ? read : read.contents;
-               } catch {
-                  return undefined;
-               }
-            },
+            readText,
          );
          if (!blanked) return { error: "a `#@` line could not be left out" };
          for (const [url, file] of blanked) overlay.set(url, file);
          const built = `${plan.rollupSourceName}__built`;
          declaration = `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(relativeImport(queryModelURL, companion.href) ?? "")}
-source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan)}
+source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan, this.host.modelDef())}
 }
-source: ${identifier(localName)} is ${identifier(servedName)}${internalPartials(plan)}`;
+${sourceOverRollup(plan, use, servedName, additions)}`;
       }
       const text = queryModelText(
          this.host.modelDef(),
          queryModelURL,
          pathToFileURL(modelFile).href,
-         localName,
+         use.kind === "join"
+            ? { alias: new Map([[localName, parentAlias(plan)]]) }
+            : { skip: new Set([localName]) },
          declaration,
       );
       overlay.set(overlayKey(queryModelURL.href), text);
@@ -569,9 +1075,228 @@ source: ${identifier(localName)} is ${identifier(servedName)}${internalPartials(
          { overlay },
       );
       const materializer = runtime.loadModel(queryModelURL, { importBaseURL });
-      await materializer.getModel();
+      const compiled = await materializer.getModel();
+      // Each view read back from the author's file must compile to the view
+      // the author's model holds: the file may have changed since it
+      // compiled (an edit not yet reloaded), and the variant would then
+      // answer a query the caller did not run.
+      if (use.kind === "base") {
+         const variantDef = (
+            compiled as { _modelDef?: { contents?: Record<string, unknown> } }
+         )._modelDef?.contents?.[localName];
+         for (const view of use.views) {
+            const theirs = turtleNamed(use.struct, view);
+            const ours = turtleNamed(variantDef, view);
+            if (
+               !theirs ||
+               !ours ||
+               pipelineSignature(theirs.pipeline) !==
+                  pipelineSignature(ours.pipeline)
+            ) {
+               return {
+                  error: `view \`${view}\` does not read back as the model compiled it`,
+               };
+            }
+         }
+      }
       return { materializer };
    }
+}
+
+/** The view `name` of a compiled source, if it declares one. */
+function turtleNamed(
+   struct: unknown,
+   name: string,
+): { pipeline?: unknown } | undefined {
+   const fields = (struct as { fields?: unknown[] } | undefined)?.fields;
+   if (!Array.isArray(fields)) return undefined;
+   return (fields as { type?: unknown; name?: unknown; as?: unknown }[]).find(
+      (f) => f.type === "turtle" && (f.as ?? f.name) === name,
+   ) as { pipeline?: unknown } | undefined;
+}
+
+/**
+ * What a compiled pipeline records of its context rather than of the query:
+ * where it was written, the notes its fields inherit, and the result's shape
+ * over the source it ran on (a stored column's connection and number type).
+ */
+const PIPELINE_CONTEXT_KEYS = new Set([
+   "location",
+   "at",
+   "referencedAt",
+   "annotations",
+   "outputStruct",
+]);
+
+/**
+ * A view's compiled pipeline without where it was written: the same view
+ * text compiled in two models differs only in its locations.
+ */
+function pipelineSignature(pipeline: unknown): string {
+   return JSON.stringify(pipeline, (key, value) =>
+      PIPELINE_CONTEXT_KEYS.has(key) ? undefined : value,
+   );
+}
+
+/**
+ * What an extension adds over the base its rollups aggregate (row 22), or a
+ * {@link RollupSkip} when that is more than fields: a `where:` of its own
+ * (its rows are not the base's, `GRAIN_TOO_COARSE`), or a `timezone:` of its
+ * own (`TIME_ZONE`). A gate of its own never reaches here: the router skips
+ * the leg for a gated entry point (`CONTRACT`).
+ */
+function checkExtension(struct: object, baseDef: unknown): SourceDelta {
+   const delta = sourceDelta(struct, baseDef);
+   if (delta.addsFilter) {
+      throw new RollupSkip(
+         "rollup_grain_too_coarse",
+         "the query's source filters its rows (`where:`) beyond the source the rollup aggregates",
+         true,
+      );
+   }
+   const zone = (d: unknown) =>
+      (d as { queryTimezone?: unknown } | undefined)?.queryTimezone;
+   if (zone(struct) !== zone(baseDef)) {
+      throw new RollupSkip(
+         "rollup_time_zone",
+         "the query's source sets its own time zone, and the rollup was built in its base's",
+         true,
+      );
+   }
+   return delta;
+}
+
+/**
+ * The extension's own dimensions the variant re-declares for `plan`: each
+ * public scalar dimension it adds whose expression reads only the rollup's
+ * grain dimensions and dimensions already taken (row 22), in an order where
+ * each follows what it reads. Anything else it adds (a measure, a join, a
+ * dimension over a field the rollup lacks) is not declared, so a query that
+ * reads it does not compile against the variant (`MISSING_FIELD`) or fails
+ * the grain check first. A grain dimension or stored measure the extension
+ * holds differently from its base (a `rename:` onto its name) declines the
+ * rollup: the variant's field would not be the one the query reads.
+ */
+function extensionDimensions(
+   extension: NonNullable<RollupQuery["extension"]>,
+   plan: RollupVariantPlan,
+   measures: ReadonlySet<string>,
+): ExtensionDimension[] {
+   const delta = extension.delta;
+   if (!delta) return [];
+   const grain = new Set(plan.grainDimensions);
+   // Any name the extension binds to another field, not only a grain
+   // dimension or stored measure: those read their base's fields by name, so
+   // `rename: reg is region; dimension: region is 'east'` changes what a
+   // stored `amount.sum() { where: region = 'east' }` reads on the extension,
+   // while the rollup stores it as the base defines it.
+   const clash =
+      delta.changed.find((n) => grain.has(n) || measures.has(n)) ??
+      delta.changed[0];
+   if (clash !== undefined) {
+      throw new RollupSkip(
+         "rollup_missing_field",
+         `the query's source redefines \`${clash}\`, which the rollup's fields read as its base defines it`,
+         true,
+      );
+   }
+   interface AddedField {
+      name?: unknown;
+      as?: unknown;
+      type?: unknown;
+      join?: unknown;
+      code?: unknown;
+      expressionType?: unknown;
+      accessModifier?: unknown;
+      annotations?: Parameters<typeof viewNoteTexts>[0];
+      e?: unknown;
+   }
+   const candidates = (delta.added as AddedField[]).filter(
+      (f) =>
+         f.type !== "turtle" &&
+         f.join === undefined &&
+         typeof f.code === "string" &&
+         // Raw SQL names columns the compiler records no read of.
+         !readsRawSql(f.e) &&
+         (f.expressionType === undefined || f.expressionType === "scalar") &&
+         (f.accessModifier == null || f.accessModifier === "public"),
+   );
+   const known = new Set(grain);
+   const out: ExtensionDimension[] = [];
+   for (let grew = true; grew; ) {
+      grew = false;
+      for (const f of candidates) {
+         const name =
+            typeof f.as === "string"
+               ? f.as
+               : typeof f.name === "string"
+                 ? f.name
+                 : undefined;
+         if (name === undefined || known.has(name)) continue;
+         const reads = fieldNameReads(f);
+         if (!reads || !reads.every((r) => known.has(r))) continue;
+         known.add(name);
+         out.push({
+            name,
+            code: f.code as string,
+            notes: viewNoteTexts(f.annotations),
+         });
+         grew = true;
+      }
+   }
+   return out;
+}
+
+/**
+ * The ` extend { … }` that declares the target's extension dimensions and the
+ * views the query reads on the variant (empty when there are none), or why
+ * it cannot. Each view is its definition as the author wrote it, read at its
+ * compiled location ({@link definitionTextAt}), so the view's own query is
+ * what compiles against the rollup and what coverage reads; one that does
+ * not read back as its own definition leaves the variant uncompiled.
+ */
+async function variantAdditions(
+   target: VariantTarget,
+   readText: (url: string) => Promise<string | undefined>,
+): Promise<string | { error: string }> {
+   const lines: string[] = [];
+   for (const d of target.dimensions) {
+      // malloy-text: the author's own notes on the field, single lines, `#@` left out (viewNoteTexts)
+      const notes = d.notes.map((n) => `  ${n}`);
+      lines.push(...notes);
+      // malloy-text: the compiler's record of the author's own expression, over names the variant declares
+      const expression = d.code;
+      lines.push(`  dimension: ${identifier(d.name)} is ${expression}`);
+   }
+   const fields = ((target.struct as { fields?: unknown[] }).fields ?? []) as {
+      type?: unknown;
+      name?: unknown;
+      as?: unknown;
+      location?: { url?: unknown; range?: TextRange };
+      annotations?: Parameters<typeof viewNoteTexts>[0];
+   }[];
+   for (const view of target.views) {
+      const field = fields.find(
+         (f) => f.type === "turtle" && (f.as ?? f.name) === view,
+      );
+      const url = field?.location?.url;
+      const range = field?.location?.range;
+      const text = typeof url === "string" ? await readText(url) : undefined;
+      // malloy-text: the author's own view definition, read whole at its compiled location (definitionTextAt checks its name and brackets)
+      const definition =
+         text !== undefined && range
+            ? definitionTextAt(text, range, view)
+            : undefined;
+      if (definition === undefined) {
+         return { error: `the definition of view \`${view}\` was not read` };
+      }
+      // malloy-text: the author's own notes on the view, single lines, `#@` left out (viewNoteTexts)
+      const notes = viewNoteTexts(field?.annotations).map((n) => `  ${n}`);
+      lines.push(...notes);
+      lines.push(`  view: ${definition}`);
+   }
+   // malloy-text: each line above is a name through identifier, or the author's own text marked where it is read
+   return lines.length > 0 ? ` extend {\n${lines.join("\n")}\n}` : "";
 }
 
 /** Whether a binding is inside its freshness window at `now`. */
@@ -596,13 +1321,89 @@ export function rollupSourceID(plan: RollupVariantPlan): string | undefined {
    return companion ? `${plan.rollupSourceName}@${companion.href}` : undefined;
 }
 
-/** The rollup's merged measures. */
-function rollupStatements(plan: RollupVariantPlan): string {
+/** The author's source, imported for a join leg under this name. */
+function parentAlias(plan: RollupVariantPlan): string {
+   return `${plan.rollupSourceName}__parent`;
+}
+
+/**
+ * The variant's declaration of the query's source over `servedName`: the
+ * rollup itself under the source's name, or (A7) the author's source with
+ * the join re-pointed at the rollup on its key. `include { *; except: … }`
+ * keeps every other field's access modifier and annotations as written.
+ */
+function sourceOverRollup(
+   plan: RollupVariantPlan,
+   use: VariantUse,
+   servedName: string,
+   /** For `base`: the ` extend { … }` of {@link variantAdditions}. */
+   additions: string,
+): string {
+   if (use.kind === "base") {
+      // malloy-text: variantAdditions emits names through identifier, and the author's own notes, expressions and view definitions (marked there)
+      const extension = additions;
+      return `source: ${identifier(use.localName)} is ${identifier(servedName)}${internalPartials(plan)}${extension}`;
+   }
+   const { join } = use.leg;
+   const keyword = use.leg.relationship === "one" ? "join_one" : "join_many";
+   const joined = `${plan.rollupSourceName}__joined`;
+   const j = identifier(join.name);
+   return `source: ${identifier(joined)} is ${identifier(servedName)}${internalPartials(plan)}
+source: ${identifier(use.localName)} is ${identifier(parentAlias(plan))} include { *; except: ${j} } extend {
+  ${keyword}: ${j} is ${identifier(joined)} on ${j}.${identifier(join.keyColumn)} = ${identifier(join.baseKey)}
+}`;
+}
+
+/** The first level of `levels` (or a nest in it) that is not a `reduce`, by its stage word. */
+function nonReduceLevel(levels: QueryLevelFacts): string | undefined {
+   if (levels.kind !== "reduce") {
+      return levels.kind === "project"
+         ? "select:"
+         : levels.kind === "index"
+           ? "index:"
+           : levels.kind;
+   }
+   for (const f of levels.fields) {
+      if (!f.isNest) continue;
+      if (!f.nest) return "nest";
+      const inner = nonReduceLevel(f.nest);
+      if (inner !== undefined) return inner;
+   }
+   return undefined;
+}
+
+/**
+ * The rollup's merged measures, each with the author's measure's annotation
+ * lines (`#(classification)`, `#(doc)`, a render tag such as `# currency`):
+ * a measure's notes are its own, kept on the result column, so a query's
+ * result carries what live's does.
+ */
+function rollupStatements(plan: RollupVariantPlan, modelDef: unknown): string {
+   const notes = baseFieldNotes(plan, modelDef);
+   // malloy-text: the author's own notes, then each merged measure re-emitted from the grammar's parse through malloy_text
    const measures = plan.rollupMeasures
-      .map((m) => `    ${identifier(m.name)} is ${emitMeasureExpr(m.merged)}`)
+      .map(
+         (m) =>
+            (notes.get(m.name) ?? [])
+               .map((n) => `    ${n.trimEnd()}\n`)
+               .join("") +
+            `    ${identifier(m.name)} is ${emitMeasureExpr(m.merged)}`,
+      )
       .join("\n");
-   // malloy-text: each merged measure re-emitted from the grammar's parse through malloy_text
    return `\n  measure:\n${measures}`;
+}
+
+/** The base's fields' annotation lines, by name. */
+function baseFieldNotes(
+   plan: RollupVariantPlan,
+   modelDef: unknown,
+): Map<string, string[]> {
+   const base = SourceMap.of(modelDef).node(plan.baseSourceID)?.def as
+      | { fields?: { name?: unknown; as?: unknown }[] }
+      | undefined;
+   return new Map(
+      (base?.fields ?? []).map((f) => [String(f.as ?? f.name), fieldNotes(f)]),
+   );
 }
 
 /**
@@ -616,11 +1417,14 @@ function internalPartials(plan: RollupVariantPlan): string {
    return ` include { internal: ${partials} public: * }`;
 }
 
-/** The rollup's grain columns, each with the author's timeframe if it has one. */
+/**
+ * The rollup's grain columns, each with the author's timeframe if it has one
+ * and its dimension's annotation lines.
+ */
 function grainColumns(
    plan: RollupVariantPlan,
    modelDef: unknown,
-): { name: string; timeframe?: string }[] {
+): { name: string; timeframe?: string; notes: string[] }[] {
    const base = SourceMap.of(modelDef).node(plan.baseSourceID)?.def as
       | { fields?: { name?: unknown; as?: unknown; timeframe?: unknown }[] }
       | undefined;
@@ -630,9 +1434,14 @@ function grainColumns(
          timeframes.set(String(f.as ?? f.name), f.timeframe);
       }
    }
+   const notes = baseFieldNotes(plan, modelDef);
    return plan.grainDimensions.map((name) => {
       const timeframe = timeframes.get(name);
-      return timeframe === undefined ? { name } : { name, timeframe };
+      return {
+         name,
+         ...(timeframe === undefined ? {} : { timeframe }),
+         notes: notes.get(name) ?? [],
+      };
    });
 }
 
@@ -644,14 +1453,13 @@ function queryModelText(
    modelDef: unknown,
    queryModelURL: URL,
    modelURL: string,
-   localName: string,
+   names: AuthorImportOptions,
    declaration: string,
 ): string {
-   // Every name but the one the variant declares, givens included, so a query
-   // that supplies or reads a given compiles against the rollup.
-   const imports = authorNameImports(modelDef, queryModelURL, modelURL, {
-      skip: new Set([localName]),
-   });
+   // Every name but the one the variant declares (or that name under an
+   // alias, for a join leg), givens included, so a query that supplies or
+   // reads a given compiles against the rollup.
+   const imports = authorNameImports(modelDef, queryModelURL, modelURL, names);
    return `${flagLine(modelDef)}
 ${imports}
 
