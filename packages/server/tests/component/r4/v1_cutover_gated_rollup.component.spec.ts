@@ -316,7 +316,7 @@ function expectLive(run: R4Run): void {
 }
 
 for (const placement of ["colocated", "storage"] as const) {
-   describe(`review 1703b B v1 cutover R4: gated queries on ${placement} rollups (row 1, gated sources on)`, () => {
+   describe(`v1 cutover R4: gated queries on ${placement} rollups (row 1, gated sources on)`, () => {
       let restore: () => void;
       let restoreReview: () => void;
       let fixture: R4Fixture;
@@ -694,7 +694,7 @@ for (const placement of ["colocated", "storage"] as const) {
    });
 }
 
-describe("review 1703b B v1 cutover R4: gated queries on rollups with gated sources off", () => {
+describe("v1 cutover R4: gated queries on rollups with gated sources off", () => {
    let restore: () => void;
    let fixture: R4Fixture;
    beforeAll(async () => {
@@ -743,7 +743,7 @@ describe("review 1703b B v1 cutover R4: gated queries on rollups with gated sour
    }
 });
 
-describe("review 1703b B v1 cutover: storage= rollups over gated bases without the review seam", () => {
+describe("v1 cutover: storage= rollups over gated bases without the review seam", () => {
    let restore: () => void;
    let fixture: R4Fixture;
    beforeAll(async () => {
