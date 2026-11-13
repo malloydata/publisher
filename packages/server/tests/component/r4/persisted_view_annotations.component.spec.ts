@@ -98,10 +98,10 @@ const authorNotes = (f: Field) =>
       .filter((v) => !v.startsWith("#(malloy)"));
 
 describe.each([
-   ["colocated", (v: string) => `#@ persist name="orders_${v}"`, true],
+   ["colocated", (v: string): string => `#@ persist name="orders_${v}"`, true],
    [
       "in a storage destination",
-      (_v: string) => `#@ persist storage="${DESTINATION}"`,
+      (_v: string): string => `#@ persist storage="${DESTINATION}"`,
       false,
    ],
 ] as const)(
@@ -133,7 +133,10 @@ describe.each([
          await disposeScenarios();
       });
 
-      const answer = async (malloy: string, served: boolean) => {
+      const answer = async (
+         malloy: string,
+         served: boolean,
+      ): Promise<Answer> => {
          fixture.setBindings(served ? fixture.bindings : []);
          const audit = unrecordedAudit();
          try {

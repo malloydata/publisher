@@ -167,9 +167,8 @@ const SAME_NAMED_MATERIALIZE: Partial<Record<Variant, Expect>> = {
 /** Today's serve shape answers a v1 `storage=` rollup without its measures' annotations. */
 const V1_STORAGE_ROLLUP_ANNOTATIONS: Gap = {
    kind: "metadata",
-   issue: "#1691",
    reason:
-      "today's serve shape answers a v1 #@ preaggregate storage= rollup with its measures' annotations (# currency, #(doc)) dropped",
+      "today's serve shape answers a v1 #@ preaggregate storage= rollup with its measures' annotations (# currency, #(doc)) dropped; the cutover's rollup leg answers with them (G4), and the serve shape retires",
 };
 
 /** A `#@ persist` view is planned and read only with the materialize switch on. */
@@ -177,14 +176,6 @@ const PERSISTED_VIEW_OFF: Gap = {
    kind: "live",
    reason:
       "a #@ persist view is planned and served only with PUBLISHER_MATERIALIZE on (phase 4's view leg)",
-};
-
-/** A `storage=` persisted view drops its measures' annotations. */
-const PERSISTED_VIEW_ANNOTATIONS: Gap = {
-   kind: "metadata",
-   issue: "#1691",
-   reason:
-      "a storage= persisted view answers with its measures' annotations (# currency, #(doc)) dropped; not the cutover's (the view leg is unchanged)",
 };
 
 export const SHAPES: Shape[] = [
@@ -1543,8 +1534,6 @@ source: ov is orders_raw extend {
          // The view leg exists only with the materialize switch on.
          "storage/off": PERSISTED_VIEW_OFF,
          "colocated/off": PERSISTED_VIEW_OFF,
-         "storage/on": PERSISTED_VIEW_ANNOTATIONS,
-         "storage/cutover": PERSISTED_VIEW_ANNOTATIONS,
       },
       queries: [
          {
