@@ -81,8 +81,8 @@ import { SourceMap } from "../plan/source_map";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
 import type { ServeBinding } from "./materialization_serve_transform";
 import type { MaterializedTableCatalog } from "./query_path";
+import { fieldNotes } from "../field_notes";
 import {
-   fieldNotes,
    TIMEFRAMES,
    timeframeRestatements,
    typeDeclaration,

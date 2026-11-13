@@ -52,8 +52,11 @@ source: orders is duckdb.sql("""
   # label="Month"
   dimension: m is ts.month
   #(classification) "none"
-  #(doc) "Order revenue"
+  #(doc) "Order revenue, \\"as booked\\" |# not a closer"
   # currency
+  #|
+    # label="Total"
+  |#
   ${preaggregate}
   measure: total is amount.sum()
 }
@@ -65,7 +68,7 @@ type Field = {
    type?: { element_type?: { fields?: Field[] } };
 };
 
-/** Each column's author notes, nested columns as `nest.column`; Malloy's own and `#@` lines left out. */
+/** Each column's author notes, nested columns as `nest.column`; Malloy's own left out, so a leaked `#@` line fails. */
 function notesOf(
    fields: readonly Field[],
    prefix = "",
@@ -74,7 +77,7 @@ function notesOf(
    for (const f of fields) {
       out[`${prefix}${f.name}`] = (f.annotations ?? [])
          .map((a) => a.value.trim())
-         .filter((v) => !v.startsWith("#(malloy)") && !v.startsWith("#@"));
+         .filter((v) => !v.startsWith("#(malloy)"));
       Object.assign(
          out,
          notesOf(f.type?.element_type?.fields ?? [], `${f.name}.`),
@@ -120,8 +123,12 @@ describe("a v1 #@ preaggregate rollup's annotations", () => {
       for (const q of queries) truth.push(await run(pkg, "truth.malloy", q));
       expect(truth[0].notes.total).toEqual([
          '#(classification) "none"',
-         '#(doc) "Order revenue"',
+         '#(doc) "Order revenue, \\"as booked\\" |# not a closer"',
          "# currency",
+         // A multi-line note, held without its closer: written back as held,
+         // it would leave the synthesized rollup's annotation open, and the
+         // rollup would not compile.
+         '#|\n# label="Total"',
       ]);
       expect(truth[2].notes["n.total"]).toContain("# currency");
 

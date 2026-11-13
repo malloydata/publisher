@@ -65,7 +65,7 @@ import {
    type ReaggregateFunction,
 } from "./preaggregation_classifier";
 import { isSpliceableNamespace } from "./preaggregation_namespace";
-import { fieldNotes } from "../serve/served_copy";
+import { fieldNotes, noteSource } from "../field_notes";
 import type { ValidatableSource } from "./preaggregation_validation";
 
 /** The alias the base is imported under, and the last compose() member. */
@@ -427,7 +427,7 @@ function emitRollup(plan: RollupPlan): string {
       .map(
          (m) =>
             // malloy-text: the author's own notes, then the re-aggregate method, a fixed name from RollupPlan (sum, min, max), not a value
-            (m.notes ?? []).map((n) => `    ${n.trimEnd()}\n`).join("") +
+            (m.notes ?? []).map((n) => noteSource(n, "    ")).join("") +
             `    ${identifier(m.name)} is ${identifier(m.partialName)}.${m.reaggregate}()`,
       )
       .join("\n");

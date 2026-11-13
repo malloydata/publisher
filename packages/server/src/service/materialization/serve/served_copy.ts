@@ -35,6 +35,7 @@
  */
 
 import { identifier, nowComparison, stringLiteral } from "../../malloy_text";
+import { noteSource } from "../field_notes";
 import type { MaterializeReadTimeTerm } from "../plan/build_file_generator";
 import {
    duckdbTypeToMalloy,
@@ -372,7 +373,7 @@ export function timeframeRestatements(
    const dims = truncated
       .map(
          (c) =>
-            (c.notes ?? []).map((n) => `    ${n.trimEnd()}\n`).join("") +
+            (c.notes ?? []).map((n) => noteSource(n, "    ")).join("") +
             `    ${identifier(c.name)} is ${identifier(`${c.name}__tf`)}.${timeframeKeyword(c.timeframe)}`,
       )
       .join("\n");
@@ -878,7 +879,7 @@ function pairMeasures(pair: PairReroot): string {
       .join("\n");
    const notes = (m: PairMeasure) =>
       // malloy-text: the author's own notes, as written on the measure
-      (m.notes ?? []).map((n) => `    ${n.trimEnd()}\n`).join("");
+      (m.notes ?? []).map((n) => noteSource(n, "    ")).join("");
    const definitions = (list: readonly PairMeasure[]) =>
       list
          .map(
@@ -1060,7 +1061,7 @@ function timeframeStatements(
          .filter((c) => c.access === access)
          .map(
             (c) =>
-               (c.notes ?? []).map((n) => `    ${n.trimEnd()}\n`).join("") +
+               (c.notes ?? []).map((n) => noteSource(n, "    ")).join("") +
                `    ${identifier(c.name)} is ${timeframeExpression(c)}`,
          )
          .join("\n");
@@ -1149,34 +1150,6 @@ function parseNestedType(
    return { text, rest };
 }
 
-/**
- * The annotation lines on a compiled field, outermost first: what it inherits,
- * then its statement's (block) notes, then its own. Each is the author's text
- * (`#(doc) "…"`), so it can be written again on the field in a `type:`.
- */
-export function fieldNotes(field: unknown): string[] {
-   interface Annotation {
-      inherits?: Annotation;
-      blockNotes?: { text?: unknown }[];
-      notes?: { text?: unknown }[];
-   }
-   const out: string[] = [];
-   const walk = (a: Annotation | undefined, depth: number) => {
-      if (!a || depth > 16) return;
-      walk(a.inherits, depth + 1);
-      for (const n of [...(a.blockNotes ?? []), ...(a.notes ?? [])]) {
-         if (typeof n.text === "string" && !out.includes(n.text)) {
-            out.push(n.text);
-         }
-      }
-   };
-   const f = field as
-      | { annotations?: Annotation; annotation?: Annotation }
-      | undefined;
-   walk(f?.annotations ?? f?.annotation, 0);
-   return out;
-}
-
 /** The emitted `type:` declaration for one re-rooted source. */
 export function typeDeclaration(
    r: Pick<Reroot, "typeName" | "columns" | "inlinedJoins">,
@@ -1200,7 +1173,7 @@ export function typeDeclaration(
          (c) =>
             // A timeframe column's notes go on its redefined field instead.
             (c.timeframe && TIMEFRAMES.has(c.timeframe) ? [] : (c.notes ?? []))
-               .map((note) => `   ${note.trimEnd()}\n`)
+               .map((note) => noteSource(note, "   "))
                .join("") +
             `   ${identifier(c.name)}::${storedTypeText(c.type)}`,
       )

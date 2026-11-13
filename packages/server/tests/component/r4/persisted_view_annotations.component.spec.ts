@@ -4,7 +4,8 @@
 /**
  * R4 for a persisted view's annotations: a `#@ persist` view's answer returns
  * each output column with the annotations live's does (`#(classification)`,
- * `#(doc)`, render tags such as `# currency` and `# label`), colocated and
+ * `#(doc)`, render tags such as `# currency` and `# label`, a multi-line
+ * `#|`…`|#` note), colocated and
  * `storage=`, for a column, a computed dimension, a timeframe, a measure and
  * a nest; and the access record reads the same fields as live.
  */
@@ -47,11 +48,16 @@ source: orders is duckdb.table('orders_raw') include {
   # label="Region tag"
   dimension: region_tag is concat(region, '/', buyer)
   #(classification) "none"
-  # label="Month"
+  #|
+    # label="Month"
+  |#
   dimension: order_month is order_time.month
   #(classification) "none"
   #(doc) "Order revenue"
   # currency
+  #|
+    # description="Net of refunds, \\"as booked\\" |# not a closer"
+  |#
   measure: revenue is amount.sum()
 
   # bar_chart
@@ -177,13 +183,16 @@ describe.each([
                '#(classification) "none"',
                '#(doc) "Order revenue"',
                "# currency",
+               // A multi-line note, held without its closer: written back
+               // as held, it would leave the variant's annotation open.
+               '#|\n# description="Net of refunds, \\"as booked\\" |# not a closer"',
             ],
          ],
          [
             "a timeframe dimension",
             "run: orders -> by_month",
             "order_month",
-            ['#(classification) "none"', '# label="Month"'],
+            ['#(classification) "none"', '#|\n# label="Month"'],
          ],
          [
             "a computed dimension",

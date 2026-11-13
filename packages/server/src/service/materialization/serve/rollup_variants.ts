@@ -160,11 +160,8 @@ import {
 } from "../../gate_classification";
 import { enforcedGatesOf, type EnforcedGates } from "../../access_record";
 import { sameGateSet } from "../../governance/query_governor";
-import {
-   fieldNotes,
-   timeframeRestatements,
-   typeDeclaration,
-} from "./served_copy";
+import { fieldNotes, noteSource } from "../field_notes";
+import { timeframeRestatements, typeDeclaration } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import type { ServeBinding } from "./materialization_serve_transform";
 import type { MaterializedTableCatalog } from "./query_path";
@@ -1593,7 +1590,7 @@ function rollupStatements(plan: RollupVariantPlan, modelDef: unknown): string {
       .map(
          (m) =>
             (notes.get(m.name) ?? [])
-               .map((n) => `    ${n.trimEnd()}\n`)
+               .map((n) => noteSource(n, "    "))
                .join("") +
             `    ${identifier(m.name)} is ${emitMeasureExpr(m.merged)}`,
       )
