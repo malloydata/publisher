@@ -221,6 +221,11 @@ export class SourceMap {
       });
    }
 
+   /** The compiled model this map was built from. */
+   model(): unknown {
+      return this.modelDef;
+   }
+
    /** The node for a declaration. */
    node(sourceID: string): SourceNode | undefined {
       return this.nodesById.get(sourceID);

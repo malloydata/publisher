@@ -61,6 +61,7 @@ import { persistedViewRefusalFinding } from "./persisted_view";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
 import { rollingWindowsOf } from "./rolling_window";
 import { tryCompileRollupCompanion } from "./rollup_compile";
+import { rollupGateEnforcedAtRead } from "./rollup_plan";
 import { rollupRefusalFinding } from "./rollup_plan";
 import { getMaterializeEnabled } from "../../../config";
 import { admitGivenPositions, type DynamicTerm } from "./persist_dynamic_terms";
@@ -1232,18 +1233,24 @@ export function deriveBuildPlan(
             // otherwise treat it as materialized/buildable.
             let storageRefused = false;
             try {
+               // A `#(preaggregate)` rollup over a gated base whose gates
+               // the variant grafts at read (rows 1 and 21) is not refused
+               // for them; a v1 rollup always is.
+               const keepsGate = rollupGateEnforcedAtRead(rollup);
                assertColocatedPersistNotAuthorizeGated(
                   source,
                   source.name,
                   "preaggregate",
                   options?.sourceGateOutcomes?.[sourceID],
                   annotationFields,
+                  { gateEnforcedAtRead: keepsGate },
                );
                if (declaresStorage) {
                   storageRefused = true;
                   assertMaterializationEligible(
                      source,
                      deriveAnnotationFields(source),
+                     { gateEnforcedAtRead: keepsGate },
                   );
                   storageRefused = false;
                }
