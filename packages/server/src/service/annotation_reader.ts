@@ -23,7 +23,7 @@ import {
    type DocumentLocation,
 } from "@malloydata/malloy";
 import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
-import { parseRouteTag } from "./motly";
+import { parseBounded, parseRouteTag } from "./motly";
 
 /** Malloy's routing for one note: its route, `""` for a MOTLY tag, `undefined` when the prefix is malformed. */
 export function routeOfNote(text: string): string | undefined {
@@ -96,6 +96,100 @@ export function payloadsOnRoute(
       if (note?.route === route) out.push(note.payload);
    }
    return out;
+}
+
+/**
+ * The top-level keys a `tag` payload declares, folded to lower case, in the
+ * order written. Read by Malloy's tag parser, so quoting, nesting and
+ * deletion (`-key`) mean what they mean to every MOTLY reader. Only key names
+ * leave, so an `@env.` value is never hydrated into a result. A payload that
+ * does not parse is read word by word, so one broken property cannot hide a
+ * sibling's key.
+ */
+export function tagPayloadKeys(payload: string): string[] {
+   const declared = (text: string): string[] | undefined => {
+      const { tag, messages } = parseBounded([`# ${text}`]);
+      if (!tag || messages.length > 0) return undefined;
+      return [...tag.entries()]
+         .filter(([key]) => tag.has(key))
+         .map(([key]) => key.toLowerCase());
+   };
+   const keys =
+      declared(payload) ??
+      payload
+         .split(/[ \t\r\n]+/)
+         .filter(Boolean)
+         .flatMap((word) => declared(word) ?? []);
+   return [...new Set(keys)];
+}
+
+/**
+ * An `#(index)` / `#(index_values)` tagline: `#(` (or `# (`) and the word, at
+ * the object level. Parenthesis-only, and a block note (`#|(index)`) is not
+ * one: see `hasIndexTag` in `dim_index_discovery.ts` for why widening it is a
+ * change of its own.
+ */
+const INDEX_NOTE = /^#\s*\(\s*index(?:_values)?\b/;
+/** A tagline Malloy does not route to `index`: the bracket's body and what follows it. */
+const INDEX_NOTE_PARTS = /^#\s*\(\s*index(?:_values)?\b([^)]*)\)(.*)$/;
+
+/** Whether a tagline opts its field into the dimension index. */
+export function isIndexNote(text: string): boolean {
+   return INDEX_NOTE.test(text);
+}
+
+/**
+ * An index tagline's payload, or `undefined` when `text` is none. Malloy's
+ * own payload when it routes the note (`#(index) n=200`); otherwise the
+ * shapes authors write that Malloy calls malformed or reads as a MOTLY tag,
+ * which have always been read: the payload inside the parens
+ * (`#( index_values n=200 )`), glued to them (`#(index)n=200`), or after a
+ * spaced prefix (`# (index) n=200`). An unclosed paren is no payload.
+ */
+export function indexNotePayload(text: string): string | undefined {
+   const trimmed = text.trim();
+   if (!isIndexNote(trimmed)) return undefined;
+   const route = routeOfNote(trimmed);
+   if (route === "index" || route === "index_values") {
+      return payloadOfNote(trimmed);
+   }
+   const parts = INDEX_NOTE_PARTS.exec(trimmed);
+   if (!parts) return undefined;
+   return [parts[1], parts[2]]
+      .map((part) => (part ?? "").trim())
+      .filter(Boolean)
+      .join(" ");
+}
+
+/** The mark that keeps a source out of agent retrieval. Deprecated, still read. */
+export const AGENT_HIDDEN_ROUTE = "agent-hidden";
+
+/**
+ * Every spelling of the mark that hides, past Malloy's own route: a malformed
+ * prefix (`#( agent-hidden )`, `#agent-hidden`, `#(agent-hidden)x`) and a
+ * MOTLY tag naming it (`# agent-hidden`, `# (agent-hidden)`). Read wide on
+ * purpose: a missed mark exposes a source the author meant to withhold, and
+ * the hosted service reads the plan's verdict.
+ */
+const AGENT_HIDDEN_MARK = /^#\|?\s*[([{<]?\s*agent-hidden\b/;
+
+/**
+ * Whether a note marks agent-hidden at `level`: `#(agent-hidden)` on a
+ * source, `##(agent-hidden)` on a model file. Every bracket pair Malloy
+ * routes and a block note (`#|(agent-hidden) … |#`) count, as do the
+ * near-miss spellings {@link AGENT_HIDDEN_MARK} lists.
+ */
+export function marksAgentHidden(
+   text: string,
+   level: "source" | "file",
+): boolean {
+   if (!text.startsWith("#")) return false;
+   const fileLevel = text.startsWith("##");
+   if (fileLevel !== (level === "file")) return false;
+   const note = fileLevel ? text.slice(1) : text;
+   return (
+      routeOfNote(note) === AGENT_HIDDEN_ROUTE || AGENT_HIDDEN_MARK.test(note)
+   );
 }
 
 /** A sorted set, in codepoint order, so two servers on identical bytes agree. */
@@ -204,7 +298,15 @@ export const PUBLISHER_ROUTES: Readonly<Record<string, RouteSpec>> = {
    classification: { payload: "list" },
    carries: { payload: "list" },
    secure: { payload: "none" },
-   index: { payload: "tag" },
+   index: {
+      payload: "tag",
+      // Package-level knobs a dimension may not set: refused at load
+      // (`findForbiddenIndexPolicyKeys`). The route's other keys are open.
+      retiredKeys: {
+         sharing: "set materialization.scope in publisher.json",
+         schedule: "set materialization.schedule in publisher.json",
+      },
+   },
    dbmeta: { payload: "tag" },
    doc: { payload: "prose" },
    markdown: { payload: "prose" },

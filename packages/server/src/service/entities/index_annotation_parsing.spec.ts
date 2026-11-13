@@ -95,13 +95,18 @@ describe("findForbiddenIndexPolicyKeys: accepted shapes", () => {
    });
 });
 
-// Payload edges a whitespace split and a tag parser read differently.
+// Payload edges a whitespace split and a tag parser read differently. The
+// payload is read as a tag, the way every MOTLY reader reads it: a bare
+// `sharing` or a spaced `sharing = x` declares the key (a whitespace split did
+// not), and a quoted `"sharing=x"` or a nested `foo { sharing=x }` declares no
+// top-level key (a whitespace split saw one), nor does a key deleted again.
 describe("findForbiddenIndexPolicyKeys: payload edges", () => {
    const cases: Array<[string, string[]]> = [
-      ["#(index) sharing", []],
-      ["#(index) sharing = x", []],
-      ['#(index) "sharing=x"', ["sharing"]],
-      ["#(index) foo { sharing=x }", ["sharing"]],
+      ["#(index) sharing", ["sharing"]],
+      ["#(index) sharing = x", ["sharing"]],
+      ['#(index) "sharing=x"', []],
+      ["#(index) foo { sharing=x }", []],
+      ["#(index) sharing=x -sharing", []],
    ];
    for (const [tagline, expected] of cases) {
       test(tagline, () => {
