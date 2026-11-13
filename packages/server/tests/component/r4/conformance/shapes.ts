@@ -1124,31 +1124,18 @@ source: summary_kept is summary extend {
       },
       queries: [
          {
-            // v1 honours the opt-out through 0.x; v2 ignores it (plan, question 5).
+            // Malloy core's opt-out, honoured in v1 and v2 alike (plan,
+            // question 5, decided 2026-11-12): the reader recomputes live.
             name: "the opted-out reader",
             malloy:
                "run: summary_fresh -> { group_by: region; aggregate: grand }",
-            expect: { storage: "live", colocated: "live" },
-            gaps: {
-               "materialize/on": {
-                  kind: "live",
-                  reason:
-                     "v2 ignores #@ -persist (plan, question 5); the served copy still declines it",
-               },
-            },
+            expect: "live",
          },
          {
             name: "a reader built on the opted-out one",
             malloy:
                "run: summary_fresh_rollup -> { group_by: region; aggregate: t is g.sum() }",
-            expect: { storage: "live", colocated: "live" },
-            gaps: {
-               "materialize/on": {
-                  kind: "live",
-                  reason:
-                     "v2 ignores #@ -persist (plan, question 5); the served copy still declines it",
-               },
-            },
+            expect: "live",
          },
          {
             name: "a sibling that does not opt out",
