@@ -558,6 +558,15 @@ async function copyDeclaredBuilds(
 }
 
 /**
+ * The field of the build copy's source a hidden column is read through: an
+ * inlined join's column through its join (the join is what is hidden, and
+ * what the lift must make readable), any other through its own dimension.
+ */
+function liftedName(c: { dimension: string; join?: string }): string {
+   return c.join ?? c.dimension;
+}
+
+/**
  * Give each plan that needs one a build copy of the author's model, whose
  * text is read back here: a plan with given-reading terms (P2), which the
  * copy takes out; an extension table that builds over its parent's build
@@ -693,13 +702,13 @@ async function withBuildCopies(
                   .filter((f) => hiddenAccess(f) === undefined)
                   .map((f) => String(f.as ?? f.name)),
             );
-            if (hidden.some((c) => selectable.has(c.dimension))) {
+            if (hidden.some((c) => selectable.has(liftedName(c)))) {
                lifted = selectable;
             }
          }
       }
       const columns = original.columns.filter(
-         (c) => c.access === undefined || lifted?.has(c.dimension),
+         (c) => c.access === undefined || lifted?.has(liftedName(c)),
       );
       let plan: MaterializePlan =
          columns.length === original.columns.length
