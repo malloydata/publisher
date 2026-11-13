@@ -27,6 +27,18 @@
  *    are collected (db-duckdb's note in `detachInstance`), so the cap in (1)
  *    is what keeps the run alive.
  *
+ *    Closing waits for every `init()` still in flight. A connection starts
+ *    `init()` in its constructor, and nothing awaits it until the first query,
+ *    so a spec that stubs `runSQL` closes connections whose `DuckDBInstance`
+ *    is still being created or connected to. db-duckdb's `close()` does not
+ *    wait for it either, so the instance lands in `activeDBs` after the close.
+ *    Closing that instance while a `connect()` on it is running natively frees
+ *    the database under the connect: Bun segfaults (SIGSEGV, SIGILL after
+ *    Bun's panic, exit 3 on Windows), at a random point after the spec. That
+ *    took down the unit suite on all three CI platforms, right after
+ *    extension_fetch_policy.spec.ts, which stubs `runSQL` and reopens one
+ *    directory test after test.
+ *
  * Production never loads this.
  */
 
@@ -58,6 +70,8 @@ proto.buildInstanceOptions = function (
 
 /** The directory each open instance belongs to: its file's, or its root. */
 const directoryOf = new WeakMap<ActiveDB, string>();
+/** Every `init()` that has not settled: each may be creating or connecting. */
+const pendingInits = new Set<Promise<void>>();
 const init = proto.init;
 proto.init = function (this: Internals): Promise<void> {
    const { databasePath, workingDirectory } = this.normalized ?? {};
@@ -67,15 +81,20 @@ proto.init = function (this: Internals): Promise<void> {
       path.isAbsolute(databasePath)
          ? path.dirname(databasePath)
          : workingDirectory;
-   return init.call(this).then(() => {
+   const pending = init.call(this).then(() => {
       const activeDB = DuckDBConnection.activeDBs[this.shareKey];
       if (activeDB && directory && !directoryOf.has(activeDB)) {
          directoryOf.set(activeDB, directory);
       }
    });
+   const settled = () => pendingInits.delete(pending);
+   pendingInits.add(pending);
+   pending.then(settled, settled);
+   return pending;
 };
 
-afterEach(() => {
+afterEach(async () => {
+   while (pendingInits.size > 0) await Promise.allSettled([...pendingInits]);
    for (const [key, activeDB] of Object.entries(DuckDBConnection.activeDBs)) {
       const directory = directoryOf.get(activeDB);
       if (!directory || fs.existsSync(directory)) continue;
