@@ -103,6 +103,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy": {

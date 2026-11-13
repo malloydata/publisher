@@ -205,6 +205,7 @@ export async function compilePackageBuildPlan(
       ...(Object.keys(storedKeyChecks).length > 0 ? { storedKeyChecks } : {}),
       materializePlans: parts.materializePlans,
       sourceGateOutcomes: parts.sourceGateOutcomes,
+      omittedSources: parts.omittedSources,
    });
 }
 

@@ -40,6 +40,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "split_daily@<pkg>/m.malloy": {

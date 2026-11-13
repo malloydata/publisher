@@ -42,6 +42,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {
       "orders@<hammer>/pws/pws.malloy": {
         "message": "Source 'orders' cannot be materialized (colocated '#@ persist'): 'partition=' is declared without 'storage='. A colocated '#@ persist' writes into the source's own warehouse, where the table layout is that warehouse's own DDL — the publisher does not lay it out. Add 'storage=' to build into a storage destination, or drop 'partition='.",

@@ -98,6 +98,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "orders__rollup__category_qty__3eb75032@<hammer>/pv/pv.malloy.preaggregate.malloy": {

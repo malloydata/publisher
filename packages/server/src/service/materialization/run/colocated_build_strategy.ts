@@ -3,6 +3,7 @@
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
+import { errorCodeOf } from "./error_code";
 import { errMessage } from "../../../utils";
 import { quoteRenameTarget, quoteTablePath } from "../../quoting";
 import { storedColumnsOfOutput } from "../stored_column_types";
@@ -397,7 +398,9 @@ async function swapInTransaction({
                   physicalTableName,
                   connectionName,
                   error: errMessage(rollbackErr),
-                  cause: errMessage(err),
+                  // The swap's error can quote its SQL; it reaches the run's
+                  // record.
+                  causeCode: errorCodeOf(err),
                });
             }
          }

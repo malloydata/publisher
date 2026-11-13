@@ -548,8 +548,7 @@ export interface RollupPlanContext {
    readUnderGates?: boolean;
    /**
     * Whether v1 `#@ preaggregate` lines are read as `#(preaggregate)`
-    * declarations (the v1 cutover's G4). Absent: under
-    * `PUBLISHER_V1_SERVED_COPY=on`.
+    * declarations (the v1 cutover's G4). Absent: they are.
     */
    readsV1?: boolean;
    /**

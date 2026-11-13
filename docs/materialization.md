@@ -659,6 +659,32 @@ An orchestrated build works the same way, but the host, not the publisher, decid
 
 Each manifest entry reports the coverage its source reached on a `ledger` object, whose `coveredThrough` (with its `coveredThroughType`) makes progress something you read rather than infer: a value that advanced between runs is a delta that applied. A skipped source reports the boundary that stays in force, and a seeded one reports the boundary probed from the table it just wrote, so it means the same thing whatever the step did. The boundary is reported only there, alongside the watermark and source address it was measured under, because the value alone is not comparable across runs — see [Supplying the ledger yourself](#supplying-the-ledger-yourself), which is the same object you send back if you hold the ledger. Alongside it, `refresh` says what the run actually DID to the table — `delta` (advanced in place), `full` (rebuilt), or `none` (nothing to apply, the boundary stands) — because nothing else on the entry distinguishes them: every fallback above answers success and rebuilds, so a source quietly rebuilding on every run looks exactly like one advancing. It is present exactly when a source is refreshed incrementally, so its absence means only that this one is not.
 
+### Retiring tables the plan no longer lists
+
+A host that retires a table when its source leaves a version's build plan (a v1 rollup renamed by the `PUBLISHER_V1_SERVED_COPY` cutover, or renamed back by a rollback, moves its `sourceEntityId` with no change to the package) needs to know the plan it is reading is complete. A source absent from `sources` and `refusedSources` has left the plan only when the plan's `omittedSources` and `omittedFiles` are both empty.
+
+`omittedSources` lists, sorted by `sourceID`, each source the plan would have held but left out because planning it **failed**: `{ "sourceID": "<name>@<model URL>", "reason": "<code>" }`. A source the plan decides not to build is refused or warned on instead and is never listed here, and an entry never names a sourceID that is in `sources`. Every entry is a real sourceID; there is no wildcard, because a source may be named anything, `*` included.
+
+`omittedFiles` lists, sorted by `file`, each file whose sources the plan could not name, because the planner that would have named them failed first: `{ "file": "<file URL>", "reason": "<code>" }`. `file` is the URL the file's sourceIDs carry after their `@`: a generated companion's own URL (`<model>.preagg.malloy`, `<model>.preaggregate.malloy`, `<model>.persist-view.malloy`), or, for `#(materialize)`, the author's model file, whose sources the generated ones are presented as. Treat an omitted file as "retire nothing declared in it": any source whose sourceID ends `@<file>` may have been lost.
+
+In both lists `reason` is a code, never the failure's message (which could quote SQL or a value; the message is logged at the Publisher with the model it was planned from), and the set of codes is open, so read an unknown one as a failure:
+
+| `reason` | What failed |
+| --- | --- |
+| `unkeyable` | Malloy could not key the source's build (an unbound parameter, a given with no value) and no eligibility gate refused it first. |
+| `eligibility_check_failed` | An eligibility gate failed with an error rather than a refusal. |
+| `projection_failed` | The source's plan entry could not otherwise be computed. |
+| `rollup_companion_failed` | The rollup companion (`<model>.preaggregate.malloy`: `#(preaggregate)`, and v1 `#@ preaggregate`) did not plan or compile. |
+| `rollup_companion_blanking_failed` | That companion was not built because a `#@` line of the author's files could not be set aside. |
+| `materialize_companion_failed` | The generated `#(materialize)` companion did not plan or compile. |
+| `persisted_view_companion_failed` | The persisted-view companion did not plan or compile. |
+| `v1_build_companion_failed` | The build copy of a model file without `##! experimental.persistence` could not be read or did not compile, so none of its `#@ persist` sources were planned. |
+| `persist_annotation_unparseable` | None of the source's `#@` lines parse, so Malloy planned nothing for it. The package warning (`persist-unparseable`) names the line; this entry names the source. |
+
+So: retire an anchor whose source is absent from `sources` and `refusedSources` only when no `omittedSources` entry names the source and no `omittedFiles` entry names the file it is declared in. A plan from a Publisher that predates the fields carries neither; read their absence as "completeness unknown", not as empty. Both fields are on every surface that returns a build plan, `[]` when nothing was lost: `GET …/packages/{pkg}/build-plan`, the dry run (`POST …/packages?dryRun=true`) and the deprecated `Package.buildPlan`. A plan that could not be derived at all (a model that does not compile, an import cycle) still answers 409 `BUILD_PLAN_UNAVAILABLE` rather than a partial plan.
+
+**A mixed fleet mid-rollout** (some workers with `PUBLISHER_V1_SERVED_COPY=on`, some off) is safe to bind one manifest to: each worker matches a manifest entry only against its own plan, by `sourceEntityId` (and, for a `storage=` entry with no matching id, by a source name its plan holds exactly once, which the two sides' `__preagg__` and `__rollup__` names never share). An entry built on the other side matches nothing and is ignored, so its source answers live until this side builds its own table: it costs a rebuild, never an answer from the other side's table.
+
 ### Supplying the ledger yourself
 
 The boundary lives in the publisher's own store, which is per-process. If you dispatch a package's refreshes across several interchangeable workers, that store is on ONE of them: a refresh landing anywhere else finds no boundary and re-seeds. With N workers picked without affinity, roughly one refresh in N is a full rebuild of a source whose whole purpose is avoiding them, and it lands on the live serving name.
