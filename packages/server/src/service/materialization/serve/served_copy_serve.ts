@@ -1025,7 +1025,13 @@ export class ServedCopyServe {
          }
          inlinedJoins = joined;
       } else {
-         const narrowed = narrowSchemaToPublic(binding.schema, def.fields);
+         // A v1 `storage=` table holds public columns only. A v1 colocated
+         // one holds what Malloy built, hidden columns too (G2): each is
+         // kept with its access modifier, written again on the stored table
+         // (P3), so a measure over it compiles and the column stays hidden.
+         const narrowed = binding.colocated
+            ? storedColumnsWithAccess(binding.schema, def.fields)
+            : narrowSchemaToPublic(binding.schema, def.fields);
          if (
             storedColumnTypeMismatches(narrowed, declaredColumnsOf(def.fields))
                .length > 0
@@ -2365,4 +2371,46 @@ function readsJoinStar(
          tokens[i + 1]?.text === "." &&
          tokens[i + 2]?.text === "*",
    );
+}
+
+/**
+ * A v1 colocated table's columns as its source's fields (G2): every stored
+ * column matched to the author's field of its name (exactly, else one field
+ * whose name folds to it, as {@link narrowSchemaToPublic} matches), with the
+ * field's access modifier when it is `internal` or `private`. Malloy built
+ * the table from the source's own query, hidden columns included, so a column
+ * no field names is left out (the served copy finds it missing).
+ */
+export function storedColumnsWithAccess(
+   schema: readonly { name: string; type: string }[],
+   fields: readonly unknown[] | undefined,
+): { name: string; type: string; access?: "private" | "internal" }[] {
+   const byName = new Map<string, { accessModifier?: unknown }>();
+   const byFold = new Map<string, string[]>();
+   for (const f of fields ?? []) {
+      const name = (f as { name?: unknown }).name;
+      if (typeof name !== "string") continue;
+      byName.set(name, f as { accessModifier?: unknown });
+      const folded = name.toLowerCase();
+      byFold.set(folded, [...(byFold.get(folded) ?? []), name]);
+   }
+   const out: {
+      name: string;
+      type: string;
+      access?: "private" | "internal";
+   }[] = [];
+   const emitted = new Set<string>();
+   for (const c of schema) {
+      const fold = byFold.get(c.name.toLowerCase());
+      const name = byName.has(c.name)
+         ? c.name
+         : fold?.length === 1
+           ? fold[0]
+           : undefined;
+      if (name === undefined || emitted.has(name)) continue;
+      emitted.add(name);
+      const access = hiddenAccess(byName.get(name)!);
+      out.push({ name, type: c.type, ...(access ? { access } : {}) });
+   }
+   return out;
 }

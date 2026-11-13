@@ -851,13 +851,6 @@ source: orders_j is orders_raw extend {
       name: "joined persisted source with hidden fields, from an index",
       issue: "#1666",
       about: "A persisted dimension source with an internal column, and measures over it (one private), held by the index only as a join of a persisted fact in another file (P3 with #6643's shape)",
-      gaps: {
-         "colocated/cutover": {
-            kind: "live",
-            reason:
-               "G2: the served copy binds a v1 table with its public columns only, right for storage= and wrong for a colocated table Malloy built with its internal column, so the copy does not compile and both sources answer live",
-         },
-      },
       files: {
          "index.malloy": `import "facts.malloy"
 export { order_facts }
