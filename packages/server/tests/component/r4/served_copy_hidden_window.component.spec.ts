@@ -27,6 +27,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
+   PackageMaterialization,
+   type PackageMaterializationOwner,
+} from "../../../src/service/materialization/package_materialization";
+import {
    buildScenario,
    disposeScenarios,
    rowDifference,
@@ -346,4 +350,100 @@ describe("R4: a rolling window over a hidden dimension, served at a pinned clock
          await expectParity(fixture, malloy, true);
       });
    }
+});
+
+/**
+ * Containment's first step for a source that inlines a join_one keeps that
+ * join as written, and reports it (`inline_join_kept`) once the copy
+ * compiles. A later pass that keeps every other source's inlined joins as
+ * written (a failure outside every re-root) must not drop that report: the
+ * source still reads its join as written, and the cross-connection warning
+ * on that join sends the reader to it.
+ */
+describe("R4: containment's kept inlined join is reported beside a model-wide one", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `##! experimental { access_modifiers }
+source: carriers is duckdb.table('carriers') extend {
+  primary_key: code
+  measure: cc is count()
+}
+
+// Its own text reads the joined source's measure, which the record does not
+// carry: traced to this re-root, which keeps its join as written.
+#(materialize) storage="lake" inline=["carriers"]
+source: xsrc is duckdb.table('flights') extend {
+  primary_key: id
+  join_one: carriers with carrier
+  measure: n is count(), cm is carriers.cc
+}
+
+#(materialize) storage="lake" inline=["carriers"]
+source: ysrc is duckdb.table('flights') extend {
+  primary_key: id
+  join_one: carriers with carrier
+  measure: n is count()
+}
+
+// Author text outside every re-root reads ysrc's joined measure: traced to
+// no re-root, so every inlined join still re-rooted is kept as written.
+source: yext is ysrc extend { measure: q is carriers.cc }
+`,
+         },
+         seedSql: [
+            `CREATE TABLE carriers AS SELECT * FROM (VALUES
+               ('AA', 'American'), ('UA', 'United')) AS t(code, nickname)`,
+            `CREATE TABLE flights AS SELECT * FROM (VALUES
+               (1, 'AA', 100.0), (2, 'UA', 250.0), (3, 'AA', 75.0)
+             ) AS t(id, carrier, distance)`,
+         ],
+         materialize: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("reports each source's kept join", async () => {
+      const kept = (await fixture.servedCopyProblems())
+         .filter((p) => p.reason === "inline_join_kept")
+         .map((p) => [p.sourceName, p.join])
+         .sort();
+      expect(kept).toEqual([
+         ["xsrc", "carriers"],
+         ["ysrc", "carriers"],
+      ]);
+   });
+
+   it("never names the served copy's storage alias in a package warning", async () => {
+      await fixture.servedCopyProblems();
+      const warnings = new PackageMaterialization({
+         models: () => new Map([["m.malloy", fixture.model]]),
+      } as unknown as PackageMaterializationOwner).servedCopyWarnings();
+      // The kept joins' warnings quote the compiler's reasons; the one that
+      // refused a join across connections names the alias it is reached by.
+      expect(
+         warnings.filter((w) => w.message?.includes("inlines its join")),
+      ).toHaveLength(2);
+      for (const w of warnings) {
+         expect(w.message ?? "").not.toMatch(/__publisher_storage_/);
+      }
+   });
+
+   it("answers both, equal to live", async () => {
+      for (const malloy of [
+         "run: xsrc -> { aggregate: n, cm }",
+         "run: ysrc -> { aggregate: n }",
+      ]) {
+         const run = await fixture.run({ name: malloy, malloy });
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+      }
+   });
 });

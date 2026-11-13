@@ -1341,14 +1341,29 @@ export class ServedCopyServe {
             if (!candidates.some((c) => c.reroot.inlinedJoins)) return false;
             const detail =
                error instanceof Error ? error.message : String(error);
-            inlinedKept = candidates.flatMap((c) =>
-               (c.reroot.inlinedJoins ?? []).map((j) => ({
-                  sourceName: c.reroot.sourceName,
-                  reason: "inline_join_kept" as const,
-                  join: j.join,
-                  detail,
-               })),
+            // Added to, not replaced: a join containment already kept as
+            // written for its own source (see `contain`) stays reported.
+            const reported = new Set(
+               inlinedKept.map((p) => `${p.sourceName}\u0000${p.join}`),
             );
+            inlinedKept = [
+               ...inlinedKept,
+               ...candidates.flatMap((c) =>
+                  (c.reroot.inlinedJoins ?? [])
+                     .filter(
+                        (j) =>
+                           !reported.has(
+                              `${c.reroot.sourceName}\u0000${j.join}`,
+                           ),
+                     )
+                     .map((j) => ({
+                        sourceName: c.reroot.sourceName,
+                        reason: "inline_join_kept" as const,
+                        join: j.join,
+                        detail,
+                     })),
+               ),
+            ];
             candidates = candidates.map((c) => {
                if (!c.reroot.inlinedJoins) return c;
                const { inlinedJoins: _kept, ...reroot } = c.reroot;

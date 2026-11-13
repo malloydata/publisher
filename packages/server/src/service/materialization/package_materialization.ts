@@ -72,6 +72,7 @@ import {
    type ServedCopyProblem,
 } from "./serve/served_copy_serve";
 import { deriveColocatedServeBindings } from "./serve/colocated_bindings";
+import { namesServedCopyAlias } from "./serve/served_copy_config";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import {
    computeServeVerdicts,
@@ -2181,12 +2182,14 @@ function withoutChangedConnections(
 /**
  * The compiler's own reasons in a compile error, as `: <reason>; <reason>.`:
  * each diagnostic's message without its file and source excerpt, so a package
- * warning names why without the server's paths. `.` when there are none.
+ * warning names why without the server's paths. A reason that names a
+ * served-copy alias (a join refused across connections) is left out: the
+ * alias stays in the server log. `.` when there are none.
  */
 function compilerReasons(detail: string | undefined): string {
-   const reasons = [...(detail ?? "").matchAll(/^line \d+: (.+)$/gm)].map((m) =>
-      m[1].trim(),
-   );
+   const reasons = [...(detail ?? "").matchAll(/^line \d+: (.+)$/gm)]
+      .map((m) => m[1].trim())
+      .filter((reason) => !namesServedCopyAlias(reason));
    return reasons.length > 0 ? `: ${reasons.join("; ")}.` : ".";
 }
 
