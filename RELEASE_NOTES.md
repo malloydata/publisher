@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — In development: a `#(materialize)` source over a table-backed base scoped by a given builds through a rename, its own `where:` or a join
+
+Behind `PUBLISHER_MATERIALIZE` (off by default). Over a base that reads a table (`duckdb.table('orders')`) and keeps one tenant's rows, a `#(materialize)` extension reached through a rename (`source: b2 is base`), or one that adds its own `where:` or join (or sits below a source that does), was refused (`materialize-not-built`) and answered live, though the same shapes built over a SQL base. Now each is built with every caller's rows and served per caller from its table, as over a SQL base. No API change. See docs/materialization.md, "A base scoped by a given".
+
 ## [Unreleased] — Persisted tables are named for their package, so packages sharing a schema no longer serve each other's rows
 
 Auto-run (Publisher's own builds) used to name a persisted table after its source, or its `name=`. Two packages, or two environments, whose models point at the same warehouse schema or storage destination and persist a source of the same name wrote the **same** table: each build overwrote the other's rows, and every package served whichever built last. Nothing reported it: wrong answers, and possibly one tenant's rows served to another.

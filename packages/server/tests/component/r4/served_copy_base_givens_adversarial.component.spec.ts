@@ -45,6 +45,9 @@ const seedSql = [
       ('globex', 'tin', 'G-tin'),
       ('initech', 'gold', 'I-gold')
     ) AS t(org, tier, label)`,
+   `CREATE TABLE labels AS SELECT * FROM (VALUES
+      ('acme', 'A'), ('globex', 'G'), ('initech', 'I')
+    ) AS t(org, letter)`,
 ];
 
 const HEAD = `##! experimental { givens access_modifiers }
@@ -63,11 +66,13 @@ source: far_base is duckdb.sql("select * from ev") extend {
 const modelOver = (
    ev: string,
    tiers: string,
+   labels: string,
 ) => `##! experimental { givens access_modifiers }
 import "other.malloy"
 
 source: ev is ${ev}
 source: tiers is ${tiers}
+source: labels is ${labels}
 
 source: base is ev extend {
   where: org = $ORG
@@ -167,6 +172,22 @@ source: three_terms is mid extend {
   measure: total is amt.sum()
 }
 
+// A middle source's own join, and the source's own join, over the scoped
+// base; and a rename of a middle source with its own term.
+source: with_join is base extend {
+  join_one: l is labels on l.org = org
+}
+#(materialize) storage="lake" inline=["l"]
+source: own_join is with_join extend { measure: total is amt.sum() }
+#(materialize) storage="lake" inline=["l"]
+source: own_join_direct is b2 extend {
+  join_one: l is labels on l.org = org
+  measure: total is amt.sum()
+}
+source: mid_r is mid
+#(materialize) storage="lake"
+source: rename_where is mid_r extend { measure: total is amt.sum() }
+
 // A rolling window of the source's own over the scoped base.
 #(materialize) storage="lake"
 source: rolling is base extend {
@@ -232,27 +253,39 @@ async function asEachCaller(
 
 // Over a table and over a SQL source: Malloy records an extension's base
 // differently for each, and the kept walk reads both.
-// What each shape builds. Over a table, Malloy records no base edge for an
-// extension, and the walk infers it only while the extension adds no
-// `where:` or join and is not a rename (`b2 is base`), so those are refused
-// and served live there, fail closed.
-const BUILT_EVERYWHERE = ["hidden", "mixed", "plain", "two_blocks"];
-for (const [shape, ev, tiers, expectedBuilt] of [
-   ["table", "duckdb.table('ev')", "duckdb.table('tiers')", BUILT_EVERYWHERE],
+// Each shape builds the same: over a table, Malloy records no base edge for
+// an extension, and the walk infers it, through a rename (`b2 is base`) and
+// past an extension's own `where:` or join, as it reads the SQL source's.
+const BUILT = [
+   "hidden",
+   "mixed",
+   "own_join",
+   "own_join_direct",
+   "plain",
+   "rename_chain",
+   "rename_where",
+   "renamed_ext",
+   "rolling",
+   "three_terms",
+   "two_blocks",
+];
+for (const [shape, ev, tiers, labels, expectedBuilt] of [
+   [
+      "table",
+      "duckdb.table('ev')",
+      "duckdb.table('tiers')",
+      "duckdb.table('labels')",
+      BUILT,
+   ],
    [
       "sql",
       'duckdb.sql("select * from ev")',
       'duckdb.sql("select * from tiers")',
-      [
-         ...BUILT_EVERYWHERE,
-         "rename_chain",
-         "renamed_ext",
-         "rolling",
-         "three_terms",
-      ],
+      'duckdb.sql("select * from labels")',
+      BUILT,
    ],
 ] as const) {
-   const model = modelOver(ev, tiers);
+   const model = modelOver(ev, tiers, labels);
    describe(`R4 adversarial: a base scoped by a given, with a defaulted given (over a ${shape})`, () => {
       let restore: () => void;
       let fixture: R4Fixture;
@@ -374,6 +407,21 @@ for (const [shape, ev, tiers, expectedBuilt] of [
          [
             "rolling",
             "run: rolling -> { group_by: org; aggregate: total }",
+            true,
+         ],
+         [
+            "own_join",
+            "run: own_join -> { group_by: org, l.letter, mine; aggregate: total }",
+            true,
+         ],
+         [
+            "own_join_direct",
+            "run: own_join_direct -> { group_by: org, l.letter, tag; aggregate: total, mine_total }",
+            true,
+         ],
+         [
+            "rename_where",
+            "run: rename_where -> { group_by: org, tier, mine; aggregate: total }",
             true,
          ],
          [
