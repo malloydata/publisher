@@ -210,6 +210,18 @@ export interface PairReroot {
     * served source reads, and the other blocks' records.
     */
    block?: PairBlockReroot;
+   /**
+    * The join_many's access modifier on the author's source, when it is not
+    * public (known limitation 24), read off the author's compiled source. The
+    * record is declared under it in place of the join_many statement, and
+    * the stored columns it reads (every level of a path) are renamed
+    * `private` in that same block, the only one that reads them, so a caller
+    * reads `<join>.<field>` exactly where live lets it (an `internal` join
+    * through a caller's own `extend`, a `private` one never) and the stored
+    * columns never, while the author's own fields, measures, views and gates
+    * over the join still read it.
+    */
+   access?: "private" | "internal";
 }
 
 /** The stored fields of one join past the first of an inlined path. */
@@ -233,6 +245,8 @@ export interface PairBlockReroot {
       join: string;
       childColumns: readonly (JoinedColumn & { internalName: string })[];
       hops?: readonly PairHopColumns[];
+      /** As {@link PairReroot.access}, for that block's join_many. */
+      access?: "private" | "internal";
    }[];
 }
 
@@ -590,11 +604,13 @@ function accessInclude(
  * hidden stored column, or a hidden inlined join's record.
  */
 function hasHiddenColumns(
-   r: Pick<Reroot, "columns" | "inlinedJoins">,
+   r: Pick<Reroot, "columns" | "inlinedJoins" | "pair">,
 ): boolean {
    return (
       r.columns.some((c) => c.access !== undefined) ||
-      (r.inlinedJoins ?? []).some((j) => j.access !== undefined)
+      (r.inlinedJoins ?? []).some((j) => j.access !== undefined) ||
+      r.pair?.access !== undefined ||
+      (r.pair?.block?.others ?? []).some((o) => o.access !== undefined)
    );
 }
 
@@ -692,17 +708,21 @@ export function rerootDeclaration(
    }
    let pairHead = "";
    if (r.pair) {
+      // A hidden join_many's statement is replaced from its access label
+      // on, since its record is declared under the join's compiled modifier.
       let replaced: string | undefined = replacePairJoin(
          extend,
          r.pair.join,
-         pairRecord(r.pair.join, r.pair.childColumns, r.pair.hops),
+         pairRecord(r.pair),
+         r.pair.access !== undefined,
       );
       for (const other of r.pair.block?.others ?? []) {
          if (replaced === undefined) break;
          replaced = replacePairJoin(
             replaced,
             other.join,
-            pairRecord(other.join, other.childColumns, other.hops),
+            pairRecord(other),
+            other.access !== undefined,
          );
       }
       if (replaced === undefined) return undefined;
@@ -801,9 +821,10 @@ function pairStoredColumns(
               },
            ]
          : []),
-      ...joined(pair.childColumns, pair.hops),
+      // A hidden join's stored columns are renamed in its record's block.
+      ...(pair.access ? [] : joined(pair.childColumns, pair.hops)),
       ...(pair.block?.others ?? []).flatMap((o) =>
-         joined(o.childColumns, o.hops),
+         o.access ? [] : joined(o.childColumns, o.hops),
       ),
    ];
 }
@@ -830,13 +851,18 @@ function pairRenames(pair: PairReroot): string {
  * The record a pair table's join_many is replaced by: `<join> is { <field> is
  * <internal column>, … }`, a timeframe field truncated again as its stored
  * value was, and for a path of more than one hop each further join a record
- * nested in the one before.
+ * nested in the one before. For a hidden join ({@link PairReroot.access}) the
+ * record is declared under the join's modifier and followed, in the same
+ * block, by a `private rename:` of every stored column it reads: a private
+ * name is readable only in the block that defines it, which is the record's.
  */
-function pairRecord(
-   join: string,
-   childColumns: readonly (JoinedColumn & { internalName: string })[],
-   hops: readonly PairHopColumns[] | undefined,
-): string {
+function pairRecord(record: {
+   join: string;
+   childColumns: readonly (JoinedColumn & { internalName: string })[];
+   hops?: readonly PairHopColumns[];
+   access?: "private" | "internal";
+}): string {
+   const { join, childColumns, hops, access } = record;
    const field = (c: JoinedColumn & { internalName: string }, pad: string) =>
       // malloy-text: names through identifier and a timeframe from TIMEFRAMES
       `${pad}${identifier(c.name)} is ${identifier(c.internalName)}` +
@@ -852,7 +878,14 @@ function pairRecord(
       }
       return items.join(",\n");
    };
-   return `dimension: ${identifier(join)} is {\n${level(0, "    ")}\n  }`;
+   const dimension = `${accessPrefix(access)}dimension: ${identifier(join)} is {\n${level(0, "    ")}\n  }`;
+   if (access === undefined) return dimension;
+   const renames = [...childColumns, ...(hops ?? []).flatMap((h) => h.columns)]
+      .map(
+         (c) => `    ${identifier(c.internalName)} is ${identifier(c.column)}`,
+      )
+      .join("\n");
+   return `${dimension}\n  private rename:\n${renames}`;
 }
 
 /**
@@ -903,12 +936,15 @@ function pairMeasures(pair: PairReroot): string {
  * the annotations and access label written before it stay on the statement
  * that replaces it. Undefined when the text does not lex, declares no such
  * join_many (one inherited from a base the re-root replaces is not in it), or
- * declares it in a statement with other joins.
+ * declares it in a statement with other joins. With `fromLabel`, the
+ * statement's access label (`internal join_many: …`) is replaced too, for a
+ * `statement` that writes its own.
  */
 export function replacePairJoin(
    text: string,
    join: string,
    statement: string,
+   fromLabel = false,
 ): string | undefined {
    const tokens = lexAll(text);
    if (!tokens) return undefined;
@@ -949,7 +985,10 @@ export function replacePairJoin(
       );
       const end = inStatement[inStatement.length - 1]?.end;
       if (end === undefined) return undefined;
-      return text.slice(0, kw.start) + statement + text.slice(end);
+      const from = fromLabel
+         ? statementHead(level, starts[si]).start
+         : kw.start;
+      return text.slice(0, from) + statement + text.slice(end);
    }
    return undefined;
 }
