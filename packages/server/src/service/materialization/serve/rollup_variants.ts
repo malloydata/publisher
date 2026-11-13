@@ -160,7 +160,11 @@ import {
 } from "../../gate_classification";
 import { enforcedGatesOf, type EnforcedGates } from "../../access_record";
 import { sameGateSet } from "../../governance/query_governor";
-import { timeframeRestatements, typeDeclaration } from "./served_copy";
+import {
+   fieldNotes,
+   timeframeRestatements,
+   typeDeclaration,
+} from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import type { ServeBinding } from "./materialization_serve_transform";
 import type { MaterializedTableCatalog } from "./query_path";
@@ -1115,7 +1119,7 @@ export class RollupVariantServe {
       for (const [url, file] of blanked) overlay.set(url, file);
       const built = `${plan.rollupSourceName}__built`;
       const declaration = `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(relativeImport(queryModelURL, companion.href) ?? "")}
-source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan)}
+source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan, this.host.modelDef())}
 }
 ${sourceOverRollup(plan, use, servedName, "")}`;
       const modelText = queryModelText(
@@ -1199,17 +1203,28 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
             );
             if (table.binding) {
                const typeName = `${plan.rollupSourceName}__type`;
-               const columns = table.binding.schema.map((c) => ({
-                  name: c.name,
-                  type: c.type,
-               }));
-               // malloy-text: the served copy's timeframe emitter, names through identifier
-               const timeframes = timeframeRestatements(
-                  grainColumns(plan, modelDef),
+               const grain = grainColumns(plan, modelDef);
+               // A grain column carries its dimension's notes, as the served
+               // copy's stored columns do: a `type:` field keeps its
+               // annotations, so a result column reads them as live's does.
+               // A timeframe column's go on its redefined field
+               // (timeframeRestatements) instead.
+               const grainNotes = new Map(
+                  grain.map((g) => [g.name, g.timeframe ? [] : g.notes]),
                );
+               const columns = table.binding.schema.map((c) => {
+                  const notes = grainNotes.get(c.name);
+                  return {
+                     name: c.name,
+                     type: c.type,
+                     ...(notes && notes.length > 0 ? { notes } : {}),
+                  };
+               });
+               // malloy-text: the served copy's timeframe emitter, names through identifier
+               const timeframes = timeframeRestatements(grain);
                // malloy-text: the served copy's type emitter; rollupStatements re-emits the grammar's parse through malloy_text
                return `${typeDeclaration({ typeName, columns })}
-source: ${identifier(servedName)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)} extend {${timeframes}${rollupStatements(plan)}
+source: ${identifier(servedName)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)} extend {${timeframes}${rollupStatements(plan, modelDef)}
 }
 ${gates}${over}`;
             }
@@ -1232,7 +1247,7 @@ ${gates}${over}`;
             addFile(companion, text);
             const built = `${plan.rollupSourceName}__built`;
             return `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(relativeImport(declaringURL, companion.href) ?? "")}
-source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan)}
+source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan, modelDef)}
 }
 ${gates}${over}`;
          },
@@ -1551,13 +1566,38 @@ function nonReduceLevel(levels: QueryLevelFacts): string | undefined {
    return undefined;
 }
 
-/** The rollup's merged measures. */
-function rollupStatements(plan: RollupVariantPlan): string {
+/**
+ * The rollup's merged measures, each with the author's measure's annotation
+ * lines (`#(classification)`, `#(doc)`, a render tag such as `# currency`):
+ * a measure's notes are its own, kept on the result column, so a query's
+ * result carries what live's does.
+ */
+function rollupStatements(plan: RollupVariantPlan, modelDef: unknown): string {
+   const notes = baseFieldNotes(plan, modelDef);
+   // malloy-text: the author's own notes, then each merged measure re-emitted from the grammar's parse through malloy_text
    const measures = plan.rollupMeasures
-      .map((m) => `    ${identifier(m.name)} is ${emitMeasureExpr(m.merged)}`)
+      .map(
+         (m) =>
+            (notes.get(m.name) ?? [])
+               .map((n) => `    ${n.trimEnd()}\n`)
+               .join("") +
+            `    ${identifier(m.name)} is ${emitMeasureExpr(m.merged)}`,
+      )
       .join("\n");
-   // malloy-text: each merged measure re-emitted from the grammar's parse through malloy_text
    return `\n  measure:\n${measures}`;
+}
+
+/** The base's fields' annotation lines, by name. */
+function baseFieldNotes(
+   plan: RollupVariantPlan,
+   modelDef: unknown,
+): Map<string, string[]> {
+   const base = SourceMap.of(modelDef).node(plan.baseSourceID)?.def as
+      | { fields?: { name?: unknown; as?: unknown }[] }
+      | undefined;
+   return new Map(
+      (base?.fields ?? []).map((f) => [String(f.as ?? f.name), fieldNotes(f)]),
+   );
 }
 
 /**
@@ -1571,11 +1611,14 @@ function internalPartials(plan: RollupVariantPlan): string {
    return ` include { internal: ${partials} public: * }`;
 }
 
-/** The rollup's grain columns, each with the author's timeframe if it has one. */
+/**
+ * The rollup's grain columns, each with the author's timeframe if it has one
+ * and its dimension's annotation lines.
+ */
 function grainColumns(
    plan: RollupVariantPlan,
    modelDef: unknown,
-): { name: string; timeframe?: string }[] {
+): { name: string; timeframe?: string; notes: string[] }[] {
    const base = SourceMap.of(modelDef).node(plan.baseSourceID)?.def as
       | { fields?: { name?: unknown; as?: unknown; timeframe?: unknown }[] }
       | undefined;
@@ -1585,9 +1628,14 @@ function grainColumns(
          timeframes.set(String(f.as ?? f.name), f.timeframe);
       }
    }
+   const notes = baseFieldNotes(plan, modelDef);
    return plan.grainDimensions.map((name) => {
       const timeframe = timeframes.get(name);
-      return timeframe === undefined ? { name } : { name, timeframe };
+      return {
+         name,
+         ...(timeframe === undefined ? {} : { timeframe }),
+         notes: notes.get(name) ?? [],
+      };
    });
 }
 

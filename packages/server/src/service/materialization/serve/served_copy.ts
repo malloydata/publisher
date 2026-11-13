@@ -293,7 +293,12 @@ function timeframeKeyword(timeframe: string | undefined): string {
  * when no column has a timeframe in {@link TIMEFRAMES}.
  */
 export function timeframeRestatements(
-   columns: readonly { name: string; timeframe?: string }[],
+   columns: readonly {
+      name: string;
+      timeframe?: string;
+      /** The author's annotation lines, written again on the redefined field. */
+      notes?: readonly string[];
+   }[],
 ): string {
    const truncated = columns.filter(
       (c) => c.timeframe !== undefined && TIMEFRAMES.has(c.timeframe),
@@ -302,9 +307,11 @@ export function timeframeRestatements(
    const renames = truncated
       .map((c) => `    ${identifier(`${c.name}__tf`)} is ${identifier(c.name)}`)
       .join("\n");
+   // malloy-text: the author's own notes, then names through identifier and a timeframe from TIMEFRAMES
    const dims = truncated
       .map(
          (c) =>
+            (c.notes ?? []).map((n) => `    ${n.trimEnd()}\n`).join("") +
             `    ${identifier(c.name)} is ${identifier(`${c.name}__tf`)}.${timeframeKeyword(c.timeframe)}`,
       )
       .join("\n");
@@ -1053,6 +1060,34 @@ function parseNestedType(
       rest = rest.slice(list[0].length);
    }
    return { text, rest };
+}
+
+/**
+ * The annotation lines on a compiled field, outermost first: what it inherits,
+ * then its statement's (block) notes, then its own. Each is the author's text
+ * (`#(doc) "…"`), so it can be written again on the field in a `type:`.
+ */
+export function fieldNotes(field: unknown): string[] {
+   interface Annotation {
+      inherits?: Annotation;
+      blockNotes?: { text?: unknown }[];
+      notes?: { text?: unknown }[];
+   }
+   const out: string[] = [];
+   const walk = (a: Annotation | undefined, depth: number) => {
+      if (!a || depth > 16) return;
+      walk(a.inherits, depth + 1);
+      for (const n of [...(a.blockNotes ?? []), ...(a.notes ?? [])]) {
+         if (typeof n.text === "string" && !out.includes(n.text)) {
+            out.push(n.text);
+         }
+      }
+   };
+   const f = field as
+      | { annotations?: Annotation; annotation?: Annotation }
+      | undefined;
+   walk(f?.annotations ?? f?.annotation, 0);
+   return out;
 }
 
 /** The emitted `type:` declaration for one re-rooted source. */
