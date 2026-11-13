@@ -83,10 +83,10 @@ import {
    type DerivedSourceDef,
    type ServeBinding,
 } from "./materialization_serve_transform";
+import { fieldNotes } from "../field_notes";
 import {
    buildServedCopy,
    declaredBaseName,
-   fieldNotes,
    type InlinedJoin,
    type JoinedColumn,
    type PairBlockReroot,
