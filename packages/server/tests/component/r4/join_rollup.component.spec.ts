@@ -334,6 +334,14 @@ describe("R4: join-to-rollup (A7), a joined source's colocated rollup, equal to 
       expectLive(run);
    });
 
+   it("names no joined source's rollup for a query that reads no join", async () => {
+      fixture.setBindings(fixture.bindings);
+      const { path } = await fixture.runAsIs(
+         "run: flights -> { group_by: carrier; aggregate: flight_count }",
+      );
+      expect(path?.considered.filter((c) => c.kind === "rollup")).toEqual([]);
+   });
+
    it("serves a named view of the source: the view is the author's, kept", async () => {
       expectServedFromRollup(
          await fixture.run({
@@ -496,4 +504,115 @@ source: flights is duckdb.table('flights_raw') extend {
             .map((c) => c.reason),
       ).toContain("CONTRACT");
    });
+});
+
+describe("R4: join-to-rollup (A7) where live and a rollup disagree by construction", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `source: segments is duckdb.table('segs_ts_raw') extend {
+  primary_key: seg_id
+  dimension: seg_day is seg_ts.day
+  #(preaggregate) grain=["flight_id", "seg_day"]
+  measure: seg_miles is miles.sum()
+}
+source: segs_la is duckdb.table('segs_ts_raw') extend {
+  timezone: 'America/Los_Angeles'
+  primary_key: seg_id
+  dimension: seg_day is seg_ts.day
+  #(preaggregate) grain=["flight_id", "seg_day"]
+  measure: seg_miles is miles.sum()
+}
+source: crew_dup is duckdb.table('crew_dup_raw') extend {
+  #(preaggregate) grain=["flight_id"]
+  measure: crew_size is size.sum()
+}
+source: flights is duckdb.table('flights_raw') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  join_many: segs_la on segs_la.flight_id = id
+  join_one: crew_dup on crew_dup.flight_id = id
+  measure: flight_count is count()
+  measure: total_distance is distance.sum()
+}
+source: flights_la is flights extend { timezone: 'America/Los_Angeles' }
+`,
+         },
+         seedSql: [
+            ...seedSql,
+            // Segments 11 and 13 fall on another day in Los Angeles than in UTC.
+            `CREATE TABLE segs_ts_raw AS SELECT * FROM (VALUES
+               (10, 1, 2.0, TIMESTAMP '2024-01-01 12:00:00'),
+               (11, 1, 3.0, TIMESTAMP '2024-01-02 03:00:00'),
+               (12, 2, 4.0, TIMESTAMP '2024-01-02 12:00:00'),
+               (13, 3, 1.5, TIMESTAMP '2024-01-03 05:00:00')
+             ) AS t(seg_id, flight_id, miles, seg_ts)`,
+            // Declared join_one, but flight 1 has two crew rows.
+            `CREATE TABLE crew_dup_raw AS SELECT * FROM (VALUES
+               (1, 3), (1, 4), (3, 2), (5, 7)
+             ) AS t(flight_id, size)`,
+         ],
+         preaggregate: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   const reasonOf = async (malloy: string) => {
+      fixture.setBindings(fixture.bindings);
+      const { path } = await fixture.runAsIs(malloy);
+      return path?.considered
+         .filter((c) => c.kind === "rollup")
+         .map((c) => c.reason);
+   };
+
+   for (const [name, malloy, reason] of [
+      [
+         "a joined source read in the query source's time zone, not its own",
+         "run: flights -> { group_by: segs_la.seg_day; aggregate: segs_la.seg_miles }",
+         "TIME_ZONE",
+      ],
+      [
+         "a query source in its own time zone, through a joined source in the model's",
+         "run: flights_la -> { group_by: segments.seg_day; aggregate: segments.seg_miles }",
+         "TIME_ZONE",
+      ],
+      [
+         "the parent's own aggregates beside a join_one the data does not keep unique",
+         "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, crew_dup.crew_size }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "a having: on a parent aggregate beside a non-unique join_one",
+         "run: flights -> { group_by: carrier; aggregate: crew_dup.crew_size; having: flight_count > 1 }",
+         "COUNT_SEMANTICS",
+      ],
+   ] as const) {
+      it(`answers ${name} live (${reason})`, async () => {
+         expectLive(await fixture.run({ name, malloy }));
+         expect(await reasonOf(malloy)).toContain(reason);
+      });
+   }
+
+   for (const [name, malloy] of [
+      [
+         "a joined source in the query source's time zone",
+         "run: flights -> { group_by: segments.seg_day; aggregate: segments.seg_miles }",
+      ],
+      [
+         "a non-unique join_one's own measure, by parent dimensions",
+         "run: flights -> { group_by: carrier, id; aggregate: crew_dup.crew_size }",
+      ],
+   ] as const) {
+      it(`serves ${name}`, async () => {
+         expectServedFromRollup(await fixture.run({ name, malloy }));
+      });
+   }
 });

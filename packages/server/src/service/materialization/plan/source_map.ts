@@ -256,9 +256,7 @@ export class SourceMap {
     */
    filterJoinsOf(sourceID: string): FieldJoinReads | undefined {
       const node = this.nodesById.get(sourceID);
-      return node
-         ? filterJoinReads(node.def)
-         : { joins: new Set(), nested: false };
+      return node ? filterJoinReads(node.def) : undefined;
    }
 
    /**
