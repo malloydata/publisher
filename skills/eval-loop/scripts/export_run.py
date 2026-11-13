@@ -5,7 +5,7 @@ database a team can query. Stdlib only.
   python3 export_run.py --run <run-dir> --set <set-dir> [--out <dir>]
   # or: python3 eval.py export --set <set-dir> --label baseline-01
 
-Runs do not go in git. This is how a run leaves the laptop instead: six CSV
+Runs do not go in git. This is how a run leaves the laptop instead: seven CSV
 files in `<run>/export/` (or `--out`), each row carrying `run_id`, plus a
 `manifest.json` naming each file and the table name to load it under. It calls nothing remote. Where the files go is the caller's choice:
 `reference/sharing-runs.md` lists the options, and a host can ship its own
@@ -21,6 +21,14 @@ upload step that reads `manifest.json`.
   eval_query_timings  one row per query of a query replay (`query_replay.py`):
                     median and max time, where it was served from, the rows'
                     hash; empty for any other kind of run
+  eval_files        one row per other file of the run's record, as text:
+                    summary.json and results.jsonl of a replay, the diagnosis,
+                    the coverage report, the model snapshot
+
+The tables are also the run itself. `eval_runs.run_json`, `eval_events.event`
+and `eval_files.text` hold run.json, each line of events.jsonl and each record
+file exactly as written, so `import_run.py` rebuilds the run directory from
+them, byte for byte, wherever the tables were loaded.
 
 Every row of a table has the same columns, in a fixed order, and a nested value
 (a list, an object) is written as JSON text. CSV and not JSON lines, because a
@@ -55,7 +63,12 @@ from ledger import read_jsonl  # noqa: E402
 from run_index import runs as index_runs  # noqa: E402
 
 TABLES = ("eval_runs", "eval_attempts", "eval_events", "eval_transcripts", "eval_cases",
-          "eval_query_timings")
+          "eval_query_timings", "eval_files")
+# The files of a run that are its record, beside run.json and events.jsonl,
+# which have columns of their own. Only what sits at the top of the run
+# directory: artifacts/ is in eval_transcripts, and rows/ (a replay's first 500
+# rows per query), export/ and voided/ are not carried.
+NOT_A_RECORD_FILE = ("run.json", "events.jsonl")
 # A table name a loader accepts: a lowercase letter or _ first, then lowercase
 # letters, digits or _, at most 63 characters. The run id is appended to keep
 # one run's tables apart from another's until the loader can append to one.
@@ -100,7 +113,10 @@ def rows_runs(run: pathlib.Path, meta: dict[str, Any], index_row: dict[str, Any]
         "decided": index_row.get("decided"), "recall_exact": index_row.get("recall_exact"),
         "answerer_cost_usd": meta.get("answererCostUsd"), "judge_cost_usd": meta.get("judgeCostUsd"),
         "p50_ms": index_row.get("p50_ms"), "total_ms": index_row.get("total_ms"),
-        "run_json": as_text(meta),
+        # The file as written, not a re-serialization: import_run.py writes
+        # this text back, and a store tells two copies of a run apart by their
+        # bytes.
+        "run_json": (run / "run.json").read_text(),
     }]
 
 
@@ -151,8 +167,22 @@ def rows_attempts(run: pathlib.Path, events: list[dict], cases: dict[str, dict])
 
 
 def rows_events(run: pathlib.Path, events: list[dict]) -> list[dict]:
+    """One row per ledger line, `event` being the line as written."""
+    f = run / "events.jsonl"
+    lines = [l for l in f.read_text().splitlines() if l.strip()] if f.is_file() else []
     return [{"run_id": run.name, "seq": i, "kind": e.get("kind"), "qid": e.get("qid"),
-             "sample": e.get("sample"), "event": as_text(e)} for i, e in enumerate(events)]
+             "sample": e.get("sample"), "event": line}
+            for i, (e, line) in enumerate(zip(events, lines))]
+
+
+def rows_files(run: pathlib.Path) -> list[dict]:
+    out = []
+    for f in sorted(run.iterdir()):
+        if f.is_file() and f.name not in NOT_A_RECORD_FILE and not f.name.startswith("."):
+            text = read_text(f)
+            if text is not None:
+                out.append({"run_id": run.name, "path": f.name, "text": text})
+    return out
 
 
 def rows_transcripts(run: pathlib.Path, events: list[dict]) -> list[dict]:
@@ -210,6 +240,7 @@ COLUMNS = {
     "eval_cases": ("run_id", "dataset_sha", "qid", "question", "question_sha", "tags", "split",
                    "golden_revision", "golden", "case"),
     "eval_query_timings": TIMING_COLUMNS,
+    "eval_files": ("run_id", "path", "text"),
 }
 
 
@@ -228,7 +259,7 @@ def write_csv(path: pathlib.Path, rows: list[dict[str, Any]], columns: tuple[str
 
 
 def export(run: pathlib.Path, set_dir: pathlib.Path, out: pathlib.Path) -> dict[str, Any]:
-    """Write the six files and manifest.json; return the manifest."""
+    """Write the seven files and manifest.json; return the manifest."""
     meta = json.loads((run / "run.json").read_text())
     events = read_jsonl(run / "events.jsonl") if (run / "events.jsonl").is_file() else []
     case_list = read_jsonl(set_dir / "cases.jsonl")
@@ -248,6 +279,7 @@ def export(run: pathlib.Path, set_dir: pathlib.Path, out: pathlib.Path) -> dict[
         "eval_transcripts": rows_transcripts(run, events),
         "eval_cases": rows_cases(run.name, sha, case_list),
         "eval_query_timings": rows_timings(run, meta),
+        "eval_files": rows_files(run),
     }
     out.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, Any] = {"runId": run.name, "setName": meta.get("setName"),

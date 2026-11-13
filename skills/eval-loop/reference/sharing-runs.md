@@ -48,6 +48,9 @@ eval.py pull --set <set>                    # every shared run missing here
 eval.py runs --set <set> --store            # what the store holds
 ```
 
+`eval.py runs`, `versions` and `history` pull what the store holds first, so
+they list the team's runs and not only the ones made here.
+
 What it stores is the run directory itself: `run.json`, `events.jsonl`, the
 transcripts. Pages and tables are built from it, so nothing is lost on the way
 and a pulled run is the run, byte for byte.
@@ -85,17 +88,18 @@ To query runs in a warehouse of your own:
 python3 skills/eval-loop/scripts/eval.py export --set <set> --label baseline-01
 ```
 
-This writes six CSV files and a `manifest.json` into `<run>/export/`. Every
+This writes seven CSV files and a `manifest.json` into `<run>/export/`. Every
 row carries `run_id`.
 
 | table | one row per | holds |
 |---|---|---|
 | `eval_runs` | run | the pins (package version, set version and sha, slice, judge, models) and the headline score |
 | `eval_attempts` | attempt | verdict, `golden_revision`, `question_sha`, tags, split, cost, retrieval scores for a replay |
-| `eval_events` | ledger event | the event itself, as JSON text |
+| `eval_events` | ledger event | the event itself, as JSON text: the line as `events.jsonl` holds it |
 | `eval_transcripts` | attempt | the answerer transcript, the answer, and the judge's write-up, as text |
 | `eval_cases` | case | the set as it was run, keyed by `dataset_sha`: question, tags, split, golden |
 | `eval_query_timings` | query, in a query replay | median and max time, where it was served from, the rows' hash; empty for any other run |
+| `eval_files` | other file of the run's record | `path` and `text`: a replay's `summary.json` and `results.jsonl`, the diagnosis, the coverage report, the model snapshot |
 
 `manifest.json` names each file and the table name to load it under
 (`eval_attempts__<run id>`). The export refuses a set whose `datasetSha` differs
@@ -118,3 +122,34 @@ FROM query_table(['eval_attempts__baseline_01', 'eval_attempts__baseline_02'], t
 
 A host may ship a skill that does the upload for its own storage: look for one
 before writing the commands by hand.
+
+## Reading a run back from the tables
+
+The tables are also the run. `eval_runs.run_json` is `run.json` as written,
+`eval_events.event` is each line of `events.jsonl`, and `eval_files.text` is
+every other record file, so a run that lives only in a warehouse can be
+rebuilt where it is needed:
+
+```bash
+eval.py import-run --set <set> --from <dir>
+```
+
+`<dir>` holds the tables of one run: the CSV files export wrote, or what a
+query for them returned, as `<table>.json` (a list of row objects) or
+`<table>.jsonl`. Select every column, and select `run_json`, `event` and
+`text` as text: a cast or a re-format changes the bytes. `eval_runs` and
+`eval_events` are needed. `eval_files` brings back a replay's results and a
+run's diagnosis, and `eval_transcripts` each case's transcript, answer and
+judge write-up. When the files hold rows of several runs, name one with
+`--run-id`.
+
+The run is written to `<workdir>/runs/<run id>`, where `accept`, `versions`,
+`history` and `--baseline record` read. `run.json` and `events.jsonl` come
+back byte for byte, measured through DuckDB 1.5.1 (export, load, select, write
+as JSON, import), so a store that already holds the run sees the same run. A
+replay's `rows/` and a case's other artifacts are not carried. A run already
+here with the same record is left alone, and a different run under the same
+name is refused.
+
+This is how tonight's run is compared with last night's when last night's
+lives in a warehouse: import the newest record, then `--baseline record`.

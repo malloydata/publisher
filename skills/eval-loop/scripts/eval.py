@@ -21,6 +21,7 @@
   python3 eval.py runs     --set <set-dir>         # every run of the set, by kind and version
   python3 eval.py versions --set <set-dir>         # how each package version scored
   python3 eval.py export   --set <set-dir> --label baseline-01   # a run as CSV tables to share
+  python3 eval.py import-run --set <set-dir> --from <dir>         # a run rebuilt from those tables
 
 Each verb runs one script's `main` with the arguments given, after `--set`
 has picked up the set's eval.toml (skills/eval-answer/scripts/config.py). Any
@@ -46,7 +47,7 @@ import config  # noqa: E402
 
 VERBS = ("check", "serve", "publish", "experiment", "verify", "run", "replay",
          "query-replay", "accept", "diagnose", "package", "history", "push", "pull",
-         "routine", "runs", "versions", "export")
+         "routine", "runs", "versions", "export", "import-run")
 
 
 def flag_value(args: list[str], flag: str) -> str | None:
@@ -154,6 +155,20 @@ def run_then_share(verb: str, args: list[str], main) -> int:
     return code
 
 
+def pull_shared(args: list[str]) -> None:
+    """Pull the runs the store holds and the workdir does not, before a verb
+    that reads every run. Without it `runs`, `versions` and `history` showed
+    one laptop's runs under a heading that reads as the team's. A store that
+    cannot be reached is said and skipped: the local runs are still worth
+    listing."""
+    import run_store
+    try:
+        run_store.sync(config.load(pathlib.Path(flag_value(args, "--set"))))
+    except SystemExit as e:
+        print(f"  note: the store was not read, so only the runs here are shown ({e})",
+              file=sys.stderr)
+
+
 CANNOT_RUN = 3
 
 
@@ -202,6 +217,7 @@ def dispatch(argv: list[str]) -> int:
         return accept.main(rest)
     if verb == "history":
         import build_history
+        pull_shared(rest)
         return build_history.main(rest)
     if verb == "routine":
         import routine
@@ -236,8 +252,12 @@ def dispatch(argv: list[str]) -> int:
     if verb == "export":
         import export_run
         return export_run.main(run_dir_from_label(rest))
+    if verb == "import-run":
+        import import_run
+        return import_run.main(rest)
     if verb in ("runs", "versions"):
         import run_index
+        pull_shared(rest)
         return run_index.main([verb, *rest])
     if verb == "diagnose":
         import diagnose
