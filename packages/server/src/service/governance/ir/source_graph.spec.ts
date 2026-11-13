@@ -12,7 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { sourceBaseEdge } from "./source_graph";
+import { fieldNameReads, sourceBaseEdge, sourceDelta } from "./source_graph";
 
 // File-backed: db-duckdb's in-memory database is shared across spec files.
 const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), "source-graph-spec-"));
@@ -192,5 +192,57 @@ source: copied is duckdb.table('ev') extend { dimension: d is 1; dimension: e is
       expect(base(z, "c")).toEqual(["extends", "b"]);
       expect(base(y, "b")).toEqual(["extends", "a"]);
       expect(base(z, "b")).toBeUndefined();
+   });
+});
+
+describe("sourceDelta and fieldNameReads", () => {
+   it("reads what an extension adds over its base, across hops", async () => {
+      const m = await compile(
+         {
+            "m.malloy": `source: base is duckdb.sql("SELECT 1 AS a, 'x' AS b") extend {
+  measure: n is count()
+}
+source: one is base extend { dimension: lb is lower(b) }
+source: two is one extend { dimension: lb2 is concat(lb, a) }
+source: filtered is base extend { where: a > 0 }
+source: renamed is base extend { rename: bee is b }
+`,
+         },
+         "m.malloy",
+      );
+      const def = (n: string) => m.contents[n];
+      const names = (fs: unknown[]) =>
+         fs.map((f) => (f as { name: string }).name);
+      const two = sourceDelta(def("two"), def("base"));
+      expect(two.addsFilter).toBe(false);
+      expect(two.changed).toEqual([]);
+      expect(names(two.added)).toEqual(["lb", "lb2"]);
+      expect(two.added.map((f) => fieldNameReads(f))).toEqual([
+         ["b"],
+         ["lb", "a"],
+      ]);
+      expect(sourceDelta(def("filtered"), def("base")).addsFilter).toBe(true);
+      expect(sourceDelta(def("base"), def("base"))).toEqual({
+         addsFilter: false,
+         changed: [],
+         added: [],
+      });
+      // A rename takes the field away under its old name, and adds it anew.
+      const renamed = sourceDelta(def("renamed"), def("base"));
+      expect(renamed.added.length).toBe(1);
+   });
+
+   it("reads nothing it cannot: a path through a join, or no record", () => {
+      expect(fieldNameReads({})).toBeUndefined();
+      expect(
+         fieldNameReads({ refSummary: { fieldUsage: [{ path: ["j", "x"] }] } }),
+      ).toBeUndefined();
+      expect(
+         fieldNameReads({
+            refSummary: {
+               fieldUsage: [{ path: [] }, { path: ["a"] }, { path: ["a"] }],
+            },
+         }),
+      ).toEqual(["a"]);
    });
 });

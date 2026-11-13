@@ -756,6 +756,176 @@ describe("hidden stored columns (P3)", () => {
       expect(out).not.toContain("include { public: *");
    });
 
+   it("restores a hidden timeframe column under the author's modifier, its stored column renamed as hidden (row 8)", () => {
+      // Inherited, so the re-root defines the field under its own modifier.
+      // A hidden field's stored column is `private` (an `internal` one a
+      // caller's own `extend` could read), hidden by a labelled rename in the
+      // first block: no include, so an author's `rename:` still compiles.
+      const out = rerootDeclaration(
+         "orders is base extend {\n  measure: n is count()\n}",
+         {
+            sourceName: "orders",
+            connectionAlias: "x",
+            virtualHandle: "h",
+            typeName: "orders__served",
+            storedDimensions: [],
+            columns: [
+               { name: "amount", type: "DOUBLE" },
+               {
+                  name: "order_month",
+                  type: "DATE",
+                  timeframe: "month",
+                  access: "private",
+               },
+               {
+                  name: "order_week",
+                  type: "DATE",
+                  timeframe: "week",
+                  access: "internal",
+               },
+               { name: "order_day", type: "DATE", timeframe: "day" },
+            ],
+         },
+      );
+      expect(out).toBe(
+         "orders is x.virtual('h')::orders__served extend {\n" +
+            "  internal rename:\n" +
+            "    order_day__stored is order_day\n" +
+            "  private rename:\n" +
+            "    order_month__stored is order_month\n" +
+            "    order_week__stored is order_week\n" +
+            "  dimension:\n" +
+            "    order_day is order_day__stored.day\n" +
+            "  internal dimension:\n" +
+            "    order_week is order_week__stored.week\n" +
+            "  private dimension:\n" +
+            "    order_month is order_month__stored.month\n" +
+            "  measure: n is count()\n" +
+            "}",
+      );
+   });
+
+   it("renames a hidden timeframe column ahead of the include another hidden column needs", () => {
+      const out = rerootDeclaration(
+         "orders is base extend {\n  measure: n is count()\n}",
+         {
+            sourceName: "orders",
+            connectionAlias: "x",
+            virtualHandle: "h",
+            typeName: "orders__served",
+            storedDimensions: [],
+            columns: [
+               { name: "org_id", type: "VARCHAR", access: "internal" },
+               {
+                  name: "order_month",
+                  type: "DATE",
+                  timeframe: "month",
+                  access: "private",
+               },
+               { name: "order_day", type: "DATE", timeframe: "day" },
+            ],
+         },
+      );
+      expect(out).toBe(
+         "orders is x.virtual('h')::orders__served extend {\n" +
+            "  rename:\n" +
+            "    order_month__stored is order_month\n" +
+            "    order_day__stored is order_day\n" +
+            "} include { public: *; private: order_month__stored; internal: org_id, order_day__stored } extend {\n" +
+            "  dimension:\n" +
+            "    order_day is order_day__stored.day\n" +
+            "  private dimension:\n" +
+            "    order_month is order_month__stored.month\n" +
+            "  measure: n is count()\n" +
+            "}",
+      );
+   });
+
+   it("writes no include for a hidden timeframe column alone, so an author's rename still compiles", () => {
+      // An include would put the inverse rename block, and the author's own
+      // `rename:`, just after it, which Malloy refuses: the whole served copy
+      // would not compile.
+      const out = rerootDeclaration(
+         "orders is base extend {\n  rename: amt is amount\n  measure: n is amt.sum()\n}",
+         {
+            sourceName: "orders",
+            connectionAlias: "x",
+            virtualHandle: "h",
+            typeName: "orders__served",
+            storedDimensions: [],
+            columns: [
+               { name: "amt", type: "DOUBLE" },
+               {
+                  name: "order_month",
+                  type: "DATE",
+                  timeframe: "month",
+                  access: "internal",
+               },
+            ],
+         },
+      );
+      expect(out).not.toContain("include");
+      expect(out).toBe(
+         "orders is x.virtual('h')::orders__served extend { rename: amount is amt } extend {\n" +
+            "  private rename:\n" +
+            "    order_month__stored is order_month\n" +
+            "  internal dimension:\n" +
+            "    order_month is order_month__stored.month\n" +
+            "  rename: amt is amount\n" +
+            "  measure: n is amt.sum()\n" +
+            "}",
+      );
+   });
+
+   it("refuses a re-root whose include would come just before the inverse renames (known limitation 25)", () => {
+      // Malloy refuses a rename just after an include: written, the whole
+      // served copy would not compile. Refused, only this source is live.
+      expect(
+         rerootDeclaration(
+            "orders is base extend {\n  rename: amt is amount\n  measure: n is amt.sum()\n}",
+            {
+               sourceName: "orders",
+               connectionAlias: "x",
+               virtualHandle: "h",
+               typeName: "orders__served",
+               storedDimensions: [],
+               columns: [
+                  { name: "amt", type: "DOUBLE" },
+                  { name: "org_id", type: "VARCHAR", access: "internal" },
+               ],
+            },
+         ),
+      ).toBeUndefined();
+   });
+
+   it("keeps a hidden timeframe field its own extend defines, computed at read, with no stored stand-in", () => {
+      const text = `source: orders is base extend {
+  private dimension: order_month is d.month
+}
+`;
+      const copy = buildServedCopy(
+         [
+            reroot(text, "orders", {
+               columns: [
+                  { name: "d", type: "DATE" },
+                  {
+                     name: "order_month",
+                     type: "DATE",
+                     timeframe: "month",
+                     access: "private",
+                  },
+               ],
+               storedDimensions: ["order_month"],
+            }),
+         ],
+         () => text,
+      );
+      const out = copy.files.get("file:///m.malloy") as string;
+      expect(out).toContain("  private dimension: order_month is d.month");
+      expect(out).not.toContain("order_month__stored");
+      expect(out).not.toMatch(/order_month::/);
+   });
+
    it("quotes a hidden name that needs it", () => {
       expect(
          hiddenInclude([
@@ -817,6 +987,38 @@ describe("an inlined join_one, answered from its stored columns", () => {
       );
    });
 
+   it("declares a hidden join's record and renames under the join's modifier (row 24)", () => {
+      for (const access of ["internal", "private"] as const) {
+         const out = rerootDeclaration(
+            "flights is duckdb.table('flights') extend {\n" +
+               "  primary_key: id\n" +
+               `  ${access} join_one: carriers with carrier\n` +
+               "  dimension: carrier_region is carriers.region\n" +
+               "  measure: n is count()\n" +
+               "}",
+            {
+               ...base,
+               inlinedJoins: [{ ...inlinedJoins[0], access }],
+            },
+         );
+         expect(out).toBe(
+            "flights is x.virtual('h')::flights__served extend {\n" +
+               "  private rename:\n" +
+               "    carriers__nickname__stored is carriers__nickname\n" +
+               "    carriers__since_month__stored is carriers__since_month\n" +
+               `  ${access} dimension:\n` +
+               "    carriers is {\n" +
+               "      nickname is carriers__nickname__stored,\n" +
+               "      since_month is carriers__since_month__stored.month\n" +
+               "    }\n" +
+               "  primary_key: id\n" +
+               "\n" +
+               "  measure: n is count()\n" +
+               "}",
+         );
+      }
+   });
+
    it("adds the record when the join is inherited from the base it replaces", () => {
       const out = rerootDeclaration("flights is flights_base", base);
       expect(out).toContain("carriers is {");
@@ -854,14 +1056,20 @@ describe("an inlined join_one, answered from its stored columns", () => {
             "carriers",
          ),
       ).toBeUndefined();
-      // A hidden join keeps its access: the record would be public, and the
-      // modifier would be left on the next statement.
+      // A hidden join's label goes with its statement, never onto the next
+      // one; the record carries the join's modifier (InlinedJoin.access).
       expect(
          dropJoinDefinition(
             "extend {\n  internal join_one: carriers with carrier\n  measure: n is count()\n}",
             "carriers",
          ),
-      ).toBeUndefined();
+      ).toBe("extend {\n\n  measure: n is count()\n}");
+      expect(
+         dropJoinDefinition(
+            "extend {\n  # doc\n  private join_one: carriers with carrier\n  dimension: k is 1\n}",
+            "carriers",
+         ),
+      ).toBe("extend {\n\n  dimension: k is 1\n}");
    });
 });
 
@@ -1019,18 +1227,19 @@ describe("a statement's access label stays on its own statement (P3 with P10)", 
       ).toBeUndefined();
    });
 
-   it("refuses dropping any definition of an access-labelled join_one statement", () => {
-      expect(
-         dropJoinDefinition(
+   it("drops one definition of an access-labelled join_one statement, the label staying on the other", () => {
+      for (const join of ["a", "b"]) {
+         const out = dropJoinDefinition(
             "extend {\n  internal join_one: a with x, b with y\n  measure: n is count()\n}",
-            "a",
-         ),
-      ).toBeUndefined();
-      expect(
-         dropJoinDefinition(
-            "extend {\n  internal join_one: a with x, b with y\n  measure: n is count()\n}",
-            "b",
-         ),
-      ).toBeUndefined();
+            join,
+         );
+         const other = join === "a" ? "b" : "a";
+         expect(out).toMatch(
+            new RegExp(
+               `internal join_one:\\s*${other} with [xy]\\s*\\n  measure`,
+            ),
+         );
+         expect(out).not.toMatch(new RegExp(`\\b${join} with`));
+      }
    });
 });

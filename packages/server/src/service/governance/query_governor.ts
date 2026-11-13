@@ -183,6 +183,24 @@ function denyUnlessAdmitted(
 }
 
 /**
+ * Whether two {@link EnforcedGates} hold the same gates: per route, the same
+ * set of expressions. A gate reached twice (own and inherited, or by two
+ * checks) counts once; order does not matter. Givens are read by name from
+ * the expression text and bound from the one request, so equal text is the
+ * same gate with the same givens.
+ */
+export function sameGateSet(a: EnforcedGates, b: EnforcedGates): boolean {
+   const same = (x: readonly string[], y: readonly string[]) => {
+      const xs = new Set(x);
+      const ys = new Set(y);
+      return xs.size === ys.size && [...xs].every((e) => ys.has(e));
+   };
+   return (
+      same(a.authorize, b.authorize) && same(a.accessFilter, b.accessFilter)
+   );
+}
+
+/**
  * Budget for a walk over a request's own derivation declarations. Exceeding it
  * fails the proof (and so denies), so it only has to exceed any real chain.
  *
@@ -236,8 +254,9 @@ export interface GovernRequest {
     * The router let `compiled.runnable`, a variant that keeps the author's
     * text (the served copy, R3), past a gate on the query's entry point. The
     * veto read the gate off the LIVE compile; this re-proves it on the routed
-    * one: the request must carry that variant's own `graftScope`, and
-    * governing must find and enforce a gate there, or the query is denied.
+    * one: the request must carry that variant's own `graftScope` and the
+    * `live` compile, and governing must enforce there exactly the gates the
+    * live entry point carries (see `sameGateSet`), or the query is denied.
     */
    routedPastEntryPointGate?: boolean;
    /** See `authorizeAndBindRunnable`'s options. */
@@ -261,6 +280,17 @@ export interface GovernRequest {
       source: (
          governed: GovernedRunnable,
       ) => string | undefined | Promise<string | undefined>;
+      /**
+       * `"served_copy"` when the router answered from the served copy (the
+       * author's text re-rooted on stored tables), so the ceiling is read on
+       * {@link CompiledQuery.runnable}, the compile that answers: the live
+       * compile is a cross-connection model's build view, which lacks the
+       * joins it leaves out, so a query through one does not compile there.
+       * The live compile is still checked whenever it compiles. Any other
+       * routed shape carries no annotations to read a ceiling from, so it
+       * stays on the live compile.
+       */
+      answeredBy?: "served_copy";
    };
 }
 
@@ -655,25 +685,41 @@ export class QueryGovernor {
          },
       );
       if (request.routedPastEntryPointGate && !request.bypassAuthorize) {
+         // The routed compile must enforce EXACTLY the gates the live entry
+         // point does, by route and expression, own and inherited. One gate
+         // found is not the gate set: a routed form that kept the lock but
+         // lost the filter would answer rows live refuses. A live set that
+         // cannot be read, or is empty, denies too.
+         const expected = live
+            ? await this.liveEntryPointGateSet(live)
+            : undefined;
          const enforced = this.enforcedGatesByRunnable.get(runnable);
-         if (
-            !enforced ||
-            enforced.authorize.length + enforced.accessFilter.length === 0
-         ) {
-            // The live entry point is gated but no gate was found on the
-            // routed compile: it lost the author's gate text. Never answer.
+         if (!expected || !enforced) {
             await this.denyRoutedPastGate(compiled.runnable, "no_gate_found");
+         } else if (!sameGateSet(expected, enforced)) {
+            await this.denyRoutedPastGate(
+               compiled.runnable,
+               "gate_set_differs",
+            );
          }
       }
       if (request.ceiling && !request.bypassAuthorize) {
-         await this.assertWithinCarriesCeiling(
-            request.ceiling.audit,
-            live ?? runnable,
+         const source = await request.ceiling.source(runnable);
+         for (const target of await this.ceilingTargets(
+            request.ceiling,
+            compiled,
             runnable,
-            await request.ceiling.source(runnable),
-            request.givens,
-            request.callerRegion,
-         );
+         )) {
+            await this.assertWithinCarriesCeiling(
+               request.ceiling.audit,
+               target.compile,
+               runnable,
+               source,
+               request.givens,
+               request.callerRegion,
+               target.servedCopy,
+            );
+         }
       }
       return {
          runnable,
@@ -690,7 +736,7 @@ export class QueryGovernor {
     */
    private async denyRoutedPastGate(
       routed: QueryMaterializer,
-      why: "no_graft_scope" | "no_gate_found",
+      why: "no_graft_scope" | "no_gate_found" | "gate_set_differs",
    ): Promise<never> {
       const source = await this.resolveAuthorizeSourceFromRunnable(routed);
       recordRowLevelGateDecision("denied_by_gate", "entry_point");
@@ -699,6 +745,27 @@ export class QueryGovernor {
          { modelPath: this.modelPath, source, why },
       );
       throw AccessDeniedError.forSource(source ?? "unknown");
+   }
+
+   /**
+    * The gates governing the LIVE compile would evaluate on its entry point:
+    * the walk ({@link entryPointGatesInForce}: own, inherited, a derivation's
+    * base, a composite's resolved branch) plus this model's on-disk gates for
+    * the run target's name, which {@link probeEntryPointGates} folds in the
+    * same way. `undefined` (deny) when the walk cannot read the run target or
+    * finds no gate, since a routed answer past a gate implies live has one.
+    */
+   private async liveEntryPointGateSet(
+      live: QueryMaterializer,
+   ): Promise<EnforcedGates | undefined> {
+      const walked = await this.entryPointGatesInForce(live);
+      if (!walked) return undefined;
+      const name = await this.resolveAuthorizeSourceFromRunnable(live);
+      const onDisk = name ? (this.entryPointGatesBySource.get(name) ?? []) : [];
+      const gates = enforcedGatesOf([...walked, ...onDisk]);
+      return gates.authorize.length + gates.accessFilter.length === 0
+         ? undefined
+         : gates;
    }
 
    /**
@@ -1884,6 +1951,42 @@ export class QueryGovernor {
    }
 
    /**
+    * The compiles the `#(carries)` ceiling is read on, in order. Live (or the
+    * governed runnable, when there is no separate live compile) unless the
+    * served copy answered. When it did, the served copy's own compile (the
+    * routed runnable, before any graft, as the live check reads the live
+    * compile before any graft), and live as well whenever live compiles: a
+    * live compile that does not compile is a cross-connection model's build
+    * view without the join the query goes through, which has nothing to
+    * read, and is never what answers. A served-copy claim with no separate
+    * routed compile is not one: the live compile is what runs, so it is read.
+    */
+   private async ceilingTargets(
+      ceiling: NonNullable<GovernRequest["ceiling"]>,
+      compiled: CompiledQuery,
+      governed: GovernedRunnable,
+   ): Promise<{ compile: QueryMaterializer; servedCopy: boolean }[]> {
+      const { live } = compiled;
+      if (
+         ceiling.answeredBy !== "served_copy" ||
+         !live ||
+         compiled.runnable === live
+      ) {
+         return [{ compile: live ?? governed, servedCopy: false }];
+      }
+      const served = { compile: compiled.runnable, servedCopy: true };
+      let liveCompiles = true;
+      try {
+         await live.getPreparedQuery();
+      } catch {
+         liveCompiles = false;
+      }
+      return liveCompiles
+         ? [{ compile: live, servedCopy: false }, served]
+         : [served];
+   }
+
+   /**
     * Refuse a query whose entry carries a `#(carries)` ceiling when it reads a
     * field past it, so a source's list holds for what a caller reads and not
     * only for what the author declared. The entry's ceiling is read off the
@@ -1897,11 +2000,27 @@ export class QueryGovernor {
       source: string | undefined,
       givens: Record<string, GivenValue> | undefined,
       region: CallerRegion | undefined,
+      /**
+       * `live` is the served copy's compile: its own model is the one read
+       * (the build view's lacks what it left out), and a ceiling declared
+       * only there still counts.
+       */
+      servedCopy = false,
    ): Promise<void> {
       // Only a model that declares a ceiling pays for reading the query.
-      if (!modelDeclaresCarries(this.modelDef)) return;
+      if (!servedCopy && !modelDeclaresCarries(this.modelDef)) return;
       const prepared = await readPreparedQuery(live);
-      const modelDef = prepared.modelDef ?? this.modelDef;
+      const modelDef = servedCopy
+         ? prepared.modelDef
+         : (prepared.modelDef ?? this.modelDef);
+      if (
+         servedCopy &&
+         modelDef &&
+         !modelDeclaresCarries(this.modelDef) &&
+         !modelDeclaresCarries(modelDef)
+      ) {
+         return;
+      }
       let refusal: string | undefined;
       try {
          const joins = region
@@ -1909,7 +2028,12 @@ export class QueryGovernor {
                  (r) => r.callerJoin.join,
               )
             : [];
-         refusal = ceilingRefusal(modelDef, prepared.query, joins);
+         // The served copy's compile without its own model cannot be read
+         // against anything: refused rather than read against the build view.
+         refusal =
+            servedCopy && !modelDef
+               ? "this query's source cannot be read completely"
+               : ceilingRefusal(modelDef, prepared.query, joins);
       } catch (err) {
          if (!(err instanceof CallerJoinWalkError)) throw err;
          refusal = "this query's joins cannot be read completely";

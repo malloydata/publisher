@@ -177,19 +177,24 @@ function contextAt(
    };
 }
 
-describe("R4: an incremental pair table refreshed in place equals a full rebuild, and serves live's answers", () => {
-   let restore: () => void;
-   let fixture: R4Fixture;
+/**
+ * The refresh helpers over one scenario: plan and apply a refresh of a
+ * source's pair table from its recorded boundary, as a build does, and
+ * compare the stored table with a full rebuild. `fixture` is set once the
+ * scenario is built.
+ */
+function pairRefresher() {
+   const state = {} as { fixture: R4Fixture };
    // Each table's boundary, as the ledger records it.
    const covered: Record<string, WatermarkBound> = {};
 
    const runner = (sql: string) =>
-      fixture.duckdb.runSQL(sql, { rowLimit: 100_000 }) as Promise<{
+      state.fixture.duckdb.runSQL(sql, { rowLimit: 100_000 }) as Promise<{
          rows: unknown[];
       }>;
    const rows = async (sql: string) => (await runner(sql)).rows as Row[];
    const table = (source: string) =>
-      `${DESTINATION}.${fixture.physicalTables[source]}`;
+      `${DESTINATION}.${state.fixture.physicalTables[source]}`;
 
    /** Plan one refresh of `source` at `now` from its recorded boundary. */
    async function plan(
@@ -200,14 +205,14 @@ describe("R4: an incremental pair table refreshed in place equals a full rebuild
       lineage: IncrementalLineage;
       target: ReturnType<typeof warehouseDeltaTarget>;
    }> {
-      fixture.setClock(now);
-      const lineage = lineageOf(fixture, source);
+      state.fixture.setClock(now);
+      const lineage = lineageOf(state.fixture, source);
       const target = warehouseDeltaTarget({
          dialect: "duckdb",
          runner,
          quotedTablePath: table(source),
          lineage,
-         sourceSQL: fixture.builtSQL[source],
+         sourceSQL: state.fixture.builtSQL[source],
       });
       const columns = (await rows(`DESCRIBE ${table(source)}`)).map((r) =>
          String(r.column_name),
@@ -264,7 +269,7 @@ describe("R4: an incremental pair table refreshed in place equals a full rebuild
    async function expectEqualsRebuild(source: string, where = "true") {
       const rebuilt = `${DESTINATION}.rebuilt_${source}`;
       await runner(
-         `CREATE OR REPLACE TABLE ${rebuilt} AS ${fixture.builtSQL[source]}`,
+         `CREATE OR REPLACE TABLE ${rebuilt} AS ${state.fixture.builtSQL[source]}`,
       );
       const side = (t: string) =>
          `SELECT * EXCLUDE (__parent_row) FROM ${t} WHERE ${where}`;
@@ -284,11 +289,26 @@ describe("R4: an incremental pair table refreshed in place equals a full rebuild
       expect(flags).toEqual([]);
    }
 
+   return {
+      state,
+      covered,
+      runner,
+      rows,
+      table,
+      refresh,
+      expectEqualsRebuild,
+   };
+}
+
+describe("R4: an incremental pair table refreshed in place equals a full rebuild, and serves live's answers", () => {
+   let restore: () => void;
+   const { state, covered, runner, rows, table, refresh, expectEqualsRebuild } =
+      pairRefresher();
    beforeAll(async () => {
       restore = installSettings({
          env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       }).restore;
-      fixture = await buildScenario({
+      state.fixture = await buildScenario({
          files: { "m.malloy": model },
          seedSql,
          materialize: true,
@@ -347,9 +367,9 @@ describe("R4: an incremental pair table refreshed in place equals a full rebuild
 
    /** Every query served from the table (or skipping it) equals live. */
    async function expectServedEqualsLive(now: string) {
-      fixture.setClock(now);
+      state.fixture.setClock(now);
       for (const [name, malloy] of served) {
-         const run = await fixture.run({ name, malloy });
+         const run = await state.fixture.run({ name, malloy });
          expect({ name, via: run.servedVia }).toEqual({
             name,
             via: "served_copy",
@@ -361,12 +381,16 @@ describe("R4: an incremental pair table refreshed in place equals a full rebuild
          });
       }
       for (const [name, malloy] of parentOnly) {
-         fixture.setBindings(fixture.bindings);
-         const run = await fixture.runAsIs(malloy);
+         state.fixture.setBindings(state.fixture.bindings);
+         const run = await state.fixture.runAsIs(malloy);
          expect(
             (run.path?.considered ?? []).map((c) => [c.outcome, c.reason]),
          ).toEqual([["skipped", "COUNT_SEMANTICS"]]);
-         const both = await fixture.run({ name, malloy, expectLive: true });
+         const both = await state.fixture.run({
+            name,
+            malloy,
+            expectLive: true,
+         });
          expect(rowDifference(both.live, both.served)).toBeUndefined();
       }
    }
@@ -499,11 +523,88 @@ describe("R4: an incremental pair table refreshed in place equals a full rebuild
            HAVING count(*) FILTER (WHERE __parent_row) > 1`,
       );
       expect(twice.map((r) => Number(r.id))).toEqual([10]);
-      const run = await fixture.run({
+      const run = await state.fixture.run({
          name: "parent measures beside child ones",
          malloy:
             "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, seg_n }",
       });
       expect(rowDifference(run.live, run.served)).toBeDefined();
+   });
+});
+
+describe("R4: an incremental pair table's edges: a watermark ahead of the clock, NULL parent keys, the watermark column", () => {
+   let restore: () => void;
+   const { state, covered, runner, refresh, expectEqualsRebuild } =
+      pairRefresher();
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      state.fixture = await buildScenario({
+         files: { "m.malloy": model },
+         seedSql,
+         materialize: true,
+         clock: B,
+      });
+      covered.flights = canonicalBoundValue("timestamp", at(B));
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   async function expectServedEqualsLive(now: string) {
+      state.fixture.setClock(now);
+      const run = await state.fixture.run({
+         name: "parent and child measures per flight",
+         malloy:
+            "run: flights -> { group_by: id, carrier; aggregate: total_distance, seg_n, seg_total }",
+      });
+      expect(run.servedVia).toBe("served_copy");
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   }
+
+   it("does not expose the watermark column on the served source", async () => {
+      state.fixture.setBindings(state.fixture.bindings);
+      await expect(
+         state.fixture.runAsIs(
+            "run: flights -> { group_by: __pair_watermark; aggregate: seg_n }",
+         ),
+      ).rejects.toThrow(/__pair_watermark/);
+   });
+
+   it("a child whose watermark is ahead of the clock does not hold back its parent's later changes", async () => {
+      // A child stamped in the future: its parent's watermark is that value
+      // until the clock reaches it.
+      await runner(
+         `INSERT INTO segments VALUES (200, 10, 1.0, TIMESTAMP '2027-01-01 00:00:00')`,
+      );
+      expect((await refresh("flights", R1)).refresh).toBe("delta");
+      await expectEqualsRebuild("flights");
+      // The parent restated: a range that stopped at the clock would never
+      // read it again, since its watermark stays in 2027.
+      await runner(
+         `UPDATE flights SET distance = 5555.0, updated_at = TIMESTAMP '2026-11-11 05:00:00' WHERE id = 10`,
+      );
+      expect((await refresh("flights", R2)).refresh).toBe("delta");
+      await expectEqualsRebuild("flights");
+      await expectServedEqualsLive(R2);
+   });
+
+   it("replaces the parents with a NULL key together, as the build's window groups them", async () => {
+      await runner(
+         `INSERT INTO flights VALUES (NULL, 'AA', 100.0, TIMESTAMP '2026-11-12 01:00:00'), (NULL, 'UA', 200.0, TIMESTAMP '2026-11-12 01:00:00')`,
+      );
+      expect((await refresh("flights", "2026-11-12 02:00:00")).refresh).toBe(
+         "delta",
+      );
+      await expectEqualsRebuild("flights");
+      await runner(
+         `INSERT INTO flights VALUES (NULL, 'DL', 300.0, TIMESTAMP '2026-11-12 03:00:00')`,
+      );
+      expect((await refresh("flights", "2026-11-12 04:00:00")).refresh).toBe(
+         "delta",
+      );
+      await expectEqualsRebuild("flights");
    });
 });
