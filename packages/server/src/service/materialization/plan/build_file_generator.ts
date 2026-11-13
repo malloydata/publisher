@@ -40,8 +40,11 @@
  * the companion model. Without a `name=`, a `storage=` source's table defaults
  * to the source's own name (the destination is Publisher's, and the existing
  * collision checks refuse two sources on one table). A colocated source (no
- * `storage=`) is not built at all until the served copy can serve it
- * ({@link COLOCATED_NOT_SERVED}); v1's colocated `#@ persist` is unchanged.
+ * `storage=`) is built into its own warehouse and needs a `name=`
+ * ({@link COLOCATED_NEEDS_NAME}): its default could be the very table it
+ * reads. The served copy re-roots it on that table, on its own connection,
+ * as it re-roots a `storage=` source on its destination; v1's colocated
+ * `#@ persist` is still served through Malloy's build manifest.
  *
  * Joins (phase 3 PR 4). A join is a reference by default: it is not stored,
  * the served copy keeps it as written, and it reads the joined source (its own
@@ -98,15 +101,36 @@
  * Not yet (each is a later pull request's, and is refused or left out here
  * rather than built wrong):
  * - `inline=` on a join_cross is refused.
- * - A dimension that reads a given is not left out of the build: a source
- *   with one is refused by the same eligibility gates that refuse it under
- *   `#@ persist` today.
- * - A dimension that depends on the query time zone (`hour(ts)`) is stored as
- *   the build computes it; the plan computes it at read instead, which needs
- *   the rewriter's served copy to tell such a column apart.
+ * - A dimension that reads a given and is declared on a source this one is
+ *   built from (not on its own declaration) refuses the source: the re-root
+ *   replaces that declaration, so the served copy could not compute it at
+ *   read (P9, below).
  * - The build reads the author's file as written, not a copy with its
  *   `#@ persist` lines removed, so a source that also carries its own
  *   `#@ persist` is refused rather than stored twice.
+ *
+ * Caller-dependent dimensions (P9). A dimension whose value depends on what
+ * the caller sets is left out of the build and computed at read by the served
+ * copy, which keeps its definition (only stored dimensions' definitions are
+ * dropped), over its inputs, which are stored: one that reads a given, the
+ * current time or the query time zone. The probe compiler (probe_compiler.ts)
+ * answers which, by compiling a probe of each computed dimension, never
+ * running it; the IR walks ({@link givenReadingFields}, `currentTimeFields`)
+ * answer too, and either marking a dimension leaves it out. A given or the
+ * current time leaves it out wherever it is declared (a given-reading one
+ * declared on a base refuses the source, since the served copy would lose its
+ * definition and an author should hear why); the time zone leaves out only a
+ * dimension the source's own declaration writes, since one declared on a base
+ * would be lost from the served copy: that one is stored as the build computes
+ * it, in the default zone, and a query that sets a `timezone:` over its table
+ * is answered live. A stored computed dimension the probe cleared of the time
+ * zone is marked `zoneFree`, so a `timezone:` query over a table that stores
+ * only such dimensions is not declined for it. The source's rows are probed
+ * too: a `where:` term or base relation whose SQL moves with the zone (a
+ * timestamp literal) filtered the table in the build's zone, so only a source
+ * the probe cleared is marked `zoneFreeRows`, and a `timezone:` query over
+ * any other's table is answered live. Each left-out dimension is listed on
+ * the plan (`leftOut`).
  *
  * A current-time `where:` term is a rolling window (rolling_window.ts): a lower
  * bound builds as written, since the build's own `now` is the widest-set
@@ -147,9 +171,10 @@
  * sources then sit in level files (`<model>.<n>.materialize-level.malloy`),
  * one per depth of the chain, which the companion imports, since a build
  * copy imports its parent's level and the companion cannot be imported by
- * what it imports. Only a pair in one `storage=` destination with no
- * incremental keys chains (a colocated `#(materialize)` is not built at all,
- * {@link COLOCATED_NOT_SERVED}, so no colocated pair is planned). A `storage=`
+ * what it imports. Only a pair on one tier (both colocated, or both in one
+ * `storage=` destination) with no incremental keys chains. A colocated
+ * extension's build reads its parent's build source, which Malloy's planner
+ * resolves to the parent's table through the build manifest. A `storage=`
  * extension's warehouse cannot read its parent's stored table, so its build
  * runs in the destination from a text of its own ({@link storedChainText},
  * {@link extensionOverStoredModel}): the parent's build source declared as
@@ -187,6 +212,7 @@ import {
    inverseRenameBlocks,
    type TextEdit,
 } from "../declaration_text";
+import type { StoredColumn } from "../stored_column_types";
 import {
    dropJoinDefinition,
    inlinedJoinRenames,
@@ -195,9 +221,11 @@ import {
    type InlinedJoinText,
 } from "../inlined_join_text";
 import { offsetOf } from "../malloy_lexer";
+import { callerIndependent, type FieldDependence } from "../../probe_compiler";
 import {
    classifyWhereTerms,
    currentTimeFields,
+   givenReadingFields,
    type ClassifiedWhereTerm,
    type MalloyRange,
    type TermUse,
@@ -254,12 +282,17 @@ const CARRIED_GROUPS = ["freshness", "queryMetadata"] as const;
 const PLAIN_PROPERTY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
- * Why a colocated `#(materialize)` (one with no `storage=`) is not built: the
- * served copy reads only a storage destination, so the table would be built
- * and never served.
+ * Why a colocated `#(materialize)` (one with no `storage=`) and no `name=` is
+ * not built: its table would default to the source's own name, in the very
+ * warehouse it reads, so it could be the table it is built from.
  */
-export const COLOCATED_NOT_SERVED =
-   "colocated #(materialize) is not served yet; use storage= or #@ persist";
+export function colocatedNeedsName(tableName: string): string {
+   return (
+      "a #(materialize) source built into its own warehouse needs name=: " +
+      `without one its table would be \`${tableName}\`, which may be the very ` +
+      "table it reads"
+   );
+}
 
 /** A table name `#@ persist name=` accepts (see persist_annotation_validation.ts). */
 const PLAIN_TABLE_NAME = /^[A-Za-z0-9_-]+$/;
@@ -408,6 +441,13 @@ export interface MaterializeColumn {
     */
    access?: "private" | "internal";
    /**
+    * For a stored computed dimension of the source's own: the probe compiler
+    * found its value the same in every query time zone (P9), so a query that
+    * sets a `timezone:` reads it from the table. Absent: unknown, and such a
+    * query is answered live.
+    */
+   zoneFree?: true;
+   /**
     * For a column of an inlined join's joined source: the join's name, with
     * {@link dimension} the joined source's field. The served copy declares
     * these under the join's name, in place of the join.
@@ -489,6 +529,18 @@ export function givenReadTerms(
    );
 }
 
+/** What a caller sets that a left-out dimension's value depends on (P9). */
+export type CallerInput = "given" | "current_time" | "time_zone";
+
+/**
+ * A dimension of a materialized source left out of its build because its
+ * value depends on the caller (P9): the served copy computes it at read.
+ */
+export interface LeftOutDimension {
+   dimension: string;
+   reads: CallerInput[];
+}
+
 /** A given a read-time term reads, and the file that declares it. */
 export interface MaterializeGivenDeclaration {
    name: string;
@@ -512,6 +564,13 @@ export interface MaterializePlan {
    /** The stored columns, in the source's field order. */
    columns: MaterializeColumn[];
    /**
+    * The build source's compiled output, each column in DuckDB's type
+    * spelling (`storedColumnsOfOutput`), read off the compiled companion.
+    * A colocated table's schema is not captured at build, so its serve
+    * binding declares these. Absent before the companion compiles.
+    */
+   storedColumns?: StoredColumn[];
+   /**
     * The `#@ persist` keys carried from the declaration, by key path: `name`,
     * or `freshness.window` for a property of a carried group.
     */
@@ -531,6 +590,20 @@ export interface MaterializePlan {
    givenDeclarations?: MaterializeGivenDeclaration[];
    /** The joins the declaration inlines (`inline=[…]`). */
    inline?: string[];
+   /**
+    * The source's own computed dimensions left out of the build because each
+    * depends on the caller (P9), in field order. Absent when none is.
+    */
+   leftOut?: LeftOutDimension[];
+   /**
+    * The probe compiler found the source's rows the same in every query time
+    * zone (P9): its `where:` terms and base relation compile to the same SQL
+    * at every probe zone. Absent: a `where: ts > @2026-03-08 09:00` (or a
+    * base the probe could not clear) filtered the table's rows in the
+    * build's zone, so a query that sets a `timezone:` over it is answered
+    * live.
+    */
+   zoneFreeRows?: true;
    /** One uniqueness check per inlined join_one (P8). */
    uniquenessChecks?: InlineUniquenessCheck[];
    /**
@@ -579,8 +652,8 @@ export interface MaterializeParent {
     * For a `storage=` pair, set with the build copy: the text the extension's
     * build compiles in its destination over the parent's stored table
     * ({@link extensionOverStoredModel}). Absent until the build copy is
-    * written; every chained pair is a `storage=` pair, since a colocated
-    * `#(materialize)` is not built ({@link COLOCATED_NOT_SERVED}).
+    * written; absent for a colocated pair, whose build reads the parent's
+    * build source in its own warehouse.
     */
    overStored?: StoredChain;
 }
@@ -915,10 +988,16 @@ export function materializeColumns(
       joinReads?: ReadonlyMap<string, FieldJoinReads | undefined>;
       inline?: ReadonlySet<string>;
       hasJoins?: boolean;
+      /** Dimensions the build leaves out because each depends on the caller (P9). */
+      leftOut?: ReadonlySet<string>;
+      /** Stored computed dimensions the probe cleared of the time zone (P9). */
+      zoneFree?: ReadonlySet<string>;
    } = {},
 ): MaterializeColumn[] {
    const out: MaterializeColumn[] = [];
    const perRead = currentTimeFields(def.fields);
+   // A dimension that reads a given is never stored, whoever asks (P9).
+   const perCaller = givenReadingFields(def.fields);
    for (const raw of def.fields ?? []) {
       const field = raw as FieldLike;
       const nested = storableArray(field);
@@ -929,6 +1008,8 @@ export function materializeColumns(
       const dimension = storableDimension(field);
       if (dimension === undefined) continue;
       if (perRead.has(dimension)) continue;
+      if (field.e !== undefined && perCaller.has(dimension)) continue;
+      if (options.leftOut?.has(dimension)) continue;
       const access = hiddenAccess(field);
       const computed = field.e !== undefined;
       if (computed && options.joinReads) {
@@ -946,10 +1027,92 @@ export function materializeColumns(
          dimension,
          column: dimension,
          computed,
+         ...(computed && options.zoneFree?.has(dimension)
+            ? { zoneFree: true as const }
+            : {}),
          ...(access ? { access } : {}),
       });
    }
    return out;
+}
+
+/**
+ * Which of a materialized source's own computed dimensions depend on the
+ * caller (P9), from the probe compiler's answers (`probed`, by dimension;
+ * absent when no probe ran) and the IR walks, and which stored ones the probe
+ * cleared of the time zone. A dimension that reads a given and is declared on
+ * a base, not on the source's own declaration, is a refusal: the served copy
+ * re-roots the declaration and would lose it. So is an inlined join through
+ * which a given is read: its stored columns would hold one caller's values.
+ */
+export function callerDependentDimensions(
+   def: SourceDefLike,
+   probed: ReadonlyMap<string, FieldDependence> | undefined,
+   inline: readonly string[] = [],
+): { leftOut: LeftOutDimension[]; zoneFree: Set<string> } | { reason: string } {
+   const givenIR = givenReadingFields(def.fields);
+   for (const j of inline) {
+      if (
+         givenIR.has(j) ||
+         [...givenIR].some((path) => path.startsWith(`${j}.`))
+      ) {
+         return {
+            reason:
+               `inline= names ${quotedName(j)}, through which a given is read, ` +
+               "so its stored columns would hold one caller's values; " +
+               "reference the join instead",
+         };
+      }
+   }
+   const timeIR = currentTimeFields(def.fields);
+   const declaration = declarationOf(def);
+   const ownDeclaration = (field: FieldLike): boolean => {
+      const at = (
+         field as { location?: { url?: unknown; range?: MalloyRange } }
+      ).location;
+      return (
+         declaration !== undefined &&
+         at?.url === declaration.url &&
+         at.range !== undefined &&
+         rangeWithin(at.range, declaration.range)
+      );
+   };
+   const leftOut: LeftOutDimension[] = [];
+   const zoneFree = new Set<string>();
+   for (const raw of def.fields ?? []) {
+      const field = raw as FieldLike;
+      const dimension = storableDimension(field);
+      if (dimension === undefined || field.e === undefined) continue;
+      const probe = probed?.get(dimension);
+      const reads: CallerInput[] = [];
+      if (givenIR.has(dimension) || (probe?.givens?.length ?? 0) > 0) {
+         reads.push("given");
+      }
+      if (timeIR.has(dimension) || probe?.currentTime === true) {
+         reads.push("current_time");
+      }
+      if (probe?.timeZone === true) reads.push("time_zone");
+      if (reads.includes("given") && !ownDeclaration(field)) {
+         return {
+            reason:
+               `the dimension ${quotedName(dimension)} reads a given and is ` +
+               "declared on a source this one is built from; the served copy " +
+               "re-roots only this declaration, so it could not compute the " +
+               "dimension at read. Declare it on this source, or materialize " +
+               "the source that declares it",
+         };
+      }
+      const perRead =
+         reads.includes("given") ||
+         reads.includes("current_time") ||
+         (reads.includes("time_zone") && ownDeclaration(field));
+      if (perRead) {
+         leftOut.push({ dimension, reads });
+      } else if (reads.length === 0 && callerIndependent(probe)) {
+         zoneFree.add(dimension);
+      }
+   }
+   return { leftOut, zoneFree };
 }
 
 /** A dimension's Malloy type on a compiled source, or "" when unknown. */
@@ -1670,6 +1833,18 @@ export function planModelMaterialize(
    contents: Record<string, unknown>,
    declaredHere?: (declaringURL: string) => boolean,
    givens?: Record<string, unknown>,
+   /**
+    * The probe compiler's answers for each source's computed dimensions, by
+    * `sourceID` then dimension (P9). Absent: the IR walks alone decide, and
+    * no stored dimension is cleared of the time zone.
+    */
+   probed?: ReadonlyMap<string, ReadonlyMap<string, FieldDependence>>,
+   /**
+    * The sources, by `sourceID`, whose rows the probe compiler found the same
+    * in every query time zone (P9). Absent, or a source not in it: a
+    * `timezone:` query over its table is answered live.
+    */
+   zoneFreeRows?: ReadonlySet<string>,
 ): {
    plans: MaterializePlan[];
    refused: MaterializeRefusal[];
@@ -1840,12 +2015,29 @@ export function planModelMaterialize(
          });
          continue;
       }
+      // A dimension that depends on the caller is left out and computed at
+      // read (P9).
+      const dependence = callerDependentDimensions(
+         def,
+         probed?.get(def.sourceID),
+         inline,
+      );
+      if ("reason" in dependence) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: dependence.reason,
+         });
+         continue;
+      }
       // What reads through an inlined join_many has one value per pair, not
       // per parent, so it is computed at read through the served join.
       const columns = materializeColumns(def, {
          joinReads: map.fieldJoinsOf(def.sourceID),
          inline: new Set(ones),
          hasJoins: joins.length > 0,
+         leftOut: new Set(dependence.leftOut.map((d) => d.dimension)),
+         zoneFree: dependence.zoneFree,
       });
       const ownColumns = new Set(columns.map((c) => c.column));
       const joinedColumns = [
@@ -1920,22 +2112,20 @@ export function planModelMaterialize(
          continue;
       }
       const { persist } = carried;
-      // Colocated (no `storage=`): the served copy reads only a storage
-      // destination, so a table built into the source's own warehouse would
-      // be built and never read. Not built until it can be served; a v1
-      // `#@ persist` is colocated as before.
-      if (persist.storage === undefined) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: COLOCATED_NOT_SERVED,
-         });
-         continue;
-      }
       // A source is planned in the model that declares it (see `declaredHere`),
       // so its name here is the name its author gave it.
       const tableName = name;
       if (persist.name === undefined) {
+         // Colocated (no `storage=`): built into the warehouse it reads,
+         // where its own name could be the table it is built from.
+         if (persist.storage === undefined) {
+            refused.push({
+               sourceName: name,
+               sourceID: def.sourceID,
+               reason: colocatedNeedsName(tableName),
+            });
+            continue;
+         }
          if (!PLAIN_TABLE_NAME.test(tableName)) {
             refused.push({
                sourceName: name,
@@ -2083,6 +2273,12 @@ export function planModelMaterialize(
               ? withDeclaration(declarationOf(def))
               : {}),
          ...(inline.length > 0 ? { inline } : {}),
+         ...(dependence.leftOut.length > 0
+            ? { leftOut: dependence.leftOut }
+            : {}),
+         ...(zoneFreeRows?.has(def.sourceID)
+            ? { zoneFreeRows: true as const }
+            : {}),
          ...(uniquenessChecks.length > 0 ? { uniquenessChecks } : {}),
          ...(pair ? { pair } : {}),
          ...(pairBlocks ? { pairBlocks } : {}),
@@ -2107,9 +2303,8 @@ const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key", "partition"];
  * the chain, reached through `extend` and renames only (a query-shaped hop
  * starts a new segment, which the build cannot re-root on a table), declared
  * in the same file (the build copy re-roots it in that file's text), as is
- * every declaration between them (`path`). Both must be `storage=` the same
- * destination (a colocated `#(materialize)` is refused before this, and a
- * colocated pair never chains), carry no incremental
+ * every declaration between them (`path`). Both must be on one tier (both
+ * colocated, or both `storage=` the same destination), carry no incremental
  * key, and the parent no given-reading `where:` (its build source's own
  * `extend` re-applies that term, which would scope the extension's build to
  * one caller). A plan that does not qualify builds over the raw chain, as
@@ -2142,10 +2337,9 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
       ) {
          continue;
       }
-      // One storage destination on both sides, whose build reads the
-      // parent's table there (see `overStored`). A colocated plan is refused
-      // before this (COLOCATED_NOT_SERVED); never chained should one reach it.
-      if (plan.persist.storage === undefined) continue;
+      // One tier on both sides: colocated, whose build reads the parent's
+      // build source in its own warehouse, or one storage destination, whose
+      // build reads the parent's table there (see `overStored`).
       if (plan.persist.storage !== parent.persist.storage) continue;
       const incremental = (p: MaterializePlan) =>
          Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));

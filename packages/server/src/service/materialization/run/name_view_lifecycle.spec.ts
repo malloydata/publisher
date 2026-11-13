@@ -110,12 +110,11 @@ let restoreSettings: () => void;
 
 /**
  * These builds put a colocated `#(materialize)` table and its view in the
- * source's own warehouse, which is not built until the served copy can serve
- * it (`materialize-not-built`, decided 2026-11-12): the view's colocated site
- * returns with colocated serving, and these run again then. A storage
- * destination is a DuckLake, which a unit spec cannot attach.
+ * source's own warehouse, which the served copy serves on that connection
+ * (phase 3 pull request 6). A storage destination is a DuckLake, which a unit
+ * spec cannot attach.
  */
-const colocatedIt = it.skip;
+const colocatedIt = it;
 
 describe("the name= view through real builds", () => {
    let root: string;
@@ -536,8 +535,7 @@ describe("the name= view through real builds", () => {
    it(
       "another loaded version stops serving the table a later version's view replaced",
       async () => {
-         // Colocated `#(materialize)` builds nothing (see colocatedIt), so the
-         // builds are `#@ persist`, and the replacement is recorded on the
+         // The builds are `#@ persist`, and the replacement is recorded on the
          // later version's run as the view would record it.
          await publish("1.0.0", 1, "package", persistModel);
          const self = await build({ versionId: VersionRef.parse("1.0.0") });
@@ -829,26 +827,6 @@ describe("the name= view through real builds", () => {
          expect(await sql('SELECT answer FROM "summary"')).toEqual([
             { answer: 7 },
          ]);
-      },
-      { timeout: 60_000 },
-   );
-
-   it(
-      "a colocated #(materialize) builds nothing and makes no view, until it can be served",
-      async () => {
-         await publish("1.0.0", 1, "version");
-         const plan = (
-            await env.getPackage(parsePackageName(PKG), false, {
-               versionId: VersionRef.parse("1.0.0"),
-            })
-         ).getBuildPlan();
-         expect(
-            Object.values(plan?.sources ?? {}).map((s) => s.name),
-         ).not.toContain("summary");
-         const run = await build({ versionId: VersionRef.parse("1.0.0") });
-         expect(run.status).not.toBe("FAILED");
-         expect(await tables()).toEqual([]);
-         expect(await summaryView()).toBeUndefined();
       },
       { timeout: 60_000 },
    );

@@ -7,11 +7,15 @@
  * (materialization v2, phase 3).
  *
  * Behind `materialize.enabled` (`PUBLISHER_MATERIALIZE`, default off), the one switch for `#(materialize)` build and serve. With it off nothing here
- * runs and serving goes through today's storage serve shape, unchanged.
+ * runs and serving goes through today's storage serve shape and the colocated
+ * build manifest, unchanged.
  *
  * The served copy compiles in a runtime whose connections are the package's
  * own plus each storage destination under a per-process alias
- * (served_copy_config.ts), so the author's text never names a destination.
+ * (served_copy_config.ts), so the author's text never names a destination. A
+ * colocated `#(materialize)` table (colocated_bindings.ts) is read through the
+ * source's own connection, which the package's connections already hold, so a
+ * copy of colocated tables alone needs no storage tier.
  * A compile failure leaves the model's sources serving through the next
  * candidate (today's serve shape, then live) and is reported as a coded
  * package warning.
@@ -21,7 +25,7 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import {
    MalloyError,
-   type MalloyConfig,
+   MalloyConfig,
    type ModelDef,
    type ModelMaterializer,
    type QueryMaterializer,
@@ -36,7 +40,6 @@ import {
    gateFilterText,
    liftProbeFilterCondition,
 } from "../../authorize";
-import { quoteManifestTablePath } from "../../quoting";
 import { keyedOverlay, overlayKey } from "../../overlay_key";
 import {
    createModelRuntime,
@@ -72,6 +75,8 @@ import {
 } from "../../governance/ir/pair_flat_query";
 import {
    authorModelLiftContext,
+   boundTablePath,
+   sqlReadsTable,
    buildVirtualMap,
    narrowSchemaToPublic,
    optsOutOfPersist,
@@ -110,6 +115,20 @@ import {
 } from "../plan/cross_connection_joins";
 
 type VirtualMap = Map<string, Map<string, string>>;
+
+/**
+ * The connection a binding's table is read through in the served copy: a
+ * storage destination under its server-only alias, a colocated table on the
+ * source's own connection (colocated_bindings.ts), which the package's
+ * connections already hold.
+ */
+function servedConnectionOf(b: ServeBinding): string {
+   return b.colocated ? b.destinationName : servedCopyAlias(b.destinationName);
+}
+
+/** No storage destination: a served copy of colocated tables alone. */
+const NO_DESTINATIONS = (): MalloyConfig =>
+   new MalloyConfig({ connections: {} });
 
 /**
  * Why the served copy declined a query, for the path report: `time_zone`, the
@@ -251,6 +270,11 @@ export interface ServedCopyProblem {
 export interface ServedCopyHost {
    modelPath(): string;
    modelDef(): unknown;
+   /**
+    * The storage destinations, while the storage tier serves
+    * (`PERSIST_STORAGE_MODE=on`); undefined otherwise, when only colocated
+    * tables are read.
+    */
    serveDestinationConfig(): (() => MalloyConfig) | undefined;
 }
 
@@ -279,9 +303,13 @@ interface Compiled {
    /** Bindings actually re-rooted, with their destination under its alias. */
    rerooted: ServeBinding[];
    /**
-    * Tables that store a computed dimension (`#(materialize)`), by table
-    * path. The build evaluated it in the default timezone, so a query that
-    * sets its own `timezone:` would read values live computes differently.
+    * Tables that store a computed dimension (`#(materialize)`) whose value
+    * may depend on the time zone, by table path: one of the source's own the
+    * probe compiler did not clear (P9), or an inlined join's or pair table's
+    * child column; or whose rows the probe did not clear (a `where:` with a
+    * timestamp literal). The build evaluated it in the default timezone, so a
+    * query that sets its own `timezone:` would read values live computes
+    * differently.
     */
    computedTables?: ReadonlySet<string>;
    /**
@@ -341,7 +369,17 @@ interface Compiled {
  * the served copy's compile of it against this definition, which is the
  * declaring model's when this model reaches the source only through a join.
  */
-type AuthorReroot = Reroot & { sourceID: string; authorDef: unknown };
+type AuthorReroot = Reroot & {
+   sourceID: string;
+   authorDef: unknown;
+   /**
+    * For a `#(materialize)` re-root: its table holds something the build
+    * evaluated in the default zone that the probe compiler did not clear of
+    * the query time zone (P9): a stored computed dimension, or its rows (a
+    * `where:` term or base relation whose SQL moves with the zone).
+    */
+   storesZonedDimension?: true;
+};
 
 /** How many declined queries one compiled copy remembers before starting over. */
 const DECLINED_LIMIT = 1000;
@@ -416,9 +454,23 @@ export class ServedCopyServe {
       );
    }
 
-   /** Whether any binding could re-root a source (before compiling). */
+   /**
+    * Whether any binding could re-root a source (before compiling): a
+    * colocated table, or a storage table while the storage tier serves.
+    */
    hasBindings(): boolean {
-      return this.bindings.some((b) => b.origin !== "preaggregate");
+      return this.bindings.some((b) => this.usable(b));
+   }
+
+   /**
+    * Whether the served copy may read a binding: never a rollup's; a storage
+    * table only while the host has storage destinations to serve from
+    * (`PERSIST_STORAGE_MODE=on`); a colocated table always, on its own
+    * connection.
+    */
+   private usable(b: ServeBinding): boolean {
+      if (b.origin === "preaggregate") return false;
+      return b.colocated === true || !!this.host.serveDestinationConfig();
    }
 
    /** Drop the compiled copy (bindings, destinations or the model changed). */
@@ -575,7 +627,7 @@ export class ServedCopyServe {
          }),
       );
       const tablesRead = compiled.rerooted.filter((b) =>
-         sql.includes(quoteManifestTablePath(b.tablePath, "duckdb")),
+         sqlReadsTable(sql, boundTablePath(b)),
       );
       if (tablesRead.length === 0) {
          // The query reads no stored table: the served copy would only add
@@ -755,7 +807,7 @@ export class ServedCopyServe {
       if ((computed || windowed) && setsTimezone((await prepared()).query)) {
          decline(
             computed
-               ? "the query sets a timezone over a stored computed dimension"
+               ? "the query sets a timezone over a table built in the default zone (a stored computed dimension or a row filter that depends on it)"
                : "the query sets a timezone, which moves a rolling window's cut-off past what its table stores",
             "time_zone",
          );
@@ -792,7 +844,7 @@ export class ServedCopyServe {
       const at = new Date(now);
       return this.bindings.filter(
          (b) =>
-            b.origin !== "preaggregate" &&
+            this.usable(b) &&
             evaluateManifestFreshness(
                {
                   tableName: b.tablePath,
@@ -818,7 +870,7 @@ export class ServedCopyServe {
          ...bindings
             .map(
                (b) =>
-                  `${b.sourceName}@${b.destinationName}/${b.virtualHandle}/${b.freshnessFallback ?? ""}`,
+                  `${b.sourceName}@${b.colocated ? "colocated:" : ""}${b.destinationName}/${b.virtualHandle}/${b.tablePath}/${b.freshnessFallback ?? ""}`,
             )
             .sort(),
       ].join("|");
@@ -1014,7 +1066,7 @@ export class ServedCopyServe {
          range,
          sourceName,
          ...(pair ? { pair } : {}),
-         connectionAlias: servedCopyAlias(binding.destinationName),
+         connectionAlias: servedConnectionOf(binding),
          virtualHandle: binding.virtualHandle,
          typeName: `${sourceName}__served`,
          columns,
@@ -1025,6 +1077,13 @@ export class ServedCopyServe {
                     .filter((c) => c.computed && c.join === undefined)
                     .map((c) => c.dimension),
               }
+            : {}),
+         ...(plan &&
+         (!plan.zoneFreeRows ||
+            plan.columns.some(
+               (c) => c.computed && c.join === undefined && !c.zoneFree,
+            ))
+            ? { storesZonedDimension: true }
             : {}),
          ...(plan?.readTimeTerms?.length
             ? { readTimeTerms: plan.readTimeTerms }
@@ -1124,8 +1183,11 @@ export class ServedCopyServe {
       lane = 0,
    ): Promise<Compiled> {
       const problems: ServedCopyProblem[] = [];
-      const destinations = this.host.serveDestinationConfig();
-      if (!destinations || !this.packagePath || !this.packageConfig) {
+      // Storage bindings reach here only with destinations (`usable`); a
+      // copy of colocated tables alone needs none.
+      const destinations =
+         this.host.serveDestinationConfig() ?? NO_DESTINATIONS;
+      if (!this.packagePath || !this.packageConfig) {
          return { key, generation, lane, rerooted: [], aliased: [], problems };
       }
       const modelDef = this.host.modelDef();
@@ -1241,7 +1303,7 @@ export class ServedCopyServe {
          const rerooted = candidates.map((c) => c.binding);
          const aliased = rerooted.map((b) => ({
             ...b,
-            destinationName: servedCopyAlias(b.destinationName),
+            destinationName: servedConnectionOf(b),
          }));
          const overlay = new Map<string, string>();
          for (const [url, text] of copy.files) {
@@ -1251,7 +1313,11 @@ export class ServedCopyServe {
          const config = servedCopyConfig(
             this.packageConfig,
             destinations(),
-            new Set(rerooted.map((b) => b.destinationName)),
+            new Set(
+               rerooted
+                  .filter((b) => !b.colocated)
+                  .map((b) => b.destinationName),
+            ),
          );
          const load = async (files: ReadonlyMap<string, string>) => {
             const { runtime, modelURL, importBaseURL } =
@@ -1519,12 +1585,16 @@ export class ServedCopyServe {
             generation,
             lane,
             // An inlined join's columns are the joined source's fields as the
-            // build computed them, in its time zone.
+            // build computed them, in its time zone. A stored computed
+            // dimension of the source's own is too, unless the probe compiler
+            // found it the same in every zone (P9): one that is not was left
+            // out of the build when the source declares it, and is computed
+            // at read in the query's zone.
             computedTables: new Set(
                candidates
                   .filter(
                      (c) =>
-                        (c.reroot.storedDimensions ?? []).length > 0 ||
+                        c.reroot.storesZonedDimension === true ||
                         (c.reroot.inlinedJoins ?? []).length > 0 ||
                         (c.reroot.pair?.childStoredDimensions ?? []).length > 0,
                   )
