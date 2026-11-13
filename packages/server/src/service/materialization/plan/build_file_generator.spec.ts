@@ -170,6 +170,38 @@ source: orders__mat is orders__mat__base -> {
 
 describe("the generated companion, compiled into the build plan", () => {
    it(
+      "stores a persisted query's nest as a column, not a declared join",
+      async () => {
+         const c = await compiled(`${BASE}
+source: regions is duckdb.sql("""select 'east' as code""")
+
+#(materialize) storage="lake"
+source: nested is orders_raw -> {
+  group_by: region
+  aggregate: total is amount.sum()
+  nest: by_day is { group_by: order_date; aggregate: n is count() }
+} extend {
+  join_many: r is regions on r.code = region
+}
+`);
+         const [p] = generatedPlans(c);
+         expect(p.columns).toEqual([
+            { dimension: "region", column: "region", computed: false },
+            { dimension: "total", column: "total", computed: false },
+            { dimension: "by_day", column: "by_day", computed: false },
+         ]);
+         // The build selects it, so the table stores the nest's rows.
+         const [sourceID, source] = Object.entries(c.sources).find(
+            ([, s]) => s.name === "nested",
+         )!;
+         expect(
+            buildSQLOf(source, { entries: {} }, c.targets?.[sourceID]),
+         ).toContain('"by_day"');
+      },
+      { timeout: 30000 },
+   );
+
+   it(
       "carries a rolling window from the compiled source to the refresh's lineage, and builds the term as written",
       async () => {
          const c = await compiled(`source: events_raw is duckdb.sql("""
