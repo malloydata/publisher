@@ -1127,30 +1127,44 @@ function failingSourceOf(
 }
 
 /**
- * The declaration off the chain the first problem in `plan`'s chained build
- * copy lies in, with its range in the author's file, or undefined when that
- * problem is on the chain (the plan's own declaration, its parent's or one
- * between) or in no declaration.
+ * The declarations off the chain that the problems in `plan`'s chained build
+ * copy lie in, each with its range in the author's file and each named once,
+ * leaving out any the copy already omits. Empty when every problem is on the
+ * chain (the plan's own declaration, its parent's or one between) or in no
+ * declaration. All of them at once, so a file with many siblings that do not
+ * compile over the re-root settles in one round rather than one per sibling.
  */
-function copyOmission(
+function copyOmissions(
    failure: CompanionCompileError,
    copy: BuildCopy | undefined,
    plan: MaterializePlan,
-): { sourceID: string; declaration: TermUse } | undefined {
-   if (!copy?.declarationAt) return undefined;
+): { sourceID: string; declaration: TermUse }[] {
+   if (!copy?.declarationAt) return [];
    const url = [...failure.copyOwners].find(
       ([, id]) => id === plan.sourceID,
    )?.[0];
+   if (url === undefined) return [];
    const problems = ((failure.error as { problems?: unknown } | null)
       ?.problems ?? []) as CompileProblem[];
-   const start = problems.find((p) => p?.at?.url === url)?.at?.range?.start as
-      | { line?: unknown; character?: unknown }
-      | undefined;
-   if (url === undefined || typeof start?.line !== "number") return undefined;
-   return copy.declarationAt({
-      line: start.line,
-      character: typeof start.character === "number" ? start.character : 0,
-   });
+   const key = (d: TermUse) =>
+      `${d.url}:${d.range.start.line}:${d.range.start.character}`;
+   const seen = new Set((plan.buildsOver?.omit ?? []).map(key));
+   const out: { sourceID: string; declaration: TermUse }[] = [];
+   for (const problem of problems) {
+      if (problem?.at?.url !== url) continue;
+      const start = problem.at.range?.start as
+         | { line?: unknown; character?: unknown }
+         | undefined;
+      if (typeof start?.line !== "number") continue;
+      const found = copy.declarationAt({
+         line: start.line,
+         character: typeof start.character === "number" ? start.character : 0,
+      });
+      if (found === undefined || seen.has(key(found.declaration))) continue;
+      seen.add(key(found.declaration));
+      out.push(found);
+   }
+   return out;
 }
 
 /** The first problem's message, or the error's own, for a refusal reason. */
@@ -1161,6 +1175,14 @@ function firstProblem(failure: CompanionCompileError): string {
       typeof problem?.message === "string" ? problem.message : failure.message;
    return message.split("\n")[0];
 }
+
+/**
+ * How many rounds one chained source may leave declarations out of its build
+ * copy before it builds over the raw chain instead. Each round leaves out
+ * every declaration its copy's problems lie in, so more rounds are needed
+ * only where leaving one out fails another that reads it.
+ */
+const MAX_OMISSION_ROUNDS = 4;
 
 /**
  * Prepare `from` (build copies, P2/P3/P10) and compile its companion, so that
@@ -1187,8 +1209,14 @@ async function compileContained(
    generated?: GeneratedMaterialize;
 }> {
    let input = from;
-   // Each round unchains or drops a source, or unchains every one once.
-   for (let round = 0; round <= 2 * from.length + 1; round++) {
+   // How many rounds each chained source has left declarations out of its
+   // copy. Past MAX_OMISSION_ROUNDS it builds over the raw chain instead.
+   const omissionRounds = new Map<string, number>();
+   // Each round leaves declarations out of one copy (at most
+   // MAX_OMISSION_ROUNDS times per source), unchains or drops one source, or
+   // unchains every one once, so this many rounds always settle.
+   const rounds = (MAX_OMISSION_ROUNDS + 2) * from.length + 2;
+   for (let round = 0; round < rounds; round++) {
       const { plans, copies } = await prepare(input);
       try {
          return {
@@ -1205,16 +1233,22 @@ async function compileContained(
          // (one that reads the parent and does not compile over its re-root)
          // is that source's: the copy leaves it out, empty, and keeps the
          // chain.
-         const omitted = plan?.buildsOver
-            ? copyOmission(error, copies.get(plan.sourceID), plan)
-            : undefined;
-         if (plan?.buildsOver && omitted) {
+         const omitted =
+            plan?.buildsOver &&
+            (omissionRounds.get(plan.sourceID) ?? 0) < MAX_OMISSION_ROUNDS
+               ? copyOmissions(error, copies.get(plan.sourceID), plan)
+               : [];
+         if (plan?.buildsOver && omitted.length > 0) {
+            omissionRounds.set(
+               plan.sourceID,
+               (omissionRounds.get(plan.sourceID) ?? 0) + 1,
+            );
             logger.warn(
-               "A chained #(materialize) build copy leaves out a declaration that does not compile over the parent's build source",
+               "A chained #(materialize) build copy leaves out declarations that do not compile over the parent's build source",
                {
                   modelPath: args.modelPath,
                   sourceName: plan.sourceName,
-                  omitted: splitSourceID(omitted.sourceID)?.name,
+                  omitted: omitted.map((o) => splitSourceID(o.sourceID)?.name),
                },
             );
             input = plans.map((p) =>
@@ -1225,7 +1259,7 @@ async function compileContained(
                           ...p.buildsOver,
                           omit: [
                              ...(p.buildsOver.omit ?? []),
-                             omitted.declaration,
+                             ...omitted.map((o) => o.declaration),
                           ],
                        },
                     }

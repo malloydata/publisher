@@ -304,3 +304,64 @@ source: c is a extend {
       );
    });
 });
+
+describe("a chained build copy with many declarations that fail over the re-root", () => {
+   const head = `source: regions is duckdb.table('rg') extend { primary_key: id }
+
+source: base is duckdb.table('ev') extend {
+  join_one: r is regions on rid = r.id
+}
+
+#(materialize) storage="lake" name="a_t"
+source: a is base extend {
+  measure: total is amt.sum()
+}
+`;
+   const tail = `
+#(materialize) storage="lake" name="c_t"
+source: c is a extend {
+  dimension: dbl is amt * 2
+}
+`;
+
+   // One round per sibling used to run out of rounds and throw, so the model
+   // lost every build where it used to send its extensions to the raw chain.
+   it("leaves them all out in one round and keeps the chain", async () => {
+      const siblings = Array.from(
+         { length: 7 },
+         (_, i) =>
+            `source: x${i} is a extend {\n  dimension: l${i} is r.label\n}\n`,
+      ).join("\n");
+      const { generated, refused } = await companionOf(
+         `${head}\n${siblings}${tail}`,
+      );
+      expect(refused).toEqual([]);
+      const c = generated?.plans.find((p) => p.sourceName === "c");
+      expect(c?.buildsOver?.sourceName).toBe("a");
+      expect(c?.buildsOver?.omit?.length).toBe(7);
+   });
+
+   // Each sibling reads the one before, so each left out fails the next: past
+   // the round limit, `c` builds over the raw chain (the same rows) rather than
+   // costing the model its builds.
+   it("settles on the raw chain when leaving them out does not converge", async () => {
+      const siblings = Array.from({ length: 8 }, (_, i) =>
+         i === 0
+            ? `source: y0 is a extend {\n  dimension: m0 is r.label\n}\n`
+            : `source: y${i} is y${i - 1} extend {\n  dimension: m${i} is concat(m${i - 1}, 'x')\n}\n`,
+      ).join("\n");
+      const { generated, refused } = await companionOf(
+         `${head}\n${siblings}${tail}`,
+      );
+      expect(refused).toEqual([]);
+      expect(
+         generated?.plans.map((p) => [
+            p.sourceName,
+            p.buildsOver?.sourceName ?? null,
+         ]),
+      ).toEqual([
+         ["a", null],
+         ["c", null],
+      ]);
+   });
+});

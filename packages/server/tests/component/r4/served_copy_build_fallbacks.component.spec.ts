@@ -6,9 +6,9 @@
  * of #1678):
  *
  * - An `inline=` join whose rows read a given is refused for that source
- *   alone (`materialize-not-built`): its stored columns would hold one
- *   caller's rows, and its uniqueness check read the given, which failed the
- *   whole companion when the given had no default. It answers live, equal to
+ *   alone (`materialize-not-built`, P9's check from #1684): its stored
+ *   columns would hold one caller's rows, and its uniqueness check would read
+ *   the given, which fails the whole companion when the given has no default. It answers live, equal to
  *   live for each caller; every other source in the model is built and
  *   served.
  * - An extension table whose chained build does not compile over its
@@ -225,5 +225,78 @@ source: c is a extend {
          expect(live.live.length).toBeGreaterThan(0);
          expect(rowDifference(live.live, stored)).toBeUndefined();
       }
+   });
+});
+
+describe("R4: a chained build keeps its parent's table past many siblings that do not compile over it", () => {
+   // Seven plain sources each read `r`, which `a`'s stored table does not
+   // carry: every one fails `c`'s build copy over `a`'s build source. They are
+   // left out of the copy, empty, and `c` still builds over `a`'s table (one
+   // round per sibling used to run out and cost the model every build).
+   const siblings = Array.from(
+      { length: 7 },
+      (_, i) =>
+         `source: x${i} is a extend {\n  dimension: l${i} is r.label\n}\n`,
+   ).join("\n");
+   const model = `source: regions is duckdb.table('rg') extend { primary_key: id }
+
+source: base is duckdb.table('ev') extend {
+  join_one: r is regions on rid = r.id
+}
+
+#(materialize) storage="lake" name="a_t"
+source: a is base extend {
+  measure: total is amt.sum()
+}
+
+${siblings}
+#(materialize) storage="lake" name="c_t"
+source: c is a extend {
+  where: region = 'east'
+  dimension: dbl is amt * 2
+}
+`;
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": model },
+         seedSql,
+         materialize: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("builds the extension over its parent's stored table", () => {
+      expect(fixture.buildReads).toEqual({ a: [], c: ["a"] });
+      expect(fixture.storedBuildSQL.c).toContain(fixture.physicalTables.a);
+      expect(fixture.storedBuildSQL.c).not.toMatch(/\bev\b/);
+   });
+
+   it("serves the extension from its table, equal to live", async () => {
+      const run = await fixture.run({
+         name: "c",
+         malloy: "run: c -> { group_by: dbl; aggregate: total }",
+      });
+      expect(run.servedVia).toBe("served_copy");
+      expect(run.servedFrom).toBe("storage");
+      expect(run.live.length).toBeGreaterThan(0);
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+
+   it("answers a left-out sibling equal to live", async () => {
+      const run = await fixture.run({
+         name: "x0",
+         malloy: "run: x0 -> { group_by: l0; aggregate: total; order_by: l0 }",
+         expectLive: true,
+      });
+      expect(run.live.length).toBeGreaterThan(0);
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 });
