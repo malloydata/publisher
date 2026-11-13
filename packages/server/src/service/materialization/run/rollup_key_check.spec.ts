@@ -1015,4 +1015,36 @@ describe("the rollup key record, bound for serving", () => {
       materialization.forgetKeyUniqueness(["a"]);
       expect(materialization.repeatedJoinOneKeyWarnings()).toEqual([]);
    });
+
+   it("does not warn of a join_one key for a rollup whose build ran only query source key checks", () => {
+      const materialization = new PackageMaterialization({
+         models: () => new Map(),
+         packageName: () => "pkg",
+      } as unknown as PackageMaterializationOwner);
+      materialization.buildPlan = {
+         sources: {
+            "r1@m": {
+               name: "segments__rollup",
+               sourceEntityId: "a",
+               modelPath: "m.malloy",
+               preaggregate: {
+                  baseSourceName: "segments",
+                  grainDimensions: ["flight_id"],
+                  measures: ["seg_miles"],
+               },
+            },
+         },
+      } as never;
+      // No own key check (no join_one reads the rollup through its key):
+      // only what each query source's primary key check found.
+      for (const unique of [true, false]) {
+         materialization.recordManifestBinding({
+            a: {
+               tableName: "r_t",
+               keyUniqueness: { parentKeys: { "flights@m": unique } },
+            },
+         });
+         expect(materialization.repeatedJoinOneKeyWarnings()).toEqual([]);
+      }
+   });
 });
