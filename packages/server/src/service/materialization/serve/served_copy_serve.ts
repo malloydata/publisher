@@ -497,7 +497,7 @@ export class ServedCopyServe {
                ? {
                     kind: "refused" as const,
                     reason:
-                       "the query reads a pair table through a join to it, whose rows would fan out the joining source",
+                       "the query reads a pair table other than as the source it stores (through a join to it, whose rows would fan out the joining source, or from a source built on it)",
                  }
                : flatPairQueryVerdict(
                     prepared.query,
@@ -821,6 +821,10 @@ export class ServedCopyServe {
                : declaredBaseName(text, c.reroot.range);
          return base === undefined || !rerootedNames.has(base);
       });
+      // Pair tables dropped because the copy did not compile with them,
+      // reported only once it compiles without them: when it still does not,
+      // they were not the cause.
+      let pairsDropped: ServedCopyProblem[] = [];
       // At most one pass per candidate: each pass either compiles with every
       // remaining source whole, or drops the sources it lost fields on.
       for (let pass = 0; pass <= candidates.length + 1; pass++) {
@@ -843,6 +847,8 @@ export class ServedCopyServe {
             (c) => !refused.has(`${c.reroot.url}\u0000${c.reroot.sourceName}`),
          );
          if (candidates.length === 0) {
+            // Nothing left to compile: a pair table dropped was the only one.
+            problems.push(...pairsDropped);
             return { key, generation, rerooted: [], aliased: [], problems };
          }
          const rerooted = candidates.map((c) => c.binding);
@@ -910,13 +916,11 @@ export class ServedCopyServe {
             const withoutPairs = (detail: string): boolean => {
                const pairs = candidates.filter((c) => c.reroot.pair);
                if (pairs.length === 0) return false;
-               for (const c of pairs) {
-                  problems.push({
-                     sourceName: c.reroot.sourceName,
-                     reason: "pair_not_compiled",
-                     detail,
-                  });
-               }
+               pairsDropped = pairs.map((c) => ({
+                  sourceName: c.reroot.sourceName,
+                  reason: "pair_not_compiled" as const,
+                  detail,
+               }));
                candidates = candidates.filter((c) => !c.reroot.pair);
                return true;
             };
@@ -944,6 +948,8 @@ export class ServedCopyServe {
             }
             leftOut = kept.leftOut;
          }
+         problems.push(...pairsDropped);
+         pairsDropped = [];
          // A re-rooted source must keep every field the author's has. One it
          // inherited from a base the re-root replaced (a measure, a view, a
          // join declared on the base) is not in its own text, so it is lost:

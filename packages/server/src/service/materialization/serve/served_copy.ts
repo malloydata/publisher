@@ -120,14 +120,10 @@ export interface PairReroot {
    /** The internal name the flag is read under. */
    parentRowField: string;
    /**
-    * The joined source's stored fields: `name` its field, `column` the pair
-    * table's `<join>__<field>` column, `internalName` what the column is
-    * renamed to, and the field's timeframe, if it has one.
+    * The joined source's stored fields ({@link JoinedColumn}), each with
+    * `internalName`, what its stored column is renamed to.
     */
-   childColumns: readonly (ServedColumn & {
-      column: string;
-      internalName: string;
-   })[];
+   childColumns: readonly (JoinedColumn & { internalName: string })[];
    /**
     * The source's measures over its own fields only, re-declared over the
     * parent rows: each renamed internally to `internalName` and declared again
@@ -140,6 +136,16 @@ export interface PairReroot {
     */
    childStoredDimensions: readonly string[];
 }
+
+/**
+ * A stored column that holds a joined source's field: `name` is the field on
+ * the joined source, `column` the stored column (`<join>__<field>`), with the
+ * field's type, notes and timeframe as a {@link ServedColumn} carries them.
+ * What exposes stored columns under a join's name reads this shape: the
+ * record that replaces an inlined join_one, and the record of a pair table's
+ * child columns.
+ */
+export type JoinedColumn = ServedColumn & { column: string };
 
 /** One measure a pair table's served source re-declares over its parent rows. */
 export interface PairMeasure {

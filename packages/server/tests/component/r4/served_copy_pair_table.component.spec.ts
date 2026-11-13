@@ -692,3 +692,80 @@ describe("R4: a row-level gate on a pair source", () => {
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 });
+
+// A pair source the served copy cannot read with its join as a record is left
+// as written, with a warning saying why, and the model's other tables serve.
+const unreadable = `source: segments is duckdb.table('segments') extend {
+  primary_key: seg_id
+  measure: seg_miles is miles.sum()
+}
+
+#(materialize) storage="lake" inline=["segments"]
+source: reads_child_measure is duckdb.table('flights') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  measure:
+    flight_count is count()
+    via_child is segments.seg_miles
+}
+
+#(materialize) storage="lake" inline=["segments"]
+source: shared_statement is duckdb.table('flights') extend {
+  primary_key: id
+  join_many:
+    segments on segments.flight_id = id
+    notes is duckdb.table('notes') on notes.carrier = carrier
+  measure: seg_n is segments.count()
+}
+
+#(materialize) storage="lake"
+source: plain is duckdb.table('flights') extend {
+  primary_key: id
+  measure: flight_count is count()
+}
+`;
+
+describe("R4: a pair table the served copy cannot read flat", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": unreadable },
+         seedSql,
+         materialize: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("warns for each, by its own reason, and serves the other tables", async () => {
+      const problems = await fixture.servedCopyProblems();
+      expect(problems.map((p) => [p.sourceName, p.reason]).sort()).toEqual([
+         ["reads_child_measure", "pair_not_compiled"],
+         ["shared_statement", "pair_join_not_found"],
+      ]);
+      const plain = await fixture.run({
+         name: "plain",
+         malloy: "run: plain -> { group_by: carrier; aggregate: flight_count }",
+      });
+      expect(plain.servedVia).toBe("served_copy");
+      expect(rowDifference(plain.live, plain.served)).toBeUndefined();
+      for (const malloy of [
+         "run: reads_child_measure -> { group_by: carrier; aggregate: flight_count, via_child }",
+         "run: shared_statement -> { group_by: carrier; aggregate: seg_n }",
+      ]) {
+         const run = await fixture.run({
+            name: malloy,
+            malloy,
+            expectLive: true,
+         });
+         expect(run.servedVia).toBeUndefined();
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+      }
+   });
+});
