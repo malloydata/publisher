@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT
 
 Pre-aggregation rolls a measure up to a coarse grain and stores the result, so a query that only needs that grain reads a small table instead of scanning the base. You annotate the measure; Publisher builds the rollup and routes to it.
 
-Queries do not change. They name the source they always named, ask for the measure they always asked for, and get the same answer — from the rollup when it covers the query, from the base when it does not. Nothing in the API or the model surface exposes a rollup to query authors, which is the point: pre-aggregation is a cache, and a cache you have to ask for is a schema change.
+Queries do not change. They name the source they always named, ask for the measure they always asked for, and get the same answer — from the rollup when it covers the query, from the base when it does not. Nothing in the API or the model surface exposes a rollup to query authors, which is the point: pre-aggregation is a cache, and a cache you have to ask for is a schema change. The same answer includes its metadata: each column a rollup returns carries the annotations live's does (`#(classification)`, `#(doc)`, render tags such as `# currency`), whether the rollup is the source's own or a joined source's, and the access record's field classes and the `#(carries)` ceiling are read from the query as live compiles it, so a rollup never answers a query the ceiling refuses.
 
 This is the same machinery as [materialization](materialization.md) with a different trigger. `#@ persist` stores a source you wrote; `#@ preaggregate` stores a rollup Publisher derives from a measure you annotated. Both build through the same plan, manifest, and scheduler.
 
