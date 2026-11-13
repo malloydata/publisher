@@ -35,7 +35,15 @@ source: base is duckdb.table('data/orders.csv') include { private: id; internal:
 
 #(access_filter) region in $GROUPS
 #(materialize) storage="lake"
-source: orders is __served_copy_alias_of_lake.virtual('c215bd26b05cb26ff0cc5d7d83a4ed555895a01a0516d9ce4abfe890ba3be71c')::orders__served include { public: *; internal: customer_id, region_code } extend {
+source: orders is __served_copy_alias_of_lake.virtual('c215bd26b05cb26ff0cc5d7d83a4ed555895a01a0516d9ce4abfe890ba3be71c')::orders__served extend {
+  rename:
+    customer_id__stored is customer_id
+    order__stored is order
+} include { public: *; private: customer_id__stored; internal: region_code, order__stored } extend {
+  dimension:
+    order is order__stored::"HUGEINT"
+  internal dimension:
+    customer_id is customer_id__stored::"HUGEINT"
   private dimension: secret is amount * 2
   measure:
     total is amount.sum()
@@ -44,6 +52,15 @@ source: orders is __served_copy_alias_of_lake.virtual('c215bd26b05cb26ff0cc5d7d8
 }
 
 #(materialize) storage="lake"
-source: wide is __served_copy_alias_of_lake.virtual('2f6d3e57f13e9e62faf8122e60768b040c87df9c415fd3890f48c5d3915609ce')::wide__served include { public: *; private: amount } extend {
+source: wide is __served_copy_alias_of_lake.virtual('2f6d3e57f13e9e62faf8122e60768b040c87df9c415fd3890f48c5d3915609ce')::wide__served extend {
+  rename:
+    id__stored is id
+    customer_id__stored is customer_id
+    order__stored is order
+} include { public: *; private: amount; internal: id__stored, customer_id__stored, order__stored } extend {
+  dimension:
+    id is id__stored::"HUGEINT"
+    customer_id is customer_id__stored::"HUGEINT"
+    order is order__stored::"HUGEINT"
   measure: amt is amount.sum()
 }

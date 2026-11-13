@@ -48,7 +48,7 @@ const READS = [
 
 const seedSql = [
    `CREATE TABLE events AS
-      SELECT ts, row_number() OVER (ORDER BY ts) AS amount,
+      SELECT ts, CAST(row_number() OVER (ORDER BY ts) AS INTEGER) AS amount,
              CASE WHEN hour(ts) % 2 = 0 THEN 'acme' ELSE 'globex' END AS org
       FROM range(TIMESTAMP '${B}' - INTERVAL 120 DAY, TIMESTAMP '${B}' + INTERVAL 2 DAY, INTERVAL 1 HOUR) t(ts)`,
 ];
@@ -186,6 +186,9 @@ describe("R4: a rolling window over a hidden dimension, served at a pinned clock
       });
       // A stand-in for a re-root bug: `broken`'s stored `amount` read back
       // as a string, which its own `amount.sum()` cannot compile over.
+      // (`amount` is a 32-bit INTEGER in the seed: a BIGINT one would be a
+      // big integer, which a text column is left out for per query instead,
+      // known limitation 12.)
       // In place: the fixture's runs read the same binding objects.
       const broken = fixture.bindings.filter((b) =>
          b.sourceName?.startsWith("broken"),

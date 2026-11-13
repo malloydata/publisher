@@ -55,6 +55,9 @@ import {
 import { rollingWindowsOf } from "../plan/rolling_window";
 import { evaluateManifestFreshness } from "../run/freshness";
 import {
+   bigIntegerReadOf,
+   bigIntegerReads,
+   type BigIntegerRead,
    declaredColumnsOf,
    storedColumnTypeMismatches,
 } from "../stored_column_types";
@@ -393,6 +396,14 @@ type AuthorReroot = Reroot & {
     * `where:` term or base relation whose SQL moves with the zone).
     */
    storesZonedDimension?: true;
+   /**
+    * The stored big-integer columns no cast reads exactly (known limitation
+    * 12: one stored as a float, a warehouse whose bigint type Malloy does not
+    * read back as one), left out of the `type:`, so only a query reading one
+    * fails to compile here and answers live. Their absence is not a lost
+    * field.
+    */
+   columnsLeftOut?: readonly string[];
 };
 
 /**
@@ -1139,7 +1150,28 @@ export class ServedCopyServe {
             problems.push({ sourceName, reason: "column_types" });
             return undefined;
          }
-         inlinedJoins = joined;
+         // A joined big-integer field is read through its native type in the
+         // record; one no cast reads exactly leaves the source to its
+         // fallback (known limitation 12).
+         const joinedReads = joined.map((j) =>
+            bigIntegerReadsOf(
+               j.columns.map((c) => ({ name: c.name, type: c.type })),
+               joinedFieldsAt(def.fields, [j.join]),
+               def,
+               binding,
+            ),
+         );
+         if (joinedReads.some((reads) => [...reads.values()].some((r) => !r))) {
+            problems.push({ sourceName, reason: "column_types" });
+            return undefined;
+         }
+         inlinedJoins = joined.map((j, i) => ({
+            ...j,
+            columns: j.columns.map((c) => {
+               const castTo = joinedReads[i].get(c.name);
+               return castTo ? { ...c, castTo } : c;
+            }),
+         }));
       } else {
          const narrowed = narrowSchemaToPublic(binding.schema, def.fields);
          if (
@@ -1161,6 +1193,22 @@ export class ServedCopyServe {
             };
          });
       }
+      // A column live answers above 2^53 (a BIGINT, known limitation 12) is
+      // read through its native type, which keeps every digit; one no cast
+      // reads exactly is left out, so only a query reading it answers live.
+      const ownReads = bigIntegerReadsOf(columns, def.fields, def, binding);
+      const columnsLeftOut: string[] = [];
+      columns = columns.flatMap((c) => {
+         if (!ownReads.has(c.name)) return [c];
+         const castTo = ownReads.get(c.name);
+         if (castTo) return [{ ...c, castTo }];
+         columnsLeftOut.push(c.name);
+         return [];
+      });
+      if (columns.length === 0) {
+         problems.push({ sourceName, reason: "column_types" });
+         return undefined;
+      }
       // A column the `type:` cannot declare faithfully would fail the whole
       // model's copy, not just this source: leave this one to its fallback.
       if (columns.some((c) => storedMalloyType(c.type) === undefined)) {
@@ -1178,6 +1226,11 @@ export class ServedCopyServe {
             [...reservedNames, ...plan.columns.map((c) => c.column)],
             readSourceClassifications(def.fields as IrField[] | undefined),
             lane,
+            (field, column) =>
+               bigIntegerReadOf(field, column, {
+                  dialect: (def as { dialect?: unknown }).dialect,
+                  colocated: binding.colocated === true,
+               }),
          );
          if (!pair) {
             problems.push({ sourceName, reason: "column_types" });
@@ -1197,7 +1250,12 @@ export class ServedCopyServe {
          ...(plan
             ? {
                  storedDimensions: plan.columns
-                    .filter((c) => c.computed && c.join === undefined)
+                    .filter(
+                       (c) =>
+                          c.computed &&
+                          c.join === undefined &&
+                          !columnsLeftOut.includes(c.dimension),
+                    )
                     .map((c) => c.dimension),
               }
             : {}),
@@ -1212,6 +1270,7 @@ export class ServedCopyServe {
             ? { readTimeTerms: plan.readTimeTerms }
             : {}),
          ...(inlinedJoins.length > 0 ? { inlinedJoins } : {}),
+         ...(columnsLeftOut.length > 0 ? { columnsLeftOut } : {}),
          sourceID: node.sourceID,
          authorDef: node.def,
       } as AuthorReroot;
@@ -1488,6 +1547,50 @@ export class ServedCopyServe {
             });
             return true;
          };
+         // A big-integer column no cast reads exactly is left out of its
+         // source's `type:` (known limitation 12). When the model's own text
+         // names it (a dimension or measure over it), the copy cannot compile
+         // with it gone: that source is left as written and answers live, as
+         // the serve shape withholds a binding whose unservable column a
+         // refinement names, and every other source keeps its table.
+         const withoutLeftOutColumn = (error: unknown): boolean => {
+            const message =
+               error instanceof Error ? error.message : String(error);
+            const named = new Set(
+               [
+                  ...message.matchAll(
+                     /'([^']+)' is not defined|Reference to undefined (?:value|object) `?([^`\s]+)/g,
+                  ),
+               ].map((m) => m[1] ?? m[2]),
+            );
+            if (named.size === 0) return false;
+            const naming = candidates.filter((c) =>
+               (c.reroot.columnsLeftOut ?? []).some((n) => named.has(n)),
+            );
+            if (naming.length === 0) return false;
+            // The re-root the failure is placed in, when it is one of them:
+            // another source that leaves out a column of the same name keeps
+            // its table. A failure placed elsewhere (an extension left as
+            // written) costs every source that leaves the name out.
+            const traced = new Set(
+               failingReroots(error, copy.files, copy.spans, "precise").map(
+                  (f) => rerootKey(f.url, f.sourceName),
+               ),
+            );
+            const placed = naming.filter((c) =>
+               traced.has(rerootKey(c.reroot.url, c.reroot.sourceName)),
+            );
+            const failing = placed.length > 0 ? placed : naming;
+            for (const c of failing) {
+               problems.push({
+                  sourceName: c.reroot.sourceName,
+                  reason: "column_types",
+               });
+               withoutKept.delete(c);
+            }
+            candidates = candidates.filter((c) => !failing.includes(c));
+            return true;
+         };
          // Containment (served_copy_containment.ts): a failure traced to one
          // re-root's own text costs that source alone. Its ladder: a source
          // that inlines join_ones keeps them as written first (the record is
@@ -1565,6 +1668,7 @@ export class ServedCopyServe {
                runtime: servedRuntime,
             } = await load(overlay));
          } catch (err) {
+            if (withoutLeftOutColumn(err)) continue;
             if (contain(err, copy.files, "precise")) continue;
             // A reference join the re-root moved across connections (question
             // 11): leave it out, with what reads it, so every other query
@@ -1686,11 +1790,12 @@ export class ServedCopyServe {
                   .filter((n): n is string => n !== undefined),
             );
             chain.add(c.reroot.sourceName);
-            const excused = new Set(
-               leftOut
+            const excused = new Set([
+               ...leftOut
                   .filter((l) => chain.has(l.declaration ?? l.name))
                   .map((l) => l.name),
-            );
+               ...(c.reroot.columnsLeftOut ?? []),
+            ]);
             // A private field the table does not hold (one private on a
             // source this one extends, which the build never selects, P3)
             // cannot be read by the source, its extensions or a caller, so
@@ -2043,6 +2148,10 @@ function pairRerootOf(
    taken: readonly string[],
    lineage: ReadonlyMap<string, FieldClassification>,
    lane = 0,
+   bigRead: (
+      field: unknown,
+      column: { name: string; type: string },
+   ) => BigIntegerRead | undefined = () => undefined,
 ): PairReroot | undefined {
    const blocks = plan.pairBlocks;
    const block = blocks
@@ -2090,6 +2199,14 @@ function pairRerootOf(
             continue;
          }
          const field = fieldsOf.get(c.dimension);
+         // A big-integer child field is read through its native type in the
+         // record (known limitation 12); one no cast reads exactly leaves
+         // the table to its fallback.
+         const big = bigRead(field, { name: c.column, type });
+         if (big && !big.castTo) {
+            missing = true;
+            continue;
+         }
          const { notes, annotated } = joinedColumnNotes(
             field,
             lineage.get(`${at}.${c.dimension}`),
@@ -2113,6 +2230,7 @@ function pairRerootOf(
             column: c.column,
             internalName: fresh(c.column),
             type,
+            ...(big?.castTo ? { castTo: big.castTo } : {}),
             ...(notes.length > 0 ? { notes } : {}),
             ...(typeof field?.timeframe === "string"
                ? { timeframe: field.timeframe }
@@ -2502,6 +2620,55 @@ export function classifyServedCopyFailure(
  * applies the filter through the join). Undefined when the table lacks a
  * column the plan stores.
  */
+/** A compiled field's name on its source (`as`, else `name`). */
+function fieldNameOf(field: unknown): string | undefined {
+   const f = (field ?? {}) as { name?: unknown; as?: unknown };
+   const name = f.as ?? f.name;
+   return typeof name === "string" ? name : undefined;
+}
+
+/**
+ * The fields of the source reached through `path` (join names from the
+ * re-rooted source down), read off the author's compiled fields; empty when
+ * the path does not resolve.
+ */
+function joinedFieldsAt(
+   fields: readonly unknown[] | undefined,
+   path: readonly string[],
+): unknown[] {
+   let level: readonly unknown[] = fields ?? [];
+   for (const join of path) {
+      const next = level.find(
+         (f) =>
+            (f as { join?: unknown }).join !== undefined &&
+            fieldNameOf(f) === join,
+      ) as { fields?: unknown } | undefined;
+      if (!next || !Array.isArray(next.fields)) return [];
+      level = next.fields;
+   }
+   return [...level];
+}
+
+/**
+ * The big-integer columns among `columns` (known limitation 12), by name, to
+ * the native type each is read through, or to undefined when no cast reads it
+ * exactly ({@link bigIntegerReads}). Decided by the author's source's dialect
+ * (the one live answers on) and where the binding's table is.
+ */
+function bigIntegerReadsOf(
+   columns: readonly { name: string; type: string }[],
+   fields: readonly unknown[] | undefined,
+   def: unknown,
+   binding: ServeBinding,
+): Map<string, string | undefined> {
+   return new Map(
+      bigIntegerReads(columns, fields, {
+         dialect: (def as { dialect?: unknown }).dialect,
+         colocated: binding.colocated === true,
+      }).map((r) => [r.column, r.castTo] as const),
+   );
+}
+
 function inlinedJoinsOf(
    plan: MaterializePlan,
    fields: unknown[] | undefined,

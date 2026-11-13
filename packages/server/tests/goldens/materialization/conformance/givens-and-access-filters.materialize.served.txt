@@ -18,6 +18,10 @@ given: REGIONS :: string[]
 
 #(materialize) storage="lake"
 source: scoped is __served_copy_alias_of_lake.virtual('2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e')::scoped__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"HUGEINT"
   where: region = $REGION
   measure: total is amount.sum()
 }

@@ -11,7 +11,27 @@ Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, and 
 
 The `Release (NPM + Docker + PyPI)` workflow (`.github/workflows/release.yml`) creates GitHub releases automatically with a standard header (NPM/Docker links) plus an auto-generated "What's Changed" PR list via `gh release create --generate-notes`. That auto list is sufficient for routine patch releases.
 
-For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
+For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased] — In development: integers past 2^53 served from storage come back exact
+
+A wrong answer is fixed. A query answered from a stored table (`storage=`, colocated
+`#(materialize)`, and the storage serve shape) read a big-integer column through the table's plain
+`number` declaration, so a value above 2^53 came back rounded: 9007199254740993 as
+9007199254740992, where live on DuckDB, BigQuery or Snowflake gives every digit (materialization v2
+known limitation 12, which said answers were equal and only metadata differed).
+
+A column whose field Malloy types as a big integer (`BIGINT`, `HUGEINT`, `UBIGINT`, `INT64`,
+`NUMBER(p,0)`, a sum or max over one) is now read through a native cast (`::"HUGEINT"` in a
+`storage=` table, the warehouse's own big-integer type in a colocated one), so it stays served from
+storage and comes back exact, with live's `bigint` subtype. Selecting, grouping, filtering and
+aggregating it, a `primary_key:` and the author's own measures over it all keep serving. A column
+no cast reads exactly (stored as a float) is left out per query and answered live. On Postgres,
+whose live answer itself rounds such values (its rows come back through JSON), served equals live,
+never more precise. `count()`, 32-bit integers and decimals are unchanged.
+
+No API change. See docs/materialization.md, "Stored column types follow the model, not the
+warehouse".
+
+## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
 
 One step is a human's: someone has to open `release/v<version>` as a PR into `main` and merge it. `main` requires a pull request, so the release cannot land it itself, and the job summary prints the link. Until it merges the headings on `main` still read `[Unreleased]` and the next release would ship them twice, so the `Release sync` check (`release-sync.yml`) fails on `main` and on every pull request until it does. Whoever cuts the release owns that PR; the `publisher-release` skill makes it a step.
 

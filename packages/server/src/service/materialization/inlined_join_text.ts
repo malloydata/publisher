@@ -16,7 +16,7 @@
  * parent's inlined join the same way. A leaf, so both import it.
  */
 
-import { identifier } from "../malloy_text";
+import { doubleQuotedString, identifier } from "../malloy_text";
 import { lexAll, isName } from "./malloy_lexer";
 import { definitionCutAt } from "./plan/cross_connection_joins";
 
@@ -40,6 +40,12 @@ export interface InlinedJoinColumnText {
    column: string;
    /** The timeframe the joined field truncates to, restored on the record. */
    timeframe?: string;
+   /**
+    * The native SQL type a big-integer column is read through (`HUGEINT`), so
+    * the record's field is a `bigint` number that keeps every digit (known
+    * limitation 12).
+    */
+   castTo?: string;
 }
 
 /** One inlined join, as {@link inlinedJoinStatements} writes its record. */
@@ -181,16 +187,17 @@ function recordsOf(
    inlined: readonly InlinedJoinText[],
    internalOf: ReadonlyMap<string, string>,
 ): string {
-   // malloy-text: names through identifier and a timeframe from TIMEFRAMES
+   // malloy-text: names through identifier, a timeframe from TIMEFRAMES and a cast through doubleQuotedString
    return inlined
       .map((j) => {
          const fields = j.columns
             .map((c) => {
                const internal = identifier(internalOf.get(c.column) as string);
-               const read =
-                  c.timeframe && TIMEFRAMES.has(c.timeframe)
-                     ? `${internal}.${c.timeframe}`
-                     : internal;
+               const read = c.castTo
+                  ? `${internal}::${doubleQuotedString(c.castTo)}`
+                  : c.timeframe && TIMEFRAMES.has(c.timeframe)
+                    ? `${internal}.${c.timeframe}`
+                    : internal;
                return `      ${identifier(c.name)} is ${read}`;
             })
             .join(",\n");
