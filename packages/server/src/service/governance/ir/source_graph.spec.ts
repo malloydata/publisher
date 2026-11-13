@@ -144,6 +144,38 @@ describe("sourceBaseEdge", () => {
       expect(base(b, "stored_ext")).toEqual(["extends", "stored"]);
    });
 
+   it("never takes a look-alike for a base: another source on the same table, a sibling, or one in another file", async () => {
+      const files = {
+         "x.malloy":
+            "source: a is duckdb.table('ev') extend { dimension: d is 1 }",
+         "w.malloy":
+            "source: a2 is duckdb.table('ev') extend { dimension: d is 1 }",
+         "z.malloy": `import "x.malloy"
+import "w.malloy"
+source: c is a extend { dimension: e is 2 }
+source: twin is duckdb.table('ev') extend { dimension: d is 1 }
+source: twin_ext is twin extend { dimension: t is 3 }
+source: s1 is a extend { dimension: p is 1 }
+source: s2 is a extend { dimension: p is 1 }
+source: l1 is duckdb.table('ev'); source: l2 is duckdb.table('ev') extend { dimension: k is 1 }
+source: copied is duckdb.table('ev') extend { dimension: d is 1; dimension: e is 2 }
+`,
+      };
+      const z = await compile(files, "z.malloy");
+      // The one it extends, not the look-alike in the other imported file.
+      expect(base(z, "c")).toEqual(["extends", "a"]);
+      // Two sources on one table, with the same fields written alike, are
+      // not each other's: a table's columns carry the call that read them.
+      expect(base(z, "twin")).toBeUndefined();
+      expect(base(z, "twin_ext")).toEqual(["extends", "twin"]);
+      // A sibling that adds the same field is not the base.
+      expect(base(z, "s2")).toEqual(["extends", "a"]);
+      // Two table calls on one line.
+      expect(base(z, "l2")).toBeUndefined();
+      // Every field another source has, written again, is no extension of it.
+      expect(base(z, "copied")).toBeUndefined();
+   });
+
    it("gives no edge where the compiled model cannot say which file came first", async () => {
       // `z`'s model lists only its own import of `y`, not `y`'s of `x`: in it,
       // `b`'s base in `x` is of unknown order, so `b` gets no edge there.
