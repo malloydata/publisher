@@ -1025,3 +1025,179 @@ describe("R4: a pair table the served copy cannot read flat", () => {
       }
    });
 });
+
+// A join_many reached through a join_one fans out the pair rows as much as one
+// on the source: a query that filters or groups through it is answered live.
+// Both joins are to sources stored in the same destination, so the served copy
+// keeps them over the pair rows.
+const hubSeed = [
+   ...gatedSeed.filter((sql) => !/TABLE notes /.test(sql)),
+   `CREATE TABLE hubs AS SELECT * FROM (VALUES ('AA'), ('UA'), ('DL')) AS t(code)`,
+   // Hub AA has two gates of one name, UA one, DL none.
+   `CREATE TABLE gates AS SELECT * FROM (VALUES
+      (1, 'AA', 'A1'), (2, 'AA', 'A1'), (3, 'UA', 'A1')
+    ) AS t(gate_id, code, gate)`,
+];
+
+const hubModel = `source: segs is duckdb.table('segs') extend { primary_key: seg_id }
+
+#(materialize) storage="lake"
+source: gates_stored is duckdb.table('gates') extend { primary_key: gate_id }
+
+#(materialize) storage="lake"
+source: hubs_stored is duckdb.table('hubs') extend {
+  primary_key: code
+  join_many: gs is gates_stored on gs.code = code
+}
+
+#(materialize) storage="lake" inline=["segs"]
+source: by_hub is duckdb.table('flights') extend {
+  primary_key: id
+  join_many: segs on segs.flight_id = id
+  join_one: hub is hubs_stored on hub.code = carrier
+  dimension: hub_gate is hub.gs.gate
+  measure:
+    flight_count is count()
+    seg_n is segs.count()
+    seg_w is segs.w.sum()
+}
+`;
+
+describe("R4: a one-hop pair table beside a join_one whose source joins many", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": hubModel },
+         seedSql: hubSeed,
+         materialize: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("leaves no problem on the served copy", async () => {
+      expect(await fixture.servedCopyProblems()).toEqual([]);
+   });
+
+   const cases = [
+      [
+         "a filter through it",
+         "run: by_hub -> { where: hub.gs.gate = 'A1'; aggregate: seg_n, seg_w }",
+         false,
+      ],
+      [
+         "a group-by through it",
+         "run: by_hub -> { group_by: hub.gs.gate; aggregate: seg_n, seg_w }",
+         false,
+      ],
+      [
+         "a group-by on a dimension through it",
+         "run: by_hub -> { group_by: hub_gate; aggregate: seg_n }",
+         false,
+      ],
+      [
+         "a filtered measure reading through it",
+         "run: by_hub -> { aggregate: r is seg_n { where: hub.gs.gate = 'A1' } }",
+         false,
+      ],
+      [
+         "the join_one's own field",
+         "run: by_hub -> { group_by: hub.code; aggregate: flight_count, seg_n }",
+         true,
+      ],
+   ] as const;
+   for (const [name, malloy, servedHere] of cases) {
+      it(`${servedHere ? "serves" : "answers live"}: ${name}`, async () => {
+         const run = await fixture.run({
+            name,
+            malloy,
+            ...(servedHere ? {} : { expectLive: true }),
+         });
+         expect(run.live.length).toBeGreaterThan(0);
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         expect(run.servedVia).toBe(servedHere ? "served_copy" : undefined);
+      });
+   }
+});
+
+// A one-hop pair table's `__parent_row` marks one row per distinct parent key,
+// so two parents of one key, or two null keys, share one flagged row where
+// live aggregates each: the build checks the parent key first and is refused,
+// so the source answers live, equal to live.
+const keyedModel = `source: segs is duckdb.table('segs') extend { primary_key: seg_id }
+
+#(materialize) storage="lake" inline=["segs"]
+source: flights is duckdb.table('flights') extend {
+  primary_key: id
+  join_many: segs on segs.flight_id = id
+  measure:
+    flight_count is count()
+    total_distance is distance.sum()
+    seg_n is segs.count()
+    seg_w is segs.w.sum()
+}
+`;
+
+const parentKeySeeds = {
+   "null parent keys": `CREATE TABLE flights AS SELECT * FROM (VALUES
+      (1, 'AA', 100.0), (2, 'AA', 250.0), (NULL, 'UA', 30.0), (NULL, 'UA', 40.0), (8, 'DL', 410.0)
+    ) AS t(id, carrier, distance)`,
+   "a parent key held twice": `CREATE TABLE flights AS SELECT * FROM (VALUES
+      (1, 'AA', 100.0), (2, 'AA', 250.0), (3, 'UA', 30.0), (3, 'UA', 40.0), (8, 'DL', 410.0)
+    ) AS t(id, carrier, distance)`,
+};
+
+for (const [label, flights] of Object.entries(parentKeySeeds)) {
+   describe(`R4: a one-hop pair table over ${label} is not built, and answers live`, () => {
+      let restore: () => void;
+      let fixture: R4Fixture;
+      beforeAll(async () => {
+         restore = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+         }).restore;
+         fixture = await buildScenario({
+            files: { "m.malloy": keyedModel },
+            seedSql: [
+               flights,
+               ...gatedSeed.filter((sql) => /TABLE segs /.test(sql)),
+            ],
+            materialize: true,
+            checkKeys: true,
+         });
+      });
+      afterAll(async () => {
+         restore();
+         await disposeScenarios();
+      });
+
+      // Each would differ from live over the table: the flag counts the
+      // shared key once.
+      for (const malloy of [
+         "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance }",
+         "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, seg_n, seg_w }",
+      ]) {
+         it(`answers live, equal to live: ${malloy}`, async () => {
+            const run = await fixture.run({
+               name: malloy,
+               malloy,
+               expectLive: true,
+            });
+            expect(rowDifference(run.live, run.served)).toBeUndefined();
+            expect(run.servedVia).toBeUndefined();
+         });
+      }
+
+      it("refuses the build, naming the key", () => {
+         expect(Object.keys(fixture.checkFailures)).toEqual(["flights"]);
+         expect(fixture.checkFailures.flights).toMatch(
+            /keys one row flag on 'id' of 'flights' itself/,
+         );
+      });
+   });
+}

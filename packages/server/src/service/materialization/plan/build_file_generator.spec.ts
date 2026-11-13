@@ -963,7 +963,11 @@ source: orders is orders_raw extend {
             ["lines__qty", "lines"],
             ["lines__big_line", "lines"],
          ]);
-         expect(plan.uniquenessChecks).toBeUndefined();
+         // No join_one to check; the parent key is checked, since the
+         // parent-row flag marks one row per key.
+         expect(
+            plan.uniquenessChecks?.map((x) => [x.pairLevel, x.keyColumn]),
+         ).toEqual([[0, "id"]]);
          expect(plan.pair).toEqual({
             join: "lines",
             parentKey: "id",
@@ -1171,7 +1175,7 @@ source: orders is orders_raw extend {
    );
 
    it(
-      "checks a path's and a block table's keys before each build: unique and never null at every level above the leaf",
+      "checks a pair table's keys before each build (one hop, a path, blocks): unique and never null at every level above the leaf",
       async () => {
          const model = (lines: string, orders = "orders_raw") => `${BASE}
 source: lines is duckdb.sql("""
@@ -1216,7 +1220,8 @@ source: orders_one is ${orders} extend {
          );
          // The path checks the source's key and the middle level's; the
          // leaf needs none. The block table checks the source's key (each
-         // block's child is its leaf). A one-hop table checks nothing.
+         // block's child is its leaf). A one-hop table checks the source's
+         // key too: its parent-row flag marks one row per key.
          expect(
             clean.byName
                .get("orders_hop")
@@ -1239,9 +1244,15 @@ source: orders_one is ${orders} extend {
                ]),
          ).toEqual([[0, "", "id"]]);
          expect(
-            clean.byName.get("orders_one")?.uniquenessChecks,
-         ).toBeUndefined();
-         for (const name of ["orders_hop", "orders_blocks"]) {
+            clean.byName
+               .get("orders_one")
+               ?.uniquenessChecks?.map((x) => [
+                  x.pairLevel,
+                  x.join,
+                  x.keyColumn,
+               ]),
+         ).toEqual([[0, "", "id"]]);
+         for (const name of ["orders_hop", "orders_blocks", "orders_one"]) {
             await assertInlinedJoinsUnique(
                clean.byName.get(name),
                clean.duckdb,
@@ -1261,19 +1272,18 @@ source: orders_one is ${orders} extend {
             ).rejects.toThrow(
                /keys one row flag on 'line_id' of the source 'lp'/,
             );
-            await assertInlinedJoinsUnique(
-               bad.byName.get("orders_blocks"),
-               bad.duckdb,
-            );
+            for (const name of ["orders_blocks", "orders_one"]) {
+               await assertInlinedJoinsUnique(bad.byName.get(name), bad.duckdb);
+            }
          }
-         // A null source key fails both.
+         // A null source key fails all three.
          const nullParent = await plansOf(
             model(
                "(1, 1, 2.0), (2, 1, 3.0), (3, 2, 4.0)",
                "orders_raw extend { dimension: id2 is pick null when id = 3 else id } -> { select: id is id2, region, amount, order_date }",
             ),
          );
-         for (const name of ["orders_hop", "orders_blocks"]) {
+         for (const name of ["orders_hop", "orders_blocks", "orders_one"]) {
             await expect(
                assertInlinedJoinsUnique(
                   nullParent.byName.get(name),
@@ -1517,6 +1527,12 @@ source: orders is orders_raw extend {
             watermark: "__pair_watermark",
             merge_key: "id",
          });
+         // The parent key check runs before each build, a refresh included:
+         // a delta that brings a repeated or null key fails as a full build
+         // would, and the plan stays incremental.
+         expect(
+            plan.uniquenessChecks?.map((x) => [x.pairLevel, x.keyColumn]),
+         ).toEqual([[0, "id"]]);
          expect(
             (c.annotationFindings ?? []).filter((f) =>
                f.code.startsWith("materialize-"),

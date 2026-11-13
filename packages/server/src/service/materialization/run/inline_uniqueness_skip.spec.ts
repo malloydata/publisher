@@ -87,6 +87,17 @@ source: orders is duckdb.table('orders_src') extend {
 }
 `;
 
+/** A one-hop pair table: its build checks its own primary key first. */
+const PAIR = `source: regions is duckdb.table('regions_src') extend {
+  primary_key: code
+}
+#(materialize) storage="lake" name="orders_t" inline=["regions"]
+source: orders is duckdb.table('orders_src') extend {
+  primary_key: id
+  join_many: regions on regions.code = region
+}
+`;
+
 type Metadata = NonNullable<ReturnType<UniquenessLedger["toMetadata"]>>;
 
 async function scenario(model: string) {
@@ -352,6 +363,30 @@ describe("the inline uniqueness check, skipped only when its table is unchanged"
          );
          await expect(s.run(["orders"])).rejects.toThrow(
             /inlines the join_one 'regions_m'/,
+         );
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "checks a one-hop pair table's parent key on every build, never relying on its own table",
+      async () => {
+         const s = await scenario(PAIR);
+         const first = await s.run(["orders"]);
+         expect(first.failures).toEqual({});
+         expect(outcomes(first.uniquenessChecks)).toEqual(["orders.:ran"]);
+         expect(first.uniquenessChecks?.passes ?? {}).toEqual({});
+         // Its own table is carried, but that is what the build writes, not
+         // what it reads: the check runs again.
+         const second = await s.run(["orders"]);
+         expect(second.failures).toEqual({});
+         expect(outcomes(second.uniquenessChecks)).toEqual(["orders.:ran"]);
+         // A parent key held twice: caught before the table is written.
+         await s.duckdb.runSQL(
+            "INSERT INTO orders_src VALUES (3, 'west', 7.0)",
+         );
+         await expect(s.run(["orders"])).rejects.toThrow(
+            /keys one row flag on 'id' of 'orders' itself/,
          );
       },
       { timeout: 60000 },

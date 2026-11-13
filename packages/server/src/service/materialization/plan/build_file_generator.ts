@@ -515,10 +515,10 @@ export interface InlineUniquenessCheck {
     */
    sql?: string;
    /**
-    * Set on a pair table's key check (a path of join_manys, or a table of
-    * several blocks): the level of the path whose key it checks, 0 for the
-    * source's own. Such a check also fails on a null key, since a level's row
-    * flag marks one row per distinct key, where live counts each row
+    * Set on a pair table's key check: the level of the path whose key it
+    * checks, 0 for the source's own. Such a check also fails on a null key,
+    * since a level's row flag marks one row per distinct key, where live
+    * counts each row
     * ({@link pairKeyChecks}). `join` is then the path down to that level
     * (empty for the source).
     */
@@ -2820,15 +2820,15 @@ function pairWatermarkCalculation(
 }
 
 /**
- * The key checks of a pair table whose rows carry a flag below the parent's
- * (a path of join_manys) or more than one block, run before each build like
- * an inlined join_one's (P8): the source's primary key, and the key of each
- * level between it and the leaf, must be unique and never null. A level's row
- * flag marks one row per distinct key down to that level, so two rows of one
- * key (or two null keys) share one flagged row, where live aggregates that
- * level over each row: a middle-level measure, and a parent measure beside a
- * deeper level, would come up short. The leaf needs no check: its aggregates
- * read every row. A one-hop table of one block checks nothing, as before.
+ * The key checks of a pair table, run before each build like an inlined
+ * join_one's (P8): the source's primary key, and the key of each level between
+ * it and the leaf (a path of join_manys), must be unique and never null. A
+ * level's row flag marks one row per distinct key down to that level, so two
+ * rows of one key (or two null keys) share one flagged row, where live
+ * aggregates that level over each row: a parent measure, and a middle-level
+ * measure beside a deeper level, would come out wrong. A one-hop table of one
+ * block checks only the source's key. The leaf needs no check: its aggregates
+ * read every row.
  */
 function pairKeyChecks(
    pair: MaterializePair,
@@ -2838,7 +2838,6 @@ function pairKeyChecks(
    connection: string | undefined,
 ): InlineUniquenessCheck[] {
    const all = blocks?.blocks ?? [pair];
-   if (!blocks && !(pair.hops && pair.hops.length > 0)) return [];
    const on = connection ? { connectionName: connection } : {};
    const out: InlineUniquenessCheck[] = [
       {
