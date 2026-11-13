@@ -1310,8 +1310,13 @@ export class PackageMaterialization {
       for (const [sourceEntityId, entry] of Object.entries(
          this.freshnessEntries ?? {},
       )) {
+         // The rollup's own key check only: an entry may carry just the
+         // query sources' primary key checks (`parentKeys`), which say
+         // nothing of a join_one keyed on the rollup's grain.
          const check = entry.keyUniqueness;
-         if (!check || check.unique) continue;
+         if (check?.unique !== false || check.keyColumn === undefined) {
+            continue;
+         }
          const rollup = bySourceEntity.get(sourceEntityId)?.preaggregate;
          if (!rollup) continue;
          const source = bySourceEntity.get(sourceEntityId);

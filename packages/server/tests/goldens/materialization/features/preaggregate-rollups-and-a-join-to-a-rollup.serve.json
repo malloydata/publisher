@@ -671,9 +671,25 @@
       "path": {
         "considered": [
           {
+            "detail": "the query source's primary key `id` was not checked unique and never NULL when the rollup of `lines` was built, so a row of it could be read once per row that shares it",
             "kind": "rollup",
-            "outcome": "used",
+            "outcome": "skipped",
+            "reason": "COUNT_SEMANTICS",
             "tableId": "ea7a32eb791f5d5e237d80571b0bd0dbde9460cd58ea650ba82d2045d4fabc91"
+          },
+          {
+            "detail": "the query source's primary key `id` was not checked unique and never NULL when the rollup of `lines` was built, so a row of it could be read once per row that shares it",
+            "kind": "rollup",
+            "outcome": "skipped",
+            "reason": "COUNT_SEMANTICS",
+            "tableId": "f07ea8bc9c40274198d8c7f091d311ec84a30c92a625d6aded00c4abb951ad0c"
+          },
+          {
+            "detail": "the query source's primary key `id` was not checked unique and never NULL when the rollup of `lines` was built, so a row of it could be read once per row that shares it",
+            "kind": "rollup",
+            "outcome": "skipped",
+            "reason": "COUNT_SEMANTICS",
+            "tableId": "8ee590c7caa5a8e27b612492f2abec261baa65e65ea067328c7af3a037c1effc"
           },
           {
             "kind": "rollup",
@@ -694,13 +710,12 @@
           "sourceName": "orders"
         },
         "servedBy": {
-          "kind": "rollup",
-          "tableId": "ea7a32eb791f5d5e237d80571b0bd0dbde9460cd58ea650ba82d2045d4fabc91"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "a join to a rollup",
-      "servedBy": "rollup",
+      "servedBy": "live",
       "servedFrom": null,
       "switch": "on"
     },

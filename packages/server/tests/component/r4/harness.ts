@@ -22,6 +22,7 @@ import { tryCompileMaterializeCompanion } from "../../../src/service/materializa
 import { assertInlinedJoinsUnique } from "../../../src/service/materialization/run/inline_uniqueness";
 import {
    compileParentKeyChecks,
+   parentKeyCheckCompiler,
    tryCompileRollupCompanion,
 } from "../../../src/service/materialization/plan/rollup_compile";
 import {
@@ -579,7 +580,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          rollups.generated.plans,
          parentKeyNeedsOf(SourceMap.of(authorDef)).map((need) => ({
             need,
-            compile: (text: string) => materializer.loadQuery(text).getSQL(),
+            compile: parentKeyCheckCompiler(materializer),
          })),
       );
    }
