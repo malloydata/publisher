@@ -5,7 +5,10 @@ import { describe, expect, it } from "bun:test";
 import { Annotations } from "@malloydata/malloy";
 import {
    findingSeverity,
+   indexNotePayload,
+   isIndexNote,
    isOnRoute,
+   marksAgentHidden,
    MATERIALIZE_V2_ROUTES,
    publisherRouteOf,
    persistAnnotationFindings,
@@ -17,6 +20,7 @@ import {
    readRouteTag,
    RECOGNIZED_PERSIST_KEYS,
    routeOfNote,
+   tagPayloadKeys,
 } from "./annotation_reader";
 import { GENERATOR_KEYS } from "./materialization/plan/build_file_generator";
 
@@ -295,5 +299,171 @@ describe("readRouteList", () => {
       expect(
          readRouteList("carries", '["@env.X"]', { list: "required" }).malformed,
       ).toContain("reads the environment");
+   });
+});
+
+describe("marksAgentHidden", () => {
+   // The matchers the catalog, the plan and the source extraction each wrote
+   // by hand before the one reader; the reader must hide everything they hid.
+   const OLD_SOURCE = /^#\|?\s*[([{<]?\s*agent-hidden\b/;
+   const OLD_FILE = /^##\|?\s*[([{<]?\s*agent-hidden\b/;
+   const notes = [
+      "#(agent-hidden)",
+      "#[agent-hidden]",
+      "#<agent-hidden>",
+      "#{agent-hidden}",
+      "#|(agent-hidden)\n",
+      "#|(agent-hidden) because\n",
+      "#(agent-hidden)x",
+      '#(agent-hidden)["x"]',
+      "#( agent-hidden )",
+      "#agent-hidden",
+      "# agent-hidden",
+      "# (agent-hidden)",
+      "#(agent-hidden-v2)",
+      "#(Agent-Hidden)",
+      "#(agent_hidden)",
+      "#(agenthidden)",
+      "#(doc) agent-hidden",
+      "# hidden",
+      "  #(agent-hidden)",
+      "",
+   ];
+   const all = [...notes, ...notes.map((n) => (n ? `#${n}` : n))];
+
+   it("hides exactly what the hand-written matchers hid, at each level", () => {
+      for (const text of all) {
+         expect([text, marksAgentHidden(text, "source")]).toEqual([
+            text,
+            OLD_SOURCE.test(text),
+         ]);
+         expect([text, marksAgentHidden(text, "file")]).toEqual([
+            text,
+            OLD_FILE.test(text),
+         ]);
+      }
+   });
+
+   it("hides at least what the hand-written matchers hid, over a grid", () => {
+      // Every prefix, opener, spelling and closer combined. A miss here
+      // exposes a source the author meant to withhold. The one shape the
+      // reader hides past the old matchers is a `###(agent-hidden)` file
+      // note, which Malloy routes to `agent-hidden`.
+      const prefixes = [
+         ...["#", "##", "###", "#|", "##|", "# ", "#\t", "#\n"],
+         ...["#| ", "#|\n", " #", "#  |"],
+      ];
+      const opens = ["", "(", "[", "{", "<", " (", "( ", "(\n", ")", "|"];
+      const words = [
+         "agent-hidden",
+         "AGENT-HIDDEN",
+         "agent-hidden-x",
+         "agent-hiddenx",
+         "agent-hidden=1",
+         "agent-hidden.x",
+      ];
+      const closes = ["", ")", "]", "}", ">", " )", ")x", ")\n|#", "=true"];
+      const missed: string[] = [];
+      for (const p of prefixes)
+         for (const o of opens)
+            for (const w of words)
+               for (const c of closes) {
+                  const text = p + o + w + c;
+                  if (
+                     OLD_SOURCE.test(text) &&
+                     !marksAgentHidden(text, "source")
+                  )
+                     missed.push(`source ${JSON.stringify(text)}`);
+                  if (OLD_FILE.test(text) && !marksAgentHidden(text, "file"))
+                     missed.push(`file ${JSON.stringify(text)}`);
+               }
+      expect(missed).toEqual([]);
+      expect(marksAgentHidden("###(agent-hidden)", "file")).toBe(true);
+   });
+
+   it("reads a block note, a glued prefix and a malformed prefix", () => {
+      expect(marksAgentHidden("#|(agent-hidden)\n", "source")).toBe(true);
+      expect(marksAgentHidden("##|(agent-hidden)\n", "file")).toBe(true);
+      expect(marksAgentHidden("#(agent-hidden)x", "source")).toBe(true);
+      expect(marksAgentHidden("#( agent-hidden )", "source")).toBe(true);
+      expect(marksAgentHidden("##agent-hidden", "file")).toBe(true);
+   });
+
+   it("keeps the levels apart", () => {
+      expect(marksAgentHidden("##(agent-hidden)", "source")).toBe(false);
+      expect(marksAgentHidden("#(agent-hidden)", "file")).toBe(false);
+   });
+});
+
+describe("index notes", () => {
+   it("reads the index shapes, parenthesis-only, at the object level", () => {
+      for (const text of [
+         "#(index)",
+         "#(index_values) n=200",
+         "#( index_values n=200 )",
+         "# (index) n=1",
+         "#(index)n=1",
+      ]) {
+         expect([text, isIndexNote(text)]).toEqual([text, true]);
+      }
+      for (const text of [
+         "#|(index)\n",
+         "#[index]",
+         "##(index)",
+         "#(indexer)",
+         "#(doc) index",
+      ]) {
+         expect([text, isIndexNote(text)]).toEqual([text, false]);
+      }
+   });
+
+   it("takes the payload Malloy routes, or the one inside, glued to or after the parens", () => {
+      expect(indexNotePayload("#(index) n=200")).toBe("n=200");
+      expect(indexNotePayload("#(index_values) n=200 refresh=full")).toBe(
+         "n=200 refresh=full",
+      );
+      expect(indexNotePayload("#( index_values n=200 )")).toBe("n=200");
+      expect(indexNotePayload("#(index n=5) schedule=x")).toBe(
+         "n=5 schedule=x",
+      );
+      expect(indexNotePayload("#(index)n=1")).toBe("n=1");
+      expect(indexNotePayload("# (index) n=1")).toBe("n=1");
+      expect(indexNotePayload("#(index")).toBeUndefined();
+      expect(indexNotePayload("#|(index) n=1")).toBeUndefined();
+      expect(indexNotePayload("#(doc) hello")).toBeUndefined();
+   });
+});
+
+describe("tagPayloadKeys", () => {
+   it("reads top-level keys as a tag, folded to lower case", () => {
+      expect(tagPayloadKeys('n=200 Sharing=x freshness.window="1h"')).toEqual([
+         "n",
+         "sharing",
+         "freshness",
+      ]);
+      expect(tagPayloadKeys("a { sharing=x }")).toEqual(["a"]);
+      expect(tagPayloadKeys("sharing=x -sharing")).toEqual([]);
+      expect(tagPayloadKeys("")).toEqual([]);
+   });
+
+   it("never hydrates an @env. value into the result", () => {
+      expect(tagPayloadKeys("sharing=@env.HOME")).toEqual(["sharing"]);
+   });
+
+   it("reads an unparseable payload word by word", () => {
+      expect(tagPayloadKeys("sharing=private n=")).toEqual(["sharing", "n"]);
+      expect(tagPayloadKeys('"sharing=x"')).toEqual([]);
+   });
+
+   it("names the key of a word that does not parse on its own", () => {
+      expect(tagPayloadKeys("sharing=")).toEqual(["sharing"]);
+      expect(tagPayloadKeys('n=1 Sharing="a b" m=')).toEqual([
+         "n",
+         "sharing",
+         "m",
+      ]);
+      expect(tagPayloadKeys("n=(1 sharing=x)")).toEqual(["n", "sharing"]);
+      expect(tagPayloadKeys("'sharing'=x")).toEqual(["sharing"]);
+      expect(tagPayloadKeys("@env.X= n=")).toEqual(["n"]);
    });
 });

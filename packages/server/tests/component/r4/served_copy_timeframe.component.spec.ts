@@ -39,9 +39,17 @@ const TRUNCATIONS = [
    "ts_month",
 ];
 
-const model = `source: orders is duckdb.table('ev') extend {
+// In a file of its own: a timestamp truncation declared on a base in another
+// file is stored as the build computed it, in the default zone (the served
+// copy keeps only the blocks of bases declared in the source's own file), so
+// a timezone: query over the table declines.
+const baseModel = `source: orders is duckdb.table('ev') extend {
   dimension: inherited_month is d.month
+  dimension: inherited_day is ts.day
 }
+`;
+
+const model = `import "base.malloy"
 
 #(materialize) storage="lake"
 source: stored is orders extend {
@@ -90,7 +98,7 @@ describe("R4: a stored timeframe truncation keeps its timeframe in the served co
          env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       }).restore;
       fixture = await buildScenario({
-         files: { "m.malloy": model },
+         files: { "m.malloy": model, "base.malloy": baseModel },
          seedSql,
          materialize: true,
       });

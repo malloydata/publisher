@@ -40,8 +40,11 @@
  * the companion model. Without a `name=`, a `storage=` source's table defaults
  * to the source's own name (the destination is Publisher's, and the existing
  * collision checks refuse two sources on one table). A colocated source (no
- * `storage=`) is not built at all until the served copy can serve it
- * ({@link COLOCATED_NOT_SERVED}); v1's colocated `#@ persist` is unchanged.
+ * `storage=`) is built into its own warehouse and needs a `name=`
+ * ({@link COLOCATED_NEEDS_NAME}): its default could be the very table it
+ * reads. The served copy re-roots it on that table, on its own connection,
+ * as it re-roots a `storage=` source on its destination; v1's colocated
+ * `#@ persist` is still served through Malloy's build manifest.
  *
  * Joins (phase 3 PR 4). A join is a reference by default: it is not stored,
  * the served copy keeps it as written, and it reads the joined source (its own
@@ -77,25 +80,76 @@
  *
  * What reads through the join_many on the source itself is not stored (a
  * dimension through it has one value per pair, not per parent): the served
- * copy computes it at read, over the record. One join_many per source,
- * declared on the same connection, its condition reading no other join, both
- * sides with a declared primary key that is stored, and the joined source with
- * no joins of its own (one hop); anything else is refused. An incremental pair
- * table refreshes whole parents over a per-parent watermark
- * ({@link pairIncremental}), or is rebuilt in full with a warning.
+ * copy computes it at read, over the record. Each join declared on the same
+ * connection, its condition reading no other join, every side with a declared
+ * primary key that is stored, and a joined source with no joins of its own
+ * but the next of its path; anything else is refused.
+ *
+ * A path of join_manys (`inline=["items.options"]`) is stored as one pair
+ * table through every join of the path (columns `items__options__<field>`),
+ * with one row flag per level above the leaf ({@link pairLevelRowColumn}), and
+ * more than one inlined join_many as blocks of one table, one block per path,
+ * marked by {@link PAIR_LANE_COLUMN} ({@link pairBlocksSource}); the served
+ * copy reads one block per query (served_copy_serve.ts). A path through a
+ * join_one is refused: live aggregates past it by the joined row's key,
+ * however many parents share the row, which no stored row reproduces.
+ *
+ * An incremental one-hop pair table refreshes whole parents over a per-parent
+ * watermark ({@link pairIncremental}), or is rebuilt in full with a warning;
+ * a path's table and a table of several blocks are always rebuilt in full.
  *
  * Not yet (each is a later pull request's, and is refused or left out here
  * rather than built wrong):
  * - `inline=` on a join_cross is refused.
- * - A dimension that reads a given is not left out of the build: a source
- *   with one is refused by the same eligibility gates that refuse it under
- *   `#@ persist` today.
- * - A dimension that depends on the query time zone (`hour(ts)`) is stored as
- *   the build computes it; the plan computes it at read instead, which needs
- *   the rewriter's served copy to tell such a column apart.
+ * - A given-reading `where:` or dimension written where the served copy
+ *   cannot keep it (a source in another file, a parenthesised head, a base
+ *   whose fields this source renames, redefines or drops) refuses the
+ *   source (Bases' blocks, below).
  * - The build reads the author's file as written, not a copy with its
  *   `#@ persist` lines removed, so a source that also carries its own
  *   `#@ persist` is refused rather than stored twice.
+ *
+ * Caller-dependent dimensions (P9). A dimension whose value depends on what
+ * the caller sets is left out of the build and computed at read by the served
+ * copy, which keeps its definition (only stored dimensions' definitions are
+ * dropped), over its inputs, which are stored: one that reads a given, the
+ * current time or the query time zone. The probe compiler (probe_compiler.ts)
+ * answers which, by compiling a probe of each computed dimension, never
+ * running it; the IR walks ({@link givenReadingFields}, `currentTimeFields`)
+ * answer too, and either marking a dimension leaves it out. A given or the
+ * current time leaves it out wherever it is declared (a given-reading one
+ * declared where the served copy cannot keep its definition refuses the
+ * source, and an author should hear why); the time zone leaves out only a
+ * dimension whose definition the served copy keeps (the source's own, or a
+ * kept base's): any other is stored as the build computes it, in the default
+ * zone, and a query that sets a `timezone:` over its table is answered live.
+ * A stored computed dimension the probe cleared of the time zone is marked
+ * `zoneFree`, so a `timezone:` query over a table that stores only such
+ * dimensions is not declined for it. The source's rows are probed too: a
+ * `where:` term or base relation whose SQL moves with the zone (a timestamp
+ * literal) filtered the table in the build's zone, so only a source the
+ * probe cleared is marked `zoneFreeRows`, and a `timezone:` query over any
+ * other's table is answered live. The probe compiles the source as the
+ * author's model declares it, so a term a kept base's block re-applies is
+ * probed too. Each left-out dimension is listed on the plan (`leftOut`).
+ *
+ * Bases' blocks. The served copy replaces the source's declaration base with
+ * its table, so what a base declares is gone unless the re-root keeps that
+ * base's trailing `extend` blocks (kept_ancestors.ts: bases this source
+ * extends or renames, up the chain in its own file, as each declaration
+ * names the next as its whole base). A given-reading `where:` the source
+ * inherits from such a base is left out of the build (the build copy writes
+ * `true` in the base's text) and a caller-dependent dimension such a base
+ * declares is left out of the `select:`; the plan lists the bases whose
+ * blocks the served copy must keep (`keptBases`), and the served copy keeps
+ * them, so the term is re-applied and the dimension computed at read, per
+ * caller. Only when the source inherits the base's fields unchanged (no
+ * `rename:`, redefinition, `except:` or access change), so the kept block
+ * reads the columns it read on the base; and for a term, only when no join
+ * of the source reads that base, since the copy takes the term out of every
+ * reader of the base in it. #1637's leak was a re-root that dropped a
+ * given-reading `where:`; the served copy's given-term check still refuses
+ * any re-root whose compiled filters lost one (`keepsGivenTerms`).
  *
  * A current-time `where:` term is a rolling window (rolling_window.ts): a lower
  * bound builds as written, since the build's own `now` is the widest-set
@@ -136,9 +190,10 @@
  * sources then sit in level files (`<model>.<n>.materialize-level.malloy`),
  * one per depth of the chain, which the companion imports, since a build
  * copy imports its parent's level and the companion cannot be imported by
- * what it imports. Only a pair in one `storage=` destination with no
- * incremental keys chains (a colocated `#(materialize)` is not built at all,
- * {@link COLOCATED_NOT_SERVED}, so no colocated pair is planned). A `storage=`
+ * what it imports. Only a pair on one tier (both colocated, or both in one
+ * `storage=` destination) with no incremental keys chains. A colocated
+ * extension's build reads its parent's build source, which Malloy's planner
+ * resolves to the parent's table through the build manifest. A `storage=`
  * extension's warehouse cannot read its parent's stored table, so its build
  * runs in the destination from a text of its own ({@link storedChainText},
  * {@link extensionOverStoredModel}): the parent's build source declared as
@@ -176,6 +231,7 @@ import {
    inverseRenameBlocks,
    type TextEdit,
 } from "../declaration_text";
+import type { StoredColumn } from "../stored_column_types";
 import {
    dropJoinDefinition,
    inlinedJoinRenames,
@@ -185,8 +241,15 @@ import {
 } from "../inlined_join_text";
 import { offsetOf } from "../malloy_lexer";
 import {
+   confirmedAncestors,
+   keptAncestorChain,
+   type KeptAncestor,
+} from "../kept_ancestors";
+import { callerIndependent, type FieldDependence } from "../../probe_compiler";
+import {
    classifyWhereTerms,
    currentTimeFields,
+   givenReadingFields,
    type ClassifiedWhereTerm,
    type MalloyRange,
    type TermUse,
@@ -243,12 +306,17 @@ const CARRIED_GROUPS = ["freshness", "queryMetadata"] as const;
 const PLAIN_PROPERTY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
- * Why a colocated `#(materialize)` (one with no `storage=`) is not built: the
- * served copy reads only a storage destination, so the table would be built
- * and never served.
+ * Why a colocated `#(materialize)` (one with no `storage=`) and no `name=` is
+ * not built: its table would default to the source's own name, in the very
+ * warehouse it reads, so it could be the table it is built from.
  */
-export const COLOCATED_NOT_SERVED =
-   "colocated #(materialize) is not served yet; use storage= or #@ persist";
+export function colocatedNeedsName(tableName: string): string {
+   return (
+      "a #(materialize) source built into its own warehouse needs name=: " +
+      `without one its table would be \`${tableName}\`, which may be the very ` +
+      "table it reads"
+   );
+}
 
 /** A table name `#@ persist name=` accepts (see persist_annotation_validation.ts). */
 const PLAIN_TABLE_NAME = /^[A-Za-z0-9_-]+$/;
@@ -264,6 +332,38 @@ const DEFERRED_KEYS: Readonly<Record<string, string>> = {};
  * (see the module comment).
  */
 export const PAIR_PARENT_ROW = "__parent_row";
+
+/**
+ * The row flag of a level between the source and the leaf of a path of more
+ * than one hop: `__child_row` for the path's first join, `__child_row_2` for
+ * its second, and so on. True on one row per distinct row of that level (the
+ * keys from the source down to it), a childless row's null-extended row
+ * included; past a block's own last hop, true on every row.
+ */
+export function pairLevelRowColumn(level: number): string {
+   return level === 1 ? "__child_row" : `__child_row_${level}`;
+}
+
+/**
+ * A table that stores more than one inlined path (one block per path) marks
+ * each row with its block's number in this column.
+ */
+export const PAIR_LANE_COLUMN = "__pair_lane";
+
+/** One join past the first of an inlined path of join_manys. */
+export interface MaterializePairHop {
+   /** The join's name on the previous hop's joined source. */
+   join: string;
+   /** This hop's joined source's primary key, as that source names it. */
+   key: string;
+   /** This hop's joined source's declaration. */
+   sourceID: string;
+   /**
+    * The row flag of the level above this hop ({@link pairLevelRowColumn}):
+    * one row per distinct row down to the previous hop.
+    */
+   rowColumn: string;
+}
 
 /**
  * An incremental pair table's watermark column: per parent, the greatest of
@@ -294,11 +394,38 @@ export interface MaterializePair {
    /** The parent-row flag's column ({@link PAIR_PARENT_ROW}). */
    parentRowColumn: string;
    /**
+    * For a path of join_manys (`inline=["items.options"]`): the joins past the
+    * first, in order. Absent: one hop.
+    */
+   hops?: MaterializePairHop[];
+   /**
     * For an incremental pair table: its watermark column
     * ({@link PAIR_WATERMARK}) and the stored columns it is the greatest of,
     * at least one of the source's own and one of the joined source's.
     */
    watermark?: { column: string; parts: string[] };
+}
+
+/**
+ * A pair table that stores more than one inlined path: one block of rows per
+ * path, each block the rows of that path's own pair table, marked by
+ * {@link PAIR_LANE_COLUMN}. Every block stores every column, the other
+ * blocks' as typed nulls, and every level flag down to the deepest path.
+ */
+export interface MaterializePairBlocks {
+   /** The blocks, by block number; the first is the plan's `pair`. */
+   blocks: MaterializePair[];
+   /** The block-number column ({@link PAIR_LANE_COLUMN}). */
+   laneColumn: string;
+   /** The connection the build's SQL source runs on: the source's own. */
+   connection: string;
+   /**
+    * Each joined column's Malloy type, for the other blocks' typed nulls
+    * (see {@link typedNull}).
+    */
+   columnTypes: Record<string, string>;
+   /** The number of level flags every block writes: the deepest path's depth. */
+   levels: number;
 }
 
 /**
@@ -338,11 +465,25 @@ export interface MaterializeColumn {
     */
    access?: "private" | "internal";
    /**
+    * For a stored computed dimension of the source's own: the probe compiler
+    * found its value the same in every query time zone (P9), so a query that
+    * sets a `timezone:` reads it from the table. Absent: unknown, and such a
+    * query is answered live.
+    */
+   zoneFree?: true;
+   /**
     * For a column of an inlined join's joined source: the join's name, with
     * {@link dimension} the joined source's field. The served copy declares
     * these under the join's name, in place of the join.
     */
    join?: string;
+   /**
+    * For a column of a joined source two or more joins down an inlined path
+    * of join_manys: the joins from the source to it, {@link join} first
+    * (`["items", "options"]`), with {@link dimension} its field. Absent for
+    * the path's first join's columns.
+    */
+   path?: string[];
 }
 
 /** The P8 uniqueness check for one inlined join_one, run before each build. */
@@ -362,6 +503,15 @@ export interface InlineUniquenessCheck {
     * Any row it returns is a key the joined source holds twice.
     */
    sql?: string;
+   /**
+    * Set on a pair table's key check (a path of join_manys, or a table of
+    * several blocks): the level of the path whose key it checks, 0 for the
+    * source's own. Such a check also fails on a null key, since a level's row
+    * flag marks one row per distinct key, where live counts each row
+    * ({@link pairKeyChecks}). `join` is then the path down to that level
+    * (empty for the source).
+    */
+   pairLevel?: number;
 }
 
 /**
@@ -403,6 +553,24 @@ export function givenReadTerms(
    );
 }
 
+/** What a caller sets that a left-out dimension's value depends on (P9). */
+export type CallerInput = "given" | "current_time" | "time_zone";
+
+/**
+ * A dimension of a materialized source left out of its build because its
+ * value depends on the caller (P9): the served copy computes it at read.
+ */
+export interface LeftOutDimension {
+   dimension: string;
+   reads: CallerInput[];
+   /**
+    * For one a base on the plan's `keptBases` declares: where (the field's
+    * compiled location), so the build copy confirms it is in that base's
+    * trailing `extend` run, the text the served copy keeps.
+    */
+   at?: TermUse;
+}
+
 /** A given a read-time term reads, and the file that declares it. */
 export interface MaterializeGivenDeclaration {
    name: string;
@@ -426,6 +594,13 @@ export interface MaterializePlan {
    /** The stored columns, in the source's field order. */
    columns: MaterializeColumn[];
    /**
+    * The build source's compiled output, each column in DuckDB's type
+    * spelling (`storedColumnsOfOutput`), read off the compiled companion.
+    * A colocated table's schema is not captured at build, so its serve
+    * binding declares these. Absent before the companion compiles.
+    */
+   storedColumns?: StoredColumn[];
+   /**
     * The `#@ persist` keys carried from the declaration, by key path: `name`,
     * or `freshness.window` for a property of a carried group.
     */
@@ -445,10 +620,40 @@ export interface MaterializePlan {
    givenDeclarations?: MaterializeGivenDeclaration[];
    /** The joins the declaration inlines (`inline=[…]`). */
    inline?: string[];
+   /**
+    * The computed dimensions left out of the build because each depends on
+    * the caller (P9), in field order: the source's own, and ones a base on
+    * {@link keptBases} declares. Absent when none is.
+    */
+   leftOut?: LeftOutDimension[];
+   /**
+    * The ancestors whose trailing `extend` blocks the served copy must keep
+    * ahead of the source's own (kept_ancestors.ts), nearest first, up to the
+    * farthest one needed: one writes a given-reading `where:` the source
+    * inherits, or declares a dimension left out because it depends on the
+    * caller. The build leaves those out, and only that base's block,
+    * written again over the stored table, re-applies them at read. Absent
+    * when the source needs no base's block.
+    */
+   keptBases?: KeptAncestor[];
+   /**
+    * The probe compiler found the source's rows the same in every query time
+    * zone (P9): its `where:` terms and base relation compile to the same SQL
+    * at every probe zone. Absent: a `where: ts > @2026-03-08 09:00` (or a
+    * base the probe could not clear) filtered the table's rows in the
+    * build's zone, so a query that sets a `timezone:` over it is answered
+    * live.
+    */
+   zoneFreeRows?: true;
    /** One uniqueness check per inlined join_one (P8). */
    uniquenessChecks?: InlineUniquenessCheck[];
-   /** For an inlined join_many: the pair table's layout (P5). */
+   /**
+    * For an inlined join_many: the pair table's layout (P5); for a table
+    * that stores more than one inlined path, its first block's.
+    */
    pair?: MaterializePair;
+   /** For a pair table that stores more than one inlined path: its blocks. */
+   pairBlocks?: MaterializePairBlocks;
    /**
     * Why a pair table's `refresh="incremental"` is not honoured, when it is
     * not: the plan carries no incremental key, so the table is rebuilt in
@@ -488,8 +693,8 @@ export interface MaterializeParent {
     * For a `storage=` pair, set with the build copy: the text the extension's
     * build compiles in its destination over the parent's stored table
     * ({@link extensionOverStoredModel}). Absent until the build copy is
-    * written; every chained pair is a `storage=` pair, since a colocated
-    * `#(materialize)` is not built ({@link COLOCATED_NOT_SERVED}).
+    * written; absent for a colocated pair, whose build reads the parent's
+    * build source in its own warehouse.
     */
    overStored?: StoredChain;
 }
@@ -824,10 +1029,16 @@ export function materializeColumns(
       joinReads?: ReadonlyMap<string, FieldJoinReads | undefined>;
       inline?: ReadonlySet<string>;
       hasJoins?: boolean;
+      /** Dimensions the build leaves out because each depends on the caller (P9). */
+      leftOut?: ReadonlySet<string>;
+      /** Stored computed dimensions the probe cleared of the time zone (P9). */
+      zoneFree?: ReadonlySet<string>;
    } = {},
 ): MaterializeColumn[] {
    const out: MaterializeColumn[] = [];
    const perRead = currentTimeFields(def.fields);
+   // A dimension that reads a given is never stored, whoever asks (P9).
+   const perCaller = givenReadingFields(def.fields);
    for (const raw of def.fields ?? []) {
       const field = raw as FieldLike;
       const nested = storableArray(field);
@@ -838,6 +1049,8 @@ export function materializeColumns(
       const dimension = storableDimension(field);
       if (dimension === undefined) continue;
       if (perRead.has(dimension)) continue;
+      if (field.e !== undefined && perCaller.has(dimension)) continue;
+      if (options.leftOut?.has(dimension)) continue;
       const access = hiddenAccess(field);
       const computed = field.e !== undefined;
       if (computed && options.joinReads) {
@@ -855,10 +1068,224 @@ export function materializeColumns(
          dimension,
          column: dimension,
          computed,
+         ...(computed && options.zoneFree?.has(dimension)
+            ? { zoneFree: true as const }
+            : {}),
          ...(access ? { access } : {}),
       });
    }
    return out;
+}
+
+/**
+ * The ancestors a materialized source's re-root can keep the blocks of
+ * ({@link keptAncestorChain}), nearest first, each with whether the source
+ * inherits its fields unchanged ({@link inheritsUnchanged}). A term or
+ * dimension a base declares is re-applied at read in that base's block, in
+ * the base's own names, so it is left out of the build only when the source
+ * renames, redefines, drops or re-hides none of them.
+ */
+export interface PlanBases {
+   chain: KeptAncestor[];
+   unchanged: boolean[];
+}
+
+/** {@link PlanBases} for `def`, from the source map. */
+export function planBases(def: SourceDefLike, map: SourceMap): PlanBases {
+   const declaration = declarationOf(def);
+   if (typeof def.sourceID !== "string" || !declaration) {
+      return { chain: [], unchanged: [] };
+   }
+   const chain = keptAncestorChain(map, def.sourceID, declaration.url);
+   return {
+      chain,
+      unchanged: chain.map((a) =>
+         inheritsUnchanged(def, map.node(a.sourceID)?.def as SourceDefLike),
+      ),
+   };
+}
+
+/**
+ * Whether `def` has every field `ancestor` has, each exactly as the ancestor
+ * compiled it (no `rename:`, redefinition, `except:` or access change on the
+ * way down), so a base's block written over the stored table reads the same
+ * columns it read on the base. Unreadable fields fail closed.
+ */
+function inheritsUnchanged(
+   def: SourceDefLike,
+   ancestor: SourceDefLike | undefined,
+): boolean {
+   if (!ancestor || !Array.isArray(ancestor.fields)) return false;
+   const nameOf = (f: FieldLike) => (typeof f.as === "string" ? f.as : f.name);
+   const own = new Map<unknown, unknown>();
+   for (const raw of def.fields ?? []) own.set(nameOf(raw as FieldLike), raw);
+   try {
+      return ancestor.fields.every((raw) => {
+         const mine = own.get(nameOf(raw as FieldLike));
+         return (
+            mine !== undefined &&
+            (mine === raw || JSON.stringify(mine) === JSON.stringify(raw))
+         );
+      });
+   } catch {
+      return false;
+   }
+}
+
+/**
+ * Where a compiled thing at `uses` is declared: `"own"` within the source's
+ * own declaration, the index of the ancestor on `bases.chain` whose
+ * declaration holds every use, or undefined (another file, a base off the
+ * kept walk, or no location).
+ */
+function declaredAt(
+   uses: readonly TermUse[],
+   own: TermUse | undefined,
+   bases: PlanBases,
+): "own" | number | undefined {
+   if (uses.length === 0) return undefined;
+   const within = (url: string, range: MalloyRange) =>
+      uses.every((use) => use.url === url && rangeWithin(use.range, range));
+   if (own && within(own.url, own.range)) return "own";
+   if (!own) return undefined;
+   const index = bases.chain.findIndex((a) => within(own.url, a.range));
+   return index < 0 ? undefined : index;
+}
+
+/**
+ * Whether a join of `def` (its condition, its joined source's filters or
+ * fields, at any depth) holds IR compiled from the text at `uses`. A build
+ * copy that takes an inherited term out of its base takes it out of every
+ * reader of that base in the copy, so a join that reads the base would read
+ * every caller's rows in the build. Fails closed on a walk too deep to finish.
+ */
+function joinsRead(def: SourceDefLike, uses: readonly TermUse[]): boolean {
+   const hit = (node: unknown, depth: number): boolean => {
+      if (depth > 400) return true;
+      if (node === null || typeof node !== "object") return false;
+      if (Array.isArray(node)) return node.some((n) => hit(n, depth + 1));
+      const record = node as { url?: unknown; range?: MalloyRange };
+      if (
+         typeof record.url === "string" &&
+         record.range !== undefined &&
+         uses.some(
+            (u) =>
+               u.url === record.url &&
+               JSON.stringify(u.range) === JSON.stringify(record.range),
+         )
+      ) {
+         return true;
+      }
+      return Object.values(node).some((v) => hit(v, depth + 1));
+   };
+   return (def.fields ?? []).some(
+      (raw) => (raw as FieldLike).join !== undefined && hit(raw, 0),
+   );
+}
+
+/**
+ * Which of a materialized source's computed dimensions depend on the caller
+ * (P9), from the probe compiler's answers (`probed`, by dimension; absent
+ * when no probe ran) and the IR walks, and which stored ones the probe
+ * cleared of the time zone. A caller-dependent dimension is left out when
+ * the served copy keeps its definition: one the source's own declaration
+ * writes, or one a base on the kept walk declares ({@link PlanBases}), whose
+ * block the re-root keeps (`keptBase`, the farthest such base's index, or
+ * -1). A given-reading one declared anywhere else is a refusal: the served
+ * copy could not compute it at read. So is an inlined join through which a
+ * given is read: its stored columns would hold one caller's values. A
+ * zone-dependent one declared elsewhere is stored as built.
+ */
+export function callerDependentDimensions(
+   def: SourceDefLike,
+   probed: ReadonlyMap<string, FieldDependence> | undefined,
+   inline: readonly string[] = [],
+   bases: PlanBases = { chain: [], unchanged: [] },
+):
+   | { leftOut: LeftOutDimension[]; zoneFree: Set<string>; keptBase: number }
+   | { reason: string } {
+   const givenIR = givenReadingFields(def.fields);
+   for (const j of inline) {
+      if (
+         givenIR.has(j) ||
+         [...givenIR].some((path) => path.startsWith(`${j}.`))
+      ) {
+         return {
+            reason:
+               `inline= names ${quotedName(j)}, through which a given is read, ` +
+               "so its stored columns would hold one caller's values; " +
+               "reference the join instead",
+         };
+      }
+   }
+   const timeIR = currentTimeFields(def.fields);
+   const declaration = declarationOf(def);
+   // Where the served copy keeps the field's definition: its own declaration,
+   // or a kept base's block (the base's fields unchanged on the way down).
+   const kept = (field: FieldLike): "own" | number | undefined => {
+      const at = (
+         field as { location?: { url?: unknown; range?: MalloyRange } }
+      ).location;
+      if (typeof at?.url !== "string" || at.range === undefined) {
+         return undefined;
+      }
+      const where = declaredAt(
+         [{ url: at.url, range: at.range }],
+         declaration,
+         bases,
+      );
+      return typeof where === "number" && !bases.unchanged[where]
+         ? undefined
+         : where;
+   };
+   const leftOut: LeftOutDimension[] = [];
+   const zoneFree = new Set<string>();
+   let keptBase = -1;
+   for (const raw of def.fields ?? []) {
+      const field = raw as FieldLike;
+      const dimension = storableDimension(field);
+      if (dimension === undefined || field.e === undefined) continue;
+      const probe = probed?.get(dimension);
+      const reads: CallerInput[] = [];
+      if (givenIR.has(dimension) || (probe?.givens?.length ?? 0) > 0) {
+         reads.push("given");
+      }
+      if (timeIR.has(dimension) || probe?.currentTime === true) {
+         reads.push("current_time");
+      }
+      if (probe?.timeZone === true) reads.push("time_zone");
+      const where = reads.length > 0 ? kept(field) : undefined;
+      if (reads.includes("given") && where === undefined) {
+         return {
+            reason:
+               `the dimension ${quotedName(dimension)} reads a given and is ` +
+               "declared where the served copy cannot keep its definition " +
+               "(a source in another file, a parenthesised head, or a base " +
+               "whose fields this source renames, redefines or drops), so " +
+               "it could not compute the dimension at read. Declare it on " +
+               "this source or on a source it extends in this file, or " +
+               "materialize the source that declares it",
+         };
+      }
+      const perRead =
+         reads.includes("given") ||
+         reads.includes("current_time") ||
+         (reads.includes("time_zone") && where !== undefined);
+      if (perRead) {
+         const at = (field as { location?: TermUse }).location;
+         leftOut.push({
+            dimension,
+            reads,
+            ...(typeof where === "number" && at
+               ? { at: { url: at.url, range: at.range } }
+               : {}),
+         });
+         if (typeof where === "number") keptBase = Math.max(keptBase, where);
+      } else if (reads.length === 0 && callerIndependent(probe)) {
+         zoneFree.add(dimension);
+      }
+   }
+   return { leftOut, zoneFree, keptBase };
 }
 
 /** A dimension's Malloy type on a compiled source, or "" when unknown. */
@@ -875,16 +1302,19 @@ function columnType(def: SourceDefLike, dimension: string): string {
 
 /**
  * The columns of one inlined join's joined source: its public atomic
- * dimensions (never a hidden one) that read no join of their own (one hop), each stored as
- * `<join>__<field>`. When the join itself is private or internal on the
- * source, `access` is its modifier and each column carries it: the build copy
- * lifts the join so its build can read it (P3), and the served copy's record
- * keeps the join's modifier, so a caller reads `<join>.<field>` exactly where
- * live lets it.
+ * dimensions (never a hidden one) that read no join of their own (one hop),
+ * each stored as `<join>__<field>`, or, for a join further down an inlined
+ * path of join_manys, as `<join>__<next join>__…__<field>` (`path` names the
+ * joins from the source to this one). When the join itself is private or
+ * internal on the source, `access` is its modifier and each column carries
+ * it: the build copy lifts the join so its build can read it (P3), and the
+ * served copy's record keeps the join's modifier, so a caller reads
+ * `<join>.<field>` exactly where live lets it.
  */
 function inlinedJoinColumns(
    map: SourceMap,
    join: SourceJoin,
+   path: readonly string[] = [join.name],
    access?: "private" | "internal",
 ): MaterializeColumn[] {
    const joined = map.joinedReadsOf(join);
@@ -909,13 +1339,104 @@ function inlinedJoinColumns(
       }
       out.push({
          dimension,
-         column: `${join.name}__${dimension}`,
+         column: `${path.join("__")}__${dimension}`,
          computed: true,
-         join: join.name,
+         join: path[0],
+         ...(path.length > 1 ? { path: [...path] } : {}),
          ...(access ? { access } : {}),
       });
    }
    return out;
+}
+
+/** The Malloy types a pair table can store as a typed null (`null::<type>`). */
+const NULLABLE_TYPES: ReadonlySet<string> = new Set([
+   "string",
+   "number",
+   "boolean",
+   "date",
+   "timestamp",
+   "timestamptz",
+]);
+
+/**
+ * The joins an `inline=` entry names, from the source down (`"items"`, or a
+ * path of join_manys, `"items.options"`), or why it cannot be inlined. The
+ * first is checked as {@link inlineRefusal} checks any inlined join; each one
+ * past it must be a join_many of the joined source before it, declared as a
+ * source, on the source's connection, keyed on that joined source's own
+ * columns. A path through a join_one is refused: live aggregates a join_many
+ * past a join_one once per row of that join_many however many parents share
+ * the joined row (a symmetric aggregate on its key), which no flat row
+ * reproduces.
+ */
+function inlinedPathOf(
+   entry: string,
+   joins: readonly SourceJoin[],
+   map: SourceMap,
+   connection: unknown,
+): { path: SourceJoin[] } | { reason: string } {
+   const names = entry.split(".");
+   const quoted = quotedName(entry);
+   if (names.some((n) => n === "")) {
+      return {
+         reason: `inline= names ${quoted}, which is not a join or a path of joins`,
+      };
+   }
+   const first = inlineRefusal(names[0], joins, connection);
+   if (first) return { reason: first };
+   const path = [joins.find((j) => j.name === names[0]) as SourceJoin];
+   if (names.length === 1) return { path };
+   const throughOne =
+      `inline= names ${quoted}, a path through a join_one; only a path of ` +
+      "join_manys is stored as a pair table (live counts a row past a " +
+      "join_one once however many parents share it, which no stored row " +
+      "reproduces), so inline the join_one alone";
+   if (path[0].relationship !== "many") return { reason: throughOne };
+   for (let k = 1; k < names.length; k++) {
+      const prev = path[k - 1];
+      const next = map
+         .joinedReadsOf(prev)
+         .joins.find((j) => j.name === names[k]);
+      if (!next) {
+         return {
+            reason: `inline= names ${quoted}, and ${quotedName(names[k])} is not a join of the source ${quotedName(prev.name)} joins`,
+         };
+      }
+      if (next.relationship !== "many") return { reason: throughOne };
+      if (
+         typeof connection === "string" &&
+         next.connection !== undefined &&
+         next.connection !== connection
+      ) {
+         return {
+            reason:
+               `inline= names ${quoted}, whose ${quotedName(names[k])} reads ` +
+               "another connection than the source, so one build query cannot read both",
+         };
+      }
+      const through = next.condition
+         ? [...next.condition.joins].filter((j) => j !== next.name)
+         : undefined;
+      if (!through || through.length > 0 || next.condition?.nested) {
+         return {
+            reason:
+               `inline= names ${quoted}, whose ${quotedName(names[k])} is keyed ` +
+               "on another join than the one before it; inline only a path " +
+               "whose every join is keyed on the joined source before it",
+         };
+      }
+      if (!next.sourceID || !splitSourceID(next.sourceID)) {
+         return {
+            reason:
+               `inline= names ${quoted}, whose ${quotedName(names[k])} joins a ` +
+               "source defined in place; declare it as a source so the served " +
+               "copy can read it from the pair table",
+         };
+      }
+      path.push(next);
+   }
+   return { path };
 }
 
 /** A name as a refusal message shows it, in backticks. */
@@ -986,18 +1507,21 @@ function inlineRefusal(
 }
 
 /**
- * Why an inlined join_many cannot be stored as a pair table, or its layout
- * (see the module comment for each rule). `columns` are the source's own
- * stored columns; `joined` the join's `j__<field>` columns.
+ * Why an inlined path of join_manys cannot be stored as a pair table, or its
+ * layout (see the module comment for each rule). `path` is the path's joins,
+ * the source's own first; `columns` are the source's own stored columns;
+ * `joined` every inlined join's columns.
  */
 function pairRefusal(
-   join: SourceJoin,
+   path: readonly SourceJoin[],
    def: SourceDefLike,
    map: SourceMap,
    columns: readonly MaterializeColumn[],
    joined: readonly MaterializeColumn[],
 ): { pair: MaterializePair } | { reason: string } {
-   const name = quotedName(join.name);
+   const join = path[0];
+   const names = path.map((j) => j.name);
+   const name = quotedName(names.join("."));
    const parentKey =
       typeof def.primaryKey === "string" ? def.primaryKey : undefined;
    if (!parentKey || !columns.some((c) => c.column === parentKey)) {
@@ -1008,28 +1532,42 @@ function pairRefusal(
             "dimension), to keep one row per parent",
       };
    }
-   const childKey = join.primaryKey;
-   if (
-      !childKey ||
-      !joined.some((c) => c.join === join.name && c.dimension === childKey)
-   ) {
-      return {
-         reason:
-            `inline= names ${name}, a join_many, and a pair table needs the ` +
-            "joined source's primary key, declared and stored (a public " +
-            "dimension), to keep one row per child",
-      };
-   }
-   if (map.joinedReadsOf(join).joins.length > 0) {
-      return {
-         reason:
-            `inline= names ${name}, a join_many whose joined source has joins ` +
-            "of its own; a pair table stores one hop, so inline only a " +
-            "join_many to a source with no joins",
-      };
+   for (let k = 0; k < path.length; k++) {
+      const key = path[k].primaryKey;
+      const prefix = names.slice(0, k + 1).join("__");
+      if (!key || !joined.some((c) => c.column === `${prefix}__${key}`)) {
+         return {
+            reason:
+               `inline= names ${name}, a join_many, and a pair table needs the ` +
+               (path.length > 1
+                  ? `primary key of ${quotedName(names[k])}'s joined source, `
+                  : "joined source's primary key, ") +
+               "declared and stored (a public dimension), to keep one row per " +
+               (k === path.length - 1 ? "child" : "row of that level"),
+         };
+      }
+      const own = map.joinedReadsOf(path[k]).joins;
+      const others = own.filter((j) => j.name !== names[k + 1]);
+      if (others.length > 0) {
+         return {
+            reason:
+               path.length === 1
+                  ? `inline= names ${name}, a join_many whose joined source has joins ` +
+                    "of its own; a pair table stores one hop, so inline only a " +
+                    "join_many to a source with no joins"
+                  : `inline= names ${name}, and ${quotedName(names[k])}'s joined ` +
+                    `source has joins off the path (${others.map((j) => quotedName(j.name)).join(", ")}); ` +
+                    "a pair table stores only the joins it names",
+         };
+      }
    }
    const taken = new Set([...columns, ...joined].map((c) => c.column));
-   const clash = [PAIR_PARENT_ROW, PAIR_WATERMARK].find((c) => taken.has(c));
+   const flags = [
+      PAIR_PARENT_ROW,
+      PAIR_WATERMARK,
+      ...path.slice(1).map((_, k) => pairLevelRowColumn(k + 1)),
+   ];
+   const clash = flags.find((c) => taken.has(c));
    if (clash) {
       return {
          reason:
@@ -1041,11 +1579,104 @@ function pairRefusal(
       pair: {
          join: join.name,
          parentKey,
-         childKey,
+         childKey: join.primaryKey as string,
          childSourceID: join.sourceID as string,
          parentRowColumn: PAIR_PARENT_ROW,
+         ...(path.length > 1
+            ? {
+                 hops: path.slice(1).map((j, k) => ({
+                    join: j.name,
+                    key: j.primaryKey as string,
+                    sourceID: j.sourceID as string,
+                    rowColumn: pairLevelRowColumn(k + 1),
+                 })),
+              }
+            : {}),
       },
    };
+}
+
+/**
+ * The blocks of a pair table that stores more than one inlined path, or why
+ * it cannot: every block's columns stored on every row (the other blocks' as
+ * typed nulls, so each joined column needs a type a null can take), no block
+ * column or level flag named like a stored column, and no incremental
+ * refresh.
+ */
+function pairBlocksOf(
+   pairs: readonly MaterializePair[],
+   paths: readonly (readonly SourceJoin[])[],
+   columns: readonly MaterializeColumn[],
+   connection: unknown,
+): { blocks: MaterializePairBlocks } | { reason: string } {
+   const listed = paths.map((p) => quotedName(p.map((j) => j.name).join(".")));
+   if (typeof connection !== "string") {
+      return {
+         reason:
+            `inline= names more than one join_many (${listed.join(", ")}), and ` +
+            "the source's connection is unknown, which the pair table's build reads",
+      };
+   }
+   const columnTypes: Record<string, string> = {};
+   for (const path of paths) {
+      for (let k = 0; k < path.length; k++) {
+         const prefix = path.slice(0, k + 1).map((j) => j.name);
+         for (const c of columns) {
+            if (c.join !== prefix[0]) continue;
+            const at = c.path ?? [c.join];
+            if (at.join(".") !== prefix.join(".")) continue;
+            const type = joinedColumnType(path[k], c.dimension);
+            if (!NULLABLE_TYPES.has(type)) {
+               return {
+                  reason:
+                     `inline= names more than one join_many (${listed.join(", ")}), ` +
+                     "so each one's columns are stored as nulls on the other's " +
+                     `rows, and \`${c.column}\` has a type no null can take` +
+                     (type ? ` (${type})` : ""),
+               };
+            }
+            columnTypes[c.column] = type;
+         }
+      }
+   }
+   const levels = Math.max(...pairs.map((p) => 1 + (p.hops?.length ?? 0)));
+   const taken = new Set(columns.map((c) => c.column));
+   const clash = [
+      PAIR_LANE_COLUMN,
+      ...Array.from({ length: levels - 1 }, (_, k) =>
+         pairLevelRowColumn(k + 1),
+      ),
+   ].find((c) => taken.has(c));
+   if (clash) {
+      return {
+         reason:
+            `the pair table's \`${clash}\` column has the name of one of the ` +
+            "source's dimensions",
+      };
+   }
+   return {
+      blocks: {
+         blocks: [...pairs],
+         laneColumn: PAIR_LANE_COLUMN,
+         connection,
+         columnTypes,
+         levels,
+      },
+   };
+}
+
+/**
+ * Another block's column as one block's rows store it: a null of a type the
+ * `UNION ALL` cannot widen the column's own type to. A number's null is not
+ * `null::number`, which is the warehouse's floating type (DuckDB's `DOUBLE`,
+ * Postgres's `double precision`): the union would widen an integer or a
+ * decimal column to it, so a key past 2^53, or a decimal's last digits, would
+ * be stored rounded. It is a null of an integer literal's type, which every
+ * numeric type absorbs without changing (an integer stays an integer, a
+ * decimal keeps its scale, a float stays a float).
+ */
+function typedNull(type: string): string {
+   return type === "number" ? "pick 0 when false else null" : `null::${type}`;
 }
 
 /** A joined source's field's Malloy type, or "" when it has none. */
@@ -1227,12 +1858,15 @@ export function readTimeTermsOf(
    classified: readonly ClassifiedWhereTerm[],
    columns: readonly MaterializeColumn[],
    givens: Record<string, unknown> = {},
+   bases: PlanBases = { chain: [], unchanged: [] },
 ):
    | {
         ok: true;
         terms: GivenReadTerm[];
         declaration?: TermUse;
         givenDeclarations?: MaterializeGivenDeclaration[];
+        /** The farthest base on `bases.chain` an inherited term is written on, or -1. */
+        keptBase: number;
      }
    | { ok: false; reason: string } {
    const located = classified.flatMap(({ dependsOn }) =>
@@ -1246,8 +1880,9 @@ export function readTimeTermsOf(
            ]
          : [],
    );
-   if (located.length === 0) return { ok: true, terms: [] };
+   if (located.length === 0) return { ok: true, terms: [], keptBase: -1 };
    const declaration = declarationOf(def);
+   let keptBase = -1;
    const stored = new Set(columns.map((c) => c.column));
    const terms: GivenReadTerm[] = [];
    const givenDeclarations = new Map<string, string>();
@@ -1260,25 +1895,30 @@ export function readTimeTermsOf(
             reason: `${shown} reads a given that could not be read back, so it cannot be left out of the build`,
          };
       }
+      // Its own declaration's, or one a base on the kept walk writes, whose
+      // block the served copy keeps over the stored table (an inherited
+      // term): the build copy takes it out of that base, so no join of this
+      // source may read the base, and the base's fields must reach this
+      // source unchanged, so the kept block reads the same columns.
+      const where = declaredAt(term.at, declaration, bases);
       if (
-         !declaration ||
-         term.at.length === 0 ||
-         !term.at.every(
-            (use) =>
-               use.url === declaration.url &&
-               rangeWithin(use.range, declaration.range),
-         )
+         where === undefined ||
+         (typeof where === "number" &&
+            (!bases.unchanged[where] || joinsRead(def, term.at)))
       ) {
          return {
             ok: false,
             reason:
-               `${shown} reads a given and is written on a source this one ` +
-               `is built from, not on this source's own declaration; the ` +
-               `served copy re-roots only this declaration, so it could not ` +
-               `re-apply the term at read. Move the \`where:\` onto this ` +
-               `source, or materialize the source that writes it`,
+               `${shown} reads a given and is written where the served copy ` +
+               `cannot re-apply it at read: on a source in another file or ` +
+               `off this source's chain of extensions, in a parenthesised ` +
+               `head, on a base whose fields this source renames, redefines ` +
+               `or drops, or on a base a join of this source also reads. ` +
+               `Move the \`where:\` onto this source or a source it extends ` +
+               `in this file, or materialize the source that writes it`,
          };
       }
+      if (typeof where === "number") keptBase = Math.max(keptBase, where);
       if (
          term.columns.length === 0 ||
          !term.columns.every((column) => stored.has(column))
@@ -1322,6 +1962,7 @@ export function readTimeTermsOf(
       ok: true,
       terms,
       declaration,
+      keptBase,
       givenDeclarations: [...givenDeclarations]
          .map(([name, url]) => ({ name, url }))
          .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
@@ -1356,6 +1997,18 @@ export function planModelMaterialize(
    contents: Record<string, unknown>,
    declaredHere?: (declaringURL: string) => boolean,
    givens?: Record<string, unknown>,
+   /**
+    * The probe compiler's answers for each source's computed dimensions, by
+    * `sourceID` then dimension (P9). Absent: the IR walks alone decide, and
+    * no stored dimension is cleared of the time zone.
+    */
+   probed?: ReadonlyMap<string, ReadonlyMap<string, FieldDependence>>,
+   /**
+    * The sources, by `sourceID`, whose rows the probe compiler found the same
+    * in every query time zone (P9). Absent, or a source not in it: a
+    * `timezone:` query over its table is answered live.
+    */
+   zoneFreeRows?: ReadonlySet<string>,
 ): {
    plans: MaterializePlan[];
    refused: MaterializeRefusal[];
@@ -1457,14 +2110,19 @@ export function planModelMaterialize(
          inline = [...new Set(items as string[])];
       }
       const joins = map.joinsOf(def.sourceID);
-      const inlineProblem = inline
-         .map((j) => inlineRefusal(j, joins, def.connection))
-         .find((r) => r !== undefined);
+      // Each entry's joins from the source down: a join, or a path of
+      // join_manys (`items.options`).
+      const resolved = inline.map((entry) =>
+         inlinedPathOf(entry, joins, map, def.connection),
+      );
+      const inlineProblem = resolved.find(
+         (r): r is { reason: string } => "reason" in r,
+      );
       if (inlineProblem) {
          refused.push({
             sourceName: name,
             sourceID: def.sourceID,
-            reason: inlineProblem,
+            reason: inlineProblem.reason,
          });
          continue;
       }
@@ -1483,11 +2141,14 @@ export function planModelMaterialize(
             joinAccess.set(fieldName, access);
          }
       }
-      const hiddenMany = inline.find(
-         (j) =>
-            joinAccess.has(j) &&
-            joins.find((x) => x.name === j)?.relationship !== "one",
-      );
+      const entries = (resolved as { path: SourceJoin[] }[]).map((r) => r.path);
+      const hiddenMany = entries
+         .map((p) => p[0].name)
+         .find(
+            (j) =>
+               joinAccess.has(j) &&
+               joins.find((x) => x.name === j)?.relationship !== "one",
+         );
       if (hiddenMany !== undefined) {
          refused.push({
             sourceName: name,
@@ -1498,17 +2159,58 @@ export function planModelMaterialize(
          });
          continue;
       }
-      // An inlined join_many is a pair table (P5): at most one per source.
-      const fanned = inline.filter(
-         (j) => joins.find((x) => x.name === j)?.relationship === "many",
-      );
-      if (fanned.length > 1) {
+      const ones = entries
+         .filter((p) => p[0].relationship !== "many")
+         .map((p) => p[0].name);
+      // An inlined join_many is a pair table (P5): one path of join_manys
+      // below each one inlined. A path that is the start of a longer one is
+      // stored by the longer one's (its level flag answers it).
+      const byFirst = new Map<string, SourceJoin[][]>();
+      for (const p of entries.filter((e) => e[0].relationship === "many")) {
+         byFirst.set(p[0].name, [...(byFirst.get(p[0].name) ?? []), p]);
+      }
+      const pathKey = (p: readonly SourceJoin[]) =>
+         p.map((j) => j.name).join(".");
+      let parted: string | undefined;
+      const paths: SourceJoin[][] = [];
+      for (const group of byFirst.values()) {
+         const longest = group.reduce((a, b) => (b.length > a.length ? b : a));
+         const apart = group.find(
+            (p) =>
+               !pathKey(longest).startsWith(pathKey(p) + ".") &&
+               pathKey(p) !== pathKey(longest),
+         );
+         if (apart) {
+            parted =
+               `inline= names two paths through ${quotedName(longest[0].name)} that ` +
+               `part (${quotedName(pathKey(apart))}, ${quotedName(pathKey(longest))}); ` +
+               "a pair table stores one path below each join it inlines";
+            break;
+         }
+         paths.push(longest);
+      }
+      if (parted) {
          refused.push({
             sourceName: name,
             sourceID: def.sourceID,
-            reason:
-               `inline= names more than one join_many (${fanned.map(quotedName).join(", ")}); ` +
-               "a pair table pairs a parent with the children of one",
+            reason: parted,
+         });
+         continue;
+      }
+      // A dimension that depends on the caller is left out and computed at
+      // read (P9).
+      const bases = planBases(def, map);
+      const dependence = callerDependentDimensions(
+         def,
+         probed?.get(def.sourceID),
+         inline,
+         bases,
+      );
+      if ("reason" in dependence) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: dependence.reason,
          });
          continue;
       }
@@ -1516,17 +2218,31 @@ export function planModelMaterialize(
       // per parent, so it is computed at read through the served join.
       const columns = materializeColumns(def, {
          joinReads: map.fieldJoinsOf(def.sourceID),
-         inline: new Set(inline.filter((j) => !fanned.includes(j))),
+         inline: new Set(ones),
          hasJoins: joins.length > 0,
+         leftOut: new Set(dependence.leftOut.map((d) => d.dimension)),
+         zoneFree: dependence.zoneFree,
       });
       const ownColumns = new Set(columns.map((c) => c.column));
-      const joinedColumns = inline.flatMap((j) =>
-         inlinedJoinColumns(
-            map,
-            joins.find((x) => x.name === j) as SourceJoin,
-            joinAccess.get(j),
+      const joinedColumns = [
+         ...ones.flatMap((j) =>
+            inlinedJoinColumns(
+               map,
+               joins.find((x) => x.name === j) as SourceJoin,
+               undefined,
+               joinAccess.get(j),
+            ),
          ),
-      );
+         ...paths.flatMap((p) =>
+            p.flatMap((j, k) =>
+               inlinedJoinColumns(
+                  map,
+                  j,
+                  p.slice(0, k + 1).map((x) => x.name),
+               ),
+            ),
+         ),
+      ];
       const clash = joinedColumns.find((c) => ownColumns.has(c.column));
       if (clash) {
          refused.push({
@@ -1560,7 +2276,7 @@ export function planModelMaterialize(
          });
          continue;
       }
-      const readTime = readTimeTermsOf(def, classified, columns, givens);
+      const readTime = readTimeTermsOf(def, classified, columns, givens, bases);
       if (!readTime.ok) {
          refused.push({
             sourceName: name,
@@ -1569,6 +2285,10 @@ export function planModelMaterialize(
          });
          continue;
       }
+      // The bases whose blocks the served copy must keep, up to the farthest.
+      const keptBase = Math.max(dependence.keptBase, readTime.keptBase);
+      const keptBases =
+         keptBase >= 0 ? bases.chain.slice(0, keptBase + 1) : undefined;
       const carried = carriedPersistKeys(declaration);
       if ("reason" in carried) {
          refused.push({
@@ -1579,22 +2299,20 @@ export function planModelMaterialize(
          continue;
       }
       const { persist } = carried;
-      // Colocated (no `storage=`): the served copy reads only a storage
-      // destination, so a table built into the source's own warehouse would
-      // be built and never read. Not built until it can be served; a v1
-      // `#@ persist` is colocated as before.
-      if (persist.storage === undefined) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: COLOCATED_NOT_SERVED,
-         });
-         continue;
-      }
       // A source is planned in the model that declares it (see `declaredHere`),
       // so its name here is the name its author gave it.
       const tableName = name;
       if (persist.name === undefined) {
+         // Colocated (no `storage=`): built into the warehouse it reads,
+         // where its own name could be the table it is built from.
+         if (persist.storage === undefined) {
+            refused.push({
+               sourceName: name,
+               sourceID: def.sourceID,
+               reason: colocatedNeedsName(tableName),
+            });
+            continue;
+         }
          if (!PLAIN_TABLE_NAME.test(tableName)) {
             refused.push({
                sourceName: name,
@@ -1608,23 +2326,42 @@ export function planModelMaterialize(
          persist.name = tableName;
       }
       let pair: MaterializePair | undefined;
-      if (fanned.length === 1) {
-         const laid = pairRefusal(
-            joins.find((x) => x.name === fanned[0]) as SourceJoin,
-            def,
-            map,
-            columns.filter((c) => c.join === undefined),
-            joinedColumns,
+      let pairBlocks: MaterializePairBlocks | undefined;
+      if (paths.length > 0) {
+         const laid = paths.map((p) =>
+            pairRefusal(
+               p,
+               def,
+               map,
+               columns.filter((c) => c.join === undefined),
+               joinedColumns,
+            ),
          );
-         if ("reason" in laid) {
+         const problem = laid.find(
+            (l): l is { reason: string } => "reason" in l,
+         );
+         if (problem) {
             refused.push({
                sourceName: name,
                sourceID: def.sourceID,
-               reason: laid.reason,
+               reason: problem.reason,
             });
             continue;
          }
-         pair = laid.pair;
+         const pairs = (laid as { pair: MaterializePair }[]).map((l) => l.pair);
+         pair = pairs[0];
+         if (pairs.length > 1) {
+            const blocks = pairBlocksOf(pairs, paths, columns, def.connection);
+            if ("reason" in blocks) {
+               refused.push({
+                  sourceName: name,
+                  sourceID: def.sourceID,
+                  reason: blocks.reason,
+               });
+               continue;
+            }
+            pairBlocks = blocks.blocks;
+         }
       }
       if (carried.watermarks && !(pair && persist.refresh === "incremental")) {
          refused.push({
@@ -1637,7 +2374,22 @@ export function planModelMaterialize(
          continue;
       }
       let pairFullRefresh: string | undefined;
-      if (pair && persist.refresh === "incremental") {
+      if (
+         pair &&
+         persist.refresh === "incremental" &&
+         (pair.hops !== undefined || pairBlocks !== undefined)
+      ) {
+         // The parent-replace rule keeps one `__parent_row` per parent in one
+         // path's table; a path's level flags and a table of several blocks
+         // have no increment rule yet, so they are rebuilt in full.
+         pairFullRefresh =
+            pairBlocks !== undefined
+               ? "the pair table stores more than one inlined join_many, one block each, which an increment cannot replace parent by parent yet"
+               : "the pair table stores a path of join_manys, whose level row flags an increment cannot keep unique yet";
+         for (const key of INCREMENTAL_KEYS) {
+            if (key !== "partition") delete persist[key];
+         }
+      } else if (pair && persist.refresh === "incremental") {
          const incremental = pairIncremental({
             pair,
             persist,
@@ -1666,17 +2418,30 @@ export function planModelMaterialize(
          }
       }
       const build = buildSourceName(name);
-      const checked = inline.filter((j) => !fanned.includes(j));
-      const uniquenessChecks = checked.map((j): InlineUniquenessCheck => {
-         const join = joins.find((x) => x.name === j) as SourceJoin;
-         return {
-            join: j,
-            keyColumn: join.keyColumn as string,
-            queryName: `${build}__unique__${j}`,
-            joinedSourceID: join.sourceID as string,
-            ...(join.connection ? { connectionName: join.connection } : {}),
-         };
-      });
+      const checked = ones;
+      const uniquenessChecks = [
+         ...checked.map((j): InlineUniquenessCheck => {
+            const join = joins.find((x) => x.name === j) as SourceJoin;
+            return {
+               join: j,
+               keyColumn: join.keyColumn as string,
+               queryName: `${build}__unique__${j}`,
+               joinedSourceID: join.sourceID as string,
+               ...(join.connection ? { connectionName: join.connection } : {}),
+            };
+         }),
+         ...(pair
+            ? pairKeyChecks(
+                 pair,
+                 pairBlocks,
+                 def.sourceID,
+                 build,
+                 typeof def.connection === "string"
+                    ? def.connection
+                    : undefined,
+              )
+            : []),
+      ];
       plans.push({
          sourceName: name,
          sourceID: def.sourceID,
@@ -1691,12 +2456,20 @@ export function planModelMaterialize(
                  declaration: readTime.declaration,
                  givenDeclarations: readTime.givenDeclarations,
               }
-            : columns.some((c) => c.access)
+            : columns.some((c) => c.access) || keptBases
               ? withDeclaration(declarationOf(def))
               : {}),
+         ...(keptBases ? { keptBases } : {}),
          ...(inline.length > 0 ? { inline } : {}),
+         ...(dependence.leftOut.length > 0
+            ? { leftOut: dependence.leftOut }
+            : {}),
+         ...(zoneFreeRows?.has(def.sourceID)
+            ? { zoneFreeRows: true as const }
+            : {}),
          ...(uniquenessChecks.length > 0 ? { uniquenessChecks } : {}),
          ...(pair ? { pair } : {}),
+         ...(pairBlocks ? { pairBlocks } : {}),
          ...(pairFullRefresh ? { pairFullRefresh } : {}),
          ...(declaration.keys.includes("name") ? {} : { nameDefaulted: true }),
       });
@@ -1718,13 +2491,14 @@ const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key", "partition"];
  * the chain, reached through `extend` and renames only (a query-shaped hop
  * starts a new segment, which the build cannot re-root on a table), declared
  * in the same file (the build copy re-roots it in that file's text), as is
- * every declaration between them (`path`). Both must be `storage=` the same
- * destination (a colocated `#(materialize)` is refused before this, and a
- * colocated pair never chains), carry no incremental
+ * every declaration between them (`path`). Both must be on one tier (both
+ * colocated, or both `storage=` the same destination), carry no incremental
  * key, and the parent no given-reading `where:` (its build source's own
  * `extend` re-applies that term, which would scope the extension's build to
- * one caller). A plan that does not qualify builds over the raw chain, as
- * before: the same rows.
+ * one caller); nor may the plan store a dimension the parent left out that a
+ * base above the parent declares (its definition is in no block of the
+ * parent's re-root). A plan that does not qualify builds over the raw chain,
+ * as before: the same rows.
  */
 function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
    const byID = new Map(plans.map((p) => [p.sourceID, p]));
@@ -1753,15 +2527,31 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
       ) {
          continue;
       }
-      // One storage destination on both sides, whose build reads the
-      // parent's table there (see `overStored`). A colocated plan is refused
-      // before this (COLOCATED_NOT_SERVED); never chained should one reach it.
-      if (plan.persist.storage === undefined) continue;
+      // One tier on both sides: colocated, whose build reads the parent's
+      // build source in its own warehouse, or one storage destination, whose
+      // build reads the parent's table there (see `overStored`).
       if (plan.persist.storage !== parent.persist.storage) continue;
       const incremental = (p: MaterializePlan) =>
          Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));
       if (incremental(plan) || incremental(parent)) continue;
+      // A table that stacks several inlined paths is a SQL source over the
+      // author's model: neither builds over the other's build source.
+      if (plan.pairBlocks || parent.pairBlocks) continue;
       if (givenReadTerms(parent).length > 0) continue;
+      // A dimension the parent left out that a base above it declares is in
+      // no block of the parent's re-root on its build source, so a plan that
+      // stores it (one whose own walk could not keep that base) builds over
+      // the raw chain.
+      const aboveParent = new Set(
+         (parent.leftOut ?? []).filter((d) => d.at).map((d) => d.dimension),
+      );
+      if (
+         plan.columns.some(
+            (c) => c.join === undefined && aboveParent.has(c.dimension),
+         )
+      ) {
+         continue;
+      }
       plan.buildsOver = {
          sourceID: parent.sourceID,
          sourceName: parent.sourceName,
@@ -1832,48 +2622,136 @@ function persistLine(plan: MaterializePlan): string {
    return keys ? `#@ persist ${keys}` : "#@ persist";
 }
 
+/** One stored column as a build's select list reads it. */
+function selectItem(c: MaterializeColumn): string {
+   if (c.join === undefined) return `    ${identifier(c.dimension)}`;
+   const through = (c.path ?? [c.join]).map(identifier).join(".");
+   return `    ${identifier(c.column)} is ${through}.${identifier(c.dimension)}`;
+}
+
 /**
  * A generated build source's body: a `select:` of every stored column, or a
  * pair table's build over them ({@link pairBody}).
  */
 function buildSourceBody(plan: MaterializePlan): string {
-   const select = plan.columns
-      .map((c) =>
-         c.join === undefined
-            ? `    ${identifier(c.dimension)}`
-            : `    ${identifier(c.column)} is ${identifier(c.join)}.${identifier(c.dimension)}`,
-      )
-      .join(",\n");
+   const select = plan.columns.map(selectItem).join(",\n");
    return plan.pair ? pairBody(plan.pair, select) : `  select:\n${select}`;
 }
 
 /** One generated build source. */
 function emitBuildSource(plan: MaterializePlan): string {
-   const body = buildSourceBody(plan);
    const given = givenReadTerms(plan);
    // malloy-text: each term is the author's own given-reading where:, re-applied as written on its own declaration
    const readTime = given.length
       ? ` extend {\n${given.map((term) => `  where: ${term.code}`).join("\n")}\n}`
       : "";
+   if (plan.pairBlocks) {
+      return `${persistLine(plan)}\nsource: ${identifier(plan.buildSourceName)} is ${pairBlocksSource(plan, plan.pairBlocks)}${readTime}`;
+   }
+   const body = buildSourceBody(plan);
    const head = `source: ${identifier(plan.buildSourceName)} is ${identifier(importAlias(plan))} -> {`;
    return `${persistLine(plan)}\n${head}\n${body}\n}${readTime}`;
 }
 
 /**
+ * The stored key column of each level of a pair's path, the source's first:
+ * the source's primary key, then each joined source's key as stored
+ * (`items__item_id`, `items__options__option_id`).
+ */
+function pairKeyColumns(pair: MaterializePair): string[] {
+   const names = [pair.join];
+   const keys = [pair.parentKey, `${pair.join}__${pair.childKey}`];
+   for (const hop of pair.hops ?? []) {
+      names.push(hop.join);
+      keys.push(`${names.join("__")}__${hop.key}`);
+   }
+   return keys;
+}
+
+/**
+ * A pair table's row flags, as `calculate:` items: the parent-row flag and
+ * each level flag down to `levels` (one per level above the leaf), each true
+ * on one row per distinct keys down to its level. Past the pair's own leaf
+ * (a block of a table whose deepest path is deeper) a flag partitions on
+ * every key the pair has, which is every row.
+ */
+function pairFlags(pair: MaterializePair, levels: number): string {
+   const keys = pairKeyColumns(pair).map(identifier);
+   const flag = (column: string, level: number) =>
+      `    ${identifier(column)} is row_number() { partition_by: ${keys.slice(0, Math.min(level, keys.length - 1) + 1).join(", ")} } = 1`;
+   return [
+      flag(pair.parentRowColumn, 0),
+      ...Array.from({ length: levels - 1 }, (_, k) =>
+         flag(pairLevelRowColumn(k + 1), k + 1),
+      ),
+   ].join("\n");
+}
+
+/**
  * A pair table's build: a `group_by:` of every stored column (distinct rows,
- * since both keys are among them) that writes the parent-row flag (see the
- * module comment) by ranking each row within its parent key. The rows are
- * written in parent-key order, so a warehouse that keeps insertion order
- * (DuckDB) reads a parent's rows together.
+ * since every level's key is among them) that writes the row flags (see the
+ * module comment) by ranking each row within its keys. The rows are written
+ * in parent-key order, so a warehouse that keeps insertion order (DuckDB)
+ * reads a parent's rows together.
  */
 function pairBody(pair: MaterializePair, columns: string): string {
    const parent = identifier(pair.parentKey);
+   // malloy-text: pairFlags writes every name through identifier
+   const flags = pairFlags(pair, 1 + (pair.hops?.length ?? 0));
    // malloy-text: columns is emitBuildSource's select list, every name through identifier
    return `  group_by:
 ${columns}
   calculate:
-    ${identifier(pair.parentRowColumn)} is row_number() { partition_by: ${parent} } = 1${pair.watermark ? `\n    ${pairWatermarkCalculation(pair.watermark, parent)}` : ""}
+${flags}${pair.watermark ? `\n    ${pairWatermarkCalculation(pair.watermark, parent)}` : ""}
   order_by: ${parent}`;
+}
+
+/**
+ * The build of a pair table that stores more than one inlined path: one
+ * block per path, each the query that path's own pair table would build,
+ * every block listing every column in the same order (another block's
+ * columns as typed nulls, its own block number in the block column, every
+ * level flag), and the blocks stacked with `UNION ALL`. Malloy has no union,
+ * so the stack is a SQL source on the source's own connection whose blocks
+ * are Malloy queries embedded with `%{ … }`; the queries are compiled by
+ * Malloy like any other, and the SQL around them is only the union.
+ */
+function pairBlocksSource(
+   plan: MaterializePlan,
+   blocks: MaterializePairBlocks,
+): string {
+   const inBlocks = new Set(blocks.blocks.map((p) => p.join));
+   const block = (pair: MaterializePair, lane: number) => {
+      // The source's own columns and an inlined join_one's are on every
+      // block's rows; another block's path's are nulls on this one's.
+      const own = (c: MaterializeColumn) =>
+         c.join === undefined || !inBlocks.has(c.join) || c.join === pair.join;
+      const items = plan.columns.map((c) =>
+         own(c)
+            ? selectItem(c)
+            : `    ${identifier(c.column)} is ${typedNull(blocks.columnTypes[c.column])}`,
+      );
+      items.push(`    ${identifier(blocks.laneColumn)} is ${lane}`);
+      const parent = identifier(pair.parentKey);
+      // malloy-text: each item a selectItem or a typedNull, names through identifier, each type one of NULLABLE_TYPES
+      const listed = items.join(",\n");
+      // malloy-text: pairFlags writes every name through identifier
+      const flags = pairFlags(pair, blocks.levels);
+      return `%{ ${identifier(importAlias(plan))} -> {
+  group_by:
+${listed}
+  calculate:
+${flags}
+  order_by: ${parent}
+} }`;
+   };
+   const union = blocks.blocks
+      .map(
+         (pair, lane) =>
+            `SELECT * FROM (${block(pair, lane)}) AS ${PAIR_LANE_COLUMN}_${lane}`,
+      )
+      .join("\nUNION ALL\n");
+   return `${identifier(blocks.connection)}.sql("""\n${union}\n""")`;
 }
 
 /**
@@ -1898,11 +2776,81 @@ function pairWatermarkCalculation(
 }
 
 /**
+ * The key checks of a pair table whose rows carry a flag below the parent's
+ * (a path of join_manys) or more than one block, run before each build like
+ * an inlined join_one's (P8): the source's primary key, and the key of each
+ * level between it and the leaf, must be unique and never null. A level's row
+ * flag marks one row per distinct key down to that level, so two rows of one
+ * key (or two null keys) share one flagged row, where live aggregates that
+ * level over each row: a middle-level measure, and a parent measure beside a
+ * deeper level, would come up short. The leaf needs no check: its aggregates
+ * read every row. A one-hop table of one block checks nothing, as before.
+ */
+function pairKeyChecks(
+   pair: MaterializePair,
+   blocks: MaterializePairBlocks | undefined,
+   sourceID: string,
+   build: string,
+   connection: string | undefined,
+): InlineUniquenessCheck[] {
+   const all = blocks?.blocks ?? [pair];
+   if (!blocks && !(pair.hops && pair.hops.length > 0)) return [];
+   const on = connection ? { connectionName: connection } : {};
+   const out: InlineUniquenessCheck[] = [
+      {
+         join: "",
+         keyColumn: pair.parentKey,
+         queryName: `${build}__pair_key`,
+         joinedSourceID: sourceID,
+         pairLevel: 0,
+         ...on,
+      },
+   ];
+   for (const p of all) {
+      // Each level above the leaf: the first join's source, then each hop's
+      // but the last.
+      const levels = [
+         { names: [p.join], key: p.childKey, sourceID: p.childSourceID },
+         ...(p.hops ?? []).map((h, k) => ({
+            names: [
+               p.join,
+               ...(p.hops ?? []).slice(0, k + 1).map((x) => x.join),
+            ],
+            key: h.key,
+            sourceID: h.sourceID,
+         })),
+      ].slice(0, p.hops?.length ?? 0);
+      levels.forEach((l, k) => {
+         out.push({
+            join: l.names.join("."),
+            keyColumn: l.key,
+            queryName: `${build}__pair_key__${l.names.join("__")}`,
+            joinedSourceID: l.sourceID,
+            pairLevel: k + 1,
+            ...on,
+         });
+      });
+   }
+   return out;
+}
+
+/**
  * One inlined join's uniqueness check (P8): the joined source's keys that
- * occur more than once. A build runs it first and fails on any row.
+ * occur more than once. A build runs it first and fails on any row. A pair
+ * table's key check ({@link pairKeyChecks}) also returns a null key.
  */
 function emitUniquenessCheck(check: InlineUniquenessCheck): string {
    const key = identifier(check.keyColumn);
+   if (check.pairLevel !== undefined) {
+      return `query: ${identifier(check.queryName)} is ${identifier(checkAlias(check))} -> {
+  group_by: ${key}
+  aggregate: matches is count()
+} -> {
+  where: matches > 1 or ${key} is null
+  select: ${key}
+  limit: 1
+}`;
+   }
    return `query: ${identifier(check.queryName)} is ${identifier(checkAlias(check))} -> {
   where: ${key} is not null
   group_by: ${key}
@@ -2015,9 +2963,7 @@ function copyEdits(
    const edits: TextEdit[] = [];
    const given = givenReadTerms(plan);
    if (given.length > 0) {
-      const found = plan.declaration
-         ? termSpans(text, plan.declaration, given)
-         : { reason: NOT_FOUND };
+      const found = termSpans(text, plan, given);
       if ("reason" in found) return found;
       for (const span of found.spans) edits.push({ ...span, insert: "true" });
    }
@@ -2332,13 +3278,17 @@ const NOT_FOUND =
  */
 function termSpans(
    text: string,
-   declaration: TermUse,
+   plan: MaterializePlan,
    terms: readonly GivenReadTerm[],
 ): { spans: { start: number; end: number }[] } | { reason: string } {
+   const declaration = plan.declaration;
+   if (!declaration) return { reason: NOT_FOUND };
    const from = offsetOf(text, declaration.range.start);
    const to = offsetOf(text, declaration.range.end);
    if (from < 0 || to < from) return { reason: NOT_FOUND };
    const extendStart = declarationSpans(text.slice(from, to))?.extendStart;
+   const bases = keptBasesInText(text, plan);
+   if ("reason" in bases) return bases;
    const spans: { start: number; end: number }[] = [];
    for (const term of terms) {
       const uses = term.at.map((use) => ({
@@ -2348,10 +3298,32 @@ function termSpans(
       if (uses.some((u) => u.start < 0 || u.end < u.start)) {
          return { reason: NOT_FOUND };
       }
+      // Where the term is written: the source's own declaration, or the base
+      // whose declaration holds it (an inherited term), with the run of
+      // `extend` blocks the served copy keeps of it.
+      const base = bases.confirmed.find(
+         (a) =>
+            uses.every(
+               (u) =>
+                  u.start >= offsetOf(text, a.range.start) &&
+                  u.end <= offsetOf(text, a.range.end),
+            ) && !uses.every((u) => u.start >= from && u.end <= to),
+      );
+      const region = base
+         ? {
+              from: offsetOf(text, base.range.start),
+              to: offsetOf(text, base.range.end),
+              run: base.run?.start,
+           }
+         : {
+              from,
+              to,
+              run: extendStart === undefined ? undefined : from + extendStart,
+           };
       const matches: number[] = [];
       for (
-         let at = text.indexOf(term.code, from);
-         at >= 0 && at + term.code.length <= to;
+         let at = text.indexOf(term.code, region.from);
+         at >= 0 && at + term.code.length <= region.to;
          at = text.indexOf(term.code, at + 1)
       ) {
          const end = at + term.code.length;
@@ -2362,19 +3334,61 @@ function termSpans(
       if (spans.some((s) => s.start < span.end && span.start < s.end)) {
          return { reason: NOT_FOUND };
       }
-      if (extendStart === undefined || span.start < from + extendStart) {
+      if (region.run === undefined || span.start < region.run) {
          return {
             reason:
-               `\`where: ${term.code}\` reads a given and is not in this ` +
-               "source's trailing `extend { … }`, the only part of its " +
-               "declaration the served copy keeps, so it could not be " +
-               "re-applied at read. Write it in a trailing `extend` on this " +
-               "source",
+               `\`where: ${term.code}\` reads a given and is not in the ` +
+               `trailing \`extend { … }\` of ${base ? "the base that writes it" : "this source"}, ` +
+               "the only part of a declaration the served copy keeps, so it " +
+               "could not be re-applied at read. Write it in a trailing " +
+               "`extend`",
          };
       }
       spans.push(span);
    }
    return { spans };
+}
+
+/**
+ * The plan's `keptBases` as the file's text confirms them
+ * ({@link confirmedAncestors}), or why the served copy would not keep one of
+ * their blocks: the text does not name each as the next one's whole base, or
+ * a dimension left out on a base is not in that base's trailing `extend` run.
+ * A plan with no `keptBases` confirms trivially.
+ */
+export function keptBasesInText(
+   text: string,
+   plan: Pick<MaterializePlan, "declaration" | "keptBases" | "leftOut">,
+): { confirmed: ReturnType<typeof confirmedAncestors> } | { reason: string } {
+   const chain = plan.keptBases ?? [];
+   if (chain.length === 0) return { confirmed: [] };
+   const notKept =
+      "a `where:` reading a given or a dimension depending on the caller is " +
+      "written on a source this one is built from, and that source is not " +
+      "named as the whole base of the declaration below it " +
+      "(`<name> is <base> extend { … }`), so the served copy could not keep " +
+      "its block";
+   if (!plan.declaration) return { reason: notKept };
+   const confirmed = confirmedAncestors(text, plan.declaration.range, chain);
+   if (confirmed.length < chain.length) return { reason: notKept };
+   for (const d of plan.leftOut ?? []) {
+      if (!d.at) continue;
+      const start = offsetOf(text, d.at.range.start);
+      const end = offsetOf(text, d.at.range.end);
+      const inRun = confirmed.some(
+         (a) => a.run && start >= a.run.start && end <= a.run.end,
+      );
+      if (start < 0 || end < start || !inRun) {
+         return {
+            reason:
+               `the dimension ${quotedName(d.dimension)} depends on the ` +
+               "caller and is declared on a source this one is built from, " +
+               "outside its trailing `extend { … }`, the only part of it the " +
+               "served copy keeps, so it could not be computed at read",
+         };
+      }
+   }
+   return { confirmed };
 }
 
 /**
