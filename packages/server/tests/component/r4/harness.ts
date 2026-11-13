@@ -19,6 +19,7 @@
 
 import { loadLeavingOutCrossConnectionJoins } from "../../../src/service/materialization/plan/cross_connection_joins";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
+import { assertInlinedJoinsUnique } from "../../../src/service/materialization/run/inline_uniqueness";
 import { tryCompileRollupCompanion } from "../../../src/service/materialization/plan/rollup_compile";
 import { createModelRuntime } from "../../../src/service/model_runtime";
 import { tryCompilePersistedViewCompanion } from "../../../src/service/materialization/plan/persisted_view_compile";
@@ -131,6 +132,13 @@ export interface R4Scenario {
    /** Planned sources, by name, to leave unbuilt (no table, no binding). */
    unbuilt?: string[];
    /**
+    * Run each `#(materialize)` plan's pre-build checks (an inlined join_one's
+    * uniqueness, a pair table's keys) as a build does, and leave a source
+    * whose check fails unbuilt, with the error on
+    * {@link R4Fixture.checkFailures}. Default false.
+    */
+   checkKeys?: boolean;
+   /**
     * Also build the generated `#(preaggregate)` rollups (the rollup companion
     * beside the entry model): a `storage=` rollup into the destination, a
     * colocated one into the scenario's own database under the build
@@ -189,6 +197,8 @@ export interface R4Fixture {
     * reads again, for a test that refreshes a table in place.
     */
    builtSQL: Record<string, string>;
+   /** With {@link R4Scenario.checkKeys}: each source a check left unbuilt, and why. */
+   checkFailures: Record<string, string>;
    /** The scenario's database: its source tables and its stored ones. */
    duckdb: DuckDBConnection;
    /**
@@ -599,8 +609,21 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const entryBySourceID = new Map<string, ManifestEntry>();
    const storedBuildSQL: Record<string, string> = {};
    const builtSQL: Record<string, string> = {};
+   const checkFailures: Record<string, string> = {};
    for (const [i, source] of sources.entries()) {
       if (scenario.unbuilt?.includes(source.name)) continue;
+      if (scenario.checkKeys) {
+         try {
+            await assertInlinedJoinsUnique(
+               materializePlans[source.sourceID],
+               duckdb,
+            );
+         } catch (err) {
+            checkFailures[source.name] =
+               err instanceof Error ? err.message : String(err);
+            continue;
+         }
+      }
       if (scenario.colocated?.includes(source.name)) {
          const table = `r4_${source.name}_${i}`;
          await duckdb.runSQL(
@@ -806,6 +829,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       storedBuildSQL,
       physicalTables: Object.fromEntries(physicalNames),
       builtSQL,
+      checkFailures,
       duckdb,
       model,
       viewRefusals,

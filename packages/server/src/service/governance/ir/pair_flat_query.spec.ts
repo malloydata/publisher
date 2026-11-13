@@ -7,6 +7,7 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    flatPairQueryRefusal,
    flatPairQueryVerdict,
+   pairConditionReads,
    pairMeasureLevels,
    pairQueryReadsChild,
 } from "./pair_flat_query";
@@ -55,15 +56,15 @@ describe("pairMeasureLevels", () => {
          "segments",
       );
       const of = (n: string) => [...(levels.get(n) ?? [])].sort();
-      expect(of("flight_count")).toEqual(["parent"]);
-      expect(of("total")).toEqual(["parent"]);
-      expect(of("ratio")).toEqual(["parent"]);
-      expect(of("filtered")).toEqual(["parent"]);
-      expect(of("child_sum")).toEqual(["child"]);
-      expect(of("child_n")).toEqual(["child"]);
-      expect(of("child_max")).toEqual(["child"]);
-      expect(of("by_refs")).toEqual(["child", "parent"]);
-      expect(of("mixed")).toEqual(["child", "parent"]);
+      expect(of("flight_count")).toEqual([0]);
+      expect(of("total")).toEqual([0]);
+      expect(of("ratio")).toEqual([0]);
+      expect(of("filtered")).toEqual([0]);
+      expect(of("child_sum")).toEqual([1]);
+      expect(of("child_n")).toEqual([1]);
+      expect(of("child_max")).toEqual([1]);
+      expect(of("by_refs")).toEqual([0, 1]);
+      expect(of("mixed")).toEqual([0, 1]);
       // Unreadable: absent, so never re-declared.
       for (const n of [
          "child_filtered_parent",
@@ -229,4 +230,117 @@ source: long_leg_flights is flights extend { where: segments.miles > 1 }`;
          "refused",
       );
    });
+});
+
+describe("pairConditionReads", () => {
+   // A pair source inlining `segments`, beside a join_many it does not inline
+   // (`notes`), a join_one (`carriers`) and a join_one that itself joins many
+   // (`hubs.gates`).
+   const gated = `source: segments is duckdb.sql("select 1 as seg_id, 1 as flight_id, 'west' as region") extend {
+  primary_key: seg_id
+}
+source: notes is duckdb.sql("select 1 as note_id, 1 as flight_id, 'red' as color") extend {
+  primary_key: note_id
+}
+source: carriers is duckdb.sql("select 'AA' as code, 'x' as alliance") extend {
+  primary_key: code
+}
+source: hubs is duckdb.sql("select 'AA' as code") extend {
+  primary_key: code
+  join_many: gates is duckdb.sql("select 'AA' as code, 'A1' as gate") on gates.code = code
+}
+source: flights is duckdb.sql("select 1 as id, 'AA' as carrier") extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  join_many: notes on notes.flight_id = id
+  join_one: carriers with carrier
+  join_one: hubs with carrier
+  dimension:
+    red_note is notes.color = 'red'
+    hub_gate is hubs.gates.gate
+}`;
+   // The condition a gate grafts, as the probe lifts it: the filter of a
+   // stage that applies it.
+   const reads = async (condition: string) => {
+      const prepared = (await runtime
+         .loadModel(gated)
+         .loadQuery(
+            `run: flights -> { where: ${condition}; group_by: carrier }`,
+         )
+         .getPreparedQuery()) as unknown as {
+         _query: { pipeline: { filterList: { e: unknown }[] }[] };
+         _modelDef: { contents: Record<string, unknown> };
+      };
+      return pairConditionReads(
+         prepared._query.pipeline[0].filterList[0].e,
+         prepared._modelDef.contents.flights as never,
+         "segments",
+      );
+   };
+
+   const cases = [
+      ["carrier = 'AA'", { level: 0, fansOut: false }],
+      ["segments.region = 'west'", { level: 1, fansOut: false }],
+      ["carriers.alliance = 'x'", { level: 0, fansOut: false }],
+      ["notes.color = 'red'", { level: 0, fansOut: true }],
+      // Through a dimension that reads the join_many.
+      ["red_note", { level: 0, fansOut: true }],
+      // A join_many reached through a join_one, directly and by a dimension.
+      ["hubs.gates.gate = 'A1'", { level: 0, fansOut: true }],
+      ["hub_gate = 'A1'", { level: 0, fansOut: true }],
+      // Both: the child read does not end the walk before the fan-out.
+      [
+         "segments.region = 'west' and notes.color = 'red'",
+         { level: 1, fansOut: true },
+      ],
+   ] as const;
+   for (const [condition, expected] of cases) {
+      it(condition, async () => {
+         expect(await reads(condition)).toEqual(expected);
+      });
+   }
+});
+
+describe("flatPairQueryRefusal through a join_one's join_many", () => {
+   // The served shape, beside a join_one whose joined source joins many.
+   const served = `source: hubs is duckdb.sql("select 'AA' as code") extend {
+  primary_key: code
+  join_many: gates is duckdb.sql("select 'AA' as code, 'A1' as gate") on gates.code = code
+}
+source: flights is duckdb.sql("select 1 as id, 'AA' as carrier, 1 as sid, 2.0 as smiles, true as pr") extend {
+  primary_key: id
+  dimension: segments is { seg_id is sid, miles is smiles }
+  join_one: hubs with carrier
+  measure: seg_n is segments.count()
+}`;
+   const refusal = async (malloy: string) => {
+      const prepared = (await runtime
+         .loadModel(served)
+         .loadQuery(malloy)
+         .getPreparedQuery()) as unknown as {
+         _query: { pipeline: unknown };
+         _modelDef: { contents: Record<string, unknown> };
+      };
+      return flatPairQueryRefusal(
+         prepared._query,
+         prepared._modelDef.contents.flights as never,
+         { join: "segments", parentRowField: "pr" },
+      );
+   };
+   it("serves a join_one's own field", async () => {
+      expect(
+         await refusal(
+            "run: flights -> { group_by: hubs.code; aggregate: seg_n }",
+         ),
+      ).toBeUndefined();
+   });
+   for (const malloy of [
+      "run: flights -> { group_by: hubs.gates.gate; aggregate: seg_n }",
+      "run: flights -> { where: hubs.gates.gate = 'A1'; aggregate: seg_n }",
+      "run: flights -> { aggregate: r is seg_n { where: hubs.gates.gate = 'A1' } }",
+   ]) {
+      it(`refuses a read through it: ${malloy}`, async () => {
+         expect(await refusal(malloy)).toMatch(/fans out a pair table's rows/);
+      });
+   }
 });
