@@ -755,15 +755,35 @@ export class RollupVariantServe {
       );
       // A join_one the data does not keep unique repeats each parent row
       // once per joined row live, and every aggregate not taken at the join
-      // counts the repeats; the rollup holds one row per key.
+      // counts the repeats; the rollup holds one row per key. Served only
+      // when the rollup's build checked the key unique over the rows it
+      // grouped (known limitation 29): then live's rows and the variant's
+      // are the same rows.
       if (join.relationship === "one") {
          const outside = aggregateOutsideJoin(q.prepared, q.struct, name);
-         if (outside !== undefined) {
+         const unique =
+            outside === undefined
+               ? undefined
+               : this.keyUniqueness(plan, join.keyColumn);
+         if (outside !== undefined && unique !== true) {
             throw new RollupSkip(
                "rollup_count_semantics",
-               `${outside} aggregates rows outside the join_one \`${name}\`, which live repeats for each of its rows; its rollup holds one row per key`,
+               unique === false
+                  ? `${outside} aggregates rows outside the join_one \`${name}\`, whose key the data holds more than once, so live repeats those rows; its rollup holds one row per key`
+                  : `${outside} aggregates rows outside the join_one \`${name}\`, which live repeats for each of its rows, and its key was not checked unique when its rollup was built; its rollup holds one row per key`,
             );
          }
+      }
+      // Another join_one the query reads, known not to keep its key unique:
+      // live's rows repeat through it, and re-pointing this join changes how
+      // Malloy aggregates over those repeats, so the answers part (known
+      // limitation 29). Unknown is served, as before the check.
+      const repeating = this.nonUniqueJoinOneRead(q.struct, name, q.usage);
+      if (repeating !== undefined) {
+         throw new RollupSkip(
+            "rollup_count_semantics",
+            `the query reads the join_one \`${repeating}\`, whose key the data holds more than once, so live repeats rows through it`,
+         );
       }
       const childFields = new Map(
          (childDef?.fields ?? []).map((f) => [String(f.as ?? f.name), f]),
@@ -1021,6 +1041,61 @@ export class RollupVariantServe {
               }
             : {}),
       };
+   }
+
+   /**
+    * What the build of `plan`'s table found of its one grain dimension, when
+    * that is `keyColumn` (known limitation 29): true when unique, false when
+    * a value repeats, undefined when unknown (not checked, not built by a run
+    * that checked it, or a table bound from a host's manifest).
+    */
+   private keyUniqueness(
+      plan: RollupVariantPlan,
+      keyColumn: string | undefined,
+   ): boolean | undefined {
+      if (
+         keyColumn === undefined ||
+         plan.grainDimensions.length !== 1 ||
+         plan.grainDimensions[0] !== keyColumn
+      ) {
+         return undefined;
+      }
+      // The table's content address fixes its grain, so its check is of
+      // this key.
+      const id = this.tableOf(plan)?.sourceEntityId;
+      return id === undefined
+         ? undefined
+         : this.host.catalog()?.bound[id]?.keyUniqueness?.unique;
+   }
+
+   /**
+    * The first join_one of the query's source, other than `legJoin`, that the
+    * query reads and whose key a rollup's build found repeated (see
+    * {@link keyUniqueness}), or undefined.
+    */
+   private nonUniqueJoinOneRead(
+      struct: unknown,
+      legJoin: string,
+      usage: readonly (readonly string[])[],
+   ): string | undefined {
+      const sourceID = (struct as { sourceID?: unknown } | undefined)?.sourceID;
+      if (typeof sourceID !== "string") return undefined;
+      const byBase = this.plansByBase();
+      for (const j of SourceMap.of(this.host.modelDef()).joinsOf(sourceID)) {
+         if (
+            j.name === legJoin ||
+            j.relationship !== "one" ||
+            j.sourceID === undefined ||
+            j.keyColumn === undefined ||
+            !usage.some((p) => p[0] === j.name)
+         ) {
+            continue;
+         }
+         for (const plan of byBase.get(j.sourceID) ?? []) {
+            if (this.keyUniqueness(plan, j.keyColumn) === false) return j.name;
+         }
+      }
+      return undefined;
    }
 
    /** The rollup's fresh table: a storage binding, or a bound colocated entry. */
