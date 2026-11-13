@@ -37,7 +37,8 @@ export class IncrementalDeltaStrategy
          instruction,
          target: warehouseDeltaTarget({
             dialect,
-            runner: (sql) => connection.runSQL(sql, runOptions),
+            runner: (sql, options) =>
+               connection.runSQL(sql, { ...runOptions, ...options }),
             quotedTablePath: quoteTablePath(
                instruction.physicalTableName,
                dialect,

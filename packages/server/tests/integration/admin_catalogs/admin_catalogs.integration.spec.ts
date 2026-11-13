@@ -794,6 +794,32 @@ describe.skipIf(!SUPERUSER)(
          ).toBe("TABLE_NOT_FOUND");
       });
 
+      it("refuses the slower of two concurrent creates of one catalog, rather than reporting the other's catalog as its own", async () => {
+         // Both pass the existence check before either creates, so DuckLake's
+         // own create decides, and the one that loses must not attach the
+         // winner's catalog and answer as if it had made it with its settings.
+         const results = await Promise.allSettled(
+            [true, false].map((encrypted) =>
+               admin.createCatalog({
+                  name: "ds_race",
+                  dataPath: join(root, `ds_race_${encrypted}`),
+                  encrypted,
+               }),
+            ),
+         );
+         const created = results.filter((r) => r.status === "fulfilled");
+         const refused = results.flatMap((r) =>
+            r.status === "rejected" ? [r.reason] : [],
+         );
+         expect(created.length).toBe(1);
+         expect(refused.length).toBe(1);
+         expect(refused[0]).toBeInstanceOf(CatalogAdminError);
+         expect([refused[0].status, refused[0].reason]).toEqual([
+            409,
+            "CATALOG_EXISTS",
+         ]);
+      });
+
       it("never returns a credential", () => {
          const all = JSON.stringify(responses);
          expect(all).not.toContain(PASSWORD);

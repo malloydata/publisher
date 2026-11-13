@@ -117,6 +117,12 @@ export interface FreshnessAwareManifestEntry {
     */
    schema?: { name: string; type: string }[];
    /**
+    * The colocated table's columns with their types as the warehouse's own
+    * catalog names them (the wire entry's `nativeSchema`), which the served
+    * copy casts a big-integer column to exactly (known limitation 12).
+    */
+   nativeSchema?: { name: string; type: string }[];
+   /**
     * A `#(preaggregate)` rollup's key check (known limitation 29), as the
     * auto-run that wrote or carried this table recorded it: whether the rows
     * it grouped held its one grain dimension once per value. Internal, never
@@ -152,6 +158,14 @@ export function boundSchemaOf(
          : [],
    );
    return columns.length > 0 ? { schema: columns } : {};
+}
+
+/** {@link boundSchemaOf} for a wire entry's `nativeSchema`. */
+export function boundNativeSchemaOf(
+   schema: readonly { name?: string; type?: string }[] | undefined,
+): { nativeSchema: { name: string; type: string }[] } | Record<string, never> {
+   const bound = boundSchemaOf(schema);
+   return "schema" in bound ? { nativeSchema: bound.schema } : {};
 }
 
 /** Full (unfiltered) manifest map keyed by sourceEntityId. */

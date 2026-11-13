@@ -16,6 +16,7 @@
  * another file, two models declaring one name, and the serve verdicts.
  */
 
+import { capturedNativeSchema } from "../../service/materialization/run/colocated_native_types";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -401,9 +402,18 @@ async function buildAll(
                await warehouse.runSQL(
                   `CREATE OR REPLACE TABLE ${quoted} AS ${entry.sql}`,
                );
+               // The warehouse's own column types, captured as a colocated
+               // build captures them (colocated_native_types.ts).
+               const nativeSchema = await capturedNativeSchema({
+                  run: (sql) => warehouse.runSQL(sql, { rowLimit: 10_000 }),
+                  physicalTableName: table,
+                  dialect: warehouse.dialectName,
+                  sourceName: entry.name,
+               });
                colocated[entry.sourceEntityId] = {
                   tableName: table,
                   connectionName: entry.connectionName ?? "duckdb",
+                  ...(nativeSchema ? { nativeSchema } : {}),
                };
                built.push({ name: entry.name, tier: "colocated" });
             }

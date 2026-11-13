@@ -47,6 +47,7 @@ import { planChainedDownstream } from "../../../src/service/materialization/run/
 import { storageTablePath } from "../../../src/service/materialization/run/storage_table_path";
 import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
 import { deriveColocatedServeBindings } from "../../../src/service/materialization/serve/colocated_bindings";
+import { capturedNativeSchema } from "../../../src/service/materialization/run/colocated_native_types";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
 import * as os from "os";
@@ -751,8 +752,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // its parent's stored table.
    const entryBySourceID = new Map<string, ManifestEntry>();
    const storedBuildSQL: Record<string, string> = {};
-   const colocatedMaterializeEntries: Record<string, { tableName: string }> =
-      {};
+   const colocatedMaterializeEntries: Record<
+      string,
+      { tableName: string; nativeSchema?: { name: string; type: string }[] }
+   > = {};
    const builtSQL: Record<string, string> = {};
    const checkFailures: Record<string, string> = {};
    // The stored-table key checks a package's build plan asks for.
@@ -797,8 +800,17 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             })}`,
          );
          colocatedEntries[entityIdOf(source, i)] = { tableName: table };
+         // The warehouse's own column types, captured as a colocated build
+         // captures them (colocated_native_types.ts).
+         const nativeSchema = await capturedNativeSchema({
+            run: (sql) => builder.runSQL(sql, { rowLimit: 100_000 }),
+            physicalTableName: table,
+            dialect: builder.dialectName,
+            sourceName: source.name,
+         });
          colocatedMaterializeEntries[entityIdOf(source, i)] = {
             tableName: table,
+            ...(nativeSchema ? { nativeSchema } : {}),
          };
          continue;
       }
