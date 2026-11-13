@@ -630,6 +630,12 @@ export const VARIANT_SKIP_CODES = {
    served_copy_count_semantics: "COUNT_SEMANTICS",
    // The table lacks the field as live returns it: with its annotations.
    served_copy_joined_annotations: "MISSING_FIELD",
+   served_copy_pair_shape: "COUNT_SEMANTICS",
+   // Exact or not, a query that reads nothing through the inlined join_many
+   // reads each parent off a flag over every pair row: the table's rows are
+   // not the parents the query counts, so it is not the table to count them
+   // from (see pair_flat_query.ts).
+   served_copy_pair_parent_only: "COUNT_SEMANTICS",
 } as const satisfies Record<string, SkipReason>;
 
 /**

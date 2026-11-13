@@ -8,6 +8,7 @@ import {
 } from "@malloydata/malloy";
 import {
    findingSeverity,
+   MATERIALIZE_V2_ROUTES,
    type PackageAnnotationFinding,
 } from "../annotation_reader";
 import { components } from "../../api";
@@ -1881,8 +1882,10 @@ export class PackageMaterialization {
    }
 
    /**
-    * The publish refusal for `#@` lines that do not parse, one per line, or ""
-    * when none. Publish only: a load warns (the finding rides
+    * The publish refusal for `#@` lines that do not parse, and for malformed
+    * materialization v2 declarations (an unknown key on `#(materialize)` or
+    * `#(preaggregate)`, whose key sets are closed), one per line, or "" when
+    * none. Publish only: a load warns (the finding rides
     * `Package.warnings`), so a package already published keeps loading and its
     * schedule keeps running, and a metadata PATCH is not refused for it. Kept
     * out of {@link persistencePolicyWarnings}, which the scheduler and the
@@ -1890,7 +1893,12 @@ export class PackageMaterialization {
     */
    formatUnparseableAnnotations(): string {
       return this.annotationFindings
-         .filter((finding) => finding.code === "persist-unparseable")
+         .filter(
+            (finding) =>
+               finding.code === "persist-unparseable" ||
+               (finding.tier === "malformed" &&
+                  MATERIALIZE_V2_ROUTES.has(finding.route)),
+         )
          .map(
             (finding) =>
                `${finding.model ? `${finding.model}: ` : ""}${finding.message}`,
@@ -2139,6 +2147,10 @@ function servedCopyProblemMessage(
       case "range_not_found":
       case "definition_not_parsed":
          return "This source's declaration could not be re-rooted on its table, so the served copy leaves it to the serve shape.";
+      case "pair_join_not_found":
+         return "This source inlines a join_many that is not declared on its own in its own trailing `extend` (a source it is built from declares it, or its `join_many:` statement declares other joins too), so its pair table cannot be read with the join as a record and the served copy leaves it as written.";
+      case "pair_not_compiled":
+         return "This source's pair table (an inlined join_many) could not be read as the source with its join as a record (its text reads a measure or view of the joined source through the join, which the record does not carry), so the served copy leaves it as written.";
       case "read_terms_not_kept":
          return "This source filters by a given in a place its stored table cannot keep, or is filtered and reached here only through a join, so the served copy leaves it as written rather than answer every caller alike.";
       case "fields_not_carried":
