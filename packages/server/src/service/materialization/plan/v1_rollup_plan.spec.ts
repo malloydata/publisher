@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// Review 1703b (B): v1 `#@ preaggregate` lines read by the rollup leg (G4)
+// v1 `#@ preaggregate` lines read by the rollup leg (G4)
 // beside `#(preaggregate)` lines on the same measure, and inherited v1 lines.
 import { afterAll, describe, expect, it } from "bun:test";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -34,7 +34,7 @@ async function plan(text: string) {
    });
 }
 
-describe("review 1703b B: v1 lines on the rollup leg", () => {
+describe("v1 `#@ preaggregate` lines on the rollup leg", () => {
    it("plans one rollup when a measure declares the same grain both ways", async () => {
       const { plans } = await plan(`source: orders is ${ROWS} extend {
   #(preaggregate) grain=["category"]

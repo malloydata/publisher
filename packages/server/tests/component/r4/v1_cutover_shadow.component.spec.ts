@@ -1,21 +1,146 @@
-// Second review of PR #1703 (F1, F4): under PUBLISHER_V1_SERVED_COPY=shadow,
-// every metric a caller's query moves must move exactly as under `off`, on
-// the shadow's success and error paths alike; and a burst of distinct queries
-// must not leak the shadow's slots or hold up callers.
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+// PUBLISHER_V1_SERVED_COPY=shadow must serve exactly as `off` and add nothing
+// a caller or an operator sees but the shadow counter and its log line: a
+// shadow run is not counted as a caller's query; every metric a caller's query
+// moves moves exactly as under `off`, on the shadow's success and error paths
+// alike; and a burst of distinct queries neither leaks the shadow's slots nor
+// holds up callers.
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { metrics } from "@opentelemetry/api";
 import { MeterProvider, MetricReader } from "@opentelemetry/sdk-metrics";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
+import { resetMaterializationTelemetryForTesting } from "../../../src/materialization_metrics";
 import { ShadowScheduler } from "../../../src/service/materialization/serve/v1_shadow";
 import {
    metricsAreSuppressed,
    resetInstrumentsForTesting,
 } from "../../../src/telemetry";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../../../src/test_helpers/metrics_harness";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import { DATA_FILES, RAW_MODEL } from "./conformance/data";
 import { freshLoadPool, loadFixture } from "./conformance/package_harness";
+
+const SHADOW = "publisher_v1_served_copy_shadow_total";
+
+const GATED = `##! experimental { persistence givens }
+import "raw.malloy"
+
+given: ROLE :: string
+given: REGIONS :: string[]
+
+#(authorize) 'analyst' = $ROLE
+#(access_filter) region in $REGIONS
+#@ persist name="locked_orders"
+source: locked_orders is orders_raw -> {
+  select: id, region, status, amount
+} extend {
+  measure: total is amount.sum()
+}
+`;
+
+async function shadowSettled(h: MetricsHarness): Promise<number> {
+   const deadline = Date.now() + 20_000;
+   for (;;) {
+      let n = 0;
+      for (const outcome of [
+         "equal",
+         "live",
+         "rows_differ",
+         "metadata_differ",
+         "error",
+      ])
+         n += await h.collectCounter(SHADOW, { outcome });
+      if (n > 0 || Date.now() > deadline) return n;
+      await new Promise((r) => setTimeout(r, 50));
+   }
+}
+
+describe("v1 shadow: a shadow run is not counted as a caller's query", () => {
+   let harness: MetricsHarness;
+   let restore = () => {};
+   beforeEach(async () => {
+      harness = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+   });
+   afterEach(async () => {
+      restore();
+      await harness.shutdown();
+      await freshLoadPool();
+   });
+
+   it("counts one caller's gated query once in the authorize counters", async () => {
+      restore = installSettings({
+         env: {
+            PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE: "false",
+            PUBLISHER_V1_SERVED_COPY: "shadow",
+         },
+      }).restore;
+      await freshLoadPool();
+      const loader = await loadFixture({
+         ...DATA_FILES,
+         "raw.malloy": RAW_MODEL,
+         "g.malloy": GATED,
+      });
+      try {
+         const f = await loader.bind();
+         const lock = () =>
+            harness.collectCounter("publisher_authorize_lock_total", {
+               decision: "admitted",
+            });
+         const givens = { ROLE: "analyst", REGIONS: ["north"] } as never;
+         // `off`: what one caller's query counts.
+         restore();
+         restore = installSettings({
+            env: {
+               PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_V1_SERVED_COPY: "off",
+            },
+         }).restore;
+         let before = await lock();
+         let out = await f.run(
+            "g.malloy",
+            "run: locked_orders -> { group_by: region; aggregate: total }",
+            givens,
+         );
+         if ("error" in out) throw new Error(out.error);
+         const perQueryOff = (await lock()) - before;
+         expect(perQueryOff).toBeGreaterThan(0);
+         // `shadow`, another text of the same query (so it is compared).
+         restore();
+         restore = installSettings({
+            env: {
+               PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_V1_SERVED_COPY: "shadow",
+            },
+         }).restore;
+         await f.rebind();
+         before = await lock();
+         out = await f.run(
+            "g.malloy",
+            "run: locked_orders -> { group_by: region;  aggregate: total }",
+            givens,
+         );
+         if ("error" in out) throw new Error(out.error);
+         expect(await shadowSettled(harness)).toBe(1);
+         await new Promise((r) => setTimeout(r, 200));
+         const perQueryShadow = (await lock()) - before;
+         // Serving as `off` includes what an operator's counters say.
+         expect(perQueryShadow).toBe(perQueryOff);
+      } finally {
+         await loader.dispose();
+      }
+   }, 120_000);
+});
 
 class Reader extends MetricReader {
    protected override async onForceFlush(): Promise<void> {}
@@ -46,7 +171,6 @@ source: open_orders is orders_raw -> {
 }
 `;
 
-const SHADOW = "publisher_v1_served_copy_shadow_total";
 const GIVENS = { ROLE: "analyst", REGIONS: ["north", "south"] } as never;
 
 type Snap = Map<string, number>;
@@ -96,7 +220,7 @@ async function until(fn: () => Promise<boolean>, ms = 20_000) {
    }
 }
 
-describe("review 1703b: shadow metrics and resources", () => {
+describe("v1 shadow: metrics and resources", () => {
    let reader: Reader;
    let restore = () => {};
    const env = (mode: string, extra: Record<string, string> = {}) => {

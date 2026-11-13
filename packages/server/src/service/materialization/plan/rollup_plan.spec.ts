@@ -811,7 +811,7 @@ source: orders is ${ROWS} extend {
    });
 });
 
-describe("a v1 rollup's namespace under the v1 cutover (second review of #1703)", () => {
+describe("a v1 rollup's namespace under the v1 cutover", () => {
    it("inherits its base's #@ persist name= namespace when its line names none, as v1 places it", async () => {
       const modelDef = await compile({
          "orders.malloy": `##! experimental.persistence

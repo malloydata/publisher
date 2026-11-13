@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Review 1703b (B), decision 3 of the v1 cutover: a v1 `#@ preaggregate`
+ * Decision 3 of the v1 cutover: a v1 `#@ preaggregate`
  * rollup built before the cutover (`__preagg__`) rebuilds once under the v2
  * rollup's name (`__rollup__`), and the old table is left to the manifest GC.
  * End to end, through the service: build under `off`, flip to `on`, rebuild,
@@ -57,7 +57,7 @@ const LIVE = [
    { category: "B", total: 35 },
 ];
 
-describe("review 1703b B: v1 rollup tables across the cutover's one rebuild", () => {
+describe("v1 rollup tables across the cutover's one rebuild", () => {
    let root: string;
    let envPath: string;
    let db: DuckDBConnection;
@@ -82,7 +82,7 @@ describe("review 1703b B: v1 rollup tables across the cutover's one rebuild", ()
    beforeEach(async () => {
       await switchTo("off");
       root = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "review-1703b-gc-")),
+         fs.mkdtempSync(path.join(os.tmpdir(), "v1-rollup-gc-")),
       );
       envPath = path.join(root, "env");
       fs.mkdirSync(envPath);

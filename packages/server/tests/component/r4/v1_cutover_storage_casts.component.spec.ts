@@ -1,5 +1,7 @@
-// Review probes (PR #1703, second review, 6b / G5): a v1 `storage=` table an
-// older build typed, under PUBLISHER_V1_SERVED_COPY=on. Every answer must equal
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+// 6b / G5: a v1 `storage=` table an older build typed, under PUBLISHER_V1_SERVED_COPY=on. Every answer must equal
 // live by both the R4 rule and the shadow's exact rule, with the same wire
 // types, and a query reading a left-out column must answer live.
 
@@ -97,7 +99,7 @@ describe("6b: casts on an older build's table under on", () => {
       },
       // A BIGINT or HUGEINT beyond 2^53 reads back as a double from any
       // stored table (the type: declares a plain number, limitation 12): left
-      // out here, a decision for the cutover (second review, A1).
+      // out here, a decision for the cutover (A1).
       {
          name: "leading-zero strings, grouped and filtered",
          malloy:
@@ -265,7 +267,7 @@ source: excepted is ev -> {
 // withoutLeftOutColumn matches an undefined name against every candidate's
 // left-out columns. With another source naming its same-named left-out column
 // (`loud_ext`), today the quiet source also answers live, rows equal: a lost
-// speedup only, left as is (second review, A6), so only the plain case runs.
+// speedup only, left as is (A6), so only the plain case runs.
 for (const withLoudExt of [false])
    describe(`6b: two sources with a same-named left-out column (loud_ext ${withLoudExt})`, () => {
       let fixture: R4Fixture;
