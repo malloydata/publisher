@@ -344,6 +344,43 @@ describe("marksAgentHidden", () => {
       }
    });
 
+   it("hides at least what the hand-written matchers hid, over a grid", () => {
+      // Every prefix, opener, spelling and closer combined. A miss here
+      // exposes a source the author meant to withhold. The one shape the
+      // reader hides past the old matchers is a `###(agent-hidden)` file
+      // note, which Malloy routes to `agent-hidden`.
+      const prefixes = [
+         ...["#", "##", "###", "#|", "##|", "# ", "#\t", "#\n"],
+         ...["#| ", "#|\n", " #", "#  |"],
+      ];
+      const opens = ["", "(", "[", "{", "<", " (", "( ", "(\n", ")", "|"];
+      const words = [
+         "agent-hidden",
+         "AGENT-HIDDEN",
+         "agent-hidden-x",
+         "agent-hiddenx",
+         "agent-hidden=1",
+         "agent-hidden.x",
+      ];
+      const closes = ["", ")", "]", "}", ">", " )", ")x", ")\n|#", "=true"];
+      const missed: string[] = [];
+      for (const p of prefixes)
+         for (const o of opens)
+            for (const w of words)
+               for (const c of closes) {
+                  const text = p + o + w + c;
+                  if (
+                     OLD_SOURCE.test(text) &&
+                     !marksAgentHidden(text, "source")
+                  )
+                     missed.push(`source ${JSON.stringify(text)}`);
+                  if (OLD_FILE.test(text) && !marksAgentHidden(text, "file"))
+                     missed.push(`file ${JSON.stringify(text)}`);
+               }
+      expect(missed).toEqual([]);
+      expect(marksAgentHidden("###(agent-hidden)", "file")).toBe(true);
+   });
+
    it("reads a block note, a glued prefix and a malformed prefix", () => {
       expect(marksAgentHidden("#|(agent-hidden)\n", "source")).toBe(true);
       expect(marksAgentHidden("##|(agent-hidden)\n", "file")).toBe(true);
