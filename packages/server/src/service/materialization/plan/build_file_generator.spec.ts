@@ -13,6 +13,7 @@ import {
 import { compilePackageBuildPlan } from "./build_plan_compile";
 import { collectIncrementalDeclarations } from "./build_plan";
 import { incrementalLineage } from "../run/incremental_build";
+import { incrementalPolicyRejections } from "./incremental_policy";
 import { assertInlinedJoinsUnique } from "../run/inline_uniqueness";
 import { rollingWindowsOf } from "./rolling_window";
 import {
@@ -1285,29 +1286,6 @@ source: orders is orders_raw extend {
          /primary key of `picks_raw`'s joined source/,
       ],
       [
-         "a path of join_manys on an incremental source",
-         `source: picks is duckdb.sql("""select 1 as pick_id, 1 as line_id""") extend { primary_key: pick_id }
-source: lines_picked is lines extend {
-  join_many: picks on picks.line_id = line_id
-}
-#(materialize) name="orders_all" storage="lake" inline=["lp.picks"] refresh="incremental" watermark="order_date"
-source: orders is orders_raw extend {
-  primary_key: id
-  join_many: lp is lines_picked on lp.order_id = id
-}`,
-         /a path of join_manys, on an incremental source/,
-      ],
-      [
-         "two join_manys on an incremental source",
-         `#(materialize) name="orders_all" storage="lake" inline=["lines", "l2"] refresh="incremental" watermark="order_date"
-source: orders is orders_raw extend {
-  primary_key: id
-  join_many: lines on lines.order_id = id
-  join_many: l2 is lines on l2.order_id = id
-}`,
-         /incremental source/,
-      ],
-      [
          "two join_manys with a level flag that clashes with a dimension",
          `source: picks is duckdb.sql("""select 1 as pick_id, 1 as line_id""") extend { primary_key: pick_id }
 source: lines_picked is lines extend {
@@ -1323,13 +1301,22 @@ source: orders is orders_raw extend {
          /`__pair_lane` column/,
       ],
       [
-         "a join_many on an incremental source",
-         `#(materialize) name="orders_all" storage="lake" inline=["lines"] refresh="incremental" watermark="order_date"
+         "a join_many whose watermark column clashes with a dimension",
+         `#(materialize) name="orders_all" storage="lake" inline=["lines"]
 source: orders is orders_raw extend {
   primary_key: id
   join_many: lines on lines.order_id = id
+  dimension: __pair_watermark is order_date
 }`,
-         /incremental source/,
+         /`__pair_watermark` column/,
+      ],
+      [
+         "a watermark list on a source with no join_many",
+         `#(materialize) name="orders_all" storage="lake" refresh="incremental" watermark=["order_date", "id"]
+source: orders is orders_raw extend {
+  primary_key: id
+}`,
+         /takes a list only on an incremental pair table/,
       ],
       [
          "a join_many whose flag clashes with a dimension",
@@ -1364,6 +1351,243 @@ ${declaration}
             );
             expect(findings.map((f) => f.subject)).toEqual(["orders"]);
             expect(findings[0].message).toMatch(why);
+         },
+         { timeout: 30000 },
+      );
+   }
+
+   const DATED = `${BASE}
+source: lines is duckdb.sql("""
+  select * from (values
+    (1, 1, 2.0, date '2026-01-05'),
+    (2, 1, 3.0, date '2026-01-02'),
+    (3, 2, 4.0, date '2026-01-01'),
+    (4, 9, 1.0, date '2026-01-09')
+  ) as t(line_id, order_id, qty, loaded_on)
+""") extend {
+  primary_key: line_id
+}
+`;
+   const pairSource = (keys: string, extra = "") => `${DATED}
+#(materialize) name="orders_all" storage="lake" inline=["lines"] refresh="incremental" ${keys}
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id${extra}
+}
+`;
+
+   it(
+      "plans an incremental pair table: a per-parent watermark over both sides, replaced by the parent key",
+      async () => {
+         const c = await compiled(
+            pairSource('watermark=["order_date", "lines.loaded_on"]'),
+         );
+         const [plan] = generatedPlans(c);
+         expect(plan.pairFullRefresh).toBeUndefined();
+         expect(plan.pair?.watermark).toEqual({
+            column: "__pair_watermark",
+            parts: ["order_date", "lines__loaded_on"],
+         });
+         // v1's machinery reads the generated watermark and merges by the
+         // parent key, which the delta turns into whole-parent replacement.
+         expect(plan.persist).toMatchObject({
+            refresh: "incremental",
+            watermark: "__pair_watermark",
+            merge_key: "id",
+         });
+         expect(
+            (c.annotationFindings ?? []).filter((f) =>
+               f.code.startsWith("materialize-"),
+            ),
+         ).toEqual([]);
+         // Each parent's rows carry one watermark: the greatest over the
+         // parent and its children; a childless parent its own.
+         const [sourceID, source] = Object.entries(c.sources).find(
+            ([, s]) => s.name === "orders",
+         )!;
+         const sql = buildSQLOf(source, { entries: {} }, c.targets?.[sourceID]);
+         const pkg = await packages.create(DATED);
+         const duckdb = await pkg.getMalloyConnection("duckdb");
+         const rows = (
+            await duckdb.runSQL(
+               `SELECT id, count(*) AS n, count(DISTINCT __pair_watermark) AS w,
+                       max(__pair_watermark) AS wm,
+                       count(*) FILTER (WHERE __parent_row) AS flags
+                  FROM (${sql}) t GROUP BY id ORDER BY id`,
+            )
+         ).rows.map((r) => [
+            Number(r.id),
+            Number(r.n),
+            Number(r.w),
+            new Date(String(r.wm)).toISOString().slice(0, 10),
+            Number(r.flags),
+         ]);
+         expect(rows).toEqual([
+            [1, 2, 1, "2026-01-05", 1],
+            [2, 1, 1, "2026-01-02", 1],
+            [3, 1, 1, "2026-01-03", 1],
+         ]);
+         // The two generated windows are partitioned by the parent key, so
+         // the window gate does not apply to them; nothing else changes.
+         const declaration = collectIncrementalDeclarations(
+            c.sources,
+            c.materializePlans,
+         )[plan.sourceID];
+         expect(declaration.calculateFields).toEqual([]);
+         expect(declaration.pair).toEqual({
+            parentKey: "id",
+            parentRow: "__parent_row",
+         });
+         expect(declaration.strategy).toBe("merge");
+         // The publish gate admits it on an allowlisted origin, the window
+         // rule included.
+         expect(
+            incrementalPolicyRejections([
+               { sourceName: "orders", dialect: "postgres", declaration },
+            ]),
+         ).toEqual([]);
+         const lineage = (targetDialect: string) =>
+            incrementalLineage({
+               declaration,
+               dialect: "postgres",
+               targetDialect,
+               physicalTableName: "orders_all",
+               connectionName: "duckdb",
+               sourceEntityId: "sid",
+            });
+         expect(lineage("duckdb")).toMatchObject({
+            watermarkName: "__pair_watermark",
+            mergeKeys: ["id"],
+            pair: { parentKey: "id", parentRow: "__parent_row" },
+         });
+         // A pair delta is proven in DuckDB only: anything else seeds.
+         expect(lineage("postgres")).toBeUndefined();
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "leaves the window gate in force on a pair table that is not incremental",
+      async () => {
+         const c = await compiled(`${DATED}
+#(materialize) name="orders_all" storage="lake" inline=["lines"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+}
+`);
+         const [plan] = generatedPlans(c);
+         expect(plan.pair?.watermark).toBeUndefined();
+         expect(plan.persist.refresh).toBeUndefined();
+         const declaration = collectIncrementalDeclarations(
+            c.sources,
+            c.materializePlans,
+         )[plan.sourceID];
+         expect(declaration.pair).toBeUndefined();
+         expect(declaration.calculateFields).toEqual(["__parent_row"]);
+      },
+      { timeout: 30000 },
+   );
+
+   for (const [name, keys, extra, why] of [
+      [
+         "names only the parent's field, so a child-only change is not seen",
+         'watermark="order_date"',
+         "",
+         /names only the source's own fields, so a child added/,
+      ],
+      [
+         "names only a child's field, so a new childless parent is not seen",
+         'watermark=["lines.loaded_on"]',
+         "",
+         /names only fields of `lines`/,
+      ],
+      [
+         "names a field that is not stored",
+         'watermark=["order_date", "lines.nope"]',
+         "",
+         /`lines.nope`, which is not a stored dimension/,
+      ],
+      [
+         "names fields of two types",
+         'watermark=["order_date", "lines.qty"]',
+         "",
+         /must all be of one type.*date, number/,
+      ],
+      [
+         "merges on a key other than the parent's",
+         'watermark=["order_date", "lines.loaded_on"] merge_key="region"',
+         "",
+         /merge_key= names `region`/,
+      ],
+   ] as const) {
+      it(
+         `rebuilds a pair table in full, with a coded warning, when its watermark ${name}`,
+         async () => {
+            const c = await compiled(pairSource(keys, extra));
+            const [plan] = generatedPlans(c);
+            // Built and served; only the refresh is not incremental.
+            expect(plan.pair?.watermark).toBeUndefined();
+            expect(plan.pairFullRefresh).toMatch(why);
+            for (const key of ["refresh", "watermark", "merge_key"]) {
+               expect(plan.persist[key]).toBeUndefined();
+            }
+            const findings = (c.annotationFindings ?? []).filter((f) =>
+               f.code.startsWith("materialize-"),
+            );
+            expect(findings.map((f) => [f.code, f.tier, f.subject])).toEqual([
+               ["materialize-pair-full-refresh", "unservable", "orders"],
+            ]);
+            expect(findings[0].message).toMatch(why);
+         },
+         { timeout: 30000 },
+      );
+   }
+
+   for (const [name, declaration, why] of [
+      [
+         "a path of join_manys",
+         `source: picks is duckdb.sql("""select 1 as pick_id, 1 as line_id""") extend { primary_key: pick_id }
+source: lines_picked is lines extend {
+  join_many: picks on picks.line_id = line_id
+}
+#(materialize) name="orders_all" storage="lake" inline=["lp.picks"] refresh="incremental" watermark="order_date"
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lp is lines_picked on lp.order_id = id
+}`,
+         /a path of join_manys/,
+      ],
+      [
+         "two join_manys",
+         `#(materialize) name="orders_all" storage="lake" inline=["lines", "l2"] refresh="incremental" watermark="order_date"
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+  join_many: l2 is lines on l2.order_id = id
+}`,
+         /more than one inlined join_many/,
+      ],
+   ] as const) {
+      it(
+         `rebuilds in full, with a coded warning, an incremental pair table of ${name}`,
+         async () => {
+            const c = await compiled(`${PAIRED}
+${declaration}
+`);
+            const [plan] = generatedPlans(c);
+            expect(plan.pair).toBeDefined();
+            expect(plan.pair?.watermark).toBeUndefined();
+            expect(plan.pairFullRefresh).toMatch(why);
+            for (const key of ["refresh", "watermark", "merge_key"]) {
+               expect(plan.persist[key]).toBeUndefined();
+            }
+            const findings = (c.annotationFindings ?? []).filter((f) =>
+               f.code.startsWith("materialize-"),
+            );
+            expect(findings.map((f) => [f.code, f.subject])).toEqual([
+               ["materialize-pair-full-refresh", "orders"],
+            ]);
          },
          { timeout: 30000 },
       );

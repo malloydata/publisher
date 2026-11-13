@@ -77,10 +77,10 @@
  * dimension through it has one value per pair, not per parent): the served
  * copy computes it at read, over the record. One join_many per source,
  * declared on the same connection, its condition reading no other join, both
- * sides with a declared primary key that is stored, the joined source with no
- * joins of its own (one hop), and no incremental refresh (the flag is written
- * over the whole table: an increment that adds a child to a parent already
- * stored would mark that parent twice); anything else is refused.
+ * sides with a declared primary key that is stored, and the joined source with
+ * no joins of its own (one hop); anything else is refused. An incremental pair
+ * table refreshes whole parents over a per-parent watermark
+ * ({@link pairIncremental}), or is rebuilt in full with a warning.
  *
  * Not yet (each is a later pull request's, and is refused or left out here
  * rather than built wrong):
@@ -288,6 +288,22 @@ export interface MaterializePairHop {
    rowColumn: string;
 }
 
+/**
+ * An incremental pair table's watermark column: per parent, the greatest of
+ * the declared watermark fields over the parent's row and every child row, so
+ * a child added to (or restated under) a stored parent moves its parent's
+ * watermark, and every row of one parent carries the same value (see
+ * {@link pairIncremental}).
+ */
+export const PAIR_WATERMARK = "__pair_watermark";
+
+/**
+ * The code of the warning on a pair table whose `refresh="incremental"` is
+ * not honoured: the table is rebuilt in full on every refresh, and served.
+ */
+export const MATERIALIZE_PAIR_FULL_REFRESH_CODE =
+   "materialize-pair-full-refresh";
+
 /** How a pair table (an inlined join_many, P5) is laid out. */
 export interface MaterializePair {
    /** The inlined join_many's name on the materialized source. */
@@ -305,6 +321,12 @@ export interface MaterializePair {
     * first, in order. Absent: one hop.
     */
    hops?: MaterializePairHop[];
+   /**
+    * For an incremental pair table: its watermark column
+    * ({@link PAIR_WATERMARK}) and the stored columns it is the greatest of,
+    * at least one of the source's own and one of the joined source's.
+    */
+   watermark?: { column: string; parts: string[] };
 }
 
 /**
@@ -486,6 +508,13 @@ export interface MaterializePlan {
    pair?: MaterializePair;
    /** For a pair table that stores more than one inlined path: its blocks. */
    pairBlocks?: MaterializePairBlocks;
+   /**
+    * Why a pair table's `refresh="incremental"` is not honoured, when it is
+    * not: the plan carries no incremental key, so the table is rebuilt in
+    * full on every refresh, and the package warns
+    * ({@link MATERIALIZE_PAIR_FULL_REFRESH_CODE}).
+    */
+   pairFullRefresh?: string;
    /**
     * The table takes the source's own name because the declaration has no
     * `name=`, which the refusal of a colliding table name says (see
@@ -739,10 +768,28 @@ function unknownKeyRefusal(
  */
 function carriedPersistKeys(
    declaration: NonNullable<ReturnType<typeof readMaterializeDeclaration>>,
-): { persist: Record<string, string> } | { reason: string } {
+):
+   | { persist: Record<string, string>; watermarks?: string[] }
+   | { reason: string } {
    const persist: Record<string, string> = {};
+   let watermarks: string[] | undefined;
    for (const key of CARRIED_KEYS) {
       if (!declaration.keys.includes(key)) continue;
+      // A list of watermark fields is a pair table's (see pairIncremental);
+      // the caller refuses it on any other source.
+      const list = key === "watermark" ? declaration.tag.array(key) : undefined;
+      if (list !== undefined) {
+         const names = list.map((i) => i.text());
+         if (names.some((n) => typeof n !== "string" || n.trim() === "")) {
+            return {
+               reason:
+                  "#(materialize) `watermark=` must be a string, or a list of " +
+                  'field names such as watermark=["updated_at", "items.loaded_at"]',
+            };
+         }
+         watermarks = [...new Set((names as string[]).map((n) => n.trim()))];
+         continue;
+      }
       const value = declaration.tag.text(key);
       if (value === undefined) {
          return { reason: `#(materialize) \`${key}=\` must be a string` };
@@ -767,7 +814,7 @@ function carriedPersistKeys(
          persist[`${group}.${property}`] = text;
       }
    }
-   return { persist };
+   return watermarks ? { persist, watermarks } : { persist };
 }
 
 /**
@@ -943,18 +990,6 @@ const NULLABLE_TYPES: ReadonlySet<string> = new Set([
    "timestamptz",
 ]);
 
-/** A joined source's field's Malloy type, or "" when unknown. */
-function joinedFieldType(join: SourceJoin, dimension: string): string {
-   for (const raw of join.fields) {
-      const field = raw as FieldLike;
-      const name = typeof field.as === "string" ? field.as : field.name;
-      if (name === dimension && typeof field.type === "string") {
-         return field.type;
-      }
-   }
-   return "";
-}
-
 /**
  * The joins an `inline=` entry names, from the source down (`"items"`, or a
  * path of join_manys, `"items.options"`), or why it cannot be inlined. The
@@ -1114,7 +1149,6 @@ function pairRefusal(
    map: SourceMap,
    columns: readonly MaterializeColumn[],
    joined: readonly MaterializeColumn[],
-   persist: Readonly<Record<string, string>>,
 ): { pair: MaterializePair } | { reason: string } {
    const join = path[0];
    const names = path.map((j) => j.name);
@@ -1158,32 +1192,10 @@ function pairRefusal(
          };
       }
    }
-   // Kept apart from the one-hop rule below, which incremental refresh will
-   // lift on its own: a path's level flags are written over the whole table
-   // too, and no increment rule keeps them unique yet.
-   if (
-      path.length > 1 &&
-      Object.keys(persist).some((k) => INCREMENTAL_KEYS.includes(k))
-   ) {
-      return {
-         reason:
-            `inline= names ${name}, a path of join_manys, on an incremental ` +
-            "source; its pair table's row flags are written over the whole " +
-            "table, so it is rebuilt in full",
-      };
-   }
-   if (persist.refresh === "incremental") {
-      return {
-         reason:
-            `inline= names ${name}, a join_many, on an incremental source; a ` +
-            "pair table's parent-row flag is written over the whole table " +
-            "(an increment that adds a child to a stored parent would mark " +
-            "that parent twice), so it is rebuilt in full",
-      };
-   }
    const taken = new Set([...columns, ...joined].map((c) => c.column));
    const flags = [
       PAIR_PARENT_ROW,
+      PAIR_WATERMARK,
       ...path.slice(1).map((_, k) => pairLevelRowColumn(k + 1)),
    ];
    const clash = flags.find((c) => taken.has(c));
@@ -1227,7 +1239,6 @@ function pairBlocksOf(
    paths: readonly (readonly SourceJoin[])[],
    columns: readonly MaterializeColumn[],
    connection: unknown,
-   persist: Readonly<Record<string, string>>,
 ): { blocks: MaterializePairBlocks } | { reason: string } {
    const listed = paths.map((p) => quotedName(p.map((j) => j.name).join(".")));
    if (typeof connection !== "string") {
@@ -1235,13 +1246,6 @@ function pairBlocksOf(
          reason:
             `inline= names more than one join_many (${listed.join(", ")}), and ` +
             "the source's connection is unknown, which the pair table's build reads",
-      };
-   }
-   if (Object.keys(persist).some((k) => INCREMENTAL_KEYS.includes(k))) {
-      return {
-         reason:
-            `inline= names more than one join_many (${listed.join(", ")}) on an ` +
-            "incremental source; a pair table is rebuilt in full",
       };
    }
    const columnTypes: Record<string, string> = {};
@@ -1252,7 +1256,7 @@ function pairBlocksOf(
             if (c.join !== prefix[0]) continue;
             const at = c.path ?? [c.join];
             if (at.join(".") !== prefix.join(".")) continue;
-            const type = joinedFieldType(path[k], c.dimension);
+            const type = joinedColumnType(path[k], c.dimension);
             if (!NULLABLE_TYPES.has(type)) {
                return {
                   reason:
@@ -1288,6 +1292,141 @@ function pairBlocksOf(
          connection,
          columnTypes,
          levels,
+      },
+   };
+}
+
+/** A joined source's field's Malloy type, or "" when it has none. */
+function joinedColumnType(join: SourceJoin, dimension: string): string {
+   for (const raw of join.fields) {
+      const field = raw as FieldLike;
+      const name = typeof field.as === "string" ? field.as : field.name;
+      if (name === dimension && typeof field.type === "string") {
+         return field.type;
+      }
+   }
+   return "";
+}
+
+/** The Malloy types a pair table's watermark can be built over. */
+const PAIR_WATERMARK_TYPES: ReadonlySet<string> = new Set([
+   "date",
+   "timestamp",
+   "number",
+   "string",
+]);
+
+/**
+ * How an incremental pair table refreshes, or why it is rebuilt in full.
+ *
+ * The unit a refresh replaces is a whole parent: every pair row of each
+ * parent whose watermark moved is deleted by the parent key and written
+ * again, so `__parent_row` stays exactly one row per parent. The watermark
+ * is {@link PAIR_WATERMARK}, per parent the greatest of the named fields
+ * over the parent's row and all its child rows: the same value on every row
+ * of one parent, so a watermark range selects whole parents, and the flag
+ * the build's window writes over them is the full build's. A child-only
+ * change (a child added to a stored parent, a late-arriving child, a child
+ * restated in place) is seen only through a child field that moves with it,
+ * so the declaration must name one: `watermark=["updated_at",
+ * "segments.loaded_at"]`. Without one, or without a field of the source's own
+ * (a new childless parent would not move it), the table is rebuilt in full,
+ * with a warning. So too for a `merge_key=` other than the source's primary
+ * key (the unit is the parent), and a rolling window over a child field
+ * (its delete would remove part of a parent).
+ *
+ * Returns nothing to do when no watermark is named: the incremental gate
+ * refuses that as it refuses it on any source.
+ */
+function pairIncremental(args: {
+   pair: MaterializePair;
+   persist: Readonly<Record<string, string>>;
+   /** The watermark fields as declared: a source field, or `<join>.<field>`. */
+   names: readonly string[];
+   columns: readonly MaterializeColumn[];
+   columnTypeOf: (c: MaterializeColumn) => string;
+   /** The stored columns the source's rolling windows read. */
+   windowFields: readonly string[];
+}):
+   | { watermark: { column: string; parts: string[] } }
+   | { fullRefresh: string }
+   | { none: true } {
+   const { pair, names, columns } = args;
+   if (names.length === 0) return { none: true };
+   const join = quotedName(pair.join);
+   const parts: MaterializeColumn[] = [];
+   for (const name of names) {
+      const dot = name.indexOf(".");
+      const column =
+         dot < 0
+            ? columns.find((c) => c.join === undefined && c.dimension === name)
+            : columns.find(
+                 (c) =>
+                    c.join === pair.join &&
+                    c.join === name.slice(0, dot) &&
+                    c.dimension === name.slice(dot + 1),
+              );
+      if (!column) {
+         return {
+            fullRefresh:
+               `watermark= names \`${name}\`, which is not a stored dimension ` +
+               `of the source or of the inlined join ${join}`,
+         };
+      }
+      parts.push(column);
+   }
+   if (!parts.some((c) => c.join !== undefined)) {
+      return {
+         fullRefresh:
+            `watermark= names only the source's own fields, so a child added ` +
+            `to a stored parent through ${join} would not move it and would ` +
+            `never be stored; name a field of ${join} that moves with each ` +
+            `child as well, such as watermark=["${names[0]}", ` +
+            `"${pair.join}.loaded_at"]`,
+      };
+   }
+   if (!parts.some((c) => c.join === undefined)) {
+      return {
+         fullRefresh:
+            `watermark= names only fields of ${join}, so a new parent with ` +
+            `no children would not move it; name one of the source's own ` +
+            `fields as well`,
+      };
+   }
+   const types = new Set(parts.map((c) => args.columnTypeOf(c)));
+   const [type] = [...types];
+   if (types.size !== 1 || !PAIR_WATERMARK_TYPES.has(type)) {
+      return {
+         fullRefresh:
+            `the watermark= fields must all be of one type, a date, ` +
+            `timestamp, number or string (they are ${[...types]
+               .map((t) => t || "unknown")
+               .join(", ")})`,
+      };
+   }
+   const mergeKey = args.persist.merge_key;
+   if (mergeKey !== undefined && mergeKey.trim() !== pair.parentKey) {
+      return {
+         fullRefresh:
+            `merge_key= names \`${mergeKey}\`; a pair table replaces whole ` +
+            `parents, by the source's primary key \`${pair.parentKey}\`, so ` +
+            `name that or leave merge_key= out`,
+      };
+   }
+   const childWindow = args.windowFields.find((f) =>
+      columns.some((c) => c.column === f && c.join !== undefined),
+   );
+   if (childWindow !== undefined) {
+      return {
+         fullRefresh:
+            `its rolling window reads \`${childWindow}\` of ${join}, and ` +
+            `deleting below it would remove part of a parent`,
+      };
+   }
+   return {
+      watermark: {
+         column: PAIR_WATERMARK,
+         parts: [...new Set(parts.map((c) => c.column))],
       },
    };
 }
@@ -1758,7 +1897,6 @@ export function planModelMaterialize(
                map,
                columns.filter((c) => c.join === undefined),
                joinedColumns,
-               persist,
             ),
          );
          const problem = laid.find(
@@ -1775,13 +1913,7 @@ export function planModelMaterialize(
          const pairs = (laid as { pair: MaterializePair }[]).map((l) => l.pair);
          pair = pairs[0];
          if (pairs.length > 1) {
-            const blocks = pairBlocksOf(
-               pairs,
-               paths,
-               columns,
-               def.connection,
-               persist,
-            );
+            const blocks = pairBlocksOf(pairs, paths, columns, def.connection);
             if ("reason" in blocks) {
                refused.push({
                   sourceName: name,
@@ -1791,6 +1923,60 @@ export function planModelMaterialize(
                continue;
             }
             pairBlocks = blocks.blocks;
+         }
+      }
+      if (carried.watermarks && !(pair && persist.refresh === "incremental")) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason:
+               "#(materialize) `watermark=` takes a list only on an incremental " +
+               "pair table (an inlined join_many); name one dimension",
+         });
+         continue;
+      }
+      let pairFullRefresh: string | undefined;
+      if (
+         pair &&
+         persist.refresh === "incremental" &&
+         (pair.hops !== undefined || pairBlocks !== undefined)
+      ) {
+         // The parent-replace rule keeps one `__parent_row` per parent in one
+         // path's table; a path's level flags and a table of several blocks
+         // have no increment rule yet, so they are rebuilt in full.
+         pairFullRefresh =
+            pairBlocks !== undefined
+               ? "the pair table stores more than one inlined join_many, one block each, which an increment cannot replace parent by parent yet"
+               : "the pair table stores a path of join_manys, whose level row flags an increment cannot keep unique yet";
+         for (const key of INCREMENTAL_KEYS) {
+            if (key !== "partition") delete persist[key];
+         }
+      } else if (pair && persist.refresh === "incremental") {
+         const incremental = pairIncremental({
+            pair,
+            persist,
+            names:
+               carried.watermarks ??
+               (persist.watermark !== undefined ? [persist.watermark] : []),
+            columns,
+            columnTypeOf: (c) =>
+               c.join === undefined
+                  ? columnType(def, c.dimension)
+                  : joinedColumnType(
+                       joins.find((x) => x.name === c.join) as SourceJoin,
+                       c.dimension,
+                    ),
+            windowFields: window.terms.map((t) => t.window.field),
+         });
+         if ("watermark" in incremental) {
+            pair = { ...pair, watermark: incremental.watermark };
+            persist.watermark = incremental.watermark.column;
+            persist.merge_key = pair.parentKey;
+         } else if ("fullRefresh" in incremental) {
+            pairFullRefresh = incremental.fullRefresh;
+            for (const key of INCREMENTAL_KEYS) {
+               if (key !== "partition") delete persist[key];
+            }
          }
       }
       const build = buildSourceName(name);
@@ -1826,6 +2012,7 @@ export function planModelMaterialize(
          ...(uniquenessChecks.length > 0 ? { uniquenessChecks } : {}),
          ...(pair ? { pair } : {}),
          ...(pairBlocks ? { pairBlocks } : {}),
+         ...(pairFullRefresh ? { pairFullRefresh } : {}),
          ...(declaration.keys.includes("name") ? {} : { nameDefaulted: true }),
       });
    }
@@ -1919,6 +2106,29 @@ export function materializeRefusalFinding(
          `#(materialize) on source "${refusal.sourceName}" is not built, ` +
          `so the source is served live: ${refusal.reason}.`,
       subject: refusal.sourceName,
+      model,
+   };
+}
+
+/**
+ * A pair table whose `refresh="incremental"` is not honoured, as a package
+ * warning: it is built, served, and rebuilt in full on every refresh (the
+ * `unservable` tier: well-formed, not honoured here).
+ */
+export function pairFullRefreshFinding(
+   plan: Pick<MaterializePlan, "sourceName">,
+   reason: string,
+   model: string,
+): PackageAnnotationFinding {
+   return {
+      route: MATERIALIZE_ROUTE,
+      tier: "unservable",
+      code: MATERIALIZE_PAIR_FULL_REFRESH_CODE,
+      message:
+         `#(materialize) on source "${plan.sourceName}" declares ` +
+         `refresh="incremental", but its pair table is rebuilt in full on ` +
+         `every refresh: ${reason}.`,
+      subject: plan.sourceName,
       model,
    };
 }
@@ -2018,7 +2228,7 @@ function pairBody(pair: MaterializePair, columns: string): string {
    return `  group_by:
 ${columns}
   calculate:
-${pairFlags(pair, 1 + (pair.hops?.length ?? 0))}
+${pairFlags(pair, 1 + (pair.hops?.length ?? 0))}${pair.watermark ? `\n    ${pairWatermarkCalculation(pair.watermark, parent)}` : ""}
   order_by: ${parent}`;
 }
 
@@ -2066,6 +2276,27 @@ ${pairFlags(pair, blocks.levels)}
       .join("\nUNION ALL\n");
    // malloy-text: the connection is the source's own, through identifier; the SQL around the embedded queries is a fixed union
    return `${identifier(blocks.connection)}.sql("""\n${union}\n""")`;
+}
+
+/**
+ * An incremental pair table's watermark (see {@link pairIncremental}): the
+ * greatest non-null value of its parts across the parent's rows. Malloy's
+ * `greatest` is null when any argument is, on every dialect, so each argument
+ * is one part with the others as its fallbacks: null only when every part is.
+ */
+function pairWatermarkCalculation(
+   watermark: NonNullable<MaterializePair["watermark"]>,
+   parent: string,
+): string {
+   const parts = watermark.parts.map(identifier);
+   const each = parts.map((p) =>
+      parts.length === 1
+         ? p
+         : `coalesce(${[p, ...parts.filter((q) => q !== p)].join(", ")})`,
+   );
+   const value = each.length === 1 ? each[0] : `greatest(${each.join(", ")})`;
+   // malloy-text: every name through identifier
+   return `${identifier(watermark.column)} is max_window(${value}) { partition_by: ${parent} }`;
 }
 
 /**
