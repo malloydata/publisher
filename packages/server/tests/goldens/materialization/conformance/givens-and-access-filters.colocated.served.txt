@@ -24,6 +24,10 @@ given: REGIONS :: string[]
 
 #@ persist name="scoped"
 source: scoped is duckdb.virtual('439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9')::scoped__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"HUGEINT"
   where: region = $REGION
   measure: total is amount.sum()
 }
@@ -34,5 +38,9 @@ source: gated_ext is scoped extend {}
 #(access_filter) region in $REGIONS
 #@ persist name="gated"
 source: gated is duckdb.virtual('8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792')::gated__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"HUGEINT"
   measure: total is amount.sum()
 }

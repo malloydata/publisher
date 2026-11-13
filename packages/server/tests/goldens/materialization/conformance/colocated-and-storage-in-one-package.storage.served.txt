@@ -20,6 +20,10 @@ import "raw.malloy"
 
 #@ persist name="dim_colocated"
 source: dim_c is duckdb.virtual('820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280')::dim_c__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"HUGEINT"
   primary_key: id
 }
 
@@ -48,10 +52,20 @@ import "raw.malloy"
 
 #@ persist name="dim_colocated"
 source: dim_c is duckdb.virtual('820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280')::dim_c__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"HUGEINT"
   primary_key: id
 }
 
 #@ persist name="fact_stored" storage="lake"
 source: fact_s is __served_copy_alias_of_lake.virtual('f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee')::fact_s__served extend {
+  internal rename:
+    id__stored is id
+    customer_id__stored is customer_id
+  dimension:
+    id is id__stored::"HUGEINT"
+    customer_id is customer_id__stored::"HUGEINT"
   measure: total is amount.sum()
 }

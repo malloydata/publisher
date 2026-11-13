@@ -24,7 +24,12 @@ type: base_daily__served is {
 import "raw.malloy"
 
 #(materialize) storage="lake"
-source: base_daily is __served_copy_alias_of_lake.virtual('4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f')::base_daily__served
+source: base_daily is __served_copy_alias_of_lake.virtual('4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f')::base_daily__served extend {
+  internal rename:
+    customer_id__stored is customer_id
+  dimension:
+    customer_id is customer_id__stored::"HUGEINT"
+}
 
 source: ext1 is base_daily extend {
   where: status != 'returned'

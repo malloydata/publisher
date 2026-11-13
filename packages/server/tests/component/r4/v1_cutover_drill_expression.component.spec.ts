@@ -1,4 +1,7 @@
-// Review probe (PR #1703, second review): the drill expression a nested field
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+// The drill expression a nested field
 // carries must name the author's field, not the served copy's internal column.
 
 import { afterAll, describe, expect, it } from "bun:test";

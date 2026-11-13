@@ -39,6 +39,27 @@ Fixed on the way, on paths the cutover makes default: the served copy shares one
 
 Introduced off by default (6a to 6e); the section above turns it on (6f). Materialization v2's v1 cutover: v1 `#@ persist` and `#@ preaggregate` tables are served by the served copy and the rollup and persisted-view legs instead of today's storage serve shape, `#@ preaggregate` composite and Malloy's build manifest on the live compile. `on`: a colocated `#@ persist` table is bound on the served copy with the columns its build captured (or, for a table built before, the persisted query's own output), read past a row-level gate with the gate grafted and proven, since it never leaves the author's warehouse (a `storage=` table still needs `PUBLISHER_MATERIALIZE_GATED_SOURCES`); its hidden columns, and those its `extend` block drops or renames, are kept for the author's own text to drop and hide again; a column an older build typed is cast on read, or left out so only a query reading it answers live; a `#@ preaggregate` rollup is the rollup leg's, `storage=` included, under the v2 rollup's table name, so it rebuilds once and answers with its measures' annotations; and a model file needs no `##! experimental.persistence` for its `#@ persist` sources to be planned (a build copy carries it, with every address unchanged). `shadow`: served as `off`, and each query a retiring path answered is answered again as `on` would, off the request path, at most two at once per server within a 30-second budget, recording no metric of the caller's query; the outcome is counted in `publisher_v1_served_copy_shadow_total` and a difference logged by place, never by value. A dry run (`POST …/packages?dryRun=true`) with the switch past `off` adds `cutoverPath` and `cutoverReason` (open strings) to each serve verdict, the path that will serve the source after the cutover. `scripts/v1-cutover-conformance.ts` runs the cutover's conformance check over a package snapshot. Behind `PUBLISHER_MATERIALIZE`, separately: a `#(materialize)` source over a base in its own file that declares measures, views or joins is now served (it kept the base's blocks). No enum is added. Publisher does not authenticate callers: a gate holds only behind the gateway that sets the givens from a verified identity.
 
+## [Unreleased] — In development: integers past 2^53 served from storage come back exact
+
+A wrong answer is fixed. A query answered from a stored table (`storage=`, colocated
+`#(materialize)`, a v1 colocated table under `PUBLISHER_V1_SERVED_COPY=on`, and the storage serve
+shape) read a big-integer column through the table's plain
+`number` declaration, so a value above 2^53 came back rounded: 9007199254740993 as
+9007199254740992, where live on DuckDB, BigQuery or Snowflake gives every digit (materialization v2
+known limitation 12, which said answers were equal and only metadata differed).
+
+A column whose field Malloy types as a big integer (`BIGINT`, `HUGEINT`, `UBIGINT`, `INT64`,
+`NUMBER(p,0)`, a sum or max over one) is now read through a native cast (`::"HUGEINT"` in a
+`storage=` table, the warehouse's own big-integer type in a colocated one), so it stays served from
+storage and comes back exact, with live's `bigint` subtype. Selecting, grouping, filtering and
+aggregating it, a `primary_key:` and the author's own measures over it all keep serving. A column
+no cast reads exactly (stored as a float) is left out per query and answered live. On Postgres,
+whose live answer itself rounds such values (its rows come back through JSON), served equals live,
+never more precise. `count()`, 32-bit integers and decimals are unchanged.
+
+No API change. See docs/materialization.md, "Stored column types follow the model, not the
+warehouse".
+
 ## [Unreleased] — In development: join-to-rollup checks the querying source's primary key, and declines a count beside a re-pointed join
 
 Behind `PUBLISHER_MATERIALIZE` (off by default). Two wrong answers from a joined source's `#(preaggregate)` rollup read through a join are fixed; each now answers live (`COUNT_SEMANTICS`) and equals live.

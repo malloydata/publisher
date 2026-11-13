@@ -12,6 +12,10 @@ import "raw.malloy"
 
 #(materialize) storage="lake"
 source: cust_b is __served_copy_alias_of_lake.virtual('f234b5b635601c6ab30e41520cbfb0ca5dea189f42b4cf1a6e29af2245250b6a')::cust_b__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"HUGEINT"
   primary_key: id
 }
 
@@ -31,6 +35,10 @@ import "raw.malloy"
 
 #(materialize) storage="lake"
 source: cust_b is __served_copy_alias_of_lake.virtual('f234b5b635601c6ab30e41520cbfb0ca5dea189f42b4cf1a6e29af2245250b6a')::cust_b__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"HUGEINT"
   primary_key: id
 }
 

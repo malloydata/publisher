@@ -51,13 +51,21 @@ source: orders_wide_local is duckdb.virtual('af106e366ef6b6a3cc9c6879b9ee78042dd
     customers__loud_name__stored is customers__loud_name
   dimension:
     customers is {
-      id is customers__id__stored,
+      id is customers__id__stored::"HUGEINT",
       name is customers__name__stored,
       segment is customers__segment__stored,
       home_region is customers__home_region__stored,
       signup_date is customers__signup_date__stored,
       loud_name is customers__loud_name__stored
     }
+  internal rename:
+    id__stored is id
+    customer_id__stored is customer_id
+    order__stored is order
+  dimension:
+    id is id__stored::"HUGEINT"
+    customer_id is customer_id__stored::"HUGEINT"
+    order is order__stored::"HUGEINT"
 
   measure:
     order_count is count()
@@ -122,13 +130,21 @@ source: orders_wide is __served_copy_alias_of_lake.virtual('e21cb38810563b21fbe2
     customers__loud_name__stored is customers__loud_name
   dimension:
     customers is {
-      id is customers__id__stored,
+      id is customers__id__stored::"HUGEINT",
       name is customers__name__stored,
       segment is customers__segment__stored,
       home_region is customers__home_region__stored,
       signup_date is customers__signup_date__stored,
       loud_name is customers__loud_name__stored
     }
+  internal rename:
+    id__stored is id
+    customer_id__stored is customer_id
+    order__stored is order
+  dimension:
+    id is id__stored::"HUGEINT"
+    customer_id is customer_id__stored::"HUGEINT"
+    order is order__stored::"HUGEINT"
 
   measure:
     order_count is count()
@@ -148,13 +164,21 @@ source: orders_wide_local is duckdb.virtual('af106e366ef6b6a3cc9c6879b9ee78042dd
     customers__loud_name__stored is customers__loud_name
   dimension:
     customers is {
-      id is customers__id__stored,
+      id is customers__id__stored::"HUGEINT",
       name is customers__name__stored,
       segment is customers__segment__stored,
       home_region is customers__home_region__stored,
       signup_date is customers__signup_date__stored,
       loud_name is customers__loud_name__stored
     }
+  internal rename:
+    id__stored is id
+    customer_id__stored is customer_id
+    order__stored is order
+  dimension:
+    id is id__stored::"HUGEINT"
+    customer_id is customer_id__stored::"HUGEINT"
+    order is order__stored::"HUGEINT"
 
   measure:
     order_count is count()

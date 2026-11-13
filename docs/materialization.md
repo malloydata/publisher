@@ -476,6 +476,22 @@ rest, give the field a native cast in the model so the warehouse returns the dec
 example `amount_text::"double"`: a cast to a type Malloy already believes the field has, such as
 `::number` here, emits no SQL.
 
+**Integers past 2^53.** A stored table's columns are declared to Malloy as plain numbers, which it
+reads through a JavaScript number, so 9007199254740993 would come back as 9007199254740992. A
+column whose field Malloy types as a big integer (a DuckDB `BIGINT`, `HUGEINT` or `UBIGINT`, a
+BigQuery `INT64`, a Snowflake `NUMBER(p,0)`, or a sum or max over one) is therefore read through a
+native cast: `::"HUGEINT"` in a `storage=` table, and the warehouse's own big-integer type in a
+colocated one (a colocated `#(materialize)` table, or a v1 `#@ persist` one under
+`PUBLISHER_V1_SERVED_COPY=on`). Malloy types the cast as a big integer, so the value comes back with every digit and
+the field keeps live's `bigint` subtype; selecting, grouping, filtering and aggregating it all stay
+served from storage, and a `primary_key:`, dimension or measure over it keeps compiling. A
+`count()` or a sum of 32-bit integers is an ordinary integer live too, and is not touched. A column
+no cast reads exactly (one stored as a float, whose digits are already gone) is left out per query:
+a query that reads it is answered live, every other query still reads the table. Served never
+exceeds live: on a source whose live answer itself rounds such values (Postgres returns its rows
+through JSON), a `storage=` table reads the column as a plain number, which rounds the same way,
+and a colocated one reads it through Postgres's own `bigint` cast, on live's own path.
+
 ## Will it serve? The serve verdict
 
 Every source a package materializes (each `#@ persist` source, and each rollup a `#@ preaggregate`

@@ -459,6 +459,27 @@ export function renamesIn(text: string): RenameDefinition[] | undefined {
  * own, so they apply in order. Undefined when the renames cannot be read
  * ({@link renamesIn}).
  */
+/**
+ * The stored names {@link inverseRenameBlocks} gives an old name back, so no
+ * statement placed after those blocks can read them under the stored name.
+ */
+export function inverselyRenamedColumns(
+   text: string,
+   stored: ReadonlySet<string>,
+): Set<string> {
+   const out = new Set<string>();
+   const renames = renamesIn(text);
+   if (!renames) return out;
+   const live = new Set(stored);
+   for (const r of [...renames].reverse()) {
+      if (!live.has(r.name) || live.has(r.from)) continue;
+      if (stored.has(r.name)) out.add(r.name);
+      live.delete(r.name);
+      live.add(r.from);
+   }
+   return out;
+}
+
 export function inverseRenameBlocks(
    text: string,
    stored: ReadonlySet<string>,

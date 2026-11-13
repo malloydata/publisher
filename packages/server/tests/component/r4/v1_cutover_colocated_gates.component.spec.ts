@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- reads internals */
 
 /**
- * Second review of #1703: colocated v1 `#@ persist` sources behind gates,
+ * Colocated v1 `#@ persist` sources behind gates,
  * under the cutover (contracts at read for colocated, G3), two callers per
  * gate kind, each answer against live (the switch off, before any bind).
  * Gates on the persisted source itself, on a same-file base it extends, and
@@ -129,7 +129,7 @@ const CASES: [string, string, Record<string, string | string[]>][] = [
    ],
 ];
 
-describe("review 1703b: colocated v1 gates under the cutover, two callers per kind", () => {
+describe("colocated v1 gates under the cutover, two callers per kind", () => {
    let restore: () => void = () => {};
    let fixture: LoadedFixture;
    let dispose: () => Promise<void>;
@@ -173,7 +173,7 @@ describe("review 1703b: colocated v1 gates under the cutover, two callers per ki
    }
 });
 
-describe("review 1703b: the colocated source over a gated base, today (switch off, tables bound)", () => {
+describe("the colocated source over a gated base, today (switch off, tables bound)", () => {
    it("answers each caller with live's rows", async () => {
       await freshLoadPool();
       const restore = withSwitch("off");

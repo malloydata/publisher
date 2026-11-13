@@ -1,13 +1,20 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// Second review of PR #1703 (F2): the shadow's strict comparison must not flag
-// differences two correct plans produce, and must still flag real ones.
+// The shadow's strict comparison: it must not flag differences two correct
+// plans produce (float noise, row order, -0, a bigint and a number of one
+// value, the reference id Malloy mints per compile on a nested field), and it
+// must still flag real ones (digit strings, integers beyond float tolerance,
+// bigints above 2^53, null against a value).
 
 import { describe, expect, it } from "bun:test";
-import { shadowRowDifference, shadowOutcome } from "./v1_shadow";
+import {
+   shadowFieldDifference,
+   shadowOutcome,
+   shadowRowDifference,
+} from "./v1_shadow";
 
-describe("F2 review: no false differences", () => {
+describe("shadowRowDifference: no false differences", () => {
    it("a float sum landing on an integer one way and just off it the other", () => {
       // sum of ten 0.1s: 0.9999999999999999 in one order, 1 in another.
       let s = 0;
@@ -54,7 +61,7 @@ describe("F2 review: no false differences", () => {
    });
 });
 
-describe("F2 review: real differences still flagged", () => {
+describe("shadowRowDifference: real differences still flagged", () => {
    it("integers, strings with leading zeros, null against a value, bigints", () => {
       expect(shadowRowDifference([{ v: 1 }], [{ v: 2 }])).toBeDefined();
       expect(shadowRowDifference([{ v: "007" }], [{ v: "7" }])).toBeDefined();
@@ -87,5 +94,64 @@ describe("F2 review: real differences still flagged", () => {
             },
          ).outcome,
       ).toBe("rows_differ");
+   });
+});
+
+describe("shadowRowDifference: false equals", () => {
+   it("tells two different strings of digits apart", () => {
+      // A zip or account code; a cast that round-trips through a number
+      // drops the leading zeros.
+      expect(shadowRowDifference([{ z: "007" }], [{ z: "7" }])).toBeDefined();
+   });
+   it("compares integers exactly, not within a float tolerance", () => {
+      expect(
+         shadowRowDifference(
+            [{ n: 1_000_000_000_000 }],
+            [{ n: 1_000_000_000_500 }],
+         ),
+      ).toBeDefined();
+   });
+   it("tells two bigints above 2^53 apart", () => {
+      expect(
+         shadowRowDifference(
+            [{ n: 9007199254740993n }],
+            [{ n: 9007199254740992n }],
+         ),
+      ).toBeDefined();
+   });
+});
+
+const nest = (refId: string) => [
+   {
+      name: "x",
+      type: {
+         kind: "array_type",
+         element_type: {
+            kind: "record_type",
+            fields: [
+               {
+                  name: "d",
+                  annotations: [
+                     {
+                        value: `#(malloy) reference_id = "${refId}" drill_expression { kind = field_reference name = d path = [x] code = d }\n`,
+                     },
+                  ],
+                  type: { kind: "date_type" },
+               },
+            ],
+         },
+      },
+      annotations: [],
+   },
+];
+
+describe("shadowFieldDifference over a nest", () => {
+   it("two compiles of one nest query are equal", () => {
+      expect(
+         shadowFieldDifference(
+            nest("6b35ece0-770f-4987-afdd-155867a7bb84"),
+            nest("9fda3b84-333a-47ef-998a-63e825a0b22a"),
+         ),
+      ).toBeUndefined();
    });
 });

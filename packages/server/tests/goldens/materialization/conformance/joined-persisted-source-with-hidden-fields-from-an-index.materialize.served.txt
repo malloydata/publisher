@@ -12,7 +12,12 @@ type: customer_dim__served is {
 import "raw.malloy"
 
 #(materialize) storage="lake"
-source: customer_dim is __served_copy_alias_of_lake.virtual('bf4286a91b893ea3bbeb2399ae99134474169fa1ea85a6dec9df7b2e2c845f59')::customer_dim__served include { public: *; internal: home_region } extend {
+source: customer_dim is __served_copy_alias_of_lake.virtual('bf4286a91b893ea3bbeb2399ae99134474169fa1ea85a6dec9df7b2e2c845f59')::customer_dim__served extend {
+  rename:
+    id__stored is id
+} include { public: *; internal: home_region, id__stored } extend {
+  dimension:
+    id is id__stored::"HUGEINT"
   primary_key: id
   private measure: west_rows is count() { where: home_region = 'west' }
   measure: west_n is west_rows + 0
@@ -33,5 +38,11 @@ import "dims.malloy"
 
 #(materialize) storage="lake"
 source: order_facts is __served_copy_alias_of_lake.virtual('ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e')::order_facts__served extend {
+  internal rename:
+    id__stored is id
+    customer_id__stored is customer_id
+  dimension:
+    id is id__stored::"HUGEINT"
+    customer_id is customer_id__stored::"HUGEINT"
   join_one: c is customer_dim on customer_id = c.id
 }

@@ -8,7 +8,9 @@ import {
    type PackageMaterializationOwner,
 } from "./package_materialization";
 import {
+   bigIntegerReads,
    castToDeclaredTypes,
+   liveKeepsBigIntegers,
    STORED_COLUMN_TYPE_MISMATCH_CODE,
    declaredColumnsOf,
    persistSourceDeclaredColumns,
@@ -477,6 +479,113 @@ source: plain is ev -> { select: id, label is concat('x', id::string) }
          { name: "label", type: "string" },
       ]);
       expect(plainCasts.castOptions).toEqual({ queryTimezone: undefined });
+   });
+});
+
+describe("bigIntegerReads (known limitation 12)", () => {
+   const big = { name: "id", type: "number", numberType: "bigint" };
+   const fields = [
+      big,
+      { name: "n", type: "number", numberType: "integer" },
+      { name: "amt", type: "number", numberType: "float" },
+      { name: "label", type: "string" },
+   ];
+   const schema = (idType: string) => [
+      { name: "id", type: idType },
+      { name: "n", type: "BIGINT" },
+      { name: "amt", type: "DECIMAL(38,0)" },
+      { name: "label", type: "VARCHAR" },
+   ];
+
+   it("reads a bigint field stored as any DuckDB integer, or a DECIMAL with no scale, as HUGEINT", () => {
+      for (const t of [
+         "BIGINT",
+         "HUGEINT",
+         "UBIGINT",
+         "INTEGER",
+         "DECIMAL(38,0)",
+         "NUMERIC(20, 0)",
+      ]) {
+         expect(
+            bigIntegerReads(schema(t), fields, { dialect: "duckdb" }),
+         ).toEqual([{ column: "id", castTo: "HUGEINT" }]);
+      }
+      expect(
+         bigIntegerReads(schema("UHUGEINT"), fields, { dialect: "duckdb" }),
+      ).toEqual([{ column: "id", castTo: "UHUGEINT" }]);
+   });
+
+   it("leaves out a bigint field stored as a float, whose digits are gone", () => {
+      for (const t of ["DOUBLE", "FLOAT", "DECIMAL(18,2)", "VARCHAR"]) {
+         expect(
+            bigIntegerReads(schema(t), fields, { dialect: "duckdb" }),
+         ).toEqual([{ column: "id" }]);
+      }
+   });
+
+   it("never touches a field live reads through a number: count(), a 32-bit sum, a DECIMAL", () => {
+      const reads = bigIntegerReads(schema("BIGINT"), fields, {
+         dialect: "duckdb",
+      });
+      expect(reads.map((r) => r.column)).toEqual(["id"]);
+   });
+
+   it("matches a stored column to its field by a unique case fold", () => {
+      expect(
+         bigIntegerReads([{ name: "ID", type: "BIGINT" }], [big], {
+            dialect: "duckdb",
+         }),
+      ).toEqual([{ column: "ID", castTo: "HUGEINT" }]);
+   });
+
+   it("keeps a storage= table of a source whose live answer rounds as it is: served equals live", () => {
+      expect(liveKeepsBigIntegers("postgres")).toBe(false);
+      expect(
+         bigIntegerReads(schema("BIGINT"), fields, { dialect: "postgres" }),
+      ).toEqual([]);
+   });
+
+   it("reads a colocated table through the warehouse's own bigint type, on live's own data path", () => {
+      expect(
+         bigIntegerReads(schema("DOUBLE"), fields, {
+            dialect: "postgres",
+            colocated: true,
+         }),
+      ).toEqual([{ column: "id", castTo: "BIGINT" }]);
+      expect(
+         bigIntegerReads(schema("DOUBLE"), fields, {
+            dialect: "duckdb",
+            colocated: true,
+         }),
+      ).toEqual([{ column: "id", castTo: "HUGEINT" }]);
+      expect(
+         bigIntegerReads(schema("DOUBLE"), fields, {
+            dialect: "snowflake",
+            colocated: true,
+         }),
+      ).toEqual([{ column: "id", castTo: "NUMBER" }]);
+      expect(
+         bigIntegerReads(schema("DOUBLE"), fields, {
+            dialect: "standardsql",
+            colocated: true,
+         }),
+      ).toEqual([{ column: "id", castTo: "INT64" }]);
+   });
+
+   it("leaves a colocated column out where Malloy does not read the warehouse's bigint type back as one", () => {
+      // MySQL's SIGNED comes back as `sql native`.
+      expect(
+         bigIntegerReads(schema("DOUBLE"), fields, {
+            dialect: "mysql",
+            colocated: true,
+         }),
+      ).toEqual([{ column: "id" }]);
+   });
+
+   it("reads DuckDB as keeping every digit, though Malloy's flag says otherwise", () => {
+      expect(liveKeepsBigIntegers("duckdb")).toBe(true);
+      expect(liveKeepsBigIntegers("snowflake")).toBe(true);
+      expect(liveKeepsBigIntegers(undefined)).toBe(true);
    });
 });
 

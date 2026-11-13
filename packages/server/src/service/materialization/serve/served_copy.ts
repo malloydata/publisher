@@ -34,7 +34,12 @@
  * `virtual()` handles the server mapped.
  */
 
-import { identifier, nowComparison, stringLiteral } from "../../malloy_text";
+import {
+   doubleQuotedString,
+   identifier,
+   nowComparison,
+   stringLiteral,
+} from "../../malloy_text";
 import { noteSource } from "../field_notes";
 import type { MaterializeReadTimeTerm } from "../plan/build_file_generator";
 import {
@@ -47,6 +52,7 @@ import {
    dropDimensions,
    dropExceptItems,
    inverseRenameBlocks,
+   inverselyRenamedColumns,
    rewriteDimensions,
 } from "../declaration_text";
 import {
@@ -373,6 +379,18 @@ export interface ServedColumn {
     *    dimension: order_month is order_month__stored.month
     */
    timeframe?: string;
+   /**
+    * The native SQL type the stored column is read through (`HUGEINT`), for a
+    * big-integer field (`bigIntegerReads`, known limitation 12): a `type:`
+    * field can only be a `number`, which Malloy reads through a JavaScript
+    * number and rounds above 2^53, so the column is renamed internally, as a
+    * timeframe column is, and the field redefined as it cast to that type,
+    * which Malloy types as a `bigint` number and answers with every digit:
+    *
+    *    internal rename: id__stored is id
+    *    dimension: id is id__stored::"HUGEINT"
+    */
+   nativeCast?: string;
    /**
     * The Malloy type the column is read as when its stored type does not
     * serve as its declared one but a cast makes it faithful
@@ -806,7 +824,18 @@ export function rerootDeclaration(
    );
    if (renames === undefined) return undefined;
    const columns = r.columns ?? [];
-   const timeframed = timeframedColumns(columns, reserved);
+   const redefined = timeframedColumns(columns, reserved);
+   // A cast column the inverse renames give an old name back cannot be read
+   // under its stored name after them: it is cast in a block of its own just
+   // ahead of them, and the renames then rename the cast field.
+   const renamedBack = inverselyRenamedColumns(
+      kept,
+      new Set(columns.map((c) => c.name)),
+   );
+   const early = redefined.filter(
+      (c) => c.nativeCast !== undefined && renamedBack.has(c.name),
+   );
+   const timeframed = redefined.filter((c) => !early.includes(c));
    const joinRenames = inlinedJoinRenames(inlined, [
       ...(r.reservedNames ?? []),
       ...columns.map((c) => c.name),
@@ -892,6 +921,13 @@ export function rerootDeclaration(
    // model live: refuse this source's re-root alone instead (known
    // limitation 30). A pair table's renames go ahead of the include (above).
    if (ahead && renames !== "") return undefined;
+   // A hidden cast column renamed back would need its private name read
+   // past the block that defines it: left to its fallback.
+   if (early.some((c) => c.access !== undefined)) return undefined;
+   const castAhead =
+      early.length > 0
+         ? ` ${intoFirstExtend("", timeframeStatements(early, early, true))}`
+         : "";
    const keptAsWritten = new Set(termsKeptAsWritten(r));
    const terms = (r.readTimeTerms ?? [])
       .filter((t) => !keptAsWritten.has(t))
@@ -906,7 +942,7 @@ export function rerootDeclaration(
            ...generated.map((g) => ({ name: g.internal, access: g.access })),
         ])}`
       : "";
-   return `${name} is ${virtual}${reread}${hide}${pairHead}${renames}${extend ? ` ${extend}` : ""}`;
+   return `${name} is ${virtual}${reread}${hide}${pairHead}${castAhead}${renames}${extend ? ` ${extend}` : ""}`;
 }
 
 /**
@@ -1026,9 +1062,13 @@ function pairRecord(record: {
 }): string {
    const { join, childColumns, hops, access } = record;
    const field = (c: JoinedColumn & { internalName: string }, pad: string) =>
-      // malloy-text: names through identifier and a timeframe from TIMEFRAMES
+      // malloy-text: names through identifier, a timeframe from TIMEFRAMES and a cast through doubleQuotedString
       `${pad}${identifier(c.name)} is ${identifier(c.internalName)}` +
-      (c.timeframe && TIMEFRAMES.has(c.timeframe) ? `.${c.timeframe}` : "");
+      (c.nativeCast
+         ? `::${doubleQuotedString(c.nativeCast)}`
+         : c.timeframe && TIMEFRAMES.has(c.timeframe)
+           ? `.${c.timeframe}`
+           : "");
    const level = (k: number, pad: string): string => {
       const columns = k === 0 ? childColumns : (hops ?? [])[k - 1].columns;
       const items = columns.map((c) => field(c, pad));
@@ -1205,14 +1245,18 @@ export function termsKeptAsWritten(
    );
 }
 
-/** A timeframe column with the internal name its stored value is renamed to. */
+/**
+ * A column whose field the served copy redefines over its stored value (a
+ * timeframe, a native cast), with the internal name that value is renamed to.
+ */
 interface Timeframed extends ServedColumn {
    internalName: string;
 }
 
 /**
- * The columns that carry a timeframe, each with an internal name that is
- * none of `reserved` and no stored column's name.
+ * The columns whose field is redefined over the stored value (one that
+ * carries a timeframe, one read through a cast or a native cast), each with an
+ * internal name that is none of `reserved` and no stored column's name.
  */
 function timeframedColumns(
    columns: readonly ServedColumn[],
@@ -1223,7 +1267,7 @@ function timeframedColumns(
    for (const c of columns) {
       const timeframe =
          c.timeframe && TIMEFRAMES.has(c.timeframe) ? c.timeframe : undefined;
-      if (!timeframe && !c.castTo) continue;
+      if (!timeframe && !c.castTo && !c.nativeCast) continue;
       let internalName = `${c.name}__stored`;
       for (let n = 2; taken.has(internalName); n++) {
          internalName = `${c.name}__stored_${n}`;
@@ -1244,9 +1288,14 @@ function timeframedColumns(
  * plain `CAST(… AS DATE)`: Malloy's own `::date` of a timestamp converts it
  * to a query's `timezone:` first, which would move the stored date by a day
  * (the serve shape cast in a query-shaped source, in the session's zone).
+ * A big-integer column is read as its native type instead
+ * (`<internal>::"HUGEINT"`, {@link ServedColumn.nativeCast}).
  */
 function timeframeExpression(c: Timeframed): string {
    const stored = identifier(c.internalName);
+   // A big-integer column read as its native type, which Malloy types as a
+   // `bigint` number (known limitation 12).
+   if (c.nativeCast) return `${stored}::${doubleQuotedString(c.nativeCast)}`;
    const read =
       c.castTo === "date"
          ? `${stored}::"DATE"`
@@ -1413,8 +1462,11 @@ export function typeDeclaration(
    const fields = [...r.columns, ...joined]
       .map(
          (c) =>
-            // A timeframe column's notes go on its redefined field instead.
-            ((c.timeframe && TIMEFRAMES.has(c.timeframe)) || c.castTo
+            // A timeframe or cast column's notes go on its redefined field
+            // instead.
+            ((c.timeframe && TIMEFRAMES.has(c.timeframe)) ||
+            c.castTo ||
+            c.nativeCast
                ? []
                : (c.notes ?? [])
             )

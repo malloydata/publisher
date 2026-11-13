@@ -13,4 +13,9 @@ type: order_summary__served is {
 source: raw_orders is duckdb.table('data/orders.csv')
 
 #@ persist name="order_summary"
-source: order_summary is duckdb.virtual('218fa4ffa546f2a111269e08a2004f00e5f76922c05e984890204e4a53107cb9')::order_summary__served
+source: order_summary is duckdb.virtual('218fa4ffa546f2a111269e08a2004f00e5f76922c05e984890204e4a53107cb9')::order_summary__served extend {
+  internal rename:
+    total_revenue__stored is total_revenue
+  dimension:
+    total_revenue is total_revenue__stored::"HUGEINT"
+}

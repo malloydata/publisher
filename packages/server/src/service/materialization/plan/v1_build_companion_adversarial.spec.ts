@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Second review of PR #1703 (6d): the v1 build copy against adversarial files.
+ * The v1 build copy (6d) against adversarial files.
  * Each unflagged file planned under `on` must plan exactly what the same file
  * with the flag written by its author plans under `off` (main's path).
  */
@@ -48,7 +48,7 @@ async function plan(
    modelPath: string,
    mode: "off" | "on",
 ): Promise<BuildPlanParts> {
-   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "r1703b-d-"));
+   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "v1-build-companion-"));
    for (const [f, text] of Object.entries(files)) {
       fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
       fs.writeFileSync(path.join(dir, f), text);
@@ -105,7 +105,7 @@ source: base is duckdb.sql("select 1 as a, 'x' as b")
 source: p is base extend { measure: n is count() } -> { group_by: a, b; aggregate: n }
 `;
 
-describe("6d review: the v1 build copy on adversarial files", () => {
+describe("the v1 build copy on adversarial files", () => {
    it("off: an unflagged #@ persist file plans nothing (guard 1 unchanged)", async () => {
       const parts = await plan({ "m.malloy": PERSIST }, "m.malloy", "off");
       expect(Object.keys(parts.sources)).toEqual([]);
