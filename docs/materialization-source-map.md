@@ -216,12 +216,11 @@ verdict tests stay green.
 
 ## Open points
 
-1. **One listing per rollup.** Today a rollup appears once per model file that
-   declares or imports its base (`model.malloy.preagg.malloy`,
-   `index.malloy.preagg.malloy`), all sharing one table. The map dedupes by
-   `sourceID`, so the build plan could list each rollup once. That changes
-   which keys `GET …/build-plan` returns, so it belongs with PR 2's build-side
-   changes rather than here.
+1. **One listing per rollup.** Resolved for `#(preaggregate)` (phase 4 PR 1):
+   a rollup is planned only in the model that declares its base, keyed by its
+   own `sourceID` (`<rollup>@<declaring model>.preaggregate.malloy`), so the
+   build plan lists it once. `#@ preaggregate` keeps its per-model companions,
+   and their duplicate listings, until its reader is removed.
 2. **Pipeline references and inheritance.** `#@ persist` is not inherited
    across a query-shaped segment; a pipeline reference reads another source's
    table but never inherits its annotations. The map records the reference

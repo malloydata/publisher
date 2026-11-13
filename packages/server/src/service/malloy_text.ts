@@ -280,3 +280,30 @@ export function nowComparison(
    }
    return `${identifier(field)} ${op} ${now}`;
 }
+
+/** A Malloy number literal: digits, an optional fraction and exponent. */
+const NUMBER_LITERAL = /^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$/;
+
+/**
+ * A number as a Malloy number literal, for a value read back from Malloy text
+ * (a grammar re-emitting an author's expression). Throws on anything else, so
+ * a token that is not a plain number can never be spliced as one.
+ */
+export function numberLiteral(text: string): string {
+   if (!NUMBER_LITERAL.test(text)) {
+      throw new Error(`not a Malloy number literal: ${JSON.stringify(text)}`);
+   }
+   return text;
+}
+
+/**
+ * A function's name in a call (`coalesce(…)`), always bare: Malloy reads a
+ * quoted name before `(` as a field, and `count` or `sum` quoted is no longer
+ * the aggregate. Throws on a name that is not one plain identifier.
+ */
+export function functionName(name: string): string {
+   if (!PLAIN_NAME.test(name)) {
+      throw new Error(`not a plain function name: ${JSON.stringify(name)}`);
+   }
+   return name;
+}

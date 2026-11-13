@@ -15,6 +15,7 @@ import { components } from "../../api";
 import {
    getMaterializeGatedSources,
    getPersistCollisionEnforce,
+   getMaterializeEnabled,
    getPersistStorageMode,
 } from "../../config";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
@@ -1143,7 +1144,11 @@ export class PackageMaterialization {
             `declares '#@ preaggregate storage=' rollups, but is itself ` +
             `persisted with 'storage=', so the rollups are not built: a rollup ` +
             `over a stored base cannot build or serve yet, and queries read the ` +
-            `base's stored table instead.`,
+            `base's stored table instead.` +
+            (getMaterializeEnabled()
+               ? ` Write the rollup as '#(preaggregate) grain=[…] storage=…' ` +
+                 `on the measure, which builds and serves over a stored base.`
+               : ""),
       }));
    }
 
