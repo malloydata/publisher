@@ -807,7 +807,7 @@ function pairMeasures(pair: PairReroot): string {
       return identifier(
          level === 0
             ? pair.parentRowField
-            : (pair.levelRows ?? [])[level - 1]?.field ?? pair.parentRowField,
+            : ((pair.levelRows ?? [])[level - 1]?.field ?? pair.parentRowField),
       );
    };
    const renames = pair.parentMeasures

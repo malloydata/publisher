@@ -713,7 +713,12 @@ export class ServedCopyServe {
                             reason:
                                "a row-level gate on the queried source reads through a join that fans out the pair table's rows",
                          }
-                       : flatPairQueryVerdict(query, struct, own.pair, gates.level);
+                       : flatPairQueryVerdict(
+                            query,
+                            struct,
+                            own.pair,
+                            gates.level,
+                         );
                  })();
          if (verdict.kind !== "served") {
             // A query that reads no child field goes to the next candidate
@@ -765,7 +770,9 @@ export class ServedCopyServe {
             // Its own cache scope: a graft built on the served copy must never
             // be shared with one built on the author's model, and a new
             // compile (new bindings, a reload) starts afresh.
-            cacheScope: `served_copy\u0000${compiled.key}`,
+            // A block's copy of a multi-path pair table is a model of its
+            // own (the same bindings, another block's rows).
+            cacheScope: `served_copy\u0000${compiled.key}\u0000${compiled.lane}`,
             runtime: compiled.runtime,
          },
       };
@@ -816,11 +823,7 @@ export class ServedCopyServe {
       ].join("|");
       const generation = this.generation;
       const current = this.compiledLanes.get(lane);
-      if (
-         current &&
-         current.key === key &&
-         current.generation === generation
-      ) {
+      if (current && current.key === key && current.generation === generation) {
          return current;
       }
       let inFlight = this.inFlightLanes.get(lane);
@@ -1225,7 +1228,14 @@ export class ServedCopyServe {
          if (candidates.length === 0) {
             // Nothing left to compile: a pair table dropped was the only one.
             problems.push(...pairsDropped);
-            return { key, generation, lane, rerooted: [], aliased: [], problems };
+            return {
+               key,
+               generation,
+               lane,
+               rerooted: [],
+               aliased: [],
+               problems,
+            };
          }
          const rerooted = candidates.map((c) => c.binding);
          const aliased = rerooted.map((b) => ({
@@ -1352,7 +1362,14 @@ export class ServedCopyServe {
                   reason: classifyServedCopyFailure(err),
                   detail,
                });
-               return { key, generation, lane, rerooted: [], aliased: [], problems };
+               return {
+                  key,
+                  generation,
+                  lane,
+                  rerooted: [],
+                  aliased: [],
+                  problems,
+               };
             }
             try {
                ({
@@ -1366,7 +1383,14 @@ export class ServedCopyServe {
                   again instanceof Error ? again.message : String(again);
                if (withoutPairs(detail)) continue;
                problems.push({ reason: "compile_failed", detail });
-               return { key, generation, lane, rerooted: [], aliased: [], problems };
+               return {
+                  key,
+                  generation,
+                  lane,
+                  rerooted: [],
+                  aliased: [],
+                  problems,
+               };
             }
             leftOut = kept.leftOut;
          }
@@ -1726,7 +1750,9 @@ function pairRerootOf(
             );
          }
          if (own && field?.e !== undefined) {
-            childStoredDimensions.push(`${names.slice(1).concat(c.dimension).join(".")}`);
+            childStoredDimensions.push(
+               `${names.slice(1).concat(c.dimension).join(".")}`,
+            );
          }
          out.push({
             name: c.dimension,
@@ -1788,7 +1814,10 @@ function pairRerootOf(
    // level's rows; one at the leaf reads every row as it stands, and one
    // reading several levels (or anything else) is left as it is, so a query
    // that reads it is answered live (pair_flat_query.ts).
-   const path = { join: block.join, hops: (block.hops ?? []).map((h) => h.join) };
+   const path = {
+      join: block.join,
+      hops: (block.hops ?? []).map((h) => h.join),
+   };
    const leaf = 1 + path.hops.length;
    const levels = pairMeasureLevels(sourceFields, path);
    const parentMeasures: PairMeasure[] = [];

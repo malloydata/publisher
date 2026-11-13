@@ -1067,9 +1067,9 @@ source: orders is orders_raw extend {
             [3, null, null],
          ]);
          for (const id of [1, 2, 3]) {
-            expect(rows.filter((r) => r[0] === id && r[3] === true)).toHaveLength(
-               1,
-            );
+            expect(
+               rows.filter((r) => r[0] === id && r[3] === true),
+            ).toHaveLength(1);
          }
          // One child-row flag per order and line, a childless order's row
          // included.
@@ -1080,7 +1080,9 @@ source: orders is orders_raw extend {
             [3, null],
          ]) {
             expect(
-               rows.filter((r) => r[0] === id && r[1] === line && r[4] === true),
+               rows.filter(
+                  (r) => r[0] === id && r[1] === line && r[4] === true,
+               ),
             ).toHaveLength(1);
          }
       },

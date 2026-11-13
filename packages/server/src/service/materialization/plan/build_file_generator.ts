@@ -991,7 +991,9 @@ function inlinedPathOf(
    if (path[0].relationship !== "many") return { reason: throughOne };
    for (let k = 1; k < names.length; k++) {
       const prev = path[k - 1];
-      const next = map.joinedReadsOf(prev).joins.find((j) => j.name === names[k]);
+      const next = map
+         .joinedReadsOf(prev)
+         .joins.find((j) => j.name === names[k]);
       if (!next) {
          return {
             reason: `inline= names ${quoted}, and ${quotedName(names[k])} is not a join of the source ${quotedName(prev.name)} joins`,
@@ -1227,9 +1229,7 @@ function pairBlocksOf(
    connection: unknown,
    persist: Readonly<Record<string, string>>,
 ): { blocks: MaterializePairBlocks } | { reason: string } {
-   const listed = paths.map((p) =>
-      quotedName(p.map((j) => j.name).join(".")),
-   );
+   const listed = paths.map((p) => quotedName(p.map((j) => j.name).join(".")));
    if (typeof connection !== "string") {
       return {
          reason:
@@ -1622,7 +1622,8 @@ export function planModelMaterialize(
       for (const group of byFirst.values()) {
          const longest = group.reduce((a, b) => (b.length > a.length ? b : a));
          const apart = group.find(
-            (p) => !pathKey(longest).startsWith(pathKey(p) + ".") &&
+            (p) =>
+               !pathKey(longest).startsWith(pathKey(p) + ".") &&
                pathKey(p) !== pathKey(longest),
          );
          if (apart) {
@@ -1635,7 +1636,11 @@ export function planModelMaterialize(
          paths.push(longest);
       }
       if (parted) {
-         refused.push({ sourceName: name, sourceID: def.sourceID, reason: parted });
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: parted,
+         });
          continue;
       }
       // What reads through an inlined join_many has one value per pair, not
@@ -2054,7 +2059,10 @@ ${pairFlags(pair, blocks.levels)}
 } }`;
    };
    const union = blocks.blocks
-      .map((pair, lane) => `SELECT * FROM (${block(pair, lane)}) AS ${PAIR_LANE_COLUMN}_${lane}`)
+      .map(
+         (pair, lane) =>
+            `SELECT * FROM (${block(pair, lane)}) AS ${PAIR_LANE_COLUMN}_${lane}`,
+      )
       .join("\nUNION ALL\n");
    // malloy-text: the connection is the source's own, through identifier; the SQL around the embedded queries is a fixed union
    return `${identifier(blocks.connection)}.sql("""\n${union}\n""")`;

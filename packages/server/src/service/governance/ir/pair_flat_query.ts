@@ -263,7 +263,8 @@ class Walker {
    /** Which levels a field path reads, resolving dimensions through definitions. */
    readsOfPath(path: string[], depth: number): Reads {
       if (depth > MAX_DEPTH) throw new Refusal("an expression nests too deep");
-      if (path[0] === this.join) return new Set([levelOfNames(path, this.pair)]);
+      if (path[0] === this.join)
+         return new Set([levelOfNames(path, this.pair)]);
       if (this.pair.otherRecords?.includes(path[0])) {
          throw new Refusal(
             `the query reads \`${path[0]}\`, another inlined join_many, which this pair table's rows do not hold`,
@@ -332,6 +333,14 @@ class Walker {
             const reads = this.readsOf(arg, depth + 1);
             let level: PairLevel;
             if (sp.length > 0) {
+               if (
+                  typeof sp[0] === "string" &&
+                  this.pair.otherRecords?.includes(sp[0])
+               ) {
+                  throw new Refusal(
+                     `an aggregate through \`${sp[0]}\`, another inlined join_many, which this pair table's rows do not hold`,
+                  );
+               }
                if (sp[0] !== this.join) {
                   throw new Refusal(
                      `an aggregate through \`${String(sp[0])}\`, another join than the inlined one`,
@@ -659,7 +668,10 @@ function checkSegment(
          aggregates.push(qf.e as Node);
          continue;
       }
-      grouped = Math.max(grouped, deepest(walker.readsOf(qf.e as Node, depth + 1)));
+      grouped = Math.max(
+         grouped,
+         deepest(walker.readsOf(qf.e as Node, depth + 1)),
+      );
    }
    let filtered = grouped;
    for (const c of Array.isArray(segment.filterList)
