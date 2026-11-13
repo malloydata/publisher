@@ -171,6 +171,7 @@ gate replaces it. So two things are yours to get right: which sources a
 caller can enter through (anything ungated that joins the base hands the base over), and what each
 extension re-exposes. Lock the base with `#(access_filter) false`, re-expose curated, separately-gated
 extensions with [access modifiers](https://docs.malloydata.dev/documentation/experiments/include),
-and do not rely on a join to carry the lock. See
+and do not rely on a join to carry the lock. Hide the tenant column with `private:`: the gate still
+reads it, and a caller's query cannot ([authorize.md § A gate reads the private columns of the source it governs](authorize.md#a-gate-reads-the-private-columns-of-the-source-it-governs)). See
 [authorize.md § The entry point, and only the entry point](authorize.md#the-entry-point-and-only-the-entry-point)
 and [§ Recommended pattern: locked base and curated extensions](authorize.md#recommended-pattern-locked-base-and-curated-extensions).

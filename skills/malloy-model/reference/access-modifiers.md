@@ -21,7 +21,7 @@ Add `##! experimental.access_modifiers` at the top of base source files.
 
 **What to mark `private` (only after user confirms):** Data a caller must not read: national IDs, raw card numbers, passwords and tokens, and PII or compensation (email, phone, address, salary) unless an `#(authorize)` gate on the source already limits who can query it. These are the columns `malloy-review` rule G-03 blocks on when left `internal`.
 
-**A `private` field can only be used in the source's own `extend {}`.** Define every measure, dimension or join that reads it there. A later `source: x is <this source> extend {...}` that references it fails to compile with `'<field>' is private`. Measures defined before the field went private keep working.
+**A `private` field can only be used in the source's own `extend {}`.** Define every measure, dimension or join that reads it there. A later `source: x is <this source> extend {...}` that references it fails to compile with `'<field>' is private`. Measures defined before the field went private keep working. A row-level gate (`#(access_filter)`) on the source can read it too, so a tenant column can be private and still scope the rows.
 
 **Include positioning:**
 - `include { } extend { }`: New definitions in extend are PUBLIC

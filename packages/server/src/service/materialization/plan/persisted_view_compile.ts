@@ -28,6 +28,7 @@
 
 import type {
    Model as MalloyModel,
+   ModelDef,
    ModelMaterializer,
    Runtime,
 } from "@malloydata/malloy";
@@ -38,6 +39,7 @@ import { annotationTexts, type AnnotationsDef } from "../../annotations";
 import { routeOfNote } from "../../annotation_reader";
 import {
    buildRowLevelProbe,
+   gateProbeCompiler,
    gateFilterText,
    liftProbeFilterCondition,
 } from "../../authorize";
@@ -195,7 +197,11 @@ export async function persistedViewRefusalReason(
       const filterText = gateFilterText(gate.exprs);
       let paths: unknown[];
       try {
-         const probe = await materializer
+         const probe = await gateProbeCompiler(
+            materializer,
+            modelDef as ModelDef,
+            localName,
+         )
             .loadQuery(buildRowLevelProbe(localName, filterText))
             .getPreparedQuery();
          const condition = liftProbeFilterCondition<{
