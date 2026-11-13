@@ -51,6 +51,14 @@ serves as a published version is refused before any agent starts (the server
 is asked, in both modes): nothing synced there is served, the sync would
 delete it, and a reload of it answers 200 without reading the edit. Either way
 the agent gets one generated script rather than a general shell.
+
+`--experiment <name>` is the third way, and the one that works on a server
+that publishes versions, which is the default: the agent's edits are served as
+the experiment `<package>.<name>` beside the main package (experiment.py), and
+the helper publishes the working tree as that experiment again after each
+edit. The agent probes the experiment, the main package and its record are
+never touched, and no watch mode or restart is needed. The routine's improve
+mode runs this way.
 """
 from __future__ import annotations
 
@@ -76,6 +84,7 @@ import attempts  # noqa: E402
 import golden_leak  # noqa: E402
 
 SKILLS_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+EXPERIMENT_PY = SKILLS_ROOT / "eval-loop" / "scripts" / "experiment.py"
 IMPROVE_TOOLS = ("mcp__publisher__get_context",
                  "mcp__publisher__execute_query",
                  "mcp__publisher__compile_model",
@@ -120,6 +129,12 @@ set -euo pipefail
 echo "reloaded; if sourceContentSha did not change, the edit did not reach the server"
 """
 
+
+# With --experiment: publish the working tree as the experiment again. Its last
+# line is the same `"sourceContentSha":"..."` the reload prints, so the
+# agent's instruction to watch that value holds in both modes.
+EXPERIMENT_SYNC = """{python} {experiment_py} sync {name} --set {set_dir} --dir {model_dir} --no-build
+"""
 
 SYNC_HELPER = "sync_and_reload.sh"
 
@@ -376,7 +391,14 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
                                environment=a.environment,
                                package=a.package)
     sync = ""
-    if not a.watch_mode:
+    if a.experiment:
+        import shlex
+        reload_cmd = EXPERIMENT_SYNC.format(
+            python=shlex.quote(sys.executable),
+            experiment_py=shlex.quote(str(EXPERIMENT_PY)), name=shlex.quote(a.experiment),
+            set_dir=shlex.quote(str(a.set_dir.resolve())),
+            model_dir=shlex.quote(str(a.model_dir.resolve())))
+    elif not a.watch_mode:
         served = (a.server_root / "publisher_data" / a.environment / a.package
                   if a.server_root else None)
         if served:
@@ -453,6 +475,20 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
 
 
 def main(argv: list[str] | None = None) -> int:
+    """`run`, then take down the experiment it started, however it ended."""
+    started: dict[str, Any] = {}
+    try:
+        return run(argv, started)
+    finally:
+        if started:
+            import contextlib
+            import io
+            import experiment
+            with contextlib.redirect_stdout(io.StringIO()):
+                experiment.stop(started["cfg"], started["name"])
+
+
+def run(argv: list[str] | None, started: dict[str, Any]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True, type=pathlib.Path)
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
@@ -469,6 +505,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--watch-mode", action="store_true",
                     help="Publisher was started with --watch-env, so edits are "
                          "live and the helper only reloads")
+    ap.add_argument("--experiment", default=None, metavar="NAME",
+                    help="serve the agent's edits as the experiment "
+                         "<package>.<NAME> beside the main package, and have "
+                         "the agent probe that. Works on a server that "
+                         "publishes versions, where --watch-mode and the "
+                         "sync do not, and leaves the main package alone")
     ap.add_argument("--model", default="opus", help="the modeling agent")
     ap.add_argument("--environment", default=None)
     ap.add_argument("--package", default=None)
@@ -557,15 +599,25 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"{a.model_dir} has uncommitted changes; commit or "
                          f"stash first so each candidate diff is only its own "
                          f"edit:\n{dirty}")
-    if not a.watch_mode and not a.server_root:
+    if a.experiment:
+        # The agent edits the working tree and probes the experiment, so what
+        # the main package is served as does not matter: nothing writes to it.
+        import experiment
+        import publish
+        experiment.sync(cfg, a.experiment, a.model_dir, build=False)
+        started.update(cfg=cfg, name=a.experiment)
+        publish.warm(cfg, a.environment, publish.experiment_package(a.package, a.experiment))
+        a.package = publish.experiment_package(a.package, a.experiment)
+        print(f"edits are served as {a.environment}/{a.package}; the main package is untouched")
+    elif not a.watch_mode and not a.server_root:
         print("warning: no --watch-mode and no --server-root, so the agent "
               "cannot sync its edit into Publisher's snapshot; every probe it "
               "runs will test the unedited model")
     # Asked in both modes: --watch-mode is the caller's claim, and a server
     # started with --watch-env over a preserved root still serves a version.
-    version = served_version(a.rest_url, a.environment, a.package)
+    version = None if a.experiment else served_version(a.rest_url, a.environment, a.package)
     served = (a.server_root / "publisher_data" / a.environment / a.package
-              if a.server_root and not a.watch_mode else None)
+              if a.server_root and not a.watch_mode and not a.experiment else None)
     if version or (served is not None and served_as_versions(served)):
         what = (f"the model server serves {a.package} as published version "
                 f"{version}" if version else f"{served} holds published versions")
@@ -575,7 +627,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(
             f"{what}, which is immutable: {why}. Fix: restart the model "
             f"server in watch mode, `eval.py serve model --set {a.set_dir} "
-            f"--watch-env {a.environment} --reinit`, then pass --watch-mode")
+            f"--watch-env {a.environment} --reinit`, then pass --watch-mode. Or pass "
+            f"--experiment <name>, which needs neither")
 
     events = read_jsonl(a.run / "events.jsonl")
     cases = {c["qid"]: c for c in read_jsonl(a.set_dir / "cases.jsonl")}

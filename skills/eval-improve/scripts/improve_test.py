@@ -432,9 +432,10 @@ class WhatTheImproverIsToldAndWhatItsDiffIsCheckedFor(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def improve(self, added: str, prior=()):
+    def improve(self, added: str, prior=(), experiment=None):
         def agent(prompt, **kw):
             self.prompt = prompt
+            self.helper = (self.model / improve.SYNC_HELPER).read_text()
             f = self.model / "m.malloy"
             f.write_text(f.read_text().replace("  measure: n", added + "\n  measure: n"))
             return types.SimpleNamespace(text="done", json={"edit": "doc"}, cost_usd=0.1,
@@ -443,7 +444,7 @@ class WhatTheImproverIsToldAndWhatItsDiffIsCheckedFor(unittest.TestCase):
             rest_url="http://x", environment="e", package="p", watch_mode=True, server_root=None,
             model_dir=self.model, set_dir=self.set, role_skills=[], roots=[], model="opus",
             mcp_url="http://x/mcp", max_turns=5, timeout=5, retries=0, isolate=True, force=False,
-            prior=list(prior))
+            prior=list(prior), experiment=experiment)
         a.keys, a.golden_queries = improve.golden_keys(self.cases, self.set)
         with mock.patch.object(improve, "spawn_agent", side_effect=agent), \
                 mock.patch.object(improve, "verify_goldens", return_value={"ran": True, "clean": True}):
@@ -471,6 +472,18 @@ class WhatTheImproverIsToldAndWhatItsDiffIsCheckedFor(unittest.TestCase):
         self.assertIn("REJECTED", self.prompt)
         self.assertIn("rejected because: no regression: keep in a", self.prompt)
         self.assertEqual(r["duplicateOf"]["what"], "doc net sales")
+
+    def test_with_an_experiment_the_agents_helper_republishes_the_working_tree(self):
+        self.improve("  #(doc) Net sales.", experiment="imp1")
+        self.assertIn("experiment.py", self.helper)
+        self.assertIn(f"sync imp1 --set {self.set.resolve()} --dir {self.model.resolve()}",
+                      self.helper)
+        self.assertNotIn("reload=true", self.helper)
+        # and without one it is the reload, as before
+        shutil.rmtree(self.root / "run")
+        self.improve("  #(doc) Net sales, again.")
+        self.assertIn("reload=true", self.helper)
+        self.assertNotIn("experiment.py", self.helper)
 
     def test_with_nothing_tried_the_prompt_says_so(self):
         self.improve("  #(doc) Net sales.")

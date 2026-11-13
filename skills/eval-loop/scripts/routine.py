@@ -25,6 +25,13 @@ agent). There are two kinds, and each reports one number:
     4. package       the replay's page
     5. history
 
+`--mode improve` goes on after the number: for the largest diagnosed cluster the
+model's repository owns (`--max-edits` of them), one agent makes one edit, the
+edit is re-asked twice as an experiment beside the main package, and the
+acceptance rules decide. An accepted edit is left as a commit on the branch
+eval/<label> in the model's repository; a rejected one is taken off and
+recorded. Nothing is pushed or published (improve_mode.py).
+
 `--max-cost-usd` bounds a quality routine's model spend: answering stops once
 answerers have cost that much, and a run that reached it is not diagnosed.
 
@@ -116,6 +123,18 @@ def quality_number(run: pathlib.Path, set_dir: pathlib.Path | None = None) -> di
                         "diagnose": meta.get("diagnoseCostUsd")}}
 
 
+def improve_said(imp: dict[str, Any]) -> str:
+    """One sentence on what the improve half left behind."""
+    if not imp.get("edits"):
+        return f"No edit was tried: {imp.get('why')}"
+    n, tried = imp.get("accepted", 0), len(imp["edits"])
+    if imp.get("branch") and n:
+        return (f"{n} of {tried} edit(s) accepted, on the branch {imp['branch']}. Nothing is "
+                f"pushed or published: open a pull request from it")
+    return (f"{tried} edit(s) tried and none accepted"
+            + (f"; the attempt is recorded on the branch {imp['branch']}" if imp.get("branch") else ""))
+
+
 def speed_number(run: pathlib.Path) -> dict[str, Any]:
     """What a speed routine reports: the stored queries' time, and what moved."""
     s = read_json(run / "summary.json")
@@ -162,7 +181,7 @@ class Routine:
         self.run_dir = cfg.workdir() / "runs" / label
         self.started: list[str] = []
         self.result: dict[str, Any] = {
-            "label": label, "kind": a.kind, "mode": "run", "set": cfg.set_name,
+            "label": label, "kind": a.kind, "mode": a.mode, "set": cfg.set_name,
             "started": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             "run": label, "steps": [], "number": None, "shared": None}
 
@@ -246,6 +265,10 @@ class Routine:
         if "test" in n["bySplit"]:
             t = n["bySplit"]["test"]
             said += f" ({t['passed']} of {t['decided']} on the test split, the number to quote)"
+        if self.a.mode == "improve" and not capped:
+            import improve_mode
+            self.result["improve"] = imp = improve_mode.improve_quality(self)
+            said += ". " + improve_said(imp)
         if capped:
             return NEEDS_A_LOOK, (f"{said}. The run and its judging cost ${spent:.2f}, at or "
                                   f"over --max-cost-usd {self.a.max_cost_usd:g}, so it was not "
@@ -321,6 +344,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--set", dest="set_dir", required=True)
     ap.add_argument("--kind", required=True, choices=KINDS,
                     help="quality: answer and score every case. speed: time the stored queries")
+    ap.add_argument("--mode", choices=("run", "improve"), default="run",
+                    help="run: report the number. improve: then try to close what the "
+                         "diagnosis found, and leave each accepted edit on a branch")
+    ap.add_argument("--max-edits", type=int, default=1,
+                    help="improve mode: how many diagnosed clusters to try an edit for, "
+                         "largest first. Each costs an improving agent and two runs of "
+                         "the cases it aimed at")
     ap.add_argument("--label", default=None,
                     help="default: <kind>-<UTC date and time>")
     ap.add_argument("--serve", action="store_true",

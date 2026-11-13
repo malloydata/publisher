@@ -7,6 +7,7 @@ without replacing it. Stdlib only.
   python3 eval.py experiment start tip-fix --set <set-dir> --dir <pkg>  # any package directory
   python3 eval.py run   --set <set-dir> --experiment tip-fix --slice tip --label tip-01
   python3 eval.py query-replay --set <set-dir> --experiment tip-fix --from baseline-01 ...
+  python3 eval.py experiment sync tip-fix --set <set-dir> --dir <pkg>   # serve <pkg> as it is NOW
   python3 eval.py experiment list --set <set-dir>
   python3 eval.py experiment stop tip-fix --set <set-dir>
 
@@ -29,6 +30,13 @@ Where the variant comes from:
   package (data that is never committed) are linked in.
 - `--dir <path>`: that directory, as it is.
 Copies and worktrees live in <workdir>/experiments/<name>/, never in the repo.
+
+`sync` is for a directory that is still being edited. It publishes the
+directory as the experiment, replacing what the experiment served before, and
+starts it if it was not started. A published package never changes, so this is
+how an edit in progress reaches a server that publishes versions: the improve
+step's agent runs it after each edit to probe what it wrote. It prints the
+package's `sourceContentSha`, which changes when the served content did.
 """
 from __future__ import annotations
 
@@ -146,12 +154,43 @@ def start(cfg: config.Config, name: str, ref: str | None, given: pathlib.Path | 
     return rec
 
 
+def unpublish(cfg: config.Config, rec: dict[str, Any]) -> tuple[int, Any]:
+    return publish.send(cfg.model_publisher(), "DELETE", f"api/v0/environments/"
+                        f"{urllib.parse.quote(rec['environment'])}/packages/"
+                        f"{urllib.parse.quote(rec['package'])}")
+
+
+def content_sha(cfg: config.Config, rec: dict[str, Any]) -> str | None:
+    _, st = publish.send(cfg.model_publisher(), "GET", f"api/v0/environments/"
+                         f"{urllib.parse.quote(rec['environment'])}/packages/"
+                         f"{urllib.parse.quote(rec['package'])}/status")
+    return st.get("sourceContentSha") if isinstance(st, dict) else None
+
+
+def sync(cfg: config.Config, name: str, location: pathlib.Path, build: bool) -> dict[str, Any]:
+    """Serve `location` as experiment `name`, as the directory is now."""
+    if not record_path(cfg, name).exists():
+        return start(cfg, name, None, location, build)
+    rec = load(cfg, name)
+    code, body = unpublish(cfg, rec)
+    if code >= 300 and code != 404:
+        raise SystemExit(f"could not replace {rec['package']}: the server kept the old one, "
+                         f"HTTP {code} {publish.message(body)}")
+    pub = publish.publish(cfg.model_publisher(), rec["environment"], rec["package"], location,
+                          publish.server_versioning(cfg.model_publisher()))
+    rec.update(location=str(location.resolve()), **{"from": f"directory {location}"},
+               version=pub.get("version") or pub.get("baseVersion"),
+               gitSha=git(location, "rev-parse", "HEAD"))
+    if build:
+        rec["build"] = publish.build(cfg.model_publisher(), rec["environment"], rec["package"],
+                                     pub.get("version"))
+    record_path(cfg, name).write_text(json.dumps(rec, indent=1) + "\n")
+    return rec
+
+
 def stop(cfg: config.Config, name: str) -> None:
     rec = load(cfg, name)
-    base = cfg.model_publisher()
-    code, body = publish.send(base, "DELETE", f"api/v0/environments/"
-                              f"{urllib.parse.quote(rec['environment'])}/packages/"
-                              f"{urllib.parse.quote(rec['package'])}")
+    code, body = unpublish(cfg, rec)
     if code >= 300 and code != 404:
         print(f"  ! the server kept {rec['package']}: HTTP {code} {publish.message(body)}")
     if rec.get("worktree"):
@@ -175,7 +214,7 @@ def run_flags(cfg: config.Config, name: str, verb: str) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("action", choices=("start", "stop", "list"))
+    ap.add_argument("action", choices=("start", "stop", "list", "sync"))
     ap.add_argument("name", nargs="?")
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
     ap.add_argument("--from", dest="ref", default=None, help="a git commit or branch")
@@ -195,6 +234,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if a.ref and a.dir:
         ap.error("--from and --dir name two different sources; pass one")
+    if a.action == "sync":
+        if not a.dir:
+            ap.error("sync needs --dir <the package directory being edited>")
+        rec = sync(cfg, a.name, a.dir, not a.no_build)
+        publish.warm(cfg, rec["environment"], rec["package"])
+        # The line the improve step's agent reads to know its edit is served.
+        print(f"synced {a.name}: {rec['environment']}/{rec['package']} serves {a.dir}")
+        print(f'"sourceContentSha":"{content_sha(cfg, rec)}"')
+        return 0
     rec = start(cfg, a.name, a.ref, a.dir, not a.no_build)
     print(f"started {a.name}: {rec['environment']}/{rec['package']} from {rec['from']}")
     b = rec.get("build")

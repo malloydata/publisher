@@ -92,6 +92,33 @@ publish. Each is one command so that whatever runs it, a person, CI or an
 agent, needs nothing else: `--serve` starts the servers and stops the ones it
 started.
 
+### Improve mode
+
+`routine --kind quality --mode improve` does the run above and then acts on its
+diagnosis. For the largest cluster the model's repository owns:
+
+1. One agent makes one smallest edit. It probes the edit as an experiment
+   beside the main package, so the record's package is never touched and the
+   server does not need watch mode.
+2. The edit is committed on a new branch, `eval/<label>`, and served as an
+   experiment.
+3. The cases it aimed at are asked twice, with every holdout case and every
+   case sharing a tag with a target.
+4. `accept` checks the rules against the night's own run.
+5. An accepted edit stays on the branch with the acceptance in its commit
+   message. A rejected one is taken off. Either way the attempt is one line in
+   `attempts.jsonl`, committed on that branch.
+
+It ends on the branch it started on. What it leaves is `eval/<label>`: open a
+pull request from it. It never pushes, publishes or merges. `--max-edits 3`
+tries three clusters, each on top of the last accepted one; the default is
+one, so a night's change in score has one cause.
+
+It needs the model's repository to have nothing uncommitted anywhere in it,
+and tries no edit if it does. It costs the run, one improving agent per edit,
+and two runs of the edit's cases. `--max-cost-usd` covers the run only: a run
+that reached it is not improved on.
+
 A routine shares its run last, after the diagnosis is written into it, and
 writes what happened to `<workdir>/routines/<label>.json`: the kind, the
 number, each step with its exit code and seconds, whether the run was shared,

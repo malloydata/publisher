@@ -12,6 +12,7 @@
   python3 eval.py query-replay --set <set-dir> --from baseline-01 --label perf-01   # time passing queries
   python3 eval.py accept   --set <set-dir> --run fix-01 --run fix-02   # the acceptance rules
   python3 eval.py diagnose --set <set-dir> --label baseline-01
+  python3 eval.py improve  --set <set-dir> --label baseline-01 --experiment fix1   # one edit per cluster
   python3 eval.py package  --set <set-dir> --label baseline-01
   python3 eval.py history  --set <set-dir>         # every run as one servable page
   python3 eval.py routine --kind quality --set <set-dir>   # check, verify, run, diagnose, package, history, share
@@ -46,7 +47,7 @@ for d in ("eval-answer", "eval-loop", "eval-diagnose"):
 import config  # noqa: E402
 
 VERBS = ("check", "serve", "publish", "experiment", "verify", "run", "replay",
-         "query-replay", "accept", "diagnose", "package", "history", "push", "pull",
+         "query-replay", "accept", "diagnose", "improve", "package", "history", "push", "pull",
          "routine", "runs", "versions", "export", "import-run")
 
 
@@ -259,6 +260,10 @@ def dispatch(argv: list[str]) -> int:
         import run_index
         pull_shared(rest)
         return run_index.main([verb, *rest])
+    if verb == "improve":
+        sys.path.insert(0, str(SKILLS / "eval-improve" / "scripts"))
+        import improve
+        return improve.main(run_dir_from_label(rest))
     if verb == "diagnose":
         import diagnose
         return diagnose.main(run_dir_from_label(rest))
