@@ -108,6 +108,15 @@ async function settledRun(
 
 let restoreSettings: () => void;
 
+/**
+ * These builds put a colocated `#(materialize)` table and its view in the
+ * source's own warehouse, which is not built until the served copy can serve
+ * it (`materialize-not-built`, decided 2026-11-12): the view's colocated site
+ * returns with colocated serving, and these run again then. A storage
+ * destination is a DuckLake, which a unit spec cannot attach.
+ */
+const colocatedIt = it.skip;
+
 describe("the name= view through real builds", () => {
    let root: string;
    let envPath: string;
@@ -293,7 +302,7 @@ describe("the name= view through real builds", () => {
       await __setPackageLoadPoolForTests(null);
    });
 
-   it(
+   colocatedIt(
       "scope: version: the view follows each version's build, falls back to the standing generation, and goes with the last",
       async () => {
          await publish("1.0.0", 1, "version");
@@ -350,7 +359,7 @@ describe("the name= view through real builds", () => {
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "orchestrated: the view follows the host's generations, and a deleted run's drop repoints or drops it",
       async () => {
          await publish("1.0.0", 1, "package");
@@ -384,7 +393,7 @@ describe("the name= view through real builds", () => {
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "a run whose commit fails puts the view back on the table it read",
       async () => {
          await publish("1.0.0", 1, "package");
@@ -410,7 +419,7 @@ describe("the name= view through real builds", () => {
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "a deleted run whose view another run repointed leaves the view alone",
       async () => {
          await publish("1.0.0", 1, "package");
@@ -426,7 +435,7 @@ describe("the name= view through real builds", () => {
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "refuses the build when name= is held by a table Publisher did not create, and writes nothing",
       async () => {
          await sql('CREATE TABLE "summary" AS SELECT 42 AS answer');
@@ -444,7 +453,7 @@ describe("the name= view through real builds", () => {
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "never replaces or drops a view Publisher did not mark",
       async () => {
          await publish("1.0.0", 1, "package");
@@ -459,7 +468,7 @@ describe("the name= view through real builds", () => {
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "self-instructed, then orchestrated: the view replaces the table the package's own run wrote at name=",
       async () => {
          await publish("1.0.0", 1, "package");
@@ -527,7 +536,10 @@ describe("the name= view through real builds", () => {
    it(
       "another loaded version stops serving the table a later version's view replaced",
       async () => {
-         await publish("1.0.0", 1, "package");
+         // Colocated `#(materialize)` builds nothing (see colocatedIt), so the
+         // builds are `#@ persist`, and the replacement is recorded on the
+         // later version's run as the view would record it.
+         await publish("1.0.0", 1, "package", persistModel);
          const self = await build({ versionId: VersionRef.parse("1.0.0") });
          expect(self.status).toBe("MANIFEST_FILE_READY");
          const servedBy = (versionId: string) =>
@@ -539,40 +551,56 @@ describe("the name= view through real builds", () => {
             ),
          ).toEqual(["summary"]);
 
-         // 2.0.0 builds tables of its own, named for it, with the view at
-         // `summary`.
-         await publish("2.0.0", 2, "version");
-         const committer = (
-            service as unknown as {
-               committer: {
-                  rebindLoadedVersions: (...args: unknown[]) => Promise<void>;
-               };
-            }
-         ).committer;
-         const rebind = committer.rebindLoadedVersions.bind(committer);
+         // 2.0.0 builds tables of its own, named for it, and its view takes
+         // `summary`'s place.
+         await publish("2.0.0", 2, "version", persistModel);
+         const seams = service as unknown as {
+            executeInstructedBuild: (
+               ...args: unknown[]
+            ) => Promise<Record<string, unknown>>;
+            committer: {
+               rebindLoadedVersions: (...args: unknown[]) => Promise<void>;
+            };
+         };
+         const execute = seams.executeInstructedBuild.bind(service);
+         seams.executeInstructedBuild = async (...args: unknown[]) => {
+            const built = await execute(...args);
+            return {
+               ...built,
+               nameViews: [
+                  {
+                     sourceEntityId: "addr",
+                     sourceName: "summary",
+                     owner: nameViewOwner(ENV, PKG),
+                     viewName: "summary",
+                     physicalTableName: versionTable("2.0.0"),
+                     connectionName: "warehouse",
+                     outcome: "replaced_own_table",
+                     asideTableName: "summary_oaddr",
+                  },
+               ],
+            };
+         };
+         const rebind = seams.committer.rebindLoadedVersions.bind(
+            seams.committer,
+         );
          const rebound: unknown[][] = [];
-         committer.rebindLoadedVersions = async (...args: unknown[]) => {
+         seams.committer.rebindLoadedVersions = async (...args: unknown[]) => {
             rebound.push(args);
             return rebind(...args);
          };
          const v2 = await build({ versionId: VersionRef.parse("2.0.0") });
-         expect(nameViewsIn(v2.metadata)[0]).toEqual(
-            expect.objectContaining({
-               physicalTableName: versionTable("2.0.0"),
-               outcome: "replaced_own_table",
-            }),
-         );
-         // `summary` is 2.0.0's view now. Read through it, 1.0.0 would
-         // answer from 2.0.0's generation: its entry is retired, and the
-         // loaded versions other than 2.0.0 are rebound off it.
-         expect((await summaryView())?.answer).toBe(2);
+         expect(v2.status).toBe("MANIFEST_FILE_READY");
+         // Read through the view, 1.0.0 would answer from 2.0.0's
+         // generation: its entry is retired, and the loaded versions other
+         // than 2.0.0 are rebound off it.
          expect(await servedBy("1.0.0")).toEqual({});
          expect(rebound).toEqual([[ENV, PKG, "2.0.0"]]);
       },
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "self-instructed, then orchestrated, whose commit fails: the table is put back",
       async () => {
          await publish("1.0.0", 1, "package");
@@ -663,7 +691,7 @@ describe("the name= view through real builds", () => {
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "a replacement a crash interrupted before its commit is put back, then done, by the next build",
       async () => {
          await publish("1.0.0", 1, "package");
@@ -693,7 +721,7 @@ describe("the name= view through real builds", () => {
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "a table at name= put there after this package's view replaced its own is refused",
       async () => {
          await publish("1.0.0", 1, "package");
@@ -714,7 +742,7 @@ describe("the name= view through real builds", () => {
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "orchestrated, then self-instructed: the table replaces this package's own view",
       async () => {
          await publish("1.0.0", 1, "package");
@@ -762,7 +790,7 @@ describe("the name= view through real builds", () => {
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "self-instructed never replaces another package's view, nor one Publisher did not mark",
       async () => {
          await publish("1.0.0", 1, "package");
@@ -784,7 +812,7 @@ describe("the name= view through real builds", () => {
       { timeout: 60_000 },
    );
 
-   it(
+   colocatedIt(
       "refuses the build when name= is held by another package's view, and writes nothing",
       async () => {
          await publish("1.0.0", 1, "package");
@@ -801,6 +829,26 @@ describe("the name= view through real builds", () => {
          expect(await sql('SELECT answer FROM "summary"')).toEqual([
             { answer: 7 },
          ]);
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
+      "a colocated #(materialize) builds nothing and makes no view, until it can be served",
+      async () => {
+         await publish("1.0.0", 1, "version");
+         const plan = (
+            await env.getPackage(parsePackageName(PKG), false, {
+               versionId: VersionRef.parse("1.0.0"),
+            })
+         ).getBuildPlan();
+         expect(
+            Object.values(plan?.sources ?? {}).map((s) => s.name),
+         ).not.toContain("summary");
+         const run = await build({ versionId: VersionRef.parse("1.0.0") });
+         expect(run.status).not.toBe("FAILED");
+         expect(await tables()).toEqual([]);
+         expect(await summaryView()).toBeUndefined();
       },
       { timeout: 60_000 },
    );
