@@ -245,6 +245,30 @@ export function uniquenessPassesIn(
 }
 
 /**
+ * `metadata` without the passes it records, keeping what became of each
+ * check, or undefined when it records none. A pass is relied on only while
+ * its run is the newest of the package and no other run overlapped it, which
+ * the run records alone prove; deleting a record takes that proof away (a
+ * newer run that rewrote the table, or an older one that overlapped), so the
+ * passes left behind are forgotten first (`deleteMaterialization`).
+ */
+export function withoutUniquenessPasses(
+   metadata: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | undefined {
+   const value = metadata?.[INLINE_UNIQUENESS_KEY];
+   if (!metadata || !value || typeof value !== "object") return undefined;
+   const { passes, ...rest } = value as { passes?: unknown };
+   if (
+      !passes ||
+      typeof passes !== "object" ||
+      Object.keys(passes as object).length === 0
+   ) {
+      return undefined;
+   }
+   return { ...metadata, [INLINE_UNIQUENESS_KEY]: { ...rest, passes: {} } };
+}
+
+/**
  * Compiles a check against a build manifest, so it reads the persisted
  * tables the manifest names. Registered per check at plan time, where the
  * companion's materializer is (materialize_compile.ts); a check without one

@@ -25,6 +25,7 @@ import {
    INLINE_UNIQUENESS_KEY,
    UniquenessLedger,
    uniquenessPassesIn,
+   withoutUniquenessPasses,
 } from "./inline_uniqueness";
 import { InstructedBuild } from "./instructed_build";
 import type { BuildEnvironment } from "./materialization_run_support";
@@ -135,9 +136,13 @@ async function scenario(model: string) {
    /**
     * One auto-run: `rebuild` names the sources built, every other entry of
     * the run before is carried, and the run before's passes are relied on
-    * unless `trustPrevious` is false.
+    * unless `trustPrevious` is false. A metadata value in its place is the
+    * one relied on instead, as when the run before's record was deleted.
     */
-   async function run(rebuild: string[], trustPrevious = true) {
+   async function run(
+      rebuild: string[],
+      trustPrevious: boolean | Metadata = true,
+   ) {
       runs += 1;
       const carried = Object.fromEntries(
          Object.entries(previous.entries).filter(
@@ -148,7 +153,8 @@ async function scenario(model: string) {
       const ledger = new UniquenessLedger(
          trustPrevious
             ? uniquenessPassesIn({
-                 [INLINE_UNIQUENESS_KEY]: previous.metadata,
+                 [INLINE_UNIQUENESS_KEY]:
+                    trustPrevious === true ? previous.metadata : trustPrevious,
               })
             : undefined,
          `run-${runs}`,
@@ -331,6 +337,41 @@ describe("the inline uniqueness check, skipped only when its table is unchanged"
       { timeout: 60000 },
    );
 
+   it(
+      "checks again once a newer run's record is deleted, rather than rely on the pass it hid",
+      async () => {
+         const s = await scenario(PERSISTED_JOIN);
+         const first = await s.run(["regions", "orders"]);
+         expect(outcomes(first.uniquenessChecks)).toEqual([
+            "orders.regions:ran",
+         ]);
+         // A later run rebuilds regions alone, over a duplicate: same
+         // address, same table, new rows. It reaches no check, so it records
+         // no pass.
+         await s.duckdb.runSQL(
+            "INSERT INTO regions_src VALUES ('east', 'Also east')",
+         );
+         const second = await s.run(["regions"]);
+         expect(second.uniquenessChecks).toBeUndefined();
+         // Its record deleted, the first run is the newest again. Relying on
+         // its pass would skip the check and store each east order twice;
+         // the delete forgets it, so the check runs and refuses orders.
+         const remaining = withoutUniquenessPasses({
+            mode: "auto",
+            [INLINE_UNIQUENESS_KEY]: first.uniquenessChecks,
+         });
+         expect(remaining?.[INLINE_UNIQUENESS_KEY]).toEqual({
+            passes: {},
+            checks: first.uniquenessChecks?.checks,
+         });
+         // (Its only source fails, so the run does.)
+         await expect(
+            s.run(["orders"], remaining?.[INLINE_UNIQUENESS_KEY] as Metadata),
+         ).rejects.toThrow(/inlines the join_one 'regions'/);
+      },
+      { timeout: 60000 },
+   );
+
    it("refuses a pass for another table or address, or one written this run", () => {
       const pass = { joinedAddress: "a1", joinedTable: "t1" };
       const stored = { sql: "select 1", address: "a1", table: "t1" };
@@ -455,6 +496,31 @@ describe("which run's passes an auto-run relies on", () => {
             older({ status: "MANIFEST_ROWS_READY", completedAt: null }),
          ]),
       ).toBeUndefined();
+   });
+
+   it("forgets every other run's passes before a run's record is deleted", async () => {
+      const ctx = createMocks();
+      const kept = previous();
+      const plain = older();
+      ctx.repository.getMaterializationById.resolves(
+         makeMaterialization({ id: "gone", status: "MANIFEST_FILE_READY" }),
+      );
+      ctx.repository.listMaterializations.resolves([kept, plain]);
+      const order: string[] = [];
+      ctx.repository.updateMaterialization.callsFake(async (id: string) => {
+         order.push(`update:${id}`);
+         return kept;
+      });
+      ctx.repository.deleteMaterialization.callsFake(async (id: string) => {
+         order.push(`delete:${id}`);
+      });
+      await ctx.service.deleteMaterialization("my-env", "pkg", "gone");
+      // Only a run that records a pass is rewritten, and before the delete.
+      expect(order).toEqual(["update:prev", "delete:gone"]);
+      const metadata = ctx.repository.updateMaterialization.firstCall.args[1]
+         .metadata as Record<string, unknown>;
+      expect(metadata.mode).toBe("auto");
+      expect(uniquenessPassesIn(metadata)).toEqual({});
    });
 
    it("relies on nothing when the listing fails", async () => {

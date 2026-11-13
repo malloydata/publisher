@@ -549,3 +549,92 @@ source: by_usage is account_usage -> {
       expect(kept.servedFrom).not.toBe("storage");
    });
 });
+
+// A served-copy answer that fails at run time is retried live
+// (freshnessFallback=live), and the retry is governed again with live's
+// #(carries) ceiling. Live was already read before the served copy ran
+// whenever it compiles, so the retry's read refuses nothing new; these pin
+// that it refuses nothing clean either, and that a retry live cannot compile
+// fails as a compile error rather than answering.
+describe("R4: a served-copy answer retried live", () => {
+   let restore: () => void;
+   beforeAll(() => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   const liveFallback = (fixture: R4Fixture) =>
+      fixture.setBindings(
+         fixture.bindings.map((b) => ({
+            ...b,
+            freshnessFallback: "live" as const,
+         })),
+      );
+
+   it("answers a clean query live, and refuses one past the ceiling", async () => {
+      const fixture = await buildScenario({
+         files: {
+            "m.malloy": `##! experimental.access_modifiers
+#(materialize) storage="lake"
+source: accounts is crm.table('accounts') include {
+  #(classification) "none"
+  public: id
+  #(classification) "phi"
+  public: account_name
+} extend { primary_key: id }
+
+#(carries) ["none"]
+source: capped is accounts extend {
+  #(classification) "none"
+  measure: n is count()
+}
+`,
+         },
+         seedSql: [],
+         origins: crossOrigin,
+         materialize: true,
+      });
+      liveFallback(fixture);
+      const clean = "run: capped -> { group_by: id; aggregate: n }";
+      expect((await fixture.runAsIs(clean)).servedFrom).toBe("storage");
+      // The stored table goes, so the served copy fails at run time.
+      await fixture.storedSQL((table) => `DROP TABLE ${table("accounts")}`);
+      const retried = await fixture.runAsIs(clean);
+      expect(retried.servedFrom).toBe("live_fallback");
+      expect(
+         rowDifference(
+            [
+               { id: 1, n: 1 },
+               { id: 2, n: 1 },
+               { id: 3, n: 1 },
+            ],
+            retried.rows,
+         ),
+      ).toBeUndefined();
+      await expect(
+         fixture.runAsIs("run: capped -> { group_by: account_name }"),
+      ).rejects.toThrow(/carries \[none\]; this query reads account_name/);
+   });
+
+   it("refuses the retry of a query through a left-out join, which live cannot compile", async () => {
+      const fixture = await buildScenario({
+         files: { "m.malloy": classifiedModel("none") },
+         seedSql: [],
+         origins: crossOrigin,
+         materialize: true,
+      });
+      liveFallback(fixture);
+      const through =
+         "run: account_usage -> { group_by: u.events; aggregate: n }";
+      expect((await fixture.runAsIs(through)).servedFrom).toBe("storage");
+      await fixture.storedSQL((table) => `DROP TABLE ${table("usage")}`);
+      await expect(fixture.runAsIs(through)).rejects.toThrow(
+         /'u' is not defined/,
+      );
+   });
+});

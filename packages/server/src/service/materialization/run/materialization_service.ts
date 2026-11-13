@@ -56,6 +56,7 @@ import {
    INLINE_UNIQUENESS_KEY,
    UniquenessLedger,
    uniquenessPassesIn,
+   withoutUniquenessPasses,
    type UniquenessPass,
 } from "./inline_uniqueness";
 import { InstructedBuild, nameViewContext } from "./instructed_build";
@@ -85,6 +86,13 @@ import {
 } from "./storage_build_strategy";
 import { TableClaims } from "./table_claims";
 
+/** A run that can write nothing more. */
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
+   "MANIFEST_FILE_READY",
+   "FAILED",
+   "CANCELLED",
+]);
+
 /**
  * Orchestrates single-call materialization builds: the facade the controller,
  * the scheduler and main_server.ts call.
@@ -108,13 +116,6 @@ import { TableClaims } from "./table_claims";
  * methods below that only delegate are the seams this class's specs drive and
  * substitute; a collaborator that calls one goes back through this class.
  */
-/** A run that can write nothing more. */
-const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
-   "MANIFEST_FILE_READY",
-   "FAILED",
-   "CANCELLED",
-]);
-
 export class MaterializationService {
    private readonly lifecycle: RunLifecycle;
    private readonly claims: TableClaims;
@@ -1162,6 +1163,30 @@ export class MaterializationService {
       return uniquenessPassesIn(previous.metadata);
    }
 
+   /**
+    * Drop the inline uniqueness passes every other run of the package records
+    * (see {@link withoutUniquenessPasses}), so the next auto-run checks again
+    * rather than rely on a pass whose run a deletion made look newest.
+    */
+   private async forgetUniquenessPasses(
+      environmentId: string,
+      packageName: string,
+      deletedId: string,
+   ): Promise<void> {
+      const runs =
+         (await this.repository.listMaterializations(
+            environmentId,
+            packageName,
+         )) ?? [];
+      for (const run of runs) {
+         if (run.id === deletedId) continue;
+         const metadata = withoutUniquenessPasses(run.metadata);
+         if (metadata) {
+            await this.repository.updateMaterialization(run.id, { metadata });
+         }
+      }
+   }
+
    /** See {@link ManifestCommitter.mostRecentEntries}. */
    private getMostRecentManifestEntries(
       ...args: Parameters<ManifestCommitter["mostRecentEntries"]>
@@ -1239,6 +1264,11 @@ export class MaterializationService {
          await this.dropMaterializedTables(environmentName, packageName, m);
       }
 
+      // The record is part of what proves a recorded uniqueness pass still
+      // holds: once it goes, an older run's pass could read as the newest
+      // over a table this run rewrote. Forgotten first, so a failure leaves
+      // the record (and the proof) in place.
+      await this.forgetUniquenessPasses(m.environmentId, packageName, id);
       await this.repository.deleteMaterialization(id);
 
       // The deleted run may have been the one serving (and its tables dropped);
