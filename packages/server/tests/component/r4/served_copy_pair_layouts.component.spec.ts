@@ -41,7 +41,18 @@ import {
    rowDifference,
    type R4Fixture,
    type Row,
+   expectPairServedVia,
 } from "./harness";
+
+/** Measures that count through the inlined path (see {@link expectPairServedVia}). */
+const PATH_COUNTS = [
+   "item_n",
+   "opt_n",
+   "pay_n",
+   "big_opts",
+   "pricey_items",
+   "by_color",
+];
 
 // Orders 1–7. Order 4 and 6 have no item; item 12, 14 and 16 have no option;
 // item 13 has three options, item 11 two. Payments: order 2 has two, 4 one,
@@ -337,7 +348,7 @@ describe("R4: a path of join_manys and more than one join_many, served flat from
       for (const malloy of both(query)) {
          it(`${name} (${malloy.split(" ")[1]})`, async () => {
             const run = await fixture.run({ name, malloy });
-            expect(run.servedVia).toBe("served_copy");
+            expectPairServedVia(run, PATH_COUNTS);
             expect(run.live.length).toBeGreaterThan(0);
             expect(rowDifference(run.live, run.served)).toBeUndefined();
          });
@@ -374,26 +385,27 @@ describe("R4: a path of join_manys and more than one join_many, served flat from
    for (const [name, malloy] of servedBlock) {
       it(`the payments block: ${name}`, async () => {
          const run = await fixture.run({ name, malloy });
-         expect(run.servedVia).toBe("served_copy");
+         expectPairServedVia(run, PATH_COUNTS);
          expect(run.live.length).toBeGreaterThan(0);
          expect(rowDifference(run.live, run.served)).toBeUndefined();
       });
    }
 
-   it("reproduces live's middle count of a childless order (one), not the true count", async () => {
+   it("answers a childless order's middle count (none, since malloydata/malloy#3208) live", async () => {
       const run = await fixture.run({
          name: "childless",
          malloy:
             "run: orders_hop -> { where: id = 4 | 1; group_by: id; aggregate: item_n }",
       });
-      expect(run.servedVia).toBe("served_copy");
+      // The flag marks order 4's null-extended row, which would count one.
+      expect(run.servedVia).toBeUndefined();
       expect(
-         run.served
+         run.live
             .map((r) => [Number(r.id), Number(r.item_n)])
             .sort((a, b) => a[0] - b[0]),
       ).toEqual([
          [1, 2],
-         [4, 1],
+         [4, 0],
       ]);
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
@@ -734,14 +746,13 @@ source: ${rerootDeclaration(declaration, {
 
    it("a middle measure without its level's row flag answers wrong, and is refused", async () => {
       const malloy =
-         "run: orders_hop -> { group_by: cat; aggregate: order_n, item_n, price_sum }";
+         "run: orders_hop -> { group_by: cat; aggregate: order_n, price_sum }";
       const live = (await fixture.run({ name: "mutation", malloy })).live;
       const flagged = await answer(
          "hop",
          hopDeclaration("orders_hop"),
          await hopPair([
             { name: "order_n", internalName: "order_n__pair" },
-            { name: "item_n", internalName: "item_n__pair", level: 1 },
             { name: "price_sum", internalName: "price_sum__pair", level: 1 },
          ]),
          ["id", "cat", "amt"],
@@ -782,7 +793,8 @@ source: ${rerootDeclaration(declaration, {
          "orders_hop",
       );
       expect(rowDifference(live, flagged.rows)).toBeDefined();
-      expect(flagged.refusal).toMatch(/beside fields below it/);
+      // Since malloydata/malloy#3208 any middle count reads that row wrong.
+      expect(flagged.refusal).toMatch(/a count through the inlined join/);
    });
 
    it("a middle sum or average of a stored column beside the leaf answers right under the flag only where each item has one order", async () => {
@@ -810,7 +822,7 @@ source: ${rerootDeclaration(declaration, {
          childStoredDimensions: ["pricey", "pricey_n"],
       };
       const sums =
-         "run: orders_hop -> { group_by: id; aggregate: price_sum, price_avg, opt_n }";
+         "run: orders_hop -> { group_by: id; aggregate: price_sum, price_avg, e is items.opts.extra.sum() }";
       const live = (await fixture.run({ name: "sums", malloy: sums })).live;
       const served = await answer(
          "hop",
@@ -846,7 +858,7 @@ source: ${rerootDeclaration(declaration, {
          "orders_hop",
       );
       expect(rowDifference(want, got.rows)).toBeDefined();
-      expect(got.refusal).toMatch(/beside fields below it/);
+      expect(got.refusal).toMatch(/a count through the inlined join/);
       // A computed column is 0, not null, on that null row; whether live's
       // symmetric average reads it depends on the dialect (DuckDB's hash of a
       // null key is not null, so it does here), so it is refused.
@@ -855,17 +867,18 @@ source: ${rerootDeclaration(declaration, {
          declaration,
          proven,
          ["id", "cat", "amt"],
-         "run: orders_hop -> { group_by: cat; aggregate: pricey_avg, opt_n }",
+         "run: orders_hop -> { group_by: cat; aggregate: pricey_avg, e is items.opts.extra.sum() }",
          "orders_hop",
       );
-      expect(computed.refusal).toMatch(/beside fields below it/);
+      expect(computed.refusal).toMatch(
+         /not null on the pair table's row|beside fields below it/,
+      );
    });
 
    it("a query read from the wrong block answers wrong, and is refused", async () => {
       // The payments query, answered from block 0 (the items path): its
       // rows hold the payments' columns as nulls.
-      const malloy =
-         "run: orders -> { group_by: cat; aggregate: pay_n, paid_sum }";
+      const malloy = "run: orders -> { group_by: cat; aggregate: paid_sum }";
       const live = (await fixture.run({ name: "block", malloy })).live;
       const types = await typesOf("blocks");
       const declaration = `orders is duckdb.table('orders') extend {
@@ -1166,7 +1179,7 @@ describe("R4: row-level gates on multi-join and multi-hop pair sources", () => {
             givens,
             ...(servedHere ? {} : { expectLive: true }),
          });
-         expect(run.servedVia).toBe(servedHere ? "served_copy" : undefined);
+         expectPairServedVia(run, PATH_COUNTS, servedHere);
          expect(run.live.length).toBeGreaterThan(0);
          expect(rowDifference(run.live, run.served)).toBeUndefined();
       });
@@ -1327,7 +1340,7 @@ describe("R4: a block table keeps each column's own type across the union", () =
    ]) {
       it(`serves, equal to live: ${malloy}`, async () => {
          const run = await fixture.run({ name: malloy, malloy });
-         expect(run.servedVia).toBe("served_copy");
+         expectPairServedVia(run, PATH_COUNTS);
          expect(rowDifference(run.live, run.served)).toBeUndefined();
       });
    }
@@ -1457,7 +1470,7 @@ describe("R4: a join_many reached through a join_one, beside a pair table", () =
             givens: { G: "A1" },
             ...(servedHere ? {} : { expectLive: true }),
          });
-         expect(run.servedVia).toBe(servedHere ? "served_copy" : undefined);
+         expectPairServedVia(run, PATH_COUNTS, servedHere);
          expect(run.live.length).toBeGreaterThan(0);
          expect(rowDifference(run.live, run.served)).toBeUndefined();
       });

@@ -17,6 +17,7 @@
  * rewriter is checked against the same scenarios when it lands (phase 3).
  */
 
+import { expect } from "bun:test";
 import { loadLeavingOutCrossConnectionJoins } from "../../../src/service/materialization/plan/cross_connection_joins";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
 import { assertInlinedJoinsUnique } from "../../../src/service/materialization/run/inline_uniqueness";
@@ -212,6 +213,8 @@ export interface R4Run {
    /** The path report's `servedBy`: which table answered. */
    servedBy?: { kind: string; tableId?: string };
    truth?: Row[];
+   /** The query that ran. */
+   malloy?: string;
 }
 
 /** A built scenario: run queries against it. */
@@ -1171,6 +1174,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                  .rows as Row[])
             : undefined;
          return {
+            malloy: query.malloy,
             live: live.rows,
             served: served.rows,
             liveFields: live.fields,
@@ -1192,6 +1196,29 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          };
       },
    };
+}
+
+/**
+ * Whether a run over a pair table (`inline=` on a join_many) was served by the
+ * served copy, as it should be: since Malloy 0.0.438 (malloydata/malloy#3208)
+ * live counts a parent with no joined row as none, which the pair table's
+ * null-extended row for that parent cannot be told apart from, so a query
+ * that counts through the inlined path (`segments.count()`, or one of the
+ * fixture's measures that does, named in `counts`) is answered live. Rows are
+ * compared by the caller.
+ */
+export function expectPairServedVia(
+   run: R4Run,
+   counts: readonly string[],
+   servedHere = true,
+): void {
+   const malloy = run.malloy ?? "";
+   const countsThroughPath =
+      /\.count\(\)/.test(malloy) ||
+      counts.some((n) => new RegExp(`\\b${n}\\b`).test(malloy));
+   expect(run.servedVia).toBe(
+      servedHere && !countsThroughPath ? "served_copy" : undefined,
+   );
 }
 
 /** Relative tolerance for floats, as R4 states it. */
