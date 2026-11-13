@@ -90,8 +90,8 @@ const preaggregateAnnotations: DeprecatedLint = (models) =>
                `Measure ${measure} on source ${source} uses #@ preaggregate, ` +
                `which is deprecated: its v2 spelling is #(preaggregate) ` +
                `grain=[…] (see ${MATERIALIZATION_MIGRATION_DOCS_URL}). ` +
-               `#(preaggregate) is not built yet, so keep #@ preaggregate ` +
-               `until it is; it still builds and serves its rollups.`,
+               `Until you switch, #@ preaggregate still builds and serves ` +
+               `its rollups.`,
          })),
    );
 
