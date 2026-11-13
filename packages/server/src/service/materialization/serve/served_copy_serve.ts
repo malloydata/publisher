@@ -58,6 +58,7 @@ import { annotatedJoinedOutput } from "../../governance/ir/joined_field_output";
 import {
    joinGrainAggregatePaths,
    readPreparedQuery,
+   setsTimezone,
    resolveStructRefSource,
 } from "../../governance/ir/prepared_query";
 import { joinedDefinitionOf } from "../../governance/ir/source_graph";
@@ -1714,19 +1715,6 @@ export function keepsGivenTerms(author: unknown, served: unknown): boolean {
    } catch {
       return false;
    }
-}
-
-/** Whether a compiled query sets a `timezone:` anywhere in it. */
-function setsTimezone(query: unknown, depth = 0): boolean {
-   if (!query || typeof query !== "object" || depth > 64) return false;
-   if (Array.isArray(query)) {
-      return query.some((q) => setsTimezone(q, depth + 1));
-   }
-   for (const [k, v] of Object.entries(query)) {
-      if (k === "queryTimezone" && typeof v === "string") return true;
-      if (typeof v === "object" && setsTimezone(v, depth + 1)) return true;
-   }
-   return false;
 }
 
 /**

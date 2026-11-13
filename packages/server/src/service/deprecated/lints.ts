@@ -144,14 +144,12 @@ const DEPRECATED_LINTS: readonly {
       lint: persistOptOuts,
       shown: getMaterializeEnabled,
    },
-   // Held back, even with the switch on, until `#(preaggregate)` is read:
-   // until then the warning would point at a spelling that does nothing.
-   // Materialization v2's phase 4 PR 1 sets this to `getMaterializeEnabled`.
-   // The lint stays, so usage is still counted.
+   // `#(preaggregate)` is read, built and served with the switch on, so the
+   // warning points at a spelling that works there.
    {
       feature: "preaggregate_annotation",
       lint: preaggregateAnnotations,
-      shown: () => false,
+      shown: getMaterializeEnabled,
    },
 ];
 

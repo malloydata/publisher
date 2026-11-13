@@ -224,6 +224,7 @@ import {
    type SourceTypeMismatches,
 } from "./materialization/serve/model_serve_shape";
 import type { MaterializePlan } from "./materialization/plan/build_file_generator";
+import { RollupVariantServe } from "./materialization/serve/rollup_variants";
 import {
    ServedCopyServe,
    type ServedCopyProblem,
@@ -442,6 +443,17 @@ export class Model {
       modelPath: () => this.modelPath,
       modelDef: () => this.modelDef,
       serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
+   });
+   /**
+    * The `#(preaggregate)` rollup leg (materialization v2, phase 4): a router
+    * candidate only when `materialize.enabled` is on and a source this model
+    * sees declares a rollup.
+    */
+   private rollupVariants = new RollupVariantServe({
+      modelPath: () => this.modelPath,
+      modelDef: () => this.modelDef,
+      serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
+      catalog: () => this.policy.materializedTables(),
    });
    /**
     * The synthesized pre-aggregation model for this model, compiled once per load
@@ -2795,6 +2807,7 @@ export class Model {
    public setServeDestinationConfig(provider: () => MalloyConfig): void {
       this.storageServe.setServeDestinationConfig(provider);
       this.servedCopy.invalidate();
+      this.rollupVariants.invalidate();
       this.persistedViews.invalidate();
    }
 
@@ -2816,6 +2829,7 @@ export class Model {
          declarationOf,
       );
       this.persistedViews.setContext(packagePath, malloyConfig);
+      this.rollupVariants.setContext(packagePath, malloyConfig);
    }
 
    /**
@@ -2866,6 +2880,19 @@ export class Model {
       );
    }
 
+   /**
+    * Whether the router may try the `#(preaggregate)` rollup leg: a model file,
+    * the materialize switch on, and a rollup declared on a source it sees.
+    */
+   private rollupVariantsEnabled(): boolean {
+      return (
+         this.modelType === "model" &&
+         !this.isNotebook() &&
+         getMaterializeEnabled() &&
+         this.rollupVariants.hasRollups()
+      );
+   }
+
    /** Compile the served copy now, when it is enabled, so its warnings exist. */
    public async prepareServedCopy(): Promise<void> {
       if (!this.servedCopyEnabled()) return;
@@ -2900,6 +2927,7 @@ export class Model {
    public invalidateServeShapeCache(): void {
       this.storageServe.invalidateServeShapeCache();
       this.servedCopy.invalidate();
+      this.rollupVariants.invalidate();
       this.persistedViews.invalidate();
    }
 
@@ -2909,14 +2937,19 @@ export class Model {
       // but only the served copy may read it: the serve shape would rebuild
       // the source over a table that already applied its definition.
       const materialized = this.materializeSourceIDs;
-      // A persisted view's table holds the view's result, not a source's
-      // rows: only the view leg reads it.
+      // A persisted view's table holds the view's result, and a
+      // `#(preaggregate)` rollup's its partials, not a source's rows: only
+      // their own legs read them.
       const views = this.persistedViews.buildSourceIDs();
+      const rollups = this.rollupVariants.buildSourceIDs(bindings);
       const others =
-         views.size === 0
+         views.size === 0 && rollups.size === 0
             ? bindings
             : bindings.filter(
-                 (b) => !(b.sourceIDs ?? []).some((id) => views.has(id)),
+                 (b) =>
+                    !(b.sourceIDs ?? []).some(
+                       (id) => views.has(id) || rollups.has(id),
+                    ),
               );
       this.storageServe.setServeBindings(
          materialized.size === 0
@@ -2926,6 +2959,7 @@ export class Model {
               ),
       );
       this.servedCopy.setBindings(others);
+      this.rollupVariants.setBindings(bindings);
       this.persistedViews.setBindings(bindings);
    }
 
@@ -3317,6 +3351,9 @@ export class Model {
                storageRoutingPossible,
                servedCopyPossible,
                preaggServeMaterializer,
+               ...(this.rollupVariantsEnabled()
+                  ? { rollupVariantsFor: runnable }
+                  : {}),
                ...(this.persistedViewsEnabled()
                   ? { persistedViewsFor: runnable }
                   : {}),
@@ -3830,6 +3867,7 @@ export class Model {
          modelPath: this.modelPath,
          storageServe: this.storageServe,
          servedCopy: this.servedCopy,
+         rollupVariants: this.rollupVariants,
          persistedViews: this.persistedViews,
          rollupPlans: () => this.preaggregateRollupPlans,
          modelDef: () => this.modelDef,

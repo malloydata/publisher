@@ -33,9 +33,9 @@ annotations:
 
 - `deprecated-persist-opt-out`, one per source that declares `#@ -persist`. Until that release it
   shows only with `PUBLISHER_MATERIALIZE` on.
-- `deprecated-preaggregate-annotation`, one per measure that declares `#@ preaggregate`. **There is
-  no warning yet**, even with the switch on: it is held back until `#(preaggregate)` is read
-  (phase 4), so it never points at a spelling that does nothing. `#@ preaggregate` keeps working.
+- `deprecated-preaggregate-annotation`, one per measure that declares `#@ preaggregate`. Until that
+  release it shows only with `PUBLISHER_MATERIALIZE` on, where `#(preaggregate)` is read, built and
+  served. `#@ preaggregate` keeps working.
 
 Each names the source (`subject`) and the file that declares it (`model`). A source that extends or
 imports an annotated one is not reported again. Neither warning changes what the package builds or
@@ -294,8 +294,8 @@ warehouse. Callers keep the same source names.
 
 ### `#@ preaggregate`
 
-**Deprecated. The v2 form is not available yet (phase 4).** `#@ preaggregate` keeps working, and
-there is no deprecation warning for it yet; keep writing it until `#(preaggregate)` ships. The v2 spelling takes the grain as a list:
+**Deprecated.** With `PUBLISHER_MATERIALIZE` on, write `#(preaggregate)` on the measure; `#@ preaggregate`
+keeps working, with a deprecation warning while the switch is on. The v2 spelling takes the grain as a list:
 
 ```malloy
 // v1, works today
@@ -304,28 +304,30 @@ source: orders is duckdb.table('data/orders.parquet') extend {
   measure: revenue is amount.sum()
 }
 
-// v2, phase 4: not read yet
+// v2, with PUBLISHER_MATERIALIZE on
 source: orders is duckdb.table('data/orders.parquet') extend {
   #(preaggregate) grain=["category", "order_day"]
   measure: revenue is amount.sum()
 }
 ```
 
-Phase 4 settles the v2 forms of `namespace=` and `storage=`, rollups over a `storage=` base, and
-inherited measures. A `#(preaggregate)` written today is not read.
+`#(preaggregate)` keeps `namespace=` and `storage=`, builds a rollup over a `storage=` base, and
+belongs to the source that writes it, so an extension or an import does not repeat it. With the
+switch off it is not read. [preaggregation.md](preaggregation.md#preaggregate-materialization-v2-behind-publisher_materialize)
+lists where it differs from `#@ preaggregate`.
 
 ### Not available yet
 
 Each of these is a later pull request. The warning text names the reason when it applies.
 
-| v2 form                                                                      | Status                                                               |
-| ---------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| Serving a colocated `#(materialize)` table                                   | Phase 3. It builds, and queries are computed live                    |
-| `inline=` on a join_many or join_cross                                       | Phase 4. Not built; `materialize-not-built`                          |
-| The `name=` view, and a materialized extension built from its parent's table | Phase 3                                                              |
-| A stored computed dimension under a query's own `timezone:`                  | Answered live today, since the build computed it in the default zone |
-| `#(preaggregate)`, and routing a persisted view (`#@ persist` on a view)     | Phase 4                                                              |
-| Generations, as-of reads, and the control plane's promote and cleanup        | Phase 5                                                              |
+| v2 form                                                                        | Status                                                               |
+| ------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| Serving a colocated `#(materialize)` table                                     | Phase 3. It builds, and queries are computed live                    |
+| `inline=` on a join_many or join_cross                                         | Phase 4. Not built; `materialize-not-built`                          |
+| The `name=` view, and a materialized extension built from its parent's table   | Phase 3                                                              |
+| A stored computed dimension under a query's own `timezone:`                    | Answered live today, since the build computed it in the default zone |
+| Routing a persisted view (`#@ persist` on a view), or a named view to a rollup | Phase 4                                                              |
+| Generations, as-of reads, and the control plane's promote and cleanup          | Phase 5                                                              |
 
 ## Addresses: what moves once
 
@@ -356,7 +358,7 @@ it. The build plan, the manifest and reuse all key on it.
   `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` are read at startup. Workers that disagree plan
   different sources or compute different addresses for one source.
 - **Read warning codes as open strings.** This page adds `deprecated-persist-opt-out`, and reserves
-  `deprecated-preaggregate-annotation` (not emitted until phase 4), beside `materialize-not-built`,
+  `deprecated-preaggregate-annotation` (with the switch on), beside `materialize-not-built`,
   `served-copy-not-served`, `materialization-destination-missing` and
   `materialization-connection-cannot-hold-table`. None is an error, and the package loads.
 - **A rolling window deletes as well as appends.** An incremental refresh of a source with a
