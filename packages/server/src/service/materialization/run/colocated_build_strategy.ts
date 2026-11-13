@@ -8,10 +8,7 @@ import { recordSourceBuildDuration } from "../../../materialization_metrics";
 import { errMessage } from "../../../utils";
 import { quoteRenameTarget, quoteTablePath } from "../../quoting";
 import { storedColumnsOfOutput } from "../stored_column_types";
-import {
-   capturedNativeSchema,
-   NATIVE_SCHEMA_ROW_LIMIT,
-} from "./colocated_native_types";
+import { capturedNativeSchema } from "./colocated_native_types";
 import { ManifestEntry } from "../types";
 import type { BuildStrategy, ColocatedBuildRequest } from "./build_strategy";
 import {
@@ -138,11 +135,8 @@ export class ColocatedCtasStrategy
       // never narrows one (known limitation 12). Captured on every build: a
       // `#(materialize)` table records no other schema.
       const nativeSchema = await capturedNativeSchema({
-         run: (sql) =>
-            connection.runSQL(sql, {
-               ...runOptions,
-               rowLimit: NATIVE_SCHEMA_ROW_LIMIT,
-            }),
+         run: (sql, options) =>
+            connection.runSQL(sql, { ...runOptions, ...options }),
          physicalTableName,
          dialect,
          sourceName: persistSource.name,

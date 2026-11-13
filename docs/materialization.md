@@ -492,9 +492,11 @@ value is narrowed: a DuckDB `UHUGEINT` past 2^127 − 1 is read as `UHUGEINT`, a
 and is not touched. A column no cast reads exactly is left out per query: a query that reads it is
 answered live, every other query still reads the table. That is a column stored as a float, whose
 digits are already gone; a colocated column whose warehouse type Malloy does not read as a big
-integer, such as the `numeric` Postgres stores a sum of `BIGINT`s as; and a colocated column whose
-type its build did not record (a table built before this, or a manifest whose producer does not
-record it). Served never exceeds live: on a source whose live answer itself rounds such values
+integer, such as the `numeric` Postgres stores a sum of `BIGINT`s as; a MySQL integer column, since
+MySQL's `CAST` names no integer type; and a colocated column whose type its build did not record (a
+table built before this, a manifest whose producer does not record it, or an unqualified table name
+the warehouse's `information_schema` finds in more than one schema, where the build cannot tell
+which table it wrote). Served never exceeds live: on a source whose live answer itself rounds such values
 (Postgres returns its rows through JSON), a `storage=` table reads the column as a plain number,
 which rounds the same way, and a colocated one reads it through Postgres's own `bigint` type, on
 live's own path ([known limitation 12](materialization-v2-plan.md#known-limitations-to-revisit)).

@@ -15,9 +15,12 @@
  * and answers a column it has no type for live.
  *
  * One catalog read per dialect: DuckDB's `DESCRIBE`, Postgres's
- * `format_type`, and `information_schema.columns` for the rest. A read that
- * fails or finds nothing captures nothing: the build stands, and the served
- * copy answers the table's big-integer columns live.
+ * `format_type`, and `information_schema.columns` for the rest, read in the
+ * table's own catalog when its name gives one. A read that fails, finds
+ * nothing, or finds the name in more than one schema (an unqualified name
+ * matches a table of that name in every schema `information_schema` shows)
+ * captures nothing: the build stands, and the served copy answers the
+ * table's big-integer columns live.
  */
 
 import { logger } from "../../../logger";
@@ -64,12 +67,19 @@ function informationSchemaType(row: Record<string, unknown>): string {
    return type;
 }
 
-/** The catalog query for a table's columns, and how to read its rows. */
+/**
+ * The catalog query for a table's columns, how to read its rows, and, for a
+ * read that can match more than one table, which table a row describes.
+ */
 function catalogRead(
    physicalTableName: string,
    dialect: string,
 ):
-   | { sql: string; read: (row: Record<string, unknown>) => NativeColumn }
+   | {
+        sql: string;
+        read: (row: Record<string, unknown>) => NativeColumn;
+        tableOf?: (row: Record<string, unknown>) => string;
+     }
    | undefined {
    const quoted = quoteTablePath(physicalTableName, dialect);
    const parts = physicalTableName.split(".");
@@ -111,21 +121,46 @@ function catalogRead(
             }),
          };
       }
-      default:
+      default: {
+         // A three-part name's catalog (Snowflake's or SQL Server's database,
+         // Trino's or Databricks' catalog) holds its own `information_schema`;
+         // unqualified, the view is the session's, where a table of the same
+         // schema and name would be read instead.
+         const catalog =
+            parts.length > 2
+               ? `${quoteTablePath(parts.slice(0, -2).join("."), dialect)}.`
+               : "";
+         // Trino's `information_schema.columns` has no precision columns: its
+         // `data_type` carries them (`decimal(38,0)`).
+         const precision =
+            dialect === "trino" || dialect === "presto"
+               ? ""
+               : ", numeric_precision, numeric_scale";
+         // MySQL resolves an unqualified name in the connection's database,
+         // and its `information_schema` shows every database's tables.
+         const schemaFilter = schema
+            ? ` AND lower(table_schema) = lower(${sqlString(schema)})`
+            : dialect === "mysql"
+              ? " AND table_schema = DATABASE()"
+              : "";
          return {
             sql:
-               "SELECT column_name, data_type, numeric_precision, numeric_scale " +
-               "FROM information_schema.columns " +
-               `WHERE lower(table_name) = lower(${sqlString(table)})` +
-               (schema
-                  ? ` AND lower(table_schema) = lower(${sqlString(schema)})`
-                  : "") +
+               "SELECT table_catalog, table_schema, table_name, column_name, data_type" +
+               precision +
+               ` FROM ${catalog}information_schema.columns` +
+               ` WHERE lower(table_name) = lower(${sqlString(table)})` +
+               schemaFilter +
                " ORDER BY ordinal_position",
             read: (r) => ({
                name: String(field(r, "column_name")),
                type: informationSchemaType(r),
             }),
+            tableOf: (r) =>
+               ["table_catalog", "table_schema", "table_name"]
+                  .map((k) => String(field(r, k)))
+                  .join("."),
          };
+      }
    }
 }
 
@@ -134,8 +169,14 @@ function catalogRead(
  * types, or undefined when the catalog read fails or finds none.
  */
 export async function capturedNativeSchema(args: {
-   /** Runs one SQL statement on the table's own connection, every row back. */
-   run: (sql: string) => Promise<{ rows: unknown[] }>;
+   /**
+    * Runs one SQL statement on the table's own connection, with the row limit
+    * given (a connection's own default can be as few as ten rows).
+    */
+   run: (
+      sql: string,
+      options: { rowLimit: number },
+   ) => Promise<{ rows: unknown[] }>;
    physicalTableName: string;
    dialect: string;
    sourceName: string;
@@ -143,8 +184,23 @@ export async function capturedNativeSchema(args: {
    const read = catalogRead(args.physicalTableName, args.dialect);
    if (!read) return undefined;
    try {
-      const result = await args.run(read.sql);
-      const columns = (result.rows as Record<string, unknown>[])
+      const result = await args.run(read.sql, {
+         rowLimit: NATIVE_SCHEMA_ROW_LIMIT,
+      });
+      const rows = result.rows as Record<string, unknown>[];
+      const tables = new Set(read.tableOf ? rows.map(read.tableOf) : []);
+      if (tables.size > 1) {
+         logger.warn(
+            "A colocated table's name matched more than one table in the warehouse's catalog; its big-integer columns are answered live",
+            {
+               sourceName: args.sourceName,
+               physicalTableName: args.physicalTableName,
+               tables: [...tables],
+            },
+         );
+         return undefined;
+      }
+      const columns = rows
          .map(read.read)
          .filter((c) => c.name !== "" && c.type !== "");
       if (columns.length > 0) return columns;

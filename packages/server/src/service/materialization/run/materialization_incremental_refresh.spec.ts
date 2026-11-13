@@ -5,6 +5,7 @@ import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import { BuildInstruction, LedgerEntry } from "../types";
+import { NATIVE_SCHEMA_ROW_LIMIT } from "./colocated_native_types";
 import { indexCallerLedger } from "./incremental_build";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
@@ -228,6 +229,20 @@ describe("buildOneSource: incremental refresh", () => {
          strategy: "range_replace",
          sourceEntityId: "abcdef1234567890",
       });
+   });
+
+   it("reads a delta's table types past runSQL's default row limit, as a full build does", async () => {
+      // DuckDB's runSQL returns ten rows unless told otherwise, so a catalog
+      // read under it records a wide table's first ten columns only, and the
+      // rest of its big-integer columns would answer live after every delta.
+      const runSQL = probeAwareRunSQL();
+      const { context } = incrementalContext({});
+      await callBuildOneSource({ runSQL, context });
+      const read = runSQL
+         .getCalls()
+         .find((c) => String(c.args[0]).includes("pg_attribute"));
+      expect(read).toBeDefined();
+      expect(read?.args[1]?.rowLimit).toBe(NATIVE_SCHEMA_ROW_LIMIT);
    });
 
    it("re-seeds the ONE source whose instruction says so", async () => {

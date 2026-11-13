@@ -695,7 +695,8 @@ export interface BigIntegerReadOptions {
  * A colocated column's captured warehouse type, as the cast that reads it
  * exactly, when Malloy types that type as a `bigint` number (`bigint`,
  * `NUMBER(38,0)`, `decimal(38,0)`, `UHUGEINT`); undefined for any other type
- * (`numeric`, read as a float), or none captured: no cast keeps both the
+ * (`numeric`, read as a float), a type the dialect's CAST does not take by
+ * that name (MySQL's `bigint`), or none captured: no cast keeps both the
  * value and live's representation, so the column is left out.
  */
 function exactWarehouseCast(
@@ -703,6 +704,12 @@ function exactWarehouseCast(
    nativeType: string | undefined,
 ): string | undefined {
    if (typeof dialect !== "string" || !nativeType?.trim()) return undefined;
+   // MySQL's CAST names no integer type (`CAST(x AS bigint)` is a syntax
+   // error; its SIGNED and UNSIGNED are not numbers to Malloy), so only a
+   // DECIMAL is a type the column can be read through.
+   if (dialect === "mysql" && !/^decimal\b/i.test(nativeType.trim())) {
+      return undefined;
+   }
    try {
       return isBigIntegerField(
          getDialect(dialect).sqlTypeToMalloyType(nativeType),

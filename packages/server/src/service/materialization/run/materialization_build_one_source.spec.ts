@@ -190,7 +190,7 @@ describe("buildOneSource", () => {
          'ALTER TABLE "MY_SCHEMA"."orders_v1" RENAME TO "MY_SCHEMA"."orders_v1_oabcdef12345"',
          'ALTER TABLE "MY_SCHEMA"."orders_v1_abcdef123456" RENAME TO "MY_SCHEMA"."orders_v1"',
          'DROP TABLE IF EXISTS "MY_SCHEMA"."orders_v1_oabcdef12345"',
-         "SELECT column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders_v1') AND lower(table_schema) = lower('MY_SCHEMA') ORDER BY ordinal_position",
+         "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders_v1') AND lower(table_schema) = lower('MY_SCHEMA') ORDER BY ordinal_position",
       ]);
       // The manifest keeps the logical name the control plane sent.
       expect(entry.physicalTableName).toBe("MY_SCHEMA.orders_v1");

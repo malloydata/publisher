@@ -566,7 +566,7 @@ describe("bigIntegerReads (known limitation 12)", () => {
          ["standardsql", "INT64"],
          // Past BIGINT: never narrowed to it.
          ["sqlserver", "decimal(38,0)"],
-         ["mysql", "bigint unsigned"],
+         ["mysql", "decimal(38,0)"],
       ] as const) {
          expect(colocated(dialect, nativeType)).toEqual([
             { column: "id", castTo: nativeType },
@@ -583,6 +583,11 @@ describe("bigIntegerReads (known limitation 12)", () => {
       expect(colocated("standardsql", "BIGNUMERIC")).toEqual([
          { column: "id" },
       ]);
+      // MySQL's CAST takes no integer type by name (only SIGNED or
+      // UNSIGNED, which Malloy does not read as a number): a cast to the
+      // captured `bigint` is a syntax error, so the column answers live.
+      expect(colocated("mysql", "bigint")).toEqual([{ column: "id" }]);
+      expect(colocated("mysql", "bigint unsigned")).toEqual([{ column: "id" }]);
       // No type captured (a table built before the capture, a host manifest
       // without it): nothing is known to be exact.
       expect(colocated("postgres", undefined)).toEqual([{ column: "id" }]);

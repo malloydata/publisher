@@ -43,8 +43,9 @@ now reads from the warehouse's catalog, so no value is narrowed (a DuckDB `UHUGE
 `primary_key:` and the author's own measures over it all keep serving. A column no cast reads
 exactly is left out per query and answered live: one stored as a float, a colocated column whose
 warehouse type Malloy does not read as a big integer (Postgres stores a sum of `BIGINT`s as
-`numeric`), and a colocated column whose build did not record its type (a table built before this
-release). On Postgres, whose live answer itself rounds such values (its rows come back through
+`numeric`; a MySQL integer, which MySQL's `CAST` cannot name), and a colocated column whose build did
+not record its type (a table built before this release, or an unqualified name the warehouse's
+`information_schema` finds in more than one schema). On Postgres, whose live answer itself rounds such values (its rows come back through
 JSON), served equals live, never more precise. `count()`, 32-bit integers and decimals are
 unchanged.
 
