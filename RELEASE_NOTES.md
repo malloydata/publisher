@@ -21,6 +21,23 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Materialization logs no longer carry watermark values or driver messages
+
+A materialization log line no longer carries a value from the data or a driver's error message, which
+can quote the build's SQL or a row value. The detail is still on the run's record. Log pipelines that
+read these fields should switch to the codes:
+
+- "Rebuilding an incremental source in full" and "Skipping an incremental source's refresh" drop
+  `reason` (it could name a watermark boundary) and keep `reasonCode`. "Applied an incremental delta"
+  drops `rangeStart` and `rangeEnd`. The boundary reached is on the manifest entry's `ledger`.
+- "Could not read a covered_through boundary after a full rebuild" carries `errorCode`, not `error`.
+- "Chained storage build could not reuse the parent table" carries `code` (a driver's code,
+  Publisher's error kind or the error's class), not `reason`; the cast fallback and the two rollback
+  warnings carry `errorCode` or `causeCode`.
+- "Materialization run failed" and "Materialization run cancelled", logged for a run failure that
+  `materialization.run.finished` did not already report, carry `code` and, for a failure, the
+  stack's frames without its message line.
+
 ## [Unreleased] — (BREAKING) Materialization build metrics: one build counter, and structured run and build events
 
 Three materialization metrics are replaced, and one loses a label. Dashboards or alerts on the old
