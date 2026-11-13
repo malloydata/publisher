@@ -36,6 +36,51 @@ export function isPublisherResizeMessage(
 }
 
 /**
+ * postMessage `type` an embedded data app's runtime emits to its host frame
+ * after each query, in the in-app viewer only (never on a hosted `/apps/`
+ * embed surface). Payload shape is {@link PublisherQueryMessage}. A host uses
+ * it to say what the reader is looking at, e.g. to a chat beside the app.
+ */
+export const PUBLISHER_QUERY_MESSAGE_TYPE = "publisher:query";
+
+/** Query report posted by an embedded data app's publisher.js runtime. */
+export interface PublisherQueryMessage {
+   type: typeof PUBLISHER_QUERY_MESSAGE_TYPE;
+   environment: string;
+   package: string;
+   /** Model path the query ran against, as the page passed it. */
+   model: string;
+   /** The Malloy query text, when the page sent one. */
+   query?: string;
+   /** A named source and view, when the page ran one instead of query text. */
+   sourceName?: string;
+   queryName?: string;
+   /** The filters and givens the page applied. */
+   filterParams?: Record<string, unknown>;
+   givens?: Record<string, unknown>;
+   /** Rows returned, when the query succeeded and returned rows. */
+   rowCount?: number;
+   /** The first rows (at most 20, and at most 16,000 characters serialized). */
+   rows?: Record<string, unknown>[];
+   /** The error message, when the query failed. */
+   error?: string;
+}
+
+/** Type guard for a {@link PublisherQueryMessage} arriving via postMessage. */
+export function isPublisherQueryMessage(
+   data: unknown,
+): data is PublisherQueryMessage {
+   if (typeof data !== "object" || data === null) return false;
+   const m = data as Record<string, unknown>;
+   return (
+      m.type === PUBLISHER_QUERY_MESSAGE_TYPE &&
+      typeof m.environment === "string" &&
+      typeof m.package === "string" &&
+      typeof m.model === "string"
+   );
+}
+
+/**
  * Derive the Publisher data origin (where static package files are served)
  * from the configured API base URL by stripping the trailing `/api/v0`.
  *

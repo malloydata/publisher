@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+   isPublisherQueryMessage,
    isPublisherResizeMessage,
    packageFileUrl,
    PUBLISHER_RESIZE_MESSAGE_TYPE,
@@ -86,5 +87,28 @@ describe("isPublisherResizeMessage", () => {
    it("rejects null / non-objects", () => {
       expect(isPublisherResizeMessage(null)).toBe(false);
       expect(isPublisherResizeMessage("publisher:resize")).toBe(false);
+   });
+});
+
+describe("isPublisherQueryMessage", () => {
+   const report = {
+      type: "publisher:query",
+      environment: "env",
+      package: "pkg",
+      model: "sales.malloy",
+      rowCount: 1,
+      rows: [{ revenue: 120 }],
+   };
+   it("accepts a report", () => {
+      expect(isPublisherQueryMessage(report)).toBe(true);
+   });
+   it("rejects a resize message and a report missing its target", () => {
+      expect(
+         isPublisherQueryMessage({ type: "publisher:resize", height: 1 }),
+      ).toBe(false);
+      expect(isPublisherQueryMessage({ ...report, model: undefined })).toBe(
+         false,
+      );
+      expect(isPublisherQueryMessage(null)).toBe(false);
    });
 });
