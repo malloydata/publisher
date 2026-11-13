@@ -125,7 +125,8 @@ export type RouteDecision<Extra> =
         /**
          * Set when this candidate answered past an `entry_point` veto (it
          * {@link Variant.keepsContracts}): the query's entry point is gated, so
-         * governing the answer must find and enforce that gate on it.
+         * governing the answer must enforce exactly the live entry point's
+         * gates on it.
          */
         pastEntryPointGate?: true;
      }

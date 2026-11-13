@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Security: a stored answer past a gate must enforce every gate live does
+
+Behind `PUBLISHER_MATERIALIZE` and `PUBLISHER_MATERIALIZE_GATED_SOURCES` (both off by default). When a query whose entry point carries a gate is answered from a stored copy (the served copy of a `#(materialize)` source, or a persisted view), Publisher re-proves the gate on the stored answer's own compile before running it. That check passed as soon as it found any one gate enforced there, so a stored form that kept an `#(authorize)` lock but lost an `#(access_filter)`, or lost an inherited gate, would have answered rows the live query refuses. It now requires the gates enforced on the stored answer to be exactly the live entry point's, every `#(authorize)` and `#(access_filter)`, own and inherited, by route and expression. Any difference, or a live gate set it cannot read, denies the query with the usual opaque 403. The stored forms shipped today write every gate onto their compile, so a correctly built package answers as before. Gates hold only behind the authenticating gateway that sets the givens ([docs/security-posture.md](docs/security-posture.md#operating-model-a-microservice-behind-your-gateway)).
+
 ## [Unreleased] — In development: the inline uniqueness check skips an unchanged table, and `#(carries)` reads the served copy
 
 Two materialization v2 limitations lifted, both behind `PUBLISHER_MATERIALIZE` (off by default).
