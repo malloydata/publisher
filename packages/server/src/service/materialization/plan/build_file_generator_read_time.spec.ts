@@ -247,15 +247,26 @@ describe("P2: what is refused rather than left out", () => {
    }
 
    it(
-      "refuses a given term written on a source this one extends",
+      "refuses a given term written on a base in another file",
       async () => {
-         expect(
-            await refusal(`${HEAD}
+         const pkg = await packages.create({
+            "b.malloy": `${HEAD}
 source: scoped is raw extend { where: org_id = $ORG_ID }
+`,
+            "m.malloy": `##! experimental { givens }
+import "b.malloy"
 #(materialize) storage="lake"
 source: orders is scoped extend { dimension: big is amount > 10 }
-`),
-         ).toContain("not on this source's own declaration");
+`,
+         });
+         const c = await compilePackageBuildPlan(pkg);
+         expect(Object.keys(c.materializePlans ?? {})).toEqual([]);
+         expect(
+            (c.annotationFindings ?? []).find(
+               (f) =>
+                  f.code === "materialize-not-built" && f.subject === "orders",
+            )?.message,
+         ).toContain("on a source in another file");
       },
       { timeout: 30000 },
    );
@@ -335,11 +346,14 @@ describe("P2: the build copy takes out one source's terms, never another's", () 
    }
 
    it(
-      "keeps another source's given term in a build that joins it, so the gate refuses that build",
+      "keeps another source's given term in a build that joins it: the inlined join is refused",
       async () => {
          // One copy per source: were `a`'s term taken out of `b`'s build too,
          // `b` would store `aa.s` from every caller's `a` rows. The join is
-         // inlined, so `b`'s build reads `a` (a reference join is not built).
+         // inlined, so `b`'s build would read `a` (a reference join is not
+         // built); a given read through an inlined join refuses `b` at plan
+         // (P9), before the eligibility gate that refused it as
+         // `given_in_persisted_query` would see its build.
          const text = `${HEAD}
 #(materialize) storage="lake"
 source: a is raw extend { where: org_id = $ORG_ID }
@@ -354,16 +368,11 @@ source: b is raw -> { select: id, org_id } extend {
          const ids = Object.fromEntries(
             Object.entries(c.sources).map(([id, s]) => [s.name, id]),
          );
-         const bSQL = buildSQLOf(
-            c.sources[ids.b],
-            { entries: {} },
-            c.targets?.[ids.b],
+         expect(ids.b).toBeUndefined();
+         expect(notBuilt(c, "b")).toContain(
+            "inline= names `aa`, through which a given is read",
          );
-         expect(bSQL).toMatch(/"org_id"\s*=\s*1/);
          const { plan } = await computePackageBuildPlan(pkg);
-         expect(plan?.refusedSources?.[ids.b]?.reason).toBe(
-            "given_in_persisted_query",
-         );
          expect(plan?.refusedSources?.[ids.a]).toBeUndefined();
          // `a`'s own build still leaves its term out.
          expect(

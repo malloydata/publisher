@@ -126,6 +126,12 @@ export interface StorageTable {
    origin?: "persist" | "preaggregate";
    tablePath: string;
    freshAsOf?: string;
+   /**
+    * A colocated `#(materialize)` table, which only the served copy reads, on
+    * the source's own connection: reported on the colocated tier, decided by
+    * the served copy as a `storage=` table is.
+    */
+   colocated?: true;
 }
 
 /** A rollup this model's pre-aggregation plans. */
@@ -164,7 +170,11 @@ interface TableState {
    dataAsOf?: string;
    /** For a colocated table: the name the SQL substitutes. */
    tableName?: string;
-   /** For a storage table: the binding. */
+   /**
+    * For a table a stored variant reads through a binding (a `storage=`
+    * table, or a colocated `#(materialize)` table the served copy reads):
+    * the binding.
+    */
    binding?: StorageTable;
    /** For a rollup: its synthesized source name (the composite member). */
    rollupName?: string;
@@ -355,9 +365,9 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
 
    // `storage=`: tried only when the tier was a candidate at all (mode on,
    // bindings and a destination present).
-   const storageTables = tables.filter(
-      (t) => t.tier === "storage" && !t.variant,
-   );
+   // A colocated `#(materialize)` table is the served copy's, decided here
+   // with the storage tier's tables.
+   const storageTables = tables.filter((t) => t.binding && !t.variant);
    let storageAnswered = false;
    if (storageDecision) {
       const read = new Set(
@@ -459,7 +469,12 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    if (!storageAnswered && !rollupAnswered) {
       let answered = false;
       for (const t of tables) {
-         if (t.tier !== "colocated" || t.kind !== "materialized" || t.unbuilt)
+         if (
+            t.tier !== "colocated" ||
+            t.kind !== "materialized" ||
+            t.unbuilt ||
+            t.binding
+         )
             continue;
          if (t.stale) {
             skip(t, "STALE");
@@ -739,7 +754,9 @@ function tablesFor(
             add({ ...storageState(binding, plan, kind, fresh), ...named });
             return;
          }
-         if (input.storageWarned) {
+         // A colocated `#(materialize)` table the served copy was not tried
+         // for: reported as its colocated twin below, never warned.
+         if (input.storageWarned && !binding.colocated) {
             add({
                ...storageState(binding, plan, kind, fresh),
                ...named,
@@ -844,10 +861,10 @@ function storageState(
    fresh: ReadonlySet<string>,
 ): TableState {
    return {
-      key: `storage:${binding.tablePath}`,
+      key: `${binding.colocated ? "colocated" : "storage"}:${binding.tablePath}`,
       ...(plan ? { tableId: plan.sourceEntityId } : {}),
       kind,
-      tier: "storage",
+      tier: binding.colocated ? "colocated" : "storage",
       stale: !fresh.has(binding.tablePath),
       unbuilt: false,
       ...(binding.freshAsOf ? { dataAsOf: binding.freshAsOf } : {}),

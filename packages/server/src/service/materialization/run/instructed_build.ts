@@ -81,6 +81,7 @@ import {
    nameViewKey,
    ownNameTableIn,
    ownViewAtTable,
+   preflightColocatedTableAtName,
    preflightNameView,
    publishNameViews,
    swapDependentsFor,
@@ -647,10 +648,18 @@ export class InstructedBuild {
             }
          } else if (tableAtName) {
             // This package's own view at the name: the table replaces it.
-            const ownView = await ownViewAtTable(
-               tableAtName,
-               nameViewContext(run, connection),
-            );
+            // Colocated, the name is in the author's own warehouse, where
+            // anything this package did not write there fails the source
+            // before it writes (the swap would drop a table it does not own).
+            const ownView = instruction.destination
+               ? await ownViewAtTable(
+                    tableAtName,
+                    nameViewContext(run, connection),
+                 )
+               : await preflightColocatedTableAtName(
+                    tableAtName,
+                    nameViewContext(run, connection),
+                 );
             if (ownView) {
                swapDependents = viewToTableSwap(
                   tableAtName,

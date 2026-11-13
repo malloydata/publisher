@@ -53,20 +53,49 @@ export class InlinedJoinNotUniqueError extends Error {
        * unchecked, and said so rather than claimed a duplicate.
        */
       readonly unchecked = false,
+      /**
+       * Set for a pair table's key check: the level of the path whose key
+       * repeats or is null, 0 for the source's own (`join` is then empty).
+       */
+      readonly pairLevel?: number,
    ) {
       super(
-         unchecked
-            ? `'${sourceName}' is not built: it inlines the join_one '${join}', ` +
-                 `and its build plan carries no uniqueness check for it, so a ` +
-                 `duplicate '${keyColumn}' could not be ruled out. Reload the ` +
-                 `package to plan the check.`
-            : `'${sourceName}' is not built: it inlines the join_one '${join}', ` +
-                 `but the joined source holds a '${keyColumn}' value more than once, ` +
-                 `so a row would be stored once per match. Make '${keyColumn}' ` +
-                 `unique in the joined source, or leave '${join}' out of inline=.`,
+         pairLevel !== undefined
+            ? pairKeyMessage(sourceName, join, keyColumn, unchecked)
+            : unchecked
+              ? `'${sourceName}' is not built: it inlines the join_one '${join}', ` +
+                `and its build plan carries no uniqueness check for it, so a ` +
+                `duplicate '${keyColumn}' could not be ruled out. Reload the ` +
+                `package to plan the check.`
+              : `'${sourceName}' is not built: it inlines the join_one '${join}', ` +
+                `but the joined source holds a '${keyColumn}' value more than once, ` +
+                `so a row would be stored once per match. Make '${keyColumn}' ` +
+                `unique in the joined source, or leave '${join}' out of inline=.`,
       );
       this.name = "InlinedJoinNotUniqueError";
    }
+}
+
+/** {@link InlinedJoinNotUniqueError}'s message for a pair table's key check. */
+function pairKeyMessage(
+   sourceName: string,
+   join: string,
+   keyColumn: string,
+   unchecked: boolean,
+): string {
+   const whose = join
+      ? `the source '${join}' joins through its pair table`
+      : `'${sourceName}' itself`;
+   return unchecked
+      ? `'${sourceName}' is not built: its pair table keys one row flag on ` +
+           `'${keyColumn}' of ${whose}, and its build plan carries no check ` +
+           `of that key, so a repeated or null '${keyColumn}' could not be ` +
+           `ruled out. Reload the package to plan the check.`
+      : `'${sourceName}' is not built: its pair table keys one row flag on ` +
+           `'${keyColumn}' of ${whose}, which holds a value more than once or ` +
+           `a null, so that flag would mark one row where live counts each. ` +
+           `Make '${keyColumn}' unique and never null, or leave that path out ` +
+           `of inline=.`;
 }
 
 /**
@@ -442,6 +471,7 @@ export async function assertInlinedJoinsUnique(
             check.join,
             check.keyColumn,
             true,
+            check.pairLevel,
          );
       }
       const stored = ledger && storedJoin ? await storedJoin(check) : undefined;
@@ -466,6 +496,8 @@ export async function assertInlinedJoinsUnique(
             plan?.sourceName ?? "",
             check.join,
             check.keyColumn,
+            false,
+            check.pairLevel,
          );
       }
       if (ledger) {

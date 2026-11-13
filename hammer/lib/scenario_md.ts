@@ -195,6 +195,11 @@ type Step =
         deleted?: number;
         /** `tables` only: an expected non-200 status, in place of an `Expect:` table. */
         status?: number;
+        /**
+         * `tables` only: how long the listing may take to settle. Re-read until
+         * it matches `expect` or the time is up; the last listing is compared.
+         */
+        withinMs?: number;
         expect?: Table;
      }
    | {
@@ -418,7 +423,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    delete: {},
    reclaim: {},
    destination: {
-      attrs: ["dest", "schema", "snapshots", "files"],
+      attrs: ["dest", "schema", "snapshots", "files", "within"],
       keys: ["deleted", "status"],
    },
    build: {
@@ -768,6 +773,14 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                schema: (attrs.schema as string) || "main",
             };
             const status = firstKey(sec.body, "status");
+            if (attrs.within !== undefined && action !== "tables")
+               throw new Error(
+                  `## Destination ${action}: (within=) applies only to ## Destination tables`,
+               );
+            if (attrs.within !== undefined && status !== undefined)
+               throw new Error(
+                  `## Destination tables: (within=) waits for an Expect: table, not a status:`,
+               );
             if (status !== undefined && action !== "tables")
                throw new Error(
                   `## Destination ${action}: status: applies only to ## Destination tables`,
@@ -788,6 +801,9 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                steps.push({
                   ...base,
                   action,
+                  ...(attrs.within !== undefined
+                     ? { withinMs: parseWithin(attrs.within) }
+                     : {}),
                   expect: requireExpectTable(sec.body, sec.header),
                });
             } else if (action === "drop") {
@@ -1419,6 +1435,18 @@ function parseAge(raw: string | boolean | undefined, what: string): number {
    return Number(m[1]) * unit;
 }
 
+/** `(within=<n>s)` -> milliseconds: a bound of a minute at most, so a listing
+ * that never settles fails in seconds rather than hanging the run. */
+function parseWithin(raw: string | boolean | undefined): number {
+   const m = typeof raw === "string" ? raw.match(/^(\d+)s$/) : null;
+   const ms = m ? Number(m[1]) * 1e3 : NaN;
+   if (!(ms > 0 && ms <= 60_000))
+      throw new Error(
+         `## Destination tables: (within=<n>s) takes 1s to 60s, got ${String(raw)}`,
+      );
+   return ms;
+}
+
 function splitConnTable(arg: string): [string, string] {
    const dot = arg.indexOf(".");
    if (dot < 0) throw new Error(`expected <conn>.<table>, got "${arg}"`);
@@ -1938,28 +1966,39 @@ function compareRows(
    expect: Table,
    actual: Record<string, unknown>[],
 ): void {
+   const mismatch = rowsMismatch(expect, actual);
+   if (mismatch) {
+      assert.fail(`${label}: ${mismatch.check}`, mismatch.detail);
+      return;
+   }
+   assert.ok(`${label}: ${expect.rows.length} row(s) match`, true);
+}
+
+/** The first way `actual` differs from `expect`, or undefined when it matches. */
+function rowsMismatch(
+   expect: Table,
+   actual: Record<string, unknown>[],
+): { check: string; detail: string } | undefined {
    const cols = expect.cols.map((c) => c.name);
    if (expect.rows.length !== actual.length) {
-      assert.fail(
-         `${label}: row count`,
-         `expected ${expect.rows.length} rows, got ${actual.length}: ${JSON.stringify(actual).slice(0, 200)}`,
-      );
-      return;
+      return {
+         check: "row count",
+         detail: `expected ${expect.rows.length} rows, got ${actual.length}: ${JSON.stringify(actual).slice(0, 200)}`,
+      };
    }
    for (let r = 0; r < expect.rows.length; r++) {
       for (let c = 0; c < cols.length; c++) {
          const exp = normalizeCell(expect.rows[r][c]);
          const act = normalizeCell(actual[r]?.[cols[c]]);
          if (JSON.stringify(exp) !== JSON.stringify(act)) {
-            assert.fail(
-               `${label}: row ${r + 1} col ${cols[c]}`,
-               `expected ${JSON.stringify(exp)}, got ${JSON.stringify(act)}`,
-            );
-            return;
+            return {
+               check: `row ${r + 1} col ${cols[c]}`,
+               detail: `expected ${JSON.stringify(exp)}, got ${JSON.stringify(act)}`,
+            };
          }
       }
    }
-   assert.ok(`${label}: ${expect.rows.length} row(s) match`, true);
+   return undefined;
 }
 
 // ─────────────────────────── build helpers ───────────────────────────
@@ -3034,16 +3073,26 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      body,
                   );
                } else if (step.action === "tables") {
-                  const names = await rest.listDestinationTables(
-                     step.dest,
-                     step.schema,
-                  );
-                  compareRows(
-                     assert,
-                     label,
-                     step.expect!,
-                     names.map((name) => ({ name })),
-                  );
+                  const list = async () =>
+                     (
+                        await rest.listDestinationTables(step.dest, step.schema)
+                     ).map((name) => ({ name }));
+                  let names = await list();
+                  // A bounded wait for work the server finishes just after it
+                  // reports a run terminal: re-read until the listing matches
+                  // or the time is up, then compare the last one, so a listing
+                  // that never settles still fails with what it held.
+                  if (step.withinMs !== undefined) {
+                     const deadline = Date.now() + step.withinMs;
+                     while (
+                        rowsMismatch(step.expect!, names) &&
+                        Date.now() < deadline
+                     ) {
+                        await sleep(100);
+                        names = await list();
+                     }
+                  }
+                  compareRows(assert, label, step.expect!, names);
                } else if (step.action === "drop") {
                   const status = await rest.dropDestinationTable(
                      step.dest,
