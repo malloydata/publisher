@@ -15,7 +15,12 @@ import {
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { DataStyles } from "@malloydata/render";
-import { lazyCounter, lazyHistogram, withSpan } from "../telemetry";
+import {
+   lazyCounter,
+   lazyHistogram,
+   withoutMetrics,
+   withSpan,
+} from "../telemetry";
 import {
    recordStorageServeRouting,
    recordV1ServedCopyShadow,
@@ -64,6 +69,7 @@ import {
    NotQueryableError,
    OffSurfaceError,
    PayloadTooLargeError,
+   errorKind,
 } from "../errors";
 import {
    getMaterializeEnabled,
@@ -3263,7 +3269,7 @@ export class Model {
       /**
        * `v1Mode`: how v1 tables serve for this run (default the configured
        * `PUBLISHER_V1_SERVED_COPY`); `shadowRun`: this run is a shadow
-       * comparison (see shadowCompare), so it records no query metrics and
+       * comparison (see shadowCompare, which runs it with no metrics), so it
        * schedules no comparison of its own.
        */
       options: { v1Mode?: V1ServedCopyMode; shadowRun?: boolean } = {},
@@ -3539,7 +3545,7 @@ export class Model {
             },
             { recordMetrics: false },
          );
-         if (!options.shadowRun) recordRoutingDecision(route);
+         recordRoutingDecision(route);
          answer = routedAnswer(route);
          if (answer.routedRunnable) runnable = answer.routedRunnable;
       } catch (error) {
@@ -3962,13 +3968,10 @@ export class Model {
          connection: queryResults.connectionName,
          servedFrom: servedFromOf(answer),
       });
-      // A shadow comparison's run is not a query anyone asked for.
-      if (!options.shadowRun) {
-         queryExecutionHistogram().record(executionTime, metricAttributes);
-      }
+      queryExecutionHistogram().record(executionTime, metricAttributes);
       // Only when reported, so the counter is absent rather than a false zero.
       const queryCostBytes = queryResults.runStats?.queryCostBytes;
-      if (queryCostBytes !== undefined && !options.shadowRun) {
+      if (queryCostBytes !== undefined) {
          queryScannedBytesCounter().add(queryCostBytes, metricAttributes);
       }
       // Never fails the query: an unreadable prepared query yields a record
@@ -3997,9 +4000,7 @@ export class Model {
       }
       // Counted once the run answered, so a variant whose run failed and fell
       // back live counts as skipped (`run_failed`), not used.
-      if (!options.shadowRun) {
-         recordVariantRouting(answer.considered, answer.runFailed);
-      }
+      recordVariantRouting(answer.considered, answer.runFailed);
       const path = await queryPathFor(this.servingHost(servedCopy), answer, {
          // The author's own compile: its names, and no grafted gate filter.
          runnable: liveRunnable ?? runnable,
@@ -4094,11 +4095,16 @@ export class Model {
          queryName: request.queryName,
       };
       try {
-         const cut = await this.runQueryResults(
-            shadowRunAudit(),
-            { ...request, abortSignal: undefined },
-            privileges,
-            { v1Mode: "on", shadowRun: true },
+         // No metric of the caller's query is counted again (its security,
+         // governance, routing and query metrics belong to the run that
+         // answered).
+         const cut = await withoutMetrics(() =>
+            this.runQueryResults(
+               shadowRunAudit(),
+               { ...request, abortSignal: undefined },
+               privileges,
+               { v1Mode: "on", shadowRun: true },
+            ),
          );
          const outcome = shadowOutcome(today, {
             rows: cut.compactResult,
@@ -4114,14 +4120,23 @@ export class Model {
             ...where,
             ...(outcome.detail ? { detail: outcome.detail } : {}),
             ...(outcome.outcome === "live"
-               ? { skipped: cut.path?.considered ?? [] }
+               ? {
+                    skipped: (cut.path?.considered ?? []).map((c) => ({
+                       kind: c.kind,
+                       outcome: c.outcome,
+                       reason: c.reason,
+                       code: c.code,
+                    })),
+                 }
                : {}),
          });
       } catch (err) {
          recordV1ServedCopyShadow("error");
+         // The kind only: an error's text can quote the statement, givens
+         // included, back.
          logger.info("v1 served copy shadow: error", {
             ...where,
-            error: err instanceof Error ? err.message : String(err),
+            errorKind: errorKind(err),
          });
       }
    }
