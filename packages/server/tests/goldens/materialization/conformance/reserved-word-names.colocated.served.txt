@@ -17,6 +17,6 @@ source: `order` is duckdb.virtual('ddeab0253bd9657798b023c29fabb35badff349b5ffe3
   internal rename:
     order__stored is order
   dimension:
-    order is order__stored::"HUGEINT"
+    order is order__stored::"BIGINT"
   measure: `group` is amt.sum()
 }

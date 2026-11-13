@@ -22,7 +22,7 @@ source: cust is duckdb.virtual('d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc3
   internal rename:
     id__stored is id
   dimension:
-    id is id__stored::"HUGEINT"
+    id is id__stored::"BIGINT"
   primary_key: id
 }
 
@@ -32,7 +32,7 @@ source: order_facts is duckdb.virtual('f68477c5c4c6c8217554876309cf1fe3d9adc67f7
     id__stored is id
     customer_id__stored is customer_id
   dimension:
-    id is id__stored::"HUGEINT"
-    customer_id is customer_id__stored::"HUGEINT"
+    id is id__stored::"BIGINT"
+    customer_id is customer_id__stored::"BIGINT"
   join_one: c is cust with customer_id
 }

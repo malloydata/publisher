@@ -15,7 +15,7 @@ source: cust_b is duckdb.virtual('820d6af004bafcff7762f225f8837cdf222b2d7dfa9662
   internal rename:
     id__stored is id
   dimension:
-    id is id__stored::"HUGEINT"
+    id is id__stored::"BIGINT"
   primary_key: id
 }
 

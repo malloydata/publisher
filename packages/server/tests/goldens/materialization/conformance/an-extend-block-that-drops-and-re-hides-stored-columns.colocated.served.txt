@@ -22,7 +22,7 @@ source: dropped is duckdb.virtual('8c98767eac2f2caa728cf31081e45f40c637955c2a62d
   internal rename:
     id__stored is id
   dimension:
-    id is id__stored::"HUGEINT"
+    id is id__stored::"BIGINT"
   except: status
   measure: total is amount.sum()
 }
@@ -34,7 +34,7 @@ source: rehidden is duckdb.virtual('d14b4a5efb2857d27e71fe2eaae8c520667149250685
   internal rename:
     id__stored is id
   dimension:
-    id is id__stored::"HUGEINT"
+    id is id__stored::"BIGINT"
   measure: n is count()
   measure: west_n is count() { where: region_raw = 'west' }
 }
