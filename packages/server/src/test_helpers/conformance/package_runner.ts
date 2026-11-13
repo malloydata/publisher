@@ -27,7 +27,12 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../service/access_record";
-import { __setPackageLoadPoolForTests } from "../../package_load/package_load_pool";
+import {
+   __setPackageLoadPoolForTests,
+   getPackageLoadWorkerCount,
+   PackageLoadPool,
+   packageLoadWorkerData,
+} from "../../package_load/package_load_pool";
 import { Environment } from "../../service/environment";
 import { parsePackageName } from "../../service/identity";
 import { QueryPrivileges } from "../../service/model_query_request";
@@ -104,13 +109,41 @@ export function withSwitch(materialize: Switch): () => void {
 }
 
 /**
- * Drop the package-load worker pool, so the next load spawns workers with the
- * settings installed then. A worker reads its settings once, at spawn, and the
- * build plan (with `#(materialize)` in it or not) is computed in the worker:
- * a pool another spec file spawned would plan with that file's settings.
+ * The pools {@link freshLoadPool} hands out, kept for the rest of the run. One
+ * per distinct set of worker settings: the corpus switches between a handful
+ * (`off`, `on`, `cutover`, a case's own env), never more.
+ */
+const reusablePools = new Set<PackageLoadPool>();
+
+/**
+ * Make the package-load pool one whose workers run under the settings
+ * installed now. A worker reads its settings once, at spawn, and the build
+ * plan (with `#(materialize)` in it or not) is computed in the worker, so a
+ * pool spawned under another switch would plan with that switch's settings.
+ *
+ * A pool whose worker was spawned under these exact settings, or that has
+ * spawned none yet, is reused rather than replaced. Replacing it spawned a new worker per case, about 220 a
+ * component run, and Bun 1.3 keeps most of a terminated worker's memory: about
+ * 78 MB of committed memory each on Windows, which drove the run past the
+ * machine's commit limit and killed it (exit 3 or 9, no crash report).
  */
 export async function freshLoadPool(): Promise<void> {
-   await __setPackageLoadPoolForTests(null);
+   const wanted = packageLoadWorkerData();
+   let pool = [...reusablePools].find((candidate) => {
+      if (candidate.isShutDownForTests) {
+         reusablePools.delete(candidate);
+         return false;
+      }
+      // A pool that has spawned nothing yet spawns under the settings of its
+      // first load, as a new one would.
+      const spawnedWith = candidate.workerDataForTests;
+      return spawnedWith === undefined || Bun.deepEquals(spawnedWith, wanted);
+   });
+   if (!pool) {
+      pool = new PackageLoadPool(getPackageLoadWorkerCount());
+      reusablePools.add(pool);
+   }
+   await __setPackageLoadPoolForTests(pool, reusablePools);
 }
 
 /** A package loaded, built and bound; queries run against it. */

@@ -278,6 +278,19 @@ function resolveWorkerScript(): URL {
    return pathToFileURL(tsCandidate);
 }
 
+/** What a package-load worker is spawned with. */
+export interface WorkerData {
+   schemaCacheBytes: number;
+   settings: ReturnType<Settings["toWorkerData"]>;
+}
+
+/** The workerData a worker spawned now would get. */
+export function packageLoadWorkerData(
+   schemaCacheBytes = getPackageLoadSchemaCacheBytes(),
+): WorkerData {
+   return { schemaCacheBytes, settings: Settings.current().toWorkerData() };
+}
+
 // ──────────────────────────────────────────────────────────────────────
 // The pool
 // ──────────────────────────────────────────────────────────────────────
@@ -296,6 +309,8 @@ export class PackageLoadPool {
    private readonly jobTimeoutMs: number;
    /** How long a job may run before it is terminated (see JOB_LIMIT_FACTOR). */
    private readonly jobLimitMs: number;
+   /** The workerData the last worker was spawned with; see workerDataForTests. */
+   private lastWorkerData: WorkerData | undefined;
 
    constructor(
       maxWorkers: number,
@@ -329,6 +344,20 @@ export class PackageLoadPool {
 
    get size(): number {
       return this.workers.filter((w) => !w.exited).length;
+   }
+
+   /** Test-only: whether shutdown() has been called. */
+   get isShutDownForTests(): boolean {
+      return this.shuttingDown;
+   }
+
+   /**
+    * Test-only: the settings and cache size the most recent worker was spawned
+    * with, or undefined before the first spawn. A worker reads its settings
+    * once, at spawn, so this is what the pool plans and compiles under.
+    */
+   get workerDataForTests(): WorkerData | undefined {
+      return this.lastWorkerData;
    }
 
    /**
@@ -500,14 +529,13 @@ export class PackageLoadPool {
       logger.info(
          `PackageLoadPool: spawning worker #${id} (script=${this.workerScript.toString()})`,
       );
+      // The worker reads its settings (the logger's, today) from these
+      // rather than from its copy of the environment, which no flag reaches.
+      const workerData = packageLoadWorkerData(this.schemaCacheBytes);
+      this.lastWorkerData = workerData;
       const worker = new Worker(this.workerScript, {
          name: `malloy-package-load-worker-${id}`,
-         // The worker reads its settings (the logger's, today) from these
-         // rather than from its copy of the environment, which no flag reaches.
-         workerData: {
-            schemaCacheBytes: this.schemaCacheBytes,
-            settings: Settings.current().toWorkerData(),
-         },
+         workerData,
       });
 
       let readyResolve!: () => void;
@@ -987,11 +1015,15 @@ export function getPackageLoadPool(): PackageLoadPool {
    return singleton;
 }
 
-/** Test-only: replace the singleton (and shut down the previous one). */
+/**
+ * Test-only: replace the singleton, and shut down the previous one unless
+ * `keep` holds it (a test helper that reuses pools; see freshLoadPool).
+ */
 export async function __setPackageLoadPoolForTests(
    pool: PackageLoadPool | null,
+   keep?: ReadonlySet<PackageLoadPool>,
 ): Promise<void> {
-   if (singleton && singleton !== pool) {
+   if (singleton && singleton !== pool && !keep?.has(singleton)) {
       await singleton.shutdown();
    }
    singleton = pool;
