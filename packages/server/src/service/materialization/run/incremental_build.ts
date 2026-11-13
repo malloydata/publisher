@@ -39,6 +39,7 @@ import type { QueryMetadata } from "../../query_metadata";
 import { errMessage } from "../../../utils";
 import {
    applyDeltaScript,
+   isPairGuardFailure,
    INCREMENTAL_SOURCE_RANGE_DIALECTS,
    INCREMENTAL_TARGET_DML_DIALECTS,
    isRenderableWatermarkType,
@@ -247,6 +248,17 @@ export function incrementalLineage(params: {
    // Backstop behind the publish-time refusal: a merge whose scope could not be
    // resolved must never be ISSUED. No lineage means a seed: slower, but correct.
    if (mergeKeys.length > 0 && d.scopeIncomplete) return undefined;
+   // A pair table's delta replaces whole parents by its key, in DuckDB, the
+   // target of every `storage=` table (pairDeltaStatements). Anything else
+   // seeds: a pair whose merge key is not its parent key was planned wrong.
+   if (
+      d.pair &&
+      (params.targetDialect !== "duckdb" ||
+         mergeKeys.length !== 1 ||
+         mergeKeys[0] !== d.pair.parentKey)
+   ) {
+      return undefined;
+   }
    return {
       physicalTableName: params.physicalTableName,
       connectionName: params.connectionName,
@@ -258,6 +270,7 @@ export function incrementalLineage(params: {
       scopeColumns: d.scopeColumns,
       strategy: d.strategy as IncrementalStrategy,
       ...(d.rollingWindow?.length ? { rollingWindow: d.rollingWindow } : {}),
+      ...(d.pair ? { pair: d.pair } : {}),
    };
 }
 
@@ -532,7 +545,26 @@ export async function applyIncrementalStep(params: {
    // One call, so the range replace's DELETE and INSERT commit or roll back
    // together (see deltaScript). A failure leaves the table and the boundary
    // as they were; the next run recomputes the same range.
-   await applyDeltaScript(target.runner, target.dialect, step.statements);
+   try {
+      await applyDeltaScript(target.runner, target.dialect, step.statements);
+   } catch (err) {
+      // A pair delta whose parent-row check failed was rolled back: rebuild
+      // in full, which writes the flag over the whole table (fail safe).
+      if (!lineage.pair || !isPairGuardFailure(err)) throw err;
+      reportIncrementalStep({
+         step: {
+            mode: "seed",
+            reasonCode: "pair_parent_row",
+            reason:
+               "the delta would leave a parent without exactly one " +
+               "parent-row flag, so it was rolled back",
+         },
+         sourceName: params.sourceName,
+         packageName: context.packageName,
+         physicalTableName: lineage.physicalTableName,
+      });
+      return { applied: false };
+   }
    await advanceLedger({
       context,
       lineage,
