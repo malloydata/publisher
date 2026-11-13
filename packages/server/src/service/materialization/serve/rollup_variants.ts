@@ -85,10 +85,10 @@ import {
    rollupCompanionURLOf,
 } from "../plan/rollup_compile";
 import { emitMeasureExpr } from "../plan/rollup_measure_grammar";
+import { splitSourceID } from "../plan/persisted_view";
 import {
    generateRollupBuildFile,
    planSourceRollups,
-   splitSourceID,
    type RollupVariantPlan,
 } from "../plan/rollup_plan";
 import { SourceMap } from "../plan/source_map";
@@ -714,6 +714,13 @@ function flagLine(modelDef: unknown): string {
  * variant source holds only the grain dimensions and the merged measures (the
  * partials are internal), so an aggregate the query computes itself counts the
  * rollup's rows, and any other read of a stored measure is its merge.
+ *
+ * Two kinds of grain dimension must be grouped or fixed at every level that
+ * aggregates: the plan's own fan-out dimensions (A6, read through a
+ * join_many), and those a measure read at that level fans out across (a
+ * join-level sum or count re-summed across groups that share its key, A2).
+ * A level that reads a measure other than by its bare name (an expression, a
+ * filtered measure, a `having:`) is held to every measure's.
  */
 export function checkCoverage(
    plan: RollupVariantPlan,
@@ -726,7 +733,12 @@ export function checkCoverage(
       );
    }
    const fanOut = new Set(plan.fanOutDimensions);
-   const measureNames = new Set(plan.rollupMeasures.map((m) => m.name));
+   const measureFanOut = new Map(
+      plan.rollupMeasures.map((m) => [m.name, m.fanOutDimensions]),
+   );
+   const anyMeasureFanOut = new Set(
+      plan.rollupMeasures.flatMap((m) => m.fanOutDimensions),
+   );
    const visit = (level: QueryLevelFacts, fixedAbove: ReadonlySet<string>) => {
       if (level.kind !== "reduce") {
          throw new RollupSkip(
@@ -740,7 +752,13 @@ export function checkCoverage(
             "a having: filter aggregates the rollup's rows, not a stored measure",
          );
       }
-      let aggregates = level.havings.length > 0;
+      // The grain dimensions this level must group or fix.
+      const required = new Set<string>();
+      let aggregates = false;
+      if (level.havings.length > 0) {
+         aggregates = true;
+         for (const d of anyMeasureFanOut) required.add(d);
+      }
       const grouped = new Set<string>();
       for (const f of level.fields) {
          if (f.isNest) continue;
@@ -750,32 +768,39 @@ export function checkCoverage(
                `\`${f.name}\` aggregates the rollup's rows, not a stored measure`,
             );
          }
-         if (f.ungrouped && fanOut.size > 0) {
+         if (f.ungrouped && (fanOut.size > 0 || anyMeasureFanOut.size > 0)) {
             throw new RollupSkip(
                "rollup_grain_too_coarse",
                `\`${f.name}\` re-sums across a fan-out dimension of the rollup's grain`,
             );
          }
          const ref = f.ref?.length === 1 ? f.ref[0] : undefined;
-         if (ref !== undefined && !measureNames.has(ref)) grouped.add(ref);
-         else if (
-            (ref !== undefined && measureNames.has(ref)) ||
+         const named = ref !== undefined ? measureFanOut.get(ref) : undefined;
+         if (ref !== undefined && named === undefined) grouped.add(ref);
+         else if (named !== undefined) {
+            aggregates = true;
+            for (const d of named) required.add(d);
+         } else if (
             f.expressionType === "aggregate" ||
             f.expressionType === "ungrouped_aggregate"
          ) {
             aggregates = true;
+            for (const d of anyMeasureFanOut) required.add(d);
          }
       }
       const fixed = new Set(fixedAbove);
-      for (const d of fanOut) {
+      for (const d of [...fanOut, ...anyMeasureFanOut]) {
          if (grouped.has(d) || level.fixedByWhere.has(d)) fixed.add(d);
       }
       if (aggregates) {
-         const loose = [...fanOut].find((d) => !fixed.has(d));
+         for (const d of fanOut) required.add(d);
+         const loose = [...required].find((d) => !fixed.has(d));
          if (loose !== undefined) {
             throw new RollupSkip(
                "rollup_grain_too_coarse",
-               `the query does not group by or fix \`${loose}\`, a fan-out dimension of the rollup's grain, so its measures would be counted once per value`,
+               fanOut.has(loose)
+                  ? `the query does not group by or fix \`${loose}\`, a fan-out dimension of the rollup's grain, so its measures would be counted once per value`
+                  : `the query does not group by or fix \`${loose}\`, so a measure taken through a join would count each joined row once per value of it`,
             );
          }
       }

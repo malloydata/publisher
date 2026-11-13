@@ -67,6 +67,8 @@ source: orders is duckdb.table('orders_raw') extend {
   measure: per_order is coalesce(amount.sum() / count(), 0)
   #(preaggregate) grain=["carrier"]${placement}
   measure: fleet is carriers.fleet.sum()
+  #(preaggregate) grain=["carrier", "category"]${placement}
+  measure: fleet_by_category is carriers.fleet.sum()
   #(preaggregate) grain=["category", "line_kind"]${placement}
   measure: line_total is amount.sum()
   view: by_category is { group_by: category; aggregate: total }
@@ -110,6 +112,10 @@ const SERVED = [
       "run: orders -> { group_by: category; aggregate: r is total / order_count }",
    ],
    [
+      "a count and a sum over no rows (0, as live, not null)",
+      "run: orders -> { where: category = 'Z'; aggregate: order_count, total }",
+   ],
+   [
       "a filter on a grain dimension",
       "run: orders -> { where: category = 'A'; aggregate: total }",
    ],
@@ -128,6 +134,14 @@ const SERVED = [
    [
       "a join-level aggregate keyed in the grain (A2)",
       "run: orders -> { group_by: carrier; aggregate: fleet }",
+   ],
+   [
+      "a join-level aggregate with every other grain dimension grouped (A2)",
+      "run: orders -> { group_by: category; aggregate: fleet_by_category }",
+   ],
+   [
+      "a join-level aggregate at the full grain (A2)",
+      "run: orders -> { group_by: carrier, category; aggregate: fleet_by_category }",
    ],
    [
       "a fan-out dimension grouped (A6)",
@@ -163,6 +177,21 @@ const LIVE = [
       "a having: that counts rows",
       "run: orders -> { group_by: category; aggregate: total; having: count() > 1 }",
       "COUNT_SEMANTICS",
+   ],
+   [
+      "a join-level aggregate across a grain dimension other than its key (A2)",
+      "run: orders -> { aggregate: fleet_by_category }",
+      "GRAIN_TOO_COARSE",
+   ],
+   [
+      "a join-level aggregate grouped by its key alone (A2)",
+      "run: orders -> { group_by: carrier; aggregate: fleet_by_category }",
+      "GRAIN_TOO_COARSE",
+   ],
+   [
+      "a join-level aggregate in an expression across the grain (A2)",
+      "run: orders -> { aggregate: f is fleet_by_category * 2 }",
+      "GRAIN_TOO_COARSE",
    ],
    [
       "a fan-out dimension dropped (A6)",
