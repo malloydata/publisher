@@ -26,11 +26,19 @@
 // posts size updates to the parent window so Publisher.embed() in the host
 // can resize the iframe.
 //
+// Inside the in-app viewer's iframe it also posts a "publisher:query" message
+// after each query: what the page asked (model, query, filters, givens) and
+// what came back (row count and the first rows, or the error). A host that
+// frames the app, such as a chat beside it, can then say what the reader is
+// looking at. Never on a hosted embed surface (/apps/...): that page belongs
+// to a customer's site, and its results are not the framing page's to read.
+//
 // The "publisher:resize" postMessage protocol below is the SAME contract the
 // SPA host consumes. Its canonical definition lives in
 // packages/sdk/src/utils/dataAppEmbed.ts (PUBLISHER_RESIZE_MESSAGE_TYPE /
-// PublisherResizeMessage). This file is build-step-free vanilla JS and can't
-// import it, so keep the message type/shape here in sync with that module.
+// PublisherResizeMessage), as does "publisher:query"'s (PUBLISHER_QUERY_MESSAGE_TYPE /
+// PublisherQueryMessage). This file is build-step-free vanilla JS and can't
+// import it, so keep the message types/shapes here in sync with that module.
 
 (function () {
    "use strict";
@@ -131,9 +139,85 @@
       return { env: env, pkg: pkg };
    }
 
+   // --- Query reports to the framing page ----------------------------------
+   // How many result rows a report carries, and the most characters it may take
+   // once serialized: enough for a host to quote the numbers on screen, not a
+   // copy of the result.
+   var QUERY_REPORT_MAX_ROWS = 20;
+   var QUERY_REPORT_MAX_CHARS = 16000;
+   var reportsQueries = (function () {
+      if (!inAppMatch) return false;
+      try {
+         return window.self !== window.top;
+      } catch (_e) {
+         return true; // cross-origin parent: framed
+      }
+   })();
+
+   function postQueryReport(target, modelPath, malloyQuery, opts, outcome) {
+      if (!reportsQueries) return;
+      var report = {
+         type: "publisher:query",
+         environment: target.env,
+         package: target.pkg,
+         model: modelPath,
+      };
+      if (malloyQuery) report.query = malloyQuery;
+      if (opts.sourceName) report.sourceName = opts.sourceName;
+      if (opts.queryName) report.queryName = opts.queryName;
+      if (opts.filterParams) report.filterParams = opts.filterParams;
+      if (opts.givens) report.givens = opts.givens;
+      if (outcome.error) {
+         report.error = String(outcome.error);
+      } else if (Array.isArray(outcome.rows)) {
+         report.rowCount = outcome.rows.length;
+         var rows = outcome.rows.slice(0, QUERY_REPORT_MAX_ROWS);
+         // Drop rows from the end until the report fits; a host reads the first.
+         while (
+            rows.length > 0 &&
+            JSON.stringify(rows).length > QUERY_REPORT_MAX_CHARS
+         ) {
+            rows = rows.slice(0, Math.floor(rows.length / 2));
+         }
+         report.rows = rows;
+      }
+      try {
+         window.parent.postMessage(report, "*");
+      } catch (_e) {
+         /* a report that can't be cloned is not worth failing the query */
+      }
+   }
+
    async function rawQuery(modelPath, malloyQuery, opts, compactJson) {
       opts = opts || {};
       var target = resolveTarget(opts);
+      try {
+         var result = await runQuery(
+            target,
+            modelPath,
+            malloyQuery,
+            opts,
+            compactJson,
+         );
+      } catch (err) {
+         postQueryReport(target, modelPath, malloyQuery, opts, {
+            error: (err && err.message) || err,
+         });
+         throw err;
+      }
+      // queryFull's envelope carries its rows under data.array; query's are the
+      // result itself.
+      postQueryReport(target, modelPath, malloyQuery, opts, {
+         rows: compactJson
+            ? result
+            : result && result.data && Array.isArray(result.data.array)
+              ? result.data.array
+              : undefined,
+      });
+      return result;
+   }
+
+   async function runQuery(target, modelPath, malloyQuery, opts, compactJson) {
       var url =
          apiBase +
          "/environments/" +

@@ -30,6 +30,10 @@ Omit `height` and the frame auto-sizes. The embedded page measures its real cont
 
 Do not rely on `body { min-height: 100vh }` to drive the frame height. The runtime deliberately measures the content's bottom edge, not the viewport, to avoid a grow-forever loop.
 
+## Query reports to the host
+
+Inside the in-app viewer's frame (`/environments/<env>/packages/<pkg>/...`), the runtime also posts a `publisher:query` message to the host after each `Publisher.query` or `queryFull`: the model, the query text or named view, the `filterParams` and `givens` the page passed, and the row count with the first rows, or the error. A host such as a chat beside the app uses it to know what the reader is looking at. You write none of this either; pass filters as `givens` or `filterParams` rather than baking them into query text, so the host can name them. It is never posted on a hosted embed surface (`/apps/...`).
+
 ## Inside the frame there is no viewport
 
 The host scrolls; the frame does not. Inside an auto-sized frame `window.innerHeight` is the whole document, `window.scrollY` stays 0, and `position: fixed` means the top of the document rather than the top of the reader's screen. Two consequences, both invisible when the page is opened directly:
