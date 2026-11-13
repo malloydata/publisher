@@ -90,6 +90,12 @@ source: zonal_ext is zonal extend {
 }
 
 #(materialize) storage="lake"
+source: since is ev extend {
+  where: ts > @2026-01-05 12:00
+  measure: total is amt.sum()
+}
+
+#(materialize) storage="lake"
 source: headed is (ev extend { dimension: mine is org = $ORG }) extend {
   measure: total is amt.sum()
 }
@@ -318,6 +324,30 @@ describe("R4: a caller-dependent dimension is computed at read, never stored (P9
             "zone and given",
             "run: local -> { timezone: 'Asia/Kolkata'; group_by: mine, on_day; aggregate: total; order_by: on_day, mine }",
          );
+      });
+
+      it("answers live over a table whose rows a timestamp literal filtered in the build's zone", async () => {
+         // `since` stores no computed dimension, but its `where:` cut-off
+         // moves with the zone: at +05:30 it admits a row the build (in UTC)
+         // left out of the table, so serving from the table would miss it.
+         const zonedSince =
+            "run: since -> { timezone: 'Asia/Kolkata'; group_by: org; aggregate: total; order_by: org }";
+         const run = await fixture.run({
+            name: "since zoned",
+            malloy: zonedSince,
+            givens: CALLERS[0],
+         });
+         expect(run.servedVia).toBeUndefined();
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         const utc = await fixture.run({
+            name: "since",
+            malloy:
+               "run: since -> { group_by: org; aggregate: total; order_by: org }",
+            givens: CALLERS[0],
+         });
+         expect(utc.servedVia).toBe("served_copy");
+         expect(rowDifference(utc.live, utc.served)).toBeUndefined();
+         expect(run.live).not.toEqual(utc.live);
       });
 
       it("answers live over a table that stores a zone-dependent dimension declared on a base", async () => {

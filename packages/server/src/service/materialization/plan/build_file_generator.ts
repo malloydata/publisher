@@ -111,8 +111,12 @@
  * it, in the default zone, and a query that sets a `timezone:` over its table
  * is answered live. A stored computed dimension the probe cleared of the time
  * zone is marked `zoneFree`, so a `timezone:` query over a table that stores
- * only such dimensions is not declined for it. Each left-out dimension is
- * listed on the plan (`leftOut`).
+ * only such dimensions is not declined for it. The source's rows are probed
+ * too: a `where:` term or base relation whose SQL moves with the zone (a
+ * timestamp literal) filtered the table in the build's zone, so only a source
+ * the probe cleared is marked `zoneFreeRows`, and a `timezone:` query over
+ * any other's table is answered live. Each left-out dimension is listed on
+ * the plan (`leftOut`).
  *
  * A current-time `where:` term is a rolling window (rolling_window.ts): a lower
  * bound builds as written, since the build's own `now` is the widest-set
@@ -459,6 +463,15 @@ export interface MaterializePlan {
     * depends on the caller (P9), in field order. Absent when none is.
     */
    leftOut?: LeftOutDimension[];
+   /**
+    * The probe compiler found the source's rows the same in every query time
+    * zone (P9): its `where:` terms and base relation compile to the same SQL
+    * at every probe zone. Absent: a `where: ts > @2026-03-08 09:00` (or a
+    * base the probe could not clear) filtered the table's rows in the
+    * build's zone, so a query that sets a `timezone:` over it is answered
+    * live.
+    */
+   zoneFreeRows?: true;
    /** One uniqueness check per inlined join_one (P8). */
    uniquenessChecks?: InlineUniquenessCheck[];
    /** For an inlined join_many: the pair table's layout (P5). */
@@ -1315,6 +1328,12 @@ export function planModelMaterialize(
     * no stored dimension is cleared of the time zone.
     */
    probed?: ReadonlyMap<string, ReadonlyMap<string, FieldDependence>>,
+   /**
+    * The sources, by `sourceID`, whose rows the probe compiler found the same
+    * in every query time zone (P9). Absent, or a source not in it: a
+    * `timezone:` query over its table is answered live.
+    */
+   zoneFreeRows?: ReadonlySet<string>,
 ): {
    plans: MaterializePlan[];
    refused: MaterializeRefusal[];
@@ -1621,6 +1640,9 @@ export function planModelMaterialize(
          ...(inline.length > 0 ? { inline } : {}),
          ...(dependence.leftOut.length > 0
             ? { leftOut: dependence.leftOut }
+            : {}),
+         ...(zoneFreeRows?.has(def.sourceID)
+            ? { zoneFreeRows: true as const }
             : {}),
          ...(uniquenessChecks.length > 0 ? { uniquenessChecks } : {}),
          ...(pair ? { pair } : {}),
