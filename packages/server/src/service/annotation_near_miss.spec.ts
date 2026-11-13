@@ -16,6 +16,9 @@ import {
 } from "./annotation_near_miss";
 import { collectAuthorizeNearMisses, misspelledGateRoute } from "./authorize";
 import { nearMissLogMessages } from "./compile_source";
+import { withSettings } from "../test_helpers/settings_env";
+
+const MATERIALIZE_ON = { env: { PUBLISHER_MATERIALIZE: "true" } };
 
 function scan(text: string) {
    return annotationNearMisses([{ text }]);
@@ -115,6 +118,37 @@ describe("annotationNearMisses", () => {
             "authorize",
          ),
       ).toEqual(["#(AUTHORIZE) org_id = $ORG"]);
+   });
+
+   it("with the materialize switch on, reads the v2 routes and catches their near misses", () => {
+      withSettings(MATERIALIZE_ON, () => {
+         for (const [text, meant] of [
+            ['#(materialise) name="t"', "#(materialize)"],
+            ['#(Materialize) name="t"', "#(materialize)"],
+            ['# (materialize) name="t"', "#(materialize)"],
+            ['#(materialize)name="t"', "#(materialize)"],
+            ['#(preaggregates) grain=["a"]', "#(preaggregate)"],
+            ['#(pre-aggregate) grain=["a"]', "#(preaggregate)"],
+            ['#(preagregate) grain=["a"]', "#(preaggregate)"],
+         ]) {
+            const [finding] = scan(text);
+            expect(finding).toMatchObject({ code: ANNOTATION_NEAR_MISS_CODE });
+            expect(finding?.message).toContain(`did you mean \`${meant}\`?`);
+         }
+         expect(scan('#(materialize) name="t"')).toEqual([]);
+         expect(scan('#(preaggregate) grain=["a"]')).toEqual([]);
+      });
+   });
+
+   it("with the materialize switch off, reads the v2 spellings as before they were registered", () => {
+      withSettings({ env: { PUBLISHER_MATERIALIZE: "false" } }, () => {
+         // `#(preaggregate)` does nothing off; `#@ preaggregate` works.
+         const [finding] = scan('#(preaggregate) grain=["a"]');
+         expect(finding?.message).toContain("did you mean `#@ preaggregate`?");
+         expect(scan('#(materialize) name="t"')).toEqual([]);
+         expect(scan('#(materialise) name="t"')).toEqual([]);
+         expect(scan('#(preaggregates) grain=["a"]')).toEqual([]);
+      });
    });
 
    it("reports a prefix Malloy cannot route", () => {

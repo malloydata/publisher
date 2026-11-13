@@ -24,6 +24,8 @@ import {
 import {
    classifyWhereTerms,
    currentTimeFields,
+   givenReadingFilterTerms,
+   givenTerms,
    readRollingWindow,
 } from "./persist_dynamic_terms";
 import { rollingWindowTerms, windowDeleteBefore } from "./rolling_window";
@@ -135,6 +137,25 @@ describe("classifyWhereTerms, the one where: term classifier", () => {
          kind: "given",
          term: { code: "amount = $ORG", givens: ["ORG"], columns: ["amount"] },
       });
+   });
+
+   it("hands v1 persistence every term that reads a given, now or not", () => {
+      // v1's stripped terms are every given-reading `where:` term, whatever
+      // else it reads; the one classifier is their only reader.
+      expect(givenTerms(classifyWhereTerms(def("given_beside_now")))).toEqual([
+         { code: "amount = $ORG", givens: ["ORG"], columns: ["amount"] },
+      ]);
+      expect(givenTerms(classifyWhereTerms(def("given_and_now")))).toEqual([
+         {
+            code: "ts >= now - 30 days and amount = $ORG",
+            givens: ["ORG"],
+            columns: ["ts", "amount"],
+         },
+      ]);
+      expect(givenTerms(classifyWhereTerms(def("inherited")))).toEqual([]);
+      expect(givenReadingFilterTerms(def("given_and_now"))).toEqual([
+         { code: "ts >= now - 30 days and amount = $ORG", givens: ["ORG"] },
+      ]);
    });
 
    it("reads a current-time term through a dimension, with no window", () => {

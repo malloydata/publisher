@@ -28,7 +28,7 @@ import { installSettings } from "../../../test_helpers/settings_env";
 import type { PersistSourceGateOutcome } from "./persist_source_fields";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import {
-   classifyDynamicTerms,
+   admitGivenPositions,
    readTimeDynamicTerms,
 } from "./persist_dynamic_terms";
 
@@ -477,7 +477,7 @@ source: mixed is raw -> { select: * } extend {
   where: org_id = $ORG_ID
   dimension: flagged is org_id = $ORG_ID
 }`);
-      expect(classifyDynamicTerms(sources.mixed).ok).toBe(false);
+      expect(admitGivenPositions(sources.mixed).ok).toBe(false);
       // Still names the column the source is actually scoped by.
       expect(
          readTimeDynamicTerms(sources.mixed).flatMap((t) => t.columns),

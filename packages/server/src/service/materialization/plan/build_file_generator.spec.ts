@@ -18,6 +18,7 @@ import { rollingWindowsOf } from "./rolling_window";
 import {
    buildSourceName,
    generateBuildFile,
+   materializeRefusalFinding,
    planModelMaterialize,
    type MaterializePlan,
 } from "./build_file_generator";
@@ -868,14 +869,20 @@ source: orders is orders_raw
 `);
          expect(generatedPlans(c).map((p) => p.sourceName)).toEqual(["orders"]);
          const findings = (c.annotationFindings ?? []).filter(
-            (f) => f.code === "materialize-not-built",
+            (f) =>
+               f.code === "materialize-not-built" ||
+               f.code === "materialize-unknown-key",
          );
-         expect(findings.map((f) => [f.subject, f.tier, f.model])).toEqual([
-            ["misspelt", "unservable", "m.malloy"],
-            ["unnamed", "unservable", "m.malloy"],
+         expect(
+            findings.map((f) => [f.subject, f.code, f.tier, f.model]),
+         ).toEqual([
+            ["misspelt", "materialize-unknown-key", "malformed", "m.malloy"],
+            ["unnamed", "materialize-not-built", "unservable", "m.malloy"],
          ]);
-         // A misspelt name= is refused, never defaulted to the source's name.
+         // A misspelt name= is malformed (refused at publish), never defaulted
+         // to the source's name.
          expect(findings[0].message).toContain("`nmae=`");
+         expect(findings[0].message).toContain("did you mean `name=`?");
          expect(findings[1].message).toContain("needs name=");
       },
       { timeout: 30000 },
@@ -1066,8 +1073,9 @@ source: orders is orders_raw -> { select: * }
          },
          fields: [{ name: "id", type: "number" }],
       });
-      const reason = (text: string) =>
-         planModelMaterialize({ orders: declared(text) }).refused[0]?.reason;
+      const refusal = (text: string) =>
+         planModelMaterialize({ orders: declared(text) }).refused[0];
+      const reason = (text: string) => refusal(text)?.reason;
       expect(reason('#(materialize) name=["a", "b"]\n')).toContain(
          "`name=` must be a string",
       );
@@ -1075,6 +1083,16 @@ source: orders is orders_raw -> { select: * }
          "`freshness` takes properties",
       );
       expect(reason('#(materialize) name="a\n')).toContain("does not parse");
+      // A value of the wrong shape is unservable (the source serves live); a
+      // line that does not parse is malformed, refused at publish.
+      expect(
+         refusal('#(materialize) name=["a", "b"]\n')?.malformedCode,
+      ).toBeUndefined();
+      const unparseable = refusal('#(materialize) name="a\n');
+      expect(unparseable?.malformedCode).toBe("materialize-unparseable");
+      expect(materializeRefusalFinding(unparseable!, "m.malloy")).toMatchObject(
+         { tier: "malformed", code: "materialize-unparseable" },
+      );
    });
 
    it(
