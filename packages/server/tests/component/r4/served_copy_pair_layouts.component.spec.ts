@@ -1140,3 +1140,61 @@ for (const [label, overrides] of Object.entries(keySeeds)) {
       }
    });
 }
+
+// Another block's columns are typed nulls on a block's rows, stacked with
+// UNION ALL: a null of the warehouse's float type would widen an integer
+// column to it, and a key past 2^53 would be stored rounded.
+describe("R4: a block table keeps each column's own type across the union", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": keyModel },
+         seedSql: [
+            `CREATE TABLE orders AS SELECT * FROM (VALUES
+      (1, 'a', 10.0), (2, 'a', 20.0), (3, 'b', 30.0)
+    ) AS t(id, cat, amt)`,
+            `CREATE TABLE items AS SELECT item_id::BIGINT AS item_id, order_id, price::DECIMAL(38,2) AS price, color FROM (VALUES
+      (9007199254740993, 1, 12345678901234567.11, 'red'), (9007199254740992, 2, 1.0, 'blue'), (9007199254740995, 3, 0.07, 'red')
+    ) AS t(item_id, order_id, price, color)`,
+            `CREATE TABLE opts AS SELECT opt_id, item_id::BIGINT AS item_id, kind, extra FROM (VALUES
+      (101, 9007199254740993, 'x', 0.5), (102, 9007199254740992, 'y', 4.0)
+    ) AS t(opt_id, item_id, kind, extra)`,
+            `CREATE TABLE pays AS SELECT pay_id::BIGINT AS pay_id, order_id, method, paid FROM (VALUES
+      (9007199254740993, 1, 'card', 5.0), (9007199254740992, 1, 'cash', 7.0)
+    ) AS t(pay_id, order_id, method, paid)`,
+         ],
+         materialize: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("stores each joined column as its source types it", async () => {
+      const rows = await fixture.storedSQL(
+         (t) =>
+            `SELECT typeof(items__item_id) AS item, typeof(items__price) AS price, typeof(pays__pay_id) AS pay FROM ${t("orders")} LIMIT 1`,
+      );
+      expect(rows).toEqual([
+         { item: "BIGINT", price: "DECIMAL(38,2)", pay: "BIGINT" },
+      ]);
+   });
+
+   for (const malloy of [
+      "run: orders -> { group_by: cat; aggregate: pay_n, d is count(pays.pay_id) }",
+      "run: orders -> { where: items.item_id = 9007199254740993; aggregate: opt_n }",
+      "run: orders -> { where: pays.pay_id = 9007199254740992; aggregate: pay_n, paid_sum }",
+      "run: orders -> { group_by: cat; aggregate: price_sum }",
+   ]) {
+      it(`serves, equal to live: ${malloy}`, async () => {
+         const run = await fixture.run({ name: malloy, malloy });
+         expect(run.servedVia).toBe("served_copy");
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+      });
+   }
+});

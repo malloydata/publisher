@@ -362,7 +362,10 @@ export interface MaterializePairBlocks {
    laneColumn: string;
    /** The connection the build's SQL source runs on: the source's own. */
    connection: string;
-   /** Each joined column's Malloy type, for the other blocks' typed nulls. */
+   /**
+    * Each joined column's Malloy type, for the other blocks' typed nulls
+    * (see {@link typedNull}).
+    */
    columnTypes: Record<string, string>;
    /** The number of level flags every block writes: the deepest path's depth. */
    levels: number;
@@ -1324,6 +1327,20 @@ function pairBlocksOf(
          levels,
       },
    };
+}
+
+/**
+ * Another block's column as one block's rows store it: a null of a type the
+ * `UNION ALL` cannot widen the column's own type to. A number's null is not
+ * `null::number`, which is the warehouse's floating type (DuckDB's `DOUBLE`,
+ * Postgres's `double precision`): the union would widen an integer or a
+ * decimal column to it, so a key past 2^53, or a decimal's last digits, would
+ * be stored rounded. It is a null of an integer literal's type, which every
+ * numeric type absorbs without changing (an integer stays an integer, a
+ * decimal keeps its scale, a float stays a float).
+ */
+function typedNull(type: string): string {
+   return type === "number" ? "pick 0 when false else null" : `null::${type}`;
 }
 
 /** A joined source's field's Malloy type, or "" when it has none. */
@@ -2312,11 +2329,11 @@ function pairBlocksSource(
       const items = plan.columns.map((c) =>
          own(c)
             ? selectItem(c)
-            : `    ${identifier(c.column)} is null::${blocks.columnTypes[c.column]}`,
+            : `    ${identifier(c.column)} is ${typedNull(blocks.columnTypes[c.column])}`,
       );
       items.push(`    ${identifier(blocks.laneColumn)} is ${lane}`);
       const parent = identifier(pair.parentKey);
-      // malloy-text: each item a selectItem or a typed null, names through identifier, each type one of NULLABLE_TYPES
+      // malloy-text: each item a selectItem or a typedNull, names through identifier, each type one of NULLABLE_TYPES
       const listed = items.join(",\n");
       // malloy-text: pairFlags writes every name through identifier
       const flags = pairFlags(pair, blocks.levels);
