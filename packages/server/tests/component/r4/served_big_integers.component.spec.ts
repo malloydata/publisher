@@ -437,11 +437,11 @@ source: s is base -> { select: * } extend {
 
 /**
  * The v1 cutover's colocated tables (`#@ persist` with no `storage=`, under
- * `PUBLISHER_V1_SERVED_COPY=on`): the served copy reads them in the source's
+ * the v1 cutover): the served copy reads them in the source's
  * own warehouse, and a big-integer column through the warehouse's own bigint
  * type, so it stays served and exact.
  */
-describe("R4: integers past 2^53 served from storage equal live (v1 colocated #@ persist, PUBLISHER_V1_SERVED_COPY=on)", () => {
+describe("R4: integers past 2^53 served from storage equal live (v1 colocated #@ persist, the v1 cutover)", () => {
    const values = seed("", true)[0].replace(/^CREATE TABLE big AS /, "");
    const model = `##! experimental { persistence }
 source: base is duckdb.sql("""${values}""")

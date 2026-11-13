@@ -194,9 +194,9 @@ source: account_usage is accounts extend {
 source: by_name is accounts -> { group_by: account_name }
 `;
 
-   async function planCross(text: string, mode: "off" | "on") {
+   async function planCross(text: string) {
       const { restore } = installSettings({
-         env: { PUBLISHER_MATERIALIZE: "true", PUBLISHER_V1_SERVED_COPY: mode },
+         env: { PUBLISHER_MATERIALIZE: "true" },
       });
       const crm = new DuckDBConnection("crm", ":memory:");
       const product = new DuckDBConnection("product", ":memory:");
@@ -229,9 +229,9 @@ source: by_name is accounts -> { group_by: account_name }
       }
    }
 
-   it("on: an unflagged file plans what the author-flagged file plans off", async () => {
-      const off = await planCross(FLAG + CROSS, "off");
-      expect(off).toEqual({ names: ["by_name"], omitted: [] });
-      expect(await planCross(CROSS, "on")).toEqual(off);
+   it("an unflagged file plans what the author-flagged file plans", async () => {
+      const flagged = await planCross(FLAG + CROSS);
+      expect(flagged).toEqual({ names: ["by_name"], omitted: [] });
+      expect(await planCross(CROSS)).toEqual(flagged);
    });
 });

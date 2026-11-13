@@ -16,7 +16,7 @@ v1 cutover, `compilePackageBuildPlan` skipped such a file, so a `#@ persist` in 
 model that forgot the header was silently inert and served live (this scenario's
 id still names that).
 
-Under the v1 cutover (`PUBLISHER_V1_SERVED_COPY=on`, the default), the planner
+Under the v1 cutover (the only path since 6g), the planner
 compiles a build copy of the file with the flag as its first line (D3), so the
 author's file needs no flag: the source is planned under its own address, built
 into the lake and served from its table by the served copy.
