@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { declaredNotes } from "./declared_notes";
+import { declaredFieldNotes, declaredNotes } from "./declared_notes";
 
 const M = "file:///pkg/m.malloy";
 const A = "file:///pkg/a.malloy";
@@ -50,5 +50,48 @@ describe("declaredNotes", () => {
    it("keeps every note of a source with no location", () => {
       const annotations = { blockNotes: [note(A, 0)] };
       expect(declaredNotes({ annotations }, {})).toHaveLength(1);
+   });
+});
+
+describe("declaredFieldNotes", () => {
+   it("reads a field's shared annotations object as the earliest source's alone", () => {
+      const annotations = { blockNotes: [note(M, 0)] };
+      const base = { location: at(M, 1), fields: [{ annotations }] };
+      // An extension copies the field (a new object) but keeps its notes.
+      const ext = { location: at(M, 2), fields: [{ annotations }] };
+      const contents = { base, ext };
+      expect(declaredFieldNotes(base, base.fields[0], contents)).toHaveLength(
+         1,
+      );
+      expect(declaredFieldNotes(ext, ext.fields[0], contents)).toEqual([]);
+   });
+
+   it("reads a fresh annotations object as the source's own", () => {
+      const base = {
+         location: at(M, 1),
+         fields: [{ annotations: { blockNotes: [note(M, 0)] } }],
+      };
+      const ext = {
+         location: at(M, 2),
+         fields: [{ annotations: { blockNotes: [note(M, 2)] } }],
+      };
+      expect(declaredFieldNotes(ext, ext.fields[0], [base, ext])).toHaveLength(
+         1,
+      );
+   });
+
+   it("drops a field's note parsed in another file", () => {
+      const annotations = { blockNotes: [note(A, 0)] };
+      const ext = { location: at(M, 2), fields: [{ annotations }] };
+      expect(declaredFieldNotes(ext, ext.fields[0], { ext })).toEqual([]);
+   });
+
+   it("does not read a later holder as the declarer", () => {
+      const annotations = { blockNotes: [note(M, 0)] };
+      const base = { location: at(M, 1), fields: [{ annotations }] };
+      const later = { location: at(M, 5), fields: [{ annotations }] };
+      expect(
+         declaredFieldNotes(base, base.fields[0], [later, base]),
+      ).toHaveLength(1);
    });
 });

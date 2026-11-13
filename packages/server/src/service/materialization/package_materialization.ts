@@ -81,7 +81,7 @@ import { persistTableTarget } from "./plan/eligibility_collect";
 import { quoteManifestTablePath } from "../quoting";
 import { structsReachedFrom } from "../governance/ir/source_graph";
 import { CLASSIFICATION_COVERAGE } from "../classification";
-import { reachableSourceIDs } from "./plan/source_map";
+import { reachableSourceIDs, SourceMap } from "./plan/source_map";
 import type {
    BuildManifest,
    BuildPlan,
@@ -888,6 +888,21 @@ export class PackageMaterialization {
       }
    }
 
+   /**
+    * A declaration's compiled definition, from the package model that holds it
+    * as a node of its own (the model that declares or imports it). A model
+    * that reaches a source only through a join (an index importing the file
+    * that joins it, #6643) holds the join, not the declaration, so its served
+    * copy finds the declaration here.
+    */
+   private declarationOf(sourceID: string): unknown {
+      for (const model of this.owner.models().values()) {
+         const def = SourceMap.of(model.getModelDef?.()).node(sourceID)?.def;
+         if (def) return def;
+      }
+      return undefined;
+   }
+
    /** Push the current storage serve bindings onto every loaded model. */
    pushStorageServeBindingsToModels(): void {
       for (const model of this.owner.models().values()) {
@@ -896,6 +911,7 @@ export class PackageMaterialization {
             this.owner.packagePath(),
             this.owner.malloyConfig(),
             this.materializePlans,
+            (sourceID) => this.declarationOf(sourceID),
          );
          model.setServeBindings(this.storageServeBindings);
          // Compiled at bind so a served copy that does not compile is a
@@ -1387,6 +1403,15 @@ export class PackageMaterialization {
    ): ServeVerdict[] {
       const models = this.owner.models();
       const index = this.entryPointIndex(models);
+      const persistedViews = new Map<
+         string,
+         { sourceID: string; sourceName: string; viewName: string }
+      >();
+      for (const model of models.values()) {
+         for (const v of model.persistedViewBuilds?.() ?? []) {
+            persistedViews.set(v.buildSourceID, v);
+         }
+      }
       const servedStorageNames = new Set<string>();
       for (const model of models.values()) {
          for (const name of model.servedStorageSourceNames?.() ?? []) {
@@ -1452,6 +1477,7 @@ export class PackageMaterialization {
                ? "serves"
                : "not_served";
          },
+         persistedViewOf: (sourceID) => persistedViews.get(sourceID),
          views,
          destinationConfigured: (name) => this.destinationConfigured(name),
          connectionCanHoldTable: (name) =>
@@ -2081,14 +2107,14 @@ function servedCopyProblemMessage(problem: ServedCopyProblem): string {
       case "cross_connection_unbuilt":
          return "This model joins sources from different connections; its served copy compiles once both sides are built into one destination, and serves live until then.";
       case "column_types":
-         return "This source's stored column types differ from the types the model declares, so the served copy leaves it to the serve shape.";
+         return "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it to the serve shape.";
       case "no_declaration":
          return "This source's declaration was not found in the compiled model, so the served copy leaves it to the serve shape.";
       case "range_not_found":
       case "definition_not_parsed":
          return "This source's declaration could not be re-rooted on its table, so the served copy leaves it to the serve shape.";
       case "read_terms_not_kept":
-         return "This source filters by a given in a place its stored table cannot keep, so the served copy leaves it as written rather than answer every caller alike.";
+         return "This source filters by a given in a place its stored table cannot keep, or is filtered and reached here only through a join, so the served copy leaves it as written rather than answer every caller alike.";
       case "fields_not_carried":
          return "This source inherits fields (a measure, view or join declared on the source it is built from) that its stored table does not carry, so the served copy leaves it as written.";
       case "cross_connection_join":

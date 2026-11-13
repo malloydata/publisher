@@ -46,6 +46,7 @@ import {
    readPreparedQuery,
    resolveStructRefSource,
 } from "../../governance/ir/prepared_query";
+import { joinedDefinitionOf } from "../../governance/ir/source_graph";
 import {
    authorModelLiftContext,
    buildVirtualMap,
@@ -60,6 +61,7 @@ import {
    type Reroot,
    type ServedColumn,
    type ServedCopyRange,
+   storedMalloyType,
 } from "./served_copy";
 import { servedCopyConfig, servedCopyAlias } from "./served_copy_config";
 import { offsetOf } from "../malloy_lexer";
@@ -229,6 +231,13 @@ interface Compiled {
    leftOut?: readonly LeftOutDefinition[];
 }
 
+/**
+ * A re-root with the author's declaration it was made from: the guards compare
+ * the served copy's compile of it against this definition, which is the
+ * declaring model's when this model reaches the source only through a join.
+ */
+type AuthorReroot = Reroot & { sourceID: string; authorDef: unknown };
+
 /** How many declined queries one compiled copy remembers before starting over. */
 const DECLINED_LIMIT = 1000;
 
@@ -244,6 +253,8 @@ export class ServedCopyServe {
     * declaration of this model by `sourceID` instead.
     */
    private bindings: ServeBinding[] = [];
+   /** A declaration's definition from the package model that holds it. */
+   private declarationOf?: (sourceID: string) => unknown;
    private compiled?: Compiled;
    private inFlight?: {
       key: string;
@@ -263,10 +274,12 @@ export class ServedCopyServe {
       packagePath: string,
       packageConfig: ModelConnectionInput,
       materializePlans: Readonly<Record<string, MaterializePlan>> = {},
+      declarationOf?: (sourceID: string) => unknown,
    ): void {
       this.packagePath = packagePath;
       this.packageConfig = packageConfig;
       this.materializePlans = materializePlans;
+      this.declarationOf = declarationOf;
       this.invalidate();
    }
 
@@ -559,7 +572,7 @@ export class ServedCopyServe {
       map: SourceMap,
       problems: ServedCopyProblem[],
       reservedNames: readonly string[],
-   ): Reroot | undefined {
+   ): AuthorReroot | undefined {
       // `#(materialize)`: the binding is the generated build source's; its
       // plan names the author's source, by sourceID.
       const plan = binding.sourceIDs
@@ -571,9 +584,9 @@ export class ServedCopyServe {
            [map.sourceIDOf(binding.sourceName)].filter(
               (id): id is string => id !== undefined,
            ));
-      const node = authorIDs
-         .map((id) => map.node(id))
-         .find((n) => n !== undefined);
+      const node =
+         authorIDs.map((id) => map.node(id)).find((n) => n !== undefined) ??
+         this.joinedDeclaration(authorIDs, map);
       // Another model's source: not this served copy's to re-root.
       if (!node) return undefined;
       const sourceName = plan?.sourceName ?? binding.sourceName;
@@ -646,7 +659,23 @@ export class ServedCopyServe {
             problems.push({ sourceName, reason: "column_types" });
             return undefined;
          }
-         columns = narrowed.map((c) => ({ ...c, ...timeframeOf(c.name) }));
+         // Each with its field's annotations (`#(doc)`, `# label`, `#
+         // percent` on the query's output field), as a `#(materialize)` column
+         // carries them, so the stored field reads back as the author's.
+         columns = narrowed.map((c) => {
+            const notes = fieldNotes(fieldsByName.get(c.name));
+            return {
+               ...c,
+               ...(notes.length > 0 ? { notes } : {}),
+               ...timeframeOf(c.name),
+            };
+         });
+      }
+      // A column the `type:` cannot declare faithfully would fail the whole
+      // model's copy, not just this source: leave this one to its fallback.
+      if (columns.some((c) => storedMalloyType(c.type) === undefined)) {
+         problems.push({ sourceName, reason: "column_types" });
+         return undefined;
       }
       return {
          url,
@@ -668,7 +697,31 @@ export class ServedCopyServe {
             ? { readTimeTerms: plan.readTimeTerms }
             : {}),
          sourceID: node.sourceID,
-      } as Reroot & { sourceID: string };
+         authorDef: node.def,
+      } as AuthorReroot;
+   }
+
+   /**
+    * A source this model reaches only as a join (#6643): its declaration, as
+    * the package model holding it compiled it, when one of this model's
+    * sources joins it. Re-rooting it in its declaring file is what lets the
+    * joining source's re-root keep its join on the destination.
+    */
+   private joinedDeclaration(
+      authorIDs: readonly string[],
+      map: SourceMap,
+   ): { sourceID: string; def: unknown } | undefined {
+      for (const sourceID of authorIDs) {
+         if (
+            !map.nodes().some((n) => joinedDefinitionOf(n.def, sourceID)) ||
+            !this.declarationOf
+         ) {
+            continue;
+         }
+         const def = this.declarationOf(sourceID);
+         if (def) return { sourceID, def };
+      }
+      return undefined;
    }
 
    private async compile(
@@ -685,7 +738,7 @@ export class ServedCopyServe {
       const map = SourceMap.of(modelDef);
       let candidates: {
          binding: ServeBinding;
-         reroot: Reroot & { sourceID: string };
+         reroot: AuthorReroot;
       }[] = [];
       const reservedNames = modelFieldNames(map);
       for (const binding of bindings) {
@@ -693,7 +746,7 @@ export class ServedCopyServe {
          if (reroot) {
             candidates.push({
                binding,
-               reroot: reroot as Reroot & { sourceID: string },
+               reroot: reroot as AuthorReroot,
             });
          }
       }
@@ -836,8 +889,10 @@ export class ServedCopyServe {
          // What a cross-connection join took with it is reported on its own,
          // when it was left out of this source or one it is built from.
          const lost = candidates.filter((c) => {
-            const author = fieldNames(map.node(c.reroot.sourceID)?.def);
-            const served = fieldNames(servedMap.node(c.reroot.sourceID)?.def);
+            const author = fieldNames(c.reroot.authorDef);
+            const served = fieldNames(
+               servedDefOf(servedMap, c.reroot.sourceID),
+            );
             const node = map.node(c.reroot.sourceID);
             const chain = new Set(
                (node ? map.chainOf(node.def) : [c.reroot.sourceID])
@@ -884,13 +939,20 @@ export class ServedCopyServe {
          // replaced it (a parenthesised head, an inline extend in the base)
          // is gone from the served source's compiled filters, and the copy
          // would answer every caller with every caller's rows.
+         // A source the served compile holds only as a join (#6643) and that
+         // applies a `where:` is not re-rooted either: the governor proves a
+         // joined source's filters against its declaring file's live compile,
+         // whose text the re-root changed, so it would refuse every caller
+         // (403) where live answers. Left as written, what reads it is live.
          const unscoped = candidates.filter(
             (c) =>
                !lost.includes(c) &&
-               !keepsGivenTerms(
-                  map.node(c.reroot.sourceID)?.def,
-                  servedMap.node(c.reroot.sourceID)?.def,
-               ),
+               (!keepsGivenTerms(
+                  c.reroot.authorDef,
+                  servedDefOf(servedMap, c.reroot.sourceID),
+               ) ||
+                  (!hasOwnNode(servedMap, c.reroot.sourceID) &&
+                     appliesFilters(c.reroot.authorDef))),
          );
          if (lost.length > 0 || unscoped.length > 0) {
             for (const c of lost) {
@@ -1101,6 +1163,34 @@ function setsTimezone(query: unknown, depth = 0): boolean {
       if (typeof v === "object" && setsTimezone(v, depth + 1)) return true;
    }
    return false;
+}
+
+/**
+ * A declaration's definition in the served copy's compile: its node, or, for
+ * a source this model reaches only as a join (an index that imports the file
+ * joining it, not the file declaring it, #6643), the joined definition a join
+ * holds, which carries the declaration's fields and filters. Undefined when
+ * neither has it, which the guards read as everything lost.
+ */
+function servedDefOf(map: SourceMap, sourceID: string): unknown {
+   const node = map.node(sourceID);
+   if (hasOwnNode(map, sourceID)) return node?.def;
+   for (const n of map.nodes()) {
+      const join = joinedDefinitionOf(n.def, sourceID);
+      if (join !== undefined) return join;
+   }
+   return node?.def;
+}
+
+/** Whether the compile holds `sourceID` as a node with fields of its own. */
+function hasOwnNode(map: SourceMap, sourceID: string): boolean {
+   return Array.isArray(map.node(sourceID)?.def.fields);
+}
+
+/** Whether a source definition applies any `where:` term. */
+function appliesFilters(def: unknown): boolean {
+   const filters = (def as { filterList?: unknown[] } | undefined)?.filterList;
+   return Array.isArray(filters) && filters.length > 0;
 }
 
 /** Every field name any source in the model declares. */
