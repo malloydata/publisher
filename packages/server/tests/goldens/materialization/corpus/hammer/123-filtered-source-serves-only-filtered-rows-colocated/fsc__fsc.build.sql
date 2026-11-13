@@ -1,4 +1,4 @@
--- hammer/77-filtered-source-serves-only-filtered-rows-colocated/fsc/fsc.malloy: build plan
+-- hammer/123-filtered-source-serves-only-filtered-rows-colocated/fsc/fsc.malloy: build plan
 -- Addresses are computed with a fixed connection digest (golden-digest:<connection>),
 -- so they move exactly when the SQL or the folded layout moves.
 

@@ -47,6 +47,11 @@ package can come from its own file rather than from `build.yml`.** Know which jo
 - `python-sdk.yml` has no PR trigger and no version check: the Python SDK releases in lockstep
   with sdk/app/server, so `prepare` sets its version and there is nothing for a PR to bump.
 
+`hammer-nightly.yml` runs the hammer scenario suite (`hammer/README.md`) against a real server,
+a throwaway Postgres in the runner's Docker and a local DuckLake, nightly and on
+`workflow_dispatch`. It is not a pull-request check and nothing depends on it. Two legs, one with
+`PUBLISHER_MATERIALIZE=true` and one with `false`, each upload their logs as an artifact.
+
 Two workflows hold real warehouse credentials, and both should be treated as such when edited:
 `connection-integration-tests.yml` (the full connection matrix) and `k6-tests.yml`, which passes
 `BQ_PRESTO_TRINO_KEY` and runs on pushes as well as on demand.

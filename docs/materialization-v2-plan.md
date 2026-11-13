@@ -693,12 +693,13 @@ The rules for every pass: no external behavior change; one commit per pass, and 
 
 **Shared fixtures.** Add a `test_helpers/materialization_fixture.ts`: a temporary package directory, a capped DuckDB connection, a runtime with an overlay, and `compile`, `plan` and `servedCopy` helpers. It replaces the per-file setup in 37, 21 and 23 spec files and the locally repeated `compiled`, `model`, `plan`, `compile` and `expectLive` helpers. `r4/harness.ts` (1,111 lines) stays the component harness and gains canonical row ordering.
 
-**Flaky tests.**
+**Flaky tests.** *Done 2026-11-13 (the test-infrastructure pull request), except where a bullet says otherwise.*
 
-- Pair nest ordering: the R4 harness sorts every result canonically by all output columns before comparing, so tied legs cannot reorder.
-- `query_text.spec.ts`: replace the wall-clock asserts with a bound on work done (tokens visited) and move the timing to `tests/perf`.
-- Hammer 119: keep #1694's poll and renumber the duplicate.
-- The DuckLake schema race: create schemas idempotently and serialize the first attach per catalog in the harness.
+- Pair nest ordering: the R4 harness sorts every result canonically by all output columns before comparing, so tied legs cannot reorder. *Done:* `rowDifference` already sorted top-level rows; it now also sorts the rows of every nested result and compares them within the float tolerance, so a nest whose aggregate ties compares equal in any order.
+- `query_text.spec.ts`: the wall-clock asserts go. *Done, differently:* a count of tokens visited would need a hook in product code, so the linearity check compares the time on the input at a quarter of full size against full size instead: about 4 times for a linear reader, about 16 for a quadratic one, and a bound of 8 between them. The two sizes are timed alternately, each keeps its fastest run, and a miss is measured again up to three times. The fixed one-second budget on the crafted-trivia case became the same check, which an exponential reader cannot pass.
+- Hammer 119: keep #1694's poll and renumber the duplicate. *Done* (with 70, 76, 77 and `incremental-mz`'s 05; a spec in `hammer/lib` keeps numbers unique per suite).
+- `environment_store_clone.spec.ts` and `environment_store_anchoring.spec.ts` used fixed directory names in the shared temp directory, so two runs at once deleted each other's trees. *Done:* each run's names are unique.
+- The DuckLake schema race: *not reproduced in any suite.* It was seen once in a manual run (two packages building into one DuckLake destination on a Postgres catalog at once; one source failed with `Schema with name lake does not exist`, and built alone on rerun). That is a possible product race in the build session's schema creation, not a test flake, so it is left for a product fix with a reproduction, not masked in a harness.
 - The Bun SIGSEGV: keep the thread cap; record the Bun version and spec on each occurrence and file it upstream; never retry silently.
 
 **Regression safety for the refactor.** Characterization goldens land before step 2 and change only in a commit that says why:
