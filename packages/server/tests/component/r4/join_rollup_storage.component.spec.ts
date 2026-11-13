@@ -592,9 +592,14 @@ source: open_flights is duckdb.table('flights_raw') extend {
       const malloy =
          "run: open_flights -> { group_by: carrier; aggregate: p_segs.p_seg_miles }";
       expectNotFromRollup(await fixture.run({ name: "gated child", malloy }));
-      const reasons = await rollupReasons(fixture, malloy);
-      expect(reasons?.length ?? 0).toBeGreaterThan(0);
-      expect(reasons).not.toContain(undefined);
+      fixture.setBindings(fixture.bindings);
+      const { path } = await fixture.runAsIs(malloy);
+      expect(path?.servedBy.kind).not.toBe("rollup");
+      expect(
+         path?.considered.filter(
+            (c) => c.kind === "rollup" && c.outcome === "used",
+         ),
+      ).toEqual([]);
    });
 });
 

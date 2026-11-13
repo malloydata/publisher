@@ -33,6 +33,7 @@ import {
    generateRollupBuildFile,
    planModelRollups,
    ROLLUP_COMPANION_SUFFIX,
+   rollupKeyCheckQuery,
    type RollupRefusal,
    type RollupVariantPlan,
 } from "./rollup_plan";
@@ -156,6 +157,7 @@ export async function tryCompileRollupCompanion(args: {
       const { runtime, importBaseURL } = await args.getRuntime(overlay);
       const materializer = runtime.loadModel(url, { importBaseURL });
       const model = await materializer.getModel();
+      await compileRollupKeyChecks(planned.plans, materializer, args.modelPath);
       return {
          generated: {
             plans: planned.plans,
@@ -175,5 +177,34 @@ export async function tryCompileRollupCompanion(args: {
          },
       );
       return { refused };
+   }
+}
+
+/**
+ * Compile each rollup's key check (known limitation 29, see
+ * `rollupKeyCheckQuery`) against the companion, onto its plan. A check that
+ * does not compile is left off, logged: its rollup's join_one is then never
+ * known unique, and the join-to-rollup leg keeps declining what it declined
+ * before.
+ */
+async function compileRollupKeyChecks(
+   plans: RollupVariantPlan[],
+   materializer: ModelMaterializer,
+   modelPath: string,
+): Promise<void> {
+   for (const plan of plans) {
+      const text = rollupKeyCheckQuery(plan);
+      const keyColumn = plan.grainDimensions[0];
+      if (text === undefined || keyColumn === undefined) continue;
+      try {
+         const sql = await materializer.loadQuery(text).getSQL();
+         plan.keyCheck = { keyColumn, sql };
+      } catch (error) {
+         logger.warn("A #(preaggregate) rollup's key check did not compile", {
+            modelPath,
+            rollup: plan.rollupSourceName,
+            error: error instanceof Error ? error.message : String(error),
+         });
+      }
    }
 }
