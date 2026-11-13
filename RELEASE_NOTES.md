@@ -32,7 +32,7 @@ No API change. See docs/materialization.md, "An incremental pair table".
 
 ## [Unreleased] — In development: a `#(preaggregate)` rollup no query reads, over a source with its own time zone, is not built
 
-Behind `PUBLISHER_MATERIALIZE` (off by default). A query on a source that sets its own `timezone:` is never answered from a rollup (`TIME_ZONE`), yet the rollup was still planned and built. Now such a rollup, on a source that sets or inherits its own `timezone:`, is not built, with a `preaggregate-time-zone` warning, unless it is colocated and another source in the same zone joins it, which a query on that source still reads through the join. Answers are unchanged; the build no query read is gone. No API change. See docs/preaggregation.md.
+Behind `PUBLISHER_MATERIALIZE` (off by default). A query on a source that sets its own `timezone:` is never answered from a rollup (`TIME_ZONE`), yet the rollup was still planned and built. Now such a rollup, on a source that sets or inherits its own `timezone:`, is not built, with a `preaggregate-time-zone` warning, unless another source in the same zone joins it, which a query on that source still reads through the join (colocated, or in a `storage=` destination that source is stored in too). Answers are unchanged; the build no query read is gone. No API change. See docs/preaggregation.md.
 
 ## [Unreleased] — In development: a `#(materialize)` source over a table-backed base scoped by a given builds through a rename, its own `where:` or a join
 

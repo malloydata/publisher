@@ -496,7 +496,7 @@ source: orders is ${ROWS} extend {
 });
 
 describe("a source that sets its own time zone (#1686)", () => {
-   it("plans its rollup only where the join leg reads it: colocated, joined from a source in the same zone", async () => {
+   it("plans its rollup only where the join leg reads it: joined from a source in the same zone", async () => {
       const zoned = (
          name: string,
          storage = "",
@@ -529,8 +529,12 @@ source: parent_utc is ${ROWS} extend {
   join_one: je is joined_elsewhere on je.id = id
 }`,
       });
+      // A storage= rollup joined from the same zone is planned too: the join
+      // leg reads it when the joining source is stored in that destination
+      // (#1704), and declines at read when it is not.
       expect(plans.map((p) => p.baseSourceID.split("@")[0]).sort()).toEqual([
          "joined",
+         "joined_stored",
          "plain",
       ]);
       expect(
@@ -541,7 +545,6 @@ source: parent_utc is ${ROWS} extend {
       ).toEqual([
          ["inherits", "total2"],
          ["joined_elsewhere", "total"],
-         ["joined_stored", "total"],
          ["lonely", "total"],
       ]);
       const message = refused.find((r) => r.sourceName === "lonely")?.message;

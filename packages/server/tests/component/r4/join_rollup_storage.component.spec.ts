@@ -702,3 +702,49 @@ source: flights_pairs is duckdb.table('flights_raw') extend {
       });
    }
 });
+
+describe("R4: join-to-rollup in a storage destination, over a source with its own time zone", () => {
+   // A rollup over a zoned source is planned when a source in the same zone
+   // joins it (preaggregate-time-zone's exception), in a storage= destination
+   // too: the join leg reads it when the joining source is stored there.
+   const zonedModel = `source: segs_la is duckdb.table('segs_raw') extend {
+  timezone: 'America/Los_Angeles'
+  primary_key: seg_id
+  #(preaggregate) grain=["flight_id"]${S}
+  measure: seg_miles is miles.sum()
+}
+#(materialize)${S}
+source: flights_la is duckdb.table('flights_raw') extend {
+  timezone: 'America/Los_Angeles'
+  primary_key: id
+  join_many: segs_la on segs_la.flight_id = id
+}
+`;
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": zonedModel },
+         seedSql,
+         materialize: true,
+         preaggregate: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("builds the rollup and reads it through the join from the same zone", async () => {
+      expectServedFromRollup(
+         await fixture.run({
+            name: "zoned join",
+            malloy:
+               "run: flights_la -> { group_by: carrier; aggregate: segs_la.seg_miles }",
+         }),
+      );
+   });
+});
