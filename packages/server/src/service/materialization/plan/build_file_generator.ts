@@ -362,7 +362,10 @@ export interface MaterializePairBlocks {
    laneColumn: string;
    /** The connection the build's SQL source runs on: the source's own. */
    connection: string;
-   /** Each joined column's Malloy type, for the other blocks' typed nulls. */
+   /**
+    * Each joined column's Malloy type, for the other blocks' typed nulls
+    * (see {@link typedNull}).
+    */
    columnTypes: Record<string, string>;
    /** The number of level flags every block writes: the deepest path's depth. */
    levels: number;
@@ -436,6 +439,15 @@ export interface InlineUniquenessCheck {
     * Any row it returns is a key the joined source holds twice.
     */
    sql?: string;
+   /**
+    * Set on a pair table's key check (a path of join_manys, or a table of
+    * several blocks): the level of the path whose key it checks, 0 for the
+    * source's own. Such a check also fails on a null key, since a level's row
+    * flag marks one row per distinct key, where live counts each row
+    * ({@link pairKeyChecks}). `join` is then the path down to that level
+    * (empty for the source).
+    */
+   pairLevel?: number;
 }
 
 /**
@@ -957,8 +969,8 @@ function columnType(def: SourceDefLike, dimension: string): string {
  * dimensions (never a hidden one) that read no join of their own (one hop),
  * each stored as `<join>__<field>`, or, for a join further down an inlined
  * path of join_manys, as `<join>__<next join>__…__<field>` (`path` names the
- * joins from the source to this one). When the inlined join itself is private
- * or internal on the source, `access` is its modifier and each column carries
+ * joins from the source to this one). When the join itself is private or
+ * internal on the source, `access` is its modifier and each column carries
  * it: the build copy lifts the join so its build can read it (P3), and the
  * served copy's record keeps the join's modifier, so a caller reads
  * `<join>.<field>` exactly where live lets it.
@@ -1334,6 +1346,20 @@ function pairBlocksOf(
          levels,
       },
    };
+}
+
+/**
+ * Another block's column as one block's rows store it: a null of a type the
+ * `UNION ALL` cannot widen the column's own type to. A number's null is not
+ * `null::number`, which is the warehouse's floating type (DuckDB's `DOUBLE`,
+ * Postgres's `double precision`): the union would widen an integer or a
+ * decimal column to it, so a key past 2^53, or a decimal's last digits, would
+ * be stored rounded. It is a null of an integer literal's type, which every
+ * numeric type absorbs without changing (an integer stays an integer, a
+ * decimal keeps its scale, a float stays a float).
+ */
+function typedNull(type: string): string {
+   return type === "number" ? "pick 0 when false else null" : `null::${type}`;
 }
 
 /** A joined source's field's Malloy type, or "" when it has none. */
@@ -1761,7 +1787,6 @@ export function planModelMaterialize(
          });
          continue;
       }
-      const entries = (resolved as { path: SourceJoin[] }[]).map((r) => r.path);
       // A private or internal join's access, by name. Its build reads the
       // join through the build copy's lift (P3), and its joined columns carry
       // the modifier: the served copy declares an inlined join_one's record,
@@ -1776,6 +1801,7 @@ export function planModelMaterialize(
             joinAccess.set(fieldName, access);
          }
       }
+      const entries = (resolved as { path: SourceJoin[] }[]).map((r) => r.path);
       const ones = entries
          .filter((p) => p[0].relationship !== "many")
          .map((p) => p[0].name);
@@ -1827,7 +1853,7 @@ export function planModelMaterialize(
             inlinedJoinColumns(
                map,
                joins.find((x) => x.name === j) as SourceJoin,
-               [j],
+               undefined,
                joinAccess.get(j),
             ),
          ),
@@ -2016,16 +2042,29 @@ export function planModelMaterialize(
       }
       const build = buildSourceName(name);
       const checked = ones;
-      const uniquenessChecks = checked.map((j): InlineUniquenessCheck => {
-         const join = joins.find((x) => x.name === j) as SourceJoin;
-         return {
-            join: j,
-            keyColumn: join.keyColumn as string,
-            queryName: `${build}__unique__${j}`,
-            joinedSourceID: join.sourceID as string,
-            ...(join.connection ? { connectionName: join.connection } : {}),
-         };
-      });
+      const uniquenessChecks = [
+         ...checked.map((j): InlineUniquenessCheck => {
+            const join = joins.find((x) => x.name === j) as SourceJoin;
+            return {
+               join: j,
+               keyColumn: join.keyColumn as string,
+               queryName: `${build}__unique__${j}`,
+               joinedSourceID: join.sourceID as string,
+               ...(join.connection ? { connectionName: join.connection } : {}),
+            };
+         }),
+         ...(pair
+            ? pairKeyChecks(
+                 pair,
+                 pairBlocks,
+                 def.sourceID,
+                 build,
+                 typeof def.connection === "string"
+                    ? def.connection
+                    : undefined,
+              )
+            : []),
+      ];
       plans.push({
          sourceName: name,
          sourceID: def.sourceID,
@@ -2292,11 +2331,11 @@ function pairBlocksSource(
       const items = plan.columns.map((c) =>
          own(c)
             ? selectItem(c)
-            : `    ${identifier(c.column)} is null::${blocks.columnTypes[c.column]}`,
+            : `    ${identifier(c.column)} is ${typedNull(blocks.columnTypes[c.column])}`,
       );
       items.push(`    ${identifier(blocks.laneColumn)} is ${lane}`);
       const parent = identifier(pair.parentKey);
-      // malloy-text: each item a selectItem or a typed null, names through identifier, each type one of NULLABLE_TYPES
+      // malloy-text: each item a selectItem or a typedNull, names through identifier, each type one of NULLABLE_TYPES
       const listed = items.join(",\n");
       // malloy-text: pairFlags writes every name through identifier
       const flags = pairFlags(pair, blocks.levels);
@@ -2339,11 +2378,82 @@ function pairWatermarkCalculation(
 }
 
 /**
+ * The key checks of a pair table whose rows carry a flag below the parent's
+ * (a path of join_manys) or more than one block, run before each build like
+ * an inlined join_one's (P8): the source's primary key, and the key of each
+ * level between it and the leaf, must be unique and never null. A level's row
+ * flag marks one row per distinct key down to that level, so two rows of one
+ * key (or two null keys) share one flagged row, where live aggregates that
+ * level over each row: a middle-level measure, and a parent measure beside a
+ * deeper level, would come up short. The leaf needs no check: its aggregates
+ * read every row. A one-hop table of one block checks nothing, as before.
+ */
+function pairKeyChecks(
+   pair: MaterializePair,
+   blocks: MaterializePairBlocks | undefined,
+   sourceID: string,
+   build: string,
+   connection: string | undefined,
+): InlineUniquenessCheck[] {
+   const all = blocks?.blocks ?? [pair];
+   if (!blocks && !(pair.hops && pair.hops.length > 0)) return [];
+   const on = connection ? { connectionName: connection } : {};
+   const out: InlineUniquenessCheck[] = [
+      {
+         join: "",
+         keyColumn: pair.parentKey,
+         queryName: `${build}__pair_key`,
+         joinedSourceID: sourceID,
+         pairLevel: 0,
+         ...on,
+      },
+   ];
+   for (const p of all) {
+      // Each level above the leaf: the first join's source, then each hop's
+      // but the last.
+      const levels = [
+         { names: [p.join], key: p.childKey, sourceID: p.childSourceID },
+         ...(p.hops ?? []).map((h, k) => ({
+            names: [
+               p.join,
+               ...(p.hops ?? []).slice(0, k + 1).map((x) => x.join),
+            ],
+            key: h.key,
+            sourceID: h.sourceID,
+         })),
+      ].slice(0, p.hops?.length ?? 0);
+      levels.forEach((l, k) => {
+         out.push({
+            join: l.names.join("."),
+            keyColumn: l.key,
+            queryName: `${build}__pair_key__${l.names.join("__")}`,
+            joinedSourceID: l.sourceID,
+            pairLevel: k + 1,
+            ...on,
+         });
+      });
+   }
+   return out;
+}
+
+/**
  * One inlined join's uniqueness check (P8): the joined source's keys that
- * occur more than once. A build runs it first and fails on any row.
+ * occur more than once. A build runs it first and fails on any row. A pair
+ * table's key check ({@link pairKeyChecks}) also returns a null key.
  */
 function emitUniquenessCheck(check: InlineUniquenessCheck): string {
    const key = identifier(check.keyColumn);
+   if (check.pairLevel !== undefined) {
+      // malloy-text: every name through identifier
+      return `query: ${identifier(check.queryName)} is ${identifier(checkAlias(check))} -> {
+  group_by: ${key}
+  aggregate: matches is count()
+} -> {
+  where: matches > 1 or ${key} is null
+  select: ${key}
+  limit: 1
+}`;
+   }
    return `query: ${identifier(check.queryName)} is ${identifier(checkAlias(check))} -> {
   where: ${key} is not null
   group_by: ${key}

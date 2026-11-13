@@ -1164,6 +1164,121 @@ source: orders is orders_raw extend {
    );
 
    it(
+      "checks a path's and a block table's keys before each build: unique and never null at every level above the leaf",
+      async () => {
+         const model = (lines: string, orders = "orders_raw") => `${BASE}
+source: lines is duckdb.sql("""
+  select * from (values ${lines}) as t(line_id, order_id, qty)
+""") extend { primary_key: line_id }
+source: picks is duckdb.sql("""
+  select * from (values (10, 1, 'a'), (11, 1, 'b'), (12, 3, 'a')) as t(pick_id, line_id, bin)
+""") extend { primary_key: pick_id }
+source: lines_picked is lines extend {
+  join_many: picks on picks.line_id = line_id
+}
+source: notes is duckdb.sql("""
+  select * from (values (7, 1, 'late'), (8, 2, 'gift')) as t(note_id, order_id, topic)
+""") extend { primary_key: note_id }
+#(materialize) name="orders_hop" storage="lake" inline=["lp.picks"]
+source: orders_hop is ${orders} extend {
+  primary_key: id
+  join_many: lp is lines_picked on lp.order_id = id
+}
+#(materialize) name="orders_blocks" storage="lake" inline=["lines", "notes"]
+source: orders_blocks is ${orders} extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+  join_many: notes on notes.order_id = id
+}
+#(materialize) name="orders_one" storage="lake" inline=["lines"]
+source: orders_one is ${orders} extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+}
+`;
+         const plansOf = async (text: string) => {
+            const pkg = await packages.create(text);
+            const c = await compilePackageBuildPlan(pkg);
+            const byName = new Map(
+               generatedPlans(c).map((p) => [p.sourceName, p]),
+            );
+            return { byName, duckdb: await pkg.getMalloyConnection("duckdb") };
+         };
+         const clean = await plansOf(
+            model("(1, 1, 2.0), (2, 1, 3.0), (3, 2, 4.0)"),
+         );
+         // The path checks the source's key and the middle level's; the
+         // leaf needs none. The block table checks the source's key (each
+         // block's child is its leaf). A one-hop table checks nothing.
+         expect(
+            clean.byName
+               .get("orders_hop")
+               ?.uniquenessChecks?.map((x) => [
+                  x.pairLevel,
+                  x.join,
+                  x.keyColumn,
+               ]),
+         ).toEqual([
+            [0, "", "id"],
+            [1, "lp", "line_id"],
+         ]);
+         expect(
+            clean.byName
+               .get("orders_blocks")
+               ?.uniquenessChecks?.map((x) => [
+                  x.pairLevel,
+                  x.join,
+                  x.keyColumn,
+               ]),
+         ).toEqual([[0, "", "id"]]);
+         expect(
+            clean.byName.get("orders_one")?.uniquenessChecks,
+         ).toBeUndefined();
+         for (const name of ["orders_hop", "orders_blocks"]) {
+            await assertInlinedJoinsUnique(
+               clean.byName.get(name),
+               clean.duckdb,
+            );
+         }
+         // A middle key held twice, or null, fails the path's build.
+         for (const lines of [
+            "(1, 1, 2.0), (1, 1, 3.0), (3, 2, 4.0)",
+            "(1, 1, 2.0), (NULL, 1, 3.0), (3, 2, 4.0)",
+         ]) {
+            const bad = await plansOf(model(lines));
+            await expect(
+               assertInlinedJoinsUnique(
+                  bad.byName.get("orders_hop"),
+                  bad.duckdb,
+               ),
+            ).rejects.toThrow(
+               /keys one row flag on 'line_id' of the source 'lp'/,
+            );
+            await assertInlinedJoinsUnique(
+               bad.byName.get("orders_blocks"),
+               bad.duckdb,
+            );
+         }
+         // A null source key fails both.
+         const nullParent = await plansOf(
+            model(
+               "(1, 1, 2.0), (2, 1, 3.0), (3, 2, 4.0)",
+               "orders_raw extend { dimension: id2 is pick null when id = 3 else id } -> { select: id is id2, region, amount, order_date }",
+            ),
+         );
+         for (const name of ["orders_hop", "orders_blocks"]) {
+            await expect(
+               assertInlinedJoinsUnique(
+                  nullParent.byName.get(name),
+                  nullParent.duckdb,
+               ),
+            ).rejects.toThrow(/keys one row flag on 'id' of '.*' itself/);
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
       "stores a many-to-many pair once per pair, and flags each parent once",
       async () => {
          const pkg = await packages.create(`${BASE}
