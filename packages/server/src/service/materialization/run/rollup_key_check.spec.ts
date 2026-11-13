@@ -365,13 +365,16 @@ async function storedScenario() {
    // The stored rows: the base's, so a duplicate in it reaches the table.
    const builder = new SourceBuilder(async (request) => {
       const table = request.instruction.physicalTableName;
-      await duckdb.runSQL(`ATTACH '${file}' AS lake`);
+      // Its own alias: the scenario's connection may be shared, and the
+      // check attaches the file as `lake` in a session of its own.
+      const alias = `stored_${Math.random().toString(36).slice(2)}`;
+      await duckdb.runSQL(`ATTACH '${file}' AS ${alias}`);
       try {
          await duckdb.runSQL(
-            `CREATE OR REPLACE TABLE lake.${table} AS SELECT * FROM crew_src`,
+            `CREATE OR REPLACE TABLE ${alias}.${table} AS SELECT * FROM crew_src`,
          );
       } finally {
-         await duckdb.runSQL("DETACH lake");
+         await duckdb.runSQL(`DETACH ${alias}`);
       }
       return {
          sourceEntityId: request.contentSourceEntityId ?? "",
