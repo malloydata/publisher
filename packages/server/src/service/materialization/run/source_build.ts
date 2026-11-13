@@ -39,7 +39,9 @@ import {
    manifestForCompiler,
    NO_PLAN_FACTS,
    noteWrongTierRecompute,
+   presentedSourceName,
    readAuthorFile,
+   strictMissSourceId,
    HostSuppliedWrongTierError,
    upstreamEntryIsCurrent,
    upstreamReuseFromManifest,
@@ -192,6 +194,24 @@ export class SourceBuilder {
             if (read.length > 0) refuseHostSupplied(read);
          }
       }
+      // `_model._modelDef` is compiler-internal. If a compiler bump removes it,
+      // the walk below finds nothing and the entry carries no
+      // `upstreamReuse`: a visible gap, not a wrong answer.
+      const lift = authorModelLiftContext(
+         persistSource._model?._modelDef,
+         readAuthorFile,
+      );
+      // A strict miss as a reason names it: a name only the generated files
+      // declare by the author's source it stands for, read from the
+      // companion's own name for it or its declared name.
+      const presentedMiss = (sourceID: string, name?: string) => {
+         for (const n of [name, sourceID.split("@")[0]]) {
+            if (n === undefined) continue;
+            const presented = presentedSourceName(n, planFacts);
+            if (presented !== n) return presented;
+         }
+         return undefined;
+      };
       let buildSQL: string;
       try {
          buildSQL = buildSQLOf(persistSource, buildManifest);
@@ -214,20 +234,30 @@ export class SourceBuilder {
                   `, and strict upstreams forbid recomputing it from raw`,
             );
          }
+         // A strict miss of a `#(materialize)` parent names its generated
+         // build source, in a file the package never shows: refused by the
+         // author's name instead, so it is attributed to that source.
+         const missed = strictMissSourceId(err)?.sourceID;
+         const parent =
+            missed === undefined
+               ? undefined
+               : presentedMiss(missed, lift.sourceNameById.get(missed));
+         if (parent !== undefined) {
+            throw new ChainedUpstreamMissingError(
+               [parent],
+               `Failed to materialize source '${persistSource.name}': ` +
+                  `persisted upstream '${parent}' is not in this build's ` +
+                  `manifest (neither built in this run nor supplied by ` +
+                  `reference), and strict upstreams forbid recomputing it ` +
+                  `from raw`,
+            );
+         }
          throw err;
       }
 
       // Which stored tables this source reads, and whether the substituted
       // manifest holds each, decided once for both tiers. It drives stacking on
       // parents, strict refusal, and the entry's `upstreamReuse`.
-      //
-      // `_model._modelDef` is compiler-internal. If a compiler bump removes it,
-      // the walk finds nothing and the entry carries no `upstreamReuse`: a
-      // visible gap, not a wrong answer.
-      const lift = authorModelLiftContext(
-         persistSource._model?._modelDef,
-         readAuthorFile,
-      );
       const reached = reachPersisted(
          lift,
          persistSource.name,
@@ -265,7 +295,10 @@ export class SourceBuilder {
                persistSource,
                fullForCompiler,
                lift.sourceNameById,
-            );
+            ).map((miss) => {
+               const presented = presentedMiss(miss.sourceID, miss.name);
+               return presented ? { ...miss, name: presented } : miss;
+            });
          }
       } catch (err) {
          if (isStorageBuild) throw err;

@@ -110,10 +110,12 @@ describe("SourceMap", () => {
          map.sourceIDOf("daily")!,
          map.sourceIDOf("orders")!,
       ]);
-      // A plain alias compiles to a copy of its target's definition, so its
-      // chain continues from the target's base: the target's table stands for it.
+      // A plain alias records its target as `referenceID`, and a copy of the
+      // target's own `extends` (the grandparent): the chain goes through the
+      // target, so every table on it stands for the alias.
       expect(sourceChain(modelDef.contents["renamed"], modelDef)).toEqual([
          map.sourceIDOf("renamed")!,
+         map.sourceIDOf("daily_ext")!,
          map.sourceIDOf("daily")!,
          map.sourceIDOf("orders")!,
       ]);

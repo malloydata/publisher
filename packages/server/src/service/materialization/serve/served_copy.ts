@@ -40,11 +40,28 @@ import {
    duckdbTypeToMalloy,
    duckdbTypeToMalloyType,
 } from "./materialization_serve_transform";
-import { declarationSpans, topLevelTokens } from "../declaration_text";
-import { isName, lexAll, offsetOf, statementStarts } from "../malloy_lexer";
+import {
+   declarationSpans,
+   declaredBaseName,
+   dropDimensions,
+   inverseRenameBlocks,
+   rewriteDimensions,
+} from "../declaration_text";
+import {
+   isName,
+   lexAll,
+   offsetOf,
+   statementHead,
+   statementStarts,
+} from "../malloy_lexer";
 import { definitionCutAt } from "../plan/cross_connection_joins";
 
-export { declarationSpans };
+export {
+   declarationSpans,
+   declaredBaseName,
+   dropDimensions,
+   rewriteDimensions,
+};
 
 /** A zero-based Malloy range, as a compiled source's `location.range` carries. */
 export interface ServedCopyRange {
@@ -96,6 +113,15 @@ export interface Reroot {
     * `extend` repeats is applied twice, which is harmless).
     */
    readTimeTerms?: readonly MaterializeReadTimeTerm[];
+   /**
+    * For an extension table (P10): the trailing `extend` runs of the sources
+    * between it and its nearest materialized ancestor, that ancestor's
+    * included, root first, as their own declarations wrote them in this file.
+    * Its table holds every one of their rows and stored columns, so the
+    * re-root keeps their blocks ahead of its own, and their measures, joins
+    * and views stay the source's.
+    */
+   keptBlocks?: string;
    /**
     * For a `#(materialize)` source that inlines a join_many: its stored table
     * is a pair table (P5), read as the source itself with no join
@@ -364,13 +390,15 @@ export function buildServedCopy(
 }
 
 /**
- * The re-root with each hidden stored dimension the declaration's own
- * trailing `extend` defines left to that definition (P3): its column is left
+ * The re-root with each hidden stored dimension the kept text defines (the
+ * declaration's own trailing `extend`, and for an extension table the kept
+ * blocks of its ancestors, P10) left to that definition (P3): its column is left
  * out of the `type:` and its definition is kept as written, access modifier
  * and all, and computed at read from the stored columns it reads. Dropping
  * it instead would leave the stored column in its place, public. A hidden
- * column the source's own text does not define (one an `include` in the
- * replaced base hides, or one it inherits) stays a stored column, and the
+ * column the kept text does not define (one an `include` in a replaced base
+ * hides, or one it inherits from outside the kept blocks) stays a stored
+ * column, and the
  * re-root writes its modifier again ({@link hiddenInclude}). Undefined when
  * the declaration does not lex.
  */
@@ -384,10 +412,14 @@ function keepHiddenDefinitions(
    if (hidden.size === 0) return r;
    const spans = declarationSpans(declaration);
    if (!spans) return undefined;
-   const extend =
+   const own =
       spans.extendStart === undefined
          ? ""
          : declaration.slice(spans.extendStart);
+   // Every block the re-root keeps: an extension table's ancestors' (P10),
+   // then its own. A hidden dimension an ancestor's kept block defines is
+   // kept as that block wrote it, as one the source's own block defines is.
+   const extend = [r.keptBlocks?.trim() ?? "", own].filter(Boolean).join(" ");
    const defined = rewriteDimensions(extend, hidden, new Map());
    if (!defined) return undefined;
    if (defined.dropped.size === 0) return r;
@@ -446,6 +478,7 @@ export function rerootDeclaration(
       | "storedDimensions"
       | "reservedNames"
       | "readTimeTerms"
+      | "keptBlocks"
       | "pair"
       | "inlinedJoins"
    > & { columns?: Reroot["columns"] },
@@ -462,10 +495,20 @@ export function rerootDeclaration(
       ...(r.reservedNames ?? []),
       ...inlined.flatMap((j) => j.columns.map((c) => c.column)),
    ];
-   let extend = servedExtend(
+   const own =
       spans.extendStart === undefined
          ? ""
-         : declaration.slice(spans.extendStart).trimEnd(),
+         : declaration.slice(spans.extendStart).trimEnd();
+   const kept = [r.keptBlocks?.trim() ?? "", own].filter(Boolean).join(" ");
+   // The table stores a renamed field under its new name; the kept text
+   // renames it from the old one, so the old name is given back first.
+   const renames = inverseRenameBlocks(
+      kept,
+      new Set((r.columns ?? []).map((c) => c.name)),
+   );
+   if (renames === undefined) return undefined;
+   let extend = servedExtend(
+      kept,
       r.columns ?? [],
       r.storedDimensions,
       reserved,
@@ -502,9 +545,11 @@ export function rerootDeclaration(
       .filter((t) => t !== undefined);
    const reread = terms.length ? ` extend { where: ${terms.join(", ")} }` : "";
    // The author's access modifiers written again on the stored hidden
-   // columns (P3), before the author's own extend so it reads them.
+   // columns (P3), on the stored table under its stored names, so before the
+   // inverse renames and every kept block (an ancestor's, P10, and the
+   // author's own), which read them as they read the author's fields.
    const hide = hiddenInclude(r.columns ?? []);
-   return `${name} is ${virtual}${reread}${hide}${pairHead}${extend ? ` ${extend}` : ""}`;
+   return `${name} is ${virtual}${reread}${hide}${pairHead}${renames}${extend ? ` ${extend}` : ""}`;
 }
 
 /**
@@ -542,13 +587,6 @@ function servedExtend(
       if (!kept) return undefined;
       extend = kept.text;
       rewritten = kept.rewritten;
-   }
-   if (storedDimensions !== undefined) {
-      // A `#(materialize)` table stores a field the source renames under its
-      // new name, so the rename has nothing left to rename.
-      const renamed = dropRenames(extend, new Set(columns.map((c) => c.name)));
-      if (!renamed) return undefined;
-      extend = renamed.text;
    }
    if (timeframed.length > 0) {
       const opened = intoFirstExtend(
@@ -657,7 +695,9 @@ export function replacePairJoin(
       if (kw.text !== "join_many") continue;
       const colon = level[starts[si] + 1];
       const nextStart =
-         si + 1 < starts.length ? level[starts[si + 1]].start : Infinity;
+         si + 1 < starts.length
+            ? statementHead(level, starts[si + 1]).start
+            : Infinity;
       const blockEnd =
          closes.find((t) => t.start > kw.start)?.start ?? Infinity;
       const stmtEnd = Math.min(nextStart, blockEnd);
@@ -848,10 +888,13 @@ export function dropJoinDefinition(
       if (!cut || cut.left.name !== join) continue;
       if (!cut.left.keyword.startsWith("join_")) continue;
       if (cut.left.keyword !== "join_one") return undefined;
-      // An access modifier written on the statement would be left on what
-      // follows it (or the record would drop the join's access): refused.
-      const before = tokens.filter((x) => x.end <= cut.start).pop();
-      if (before && ACCESS_WORDS.has(before.text)) return undefined;
+      // An access modifier written on the statement (the record would drop
+      // the join's access): refused, whichever of its definitions this is.
+      const keyword = tokens.findLast(
+         (x) => x.start <= t.start && x.text === cut.left.keyword,
+      );
+      const label = keyword ? tokens[tokens.indexOf(keyword) - 1] : undefined;
+      if (label && ACCESS_WORDS.has(label.text)) return undefined;
       return text.slice(0, cut.start) + text.slice(cut.end);
    }
    return text;
@@ -876,179 +919,6 @@ function intoFirstExtend(
    // On its own line, so the author's first statement keeps its own.
    const sep = /^[ \t]*\n/.test(rest) ? "" : "\n";
    return extend.slice(0, open.end) + statements + sep + rest;
-}
-
-/**
- * In a run of `extend { … }` blocks, delete the `dimension:` definition of
- * each name in `names`, with the annotations written on it, so the stored
- * column of that name IS the field (its annotations travel on the `type:`).
- * A statement left with no definition is deleted whole, with its own
- * annotations; everything else stays byte for byte. Returns the names it
- * found, or undefined when the text does not lex.
- */
-export function dropDimensions(
-   text: string,
-   names: ReadonlySet<string>,
-): { text: string; dropped: Set<string> } | undefined {
-   const out = rewriteDimensions(text, names, new Map());
-   return out && { text: out.text, dropped: out.dropped };
-}
-
-/**
- * In a run of `extend { … }` blocks, delete each `rename:` whose new name is
- * in `names`, as {@link dropDimensions} deletes a definition: a `#(materialize)`
- * table stores a renamed field under its new name, so the stored column IS the
- * field and the rename's old name is not on the table to rename.
- */
-export function dropRenames(
-   text: string,
-   names: ReadonlySet<string>,
-): { text: string; dropped: Set<string> } | undefined {
-   const out = rewriteDimensions(text, names, new Map(), "rename");
-   return out && { text: out.text, dropped: out.dropped };
-}
-
-/**
- * {@link dropDimensions}, and also replace the expression of each definition
- * named in `rewrite` (`<name> is <expression>`) with the given text, keeping
- * its name, its annotations and its place. Returns the names it dropped and
- * the names it rewrote.
- */
-export function rewriteDimensions(
-   text: string,
-   names: ReadonlySet<string>,
-   rewrite: ReadonlyMap<string, string>,
-   keyword: "dimension" | "rename" = "dimension",
-): { text: string; dropped: Set<string>; rewritten: Set<string> } | undefined {
-   const tokens = lexAll(text);
-   if (!tokens) return undefined;
-   const dropped = new Set<string>();
-   const rewritten = new Set<string>();
-   const cuts: { start: number; end: number; insert?: string }[] = [];
-   // A block's statements are its depth-1 tokens; its closing brace is not one.
-   const level = tokens.filter((t) => t.depth === 1 && t.kind !== "close");
-   const closes = tokens.filter((t) => t.kind === "close" && t.depth === 0);
-   const starts = statementStarts(level);
-   for (let si = 0; si < starts.length; si++) {
-      const kw = level[starts[si]];
-      if (kw.text !== keyword) continue;
-      const colon = level[starts[si] + 1];
-      const nextStart =
-         si + 1 < starts.length ? level[starts[si + 1]].start : Infinity;
-      const blockEnd =
-         closes.find((t) => t.start > kw.start)?.start ?? Infinity;
-      const stmtEnd = Math.min(nextStart, blockEnd);
-      const body = level.filter(
-         (t) => t.start > colon.start && t.start < stmtEnd,
-      );
-      // A definition is `<name> is …` opening the statement, after a comma,
-      // or on a new line after the previous definition.
-      const defIdx: number[] = [];
-      for (let k = 0; k + 1 < body.length; k++) {
-         if (!isName(body[k]) || body[k + 1].text !== "is") continue;
-         if (
-            k === 0 ||
-            body[k - 1].text === "," ||
-            text.slice(body[k - 1].end, body[k].start).includes("\n")
-         ) {
-            defIdx.push(k);
-         }
-      }
-      const defs = defIdx.map((k, d) => {
-         const nameTok = body[k];
-         const exprFrom = body[k + 1].end;
-         const exprTo =
-            d + 1 < defIdx.length ? body[defIdx[d + 1]].start : stmtEnd;
-         const inExpr = tokens.filter(
-            (t) => t.start >= exprFrom && t.end <= exprTo,
-         );
-         const comma =
-            inExpr[inExpr.length - 1]?.text === "," &&
-            inExpr[inExpr.length - 1].depth === 1
-               ? inExpr.pop()
-               : undefined;
-         return {
-            name: nameTok.text.startsWith("`")
-               ? nameTok.text.slice(1, -1)
-               : nameTok.text,
-            exprFrom,
-            exprEnd: inExpr[inExpr.length - 1]?.end,
-            afterComma: comma?.end,
-         };
-      });
-      if (defs.some((d) => d.exprEnd === undefined)) return undefined;
-      for (const def of defs) {
-         const expression = rewrite.get(def.name);
-         if (expression === undefined) continue;
-         rewritten.add(def.name);
-         cuts.push({
-            start: def.exprFrom,
-            end: def.exprEnd as number,
-            insert: ` ${expression}`,
-         });
-      }
-      const drop = defs.map((d) => names.has(d.name) && !rewrite.has(d.name));
-      if (!drop.some(Boolean)) continue;
-      for (const [d, def] of defs.entries()) if (drop[d]) dropped.add(def.name);
-      if (drop.every(Boolean)) {
-         // The whole statement, from the end of whatever precedes it (so its
-         // own annotation lines go too).
-         const before = tokens.filter((t) => t.end <= kw.start);
-         const from = before[before.length - 1]?.end ?? 0;
-         cuts.push({
-            start: from,
-            end: defs[defs.length - 1].exprEnd as number,
-         });
-         continue;
-      }
-      // Each dropped definition goes from the end of the definition kept
-      // before it (taking the comma between them), or, with none kept yet,
-      // from the colon through its own trailing comma.
-      let anchor = colon.end;
-      let keptBefore = false;
-      for (const [d, def] of defs.entries()) {
-         const exprEnd = def.exprEnd as number;
-         if (!drop[d]) {
-            keptBefore = true;
-            anchor = exprEnd;
-            continue;
-         }
-         const end = keptBefore ? exprEnd : (def.afterComma ?? exprEnd);
-         cuts.push({ start: anchor, end });
-         anchor = end;
-      }
-   }
-   let out = text;
-   for (const c of cuts.sort((a, b) => b.start - a.start)) {
-      out = out.slice(0, c.start) + (c.insert ?? "") + out.slice(c.end);
-   }
-   return { text: out, dropped, rewritten };
-}
-
-/**
- * The base a declaration (at `range` in `text`) extends, when it is a bare
- * source name (`<name> is <base> extend { … }` or `<name> is <base>`), else
- * undefined.
- */
-export function declaredBaseName(
-   text: string,
-   range: ServedCopyRange,
-): string | undefined {
-   const start = offsetOf(text, range.start);
-   const end = offsetOf(text, range.end);
-   if (start < 0 || end < start) return undefined;
-   const declaration = text.slice(start, end);
-   const tokens = topLevelTokens(declaration);
-   const spans = declarationSpans(declaration);
-   if (!tokens || !spans) return undefined;
-   const baseEnd = spans.extendStart ?? declaration.length;
-   const base = tokens.filter(
-      (t) => t.start > spans.nameEnd + 1 && t.end <= baseEnd,
-   );
-   if (base.length !== 1) return undefined;
-   const t = base[0];
-   if (t.kind === "word") return t.text;
-   return t.text.startsWith("`") ? t.text.slice(1, -1) : undefined;
 }
 
 /**

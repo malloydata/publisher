@@ -78,6 +78,7 @@ import {
 } from "./materialization_serve_transform";
 import {
    buildServedCopy,
+   declarationSpans,
    declaredBaseName,
    type InlinedJoin,
    type JoinedColumn,
@@ -943,6 +944,65 @@ export class ServedCopyServe {
       return undefined;
    }
 
+   /**
+    * For an extension table (P10), a `#(materialize)` source with a
+    * materialized ancestor: the trailing `extend` runs of its ancestors in its
+    * own file, root first, read from their declarations. Its table holds every
+    * one of their rows and stored columns, so its re-root keeps their blocks
+    * ahead of its own and loses no measure, join or view any of them declares.
+    * The walk goes up while each step is an `extend` or a rename whose
+    * declaration names the next source as its base, and stops at the root, a
+    * query-shaped source (whose own run it keeps), another file, or a
+    * declaration it cannot read. Undefined when the source is no extension
+    * table, or no materialized ancestor is on that walk: a source with none
+    * keeps only its own blocks (decision 2).
+    */
+   private keptBlocksFor(
+      reroot: Reroot & { sourceID: string },
+      map: SourceMap,
+      fileText: (url: string) => string | undefined,
+   ): string | undefined {
+      if (!this.materializePlans[reroot.sourceID]) return undefined;
+      const text = fileText(reroot.url);
+      if (text === undefined) return undefined;
+      const located = (def: unknown) => {
+         const loc = (
+            def as {
+               location?: { url?: string; range?: ServedCopyRange };
+            }
+         )?.location;
+         return loc?.url === reroot.url && loc.range ? loc.range : undefined;
+      };
+      const runs: string[] = [];
+      let materialized = false;
+      let node = map.node(reroot.sourceID);
+      for (let hops = 0; node && hops < 64; hops++) {
+         const base = node.base;
+         if (!base || base.hop === "query" || base.sourceID === undefined) {
+            break;
+         }
+         const parent = map.node(base.sourceID);
+         const range = located(node.def);
+         const parentRange = parent ? located(parent.def) : undefined;
+         if (!parent || !range || !parentRange) break;
+         // `name@<url>`: the parent's declared name in this file.
+         const declared = base.sourceID.slice(0, base.sourceID.indexOf("@"));
+         if (declaredBaseName(text, range) !== declared) break;
+         const from = offsetOf(text, parentRange.start);
+         const to = offsetOf(text, parentRange.end);
+         if (from < 0 || to < from) break;
+         const declaration = text.slice(from, to);
+         const spans = declarationSpans(declaration);
+         if (!spans) break;
+         if (spans.extendStart !== undefined) {
+            runs.unshift(declaration.slice(spans.extendStart).trimEnd());
+         }
+         materialized ||= this.materializePlans[base.sourceID] !== undefined;
+         node = parent;
+      }
+      return materialized ? runs.join(" ") : undefined;
+   }
+
    private async compile(
       key: string,
       generation: number,
@@ -978,24 +1038,42 @@ export class ServedCopyServe {
       }
       // An extension of a re-rooted source reads it by name already, and
       // re-rooting the extension too would replace the base it inherits its
-      // parent's fields from (a `#(materialize)` extension inherits the
-      // annotation, so it has a table of its own). Leave it as written.
-      // The chain comes from the compiled `extends`, which Malloy records only
-      // in a model with the persistence flag (a `#(materialize)` model needs
-      // none), so the declaration's own text, `<name> is <base> extend …`,
-      // answers too.
+      // parent's fields from. Leave it as written, unless it is an extension
+      // table (P10): a `#(materialize)` source with its own table, whose
+      // re-root keeps its ancestors' blocks in its file (`keptBlocks`), so it
+      // loses nothing it inherits from them.
+      // The chain comes from the source map; the declaration's own text,
+      // `<name> is <base> extend …`, answers too, for a chain the compiled
+      // model does not record.
       const rerootedIDs = new Set(candidates.map((c) => c.reroot.sourceID));
       const rerootedNames = new Set(candidates.map((c) => c.reroot.sourceName));
-      candidates = candidates.filter((c) => {
+      const readsRerootedBase = (c: (typeof candidates)[number]) => {
          const node = map.node(c.reroot.sourceID);
          const chain = node ? map.chainOf(node.def) : [];
-         if (chain.slice(1).some((id) => rerootedIDs.has(id))) return false;
+         if (chain.slice(1).some((id) => rerootedIDs.has(id))) return true;
          const text = lift.fileText(c.reroot.url);
          const base =
             text === undefined
                ? undefined
                : declaredBaseName(text, c.reroot.range);
-         return base === undefined || !rerootedNames.has(base);
+         return base !== undefined && rerootedNames.has(base);
+      };
+      // An extension table that does not compile over its kept blocks falls
+      // back to what it was before P10: left as written when it reads a
+      // re-rooted base, else re-rooted with its own blocks only.
+      const withoutKept = new Map<
+         (typeof candidates)[number],
+         (typeof candidates)[number] | undefined
+      >();
+      candidates = candidates.flatMap((c) => {
+         const kept = this.keptBlocksFor(c.reroot, map, (u) =>
+            lift.fileText(u),
+         );
+         const reads = readsRerootedBase(c);
+         if (kept === undefined) return reads ? [] : [c];
+         const extension = { ...c, reroot: { ...c.reroot, keptBlocks: kept } };
+         withoutKept.set(extension, reads ? undefined : c);
+         return [extension];
       });
       // Inlined joins kept as written because the copy did not compile with
       // their records (see keepInlinedJoins, below), and pair tables dropped
@@ -1135,6 +1213,24 @@ export class ServedCopyServe {
                if (keepInlinedJoins(err)) continue;
                const detail = err instanceof Error ? err.message : String(err);
                if (withoutPairs(detail)) continue;
+               if (withoutKept.size > 0) {
+                  // Try again without the extension tables' own re-roots,
+                  // reporting each, before giving up the whole copy.
+                  for (const c of withoutKept.keys()) {
+                     problems.push({
+                        sourceName: c.reroot.sourceName,
+                        reason: "compile_failed",
+                        detail,
+                     });
+                  }
+                  candidates = candidates.flatMap((c) => {
+                     if (!withoutKept.has(c)) return [c];
+                     const fallback = withoutKept.get(c);
+                     return fallback ? [fallback] : [];
+                  });
+                  withoutKept.clear();
+                  continue;
+               }
                problems.push({
                   reason: classifyServedCopyFailure(err),
                   detail,
@@ -1235,6 +1331,7 @@ export class ServedCopyServe {
                   (!hasOwnNode(servedMap, c.reroot.sourceID) &&
                      appliesFilters(c.reroot.authorDef))),
          );
+         for (const c of [...lost, ...unscoped]) withoutKept.delete(c);
          if (lost.length > 0 || unscoped.length > 0) {
             for (const c of lost) {
                problems.push({

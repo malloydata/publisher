@@ -100,7 +100,9 @@ async function lift(files: Record<string, string>, entry = "m.malloy") {
    const plans = Object.values(c.materializePlans ?? {}) as MaterializePlan[];
    expect(plans.length).toBe(1);
    const [plan] = plans;
-   const copy = buildCopyText(files[entry], plan, { liftAccess: true });
+   const copy = buildCopyText(files[entry], plan, undefined, {
+      liftAccess: true,
+   });
    if (!("copy" in copy)) throw new Error(copy.reason);
    const connection = await pkg.getMalloyConnection!("duckdb");
    const author = await fieldsOf(files, entry, plan.sourceName, connection);

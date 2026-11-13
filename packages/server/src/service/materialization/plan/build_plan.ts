@@ -60,6 +60,8 @@ import { tryCompileMaterializeCompanion } from "./materialize_compile";
 import { persistedViewRefusalFinding } from "./persisted_view";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
 import { rollingWindowsOf } from "./rolling_window";
+import { tryCompileRollupCompanion } from "./rollup_compile";
+import { rollupRefusalFinding } from "./rollup_plan";
 import { getMaterializeEnabled } from "../../../config";
 import { admitGivenPositions, type DynamicTerm } from "./persist_dynamic_terms";
 import { resolvePartitionColumns } from "./persist_partition";
@@ -77,6 +79,7 @@ import {
    presentAs,
    recordTarget,
    renameBuildSourceIDs,
+   withoutSourceIDs,
    sourceBuildsOf,
    type SourceBuild,
 } from "./addressing";
@@ -621,8 +624,16 @@ async function collectGeneratedMaterialize(
       generatedPlans.set(source, plan);
       rename.set(source.sourceID, plan.sourceID);
    }
+   // A source declared in a generated file that no plan names (a parent an
+   // extension's build copy re-roots on its build source, and the extension
+   // over it, P10) is on that build source's table: not a build of its own.
+   const unplannedGenerated = (id: string) =>
+      !rename.has(id) &&
+      generated.generatedURLs.has(id.slice(id.indexOf("@") + 1));
    parts.builds.push(
-      ...sourceBuildsOf(targets).map((b) => renameBuildSourceIDs(b, rename)),
+      ...sourceBuildsOf(targets).map((b) =>
+         renameBuildSourceIDs(withoutSourceIDs(b, unplannedGenerated), rename),
+      ),
    );
    // The gate is the author's, on the author's source, reading the author's
    // givens: classified there. The companion imports the source but declares
@@ -658,6 +669,99 @@ async function collectGeneratedMaterialize(
               args.modelPath,
            )
          : { classification: "rejected", attributed: false };
+   }
+}
+
+/**
+ * The `#(preaggregate)` rollups (materialization v2, phase 4) a model declares:
+ * one build source per rollup, planned only in the model that declares its
+ * base, so a rollup is listed once however many models import the base. Each
+ * keeps its compiled `sourceID` (`<rollup>@<declaring model>.preaggregate.malloy`)
+ * and is reported under the declaring model's path.
+ *
+ * A rollup whose build reads a given is left out with a warning: its table
+ * would hold one given value's rows, served to every caller.
+ */
+async function collectGeneratedRollups(
+   parts: BuildPlanParts,
+   args: {
+      modelPath: string;
+      packagePath: string;
+      getRuntime: SynthesizedRuntimeFactory;
+      modelDef: unknown;
+   },
+): Promise<void> {
+   const { generated, refused } = await tryCompileRollupCompanion(args);
+   for (const refusal of refused) {
+      addAnnotationFinding(
+         parts,
+         rollupRefusalFinding(refusal, args.modelPath),
+      );
+   }
+   if (!generated) return;
+   const all = await generated.runtime.getBuildTargets(generated.model);
+   const planByName = new Map(
+      generated.plans.map((p) => [p.rollupSourceName, p]),
+   );
+   for (const target of all.connections.flatMap((c) => c.targets)) {
+      if (!target.readsGivens) continue;
+      for (const source of target.sources) {
+         const plan = planByName.get(source.name);
+         if (!plan) continue;
+         addAnnotationFinding(
+            parts,
+            rollupRefusalFinding(
+               {
+                  tier: "unservable",
+                  code: "preaggregate-reads-given",
+                  message:
+                     `#(preaggregate) rollup of source "${plan.baseSourceName}" at ` +
+                     `(${plan.grainDimensions.join(", ")}) is not built, so its measures ` +
+                     "are served live: its rows read a given, and a table holds one " +
+                     "value's rows.",
+                  sourceName: plan.baseSourceName,
+               },
+               args.modelPath,
+            ),
+         );
+      }
+   }
+   const targets = {
+      ...all,
+      connections: all.connections.map((c) => ({
+         ...c,
+         targets: c.targets.filter((t) => !t.readsGivens),
+      })),
+   };
+   const kept = new Set<string>();
+   for (const source of plannedSources(targets)) {
+      const plan = planByName.get(source.name);
+      if (!plan) continue;
+      kept.add(source.sourceID);
+      parts.sources[source.sourceID] = source;
+      recordTarget(parts, source.sourceID, source);
+      parts.sourceModelPaths[source.sourceID] = args.modelPath;
+      parts.preaggregatePlans[source.sourceID] = plan;
+   }
+   parts.builds.push(...sourceBuildsOf(targets));
+   if (kept.size === 0) return;
+   const givens = Array.from(
+      generated.model.givens.values(),
+   ) as unknown as MalloyGiven[];
+   const deps = createGateClassificationDeps(
+      givens.map(malloyGivenToApi),
+      `${args.modelPath}#preaggregate`,
+   );
+   for (const source of plannedSources(targets)) {
+      if (!kept.has(source.sourceID)) continue;
+      parts.sourceGateOutcomes[source.sourceID] =
+         await classifyPersistSourceGate(
+            source,
+            generated.model._modelDef,
+            generated.materializer,
+            deps,
+            `${args.modelPath}#preaggregate`,
+         );
    }
 }
 
@@ -875,6 +979,13 @@ export async function collectModelBuildPlan(
          getRuntime,
          malloyModel,
          materializer,
+      });
+      // `#(preaggregate)` (phase 4), under the same switch.
+      await collectGeneratedRollups(parts, {
+         modelPath,
+         packagePath,
+         getRuntime,
+         modelDef: malloyModel._modelDef,
       });
    }
 
