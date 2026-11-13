@@ -1364,6 +1364,29 @@ export class ServedCopyServe {
             (typePlan?.unservable ?? []).map((m) => m.column),
          );
          columnsLeftOut = [...leftOut];
+         // A nest of the persisted query a destination did not store (a lake
+         // that cannot hold a repeated record): left out like a column no
+         // type reads, so only a query through it answers live, as the serve
+         // shape kept the traversal local.
+         if (perColumn) {
+            const stored = new Set(
+               binding.schema.map((c) => c.name.toLowerCase()),
+            );
+            for (const f of (def.fields ?? []) as {
+               name?: unknown;
+               as?: unknown;
+               join?: unknown;
+            }[]) {
+               const name = String(f.as ?? f.name ?? "");
+               if (
+                  typeof f.join === "string" &&
+                  name !== "" &&
+                  !stored.has(name.toLowerCase())
+               ) {
+                  columnsLeftOut.push(name);
+               }
+            }
+         }
          // Each with its field's annotations (`#(doc)`, `# label`, `#
          // percent` on the query's output field), as a `#(materialize)` column
          // carries them, so the stored field reads back as the author's.
@@ -1398,7 +1421,20 @@ export class ServedCopyServe {
          }
       }
       // A column the `type:` cannot declare faithfully would fail the whole
-      // model's copy, not just this source: leave this one to its fallback.
+      // model's copy, not just this source. Under the v1 cutover's
+      // per-column handling it is left out (a nest a destination stores as a
+      // type Malloy cannot read back, say), so only a query that reads it
+      // answers live, as the serve shape kept it local; otherwise the
+      // source is left to its fallback.
+      if (!plan && this.host.perColumnTypes?.() === true) {
+         const undeclarable = columns
+            .filter((c) => storedMalloyType(c.type) === undefined)
+            .map((c) => c.name);
+         if (undeclarable.length > 0 && undeclarable.length < columns.length) {
+            columns = columns.filter((c) => !undeclarable.includes(c.name));
+            columnsLeftOut = [...columnsLeftOut, ...undeclarable];
+         }
+      }
       if (columns.some((c) => storedMalloyType(c.type) === undefined)) {
          problems.push({
             sourceName,
@@ -1458,7 +1494,10 @@ export class ServedCopyServe {
          ...(inlinedJoins.length > 0 ? { inlinedJoins } : {}),
          ...(columnsLeftOut.length > 0 ? { columnsLeftOut } : {}),
          ...(!plan && this.host.perColumnTypes?.() === true
-            ? { keepsIncludes: true as const }
+            ? {
+                 keepsIncludes: true as const,
+                 dropsUnstoredExcepts: true as const,
+              }
             : {}),
          sourceID: node.sourceID,
          authorDef: node.def,
@@ -1589,6 +1628,22 @@ export class ServedCopyServe {
       const rerootedIDs = new Set(candidates.map((c) => c.reroot.sourceID));
       const rerootedNames = new Set(candidates.map((c) => c.reroot.sourceName));
       const throughBase: NonNullable<Compiled["throughBase"]>[number][] = [];
+      // Only through refinements (`extend`, rename): a query-shaped source
+      // (`child is base -> { … }`) starts rows of its own, which its own table
+      // holds, so it is re-rooted on that table even when its base is too, as
+      // the serve shape read a chained child's own table.
+      const refinesRerootedSource = (sourceID: string): boolean => {
+         let node = map.node(sourceID);
+         for (let hops = 0; node && hops < 64; hops++) {
+            const base = node.base;
+            if (!base || base.hop === "query" || base.sourceID === undefined) {
+               return false;
+            }
+            if (rerootedIDs.has(base.sourceID)) return true;
+            node = map.node(base.sourceID);
+         }
+         return false;
+      };
       const readsRerootedBase = (c: (typeof candidates)[number]) => {
          const node = map.node(c.reroot.sourceID);
          const chain = node ? map.chainOf(node.def) : [];
@@ -1598,7 +1653,7 @@ export class ServedCopyServe {
                ? undefined
                : declaredBaseName(text, c.reroot.range);
          const reads =
-            chain.slice(1).some((id) => rerootedIDs.has(id)) ||
+            refinesRerootedSource(c.reroot.sourceID) ||
             (base !== undefined && rerootedNames.has(base));
          if (reads) {
             throughBase.push({

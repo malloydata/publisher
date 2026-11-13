@@ -3,6 +3,11 @@
 // ==== <pkg>/base.malloy
 ##! experimental { persistence }
 ##! experimental { virtual_source }
+type: orders_rollup__served is {
+   status::string,
+   regions::number,
+   t::number
+}
 type: orders_base__served is {
    region::string,
    status::string,
@@ -15,7 +20,18 @@ import "raw.malloy"
 source: orders_base is __served_copy_alias_of_lake.virtual('97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef')::orders_base__served
 
 #@ persist name="orders_rollup" storage="lake"
-source: orders_rollup is orders_base -> {
-  group_by: status
-  aggregate: regions is count(), t is total_amount.sum()
+source: orders_rollup is __served_copy_alias_of_lake.virtual('b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463')::orders_rollup__served
+
+// ==== <pkg>/rollup.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: orders_rollup_x__served is {
+   region::string,
+   statuses::number,
+   t::number
 }
+
+import "base.malloy"
+
+#@ persist name="orders_rollup_x" storage="lake"
+source: orders_rollup_x is __served_copy_alias_of_lake.virtual('45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd')::orders_rollup_x__served

@@ -17,8 +17,8 @@
     ],
     "verdicts": [
       "orders_base:serves",
-      "orders_rollup:live:served_copy",
-      "orders_rollup_x:live:served_copy"
+      "orders_rollup:serves",
+      "orders_rollup_x:serves"
     ],
     "warnings": []
   },
@@ -72,7 +72,7 @@
           {
             "kind": "materialized",
             "outcome": "used",
-            "tableId": "8c2bf9a494a8b47b9c6c6a775e60743cfd4d9aff10c10303af8020ffa8b5b370"
+            "tableId": "885c3a22adcd8bbaf839648f46134db6cfa303fb7775d64d4823cc2c419da9fe"
           }
         ],
         "notConsidered": [],
@@ -89,7 +89,7 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "8c2bf9a494a8b47b9c6c6a775e60743cfd4d9aff10c10303af8020ffa8b5b370",
+          "tableId": "885c3a22adcd8bbaf839648f46134db6cfa303fb7775d64d4823cc2c419da9fe",
           "via": "served_copy"
         },
         "warnings": []
@@ -148,7 +148,7 @@
           {
             "kind": "materialized",
             "outcome": "used",
-            "tableId": "8c2bf9a494a8b47b9c6c6a775e60743cfd4d9aff10c10303af8020ffa8b5b370"
+            "tableId": "8c121a419b30f0213986a811a8456baaf58a05e2036b4f6d49e49c490f2cb390"
           }
         ],
         "notConsidered": [
@@ -173,7 +173,7 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "8c2bf9a494a8b47b9c6c6a775e60743cfd4d9aff10c10303af8020ffa8b5b370",
+          "tableId": "8c121a419b30f0213986a811a8456baaf58a05e2036b4f6d49e49c490f2cb390",
           "via": "served_copy"
         },
         "warnings": []
@@ -317,7 +317,7 @@
           {
             "kind": "materialized",
             "outcome": "used",
-            "tableId": "8c2bf9a494a8b47b9c6c6a775e60743cfd4d9aff10c10303af8020ffa8b5b370"
+            "tableId": "885c3a22adcd8bbaf839648f46134db6cfa303fb7775d64d4823cc2c419da9fe"
           }
         ],
         "notConsidered": [],
@@ -334,7 +334,7 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "8c2bf9a494a8b47b9c6c6a775e60743cfd4d9aff10c10303af8020ffa8b5b370",
+          "tableId": "885c3a22adcd8bbaf839648f46134db6cfa303fb7775d64d4823cc2c419da9fe",
           "via": "served_copy"
         },
         "warnings": []
@@ -393,7 +393,7 @@
           {
             "kind": "materialized",
             "outcome": "used",
-            "tableId": "8c2bf9a494a8b47b9c6c6a775e60743cfd4d9aff10c10303af8020ffa8b5b370"
+            "tableId": "8c121a419b30f0213986a811a8456baaf58a05e2036b4f6d49e49c490f2cb390"
           }
         ],
         "notConsidered": [
@@ -418,7 +418,7 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "8c2bf9a494a8b47b9c6c6a775e60743cfd4d9aff10c10303af8020ffa8b5b370",
+          "tableId": "8c121a419b30f0213986a811a8456baaf58a05e2036b4f6d49e49c490f2cb390",
           "via": "served_copy"
         },
         "warnings": []

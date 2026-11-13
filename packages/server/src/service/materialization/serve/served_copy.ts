@@ -45,6 +45,7 @@ import {
    declarationSpans,
    declaredBaseName,
    dropDimensions,
+   dropExceptItems,
    inverseRenameBlocks,
    rewriteDimensions,
 } from "../declaration_text";
@@ -147,6 +148,13 @@ export interface Reroot {
     * output; the re-root writes no access modifier of its own.
     */
    keepsIncludes?: true;
+   /**
+    * With {@link keepsIncludes}: an `except:` item naming no stored column
+    * (a v1 `storage=` table stores public columns only) is deleted from the
+    * kept text, since the re-rooted source has nothing of that name to
+    * exclude and Malloy refuses the statement (`dropExceptItems`).
+    */
+   dropsUnstoredExcepts?: true;
    /**
     * For a `#(materialize)` source that inlines a join_many: its stored table
     * is a pair table (P5), read as the source itself with no join
@@ -748,6 +756,7 @@ export function rerootDeclaration(
       | "inlinedJoins"
       | "computedAtRead"
       | "keepsIncludes"
+      | "dropsUnstoredExcepts"
    > & { columns?: Reroot["columns"] },
 ): string | undefined {
    const spans = declarationSpans(declaration, {
@@ -768,7 +777,18 @@ export function rerootDeclaration(
       spans.extendStart === undefined
          ? ""
          : declaration.slice(spans.extendStart).trimEnd();
-   const kept = [r.keptBlocks?.trim() ?? "", own].filter(Boolean).join(" ");
+   let kept = [r.keptBlocks?.trim() ?? "", own].filter(Boolean).join(" ");
+   if (r.dropsUnstoredExcepts) {
+      const stored = new Set(
+         (r.columns ?? []).map((c) => c.name.toLowerCase()),
+      );
+      const edited = dropExceptItems(
+         kept,
+         (name) => !stored.has(name.toLowerCase()),
+      );
+      if (edited === undefined) return undefined;
+      kept = edited.text;
+   }
    // The table stores a renamed field under its new name; the kept text
    // renames it from the old one, so the old name is given back first.
    const renames = inverseRenameBlocks(
