@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — In development: a colocated `#(materialize)` is built and served from its own warehouse
+
+Behind `PUBLISHER_MATERIALIZE` (off by default). A `#(materialize)` source with no `storage=` is built into its own warehouse again (it needs a `name=` there, since its default table could be the one it reads), and the served copy answers it from that table, read on the source's own connection exactly as a `storage=` table is read in its destination. Everything the served copy does for `storage=` applies: stored computed dimensions and timeframes, `inline=` joins and pair tables, private and internal fields, given and rolling-window terms re-applied at read, extension tables built over their parent's table, and row-level gates grafted and proven on the served compile. A source reached only through a join now reads its table too. It needs no storage tier (`PERSIST_STORAGE_MODE` decides only `storage=` tables), and a gated one is built and served only with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on, as a `storage=` one is. An answer from colocated tables alone reports no `servedFrom`, as a colocated `#@ persist` answer does; its path report names the table, `via: "served_copy"`. The "colocated #(materialize) is not served yet" warning is gone. v1's colocated `#@ persist` is unchanged, served through Malloy's build manifest. No API field or enum changes. See [docs/materialization.md](docs/materialization.md).
+
 ## [Unreleased] — In development: the inline uniqueness check skips an unchanged table, and `#(carries)` reads the served copy
 
 Two materialization v2 limitations lifted, both behind `PUBLISHER_MATERIALIZE` (off by default).
