@@ -63,6 +63,7 @@
 
 import type {
    MalloyConfig,
+   ModelDef,
    ModelMaterializer,
    QueryMaterializer,
 } from "@malloydata/malloy";
@@ -130,6 +131,7 @@ import {
    unmatchedRowProblem,
    type JoinRollupLeg,
 } from "./join_rollup";
+import { compileDeclaringFileVariant } from "./declaring_file_variant";
 import { timeframeRestatements, typeDeclaration } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import type { ServeBinding } from "./materialization_serve_transform";
@@ -205,6 +207,8 @@ interface CompiledVariant {
 interface RollupQuery {
    /** The run target's name in the author's model. */
    localName: string;
+   /** The run target's `sourceID`. */
+   sourceID: string;
    /** The run target's compiled definition. */
    struct: object;
    shape: ReturnType<typeof queryShapeOf>;
@@ -229,6 +233,8 @@ interface ExtensionDimension {
 /** What a variant declares for the queried source beyond the rollup's fields. */
 interface VariantTarget {
    localName: string;
+   /** The run target's `sourceID`: the variant redeclares it in its declaring file. */
+   sourceID: string;
    struct: object;
    views: readonly string[];
    dimensions: readonly ExtensionDimension[];
@@ -416,6 +422,7 @@ export class RollupVariantServe {
       );
       const query: RollupQuery = {
          localName,
+         sourceID,
          struct,
          shape,
          views,
@@ -755,6 +762,7 @@ export class RollupVariantServe {
          {
             kind: "base",
             localName,
+            sourceID: query.sourceID,
             struct: query.struct,
             views: query.views,
             dimensions,
@@ -894,7 +902,6 @@ export class RollupVariantServe {
       use: VariantUse,
       table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
    ): Promise<CompiledVariant> {
-      const { localName } = use;
       // A join leg reads a colocated rollup only (attemptJoin).
       if (use.kind === "join" && table.binding) {
          return { error: "a join leg reads a colocated rollup only" };
@@ -903,6 +910,27 @@ export class RollupVariantServe {
       const packageConfig = this.packageConfig;
       if (!packagePath || !packageConfig) return { error: "no context" };
       const modelPath = this.host.modelPath();
+      const modelFile = path.join(packagePath, modelPath);
+      const queryModelURL = pathToFileURL(`${modelFile}.rollup.malloy`);
+      const destinations = this.host.serveDestinationConfig();
+      const config =
+         table.binding && destinations
+            ? servedCopyConfig(
+                 packageConfig,
+                 destinations(),
+                 new Set([table.binding.destinationName]),
+              )
+            : packageConfig;
+      if (use.kind === "base") {
+         return this.compileBase(plan, use, table, {
+            packagePath,
+            packageConfig,
+            config,
+            modelPath,
+            queryModelURL,
+         });
+      }
+      const { localName } = use;
       // The package's own reader, made once and only when a file is read.
       let reader: ReturnType<typeof createModelRuntime> | undefined;
       const readText = async (url: string) => {
@@ -919,85 +947,46 @@ export class RollupVariantServe {
             return undefined;
          }
       };
-      // What the queried source adds over the rollup's fields: an
-      // extension's dimensions over the grain, and the views the query reads.
-      const additions =
-         use.kind === "base" ? await variantAdditions(use, readText) : "";
-      if (typeof additions !== "string") return additions;
-      const modelFile = path.join(packagePath, modelPath);
-      const queryModelURL = pathToFileURL(`${modelFile}.rollup.malloy`);
       const overlay = new Map<string, string>();
-      // The rollup with its merged measures, then the base's name over it with
-      // the partial columns internal: readable by the measures, by no query.
+      // The rollup with its merged measures, then the author's source with
+      // the join re-pointed at it (A7).
       const servedName = `${plan.rollupSourceName}__served`;
-      let declaration: string;
-      if (table.binding) {
-         const typeName = `${plan.rollupSourceName}__type`;
-         const columns = table.binding.schema.map((c) => ({
-            name: c.name,
-            type: c.type,
-         }));
-         // malloy-text: the served copy's timeframe emitter, names through identifier
-         const timeframes = timeframeRestatements(
-            grainColumns(plan, this.host.modelDef()),
-         );
-         // malloy-text: the served copy's type emitter; rollupStatements re-emits the grammar's parse through malloy_text
-         declaration = `${typeDeclaration({ typeName, columns })}
-source: ${identifier(servedName)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)} extend {${timeframes}${rollupStatements(plan)}
-}
-${sourceOverRollup(plan, use, servedName, additions)}`;
-      } else {
-         // Colocated: import the build source from the declaring model's
-         // companion, so the build manifest substitutes its table.
-         const declared = splitSourceID(plan.baseSourceID);
-         const companion = declared
-            ? rollupCompanionURLOf(declared.url)
+      // Colocated: import the build source from the declaring model's
+      // companion, so the build manifest substitutes its table.
+      const declared = splitSourceID(plan.baseSourceID);
+      const companion = declared
+         ? rollupCompanionURLOf(declared.url)
+         : undefined;
+      let declaringFile: string | undefined;
+      try {
+         declaringFile = declared ? fileURLToPath(declared.url) : undefined;
+      } catch {
+         declaringFile = undefined;
+      }
+      const text =
+         companion && declaringFile
+            ? generateRollupBuildFile([plan], path.basename(declaringFile))
             : undefined;
-         let declaringFile: string | undefined;
-         try {
-            declaringFile = declared ? fileURLToPath(declared.url) : undefined;
-         } catch {
-            declaringFile = undefined;
-         }
-         const text =
-            companion && declaringFile
-               ? generateRollupBuildFile([plan], path.basename(declaringFile))
-               : undefined;
-         if (!companion || !text) return { error: "no companion" };
-         overlay.set(overlayKey(companion.href), text);
-         // The shared, checked blanking (persist_blanking.ts), read through
-         // the package's own reader, as the build companion reads them.
-         const blanked = await persistBlankedFiles(
-            this.host.modelDef(),
-            readText,
-         );
-         if (!blanked) return { error: "a `#@` line could not be left out" };
-         for (const [url, file] of blanked) overlay.set(url, file);
-         const built = `${plan.rollupSourceName}__built`;
-         declaration = `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(relativeImport(queryModelURL, companion.href) ?? "")}
+      if (!companion || !text) return { error: "no companion" };
+      overlay.set(overlayKey(companion.href), text);
+      // The shared, checked blanking (persist_blanking.ts), read through
+      // the package's own reader, as the build companion reads them.
+      const blanked = await persistBlankedFiles(this.host.modelDef(), readText);
+      if (!blanked) return { error: "a `#@` line could not be left out" };
+      for (const [url, file] of blanked) overlay.set(url, file);
+      const built = `${plan.rollupSourceName}__built`;
+      const declaration = `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(relativeImport(queryModelURL, companion.href) ?? "")}
 source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan)}
 }
-${sourceOverRollup(plan, use, servedName, additions)}`;
-      }
-      const text = queryModelText(
+${sourceOverRollup(plan, use, servedName, "")}`;
+      const modelText = queryModelText(
          this.host.modelDef(),
          queryModelURL,
          pathToFileURL(modelFile).href,
-         use.kind === "join"
-            ? { alias: new Map([[localName, parentAlias(plan)]]) }
-            : { skip: new Set([localName]) },
+         { alias: new Map([[localName, parentAlias(plan)]]) },
          declaration,
       );
-      overlay.set(overlayKey(queryModelURL.href), text);
-      const destinations = this.host.serveDestinationConfig();
-      const config =
-         table.binding && destinations
-            ? servedCopyConfig(
-                 packageConfig,
-                 destinations(),
-                 new Set([table.binding.destinationName]),
-              )
-            : packageConfig;
+      overlay.set(overlayKey(queryModelURL.href), modelText);
       const { runtime, importBaseURL } = await createModelRuntime(
          packagePath,
          modelPath,
@@ -1007,6 +996,129 @@ ${sourceOverRollup(plan, use, servedName, additions)}`;
       const materializer = runtime.loadModel(queryModelURL, { importBaseURL });
       await materializer.getModel();
       return { materializer };
+   }
+
+   /**
+    * Compile a base variant: the query's run target redeclared over the
+    * rollup in an overlay of ITS OWN DECLARING FILE
+    * (`declaring_file_variant.ts`), so it keeps the author's `sourceID` and
+    * carries the run target's gates as note lines, which `govern()` grafts
+    * and proves on the variant (R3) when the router lets it past an
+    * entry-point gate. A colocated rollup's build source is imported from
+    * the companion beside its base's declaring file, generated over the copy
+    * of that file when it is the overlaid one, so its build SQL (and so its
+    * address) is the build plan's.
+    */
+   private async compileBase(
+      plan: RollupVariantPlan,
+      use: Extract<VariantUse, { kind: "base" }>,
+      table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
+      ctx: {
+         packagePath: string;
+         packageConfig: ModelConnectionInput;
+         config: ModelConnectionInput;
+         modelPath: string;
+         queryModelURL: URL;
+      },
+   ): Promise<CompiledVariant> {
+      const modelDef = this.host.modelDef() as ModelDef | undefined;
+      if (!modelDef) return { error: "no model" };
+      const servedName = `${plan.rollupSourceName}__served`;
+      const base = splitSourceID(plan.baseSourceID);
+      const companion = base ? rollupCompanionURLOf(base.url) : undefined;
+      return compileDeclaringFileVariant({
+         packagePath: ctx.packagePath,
+         modelPath: ctx.modelPath,
+         packageConfig: ctx.packageConfig,
+         config: ctx.config,
+         modelDef,
+         sourceID: use.sourceID,
+         copySuffix: ".rollup-author.malloy",
+         queryModelURL: ctx.queryModelURL,
+         flags: flagLine(modelDef),
+         declare: async ({
+            gates,
+            sourceName,
+            copyName,
+            declaringURL,
+            addFile,
+         }) => {
+            // What the run target adds over the rollup's fields: an
+            // extension's dimensions over the grain, and the views the
+            // query reads, as the author wrote them.
+            const additions = await variantAdditions(use, (url) =>
+               this.readAuthorText(ctx, url),
+            );
+            if (typeof additions !== "string") return additions;
+            const over = sourceOverRollup(
+               plan,
+               { ...use, localName: sourceName },
+               servedName,
+               additions,
+            );
+            if (table.binding) {
+               const typeName = `${plan.rollupSourceName}__type`;
+               const columns = table.binding.schema.map((c) => ({
+                  name: c.name,
+                  type: c.type,
+               }));
+               // malloy-text: the served copy's timeframe emitter, names through identifier
+               const timeframes = timeframeRestatements(
+                  grainColumns(plan, modelDef),
+               );
+               // malloy-text: the served copy's type emitter; rollupStatements re-emits the grammar's parse through malloy_text; the gates are the author's notes, single lines
+               return `${typeDeclaration({ typeName, columns })}
+source: ${identifier(servedName)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)} extend {${timeframes}${rollupStatements(plan)}
+}
+${gates}${over}`;
+            }
+            // Colocated: the build source from the base's companion, so the
+            // build manifest substitutes its table.
+            let baseFile: string | undefined;
+            try {
+               baseFile = base ? fileURLToPath(base.url) : undefined;
+            } catch {
+               baseFile = undefined;
+            }
+            if (!companion || !baseFile) return { error: "no companion" };
+            const overlaid =
+               overlayKey(pathToFileURL(baseFile)) === overlayKey(declaringURL);
+            const text = generateRollupBuildFile(
+               [plan],
+               overlaid ? copyName : path.basename(baseFile),
+            );
+            if (!text) return { error: "no companion" };
+            addFile(companion, text);
+            const built = `${plan.rollupSourceName}__built`;
+            // malloy-text: names through identifier; the gates are the author's notes, single lines
+            return `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(relativeImport(declaringURL, companion.href) ?? "")}
+source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan)}
+}
+${gates}${over}`;
+         },
+      });
+   }
+
+   /** A file of the author's package, read through the package's own reader. */
+   private async readAuthorText(
+      ctx: {
+         packagePath: string;
+         packageConfig: ModelConnectionInput;
+         modelPath: string;
+      },
+      url: string,
+   ): Promise<string | undefined> {
+      try {
+         const { runtime } = await createModelRuntime(
+            ctx.packagePath,
+            ctx.modelPath,
+            ctx.packageConfig,
+         );
+         const read = await runtime.urlReader.readURL(new URL(url));
+         return typeof read === "string" ? read : read.contents;
+      } catch {
+         return undefined;
+      }
    }
 }
 
