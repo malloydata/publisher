@@ -417,3 +417,37 @@ describe("errorCodeOf", () => {
       expect(stackFrames(new Error(DRIVER_MESSAGE))).not.toContain(ROW_VALUE);
    });
 });
+
+describe("stackFrames", () => {
+   // A row value can hold anything, a stored stack trace included, and a cast
+   // error quotes it whole: its lines must not pass for frames.
+   const framed = `could not convert '${ROW_VALUE}\n    at ${ROW_VALUE} (x.ts:1:1)' to INTEGER`;
+
+   it("drops a frame-shaped line of the message", () => {
+      const frames = stackFrames(new Error(framed));
+      expect(frames).not.toContain(ROW_VALUE);
+      expect(frames).toContain("never_log.spec.ts");
+   });
+
+   it("drops a subclass's message, named or not", () => {
+      class DriverError extends Error {
+         override name = "DriverError";
+      }
+      expect(stackFrames(new DriverError(framed))).not.toContain(ROW_VALUE);
+      expect(stackFrames(new Error(""))).toContain("never_log.spec.ts");
+   });
+
+   it("logs no frames when the stack no longer holds the message", () => {
+      // A stack read before the message changed keeps the old message, which
+      // nothing can tell from frames.
+      const err = new Error(framed);
+      void err.stack;
+      err.message = "rewritten";
+      expect(stackFrames(err)).toBeUndefined();
+      // Cut short, it is still found in the stack, but not as the header.
+      const cut = new Error(framed);
+      void cut.stack;
+      cut.message = framed.slice(0, 10);
+      expect(stackFrames(cut)).toBeUndefined();
+   });
+});

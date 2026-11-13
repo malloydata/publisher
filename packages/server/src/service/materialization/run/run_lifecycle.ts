@@ -208,11 +208,31 @@ export class RunLifecycle {
 }
 
 /**
- * An error's stack frames without its first line, which repeats the message:
- * where a failure was thrown, for a log that may not carry what it said.
+ * An error's stack frames without the message it opens with: where a failure
+ * was thrown, for a log that may not carry what it said. The message is cut
+ * off by its own text, since a line of it (a quoted row value) can look like
+ * a frame. A stack whose header is not the message, because the message
+ * changed after the stack was read, gives no frames.
  */
 export function stackFrames(err: unknown): string | undefined {
-   if (!(err instanceof Error) || !err.stack) return undefined;
-   const frames = err.stack.split("\n").filter((line) => /^\s+at /.test(line));
+   if (!(err instanceof Error) || typeof err.stack !== "string") {
+      return undefined;
+   }
+   const { stack, message } = err;
+   // With no message, the header is the error's name alone.
+   const at = message === "" ? 0 : stack.indexOf(message);
+   const end = message === "" ? stack.indexOf("\n") : at + message.length;
+   if (
+      at < 0 ||
+      end < 0 ||
+      stack.slice(0, at).includes("\n") ||
+      (end < stack.length && stack[end] !== "\n")
+   ) {
+      return undefined;
+   }
+   const frames = stack
+      .slice(end)
+      .split("\n")
+      .filter((line) => /^\s+at /.test(line));
    return frames.length > 0 ? frames.join("\n") : undefined;
 }
