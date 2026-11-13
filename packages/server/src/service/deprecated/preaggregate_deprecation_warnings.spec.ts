@@ -1,16 +1,16 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// DEPRECATED FEATURE COVERAGE: delete with the `#@ -persist` and
-// `#@ preaggregate` readers (refused at 1.0.0, removed in 1.1).
+// DEPRECATED FEATURE COVERAGE: delete with the `#@ preaggregate` reader
+// (refused at 1.0.0, removed in 1.1).
 
 /**
  * With materialization v2 switched on (`PUBLISHER_MATERIALIZE`), a package
- * that declares `#@ -persist` gets one coded warning per declaration, in the
- * file that declares it, naming the v2 rewrite, and one per measure that
- * declares `#@ preaggregate` (whose v2 spelling, `#(preaggregate)`, is read
- * there). Off, it gets none, but usage is still counted. Either way the
- * package loads and builds as before. Drives
+ * gets one coded warning per measure that declares `#@ preaggregate` (whose
+ * v2 spelling, `#(preaggregate)`, is read there). Off, it gets none, but
+ * usage is still counted. `#@ -persist` is Malloy core's opt-out and is not
+ * deprecated (plan, question 5, decided 2026-11-12): it gets no warning and
+ * no count. Either way the package loads and builds as before. Drives
  * `Package.create` on the worker path, as the other warnings specs do.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -61,12 +61,9 @@ source: orders is ${ROWS} extend {
 source: orders_ext is orders extend { dimension: big is amt > 10 }
 `;
 
-const CODES = new Set([
-   "deprecated-persist-opt-out",
-   "deprecated-preaggregate-annotation",
-]);
+const CODES = new Set(["deprecated-preaggregate-annotation"]);
 
-describe("deprecation warnings for #@ -persist and #@ preaggregate", () => {
+describe("deprecation warnings for #@ preaggregate, and none for #@ -persist", () => {
    let tempDir: string;
    let pool: PackageLoadPool;
    let duckdb: DuckDBConnection;
@@ -124,48 +121,17 @@ describe("deprecation warnings for #@ -persist and #@ preaggregate", () => {
       );
    }
 
-   it("warns once per declaration, in its own file, naming the v2 rewrite", async () => {
+   it("does not warn about #@ -persist, which Publisher keeps honouring", async () => {
       write("models/v1.malloy", MODEL);
-      // An importer, and extensions in the declaring file, carry the same
-      // notes but declare none: none of them is reported.
-      write(
-         "models/uses.malloy",
-         `##! experimental.persistence\nimport { summary_fresh, orders } from "v1.malloy"\n\nsource: again is summary_fresh extend {}\nsource: more is orders extend {}\n`,
-      );
+      const pkg = await load(true);
 
-      const found = (await deprecations(true)).filter(
-         (w) => w.code === "deprecated-persist-opt-out",
-      );
-
-      expect(found.map((w) => [w.model, w.subject, w.code])).toEqual([
-         ["models/v1.malloy", "summary_fresh", "deprecated-persist-opt-out"],
-      ]);
-      expect(found[0].severity).toBe("warn");
-      expect(found[0].message).toContain("docs/materialization-migration.md");
-      expect(found[0].message).toContain(
-         "Source summary_fresh uses #@ -persist, which is deprecated",
-      );
-      expect(found[0].message).toContain("#(materialize)");
-   });
-
-   it("reports each definition of a multi-definition statement, and nothing a same-named file elsewhere declares", async () => {
-      // `sub/models/v1.malloy` ends in `models/v1.malloy`: its notes reach
-      // `models/v1.malloy` through the import and must stay its own.
-      write("sub/models/v1.malloy", MODEL);
-      write(
-         "models/v1.malloy",
-         `##! experimental.persistence\nimport { summary_fresh } from "../sub/models/v1.malloy"\n\nsource: again is summary_fresh extend {}\n\n#@ -persist\nsource: a is ${ROWS}, b is ${ROWS}\nsource: a_ext is a extend {}\n`,
-      );
-
-      const found = (await deprecations(true)).filter(
-         (w) => w.code === "deprecated-persist-opt-out",
-      );
-
-      expect(found.map((w) => [w.model, w.subject])).toEqual([
-         ["models/v1.malloy", "a"],
-         ["models/v1.malloy", "b"],
-         ["sub/models/v1.malloy", "summary_fresh"],
-      ]);
+      const warnings = pkg.getPackageMetadata().warnings ?? [];
+      expect(
+         warnings.some((w) => w.code === "deprecated-persist-opt-out"),
+      ).toBe(false);
+      expect(
+         warnings.some((w) => (w.message ?? "").includes("#@ -persist")),
+      ).toBe(false);
    });
 
    it("counts a measure an include list annotates, once per measure, and nothing an extension carries", async () => {
