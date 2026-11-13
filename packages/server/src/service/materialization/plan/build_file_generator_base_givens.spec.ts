@@ -340,3 +340,41 @@ source: sibling is parent extend { dimension: tag2 is 'y' }
       { timeout: 30000 },
    );
 });
+
+describe("the content address over a base scoped by a given", () => {
+   it(
+      "is the same whatever the given's default, and the build SQL holds neither value",
+      async () => {
+         const text = (org: number) => `${SCOPED.replace(
+            "ORG_ID :: number is 1",
+            `ORG_ID :: number is ${org}\n  MIN_AMT :: number is ${org * 100 + 37}`,
+         )}
+source: mid is scoped extend { dimension: tag is pick 'me' when mine else 'other' }
+#(materialize) storage="lake"
+source: orders is mid extend {
+  where: amount >= $MIN_AMT
+  measure: n is count()
+}
+`;
+         const sqls: string[] = [];
+         for (const org of [1, 7]) {
+            const { c } = await compiled(text(org));
+            const p = planOf(c, "orders");
+            expect(names(p)).toEqual(["mid", "scoped"]);
+            expect(p?.leftOut?.map((d) => d.dimension).sort()).toEqual([
+               "mine",
+               "tag",
+            ]);
+            const source = Object.values(c.sources).find(
+               (s) => s.name === "orders",
+            );
+            const sql = addressSQL(source!, c.targets?.[p!.sourceID]);
+            expect(sql).not.toContain(String(org * 100 + 37));
+            expect(sql).not.toMatch(new RegExp(`=\\s*${org}\\b`));
+            sqls.push(sql);
+         }
+         expect(sqls[1]).toBe(sqls[0]);
+      },
+      { timeout: 30000 },
+   );
+});
