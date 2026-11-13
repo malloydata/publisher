@@ -697,6 +697,53 @@ describe("the emitted model", () => {
       expect(text).toContain("#@ persist");
    });
 
+   it("imports a base from the file that declares it, under its declared name (#6646)", async () => {
+      const plans = (await planFor(BODY)).map((plan) => ({
+         ...plan,
+         baseSourceName: "o",
+         baseSourceID: "orders@file:///pkg/sub/jaffle.malloy",
+      }));
+      const text = synthesizePreaggregationModel(plans, "report.malloy", {
+         importPathForFile: (url) =>
+            url === "file:///pkg/sub/jaffle.malloy"
+               ? "sub/jaffle.malloy"
+               : undefined,
+      }) as string;
+      // The importer renamed it `o`; its own file calls it `orders`.
+      expect(text).toContain(
+         `import { ${baseAlias("o")} is orders } from "sub/jaffle.malloy"`,
+      );
+      expect(text).not.toContain("report.malloy");
+   });
+
+   it("imports from the model itself when the resolver gives no path", async () => {
+      const plans = (await planFor(BODY)).map((plan) => ({
+         ...plan,
+         baseSourceID: "orders@https://example.com/orders.malloy",
+      }));
+      expect(
+         synthesizePreaggregationModel(plans, "orders.malloy", {
+            importPathForFile: () => undefined,
+         }),
+      ).toContain(
+         `import { ${baseAlias("orders")} is orders } from "orders.malloy"`,
+      );
+   });
+
+   it("backticks a declared name that is not a plain identifier, even one holding '@'", async () => {
+      const plans = (await planFor(BODY)).map((plan) => ({
+         ...plan,
+         baseSourceID: "order items@v2@file:///pkg/jaffle.malloy",
+      }));
+      expect(
+         synthesizePreaggregationModel(plans, "report.malloy", {
+            importPathForFile: () => "jaffle.malloy",
+         }),
+      ).toContain(
+         `import { ${baseAlias("orders")} is \`order items@v2\` } from "jaffle.malloy"`,
+      );
+   });
+
    it("stores partials and re-declares each measure under its ORIGINAL name", async () => {
       const text = synthesizePreaggregationModel(
          await planFor(BODY),
@@ -1276,5 +1323,40 @@ source: alpha is duckdb.sql("""${ROWS}""") extend {
       const contents = (compiled as any)._modelDef.contents;
       const plans = planModelPreaggregation(contents);
       expect(plans.map((p) => p.baseSourceName)).toEqual(["alpha", "zulu"]);
+   });
+});
+
+describe("the companion quotes every name it emits", () => {
+   // A measure or grain dimension named with a Malloy keyword (or anything
+   // that needs backticks) is legal in the author's model; emitted bare, the
+   // companion fails to compile and every rollup in the model serves live.
+   it("compiles for a keyword-named measure and grain dimension", async () => {
+      const body =
+         "  dimension: `date` is order_date\n" +
+         "  measure:\n" +
+         '    #@ preaggregate grain="date"\n' +
+         "    `count` is count()";
+      const plans = await planFor(body);
+      expect(plans).toHaveLength(1);
+      const companion = synthesizePreaggregationModel(
+         plans,
+         "file:///m.malloy",
+      )!;
+      expect(companion).toContain("`count`");
+      expect(companion).toContain("    `date`\n");
+      const runtime = new Runtime({
+         urlReader: new InMemoryURLReader(
+            new Map([
+               ["file:///m.malloy", authorModel(body)],
+               ["file:///m.malloy.preagg.malloy", companion],
+            ]),
+         ),
+         connections,
+      });
+      await expect(
+         runtime
+            .loadModel(new URL("file:///m.malloy.preagg.malloy"))
+            .getModel(),
+      ).resolves.toBeDefined();
    });
 });

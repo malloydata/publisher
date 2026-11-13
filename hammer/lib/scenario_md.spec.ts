@@ -266,6 +266,7 @@ describe("scenario grammar: every step must verify something", () => {
          "warns",
          "rejected",
          "republish",
+         "preview",
          "await",
          "delete",
          "reclaim",

@@ -11,7 +11,11 @@
  */
 
 import { components } from "../../api";
-import { GIVENS_DOCS_URL } from "../../constants";
+import { getMaterializeEnabled } from "../../config";
+import {
+   GIVENS_DOCS_URL,
+   MATERIALIZATION_MIGRATION_DOCS_URL,
+} from "../../constants";
 import {
    recordDeprecatedUsage,
    type DeprecatedFeature,
@@ -27,6 +31,8 @@ type ApiPackageWarning = NonNullable<
 const DEPRECATED_MALLOYNB_NOTEBOOK = "deprecated-malloynb-notebook";
 /** `PackageWarning.code` of a source's deprecated `#(filter)` annotations warning. */
 const DEPRECATED_FILTER_ANNOTATION = "deprecated-filter-annotation";
+/** `PackageWarning.code` of a measure's deprecated `#@ preaggregate` warning. */
+const DEPRECATED_PREAGGREGATE_ANNOTATION = "deprecated-preaggregate-annotation";
 
 /** One deprecated format's warnings over a package's models. */
 type DeprecatedLint = (
@@ -66,24 +72,63 @@ const filterAnnotations: DeprecatedLint = (models) =>
       })),
    );
 
+/**
+ * One per measure a file declares `#@ preaggregate` on (however many grains),
+ * naming the source (`subject`) and the measure. Its v2 spelling is
+ * `#(preaggregate) grain=[…]`, which materialization v2's phase 4 builds.
+ */
+const preaggregateAnnotations: DeprecatedLint = (models) =>
+   Array.from(models).flatMap(([modelPath, model]) =>
+      model
+         .declaredDeprecatedPersistAnnotations()
+         .map(({ source, measure }) => ({
+            model: modelPath,
+            subject: source,
+            code: DEPRECATED_PREAGGREGATE_ANNOTATION,
+            severity: "warn" as const,
+            message:
+               `Measure ${measure} on source ${source} uses #@ preaggregate, ` +
+               `which is deprecated: its v2 spelling is #(preaggregate) ` +
+               `grain=[…] (see ${MATERIALIZATION_MIGRATION_DOCS_URL}). ` +
+               `Until you switch, #@ preaggregate still builds and serves ` +
+               `its rollups.`,
+         })),
+   );
+
 const DEPRECATED_LINTS: readonly {
    feature: DeprecatedFeature;
    lint: DeprecatedLint;
+   /**
+    * Whether the warning is shown. Usage is counted either way, as the
+    * evidence for when to start warning. Absent: always shown.
+    */
+   shown?: () => boolean;
 }[] = [
    { feature: "malloynb", lint: malloynbNotebooks },
    { feature: "filter_annotation", lint: filterAnnotations },
+   // `#(preaggregate)` is read, built and served with the switch on, so the
+   // warning points at a spelling that works there.
+   {
+      feature: "preaggregate_annotation",
+      lint: preaggregateAnnotations,
+      shown: getMaterializeEnabled,
+   },
 ];
 
 /** Every deprecated format's warnings, in registry order. */
 export function deprecatedFormatWarnings(
    models: ReadonlyMap<string, Model>,
 ): ApiPackageWarning[] {
-   return DEPRECATED_LINTS.flatMap(({ lint }) => lint(models));
+   return DEPRECATED_LINTS.flatMap(({ lint, shown }) =>
+      shown === undefined || shown() ? lint(models) : [],
+   );
 }
 
 /**
  * Count each deprecated-format warning as one use of its feature: a
- * `.malloynb` file, or a source declaring `#(filter)`. Called once per load
+ * `.malloynb` file, a source declaring `#(filter)`, or a measure declaring
+ * `#@ preaggregate`, whether or not its warning is shown.
+ * Called once per load
  * or reload; the warnings themselves are computed per request, so they are
  * not where to count.
  */

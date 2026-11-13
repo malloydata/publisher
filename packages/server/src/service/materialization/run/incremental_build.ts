@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { logger } from "../../../logger";
+import {
+   persistSourceDeclaredColumns,
+   persistSourceQueryTimezone,
+   rebuildWouldRecast,
+   STORED_COLUMN_TYPE_MISMATCH_CODE,
+   type StoredColumnTypeMismatch,
+} from "../stored_column_types";
 import type { PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import {
@@ -32,6 +39,7 @@ import type { QueryMetadata } from "../../query_metadata";
 import { errMessage } from "../../../utils";
 import {
    applyDeltaScript,
+   isPairGuardFailure,
    INCREMENTAL_SOURCE_RANGE_DIALECTS,
    INCREMENTAL_TARGET_DML_DIALECTS,
    isRenderableWatermarkType,
@@ -240,6 +248,17 @@ export function incrementalLineage(params: {
    // Backstop behind the publish-time refusal: a merge whose scope could not be
    // resolved must never be ISSUED. No lineage means a seed: slower, but correct.
    if (mergeKeys.length > 0 && d.scopeIncomplete) return undefined;
+   // A pair table's delta replaces whole parents by its key, in DuckDB, the
+   // target of every `storage=` table (pairDeltaStatements). Anything else
+   // seeds: a pair whose merge key is not its parent key was planned wrong.
+   if (
+      d.pair &&
+      (params.targetDialect !== "duckdb" ||
+         mergeKeys.length !== 1 ||
+         mergeKeys[0] !== d.pair.parentKey)
+   ) {
+      return undefined;
+   }
    return {
       physicalTableName: params.physicalTableName,
       connectionName: params.connectionName,
@@ -250,6 +269,8 @@ export function incrementalLineage(params: {
       mergeKeys,
       scopeColumns: d.scopeColumns,
       strategy: d.strategy as IncrementalStrategy,
+      ...(d.rollingWindow?.length ? { rollingWindow: d.rollingWindow } : {}),
+      ...(d.pair ? { pair: d.pair } : {}),
    };
 }
 
@@ -524,7 +545,26 @@ export async function applyIncrementalStep(params: {
    // One call, so the range replace's DELETE and INSERT commit or roll back
    // together (see deltaScript). A failure leaves the table and the boundary
    // as they were; the next run recomputes the same range.
-   await applyDeltaScript(target.runner, target.dialect, step.statements);
+   try {
+      await applyDeltaScript(target.runner, target.dialect, step.statements);
+   } catch (err) {
+      // A pair delta whose parent-row check failed was rolled back: rebuild
+      // in full, which writes the flag over the whole table (fail safe).
+      if (!lineage.pair || !isPairGuardFailure(err)) throw err;
+      reportIncrementalStep({
+         step: {
+            mode: "seed",
+            reasonCode: "pair_parent_row",
+            reason:
+               "the delta would leave a parent without exactly one " +
+               "parent-row flag, so it was rolled back",
+         },
+         sourceName: params.sourceName,
+         packageName: context.packageName,
+         physicalTableName: lineage.physicalTableName,
+      });
+      return { applied: false };
+   }
    await advanceLedger({
       context,
       lineage,
@@ -676,7 +716,10 @@ export function incrementalRunContext(
    // declaration, so that source builds full.
    const declarations: Record<string, IncrementalDeclaration> = {};
    for (const [sourceID, declaration] of Object.entries(
-      collectIncrementalDeclarations(compiled.sources),
+      collectIncrementalDeclarations(
+         compiled.sources,
+         compiled.materializePlans,
+      ),
    )) {
       if (declaration.incremental) declarations[sourceID] = declaration;
    }
@@ -803,13 +846,43 @@ export function storageRefreshFor(params: {
             buildSQL: params.buildSQL,
             queryMetadata: params.queryMetadata,
          });
-         const step = await planSourceRefresh({
+         // A table an older build typed (ms2data/service#6642): a delta only
+         // INSERTs into the columns it has, so only a re-seed's CTAS casts them.
+         const recast = await columnsARebuildWouldRecast(
+            session,
+            quotedTablePath,
+            persistSource,
+         );
+         let step = await planSourceRefresh({
             context,
             lineage,
             target,
             columns: deriveColumns(persistSource).map((c) => String(c.name)),
-            reseed: instruction.reseed,
+            reseed: instruction.reseed || recast.length > 0,
          });
+         if (
+            recast.length > 0 &&
+            step.mode === "seed" &&
+            step.reasonCode === "forced" &&
+            !instruction.reseed &&
+            !context.forceRefresh
+         ) {
+            step = {
+               ...step,
+               reason:
+                  `the stored table holds ${recast
+                     .map((m) => `\`${m.column}\` as ${m.storedType}`)
+                     .join(
+                        ", ",
+                     )}, which a rebuild stores as the declared type, ` +
+                  `and a delta cannot change a column's type`,
+            };
+            logger.info("Re-seeding to store declared column types", {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               sourceName: persistSource.name,
+               columns: recast,
+            });
+         }
          const outcome = await applyIncrementalStep({
             context,
             lineage,
@@ -840,4 +913,35 @@ export function storageRefreshFor(params: {
             runner: (sql) => session.runSQL(sql),
          }),
    };
+}
+
+/**
+ * The stored columns a rebuild would cast to their declared type, read from
+ * the destination table (see rebuildWouldRecast). None when the table cannot be
+ * described: a missing table seeds anyway.
+ */
+export async function columnsARebuildWouldRecast(
+   session: { runSQL(sql: string): Promise<unknown> },
+   quotedTablePath: string,
+   persistSource: PersistSource,
+): Promise<StoredColumnTypeMismatch[]> {
+   let rows: Record<string, unknown>[];
+   try {
+      const result = (await session.runSQL(`DESCRIBE ${quotedTablePath}`)) as
+         | Record<string, unknown>[]
+         | { rows?: Record<string, unknown>[] };
+      rows = Array.isArray(result) ? result : (result.rows ?? []);
+   } catch {
+      return [];
+   }
+   const schema = rows.flatMap((r) =>
+      typeof r.column_name === "string" && typeof r.column_type === "string"
+         ? [{ name: r.column_name, type: r.column_type }]
+         : [],
+   );
+   return rebuildWouldRecast(
+      schema,
+      persistSourceDeclaredColumns(persistSource),
+      { queryTimezone: persistSourceQueryTimezone(persistSource) },
+   );
 }

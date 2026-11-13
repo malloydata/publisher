@@ -2,12 +2,12 @@
   "frozenConfig": false,
   "servingApiEnabled": true,
   "adminApiEnabled": true,
-  "port": 4000,
+  "port": null,
   "host": null,
   "rateLimit": 0,
   "frameAncestors": "'self'",
   "callerHeader": "x-publisher-caller",
-  "packageVersioning": "off",
+  "packageVersioning": "on",
   "versionPromotion": "on-publish",
   "packageInlineFields": "on",
   "modelPage": "explorer",
@@ -19,6 +19,7 @@
     "corsOrigins": [],
     "configFileEnabled": true,
     "includeHiddenFilesAndSources": false,
+    "appOrigin": null,
     "trace": null
   },
   "admin": {
@@ -59,6 +60,7 @@
   "duckdb": {
     "extensionFetchPolicy": "on-demand",
     "memoryLimit": null,
+    "threads": null,
     "tempDirectory": null,
     "partitionedWriteFlushThreshold": "8192"
   },
@@ -68,7 +70,12 @@
   },
   "persist": {
     "storageMode": "off",
-    "collisionEnforcementEnabled": false
+    "addressIncludesDestination": false,
+    "collisionEnforcementEnabled": true
+  },
+  "materialize": {
+    "enabled": false,
+    "gatedSources": false
   },
   "materialization": {
     "schedulerEnabled": false,
@@ -91,6 +98,11 @@
   "shutdown": {
     "drainDurationSeconds": 0,
     "gracefulCloseTimeoutSeconds": 0
+  },
+  "workloadLog": {
+    "store": "off",
+    "retentionDays": 30,
+    "maxRows": 1000000
   },
   "retrieval": {
     "llm": {

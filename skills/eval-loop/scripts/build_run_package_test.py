@@ -301,6 +301,25 @@ class RefusalsAndServing(unittest.TestCase):
         self.assertEqual(json.loads(body)["location"], str(out.resolve()))
 
 
+class AVersionPerBuild(unittest.TestCase):
+    """A rebuilt report publishes as a new version, which becomes `latest`."""
+
+    def test_each_build_declares_a_higher_version(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        manifest = tmp / "publisher.json"
+        manifest.write_text(json.dumps({"name": "eval-run", "version": "1.0.0"}))
+        build_run_package.stamp_version(manifest)
+        first = json.loads(manifest.read_text())
+        build_run_package.stamp_version(manifest)
+        second = json.loads(manifest.read_text())
+        self.assertEqual(first["name"], "eval-run")
+        major_minor = [v["version"].rsplit(".", 1)[0] for v in (first, second)]
+        self.assertEqual(major_minor, ["1.0", "1.0"])
+        patches = [int(v["version"].rsplit(".", 1)[1]) for v in (first, second)]
+        self.assertGreater(patches[1], patches[0])
+
+
 class Register(unittest.TestCase):
     """`package` registers the report on the truth server itself."""
 

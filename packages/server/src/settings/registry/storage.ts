@@ -1,8 +1,62 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import fs from "fs";
+import os from "os";
 import { setting } from "../setting";
 import { boolean, integer, oneOf, string } from "../types";
+
+/**
+ * The whole CPUs a cgroup CPU quota allows, from a quota and period in
+ * microseconds; undefined for no quota (v2 `max`, v1 `-1`) or text that is not
+ * one. A fractional quota rounds up: half a CPU still runs one thread.
+ */
+export function cgroupCpuLimit(
+   quota: string | undefined,
+   period: string | undefined,
+): number | undefined {
+   const limit = Math.ceil(Number(quota) / Number(period));
+   return Number.isFinite(limit) && limit >= 1 ? limit : undefined;
+}
+
+/** The CPUs the cgroup CPU quota allows (v2, else v1); undefined for none. */
+function cgroupQuota(): number | undefined {
+   const reads: (() => [string | undefined, string | undefined])[] = [
+      // cgroup v2: "<quota> <period>", or "max <period>" for none.
+      () => {
+         const [quota, period] = fs
+            .readFileSync("/sys/fs/cgroup/cpu.max", "utf8")
+            .trim()
+            .split(/\s+/);
+         return [quota, period];
+      },
+      // cgroup v1: the quota is -1 for none.
+      () => [
+         fs.readFileSync("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "utf8").trim(),
+         fs.readFileSync("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "utf8").trim(),
+      ],
+   ];
+   for (const read of reads) {
+      try {
+         return cgroupCpuLimit(...read());
+      } catch {
+         // Not this cgroup version, or not Linux.
+      }
+   }
+   return undefined;
+}
+
+/**
+ * The CPUs this process may run on: the host's (its CPU affinity), bounded by
+ * a cgroup CPU quota when the container sets one, as DuckDB bounds its own
+ * default. `os.availableParallelism()` reports the node's cores inside a
+ * CPU-limited container.
+ */
+export function availableCpus(): number {
+   const cpus = os.availableParallelism();
+   const quota = cgroupQuota();
+   return quota === undefined ? cpus : Math.min(cpus, quota);
+}
 
 /** The configuration design's `duckdb`, `ducklake`, `persist`, `materialization` table. */
 export const storage = [
@@ -24,6 +78,19 @@ export const storage = [
          "memory_limit of every DuckDB session, as a DuckDB size (1GB), or off; unset warns at boot.",
       notes: "DuckDB `memory_limit` applied to **every** DuckDB session and instance Publisher owns, as a flat value (`1GB`, `512MB`) passed to DuckDB verbatim. `off` or unset leaves DuckDB's own default, which is roughly 80% of the container's memory computed **per instance** \u2014 so N instances in one process commit N times that share, and the kernel kills the process while each of them still believes it is inside its budget. Measured in a 3 GiB container: three instances each reported a 2.3 GiB limit, 6.9 GiB of committed budget against 3 GiB of real memory. **Sizing:** the divisor is not a number of builds. Count 1 metadata store + 1 serve-shape gate session + 1 environment lookup funnel + one sandbox per loaded package \u00d7 `PACKAGE_LOAD_WORKERS` (package loads run in `worker_threads`, so same address space and same cgroup) + one per in-flight materialization build, and nothing bounds concurrent builds. Budget roughly (container memory \u2212 resident baseline) \u00f7 that count. DuckDB does not reserve the limit up front, so an idle instance costs far less than its budget \u2014 the limit caps what it may reach, and it is the sum of the caps that has to fit. Too low fails a query with a DuckDB out-of-memory error and leaves the process up, which is the intended trade against losing the pod and every package on it. Validated at startup.",
       aliases: { env: ["PUBLISHER_DUCKDB_MEMORY_LIMIT"] },
+   }),
+   setting({
+      key: "duckdb.threads",
+      // A thread count or `off`.
+      type: string(),
+      // Never more than DuckDB's own default would start: on a host or
+      // container with fewer than four CPUs, a flat 4 would raise each pool.
+      default: () => String(Math.min(4, availableCpus())),
+      defaultText: "`4`, or the CPUs available when fewer",
+      description:
+         "Threads each DuckDB instance starts with, unless its connection sets threads, or off.",
+      notes: "The size of the thread pool each DuckDB instance Publisher opens starts with, unless the connection sets its own `threads`. DuckDB's own default is one thread per core **per instance**, and Publisher opens many instances in one process: one sandbox per loaded package (and per version), one per file-backed DuckDB, DuckLake or Azure connection, one per in-flight materialization build, plus the metadata store. Measured on an 18-core host: about 15 threads per loaded package. The pools are fixed when each instance opens, so they add up, and the process fails when they reach the thread limit (`kern.num_taskthreads`, 12,288 per process on macOS; on Linux the cgroup `pids.max`, which Kubernetes and `docker run --pids-limit` often set to a few thousand): DuckDB reports `thread constructor failed: Resource temporarily unavailable`, and under Bun the process aborts with `panic: A C++ exception occurred`, taking every package with it. **Sizing:** count the instances as for `PUBLISHER_DUCKDB_MEMORY_LIMIT` and keep (instances × this) well under the limit. A higher value buys parallelism within one large local query (a scan of package-local Parquet or CSV); a dashboard's small queries rarely use more than a few threads. The default is `4`, or the CPUs the process may use when fewer (the host's, bounded by a cgroup v1 or v2 CPU quota), so it never starts a larger pool than DuckDB itself would. `off` restores DuckDB's one-per-core default, the behaviour before this setting existed. Applies at instance open, so a change takes effect for instances opened after a restart. A materialization build that lowers threads for a partitioned write (`PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`) still does so. Validated at startup.",
+      aliases: { env: ["PUBLISHER_DUCKDB_THREADS"] },
    }),
    setting({
       key: "duckdb.tempDirectory",
@@ -68,12 +135,39 @@ export const storage = [
       aliases: { env: ["PERSIST_STORAGE_MODE"] },
    }),
    setting({
-      key: "persist.collisionEnforcementEnabled",
+      key: "persist.addressIncludesDestination",
       type: boolean(),
       default: false,
       description:
+         "Fold a storage= source's destination into its content address (re-addresses every storage= table once).",
+      notes: "Materialization v2's P12: a `storage=` source's content address (its `sourceEntityId`) also covers the storage destination it builds into, so moving a source between colocated and `storage=`, or between destinations, gives it a new table instead of reusing or resolving the old one (#7087). The destination is folded in only when the source declares `storage=` and `PERSIST_STORAGE_MODE` is not `off`, so colocated addresses never move. **Turning it on re-addresses every `storage=` table once**: reuse misses, an incremental source re-seeds, each table rebuilds under its new address on its next run, and a `storage=` source serves live until it has. A table Publisher names itself (`name=` or the source's name) is rebuilt in place; a table a host instructed under a generational name is the host's to reclaim. Read once at startup: set it the same on every worker serving an environment and restart them together, or workers compute different addresses for the same source. Off by default; turn it on per deployment as a scheduled rollout, after checking the rebuild cost, and make the first run after it a full one so chained sources find their parents under the new address.",
+      aliases: { env: ["PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION"] },
+   }),
+   setting({
+      key: "materialize.enabled",
+      type: boolean(),
+      default: false,
+      description:
+         "Read #(materialize) and build its generated #@ persist sources (materialization v2, in development).",
+      notes: "Materialization v2's `#(materialize)` front end, still being built (phase 3). On, a source annotated `#(materialize)` gets a generated build source, a query-shaped `#@ persist` over the source in a companion model the package never shows, and the build plan builds it under the author's source name: the plan, a name-scoped run (`sourceNames` takes the author's name), the manifest, warnings and the path report never name the generated source. With `PERSIST_STORAGE_MODE=on`, a built `storage=` source is also served from its **served copy**: the author's own files, held in memory, with the source re-rooted on its stored table and each computed dimension read as the stored column of its own name (its `#(doc)` and other annotations kept on the field), so extensions, views, joins and importing files are the author's text unchanged; a query the served copy cannot answer falls back to today's serve path, then live. The served copy also re-roots a query-shaped `#@ persist storage=` source. A served copy that does not compile is a `served-copy-not-served` package warning. A reader that opts out with `#@ -persist` (Malloy core's opt-out, still supported) recomputes live, and the served copy declines it. On, a measure that declares v1's `#@ preaggregate` gets a `deprecated-preaggregate-annotation` warning naming its v2 spelling, `#(preaggregate)` ([materialization-migration.md](materialization-migration.md)); it still works as before. Off, `#(materialize)` is ignored and the build plan is exactly what it was. Read at startup. Leave it off outside development.",
+      aliases: { env: ["PUBLISHER_MATERIALIZE"] },
+   }),
+   setting({
+      key: "materialize.gatedSources",
+      type: boolean(),
+      default: false,
+      description:
+         "Let the served copy answer a query through a row-level gate, with the gate grafted on it (materialization v2's R3, in development).",
+      notes: "Materialization v2's R3, contracts at read, behind `PUBLISHER_MATERIALIZE` and off by default until the security review that question 14 of the plan asks for. Today a query whose entry point carries a row-level gate (`#(authorize)` with a row filter, `#(access_filter)`) is never answered from a `storage=` table. On, the served copy may answer it: the served copy is the author's own text, gates included, so the row filter is grafted and proven on the served compile exactly as on live, and only the served copy is let through; today's serve shape and rollups stay blocked. A gate that cannot be grafted on the served copy denies, as it does live. It also decides what is stored: on, a `#(materialize) storage=` source whose gate is its own row filter or lock is built and bound; off, it is refused as every gated `storage=` source is. Storing a gated source puts its columns in the managed tier, which is why this waits for the review. Read at startup.",
+      aliases: { env: ["PUBLISHER_MATERIALIZE_GATED_SOURCES"] },
+   }),
+   setting({
+      key: "persist.collisionEnforcementEnabled",
+      type: boolean(),
+      default: true,
+      description:
          "Refuse a publish where two persist sources resolve to the same table.",
-      notes: "Set to `true` to refuse a publish in which two persist sources of one package resolve to the same table in the same destination. Off, a collision is a warning; loading a package only ever warns.",
+      notes: "On by default: a publish in which two different persist sources of one package resolve to the same table in the same destination is refused, as is a build of such a package, before anything is written. Give each source a distinct `name=` to fix it. Set to `false` to opt out, which turns the refusal into a warning; loading a package only ever warns. Either way neither source is served from the shared table, which holds whichever build ran last: queries on both are answered live until each has its own `name=`. A `#(materialize)` source on another source's table is never built, whatever this says (`materialize-not-built`).",
       aliases: { env: ["PERSIST_COLLISION_ENFORCE"] },
    }),
    setting({

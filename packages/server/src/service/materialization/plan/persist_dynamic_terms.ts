@@ -4,6 +4,11 @@
 import { Annotations, type PersistSource } from "@malloydata/malloy";
 import { parseRouteTag } from "../../motly";
 import { collectGivenRefs } from "../../given";
+import {
+   NOW_OFFSET_UNITS,
+   type NowComparisonOp,
+   type NowOffsetUnit,
+} from "../../malloy_text";
 
 /**
  * Where a persist source's givens sit, and whether that lets the source be
@@ -189,16 +194,18 @@ function argumentBindsAGiven(node: unknown, depth = 0): boolean {
 }
 
 /**
- * Classify every given a persist source reads by POSITION, returning the
- * extend-block `where:` terms that may be stripped from the build and
- * re-applied at read, or the first position that cannot be.
+ * Admit or refuse a persist source by the POSITION of every given it reads,
+ * returning the extend-block `where:` terms that may be stripped from the
+ * build and re-applied at read, or the first position that cannot be.
  *
+ * The terms are the given-reading subset of {@link classifyWhereTerms}, the one
+ * `where:` term classifier; this pass decides only where the givens may sit.
  * The baked check runs FIRST: a baked given is the one position no serve shape
  * can rescue, so reporting anything else would send the author to the wrong
  * line. Fails closed: a given in a position this pass does not know is
  * refused, since the failure mode is serving one tenant's rows to another.
  */
-export function classifyDynamicTerms(
+export function admitGivenPositions(
    persistSource: PersistSource,
 ): DynamicTermClassification {
    let def: unknown;
@@ -211,7 +218,7 @@ export function classifyDynamicTerms(
 }
 
 /**
- * {@link classifyDynamicTerms} over a compiled source definition. Separate so a
+ * {@link admitGivenPositions} over a compiled source definition. Separate so a
  * joined source can be held to the same rule as the source joining it: `depth`
  * counts the admitted joins between here and the persisted source.
  */
@@ -243,7 +250,7 @@ function classifyDef(def: unknown, depth: number): DynamicTermClassification {
       const fieldRefusal = classifyFields(record.fields, joinedTerms, depth);
       if (fieldRefusal) return fieldRefusal;
 
-      const terms = collectDynamicTerms(record.filterList);
+      const terms = givenTerms(classifyWhereTerms(record));
 
       // Fail-closed sweep: `filterList` and `fields` were classified above and
       // `query` cleared by the baked check; a given anywhere else is refused.
@@ -514,7 +521,7 @@ function localFieldNames(entry: unknown): string[] {
 
 /**
  * The source's own read-time dynamic terms, INDEPENDENT of whether
- * {@link classifyDynamicTerms} admits it. That classification returns no terms
+ * {@link admitGivenPositions} admits it. That classification returns no terms
  * on a refusal, and the colocated gate does not refuse the positional cases, so
  * reading terms off it would yield an empty ("no scoping needed") scope for a
  * caller-scoped source. Callers that must not fail open (the incremental merge
@@ -526,8 +533,9 @@ export function readTimeDynamicTerms(
    try {
       const def = persistSource._sourceDef as unknown as {
          filterList?: unknown;
+         fields?: unknown;
       };
-      return collectDynamicTerms(def?.filterList);
+      return givenTerms(classifyWhereTerms(def ?? {}));
    } catch {
       // Unreadable is not "none": a caller that cannot see the terms must treat
       // the source as unscopable, which one empty-column term expresses.
@@ -535,9 +543,106 @@ export function readTimeDynamicTerms(
    }
 }
 
+/** A zero-based range in a Malloy file, as the compiler reports one. */
+export interface MalloyRange {
+   start: { line: number; character: number };
+   end: { line: number; character: number };
+}
+
+/** Where a term reads a field or a given, as its `refSummary` records it. */
+export interface TermUse {
+   url: string;
+   range: MalloyRange;
+}
+
+function termUse(use: unknown): TermUse | undefined {
+   const at = (use as { at?: { url?: unknown; range?: unknown } } | null)?.at;
+   const range = at?.range as MalloyRange | undefined;
+   if (
+      typeof at?.url !== "string" ||
+      typeof range?.start?.line !== "number" ||
+      typeof range?.start?.character !== "number" ||
+      typeof range?.end?.line !== "number" ||
+      typeof range?.end?.character !== "number"
+   ) {
+      return undefined;
+   }
+   return { url: at.url, range };
+}
+
 /**
- * The extend-block `where:` conjuncts that reference a given, each classified
- * whole (an `or` or range re-applies whole at read).
+ * Every place a filter entry reads a field or a given, as its `refSummary`
+ * records them, and the compiler's ids of the givens it reads (keys of
+ * `ModelDef.givens`). `at` is empty when any use carries no location: such a
+ * term cannot be placed, and a caller that must remove it from the build has
+ * to refuse rather than guess.
+ */
+function termLocations(entry: object): { at: TermUse[]; givenIds: string[] } {
+   const summary = (
+      entry as {
+         refSummary?: { fieldUsage?: unknown; givenUsage?: unknown };
+      }
+   ).refSummary;
+   const givenUsage = Array.isArray(summary?.givenUsage)
+      ? summary.givenUsage
+      : [];
+   const uses = [
+      ...(Array.isArray(summary?.fieldUsage) ? summary.fieldUsage : []),
+      ...givenUsage,
+   ].map(termUse);
+   const givenIds = givenUsage
+      .map((use) => (use as { id?: unknown } | null)?.id)
+      .filter((id): id is string => typeof id === "string");
+   return {
+      givenIds: [...new Set(givenIds)],
+      at:
+         uses.length > 0 && uses.every((u) => u !== undefined)
+            ? (uses as TermUse[])
+            : [],
+   };
+}
+
+/**
+ * The `where:` terms a compiled source applies that read a given, as their
+ * source text and the givens they read. These must be applied when a stored
+ * table is read; a source served from its table that lost one would answer
+ * every caller alike. A term whose text the compiler did not record has an
+ * empty `code`, so a caller comparing texts fails closed on it.
+ */
+export function givenReadingFilterTerms(
+   def: unknown,
+): { code: string; givens: string[] }[] {
+   const source = (def ?? {}) as { filterList?: unknown; fields?: unknown };
+   return givenTerms(classifyWhereTerms(source)).map((t) => ({
+      code: t.code,
+      givens: [...t.givens].sort(),
+   }));
+}
+
+/**
+ * The given-reading terms of a classification, in `where:` order: every term
+ * that reads a given, whether or not it also reads the current time. This is
+ * what v1 persistence strips from the build and re-applies at read
+ * (`strippedTerms`, the incremental merge scope, the merge-key check).
+ */
+export function givenTerms(
+   classified: readonly ClassifiedWhereTerm[],
+): DynamicTerm[] {
+   const out: DynamicTerm[] = [];
+   for (const { dependsOn } of classified) {
+      if (
+         dependsOn.kind === "given" ||
+         dependsOn.kind === "given_and_current_time"
+      ) {
+         out.push(dependsOn.term);
+      }
+   }
+   return out;
+}
+
+/**
+ * One extend-block `where:` conjunct that reads a given, classified whole (an
+ * `or` or range re-applies whole at read).
  *
  * {@link DynamicTerm.columns} ignores composition, so `a = $X or b = $Y`
  * contributes BOTH; a merge on `key AND a AND b` is narrower than the author's
@@ -548,18 +653,328 @@ export function readTimeDynamicTerms(
  * the shape re-emits every `filterList` entry, so the missing `given:`
  * declaration fails its compile and the binding is withheld (serves live).
  */
-function collectDynamicTerms(filterList: unknown): DynamicTerm[] {
-   if (!Array.isArray(filterList)) return [];
-   const terms: DynamicTerm[] = [];
-   for (const entry of filterList) {
+function dynamicTerm(entry: object): DynamicTerm {
+   const code = (entry as { code?: unknown }).code;
+   return {
+      code: typeof code === "string" ? code : "",
+      givens: givenNames(entry),
+      columns: localFieldNames(entry),
+   };
+}
+
+// ---------------------------------------------------------------------------
+// The one `where:` term classifier (materialization v2 plan, Consolidation):
+// every term of a compiled source by what it depends on beside the stored
+// columns: nothing (fixed), a given, the current time, or both.
+// ---------------------------------------------------------------------------
+
+/**
+ * A current-time term in the one shape a stored table can re-apply at read: a
+ * single comparison of a one-segment field with `now`, optionally offset by a
+ * whole number of one unit, read with the field on the left. The direction is
+ * the comparison: `>=`/`>` keep rows newer than the cut-off (a lower bound).
+ */
+export interface RollingWindow {
+   /** The field the term compares (a stored column, when it is stored). */
+   field: string;
+   /** As read with the field on the left. */
+   op: NowComparisonOp;
+   /** `now + sign * amount unit`; absent for a bare `now`. */
+   offset?: { sign: 1 | -1; amount: number; unit: NowOffsetUnit };
+}
+
+/** What one `where:` term of a compiled source depends on. */
+export type WhereTermDependency =
+   /** Neither a given nor the current time: built once, never re-applied. */
+   | { kind: "fixed" }
+   /**
+    * A given (P2): {@link DynamicTerm} as {@link dynamicTerm} reads it, with
+    * where it reads each field and given (see {@link termLocations}).
+    */
+   | {
+        kind: "given";
+        term: DynamicTerm;
+        at: TermUse[];
+        givenIds: string[];
+     }
+   /**
+    * The current time, directly or through a field or join that reads it.
+    * `window` is set only when the term is a {@link RollingWindow}.
+    */
+   | { kind: "current_time"; window?: RollingWindow }
+   /**
+    * Both a given and the current time. `term` is the whole term as v1
+    * persistence reads it (see {@link givenTerms}).
+    */
+   | { kind: "given_and_current_time"; term: DynamicTerm };
+
+/** One `where:` term of a compiled source, classified. */
+export interface ClassifiedWhereTerm {
+   /** The author's text of the term, or "" when the compiler recorded none. */
+   code: string;
+   dependsOn: WhereTermDependency;
+}
+
+/**
+ * Classify every `where:` term of a compiled source (its whole `filterList`,
+ * inherited terms included: an extension's list carries its parent's) by what
+ * it depends on. A term reads the current time when it spells `now`, or reads
+ * a field of the source whose value depends on it ({@link currentTimeFields}).
+ *
+ * This is the one reader of a source's `where:` terms for materialization:
+ * the build generator decides from it which terms build, which are re-applied
+ * at read and which refuse the source, and v1 persistence reads its
+ * given-reading subset ({@link givenTerms}).
+ */
+export function classifyWhereTerms(def: {
+   filterList?: unknown;
+   fields?: unknown;
+}): ClassifiedWhereTerm[] {
+   const list = Array.isArray(def.filterList) ? def.filterList : [];
+   const timeFields = currentTimeFields(def.fields);
+   const out: ClassifiedWhereTerm[] = [];
+   for (const entry of list) {
       if (entry === null || typeof entry !== "object") continue;
-      if (!readsAGiven(entry, new WeakSet())) continue;
-      const code = (entry as { code?: unknown }).code;
-      terms.push({
-         code: typeof code === "string" ? code : "",
-         givens: givenNames(entry),
-         columns: localFieldNames(entry),
-      });
+      const rawCode = (entry as { code?: unknown }).code;
+      const code = typeof rawCode === "string" ? rawCode : "";
+      const e = (entry as { e?: unknown }).e;
+      const readsTime = readsCurrentTime(e) || readsTimeField(e, timeFields);
+      const readsGiven = readsAGiven(entry, new WeakSet());
+      if (readsTime && readsGiven) {
+         out.push({
+            code,
+            dependsOn: {
+               kind: "given_and_current_time",
+               term: dynamicTerm(entry),
+            },
+         });
+      } else if (readsGiven) {
+         out.push({
+            code,
+            dependsOn: {
+               kind: "given",
+               term: dynamicTerm(entry),
+               ...termLocations(entry),
+            },
+         });
+      } else if (readsTime) {
+         // A window over a per-read field reads no stored column; the
+         // caller's stored-column check refuses it.
+         const window = readRollingWindow(entry);
+         out.push({
+            code,
+            dependsOn: window
+               ? { kind: "current_time", window }
+               : { kind: "current_time" },
+         });
+      } else {
+         out.push({ code, dependsOn: { kind: "fixed" } });
+      }
    }
-   return terms;
+   return out;
+}
+
+/** Whether a slice of compiled IR reads the current time (`now`). */
+export function readsCurrentTime(node: unknown, depth = 0): boolean {
+   if (depth > MAX_WALK_DEPTH) return true; // fail closed
+   if (node === null || typeof node !== "object") return false;
+   if (Array.isArray(node)) {
+      return node.some((item) => readsCurrentTime(item, depth + 1));
+   }
+   const record = node as Record<string, unknown>;
+   if (record.node === "now") return true;
+   for (const [key, value] of Object.entries(record)) {
+      // Locations and annotations carry no expression.
+      if (key === "at" || key === "location" || key === "annotations") continue;
+      if (readsCurrentTime(value, depth + 1)) return true;
+   }
+   return false;
+}
+
+const COMPARISONS: ReadonlySet<string> = new Set([">=", ">", "<", "<="]);
+const MIRROR: Record<NowComparisonOp, NowComparisonOp> = {
+   ">=": "<=",
+   ">": "<",
+   "<": ">",
+   "<=": ">=",
+};
+
+interface NowExpr {
+   node?: unknown;
+   kids?: Record<string, unknown>;
+   path?: unknown;
+   op?: unknown;
+   units?: unknown;
+   literal?: unknown;
+}
+
+/** `now` or `now ± <n> <unit>`, read as an offset; undefined for any other shape. */
+function readNow(
+   e: NowExpr | undefined,
+): { offset?: RollingWindow["offset"] } | undefined {
+   if (!e || typeof e !== "object") return undefined;
+   if (e.node === "now") return {};
+   if (e.node !== "delta") return undefined;
+   const base = e.kids?.base as NowExpr | undefined;
+   const delta = e.kids?.delta as NowExpr | undefined;
+   if (base?.node !== "now") return undefined;
+   if (delta?.node !== "numberLiteral" || typeof delta.literal !== "string") {
+      return undefined;
+   }
+   if (!/^\d+$/.test(delta.literal)) return undefined;
+   const amount = Number(delta.literal);
+   if (!Number.isSafeInteger(amount)) return undefined;
+   if (e.op !== "+" && e.op !== "-") return undefined;
+   if (
+      typeof e.units !== "string" ||
+      !(NOW_OFFSET_UNITS as readonly string[]).includes(e.units)
+   ) {
+      return undefined;
+   }
+   return {
+      offset: {
+         sign: e.op === "-" ? -1 : 1,
+         amount,
+         unit: e.units as NowOffsetUnit,
+      },
+   };
+}
+
+/** A one-segment field reference's name, or undefined. */
+function readField(e: NowExpr | undefined): string | undefined {
+   if (!e || e.node !== "field" || !Array.isArray(e.path)) return undefined;
+   if (e.path.length !== 1 || typeof e.path[0] !== "string") return undefined;
+   return e.path[0];
+}
+
+/** One filter entry as a {@link RollingWindow}, or undefined when its shape is not one. */
+export function readRollingWindow(entry: unknown): RollingWindow | undefined {
+   const e = (entry as { e?: NowExpr } | null)?.e;
+   if (!e || typeof e.node !== "string" || !COMPARISONS.has(e.node)) {
+      return undefined;
+   }
+   const left = e.kids?.left as NowExpr | undefined;
+   const right = e.kids?.right as NowExpr | undefined;
+   const op = e.node as NowComparisonOp;
+   const leftField = readField(left);
+   const rightNow = readNow(right);
+   if (leftField !== undefined && rightNow) {
+      return { field: leftField, op, ...rightNow };
+   }
+   const rightField = readField(right);
+   const leftNow = readNow(left);
+   if (rightField !== undefined && leftNow) {
+      return { field: rightField, op: MIRROR[op], ...leftNow };
+   }
+   return undefined;
+}
+
+/** The dotted field paths an expression reads. */
+function fieldPaths(node: unknown, out: Set<string>, depth = 0): void {
+   if (depth > MAX_WALK_DEPTH || node === null || typeof node !== "object") {
+      return;
+   }
+   if (Array.isArray(node)) {
+      for (const item of node) fieldPaths(item, out, depth + 1);
+      return;
+   }
+   const record = node as Record<string, unknown>;
+   if (
+      record.node === "field" &&
+      Array.isArray(record.path) &&
+      record.path.length > 0 &&
+      record.path.every((p) => typeof p === "string")
+   ) {
+      out.add((record.path as string[]).join("."));
+   }
+   for (const [key, value] of Object.entries(record)) {
+      if (key === "at" || key === "location" || key === "annotations") continue;
+      fieldPaths(value, out, depth + 1);
+   }
+}
+
+/**
+ * Whether a dotted path names a field in `timeFields`, or reads through a join
+ * there (a join whose own `where:` or `on` reads the current time makes every
+ * value read through it depend on it).
+ */
+function dependsOnCurrentTime(
+   path: string,
+   timeFields: ReadonlySet<string>,
+): boolean {
+   const parts = path.split(".");
+   for (let i = 1; i <= parts.length; i++) {
+      if (timeFields.has(parts.slice(0, i).join("."))) return true;
+   }
+   return false;
+}
+
+/** Whether an expression reads a field whose value depends on the current time. */
+function readsTimeField(e: unknown, timeFields: ReadonlySet<string>): boolean {
+   if (timeFields.size === 0) return false;
+   const paths = new Set<string>();
+   fieldPaths(e, paths);
+   return [...paths].some((p) => dependsOnCurrentTime(p, timeFields));
+}
+
+/**
+ * Every field of a source whose value depends on the current time, as a dotted
+ * path: it reads `now`, or reads (through any chain of the source's fields,
+ * joined ones included) one that does. A join whose own `where:` or `on` reads
+ * the current time is listed by its own name, since every value read through
+ * it depends on it. Such a dimension is never stored, since its value differs
+ * per read.
+ */
+export function currentTimeFields(fields: unknown, depth = 0): Set<string> {
+   const out = new Set<string>();
+   if (!Array.isArray(fields) || depth > MAX_WALK_DEPTH) return out;
+   const deps = new Map<string, Set<string>>();
+   for (const raw of fields) {
+      const f = raw as {
+         name?: unknown;
+         as?: unknown;
+         e?: unknown;
+         join?: unknown;
+         fields?: unknown;
+         filterList?: unknown;
+         onExpression?: unknown;
+      };
+      const name =
+         typeof f.as === "string"
+            ? f.as
+            : typeof f.name === "string"
+              ? f.name
+              : undefined;
+      if (name === undefined) continue;
+      const refs = new Set<string>();
+      if (f.join !== undefined) {
+         if (
+            readsCurrentTime(f.filterList) ||
+            readsCurrentTime(f.onExpression)
+         ) {
+            out.add(name);
+            continue;
+         }
+         for (const inner of currentTimeFields(f.fields, depth + 1)) {
+            out.add(`${name}.${inner}`);
+         }
+         // An `on` that reads one of this source's per-read dimensions.
+         fieldPaths(f.onExpression, refs);
+      } else {
+         if (readsCurrentTime(f.e)) out.add(name);
+         fieldPaths(f.e, refs);
+      }
+      deps.set(name, refs);
+   }
+   for (let changed = true; changed; ) {
+      changed = false;
+      for (const [name, refs] of deps) {
+         if (out.has(name)) continue;
+         if ([...refs].some((r) => dependsOnCurrentTime(r, out))) {
+            out.add(name);
+            changed = true;
+         }
+      }
+   }
+   return out;
 }

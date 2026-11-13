@@ -37,7 +37,7 @@ This file is the core. The details live beside it, one topic per file, and each 
    source: my_rollup is some_source -> { group_by: ...; aggregate: ... }
    ```
    - **Only `query_source` and `sql_select` sources are persistable** - a `-> { ... }` pipeline or a `conn.sql("...")`, including one refined by a trailing `extend { ... }`. A `#@ persist` on a *plain* `extend` over a bare `conn.table(...)` is **refused, not ignored**: the package warns, and every run that covers it fails naming the source, so a whole-package run builds nothing until you fix it. Persist a query source instead (`source: x is raw -> { where: ...; select: * }`).
-   - **Quote the name, once.** A bare `name=my_table` fails the package load with `persist annotation name must be quoted`; a name quoted inside the quotes silently serves live. The target's container must already exist and be writable by the connection.
+   - **Quote the name, once.** A bare `name=my_table` fails the package load with `persist annotation name must be quoted`; a name quoted *inside* the quotes (`name="\"My Table\""`) also fails the load, as not a plain identifier path. Publisher quotes each segment itself, so mixed case and reserved words need no extra quoting. The target's container must already exist and be writable by the connection.
    - **The name is not the identity.** A persist source is identified by a content address of its connection, SQL and partition layout, so a rebuild with unchanged logic reuses the table and two sources with the same body share one. An `extend` of a persisted source reads the same table and is not a second build target.
 
    The name rules, bound arguments, `#@ -persist`, and every option (`storage=`, `partition=`, `refresh=`, `freshness.*`, `queryMetadata.*`) are in `reference/annotation.md`.
@@ -107,7 +107,7 @@ If **even this** doesn't build after a real run, the problem is package-wide: re
 - **Flag every file that declares a persist source** - a flagless model nothing flagged imports is skipped without a warning.
 - **A `#@ persist` on a plain `extend` over `conn.table(...)` fails the run** - every run that covers it, naming the source.
 - **A tag doesn't build** - only an explicit run, the standalone scheduler, or a hosted control plane does.
-- **Quote the name, once** - bare stops the load; double-quoted silently serves live.
+- **Quote the name, once** - bare stops the load, and so does a name with quotes inside it; Publisher quotes each segment for you.
 - **A ready run can still have lost a source** - read `manifest.failures` and `metadata.refusedSources`.
 - **A reload unbinds; a restart rebinds** - run a build before trusting a timing.
 - **Reuse is by content address, not by name** - `--force-refresh` and every scheduler fire defeat it.

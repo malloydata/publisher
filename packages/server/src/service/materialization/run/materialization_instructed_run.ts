@@ -7,11 +7,17 @@ import {
    MaterializationEligibilityError,
 } from "../../../errors";
 import { logger } from "../../../logger";
+import type { EligibilityRefusalReason } from "../../../materialization_metrics";
 import {
    recordSharedAddressInstructions,
    recordTableCollision,
 } from "../../../materialization_metrics";
-import type { BuildInstruction, ManifestEntry, SourceFailure } from "../types";
+import type {
+   BuildInstruction,
+   ManifestEntry,
+   RefusedSource,
+   SourceFailure,
+} from "../types";
 import { errMessage } from "../../../utils";
 import {
    getPersistCollisionEnforce,
@@ -25,6 +31,11 @@ import {
 } from "../plan/build_plan";
 import type { IncrementalRunContext } from "./incremental_build";
 import {
+   classifySourceFailure,
+   failedUpstreamsOf,
+   type FailedUpstream,
+} from "./build_failure_class";
+import {
    declaredStorage,
    physicalTargetKey,
    redactConnectionSecrets,
@@ -32,6 +43,8 @@ import {
    type BuildQueryMetadata,
    type ChainedPlanFacts,
 } from "./materialization_run_support";
+import type { NameViewIntent, NameViewRecord, OwnNameTable } from "./name_view";
+import type { UniquenessLedger } from "./inline_uniqueness";
 
 /** The eligibility gate a source was cleared by. */
 export type EligibilityTier = "storage" | "colocated";
@@ -62,13 +75,100 @@ export interface InstructedRun {
    // cannot say which of them is actually unreferenced.
    retainedThisRun: ManifestEntry[];
    failures: Record<string, SourceFailure>;
+   // The sources that failed (or were refused) so far, by sourceID, so a
+   // dependent refused for want of one inherits its classification.
+   failedBySourceID: Map<string, FailedUpstream>;
+   // sourceID -> the sourceIDs on the tables it reads, across every build.
+   upstreamsBySourceID: Map<string, string[]>;
    failedReasons: string[];
    refusals: MaterializationEligibilityError[];
+   /**
+    * Refusals not yet recorded against their address (ms2data/service#7078).
+    * A refused source can share its content address with an eligible sibling
+    * (a base and its `extend`); the refusal is decided after the loop, so it
+    * fails the address only when no sibling built it, whatever the order.
+    */
+   pendingRefusals: PendingRefusal[];
+   /**
+    * Sources auto-run already refused (deriveSelfInstructions), by sourceID.
+    * One sharing an eligible sibling's address still reaches the loop through
+    * that sibling's instruction; it is skipped, already reported.
+    */
+   priorRefusedIDs: ReadonlySet<string>;
+   /**
+    * The planned sources on each content address, computed on first use (see
+    * colocatedRefusalOn). A source whose address cannot be computed is absent.
+    */
+   sourceIDsByAddress?: Map<string, string[]>;
+   /**
+    * Per content address, the sources on it the colocated gate refuses, in
+    * sourceID order; decided on first use (see colocatedRefusalOn).
+    */
+   colocatedRefusalsByAddress?: Map<string, ColocatedRefusal[]>;
+   /**
+    * Set when a source its own gate admits was not built because a colocated
+    * sibling on its table is refused; such a run is not failed as one whose
+    * every source was refused.
+    */
+   heldBackBySibling?: boolean;
+   /** Content addresses a source of this run built (not carried, not failed). */
+   builtAddresses: Set<string>;
    builtSources: string[];
    // Keyed by physical table, not content address: the address says what a
    // table CONTAINS, the coordinate says which table it IS, and only the latter
    // answers "have I written this already".
    writtenTargets: Map<string, { sourceEntityId: string; sourceName: string }>;
+   /** The `name=` views the sources this run built call for (name_view.ts). */
+   nameViewIntents?: NameViewIntent[];
+   /**
+    * Auto-run's inline uniqueness passes: the run before's, and this run's
+    * own (inline_uniqueness.ts). Absent: every check runs as compiled.
+    */
+   uniqueness?: UniquenessLedger;
+   /**
+    * By view key: the `name=` views whose name preflight found held by a
+    * table this package's own run wrote, which the view replaces.
+    */
+   nameViewOwnTables?: Map<string, OwnNameTable>;
+   /** This package's own views a built table replaced at its name. */
+   replacedNameViews?: NameViewRecord[];
+   /** Whether this package's records say it wrote a table at a view's name. */
+   ownNameTableAt?: (
+      intent: NameViewIntent,
+   ) => Promise<OwnNameTable | undefined>;
+   /** Whether another run of this package is building now. */
+   otherRunActive?: () => Promise<boolean>;
+}
+
+/** One source the colocated gate refuses, as colocatedRefusalOn reports it. */
+export interface ColocatedRefusal {
+   sourceID: string;
+   name: string;
+   reason: EligibilityRefusalReason | undefined;
+   message: string;
+}
+
+/** One gate refusal, held until the run knows whether its address was built. */
+export interface PendingRefusal {
+   /** The address the refusal would fail. */
+   failedKey: string;
+   failure: SourceFailure;
+   /** The `ManifestEntry.error` mirror of `failure`, for the deprecation window. */
+   errorEntry: ManifestEntry;
+   /** The same refusal, per source, for the run's `refusedSources` metadata. */
+   refused: RefusedSource;
+   /**
+    * The refused source's sourceID, so an address's recorded failure is
+    * chosen in a stable order.
+    */
+   sourceID: string;
+   /**
+    * True when the source's own gate refused it; false when it is refused only
+    * because a sibling on its colocated address is. An address's recorded
+    * failure prefers an own refusal, so it names the gated source whatever the
+    * run order.
+    */
+   own: boolean;
 }
 
 /** A run's instructions, indexed both ways a source can find its own. */
@@ -171,7 +271,8 @@ export function resolveInstruction(
  *
  * Not host-only: collisions are always warn-only at load whatever
  * PERSIST_COLLISION_ENFORCE says (see loadPackage), so a package with a
- * model-declared collision can still reach this build.
+ * model-declared collision can still reach this build. Refused unless that
+ * setting is `false` (it is on by default).
  */
 export function assertNoTableCollisions(
    builds: CompiledBuildPlan["builds"],
@@ -326,6 +427,24 @@ export function recordInstructedBuildFailure(
    } catch {
       reason = redactPgSecrets(errMessage(buildErr));
    }
+   // Classified against the upstreams that already failed in this run: a
+   // dependent refused because its upstream failed fails for the upstream's
+   // reason, which it names, and inherits the upstream's classification.
+   const { retryable, upstreamDetail } = classifySourceFailure(
+      buildErr,
+      failedUpstreamsOf(
+         persistSource.sourceID,
+         buildErr,
+         run.upstreamsBySourceID,
+         run.failedBySourceID,
+      ),
+   );
+   if (upstreamDetail) reason = `${reason}; ${upstreamDetail}`;
+   run.failedBySourceID.set(persistSource.sourceID, {
+      name: persistSource.name,
+      reason,
+      retryable,
+   });
    // A build that lost a source does not throw, so without this log the
    // failure is invisible in the server's own output.
    logger.warn("Source failed to materialize", {
@@ -333,6 +452,7 @@ export function recordInstructedBuildFailure(
       sourceName: persistSource.name,
       physicalTableName: instruction.physicalTableName,
       reason,
+      retryable,
    });
    run.failedReasons.push(`${persistSource.name}: ${reason}`);
    run.failures[sourceEntityId] = {
@@ -341,6 +461,9 @@ export function recordInstructedBuildFailure(
       materializedTableId: instruction.materializedTableId,
       physicalTableName: instruction.physicalTableName,
       reason,
+      // Omitted when the error is not recognized, so the consumer keeps its
+      // own judgment, as for a Publisher that predates the field.
+      ...(retryable !== undefined ? { retryable } : {}),
       // Lets a consumer tell a colocated failure from a `storage=` one; it
       // keys by `storageDestinationName ?? connectionName`, like a
       // successful ManifestEntry.

@@ -4,11 +4,13 @@
 import { describe, expect, it } from "bun:test";
 import { derivationTerminals } from "./caller_joins";
 import {
+   extractRunViewCall,
    buildDerivationBaseMap,
    buildIsEdgeMap,
    buildJoinBaseMap,
    buildSourceAliasMap,
    collectIdentifierNames,
+   definitionTextAt,
    extractRunTargetSourceName,
    extractRunTargetSourceNames,
    locateProblemsInCallerText,
@@ -910,3 +912,113 @@ function fastestMs(run: () => void, runs = 5): number {
    }
    return best;
 }
+
+describe("extractRunViewCall", () => {
+   it("reads an exact call of a view", () => {
+      expect(extractRunViewCall("run: ops -> by_carrier")).toEqual({
+         source: "ops",
+         view: "by_carrier",
+         refined: false,
+         laterStages: 0,
+      });
+   });
+
+   it("reads a query that starts from a view, with later stages", () => {
+      expect(
+         extractRunViewCall(
+            "run: ops -> by_carrier -> { select: * } -> top_one",
+         ),
+      ).toEqual({
+         source: "ops",
+         view: "by_carrier",
+         refined: false,
+         laterStages: 2,
+      });
+   });
+
+   it("reads a refinement of the view", () => {
+      expect(
+         extractRunViewCall(
+            "run: ops -> by_carrier + { limit: 3 } -> { select: * }",
+         ),
+      ).toEqual({
+         source: "ops",
+         view: "by_carrier",
+         refined: true,
+         laterStages: 1,
+      });
+   });
+
+   it("reads the bare form, backticked names, and the last run statement", () => {
+      expect(extractRunViewCall("`my ops` -> `by carrier`")).toMatchObject({
+         source: "my ops",
+         view: "by carrier",
+      });
+      expect(
+         extractRunViewCall("run: a -> v1\nrun: b -> v2 -> { select: * }"),
+      ).toMatchObject({ source: "b", view: "v2", laterStages: 1 });
+   });
+
+   it("ignores comments and strings", () => {
+      expect(
+         extractRunViewCall(
+            "// run: x -> y\nrun: ops -> by_carrier -> { where: name = 'a -> b' }",
+         ),
+      ).toMatchObject({ source: "ops", view: "by_carrier", laterStages: 1 });
+   });
+
+   it("reads nothing from a query whose first stage is not a view name", () => {
+      for (const text of [
+         "run: ops -> { group_by: carrier }",
+         "run: ops extend { dimension: x is 1 } -> by_carrier",
+         "run: ops(p is 1) -> by_carrier",
+         "run: ops -> by_carrier extend { dimension: x is 1 }",
+         "run: ops -> by_carrier + 3",
+         "run: ops",
+         "",
+      ]) {
+         expect(extractRunViewCall(text)).toBeUndefined();
+      }
+   });
+});
+
+describe("definitionTextAt", () => {
+   const file = `source: s is t extend {
+  view: by_c is {
+    group_by: c  // a comment with a } in it
+    where: c != '{'
+  }
+  view: \`odd name\` is { group_by: c }
+}`;
+   const range = (sl: number, sc: number, el: number, ec: number) => ({
+      start: { line: sl, character: sc },
+      end: { line: el, character: ec },
+   });
+
+   it("reads a definition as written, comments and literals included", () => {
+      expect(definitionTextAt(file, range(1, 8, 4, 3), "by_c")).toBe(`by_c is {
+    group_by: c  // a comment with a } in it
+    where: c != '{'
+  }`);
+   });
+
+   it("reads a backticked name", () => {
+      expect(definitionTextAt(file, range(5, 8, 5, 37), "odd name")).toBe(
+         "`odd name` is { group_by: c }",
+      );
+   });
+
+   it("refuses a span that is not that definition", () => {
+      // Another name, a span that cuts the body short, one past the file.
+      expect(
+         definitionTextAt(file, range(1, 8, 4, 3), "other"),
+      ).toBeUndefined();
+      expect(definitionTextAt(file, range(1, 8, 3, 5), "by_c")).toBeUndefined();
+      expect(definitionTextAt(file, range(1, 8, 9, 0), "by_c")).toBeUndefined();
+      // A rename's location: `v2 is v` reads, but has no body to pair.
+      expect(
+         definitionTextAt("rename: v2 is v", range(0, 8, 0, 15), "v2"),
+      ).toBe("v2 is v");
+      expect(definitionTextAt("x is", range(0, 0, 0, 4), "x")).toBeUndefined();
+   });
+});

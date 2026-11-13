@@ -16,7 +16,12 @@ import {
 } from "../../../materialization_metrics";
 import type { ManifestEntry } from "../types";
 import { quoteManifestTablePath } from "../../quoting";
+import { annotationValue, identifier, stringLiteral } from "../../malloy_text";
 import { storageTablePath } from "../run/storage_table_path";
+import { pipelineReferences, structRefSourceId } from "../plan/source_map";
+import { documentFlagLines } from "../declaration_text";
+
+export { documentFlagLines };
 
 /**
  * A dimension or measure from the author's source, re-declared on the serve
@@ -56,7 +61,8 @@ interface JoinRefinement {
  *
  * A view can reference anything on the source, so there is no cheap dependency
  * gate: it is emitted optimistically, and if the shape then fails to compile the
- * serve path's escalation drops the view category.
+ * serve path drops the views that do not compile, one at a time, and only if
+ * that does not help the view category.
  */
 interface ViewRefinement {
    kind: "view";
@@ -144,6 +150,15 @@ export interface ServeBinding {
    tablePath: string;
    /** Authoritative DuckDB columns captured post-build (raw DuckDB types). */
    schema: { name: string; type: string }[];
+   /**
+    * Columns read through a cast to their declared type, set by the serve
+    * shape for a table an older build typed (ms2data/service#6642). The shape
+    * then declares the stored table as `<name>__stored` and the source as a
+    * query over it selecting every column, these cast (`::date`), so
+    * everything built on them still compiles. `schema` keeps the STORED
+    * types. Absent reads the table as stored.
+    */
+   readCasts?: { column: string; castTo: string }[];
    /**
     * The author source's refinements, re-emitted as an `extend {}` on the
     * virtual base. Attached at serve time from the compiled model. Analytic
@@ -344,42 +359,33 @@ export function deriveServeBindings(
 }
 
 /**
- * Map a DuckDB column type (as reported by `DESCRIBE`) to a Malloy basic type
- * for the serve-shape `type:` declaration.
- *
- * Only Malloy's basic scalar types are legal in `type:`, so every DuckDB type
- * collapses onto one. Anything unrecognized falls back to `json`, a lossy
- * carrier so an exotic column never breaks the whole serve shape, and is logged.
+ * The Malloy basic type a DuckDB column type (as reported by `DESCRIBE`) maps
+ * onto, or `undefined` for a type with no faithful mapping: a collection
+ * (`array`) or anything unrecognized (nested, struct, enum, blob). Pure; see
+ * {@link duckdbTypeToMalloy} for the serve shape's lossy fallback.
  */
-export function duckdbTypeToMalloy(duckdbType: string): string {
+export function duckdbTypeToMalloyType(
+   duckdbType: string,
+): { type: string } | { unmapped: "array" | "unrecognized" } {
    const raw = duckdbType.trim();
-   if (/\[\s*\]/.test(raw)) {
-      recordServeShapeTypeFallback("array");
-      logger.warn(
-         "Mapping DuckDB array/collection type to json for serve shape",
-         {
-            duckdbType: raw,
-         },
-      );
-      return "json";
-   }
+   if (/\[\s*\]/.test(raw)) return { unmapped: "array" };
    // DECIMAL(18,2) -> DECIMAL
    const base = raw
       .replace(/\(.*\)/, "")
       .trim()
       .toUpperCase();
 
-   if (base === "DATE") return "date";
+   if (base === "DATE") return { type: "date" };
    if (
       base.startsWith("TIMESTAMP") ||
       base === "DATETIME" ||
       base === "TIMESTAMPTZ"
    ) {
-      return "timestamp";
+      return { type: "timestamp" };
    }
    if (base === "TIME") {
       // Malloy has no time-of-day scalar; carry as string to preserve the value.
-      return "string";
+      return { type: "string" };
    }
 
    switch (base) {
@@ -403,35 +409,42 @@ export function duckdbTypeToMalloy(duckdbType: string): string {
       case "REAL":
       case "DECIMAL":
       case "NUMERIC":
-         return "number";
+         return { type: "number" };
       case "VARCHAR":
       case "TEXT":
       case "CHAR":
       case "BPCHAR":
       case "STRING":
       case "UUID":
-         return "string";
+         return { type: "string" };
       case "BOOLEAN":
       case "BOOL":
-         return "boolean";
+         return { type: "boolean" };
       default:
-         recordServeShapeTypeFallback("unrecognized");
-         logger.warn(
-            "Unrecognized DuckDB type; mapping to json for serve shape",
-            {
-               duckdbType: raw,
-            },
-         );
-         return "json";
+         return { unmapped: "unrecognized" };
    }
 }
 
-/** A Malloy identifier that needs no quoting. */
-const BARE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-/** Emit a field name bare when it is a plain identifier, else backtick-quoted. */
-function emitFieldName(name: string): string {
-   return BARE_IDENTIFIER.test(name) ? name : `\`${name.replace(/`/g, "``")}\``;
+/**
+ * Map a DuckDB column type (as reported by `DESCRIBE`) to a Malloy basic type
+ * for the serve-shape `type:` declaration.
+ *
+ * Only Malloy's basic scalar types are legal in `type:`, so every DuckDB type
+ * collapses onto one. Anything unrecognized falls back to `json`, a lossy
+ * carrier so an exotic column never breaks the whole serve shape, and is logged.
+ */
+export function duckdbTypeToMalloy(duckdbType: string): string {
+   const mapped = duckdbTypeToMalloyType(duckdbType);
+   // malloy-text: a Malloy type name from the fixed DuckDB type map, not a value
+   if ("type" in mapped) return mapped.type;
+   recordServeShapeTypeFallback(mapped.unmapped);
+   logger.warn(
+      mapped.unmapped === "array"
+         ? "Mapping DuckDB array/collection type to json for serve shape"
+         : "Unrecognized DuckDB type; mapping to json for serve shape",
+      { duckdbType: duckdbType.trim() },
+   );
+   return "json";
 }
 
 /**
@@ -468,7 +481,8 @@ export function buildServeShapeModel(
 function serveShapeGivenLine(given: ServeShapeGiven): string {
    const suffix =
       given.defaultText !== undefined ? ` is ${given.defaultText}` : "";
-   return `  ${given.name} :: ${given.type}${suffix}`;
+   // malloy-text: the given's type and default (in suffix) are the author's Malloy text, as written
+   return `  ${identifier(given.name)} :: ${given.type}${suffix}`;
 }
 
 /**
@@ -477,20 +491,40 @@ function serveShapeGivenLine(given: ServeShapeGiven): string {
  * once for the whole model).
  */
 function serveShapeFragment(binding: ServeBinding): string {
-   const shapeTypeName = `${binding.sourceName}__shape`;
+   const shapeTypeName = identifier(`${binding.sourceName}__shape`);
+   const sourceName = identifier(binding.sourceName);
    const fields = binding.schema
-      .map((c) => `   ${emitFieldName(c.name)}::${duckdbTypeToMalloy(c.type)}`)
+      .map((c) => `   ${identifier(c.name)}::${duckdbTypeToMalloy(c.type)}`)
       .join(",\n");
-   let source =
-      `source: ${binding.sourceName} is ` +
-      `${binding.destinationName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`;
+   const virtual = `${identifier(binding.destinationName)}.virtual(${stringLiteral(binding.virtualHandle)})::${shapeTypeName}`;
+   const casts = new Map(
+      (binding.readCasts ?? []).map((c) => [c.column, c.castTo]),
+   );
+   let prelude = "";
+   let source: string;
+   if (casts.size === 0) {
+      source = `source: ${sourceName} is ${virtual}`;
+   } else {
+      // The stored table under its own name, then the source as a query that
+      // selects every column, the mistyped ones cast to their declared type.
+      const stored = identifier(`${binding.sourceName}__stored`);
+      prelude = `source: ${stored} is ${virtual}\n`;
+      const select = binding.schema
+         .map((c) => {
+            const name = identifier(c.name);
+            const to = casts.get(c.name);
+            return to ? `${name} is ${name}::${duckdbTypeToMalloy(to)}` : name;
+         })
+         .join(", ");
+      source = `source: ${sourceName} is ${stored} -> { select: ${select} }`;
+   }
    // Anything a refinement references that the shape lacks fails the shape
    // compile, which safely falls back.
    const lines = refinementLines(binding.refinements ?? []);
    if (lines.length > 0) {
       source += ` extend {\n${lines.join("\n")}\n}`;
    }
-   return `type: ${shapeTypeName} is {\n${fields}\n}\n${source}`;
+   return `type: ${shapeTypeName} is {\n${fields}\n}\n${prelude}${source}`;
 }
 
 /**
@@ -507,17 +541,21 @@ function serveShapeFragment(binding: ServeBinding): string {
 function refinementLines(refinements: readonly SourceRefinement[]): string[] {
    const lines: string[] = [];
    for (const r of refinements) {
+      // malloy-text: a join's keyword and text are the author's Malloy, lifted by location
       if (r.kind === "join") lines.push(`   ${r.keyword}: ${r.text}`);
    }
    for (const r of refinements) {
       if (r.kind === "dimension" || r.kind === "measure") {
-         lines.push(`   ${r.kind}: ${r.name} is ${r.code}`);
+         // malloy-text: the field kind is a fixed keyword; its code is the author's Malloy, lifted by location
+         lines.push(`   ${r.kind}: ${identifier(r.name)} is ${r.code}`);
       }
    }
    for (const r of refinements) {
+      // malloy-text: a filter is the author's Malloy, lifted by location
       if (r.kind === "filter") lines.push(`   where: ${r.code}`);
    }
    for (const r of refinements) {
+      // malloy-text: a view is the author's Malloy, lifted by location
       if (r.kind === "view") lines.push(`   view: ${r.text}`);
    }
    return lines;
@@ -571,10 +609,11 @@ export interface DerivedSourceLift {
 
 /** One lifted source, as `source: X is <base> extend { … }`. */
 function derivedSourceFragment(lift: DerivedSourceLift): string {
+   // malloy-text: a query-derived source is the author's Malloy, lifted by location
    if (lift.text !== undefined) return `source: ${lift.text}`;
    const lines = refinementLines(lift.refinements);
    const body = lines.length > 0 ? ` extend {\n${lines.join("\n")}\n}` : "";
-   return `source: ${lift.sourceName} is ${lift.base}${body}`;
+   return `source: ${identifier(lift.sourceName)} is ${identifier(lift.base)}${body}`;
 }
 
 /** The compiled-model facts {@link liftDerivedSources} reads. */
@@ -634,7 +673,7 @@ export interface DerivedSourceDef {
  * Read from the source's OWN block notes, not the `persistent` flag, which is
  * also false for a source that never inherited `#@ persist`.
  */
-function optsOutOfPersist(def: DerivedSourceDef): boolean {
+export function optsOutOfPersist(def: DerivedSourceDef): boolean {
    const notes = (
       def.annotations as { blockNotes?: { text?: unknown }[] } | undefined
    )?.blockNotes;
@@ -742,18 +781,6 @@ function inlineExtendJoins(structRef: unknown): unknown[] {
    return ((structRef as { fields?: unknown[] }).fields ?? []).filter(
       (f) => typeof (f as { join?: unknown }).join === "string",
    );
-}
-
-/**
- * The sourceID a `structRef` names: the reference itself, or the `sourceID` of
- * an embedded definition. Undefined for an inline source.
- */
-function structRefSourceId(structRef: unknown): string | undefined {
-   if (typeof structRef === "string") return structRef;
-   const sourceID = (structRef as { sourceID?: unknown } | null)?.sourceID;
-   return typeof sourceID === "string" && sourceID.length > 0
-      ? sourceID
-      : undefined;
 }
 
 /**
@@ -1044,8 +1071,8 @@ export interface RollupShapeGroup {
  */
 function rollupServeShapeFragment(group: RollupShapeGroup): string {
    const members = group.members.map(serveShapeFragment).join("\n");
-   const names = group.members.map((m) => m.sourceName).join(", ");
-   return `${members}\nsource: ${group.baseSourceName} is compose(${names})`;
+   const names = group.members.map((m) => identifier(m.sourceName)).join(", ");
+   return `${members}\nsource: ${identifier(group.baseSourceName)} is compose(${names})`;
 }
 
 /**
@@ -1053,7 +1080,8 @@ function rollupServeShapeFragment(group: RollupShapeGroup): string {
  * materialized upstream is rebound to its virtual source (the same rebind as
  * the serve path), so the downstream computes over the parents' STORED tables
  * in DuckDB. The downstream is re-declared over them under `#@ persist` so the
- * caller can read `PersistSource.getSQL({ virtualMap })` from this model.
+ * caller can plan this model's build targets under the `virtualMap` and read
+ * their `buildSQL` from this model.
  *
  * `downstreamDefText` is the RHS of the author's `source: <name> is …`, lifted
  * by location (a top-level source's range starts after `source: `). The
@@ -1094,6 +1122,7 @@ export function buildChainedStorageBuildModel(params: {
    // Malloy accumulates `##!` lines, so repeating an author's flag is harmless.
    const givens = params.givens ?? [];
    const flags = [
+      // malloy-text: the author files' own `##!` lines, carried as written
       ...(params.documentFlags ?? []),
       givens.length
          ? "##! experimental { persistence virtual_source givens }"
@@ -1108,192 +1137,10 @@ export function buildChainedStorageBuildModel(params: {
       givenBlock +
       `${upstreamFragments}\n` +
       (derived ? `${derived}\n` : "") +
-      `#@ persist storage=${params.destinationName}\n` +
+      `#@ persist storage=${annotationValue(params.destinationName)}\n` +
+      // malloy-text: the downstream's definition is the author's Malloy, lifted by location
       `source: ${params.downstreamDefText}\n`
    );
-}
-
-/** What {@link reachedPersistedSources} found on the paths out of a source. */
-interface ReachedSources {
-   /**
-    * The persist sources the walk stopped at. Names are neither tables (several
-    * share one) nor package-unique, so the caller resolves each to its content
-    * address by `sourceID`.
-    */
-   persisted: { name: string; sourceID: string }[];
-   /**
-    * Some path ends at a source with no stored table behind it (a table or SQL
-    * source, or a reference with no in-model identity).
-    */
-   raw: boolean;
-   /** The sources those paths ended at (`regions`), for the reason text. */
-   rawLeaves: string[];
-   /** The non-persisted sources that reach them (`daily_regional`). */
-   rawVia: string[];
-   /**
-    * Every named source the walk passed through or stopped at, root excluded:
-    * exactly the sources a build over the stored parents needs declared.
-    */
-   visited: string[];
-}
-
-/**
- * What a source reaches, walking the author model from `name` through the
- * sources it is built from and stopping at each persist source, as
- * `isPersisted` (answered from the build plan) says.
- *
- * The plan, not the annotation, decides: `#@ persist` is inherited, so an
- * `extend` or rename of a persisted source shares its table, and nothing on a
- * definition says which name "declared" it. The walk records names; the caller
- * resolves each to its address group.
- *
- * An extension's own joins are NOT in its table: `daily_regional is daily
- * extend { join_one: r is regions … }` computes the join at read time, so the
- * walk still follows the joins a persisted extension adds, and nothing else.
- *
- * An embedded definition (inline extension, join written in place) is walked
- * as itself; only a reference with no identity, or to a name the model lacks,
- * is raw.
- *
- * A chained build's refusal turns on this: a stored table not bound is an
- * upstream `strictUpstreams` refuses; a raw path can only be recomputed from
- * the warehouse; a source reaching neither that still cannot be carried is a
- * carrying limit, which strict must not treat as licence to recompute.
- */
-export function reachedPersistedSources(
-   ctx: Pick<DerivedLiftContext, "contents" | "sourceNameById">,
-   name: string,
-   isPersisted: (sourceName: string, sourceID: string) => boolean,
-): ReachedSources {
-   const persisted = new Map<string, { name: string; sourceID: string }>();
-   const rawLeaves = new Set<string>();
-   const rawVia = new Set<string>();
-   const visited = new Set<string>();
-   const seen = new Set<unknown>();
-   const defName = (def: DerivedSourceDef): string | undefined => {
-      const id = (def as { sourceID?: unknown }).sourceID;
-      return typeof id === "string" ? ctx.sourceNameById.get(id) : undefined;
-   };
-   const reachRaw = (leaf: string, via: string): void => {
-      rawLeaves.add(leaf);
-      rawVia.add(via);
-   };
-   // A `sourceID` is `name@<model URL>`; only the name may appear in a reason,
-   // since the URL is the server's file path.
-   const nameOf = (sourceID: string): string => sourceID.split("@")[0];
-   // A reference is a sourceID, an embedded definition, or nothing usable.
-   const follow = (ref: unknown, via: string): void => {
-      if (typeof ref === "string") {
-         const next = ctx.sourceNameById.get(ref);
-         if (next !== undefined) {
-            visit(ctx.contents[next], next, false, via);
-            return;
-         }
-         // Not in this model's view (e.g. via an import) but known to the plan
-         // as a persist source: a stop, never raw.
-         const name = nameOf(ref);
-         if (isPersisted(name, ref)) {
-            visited.add(name);
-            persisted.set(ref, { name, sourceID: ref });
-            return;
-         }
-         reachRaw(name, via);
-         return;
-      }
-      if (ref !== null && typeof ref === "object") {
-         const def = ref as DerivedSourceDef;
-         visit(def, defName(def), false, via);
-         return;
-      }
-      reachRaw("(unnamed)", via);
-   };
-   const followJoins = (
-      fields: unknown[] | undefined,
-      sourceName: string,
-   ): void => {
-      for (const field of fields ?? []) {
-         const f = field as { join?: unknown; sourceID?: unknown };
-         if (typeof f.join !== "string") continue;
-         follow(
-            typeof f.sourceID === "string" ? f.sourceID : field,
-            sourceName,
-         );
-      }
-   };
-   // The joins an extension adds: its join fields minus the ones its base
-   // already carries, matched by the name a shape refers to them by.
-   const ownJoins = (def: DerivedSourceDef): unknown[] => {
-      const baseName =
-         typeof def.extends === "string"
-            ? ctx.sourceNameById.get(def.extends)
-            : undefined;
-      const baseFields = new Set(
-         (baseName ? (ctx.contents[baseName]?.fields ?? []) : []).map(fieldKey),
-      );
-      return (def.fields ?? []).filter((f) => !baseFields.has(fieldKey(f)));
-   };
-   // `sourceName` is undefined for an embedded definition. `via` is the source
-   // that referenced this one, which the reason names alongside the leaf.
-   const visit = (
-      def: DerivedSourceDef | undefined,
-      sourceName: string | undefined,
-      root: boolean,
-      via: string,
-   ): void => {
-      const label = sourceName ?? via;
-      if (!def) {
-         reachRaw(label, via);
-         return;
-      }
-      if (seen.has(def)) return;
-      seen.add(def);
-      if (!root && sourceName !== undefined) visited.add(sourceName);
-      // The root is the source being built; only its descendants stop the walk.
-      const sourceID = (def as { sourceID?: unknown }).sourceID;
-      if (
-         !root &&
-         sourceName !== undefined &&
-         typeof sourceID === "string" &&
-         isPersisted(sourceName, sourceID)
-      ) {
-         persisted.set(sourceID, { name: sourceName, sourceID });
-         // Its table is its base's; only what it adds is computed over it.
-         if (typeof def.extends === "string") {
-            followJoins(ownJoins(def), sourceName);
-         }
-         return;
-      }
-      const base =
-         typeof def.extends === "string"
-            ? def.extends
-            : def.type === "query_source"
-              ? def.query?.structRef
-              : undefined;
-      if (base === undefined) {
-         // A table or a SQL source: nothing stored stands behind it.
-         reachRaw(label, via);
-         return;
-      }
-      follow(base, label);
-      // An extension's `query` is its base's, copied; the base is walked above.
-      if (typeof def.extends !== "string") {
-         const refs = pipelineReferences(def.query?.pipeline);
-         // A pipeline too deep to walk may reach anything, so it counts as
-         // reaching a leaf with no identity: raw, never "nothing".
-         for (const { ref } of refs ?? [{ ref: undefined }]) {
-            follow(ref, label);
-         }
-      }
-      followJoins(def.fields, label);
-   };
-   visit(ctx.contents[name], name, true, name);
-   return {
-      persisted: [...persisted.values()],
-      raw: rawLeaves.size > 0,
-      rawLeaves: [...rawLeaves],
-      rawVia: [...rawVia],
-      visited: [...visited],
-   };
 }
 
 /**
@@ -1313,67 +1160,6 @@ export function missingPersistedTables(
             bound.has(alias),
          ),
    );
-}
-
-/** Past this nesting a pipeline is refused rather than walked. */
-const MAX_PIPELINE_DEPTH = 200;
-
-/**
- * One reference a query pipeline makes. `sourceID` is the referenced source's
- * id when it is named; `ref` is what a walk follows: the sourceID of a named
- * join, else the join or stage `structRef` as written (an id or an embedded
- * definition).
- */
-interface PipelineReference {
-   sourceID: string | undefined;
-   ref: unknown;
-}
-
-/**
- * Every reference a query pipeline makes: each stage's `structRef` and each
- * join. Named sources are not descended into; the caller looks them up.
- *
- * Undefined when the pipeline nests past {@link MAX_PIPELINE_DEPTH}, which a
- * caller must treat as an unknown reference. Returning rather than throwing
- * keeps one refused source from escaping lift selection and costing every
- * other lift.
- */
-function pipelineReferences(
-   pipeline: unknown,
-): PipelineReference[] | undefined {
-   const out: PipelineReference[] = [];
-   let tooDeep = false;
-   const walk = (node: unknown, depth: number): void => {
-      if (tooDeep) return;
-      if (depth > MAX_PIPELINE_DEPTH) {
-         tooDeep = true;
-         return;
-      }
-      if (node === null || typeof node !== "object") return;
-      if (Array.isArray(node)) {
-         for (const item of node) walk(item, depth + 1);
-         return;
-      }
-      const record = node as Record<string, unknown>;
-      if (typeof record.join === "string") {
-         const sourceID =
-            typeof record.sourceID === "string" ? record.sourceID : undefined;
-         out.push({ sourceID, ref: sourceID ?? node });
-         return;
-      }
-      if (record.structRef !== undefined) {
-         out.push({
-            sourceID: structRefSourceId(record.structRef),
-            ref: record.structRef,
-         });
-      }
-      for (const [key, value] of Object.entries(record)) {
-         if (key === "structRef") continue;
-         walk(value, depth + 1);
-      }
-   };
-   walk(pipeline, 0);
-   return tooDeep ? undefined : out;
 }
 
 /**
@@ -1440,16 +1226,6 @@ export function documentFlagsForLifts(
    return [...files]
       .flatMap((url) => documentFlagLines(ctx.fileText(url) ?? ""))
       .filter((line, i, all) => all.indexOf(line) === i);
-}
-
-/** The `##!` lines of an author file, in order, trimmed. */
-export function documentFlagLines(text: string): string[] {
-   // Block comments first, so a `##!` quoted inside one is not a flag.
-   return text
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith("##!"));
 }
 
 /**

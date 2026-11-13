@@ -10,8 +10,15 @@ import {
    ManifestReference,
 } from "../service/materialization/types";
 import { MaterializationService } from "../service/materialization/run/materialization_service";
+import type { WarehouseReach } from "../service/materialization/run/materialization_run_support";
 import { VersionRef } from "../service/identity";
 import { queryMetadataViolations } from "../service/query_metadata";
+
+/** The values `buildInstructions.warehouseReach` accepts (ms2data/service#6756). */
+const WAREHOUSE_REACH_VALUES: readonly WarehouseReach[] = [
+   "recompute",
+   "refuse",
+];
 
 type RunContext = components["schemas"]["RunContext"];
 
@@ -55,6 +62,7 @@ export class MaterializationController {
       buildInstructions?: BuildInstruction[];
       referenceManifest?: ManifestReference[];
       strictUpstreams?: boolean;
+      warehouseReach?: WarehouseReach;
       ledger?: LedgerEntry[];
       runContext?: RunContext;
       versionId?: VersionRef;
@@ -66,6 +74,7 @@ export class MaterializationController {
          buildInstructions?: BuildInstruction[];
          referenceManifest?: ManifestReference[];
          strictUpstreams?: boolean;
+         warehouseReach?: WarehouseReach;
          ledger?: LedgerEntry[];
          runContext?: RunContext;
          versionId?: VersionRef;
@@ -98,6 +107,9 @@ export class MaterializationController {
          }
          if (parsed.strictUpstreams !== undefined) {
             result.strictUpstreams = parsed.strictUpstreams;
+         }
+         if (parsed.warehouseReach !== undefined) {
+            result.warehouseReach = parsed.warehouseReach;
          }
          if (parsed.ledger !== undefined) {
             result.ledger = parsed.ledger;
@@ -184,6 +196,7 @@ export class MaterializationController {
       sources: BuildInstruction[];
       referenceManifest?: ManifestReference[];
       strictUpstreams?: boolean;
+      warehouseReach?: WarehouseReach;
       ledger?: LedgerEntry[];
    } {
       if (typeof raw !== "object" || raw === null) {
@@ -200,6 +213,7 @@ export class MaterializationController {
          sources: BuildInstruction[];
          referenceManifest?: ManifestReference[];
          strictUpstreams?: boolean;
+         warehouseReach?: WarehouseReach;
          ledger?: LedgerEntry[];
       } = {
          sources: sources.map((instruction) =>
@@ -226,6 +240,21 @@ export class MaterializationController {
             );
          }
          result.strictUpstreams = obj.strictUpstreams;
+      }
+      // Null is read as absent (the default, `recompute`): Credible's clients
+      // drop null fields, so null and absent must mean the same.
+      if (obj.warehouseReach !== undefined && obj.warehouseReach !== null) {
+         if (
+            typeof obj.warehouseReach !== "string" ||
+            !WAREHOUSE_REACH_VALUES.includes(
+               obj.warehouseReach as WarehouseReach,
+            )
+         ) {
+            throw new BadRequestError(
+               `buildInstructions.warehouseReach must be one of ${WAREHOUSE_REACH_VALUES.join(" | ")}`,
+            );
+         }
+         result.warehouseReach = obj.warehouseReach as WarehouseReach;
       }
       // Null is read as absent ("use the local store"), not as an empty ledger:
       // the two mean opposite things, and a caller that means "I own the ledger

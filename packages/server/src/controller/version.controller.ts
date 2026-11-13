@@ -114,21 +114,17 @@ export class VersionController {
       packageName: string,
       version: unknown,
       body: unknown,
+      request: {
+         /** A legacy combined-name PATCH rewritten to this PUT. */
+         legacyPatch?: boolean;
+         /** Whether the request was sent as JSON. Absent: assumed JSON. */
+         json?: boolean;
+      } = {},
    ): Promise<ApiPackage> {
       this.assertWritable();
-      const fields = (body ?? {}) as { manifestLocation?: unknown };
-      const location = fields.manifestLocation;
-      // A location the manifest loader reads (see isManifestLocation), or
-      // null to clear the binding.
-      if (
-         !("manifestLocation" in fields) ||
-         (location !== null &&
-            (typeof location !== "string" || !isManifestLocation(location)))
-      ) {
-         throw new BadRequestError(
-            `\`manifestLocation\` must be ${MANIFEST_LOCATION_FORMS}, or null to serve live.`,
-         );
-      }
+      const location = request.legacyPatch
+         ? legacyPatchLocation(body)
+         : putLocation(body, request.json ?? true);
       const { versions, environment } = await this.service(environmentName);
       const loaded: Package = await versions.setManifest(
          packageName,
@@ -197,4 +193,70 @@ function toApiVersion(
       createdAt: v.createdAt.toISOString(),
       updatedAt: v.updatedAt.toISOString(),
    };
+}
+
+/**
+ * The location a native `PUT …/manifest` body names. Its only field is
+ * `manifestLocation`, so any other key is refused (a typo such as
+ * `manifestUri` must not read as a clear). A missing or null field clears the
+ * binding: generated clients drop a null field from the JSON they send, so
+ * `{}` is how they say null. A request not sent as JSON is refused, because
+ * its body never reaches here and would otherwise read as `{}`.
+ */
+function putLocation(body: unknown, json: boolean): string | null {
+   if (!json) {
+      throw new BadRequestError(
+         'Send the body as `application/json`: `{"manifestLocation": "…"}` ' +
+            "to bind, or `{}` (or a null `manifestLocation`) to serve live.",
+      );
+   }
+   if (
+      body !== undefined &&
+      body !== null &&
+      (typeof body !== "object" || Array.isArray(body))
+   ) {
+      throw new BadRequestError(
+         "The body must be an object with an optional `manifestLocation`.",
+      );
+   }
+   const fields = (body ?? {}) as Record<string, unknown>;
+   const unknownKeys = Object.keys(fields).filter(
+      (key) => key !== "manifestLocation",
+   );
+   if (unknownKeys.length > 0) {
+      throw new BadRequestError(
+         `Unknown field${unknownKeys.length > 1 ? "s" : ""} ` +
+            `${unknownKeys.map((k) => `\`${k}\``).join(", ")}: the body takes ` +
+            "only `manifestLocation`.",
+      );
+   }
+   return checkedLocation(fields.manifestLocation ?? null, "(or absent) ");
+}
+
+/**
+ * The location a legacy combined-name PATCH names. Its body is the old
+ * package-update body, so only `manifestLocation` is read and the other
+ * fields (including the `versionId` the legacy middleware adds) are ignored,
+ * as before; the field must be present, string or null, as it always had to.
+ */
+function legacyPatchLocation(body: unknown): string | null {
+   const fields = (
+      body && typeof body === "object" && !Array.isArray(body) ? body : {}
+   ) as Record<string, unknown>;
+   if (!("manifestLocation" in fields)) {
+      throw new BadRequestError(
+         `\`manifestLocation\` must be ${MANIFEST_LOCATION_FORMS}, or null to serve live.`,
+      );
+   }
+   return checkedLocation(fields.manifestLocation, "");
+}
+
+function checkedLocation(location: unknown, absentNote: string): string | null {
+   if (location === null) return null;
+   if (typeof location !== "string" || !isManifestLocation(location)) {
+      throw new BadRequestError(
+         `\`manifestLocation\` must be ${MANIFEST_LOCATION_FORMS}, or null ${absentNote}to serve live.`,
+      );
+   }
+   return location;
 }

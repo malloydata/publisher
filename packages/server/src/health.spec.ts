@@ -16,6 +16,11 @@ import { Server } from "http";
 import request from "supertest";
 import { logger } from "./logger";
 import { __setPackageLoadPoolForTests } from "./package_load/package_load_pool";
+import {
+   setWorkloadLogSink,
+   workloadLogSink,
+   WorkloadLogStore,
+} from "./service/workload_log_store";
 
 type Health = typeof import("./health");
 
@@ -223,6 +228,33 @@ describe("performGracefulShutdownAfterDrain", () => {
       expect(waiting).toBeLessThan(close);
       expect(calls.filter((c) => c === "close")).toHaveLength(1);
       expect(calls.slice(close + 1)).toEqual(["exit:0"]);
+   });
+
+   it("writes the workload log's buffered records and removes its sink before exiting", async () => {
+      const health = await freshHealth();
+      const store = new WorkloadLogStore(
+         {
+            isInitialized: () => false,
+            getDuckDbConnection: () => undefined as never,
+         },
+         { retentionDays: 30, maxRows: 10 },
+      );
+      let stopped = false;
+      store.stop = async () => {
+         stopped = true;
+         calls.push("workload-log-stop");
+      };
+      setWorkloadLogSink(store);
+      try {
+         await health.performGracefulShutdownAfterDrain(idle(), idle(), 0);
+         expect(stopped).toBe(true);
+         expect(workloadLogSink()).toBeUndefined();
+         expect(calls.indexOf("workload-log-stop")).toBeLessThan(
+            calls.indexOf("close"),
+         );
+      } finally {
+         setWorkloadLogSink(undefined);
+      }
    });
 
    it("skips the wait when the graceful-close timeout is 0", async () => {

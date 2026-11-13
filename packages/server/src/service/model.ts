@@ -12,15 +12,33 @@ import {
    NamedQueryDef,
    QueryData,
    QueryMaterializer,
-   type VirtualMap,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { DataStyles } from "@malloydata/render";
 import { lazyCounter, lazyHistogram, withSpan } from "../telemetry";
 import { recordStorageServeRouting } from "../materialization_metrics";
+import { recordVariantRouting, routeQuery } from "./query_router";
+import {
+   answeredWith,
+   type Answer,
+   buildManifestFor,
+   canDegradeToLive,
+   LIVE_ANSWER,
+   liveFallbackAnswer,
+   queryPathFor,
+   type QueryServingHost,
+   recordingManifest,
+   recordRoutingDecision,
+   routeCandidates,
+   routedAnswer,
+   type RoutedExtra,
+   type ServedFrom,
+   servedFromOf,
+} from "./query_serving";
 import * as fs from "fs/promises";
 import { createRequire } from "module";
 import * as path from "path";
+import { fileURLToPath } from "url";
 import { components } from "../api";
 import {
    getMaxQueryRows,
@@ -43,30 +61,33 @@ import {
    OffSurfaceError,
    PayloadTooLargeError,
 } from "../errors";
-import { getPersistStorageMode } from "../config";
+import { getMaterializeEnabled, getPersistStorageMode } from "../config";
+import { keyedOverlay } from "./overlay_key";
+import {
+   compiledFileText,
+   loadLeavingOutCrossConnectionJoins,
+   type LeftOutDefinition,
+} from "./materialization/plan/cross_connection_joins";
 import {
    planModelPreaggregation,
    type RollupPlan,
 } from "./materialization/plan/preaggregation_synthesis";
 import { tryCompileSynthesizedPreaggregation } from "./materialization/plan/preaggregation_compile";
-import {
-   RollupCoverageError,
-   rollupCoverageViolation,
-   rollupMeasuresByMember,
-} from "./materialization/plan/preaggregation_coverage";
 import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
-import { summarizeQueryAccess, type QueryAudit } from "./access_record";
 import {
-   type ServeBinding,
-   serveShapeDiagnostics,
-} from "./materialization/serve/materialization_serve_transform";
+   accessPathOf,
+   summarizeQueryAccess,
+   type QueryAudit,
+} from "./access_record";
+import { type ServeBinding } from "./materialization/serve/materialization_serve_transform";
 import { deserializeError } from "../package_load/package_load_pool";
 import type { SerializedModel } from "../package_load/protocol";
 import { decodeSerializedModel } from "../package_load/protocol_decode";
 import { BuildManifest } from "./materialization/types";
 import {
+   modelAnnotations,
    ownModelAnnotations,
    ownModelNoteObjects,
    ownModelNotes,
@@ -110,6 +131,10 @@ import {
    type FilterParams,
 } from "./filter";
 import { assertFilterGivensParse, gateGivenSource } from "./given";
+import {
+   deprecatedPersistAnnotations,
+   type DeprecatedPersistAnnotation,
+} from "./deprecated/persist_annotations";
 import { filterPublisherOwnedRenderLogs } from "./report_manifest";
 import {
    docCommentTitleAndDescription,
@@ -117,6 +142,7 @@ import {
    parseRouteTag,
    readAutorun,
    readStartingGivens,
+   routeHasKey,
    tagText,
 } from "./motly";
 import {
@@ -188,13 +214,32 @@ import {
    compileErrorOf,
    multipleRunStatementsError,
    queryCompileError,
-   quoteMalloyIdentifier,
    runStatementCount,
 } from "./model_query_compile";
+import { quotedIdentifier } from "./malloy_text";
 import { runReadsPublished, scrubHiddenIds } from "./model_projection";
-import { StorageServeShape } from "./materialization/serve/model_serve_shape";
+import { compileOnlyDestinationConfig } from "./connection";
+import {
+   StorageServeShape,
+   type SourceTypeMismatches,
+} from "./materialization/serve/model_serve_shape";
+import type { MaterializePlan } from "./materialization/plan/build_file_generator";
+import { RollupVariantServe } from "./materialization/serve/rollup_variants";
+import {
+   ServedCopyServe,
+   type ServedCopyProblem,
+} from "./materialization/serve/served_copy_serve";
+import { type ApiQueryPath } from "./materialization/serve/query_path";
+import { PersistedViewServe } from "./materialization/serve/view_variants";
+import { sourceChain } from "./materialization/plan/source_map";
+import type { ViewServeVerdict } from "./materialization/serve/serve_verdict";
 
 export type { ModelConnectionInput, ModelType } from "./model_runtime";
+export {
+   bindingsAllowDegradeToLive,
+   recordRoutingDecision,
+   type RoutedExtra,
+} from "./query_serving";
 export type {
    NotebookCellRunResult,
    RunnableNotebookCell,
@@ -207,6 +252,8 @@ import {
    type QueryBoundaryPolicy,
 } from "./model_policy";
 import { QueryPrivileges, type QueryRequest } from "./model_query_request";
+import { annotationNearMisses, authoredNotes } from "./annotation_near_miss";
+import { type AnnotationFinding } from "./annotation_reader";
 export { QueryPrivileges } from "./model_query_request";
 export type { QueryRequest } from "./model_query_request";
 
@@ -230,16 +277,6 @@ const MALLOY_VERSION = (
 
 export type { OffSurfaceContext, QueryBoundaryPolicy } from "./model_policy";
 export { ModelPolicy, PackageModelPolicy } from "./model_policy";
-
-/**
- * How a query's answer was ultimately produced, once it reached the storage
- * routing decision at all. `storage` = served from the materialized table via
- * the virtual-source transform. `live_fallback` = it routed, then a run-time
- * store failure degraded it to the live warehouse — a success the caller cannot
- * distinguish from a storage hit, which is exactly why it is reported
- * separately. Absent means the query never had a storage binding to consider.
- */
-type ServedFrom = "storage" | "live_fallback";
 
 /** What {@link Model.runQuery} answers. */
 export interface ModelQueryResults {
@@ -271,6 +308,12 @@ export interface ModelQueryResults {
     */
    servedFrom: ServedFrom | null;
    /**
+    * The path report (materialization v2, D1): what answered the query and
+    * why. Undefined only when it could not be assembled; reporting never fails
+    * a query.
+    */
+   path?: ApiQueryPath;
+   /**
     * Wall-clock ms from query handling through execution, excluding
     * serialization and transport; the span the query histogram records.
     */
@@ -297,28 +340,6 @@ export interface RenderTagWarning {
    subject: string;
    message: string;
    severity: "error" | "warn";
-}
-
-/**
- * Whether a run-time store failure may be retried against the live warehouse,
- * decided from the bindings that produced the serve shape. Exported for tests.
- *
- * An authored binding declaring anything but `live` vetoes for the whole shape
- * (deliberately coarse). A rollup binding never vetoes and never enables on its
- * own: pre-aggregation has no correctness dimension (docs/preaggregation.md: a
- * stale rollup recomputes from the base with the same answer), so a rollup must
- * not error on a store failure. A rollup must also not be filtered out, or a
- * rollup-only package could never degrade. Empty is false: nothing routed.
- */
-export function bindingsAllowDegradeToLive(
-   bindings: readonly ServeBinding[],
-): boolean {
-   return (
-      bindings.length > 0 &&
-      bindings.every(
-         (b) => b.origin === "preaggregate" || b.freshnessFallback === "live",
-      )
-   );
 }
 
 /** The one empty result {@link Model.preaggregateViolations} hands back, so its
@@ -377,6 +398,11 @@ export interface ModelState {
     * row-level gate denies.
     */
    gateRuntime?: HydrationRuntime;
+   /**
+    * The model file's absolute path, which tells a source this file declares
+    * from one an import brought in. Absent: no source counts as declared here.
+    */
+   modelFile?: string;
 }
 
 export class Model {
@@ -386,15 +412,48 @@ export class Model {
    private modelType: ModelType;
    private modelMaterializer: ModelMaterializer | undefined;
    private modelDef: ModelDef | undefined;
+   /** See {@link ModelState.modelFile}. */
+   private modelFile: string | undefined;
+   /** See {@link declaredDeprecatedPersistAnnotations}. */
+   private deprecatedPersistAnnotationsMemo:
+      | DeprecatedPersistAnnotation[]
+      | undefined;
    private modelInfo: Malloy.ModelInfo | undefined;
-   private storageServe = new StorageServeShape({
+   private storageServe = new StorageServeShape(this.serveShapeHost());
+   /**
+    * The served copy on `virtual` (materialization v2, phase 3): the author's
+    * own files with each stored source re-rooted on its table. A router
+    * candidate only when `materialize.enabled` (`PUBLISHER_MATERIALIZE`) is on.
+    */
+   /** The author sourceIDs a `#(materialize)` build stores (see setServeBindings). */
+   private materializeSourceIDs: ReadonlySet<string> = new Set();
+   /**
+    * The `#@ persist` view leg (materialization v2, phase 4, P14): a router
+    * candidate only when `materialize.enabled` is on and a source this model
+    * sees persists a view.
+    */
+   private persistedViews = new PersistedViewServe({
       modelPath: () => this.modelPath,
       modelDef: () => this.modelDef,
-      givens: () => this.givens,
-      rollupPlans: () => this.preaggregateRollupPlans,
-      rollupPlansVersion: () => this.preaggregatePlansVersion,
-      ensureSharedQueryModel: (materializer) =>
-         this.ensureSharedQueryModel(materializer),
+      modelMaterializer: () => this.modelMaterializer,
+      serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
+      catalog: () => this.policy.materializedTables(),
+   });
+   private servedCopy = new ServedCopyServe({
+      modelPath: () => this.modelPath,
+      modelDef: () => this.modelDef,
+      serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
+   });
+   /**
+    * The `#(preaggregate)` rollup leg (materialization v2, phase 4): a router
+    * candidate only when `materialize.enabled` is on and a source this model
+    * sees declares a rollup.
+    */
+   private rollupVariants = new RollupVariantServe({
+      modelPath: () => this.modelPath,
+      modelDef: () => this.modelDef,
+      serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
+      catalog: () => this.policy.materializedTables(),
    });
    /**
     * The synthesized pre-aggregation model for this model, compiled once per load
@@ -415,6 +474,13 @@ export class Model {
     * compile must not also disable lake serving.
     */
    private preaggregateRollupPlans: RollupPlan[] = [];
+   /** {@link sourceChains}, keyed by the model it was read from. */
+   private sourceChainCache:
+      | {
+           modelDef: ModelDef | undefined;
+           chains: ReadonlyMap<string, readonly string[]>;
+        }
+      | undefined;
    /**
     * Bumped whenever {@link preaggregateRollupPlans} is replaced, and folded into
     * the serve-shape cache key.
@@ -434,6 +500,11 @@ export class Model {
     * on disk is newer than the served IR.
     */
    private compiledSourceText: string | undefined;
+   /**
+    * For a model whose files join sources across connections (#6982), loaded
+    * from its build view: the definitions left out. Undefined otherwise.
+    */
+   private crossConnectionLeftOut: LeftOutDefinition[] | undefined;
    /** {@link getReportModelFacts}, once read; boxed so `undefined` is cached too. */
    private reportModelFacts:
       | { value: ReportModelFacts | undefined }
@@ -579,6 +650,7 @@ export class Model {
       this.dataStyles = state.dataStyles;
       this.modelType = state.modelType;
       this.modelDef = state.modelDef;
+      this.modelFile = state.modelFile;
       this.modelMaterializer = state.modelMaterializer;
       this.sources = state.sources;
       this.queries = state.queries;
@@ -618,15 +690,6 @@ export class Model {
     */
    public declaredFilterSourceNames(): string[] {
       if (!this.modelDef) return [];
-      const ownFile = (url: string): boolean => {
-         try {
-            return decodeURIComponent(new URL(url).pathname).endsWith(
-               `/${this.modelPath}`,
-            );
-         } catch {
-            return false;
-         }
-      };
       const names: string[] = [];
       for (const entry of Object.values(this.modelDef.contents)) {
          if (!isSourceDef(entry)) continue;
@@ -635,11 +698,38 @@ export class Model {
             (note) =>
                note.text.trim().startsWith(FILTER_ANNOTATION_PREFIX) &&
                note.at !== undefined &&
-               ownFile(note.at.url),
+               this.declaredHere(note.at.url),
          );
          if (declares) names.push(entry.as || entry.name);
       }
       return names.sort();
+   }
+
+   /**
+    * Whether a document URL is this model's own file. Compared as resolved
+    * paths: a suffix match on {@link modelPath} would take
+    * `sub/models/a.malloy`, imported here, for `models/a.malloy`.
+    */
+   private declaredHere(url: string): boolean {
+      if (this.modelFile === undefined) return false;
+      try {
+         return path.resolve(fileURLToPath(url)) === this.modelFile;
+      } catch {
+         return false;
+      }
+   }
+
+   /**
+    * The deprecated v1 `#@ preaggregate` annotations THIS file declares, each
+    * once, at the measure it is written on.
+    */
+   public declaredDeprecatedPersistAnnotations(): DeprecatedPersistAnnotation[] {
+      if (!this.modelDef) return [];
+      // Read per package request, and the model never changes: walk it once.
+      return (this.deprecatedPersistAnnotationsMemo ??=
+         deprecatedPersistAnnotations(this.modelDef, (url) =>
+            this.declaredHere(url),
+         ));
    }
 
    /** The parsed filter definitions for a source; empty when none. */
@@ -839,15 +929,56 @@ export class Model {
       );
 
       try {
-         const { modelMaterializer, runnableNotebookCells } =
-            await Model.getModelMaterializer(
-               runtime,
-               importBaseURL,
-               modelURL,
-               modelPath,
-            );
-
-         const compiled = await modelMaterializer?.getModel();
+         const loadedModel = await Model.getModelMaterializer(
+            runtime,
+            importBaseURL,
+            modelURL,
+            modelPath,
+         );
+         let modelMaterializer = loadedModel.modelMaterializer;
+         const runnableNotebookCells = loadedModel.runnableNotebookCells;
+         let gateRuntime = runtime;
+         let compiled:
+            | Awaited<ReturnType<ModelMaterializer["getModel"]>>
+            | undefined;
+         let crossConnectionLeftOut: LeftOutDefinition[] | undefined;
+         try {
+            compiled = await modelMaterializer?.getModel();
+         } catch (first) {
+            // A file that joins sources across connections (#6982) loads
+            // from its build view behind the materialize switch.
+            const view =
+               modelType === "model"
+                  ? await loadLeavingOutCrossConnectionJoins({
+                       firstError: first,
+                       readText: (url) =>
+                          compiledFileText(url, options?.overlay),
+                       load: async (files) => {
+                          const rt = await Model.getModelRuntime(
+                             packagePath,
+                             modelPath,
+                             malloyConfig,
+                             {
+                                ...options,
+                                overlay: new Map([
+                                   ...(options?.overlay ?? []),
+                                   ...keyedOverlay(files),
+                                ]),
+                             },
+                          );
+                          const mm = rt.runtime.loadModel(rt.modelURL, {
+                             importBaseURL: rt.importBaseURL,
+                          });
+                          return { rt, mm, model: await mm.getModel() };
+                       },
+                    })
+                  : undefined;
+            if (!view) throw first;
+            modelMaterializer = view.result.mm;
+            gateRuntime = view.result.rt.runtime;
+            compiled = view.result.model;
+            crossConnectionLeftOut = view.leftOut;
+         }
          const checked =
             modelMaterializer && compiled
                ? await extractCheckedModel(
@@ -881,6 +1012,7 @@ export class Model {
             modelType,
             modelMaterializer,
             modelDef,
+            modelFile: path.resolve(packagePath, modelPath),
             sources,
             queries,
             sourceInfos,
@@ -890,9 +1022,10 @@ export class Model {
             policy,
             // Cast: `_loadModelFromModelDef` is internal and undeclared on the
             // public `Runtime` type.
-            gateRuntime: runtime as HydrationRuntime,
+            gateRuntime: gateRuntime as HydrationRuntime,
          });
          model.compiledSourceText = compiledTextFor(modelURL);
+         model.crossConnectionLeftOut = crossConnectionLeftOut;
          return model;
       } catch (thrown) {
          if (thrown instanceof Error && thrown.stack) {
@@ -930,7 +1063,7 @@ export class Model {
     */
    public static fromSerialized(
       packageName: string,
-      _packagePath: string,
+      packagePath: string,
       malloyConfig: ModelConnectionInput,
       data: SerializedModel,
       options: {
@@ -1000,6 +1133,7 @@ export class Model {
          modelType: data.modelType,
          modelMaterializer,
          modelDef,
+         modelFile: path.resolve(packagePath, data.modelPath),
          sources,
          queries,
          sourceInfos,
@@ -1018,6 +1152,9 @@ export class Model {
       // Paired with `modelDef` above: the coordinates in that IR index this
       // text and no other revision of the file.
       model.compiledSourceText = data.modelSourceText;
+      model.crossConnectionLeftOut = data.crossConnectionLeftOut as
+         | LeftOutDefinition[]
+         | undefined;
       model.preparedRenderTagResults = data.renderTagResults as
          | { label: string; result?: Malloy.Result }[]
          | undefined;
@@ -1220,6 +1357,64 @@ export class Model {
          : undefined;
    }
 
+   /**
+    * `manifest`, or undefined when this model does not carry `##!
+    * experimental.persistence` (its own or through an import). Malloy refuses
+    * a non-empty `buildManifest` against such a model, and the package's
+    * manifest is package-wide: one colocated table bound for another model
+    * (a `#@ persist` model beside it, or a `#(materialize)` source, whose
+    * author file needs no flag) would 400 every query here. A model without
+    * the flag has no persisted source for Malloy to substitute, so nothing it
+    * reads is lost. Presence only, decided as Malloy decides it.
+    */
+   private manifestIfPersistent(
+      manifest: BuildManifest | undefined,
+   ): BuildManifest | undefined {
+      const modelDef = this.modelDef;
+      if (!manifest || !modelDef) return undefined;
+      if (this.persistenceFlagMemo?.modelDef !== modelDef) {
+         this.persistenceFlagMemo = {
+            modelDef,
+            persistent: routeHasKey(
+               new Annotations(modelAnnotations(modelDef)),
+               "!",
+               "experimental",
+               "persistence",
+            ),
+         };
+      }
+      return this.persistenceFlagMemo.persistent ? manifest : undefined;
+   }
+
+   /** {@link manifestIfPersistent}'s answer for the model it was read from. */
+   private persistenceFlagMemo?: { modelDef: ModelDef; persistent: boolean };
+
+   /**
+    * `manifest` with the persisted views' table entries removed (see
+    * `liveBuildManifest` in runQueryResults). Undefined when nothing survives.
+    */
+   private withoutPersistedViewEntries(
+      manifest: BuildManifest | undefined,
+   ): BuildManifest | undefined {
+      if (!manifest) return undefined;
+      const views = this.persistedViews.buildSourceIDs();
+      if (views.size === 0) return manifest;
+      const planned = this.policy.materializedTables()?.planned;
+      const ids = new Set(
+         [...views].flatMap((id) => {
+            const entity = planned?.get(id)?.sourceEntityId;
+            return entity === undefined ? [] : [entity];
+         }),
+      );
+      if (ids.size === 0) return manifest;
+      const entries = Object.fromEntries(
+         Object.entries(manifest.entries).filter(([id]) => !ids.has(id)),
+      );
+      return Object.keys(entries).length > 0
+         ? { ...manifest, entries }
+         : undefined;
+   }
+
    /** `includeHidden` lists sources the file does not export, which `queryableSources: "all"` still serves. */
    public getSources(includeHidden = false): ApiSource[] | undefined {
       return includeHidden
@@ -1249,6 +1444,23 @@ export class Model {
     */
    public getModelDef(): ModelDef | undefined {
       return this.modelDef;
+   }
+
+   /** Memo for {@link annotationNearMisses}; a model's IR never changes. */
+   private nearMissFindings: AnnotationFinding[] | undefined;
+
+   /**
+    * The annotations this model file wrote that do nothing: near misses of a
+    * route Publisher owns, and prefixes Malloy cannot route (see
+    * `annotation_near_miss.ts`). Empty when the model did not compile.
+    */
+   public annotationNearMisses(): AnnotationFinding[] {
+      if (this.nearMissFindings === undefined) {
+         this.nearMissFindings = this.modelDef
+            ? annotationNearMisses(authoredNotes(this.modelDef))
+            : [];
+      }
+      return this.nearMissFindings;
    }
 
    /** The compiled query of each notebook cell that runs one, with the model state its query compiled in. */
@@ -1956,7 +2168,7 @@ export class Model {
       const text =
          request.query ??
          (request.queryName
-            ? `run: ${quoteMalloyIdentifier(request.queryName)}`
+            ? `run: ${quotedIdentifier(request.queryName)}`
             : undefined);
       if (!text || !this.modelMaterializer) return undefined;
       let compiledSource: string | undefined;
@@ -2198,6 +2410,7 @@ export class Model {
       if (this.preaggregateViolationsMemo === undefined) {
          this.preaggregateViolationsMemo = validateModelPreaggregation(
             this.modelDef.contents as Record<string, unknown>,
+            this.modelDef.modelID,
          );
       }
       return this.preaggregateViolationsMemo;
@@ -2511,6 +2724,7 @@ export class Model {
                });
                continue;
             }
+            // malloy-text: a report tile's query, the author's Malloy, run as written
             const text = `run: ${tile.query}`;
             let queryInfo: Promise<Malloy.QueryInfo | undefined> | undefined;
             cells.push({
@@ -2592,16 +2806,271 @@ export class Model {
    /** See {@link StorageServeShape.setServeDestinationConfig}. */
    public setServeDestinationConfig(provider: () => MalloyConfig): void {
       this.storageServe.setServeDestinationConfig(provider);
+      this.servedCopy.invalidate();
+      this.rollupVariants.invalidate();
+      this.persistedViews.invalidate();
+   }
+
+   /**
+    * The package directory and connections this model's served copy compiles
+    * with. Set by the owning package with its bindings.
+    */
+   public setServedCopyContext(
+      packagePath: string,
+      malloyConfig: ModelConnectionInput,
+      materializePlans: Readonly<Record<string, MaterializePlan>> = {},
+      declarationOf?: (sourceID: string) => unknown,
+   ): void {
+      this.materializeSourceIDs = new Set(Object.keys(materializePlans));
+      this.servedCopy.setContext(
+         packagePath,
+         malloyConfig,
+         materializePlans,
+         declarationOf,
+      );
+      this.persistedViews.setContext(packagePath, malloyConfig);
+      this.rollupVariants.setContext(packagePath, malloyConfig);
+   }
+
+   /**
+    * Whether the router may try the persisted-view leg: a model file, the
+    * materialize switch on, and a persisted view on a source it sees.
+    */
+   private persistedViewsEnabled(): boolean {
+      return (
+         this.modelType === "model" &&
+         !this.isNotebook() &&
+         getMaterializeEnabled() &&
+         this.persistedViews.hasViews()
+      );
+   }
+
+   /**
+    * The persisted views' generated build sources this model can see, by
+    * `sourceID`, with the source and view each stores: the package's serve
+    * verdict reads a view's reach through its source.
+    */
+   public persistedViewBuilds(): {
+      buildSourceID: string;
+      sourceID: string;
+      sourceName: string;
+      viewName: string;
+   }[] {
+      if (!getMaterializeEnabled()) return [];
+      return this.persistedViews.plans().map((p) => ({
+         buildSourceID: p.buildSourceID,
+         sourceID: p.sourceID,
+         sourceName: p.sourceName,
+         viewName: p.viewName,
+      }));
+   }
+
+   /**
+    * Whether the router may try the served copy: a model file, with the
+    * materialize switch and the storage tier both on. Warnings and the compile at bind follow the
+    * same rule, so a package never warns about a copy that is not routed.
+    */
+   private servedCopyEnabled(): boolean {
+      // A notebook or report is not a model file the served copy can load.
+      return (
+         this.modelType === "model" &&
+         !this.isNotebook() &&
+         getMaterializeEnabled() &&
+         getPersistStorageMode() === "on"
+      );
+   }
+
+   /**
+    * Whether the router may try the `#(preaggregate)` rollup leg: a model file,
+    * the materialize switch on, and a rollup declared on a source it sees.
+    */
+   private rollupVariantsEnabled(): boolean {
+      return (
+         this.modelType === "model" &&
+         !this.isNotebook() &&
+         getMaterializeEnabled() &&
+         this.rollupVariants.hasRollups()
+      );
+   }
+
+   /** Compile the served copy now, when it is enabled, so its warnings exist. */
+   public async prepareServedCopy(): Promise<void> {
+      if (!this.servedCopyEnabled()) return;
+      await this.servedCopy.prepare();
+   }
+
+   /**
+    * The definitions this model's build view leaves out because they join
+    * sources across connections (#6982); empty for any other model.
+    */
+   public crossConnectionLeftOutDefinitions(): readonly LeftOutDefinition[] {
+      return this.crossConnectionLeftOut ?? [];
+   }
+
+   /**
+    * The sources this model's served copy answers from storage, by author
+    * `sourceID`: undefined when the served copy is off for this model, and
+    * `pending` before it has compiled.
+    */
+   public servedCopySourceIDs(): ReadonlySet<string> | "pending" | undefined {
+      if (!this.servedCopyEnabled()) return undefined;
+      return this.servedCopy.rerootedSourceIDs() ?? "pending";
+   }
+
+   /** Why this model's served copy leaves sources unserved (empty when off). */
+   public servedCopyProblems(): readonly ServedCopyProblem[] {
+      if (!this.servedCopyEnabled()) return [];
+      return this.servedCopy.problems();
    }
 
    /** See {@link StorageServeShape.invalidateServeShapeCache}. */
    public invalidateServeShapeCache(): void {
       this.storageServe.invalidateServeShapeCache();
+      this.servedCopy.invalidate();
+      this.rollupVariants.invalidate();
+      this.persistedViews.invalidate();
    }
 
    /** See {@link StorageServeShape.setServeBindings}. */
    public setServeBindings(bindings: ServeBinding[]): void {
-      this.storageServe.setServeBindings(bindings);
+      // A `#(materialize)` table is presented under its author's source name,
+      // but only the served copy may read it: the serve shape would rebuild
+      // the source over a table that already applied its definition.
+      const materialized = this.materializeSourceIDs;
+      // A persisted view's table holds the view's result, and a
+      // `#(preaggregate)` rollup's its partials, not a source's rows: only
+      // their own legs read them.
+      const views = this.persistedViews.buildSourceIDs();
+      const rollups = this.rollupVariants.buildSourceIDs(bindings);
+      const others =
+         views.size === 0 && rollups.size === 0
+            ? bindings
+            : bindings.filter(
+                 (b) =>
+                    !(b.sourceIDs ?? []).some(
+                       (id) => views.has(id) || rollups.has(id),
+                    ),
+              );
+      this.storageServe.setServeBindings(
+         materialized.size === 0
+            ? others
+            : others.filter(
+                 (b) => !(b.sourceIDs ?? []).some((id) => materialized.has(id)),
+              ),
+      );
+      this.servedCopy.setBindings(others);
+      this.rollupVariants.setBindings(bindings);
+      this.persistedViews.setBindings(bindings);
+   }
+
+   /** See {@link StorageServeShape.storedColumnTypeMismatches}. */
+   public storedColumnTypeMismatches(): readonly SourceTypeMismatches[] {
+      return this.storageServe.storedColumnTypeMismatches();
+   }
+
+   /** What a serve shape reads from this model; one per shape instance. */
+   private serveShapeHost(): ConstructorParameters<
+      typeof StorageServeShape
+   >[0] {
+      return {
+         modelPath: () => this.modelPath,
+         modelDef: () => this.modelDef,
+         givens: () => this.givens,
+         rollupPlans: () => this.preaggregateRollupPlans,
+         rollupPlansVersion: () => this.preaggregatePlansVersion,
+         ensureSharedQueryModel: (materializer) =>
+            this.ensureSharedQueryModel(materializer),
+      };
+   }
+
+   /**
+    * The source names this model keeps a storage serve binding for: the
+    * package pushes every binding to every model, and a model drops one that
+    * materializes a same-named source declared elsewhere (see
+    * {@link StorageServeShape.setServeBindings}).
+    */
+   public servedStorageSourceNames(): string[] {
+      return [
+         ...this.storageServe.serveBindings,
+         ...this.persistedViews.viewBindings(),
+      ].map((b) => b.sourceName);
+   }
+
+   /**
+    * Whether each named view of the given stored sources compiles against a
+    * serve shape over `bindings`, without touching this model's own shape
+    * (ms2data/service#7090). The shape is a throwaway: it compiles against the
+    * same destinations a served query would, and needs no built table, since a
+    * virtual source declares its columns. Empty when no destination is
+    * configured, since then nothing serves from storage either way.
+    */
+   public async previewStorageViews(
+      bindings: ServeBinding[],
+   ): Promise<Map<string, ViewServeVerdict[]>> {
+      const out = new Map<string, ViewServeVerdict[]>();
+      const destinations = this.storageServe.serveDestinationConfig;
+      if (!destinations || bindings.length === 0 || !this.modelDef) return out;
+      const shape = new StorageServeShape(this.serveShapeHost(), {
+         preview: true,
+      });
+      // Compile-only: before the first build a DuckLake destination's catalog
+      // does not exist yet, and the dialect must not depend on reaching it.
+      shape.setServeDestinationConfig(() =>
+         compileOnlyDestinationConfig(destinations()),
+      );
+      // A view reading a given with no default serves once the caller
+      // supplies it; the preview compiles with a placeholder in its place, so
+      // it judges the stored columns, not the request.
+      const placeholders = placeholderGivens(this.givens);
+      shape.setServeBindings(bindings);
+      for (const binding of shape.serveBindings) {
+         if (binding.origin === "preaggregate") continue;
+         const def = this.modelDef.contents?.[binding.sourceName] as
+            | {
+                 fields?: readonly {
+                    name?: string;
+                    as?: string;
+                    type?: string;
+                 }[];
+              }
+            | undefined;
+         const views = (def?.fields ?? [])
+            .filter((f) => f.type === "turtle")
+            .map((f) => f.as ?? f.name)
+            .filter((name): name is string => typeof name === "string");
+         const verdicts: ViewServeVerdict[] = [];
+         for (const view of views) {
+            try {
+               await shape.loadServeShapeQuery(
+                  `run: ${quotedIdentifier(binding.sourceName)} -> ${quotedIdentifier(view)}`,
+                  placeholders,
+               );
+               verdicts.push({ view, verdict: "serves" });
+            } catch (error) {
+               const message = firstLine(
+                  error instanceof Error ? error.message : String(error),
+               );
+               // The shape left this view off because it does not compile
+               // against the stored columns: report that compile error, not
+               // the unknown name the query then hits.
+               const own = shape.prunedViews(binding.sourceName).get(view);
+               verdicts.push({
+                  view,
+                  verdict: "live",
+                  detail:
+                     own !== undefined
+                        ? firstLine(own)
+                        : message.startsWith(`'${view}' is not defined`)
+                          ? VIEWS_DROPPED_DETAIL
+                          : message,
+               });
+            }
+         }
+         // By the plan's sourceID: two models' same-named stored sources are
+         // different sources with different views.
+         out.set(binding.sourceIDs?.[0] ?? binding.sourceName, verdicts);
+      }
+      return out;
    }
 
    /**
@@ -2686,21 +3155,11 @@ export class Model {
       // Hoisted so the row-level recompile after the try block reuses the
       // SAME caller text.
       let queryString: string;
-      // Set when this query is routed through the `storage=` serve-shape
-      // transform; threaded into prepare + run so the virtual sources resolve to
-      // their physical tables. Undefined ⇒ served live (the default path).
-      let serveVirtualMap: VirtualMap | undefined;
-      // The bindings that actually PRODUCED the serve shape. Per-binding
-      // decisions must read this, not the package-wide set, or a sibling
-      // source's value would decide this query's behavior.
-      let serveShapeBindings: ServeBinding[] = [];
-      // How the answer was produced, for the query histogram. `live_fallback`
-      // must NOT count as a storage hit, or the hit rate would rise while the
-      // tier is down.
-      let servedFrom: ServedFrom | undefined;
-      // Set when the query runs against the pre-aggregation companion, the only
-      // runnable that may see rollup manifest entries.
-      let preaggRouted = false;
+      // How this query was served: the router's decision, then what the run
+      // did. Replaced, never mutated (see query_serving.ts); servedFrom, the
+      // routing metrics, the path report and the access record all derive
+      // from it.
+      let answer: Answer = LIVE_ANSWER;
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
 
@@ -2708,7 +3167,12 @@ export class Model {
       // and run all agree on the same freshness substitution.
       const buildManifest = this.resolveFreshBuildManifest();
       // Without rollup entries, for every runnable that is NOT the companion.
-      const liveBuildManifest = this.withoutPreaggregateEntries(buildManifest);
+      const viewBuildManifest = this.withoutPreaggregateEntries(buildManifest);
+      // Without persisted-view entries too: only the view leg's variant
+      // imports a view's build source (it carries the persistence flag).
+      const liveBuildManifest = this.manifestIfPersistent(
+         this.withoutPersistedViewEntries(viewBuildManifest),
+      );
       // See filterGivensToModelSurface. Resolved from the caller's own compiled
       // query, before routing or any graft replaces it.
       let querySurfaceGivens: Record<string, GivenValue> | undefined;
@@ -2773,8 +3237,8 @@ export class Model {
             // the LAST `run:`), and getFilters() would miss the raw name and
             // inject no filter.
             queryString = `\nrun: ${
-               sourceName ? `${quoteMalloyIdentifier(sourceName)} -> ` : ""
-            }${quoteMalloyIdentifier(queryName)}`;
+               sourceName ? `${quotedIdentifier(sourceName)} -> ` : ""
+            }${quotedIdentifier(queryName)}`;
          } else {
             const endTime = performance.now();
             const executionTime = endTime - startTime;
@@ -2865,154 +3329,59 @@ export class Model {
          // query off the storage tier.
          //
          // Skipped under `bypassAuthorize` (no filter to lose; never settable
-         // from ingress) and when routing is impossible anyway, since it costs
-         // an entry-point walk and possibly a probe compile.
+         // from ingress) and when no candidate exists, since it costs an
+         // entry-point walk and possibly a probe compile (see routeQuery).
          const storageRoutingPossible =
             getPersistStorageMode() === "on" &&
             this.storageServe.serveBindings.length > 0 &&
             !!this.storageServe.serveDestinationConfig;
+         // The served copy holds bindings the serve shape drops (a
+         // `#(materialize)` build source is no source of this model by name).
+         const servedCopyPossible =
+            this.servedCopyEnabled() &&
+            this.servedCopy.hasBindings() &&
+            !!this.storageServe.serveDestinationConfig;
          // Captured once so the guard and the use below see the same companion.
          const preaggServeMaterializer = this.preaggregateServeMaterializer;
-         const routingBlockedByRowLevelGate =
-            (storageRoutingPossible || !!preaggServeMaterializer) &&
-            !bypassAuthorize &&
-            // Cheap short-circuit for gate-free models. Safe, unlike
-            // `hasAuthorize()`: see `hasAnyAuthorizeNote`.
-            this.governor.hasAnyAuthorizeNote() &&
-            (await this.governor.queryEntryPointHasRowLevelGate(
-               runnable,
-               callerRegion,
-            ));
-         // Recorded once here, for the decision that blocks both tiers.
-         if (routingBlockedByRowLevelGate) {
-            recordStorageServeRouting("blocked_by_row_level_gate");
-         }
-
-         // storage= serve routing: try compiling against the serve-shape model
-         // (materialized sources rebound to virtual sources). If it does not
-         // compile, keep the original runnable and serve live.
-         if (storageRoutingPossible && !routingBlockedByRowLevelGate) {
-            try {
-               const shaped = await this.storageServe.loadServeShapeQuery(
-                  queryString,
-                  querySurfaceGivens,
-               );
-               runnable = shaped.runnable;
-               serveVirtualMap = shaped.virtualMap;
-               serveShapeBindings = shaped.bindings;
-               servedFrom = "storage";
-               // `servedFrom` names the TIER, so a lake-served rollup is
-               // "storage"; its origin rides the metric (a new enum value would
-               // break generated clients).
-               recordStorageServeRouting("storage", shaped.origin);
-               logger.debug(
-                  "Serving query from storage tier (virtual-source)",
-                  {
-                     modelPath: this.modelPath,
-                     origin: shaped.origin,
-                     // The shape's sources (stale bindings are dropped).
-                     storageSources: shaped.bindings.map((b) => b.sourceName),
-                  },
-               );
-            } catch (shapeErr) {
-               recordStorageServeRouting("live_fallback");
-               // A rollup refused for this query's aggregates is per-query and
-               // expected, not a reason the package never serves from storage.
-               if (shapeErr instanceof RollupCoverageError) {
-                  logger.debug(
-                     "storage rollup cannot answer this query; serving live",
-                     { modelPath: this.modelPath, error: shapeErr.message },
-                  );
-               } else {
-                  // info, not debug: a fallback is otherwise silent (the query
-                  // succeeds), so this is how an operator learns why a package
-                  // never serves from storage. The compiler's "undefined
-                  // object" reads the same for an unpersisted and a stale
-                  // source, so both sets are reported.
-                  const { shapeSources, staleSources } = serveShapeDiagnostics(
-                     this.storageServe.serveBindings,
-                     this.storageServe.freshServeBindings(Date.now()),
-                  );
-                  logger.info(
-                     "storage serve-shape ineligible for this query; serving live",
-                     {
-                        modelPath: this.modelPath,
-                        error:
-                           shapeErr instanceof Error
-                              ? shapeErr.message
-                              : String(shapeErr),
-                        // A name absent from both sets is not materialized at all.
-                        shapeSources,
-                        // Bound, but withheld by the freshness gate for this query.
-                        staleSources,
-                     },
-                  );
+         const route = await routeQuery<RoutedExtra>(
+            routeCandidates(this.servingHost(), {
+               queryString,
+               surfaceGivens: querySurfaceGivens,
+               buildManifest,
+               storageRoutingPossible,
+               servedCopyPossible,
+               preaggServeMaterializer,
+               ...(this.rollupVariantsEnabled()
+                  ? { rollupVariantsFor: runnable }
+                  : {}),
+               ...(this.persistedViewsEnabled()
+                  ? { persistedViewsFor: runnable }
+                  : {}),
+            }),
+            async () => {
+               // Cheap short-circuit for gate-free models. Safe, unlike
+               // `hasAuthorize()`: see `hasAnyAuthorizeNote`.
+               if (bypassAuthorize || !this.governor.hasAnyAuthorizeNote()) {
+                  return false;
                }
-            }
-         }
-
-         // Pre-aggregation serve routing: compile against the synthesized model,
-         // where each annotated source is a composite of its rollups and itself.
-         // Malloy picks a rollup when one covers the query, so this only offers
-         // the choice. Skipped when storage already routed (that runnable
-         // resolves through `virtualMap`).
-         //
-         // Blocked for a row-level-gated entry point as defence in depth: today
-         // the build gates refuse to materialize a rollup over a gated base, but
-         // that refusal (`referencesAuthorize`) has partial join reach, and a
-         // rollup that did build would serve rows pre-aggregated across every
-         // tenant. Blocking here keeps the invariant local to this decision.
-         //
-         // Also skipped when EVERY rollup is storage-bound: storage rollups are
-         // not companion members, so the composite degenerates to the base and
-         // the probe would succeed for no gain. A mixed model keeps its
-         // colocated members.
-         const everyRollupIsStorageBound =
-            this.preaggregateRollupPlans.length > 0 &&
-            this.preaggregateRollupPlans.every((plan) => !!plan.storage);
-         if (
-            preaggServeMaterializer &&
-            !routingBlockedByRowLevelGate &&
-            !serveVirtualMap &&
-            !everyRollupIsStorageBound
-         ) {
-            try {
-               const candidate =
-                  preaggServeMaterializer.loadRestrictedQuery(queryString);
-               // Compile eagerly (Malloy compiles lazily), so a failure falls to
-               // live here instead of escaping as a 400 at prepare/run. Probe
-               // with exactly what the run uses: the build manifest and the
-               // givens. A model `given:` does not cross the companion's
-               // `import`, so a given-supplying query must fail HERE and serve
-               // live (see preaggregation_seams.spec.ts).
-               await candidate.getSQL({
-                  givens: querySurfaceGivens,
-                  buildManifest,
-               });
-               // Compiling proves only that the chosen member DEFINES every
-               // field used; `count()` uses none and resolves to a rollup.
-               const uncovered = rollupCoverageViolation(
-                  (await candidate.getPreparedQuery())._query,
-                  rollupMeasuresByMember(this.preaggregateRollupPlans),
+               const veto = await this.governor.rowLevelGateVeto(
+                  runnable,
+                  callerRegion,
                );
-               if (uncovered) throw new RollupCoverageError(uncovered);
-               runnable = candidate;
-               preaggRouted = true;
-            } catch (preaggErr) {
-               // Expected and common: the companion imports only the sources it
-               // rolls up, and a rollup stores only its declared measures.
-               logger.debug(
-                  "query cannot be served from the pre-aggregation model; serving live",
-                  {
-                     modelPath: this.modelPath,
-                     error:
-                        preaggErr instanceof Error
-                           ? preaggErr.message
-                           : String(preaggErr),
-                  },
-               );
-            }
-         }
+               // Only an entry-point gate can be grafted on a routed compile
+               // (the served copy, R3); a caller join's gate, or one the walk
+               // could not decide, keeps every routed shape away.
+               return veto === "none"
+                  ? false
+                  : veto === "entry_point"
+                    ? "entry_point"
+                    : true;
+            },
+            { recordMetrics: false },
+         );
+         recordRoutingDecision(route);
+         answer = routedAnswer(route);
+         if (answer.routedRunnable) runnable = answer.routedRunnable;
       } catch (error) {
          // Re-throw BadRequestError as-is
          if (error instanceof BadRequestError) {
@@ -3091,7 +3460,7 @@ export class Model {
                   queryName,
                   sourceName,
                   status: "error",
-                  servedFrom,
+                  servedFrom: servedFromOf(answer),
                }),
             );
             throw queryCompileError(compileError, query);
@@ -3128,7 +3497,26 @@ export class Model {
             mm.loadRestrictedQuery(queryString),
          // The caller's OWN text, not the synthesized/injected `queryString`.
          callerQueryText: query,
-         ceiling: { audit, source: () => compiledSource ?? sourceName },
+         ceiling: {
+            audit,
+            source: () => compiledSource ?? sourceName,
+            // Read on the compile that answers: the served copy is the
+            // author's text with its classifications kept (the load's checks
+            // decline a copy that does not keep them), and the only compile
+            // that has a join a cross-connection build view leaves out.
+            ...(answer.tier === "storage" &&
+            answer.via === "served_copy" &&
+            answer.routedRunnable
+               ? { answeredBy: "served_copy" as const }
+               : {}),
+         },
+         // The served copy is the author's text, gates included: a row-level
+         // gate is grafted and proven on its own compile, so the routed answer
+         // keeps it (R3), and an answer let past an entry-point gate is
+         // re-proven there. Any other routed shape carries no annotations and
+         // is never reached past a row-level gate (the router's veto).
+         graftScope: answer.graftScope,
+         routedPastEntryPointGate: answer.pastEntryPointGate,
       };
       const { runnable: governed, decision } = await this.governor.govern(
          governRequest,
@@ -3144,7 +3532,7 @@ export class Model {
                queryName,
                sourceName,
                status: "error",
-               servedFrom,
+               servedFrom: servedFromOf(answer),
             }),
          );
          // An unsupplied row-level gate given denies at prepare; the count must
@@ -3161,20 +3549,21 @@ export class Model {
       // After the gate, so a denied caller gets its 403 rather than a 400 about
       // a value; before prepare, which is where Malloy would parse it.
       this.assertFilterGivens(givens);
-      // No post-hoc gate check is possible on a routed runnable (the serve
-      // shape carries no annotations): storage routing's correctness rests
-      // entirely on `queryEntryPointHasRowLevelGate`.
+      // No post-hoc gate check is possible on a serve-shape or rollup
+      // runnable (it carries no annotations): their correctness rests
+      // entirely on `queryEntryPointHasRowLevelGate`. The served copy is the
+      // exception (R3): it keeps the author's gates, and `govern()` above
+      // grafted and proved them on its own compile.
 
       const maxRows = getMaxQueryRows();
       const maxBytes = getMaxResponseBytes();
       // The serve shape resolves through `virtualMap` and lacks `##!
       // experimental.persistence`, so it gets no manifest. Only the companion
       // sees the FULL manifest (rollup entries).
-      const effectiveBuildManifest = serveVirtualMap
-         ? undefined
-         : preaggRouted
-           ? buildManifest
-           : liveBuildManifest;
+      const effectiveBuildManifest =
+         answer.tier === "view" && !answer.runFailed && !answer.virtualMap
+            ? viewBuildManifest
+            : buildManifestFor(answer, buildManifest, liveBuildManifest);
 
       // Prepare INSIDE the run try/catch, so a given-binding throw at prepare
       // gets the same error mapping as run instead of escaping as a 500.
@@ -3185,6 +3574,8 @@ export class Model {
       // passed: a materialized source's re-emitted `where:` may read one, and
       // dropping it would read the artifact unfiltered (every caller's rows).
       const effectiveGivens = querySurfaceGivens;
+      // The manifest entries the run that answers reads (recordingManifest).
+      const runRead = new Set<string>();
       try {
          // Prepare yields the connection name, so its metadata layer resolves
          // before the statement is issued.
@@ -3192,8 +3583,11 @@ export class Model {
             governed,
             {
                givens: effectiveGivens,
-               buildManifest: effectiveBuildManifest,
-               virtualMap: serveVirtualMap,
+               buildManifest: recordingManifest(
+                  effectiveBuildManifest,
+                  runRead,
+               ),
+               virtualMap: answer.virtualMap,
             },
             {
                abortSignal,
@@ -3215,6 +3609,7 @@ export class Model {
          );
          // AFTER run(), so it includes the warehouse round trip.
          executionTime = performance.now() - startTime;
+         answer = answeredWith(answer, runRead);
       } catch (error) {
          // `freshnessFallback=live` marks the tier as an optimisation, not a
          // dependency, so a store failing UNDER a routed query degrades to live.
@@ -3225,14 +3620,10 @@ export class Model {
          //  - never for a client error (bad given) or an abort;
          //  - the retry re-supplies the REAL givens, or the live source could
          //    serve unfiltered rows.
-         const canDegradeToLive =
-            !!serveVirtualMap &&
-            !!liveRunnable &&
-            !abortSignal?.aborted &&
-            !String((error as { code?: string })?.code ?? "").startsWith(
-               "runtime-given-",
-            ) &&
-            bindingsAllowDegradeToLive(serveShapeBindings);
+         const degradeToLive = canDegradeToLive(answer, error, {
+            hasLiveRunnable: !!liveRunnable,
+            aborted: !!abortSignal?.aborted,
+         });
          // Both the original failure and a failure OF THE RETRY end here, so a
          // retry failure still gets the error metric and mapping. Typed on the
          // CONST: control-flow narrowing of `never` requires an explicit
@@ -3247,7 +3638,7 @@ export class Model {
                   queryName,
                   sourceName,
                   status: "error",
-                  servedFrom,
+                  servedFrom: servedFromOf(answer),
                }),
             );
 
@@ -3294,7 +3685,7 @@ export class Model {
                   }),
             });
          };
-         if (!canDegradeToLive) failQuery(error);
+         if (!degradeToLive) failQuery(error);
          logger.warn(
             "Storage-served query failed at run time; falling back to live (freshnessFallback=live)",
             {
@@ -3303,29 +3694,48 @@ export class Model {
             },
          );
          recordStorageServeRouting("runtime_live_fallback");
+         // From here the query is the live retry: a retry failure's error
+         // metric reads `live_fallback`, not a storage error the tier never
+         // answered.
+         answer = liveFallbackAnswer(answer);
          // The retry runs the LIVE compile, which `governed` is not (it is the
          // serve shape), so it is governed in its own right here: the same
-         // bind, on the runnable that will execute. Today routing already
-         // refuses any gated entry point (`queryEntryPointHasRowLevelGate`),
-         // so this decides nothing new; it is what keeps an ungoverned live
-         // runnable from ever running if that refusal narrows. Outside the
-         // retry's try, so a denial answers 403, not a mapped run error.
+         // bind, on the runnable that will execute. A gated entry point
+         // reaches here only through the served copy (R3), whose answer's
+         // graft scope is the served copy's: the retry grafts on the author's
+         // own scope, or the graft would recompile against the stored table
+         // that just failed. Outside the retry's try, so a denial answers
+         // 403, not a mapped run error.
          const { runnable: governedLive } = await this.governor.govern(
             {
                ...governRequest,
+               graftScope: undefined,
+               routedPastEntryPointGate: false,
                boundary: undefined,
-               ceiling: undefined,
+               // Checked on live already, unless the served copy answered:
+               // then the retry, which runs live, is held to live's ceiling.
+               ceiling: governRequest.ceiling?.answeredBy
+                  ? { ...governRequest.ceiling, answeredBy: undefined }
+                  : undefined,
                bypassAlreadyNoted: true,
             },
             { runnable: liveRunnable!, live: liveRunnable },
          );
+         const retryRead = new Set<string>();
          try {
             // A fresh prepare re-derives the row cap from the live shape (a
             // failure at storage prepare would leave it 0, an EMPTY answer).
             // `liveBuildManifest`: this runs on the author's model.
             run = await prepareAndRun(
                governedLive,
-               { givens: querySurfaceGivens, buildManifest: liveBuildManifest },
+               {
+                  givens: querySurfaceGivens,
+                  // The retry is the run that answers: record its reads alone.
+                  buildManifest: recordingManifest(
+                     liveBuildManifest,
+                     retryRead,
+                  ),
+               },
                {
                   abortSignal,
                   maxRows,
@@ -3346,8 +3756,8 @@ export class Model {
          } catch (retryError) {
             failQuery(retryError);
          }
-         // NOT a storage hit.
-         servedFrom = "live_fallback";
+         // NOT a storage hit: servedFromOf reads `live_fallback`.
+         answer = answeredWith(answer, retryRead);
          executionTime = performance.now() - startTime;
       }
       const {
@@ -3386,7 +3796,7 @@ export class Model {
          sourceName,
          status: "success",
          connection: queryResults.connectionName,
-         servedFrom,
+         servedFrom: servedFromOf(answer),
       });
       queryExecutionHistogram().record(executionTime, metricAttributes);
       // Only when reported, so the counter is absent rather than a false zero.
@@ -3409,6 +3819,8 @@ export class Model {
             bypassAuthorize,
             grafts: decision.grafts,
             rowCount: queryResults.totalRows,
+            // A named view on a source; a model-level named query has no source.
+            ...(sourceName && queryName ? { view: queryName } : {}),
          });
       } catch (err) {
          logger.debug("Access summary unavailable", {
@@ -3416,8 +3828,27 @@ export class Model {
             error: (err as Error).message,
          });
       }
+      // Counted once the run answered, so a variant whose run failed and fell
+      // back live counts as skipped (`run_failed`), not used.
+      recordVariantRouting(answer.considered, answer.runFailed);
+      const path = await queryPathFor(this.servingHost(), answer, {
+         // The author's own compile: its names, and no grafted gate filter.
+         runnable: liveRunnable ?? runnable,
+         sourceName: compiledSource ?? sourceName,
+         viewName: sourceName && queryName ? queryName : undefined,
+         freshManifest: buildManifest,
+         includeHidden: !!includeHiddenFilesAndSources,
+         ...(this.persistedViewsEnabled() ? { queryString } : {}),
+      });
+      const servedFrom = servedFromOf(answer);
       audit.servedFrom = servedFrom ?? null;
       audit.executionTimeMs = Math.round(executionTime);
+      if (queryCostBytes !== undefined) audit.scannedBytes = queryCostBytes;
+      const recordedPath = path ? accessPathOf(path) : undefined;
+      if (recordedPath) audit.path = recordedPath;
+      // No report at all (it could not be assembled), as against a report
+      // that says live with nothing considered, which records no `path`.
+      if (!path) audit.pathUnavailable = true;
       return {
          result: wrappedResult,
          serializedResult,
@@ -3435,10 +3866,47 @@ export class Model {
          // Per-query attribution the aggregate histogram cannot give;
          // `servedFrom` is the only way to tell a storage answer from a live one.
          servedFrom: servedFrom ?? null,
+         ...(path ? { path } : {}),
          executionTimeMs: Math.round(executionTime),
          // Null is "not reported", not zero.
          queryCostBytes: queryCostBytes ?? null,
       };
+   }
+
+   /**
+    * What serving (query_serving.ts) reads from this model: its storage serve
+    * shape, rollup plans, catalog and discovery surface. Built per call so it
+    * always reads the current state.
+    */
+   private servingHost(): QueryServingHost {
+      return {
+         modelPath: this.modelPath,
+         storageServe: this.storageServe,
+         servedCopy: this.servedCopy,
+         rollupVariants: this.rollupVariants,
+         persistedViews: this.persistedViews,
+         rollupPlans: () => this.preaggregateRollupPlans,
+         modelDef: () => this.modelDef,
+         materializedTables: () => this.policy.materializedTables(),
+         publishedNames: () => this.publishedNames(),
+         admitsSourceByName: (name) => this.admitsSourceByName(name),
+         sourceChains: () => this.sourceChains(),
+      };
+   }
+
+   /** Every source's `sourceID` chain in this model, for the path report's `notConsidered`. */
+   private sourceChains(): ReadonlyMap<string, readonly string[]> {
+      const modelDef = this.modelDef;
+      const cached = this.sourceChainCache;
+      if (cached && cached.modelDef === modelDef) return cached.chains;
+      const chains = new Map<string, readonly string[]>();
+      for (const entry of Object.values(modelDef?.contents ?? {})) {
+         if (!isSourceDef(entry)) continue;
+         const chain = sourceChain(entry, modelDef);
+         if (chain[0] && !chains.has(chain[0])) chains.set(chain[0], chain);
+      }
+      this.sourceChainCache = { modelDef, chains };
+      return chains;
    }
 
    /**
@@ -4259,6 +4727,11 @@ export class Model {
                   error: (err as Error).message,
                });
             }
+            // As in runQuery: only when reported, absent is not zero.
+            const cellScannedBytes = result?.runStats?.queryCostBytes;
+            if (cellScannedBytes !== undefined) {
+               audit.scannedBytes = cellScannedBytes;
+            }
             // As in runQuery.
             if (
                result?._queryResult &&
@@ -4352,4 +4825,39 @@ export class Model {
          );
       }
    }
+}
+
+/**
+ * Why a stored source's view is live when the serve shape left its views off
+ * without naming a view: the shape could not isolate one (the shape failed
+ * even without any view, or the file holding them could not be read), so it
+ * dropped the view category and each view is answered live.
+ */
+const VIEWS_DROPPED_DETAIL =
+   "The serve shape left this source's views off: it could not compile them " +
+   "against the stored columns and could not single out the view at fault " +
+   "(or could not read the file that declares them), so each is answered live.";
+
+/**
+ * A value for each given with no default, for a compile that only asks
+ * whether a query compiles: `null`, or an empty filter for a `filter<T>`
+ * given, whose SQL needs a filter literal (as model_info.ts does for the same
+ * reason).
+ */
+function placeholderGivens(
+   givens:
+      | readonly { name?: string; type?: string; default?: unknown }[]
+      | undefined,
+): Record<string, GivenValue> {
+   const out: Record<string, GivenValue> = {};
+   for (const given of givens ?? []) {
+      if (!given.name || given.default !== undefined) continue;
+      out[given.name] = /^filter\b/i.test(given.type ?? "") ? "" : null;
+   }
+   return out;
+}
+
+/** The first line of an error message, which is where Malloy says what failed. */
+function firstLine(message: string): string {
+   return message.split("\n")[0].trim();
 }

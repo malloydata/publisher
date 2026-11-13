@@ -20,8 +20,9 @@
  *   (`PackageController.updatePackage`) so the environment and project paths
  *   count alike.
  * - A package load or reload: per package that sets `explores` or
- *   `queryableSources` in publisher.json, per `.malloynb` file, and per source
- *   that declares `#(filter)` annotations (`service/deprecated/*`).
+ *   `queryableSources` in publisher.json, per `.malloynb` file, per source
+ *   that declares `#(filter)` annotations, and per measure that declares
+ *   `#@ preaggregate` (`service/deprecated/*`).
  * - A startup: each deprecated setting name in use, a variable, flag or file
  *   key the configuration design renamed, as `config:<old name>` (server.ts).
  *
@@ -41,6 +42,7 @@ export type DeprecatedFeature =
    | "explores"
    | "queryable_sources"
    | "filter_annotation"
+   | "preaggregate_annotation"
    | "filter_params"
    | "bypass_filters"
    | "package_patch"

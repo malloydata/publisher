@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { isUnconditionalDenyAuthorize } from "../../service/entities/access_gates";
+import { isOnRoute, payloadsOnRoute } from "../../service/annotation_reader";
 import { hasEnvReference, warnEnvReferenceDropped } from "../../service/motly";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -12,6 +13,7 @@ import type { PackageLookup } from "../../service/environment_ports";
 import { Package } from "../../service/package";
 import { referencedGivenNames } from "../../service/authorize";
 import { splitSourceId } from "../../service/source_id";
+import { identifier, MALLOY_BARE_KEYWORDS } from "../../service/malloy_text";
 import {
    findIrSource,
    isClassificationLine,
@@ -51,7 +53,8 @@ export function truncateDoc(doc: string, max: number): string {
 
 type AnnotationLines = Array<string | { value: string }>;
 
-const AUTHORED_DOC_LINES = [/^\s*#\(doc\)\s*(.*)/, /^\s*#"\s*(.*)/];
+/** The routes an authored doc is read from, in order: `#(doc)`, then a `#"` doc string. */
+const AUTHORED_DOC_ROUTES = ["doc", '"'];
 
 function linesOf(annotations?: AnnotationLines): string[] {
    return (annotations ?? []).map((a) => (typeof a === "string" ? a : a.value));
@@ -63,9 +66,9 @@ function oneLine(text: string): string {
 
 /** `#(doc)` text, else `#"` doc string text, empty when there is neither. */
 function authoredDoc(lines: string[]): string {
-   for (const pattern of AUTHORED_DOC_LINES) {
-      const text = lines
-         .map((line) => line.match(pattern)?.[1]?.trim() ?? "")
+   for (const route of AUTHORED_DOC_ROUTES) {
+      const text = payloadsOnRoute(lines, route)
+         .map((payload) => payload.trim())
          .filter(Boolean)
          .join(" ");
       if (text) return text;
@@ -75,7 +78,7 @@ function authoredDoc(lines: string[]): string {
 
 function dbmetaDescription(lines: string[]): string {
    for (const line of lines) {
-      if (!/^#\(dbmeta\)\s/.test(line)) continue;
+      if (!isOnRoute(line, "dbmeta")) continue;
       // The tag parser hydrates `@env.` from the server's environment, and this
       // description is served to clients as the entity's doc.
       if (hasEnvReference(line)) {
@@ -442,16 +445,7 @@ const PLAIN_MEMBER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * keyword list, so this is a copy of it; record_members.spec.ts checks it
  * against the list Malloy generates from its grammar.
  */
-export const MALLOY_RESERVED_WORDS: ReadonlySet<string> = new Set(
-   (
-      "all and as asc avg boolean by case cast compose count date day " +
-      "desc distinct else end exclude export extend false filter for from " +
-      "full has hour import in include inner internal is json left like " +
-      "max min minute month not now null number on or pick private public " +
-      "quarter right second source sql string sum table then this " +
-      "timestamp timestamptz to true virtual week when with year"
-   ).split(" "),
-);
+export const MALLOY_RESERVED_WORDS: ReadonlySet<string> = MALLOY_BARE_KEYWORDS;
 
 /**
  * A plain name as a segment of a record member's path, backticked when it is
@@ -459,7 +453,7 @@ export const MALLOY_RESERVED_WORDS: ReadonlySet<string> = new Set(
  * member under it.
  */
 export function memberSegment(name: string): string {
-   return MALLOY_RESERVED_WORDS.has(name.toLowerCase()) ? `\`${name}\`` : name;
+   return identifier(name);
 }
 
 /**

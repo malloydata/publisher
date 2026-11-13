@@ -227,6 +227,10 @@ describe("getAccessModifier", () => {
 });
 
 describe("parseDocAnnotation", () => {
+   test("does not read another route that starts like #(doc)", () => {
+      assert.strictEqual(parseDocAnnotation("#(docs) Not a doc."), null);
+   });
+
    test("line form #(doc) strips prefix", () => {
       assert.strictEqual(parseDocAnnotation("#(doc) A name."), "A name.");
    });

@@ -273,6 +273,7 @@ function defaultText(
 }
 
 function code(text: string): string {
+   // malloy-text: markdown code formatting in a generated doc, not Malloy
    return `\`${text}\``;
 }
 

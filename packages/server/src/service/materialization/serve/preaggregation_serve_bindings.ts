@@ -20,6 +20,7 @@
  * stored columns, so there is no wider physical table to hide.
  */
 
+import { identifier } from "../../malloy_text";
 import { logger } from "../../../logger";
 import type {
    ServeBinding,
@@ -59,7 +60,7 @@ export function rollupServeRefinements(plan: RollupPlan): SourceRefinement[] {
    return plan.measures.map((m) => ({
       kind: "measure" as const,
       name: m.name,
-      code: `${m.partialName}.${m.reaggregate}()`,
+      code: `${identifier(m.partialName)}.${m.reaggregate}()`,
    }));
 }
 

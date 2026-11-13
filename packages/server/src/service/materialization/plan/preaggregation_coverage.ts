@@ -46,10 +46,35 @@ import type { RollupPlan } from "./preaggregation_synthesis";
  * rather than a misconfiguration, so callers log it quietly.
  */
 export class RollupCoverageError extends Error {
-   constructor(message: string) {
-      super(message);
+   /** Why, as a code the path report maps to its skip reason. */
+   readonly reason: RollupCoverageReason;
+   /**
+    * The violation in the caller's own terms (its field paths and aggregates),
+    * without the rollup's synthesized name: safe to show the caller.
+    */
+   readonly detail: string;
+   constructor(violation: RollupCoverageViolation) {
+      super(`${violation.member}: ${violation.detail}`);
       this.name = "RollupCoverageError";
+      this.reason = violation.reason;
+      this.detail = violation.detail;
    }
+}
+
+/**
+ * Why a rollup cannot answer a query: `missing_field`, the query reaches a
+ * field the rollup does not carry (a path through a join); `count_semantics`,
+ * an aggregate or a row-level stage the rollup's grain rows cannot reproduce.
+ */
+export type RollupCoverageReason = "missing_field" | "count_semantics";
+
+/** One reason a resolved rollup cannot answer a query. */
+export interface RollupCoverageViolation {
+   /** The rollup member the query resolved to (a synthesized name). */
+   member: string;
+   reason: RollupCoverageReason;
+   /** In the caller's own terms; see {@link RollupCoverageError.detail}. */
+   detail: string;
 }
 
 /** The IR fragments read here; everything else is walked generically. */
@@ -102,7 +127,7 @@ export function rollupMeasuresByMember(
 export function rollupCoverageViolation(
    query: unknown,
    rollupMeasures: ReadonlyMap<string, ReadonlySet<string>>,
-): string | undefined {
+): RollupCoverageViolation | undefined {
    const ir = query as IrQuery | undefined;
    const member = ir?.compositeResolvedSourceDef?.as;
    if (!member) return undefined;
@@ -116,7 +141,7 @@ export function rollupCoverageViolation(
       ]),
    );
    const followed = new Set<string>();
-   let violation: string | undefined;
+   let violation: { reason: RollupCoverageReason; detail: string } | undefined;
 
    /**
     * A reference into the member. A merged measure is the one sanctioned
@@ -128,7 +153,10 @@ export function rollupCoverageViolation(
    const visitRef = (path: readonly string[] | undefined) => {
       if (!path) return;
       if (path.length !== 1) {
-         violation = `reference ${path.join(".")} reaches past the rollup's own fields`;
+         violation = {
+            reason: "missing_field",
+            detail: `reference ${path.join(".")} reaches past the rollup's own fields`,
+         };
          return;
       }
       const name = path[0];
@@ -145,14 +173,20 @@ export function rollupCoverageViolation(
       }
       const n = e as IrNode;
       if (n.node === "aggregate") {
-         violation = `aggregate ${String(n.function)}() is computed over the rollup's rows, not from a stored partial`;
+         violation = {
+            reason: "count_semantics",
+            detail: `aggregate ${String(n.function)}() is computed over the rollup's rows, not from a stored partial`,
+         };
          return;
       }
       if (
          n.node === "function_call" &&
          n.overload?.returnType?.expressionType === "aggregate"
       ) {
-         violation = `aggregate function ${String(n.name)}() is computed over the rollup's rows, not from a stored partial`;
+         violation = {
+            reason: "count_semantics",
+            detail: `aggregate function ${String(n.name)}() is computed over the rollup's rows, not from a stored partial`,
+         };
          return;
       }
       if (n.node === "field") {
@@ -172,7 +206,10 @@ export function rollupCoverageViolation(
    const visitStage = (stage: IrStage | undefined) => {
       if (violation) return;
       if (stage?.type === "project" || stage?.type === "index") {
-         violation = `${stage.type === "project" ? "a select:" : "an index:"} stage over the rollup returns one row per grain group, not the source's rows`;
+         violation = {
+            reason: "count_semantics",
+            detail: `${stage.type === "project" ? "a select:" : "an index:"} stage over the rollup returns one row per grain group, not the source's rows`,
+         };
          return;
       }
       for (const field of stage?.queryFields ?? []) {
@@ -184,5 +221,5 @@ export function rollupCoverageViolation(
    };
 
    visitStage(ir?.pipeline?.[0]);
-   return violation ? `${member}: ${violation}` : undefined;
+   return violation ? { member, ...violation } : undefined;
 }

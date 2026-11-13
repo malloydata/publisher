@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { quoteMalloyIdentifier } from "./authorize";
+import { quotedIdentifier } from "./malloy_text";
 
 /** One query whose compiled result the render-tag check reads. */
 export interface RenderTagTarget {
@@ -35,7 +35,7 @@ export function renderTagTargets(
       }
       targets.push({
          label: query.name,
-         queryString: `run: ${quoteMalloyIdentifier(query.name)}`,
+         queryString: `run: ${quotedIdentifier(query.name)}`,
       });
    }
    for (const source of sources ?? []) {
@@ -52,7 +52,7 @@ export function renderTagTargets(
          // prepare would silently skip the very view this validates.
          targets.push({
             label: `${source.name} -> ${view.name}`,
-            queryString: `run: ${quoteMalloyIdentifier(source.name)} -> ${quoteMalloyIdentifier(view.name)}`,
+            queryString: `run: ${quotedIdentifier(source.name)} -> ${quotedIdentifier(view.name)}`,
          });
       }
    }

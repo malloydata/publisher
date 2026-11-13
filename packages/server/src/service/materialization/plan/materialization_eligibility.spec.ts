@@ -21,11 +21,14 @@ import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
    assertTierEligible,
+   gateEnforcedAtRead,
    READ_ONLY_DIALECTS,
 } from "./materialization_eligibility";
+import { installSettings } from "../../../test_helpers/settings_env";
+import type { PersistSourceGateOutcome } from "./persist_source_fields";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import {
-   classifyDynamicTerms,
+   admitGivenPositions,
    readTimeDynamicTerms,
 } from "./persist_dynamic_terms";
 
@@ -474,7 +477,7 @@ source: mixed is raw -> { select: * } extend {
   where: org_id = $ORG_ID
   dimension: flagged is org_id = $ORG_ID
 }`);
-      expect(classifyDynamicTerms(sources.mixed).ok).toBe(false);
+      expect(admitGivenPositions(sources.mixed).ok).toBe(false);
       // Still names the column the source is actually scoped by.
       expect(
          readTimeDynamicTerms(sources.mixed).flatMap((t) => t.columns),
@@ -652,6 +655,96 @@ source: by_category is orders -> {
          }),
       );
       expect(asRollup.message).toContain("#@ preaggregate");
+   });
+
+   describe("a gate enforced at read (R3)", () => {
+      const R3_ON = {
+         PUBLISHER_MATERIALIZE: "true",
+         PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+      };
+      const withEnv = <T>(env: Record<string, string>, run: () => T): T => {
+         const { restore } = installSettings({ env });
+         try {
+            return run();
+         } finally {
+            restore();
+         }
+      };
+      const inputs = (
+         sourceID: string,
+         outcome: PersistSourceGateOutcome = {
+            classification: "row_level",
+            attributed: true,
+         },
+         materialized = true,
+      ) => ({
+         materializePlans: materialized ? { [sourceID]: {} } : {},
+         sourceGateOutcomes: { [sourceID]: outcome },
+      });
+
+      it("admits a #(materialize) source's own row-level gate to the storage tier only with the switch on", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         withEnv(R3_ON, () =>
+            assertTierEligible(source, true, inputs(source.sourceID)),
+         );
+         for (const env of [
+            {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+            {
+               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+            },
+         ]) {
+            const refused = withEnv(env, () =>
+               refusal(() =>
+                  assertTierEligible(source, true, inputs(source.sourceID)),
+               ),
+            );
+            expect(refused.reason).toBe("authorize");
+         }
+      });
+
+      it("keeps refusing what the served copy cannot enforce: a #@ persist source, an unproven or joined gate", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         for (const plan of [
+            // `#@ persist storage=`: the v1 serve shape may read its table.
+            inputs(id, undefined, false),
+            inputs(id, { classification: "rejected", attributed: true }),
+            // A gate reached only through a join is not the entry point's.
+            inputs(id, { classification: "row_level", attributed: false }),
+            { materializePlans: { [id]: {} } },
+         ]) {
+            expect(withEnv(R3_ON, () => gateEnforcedAtRead(id, plan))).toBe(
+               false,
+            );
+            const refused = withEnv(R3_ON, () =>
+               refusal(() => assertTierEligible(source, true, plan)),
+            );
+            expect(refused.reason).toBe("authorize");
+         }
+      });
+
+      it("lifts only the gate refusal: every other storage check still runs", async () => {
+         const source = (
+            await persistSources(`##! experimental { persistence givens }
+given: GROUPS :: number[]
+given: REGION :: string
+#(access_filter) org_id in $GROUPS
+source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
+
+#@ persist storage="lake"
+source: mine is orders -> { select: * } extend { dimension: r is $REGION }`)
+         ).mine;
+         const refused = withEnv(R3_ON, () =>
+            refusal(() =>
+               assertTierEligible(source, true, inputs(source.sourceID)),
+            ),
+         );
+         expect(refused.reason).not.toBe("authorize");
+      });
    });
 
    it("runs the storage gate for a storage source", async () => {

@@ -22,6 +22,8 @@ import {
    setPackage,
 } from "../../../test_helpers/materialization_service_harness";
 import { logger } from "../../../logger";
+import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
+import { startMetricsHarness } from "../../../test_helpers/metrics_harness";
 
 /**
  * The run lifecycle of MaterializationService: create (auto-run and
@@ -501,6 +503,7 @@ describe("runBuild (branch behavior)", () => {
                  }[]
                | undefined;
             strictUpstreams?: boolean | undefined;
+            warehouseReach?: "recompute" | "refuse";
          },
          signal: AbortSignal,
       ) => Promise<void>;
@@ -609,6 +612,29 @@ describe("runBuild (branch behavior)", () => {
       });
    });
 
+   // ms2data/service#6756: the host's warehouseReach reaches the run, last.
+   it("orchestrated: passes warehouseReach through to the instructed build", async () => {
+      const svc = stubEngine();
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: false,
+            buildInstructions: [makeInstruction()],
+            strictUpstreams: true,
+            warehouseReach: "refuse",
+         },
+         new AbortController().signal,
+      );
+      const args = svc.executeInstructedBuild.firstCall.args;
+      expect(args[5]).toBe(true);
+      expect(args[12]).toBe("refuse");
+      // A host's build relies on no earlier uniqueness check.
+      expect(args[13]).toBeUndefined();
+   });
+
    it("auto-run: derives instructions and auto-loads the manifest", async () => {
       const svc = stubEngine();
 
@@ -714,6 +740,68 @@ describe("runBuild (branch behavior)", () => {
       expect(svc.commitManifest.firstCall.args[3]).not.toHaveProperty(
          "refusedSources",
       );
+   });
+
+   it("lists an orchestrated refusal beside a built table in refusedSources, and meters it as refused only", async () => {
+      // ms2data/service#7078, storage=: a refused source on an address an
+      // eligible sibling built is not in `failures` (the table stands), so the
+      // run's free-form metadata is the only place it is named.
+      const harness = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+      try {
+         const svc = stubEngine();
+         const refused = {
+            name: "gated",
+            sourceID: "gated",
+            tier: "storage",
+            reason: "authorize",
+            message: "Source 'gated' cannot be materialized",
+         };
+         svc.executeInstructedBuild.resolves({
+            entries: {
+               "build-orders": {
+                  sourceEntityId: "build-orders",
+                  physicalTableName: '"orders_v1"',
+                  connectionName: "duckdb",
+               },
+            },
+            failures: {},
+            sourcesRefused: 1,
+            refusalsInFailures: 0,
+            refusedBesideBuilt: { gated: refused },
+         });
+
+         await svc.runBuild(
+            "mat-1",
+            "my-env",
+            "pkg",
+            {
+               sourceNames: undefined,
+               forceRefresh: false,
+               buildInstructions: [makeInstruction()],
+            },
+            new AbortController().signal,
+         );
+
+         expect(svc.commitManifest.firstCall.args[2]).toEqual({});
+         expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
+            mode: "orchestrated",
+            sourcesBuilt: 1,
+            sourcesRefused: 1,
+            refusedSources: { gated: refused },
+         });
+         const count = (outcome: string) =>
+            harness.collectCounter("publisher_materialization_sources_total", {
+               outcome,
+               mode: "orchestrated",
+            });
+         expect(await count("refused")).toBe(1);
+         expect(await count("failed")).toBe(0);
+         expect(await count("built")).toBe(1);
+      } finally {
+         resetMaterializationTelemetryForTesting();
+         await harness.shutdown();
+      }
    });
 
    // What the incremental context is told to do comes from `reseed` ALONE.

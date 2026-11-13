@@ -643,7 +643,9 @@ downstream's build query). That still produces a correct table, but two
 independently-timed builds can then drift; rebuild the whole package together
 (`forceRefresh`) to keep them aligned. Under `strictUpstreams` (orchestrated
 builds) only the first kind is recomputed, because no build over the stored
-tables exists for a source that reaches the warehouse; everything else strict
+tables exists for a source that reaches the warehouse (an orchestrator that
+must never read the warehouse sets `warehouseReach: refuse` in its build
+instructions, and the source fails instead, not retryable); everything else strict
 refuses, since recomputing it would rebuild a table the orchestrator meant to
 pin — an upstream the build neither materialized nor was handed by reference,
 one whose table lives in a _different_ destination, or a shape over stored
@@ -838,7 +840,8 @@ Everything you need is on the package status and the logs:
     (`parent_reuse`) or fell back to recompute-from-raw (`inline_fallback`
     non-strict, `strict_shape_fallback` under `strictUpstreams`, where only a
     shape the destination cannot express is recomputed). `strict_refused` is an
-    upstream strict would not recompute. `infra_failure` is a destination that
+    upstream strict would not recompute, or a warehouse recompute that
+    `warehouseReach: refuse` refused. `infra_failure` is a destination that
     was unreachable, kept distinct from the shape limits so a store outage is not
     read as an un-carriable query.
   - `malloy_model_query_duration` tags a routed query with

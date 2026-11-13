@@ -80,6 +80,156 @@ export function extractRunTargetSourceNames(query?: string): string[] {
    return [];
 }
 
+/**
+ * A query that starts from a named view, read from its text: `run: ops ->
+ * by_carrier`, refined (`ops -> by_carrier + { limit: 3 }`), or with later
+ * stages (`ops -> by_carrier -> { … }`). The names are as written; whether
+ * `source` is a source and `view` one of its views is the model's to say.
+ */
+export interface RunViewCall {
+   source: string;
+   view: string;
+   /** A `+ { … }` refinement follows the view. */
+   refined: boolean;
+   /** How many `-> …` stages follow the view's own. */
+   laterStages: number;
+}
+
+/**
+ * The view the LAST run statement starts from (Malloy runs the last), or
+ * undefined when its first stage is not a bare view name: a hand-written
+ * stage (`-> { … }`), a source with arguments or a refinement of its own
+ * (`ops extend { … } -> …`), or anything this reader does not follow.
+ *
+ * An exact call (`ops -> by_carrier`, nothing after it) is also recognized
+ * from the compiled result schema (`resultExplore.name`); this reader is the
+ * half the schema cannot give, a query that only starts from the view
+ * (materialization v2 plan, Ownership, P14). Strips its own input.
+ */
+export function extractRunViewCall(query?: string): RunViewCall | undefined {
+   if (!query) return undefined;
+   const tokens = tokenize(stripMalloyCommentsAndLiterals(query));
+   let start = -1;
+   for (let k = 0; k + 1 < tokens.count; k++) {
+      if (isWord(tokens, k, "run") && textIs(tokens, k + 1, ":")) start = k + 2;
+   }
+   if (start < 0) {
+      // The bare form, as extractRunTargetSourceNames reads it.
+      for (let k = 0; k + 2 < tokens.count; k++) {
+         if (
+            isName(tokens, k) &&
+            arrowAt(tokens, k + 1) &&
+            opensLine(tokens, k)
+         ) {
+            start = k;
+            break;
+         }
+      }
+   }
+   if (start < 0 || !isName(tokens, start) || !arrowAt(tokens, start + 1)) {
+      return undefined;
+   }
+   const viewAt = start + 3;
+   if (!isName(tokens, viewAt)) return undefined;
+   let k = viewAt + 1;
+   let refined = false;
+   if (textIs(tokens, k, "+") && tokens.kind[k] === PUNCT) {
+      if (!textIs(tokens, k + 1, "{") || tokens.partner[k + 1] < 0) {
+         return undefined;
+      }
+      refined = true;
+      k = tokens.partner[k + 1] + 1;
+   }
+   let laterStages = 0;
+   while (arrowAt(tokens, k)) {
+      const stage = k + 2;
+      if (textIs(tokens, stage, "{") && tokens.partner[stage] >= 0) {
+         k = tokens.partner[stage] + 1;
+      } else if (isName(tokens, stage)) {
+         k = stage + 1;
+      } else {
+         return undefined;
+      }
+      laterStages++;
+   }
+   // The statement must end here: the next statement, or the text's end.
+   if (k < tokens.count && !(isName(tokens, k) && textIs(tokens, k + 1, ":"))) {
+      return undefined;
+   }
+   return {
+      source: textOf(tokens, start),
+      view: textOf(tokens, viewAt),
+      refined,
+      laterStages,
+   };
+}
+
+/** A compiled object's location in its file: zero-based lines and UTF-16 columns. */
+export interface TextRange {
+   start: { line: number; character: number };
+   end: { line: number; character: number };
+}
+
+/**
+ * The text of the definition `name is …` that `range` spans in `fileText`, as
+ * written, or undefined unless it reads as exactly that: the name (backticked
+ * or not), `is`, then a body whose every bracket pairs inside the span. For a
+ * compiled field whose location is its definition (`view: v is { … }` spans
+ * `v is { … }`), so the definition can be compiled again elsewhere.
+ */
+export function definitionTextAt(
+   fileText: string,
+   range: TextRange,
+   name: string,
+): string | undefined {
+   const offsetOf = (at: { line: number; character: number }) => {
+      let offset = 0;
+      for (let line = 0; line < at.line; line++) {
+         const next = fileText.indexOf("\n", offset);
+         if (next < 0) return -1;
+         offset = next + 1;
+      }
+      return offset + at.character;
+   };
+   const from = offsetOf(range.start);
+   const to = offsetOf(range.end);
+   if (from < 0 || to <= from || to > fileText.length) return undefined;
+   const text = fileText.slice(from, to);
+   const tokens = tokenize(stripMalloyCommentsAndLiterals(text));
+   if (
+      tokens.count < 3 ||
+      !isName(tokens, 0) ||
+      textOf(tokens, 0) !== name ||
+      !isWord(tokens, 1, "is")
+   ) {
+      return undefined;
+   }
+   for (let k = 0; k < tokens.count; k++) {
+      if (tokens.kind[k] !== PUNCT) continue;
+      const code = tokens.source.charCodeAt(tokens.start[k]);
+      const bracket =
+         code === 40 ||
+         code === 41 ||
+         code === 91 ||
+         code === 93 ||
+         code === 123 ||
+         code === 125;
+      if (bracket && tokens.partner[k] < 0) return undefined;
+   }
+   return text;
+}
+
+/** Whether tokens `k` and `k + 1` are an adjacent `->`. */
+function arrowAt(tokens: Tokens, k: number): boolean {
+   return (
+      textIs(tokens, k, "-") &&
+      tokens.kind[k] === PUNCT &&
+      textIs(tokens, k + 1, ">") &&
+      tokens.kind[k + 1] === PUNCT &&
+      tokens.start[k + 1] === tokens.start[k] + 1
+   );
+}
+
 /** Whether token `k` is the first on its line. */
 function opensLine(tokens: Tokens, k: number): boolean {
    if (k === 0) return true;

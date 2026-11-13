@@ -202,22 +202,101 @@ bun hammer/run.ts --attention-older-than 30 # show only ⚠ callouts raised ≥3
 bun hammer/run.ts --workers 2              # scenarios in parallel (default 6)
 bun hammer/run.ts --rebuild                # force a fresh server build first
 bun hammer/run.ts --keep                   # leave the pg container + workdir up to inspect
-bun hammer/run.ts --reuse-pg               # reuse a running hammer pg container (fast iteration)
+bun hammer/run.ts --reuse-pg               # reuse a hammer pg container a --keep run left (fast iteration)
 ```
 
 `--scenarios` and `--tags` narrow together (a scenario must match both).
 
-Flags: `--pg-port` (default 55432), `--port` (14000), `--mcp-port` (14040),
-`--quiet`. Exit code is nonzero if any scenario fails.
+Flags: `--pg-port` (default: a free port Docker assigns), `--pg-container`
+(default `publisher-hammer-pg-<run id>`), `--port` and `--mcp-port`
+(default: free ports the OS assigns; see below), `--quiet`. Exit code is nonzero if any scenario fails; Ctrl-C or
+SIGTERM tears the run down (its publishers, container and workdir, unless
+`--keep`) and exits 130 or 143 (129 for SIGHUP, a closed terminal), and a
+second Ctrl-C exits at once.
 
 Set `HAMMER_STEP_TIMING=1` to report any step over 500ms — how you localise a
 scenario that is slow only inside a full run.
 
-The harness picks non-default ports so it won't collide with your own stacks.
-If you used `--keep`, tear the container down with:
+Every Publisher the harness starts gets its own REST and MCP ports, asked of
+the OS (a bind to port 0) when the server is booted, so it never collides with
+your own stacks or with another hammer run. A port is free only until something
+binds it, so a server that exits because one was taken in the meantime is booted
+again on fresh ports. A restarted publisher keeps its ports. `--port N` (and
+`--mcp-port N`, which defaults to `--port`) instead takes the free ports walking
+upward from N, for when you want them predictable.
+If you used `--keep`, the run prints the container's name; tear it down with:
 
 ```bash
-docker rm -fv publisher-hammer-pg
+docker rm -fv publisher-hammer-pg-<run id>   # the name the run printed
+```
+
+### Running two at once
+
+Each run gets its own Postgres container, named for the run and published on a
+port Docker assigns, so two runs started at the same moment never share a name
+or race for a port. The container is labelled with the run's id, host, pid and
+the pid's start time.
+
+- A run removes only a container it created; one it reused stays up.
+- It never removes or reuses a container a live run on this host owns, and
+  refuses one created on another host (a shared Docker daemon), since it cannot
+  check that run. A label left by a crash or a reboot (the pid gone, or reused
+  by a later process) does not count as live.
+- If Docker cannot say who owns a container, the run leaves it alone and stops.
+- `--reuse-pg` reuses the newest running hammer container no live run owns: one
+  a `--keep` run left, including one under the old fixed name
+  `publisher-hammer-pg`. With none, it starts a new one.
+- `--pg-container NAME` uses that container: reused when it is running and no
+  live run owns it, replaced when it is stopped or stale, created when absent.
+
+### Cleaning up Docker
+
+A run never leaves a container or a volume behind, whichever way it ends:
+
+| How the run ends                        | What removes its container                             |
+| --------------------------------------- | ------------------------------------------------------ |
+| finishes, scenarios fail, or throws     | its teardown (`docker rm -fv`)                         |
+| Ctrl-C, SIGTERM, SIGHUP                 | the signal handler's teardown                          |
+| SIGKILL, a crash, an OOM kill           | the run's watchdog, within ~2s of the hammer pid dying |
+| the watchdog died too (reboot, kill -9) | the next run's startup reaper                          |
+
+- **No anonymous volumes.** The `postgres` image declares a `VOLUME` for its
+  data directory, so every container got an anonymous volume, and a container
+  removed with plain `docker rm -f` left it behind. Hammer mounts a tmpfs at
+  `/var/lib/postgresql/data` instead, since the data is throwaway, so there is
+  no volume to leak, and every removal is `rm -fv` anyway. The container is
+  started with `--rm`, so one that stops for any reason takes its filesystem
+  with it. The cost is memory: a full run's databases peak around 3.4 GB of
+  tmpfs in the Docker VM, held only while the run lasts. Runs were no slower
+  (a full run took 310s on tmpfs against 761s on a volume, both beside other
+  hammer runs, so the gap is mostly load, not the disk).
+- **Watchdog.** Each run that creates a container starts a detached `sh` that
+  polls the hammer pid (`kill -0`) and, once it is gone, removes every container
+  labelled `hammer.run=<this run's id>`. It removes by the run's label, never by
+  name, so it cannot take a container a later run created under the same
+  `--pg-container` name. A normal teardown stops it.
+- **Startup reaper.** Before starting its own container, every run removes
+  (with `-v`) leftovers of earlier runs, strictly limited to containers that
+  are named `publisher-hammer-pg*`, carry a `hammer.run` label, were made on
+  this host, and whose owning pid is gone or was reused by a later process. It
+  never touches an unlabelled container, a container a live run owns, one made
+  on another host, or anything outside hammer's name prefix (other stacks on
+  the same Docker, such as `service-*`, are never listed).
+- **`--keep`** creates the container without `--rm`, without a watchdog, and
+  labelled `hammer.keep=1`, so it outlives the run and the reaper leaves it for
+  `--reuse-pg`. Remove it yourself when done (`docker rm -fv <name>`).
+
+Older hammer versions left dangling anonymous volumes that no label ties back
+to hammer, so the reaper cannot safely claim them. If you ran one, check
+`docker volume ls -f dangling=true` and remove what you recognise.
+
+Publisher ports are allocated per server (above), so concurrent runs need no
+flags. Build the server once first (`bun run build:server-only`): two runs that
+both find no build start building at once and collide.
+
+```bash
+bun hammer/run.ts --tags security &
+bun hammer/run.ts --tags orchestration
 ```
 
 ## Each scenario is a clean room

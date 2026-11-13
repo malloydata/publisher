@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportAppOrigin } from "../mcp/tools/report_app_tools";
 import {
    BYPASS_AUTHORIZE_HEADER,
    readBypassAuthorize,
@@ -9,6 +10,7 @@ import {
    assertDuckDBResourceConfig,
    getDefaultQueryRowLimit,
    getDuckDBMemoryLimit,
+   getDuckDBThreads,
    getDuckDBTempDirectory,
    getDuckLakeRowGroupSizeBytes,
    getDuckLakeTargetFileSizeBytes,
@@ -24,6 +26,8 @@ import {
    getMemoryGovernorConfig,
    getModelPageMode,
    getPartitionedWriteFlushThreshold,
+   getMaterializeEnabled,
+   getPersistAddressIncludesDestination,
    getPersistCollisionEnforce,
    getPersistStorageMode,
    getPostgresPoolMax,
@@ -109,6 +113,7 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    "mcp.includeHiddenFilesAndSources": () =>
       isMcpIncludeHiddenFilesAndSources(),
    "mcp.trace": () => settings.get("mcp.trace") === "retrieval",
+   "mcp.appOrigin": () => reportAppOrigin(),
 
    "admin.port": () => settings.get("admin.port") ?? null,
    "admin.host": () => settings.get("admin.host"),
@@ -142,6 +147,10 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
       assertDuckDBResourceConfig();
       return isDuckDBMemoryLimitDisabled() ? "off" : getDuckDBMemoryLimit();
    },
+   "duckdb.threads": () => {
+      assertDuckDBResourceConfig();
+      return getDuckDBThreads();
+   },
    "duckdb.tempDirectory": () => {
       assertDuckDBResourceConfig();
       return getDuckDBTempDirectory();
@@ -159,7 +168,11 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
       return getDuckLakeTargetFileSizeBytes();
    },
    "persist.storageMode": () => getPersistStorageMode(),
+   "persist.addressIncludesDestination": () =>
+      getPersistAddressIncludesDestination(),
    "persist.collisionEnforcementEnabled": () => getPersistCollisionEnforce(),
+   "materialize.enabled": () => getMaterializeEnabled(),
+   "materialize.gatedSources": () => settings.get("materialize.gatedSources"),
    "materialization.schedulerEnabled": () =>
       getMaterializationSchedulerConfig() !== null,
    "materialization.schedulerIntervalMs": () =>
@@ -185,6 +198,9 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    "logging.level": () => settings.get("logging.level"),
    "logging.responseBodiesEnabled": () =>
       settings.get("logging.responseBodiesEnabled"),
+   "workloadLog.store": () => settings.get("workloadLog.store"),
+   "workloadLog.retentionDays": () => settings.get("workloadLog.retentionDays"),
+   "workloadLog.maxRows": () => settings.get("workloadLog.maxRows"),
    "shutdown.drainDurationSeconds": () =>
       settings.get("shutdown.drainDurationSeconds"),
    "shutdown.gracefulCloseTimeoutSeconds": () =>
