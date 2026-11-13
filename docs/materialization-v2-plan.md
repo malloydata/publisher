@@ -413,7 +413,7 @@ Guards 2 to 4 go when the live compile stops taking a manifest (the retirement p
 
 *Risks.*
 
-- One source's re-root failing takes the whole model's served copy live (G2's shape). The served copy's retry without the failing source (`withoutKept`, extension tables only) should cover every re-root before the default flips. *Done (2026-11-13, row 33):* `failingReroots` (`serve/served_copy_containment.ts`) traces a failure to its re-root from the spans `buildServedCopy` reports, and the compile loop steps that source alone back; the v1 path can trace its own re-roots' failures with the same helper.
+- One source's re-root failing takes the whole model's served copy live (G2's shape). The served copy's retry without the failing source (`withoutKept`, extension tables only) should cover every re-root before the default flips. *Done (2026-11-13, row 34):* `failingReroots` (`serve/served_copy_containment.ts`) traces a failure to its re-root from the spans `buildServedCopy` reports, and the compile loop steps that source alone back; the v1 path can trace its own re-roots' failures with the same helper.
 - Every v1 package now compiles a served copy per model at load. The phase 3 risk row's load numbers (time and RSS per package, against today's serve shape) gate 6f.
 - Real packages hold shapes the fixture lacks. `shadow` exists to find them before `on`.
 - A v1 colocated table built before 6a has no recorded schema; the derived one must agree with the table, which a mismatch check at bind (as for `storage=`) enforces by declining that source.
