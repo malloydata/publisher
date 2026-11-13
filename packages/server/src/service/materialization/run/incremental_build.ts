@@ -11,10 +11,7 @@ import {
 } from "../stored_column_types";
 import type { PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
-import {
-   recordIncrementalStep,
-   recordSourceBuildDuration,
-} from "../../../materialization_metrics";
+import { recordIncrementalStep } from "../../../materialization_metrics";
 import type {
    IncrementalLedgerEntry,
    LedgerTableIdentity,
@@ -784,9 +781,6 @@ export async function refreshOneSourceIncrementally(params: {
       sourceName: persistSource.name,
    });
    if (!outcome.applied) return undefined;
-   if (outcome.durationMs !== undefined) {
-      recordSourceBuildDuration(outcome.durationMs, "delta");
-   }
 
    // A delta or skip leaves the existing table serving; it must still enter the
    // build manifest, or a downstream source in this run would recompute it from

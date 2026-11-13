@@ -21,32 +21,118 @@ import {
    resetInstrumentsForTesting,
 } from "./telemetry";
 
-export type MaterializationMode = "auto" | "orchestrated";
+/**
+ * Every label below is a closed union whose values are listed in a const array
+ * (materialization v2 plan, section 5, "Step 4 specification"), so a spec can
+ * enumerate each one and adding a value is a reviewed change. No instrument
+ * here carries a package, environment, source, model, table, destination,
+ * connection or query label, and none is filled from a runtime string.
+ */
+export const MATERIALIZATION_MODES = ["auto", "orchestrated"] as const;
+export type MaterializationMode = (typeof MATERIALIZATION_MODES)[number];
+
+/**
+ * What a build makes: `materialize` a `#(materialize)` table, `persist` a
+ * `#@ persist` table, `rollup` a `#(preaggregate)` or `#@ preaggregate`
+ * rollup, `view` a persisted view, `pair` a pair table (an inlined join_many).
+ */
+export const BUILD_KINDS = [
+   "materialize",
+   "persist",
+   "rollup",
+   "view",
+   "pair",
+] as const;
+export type BuildKind = (typeof BUILD_KINDS)[number];
+
+/** Where a table is built: the source's own warehouse, or a `storage=` destination. */
+export const BUILD_TIERS = ["colocated", "storage"] as const;
+export type BuildTier = (typeof BUILD_TIERS)[number];
+
+/** A full rebuild, or an incremental delta applied in place. */
+export const BUILD_METHODS = ["full", "delta"] as const;
+export type BuildMethod = (typeof BUILD_METHODS)[number];
+
+/**
+ * One source's outcome in a run: `built` (a skipped incremental refresh
+ * included, since its table stands current), `reused` (carried forward
+ * unchanged, or supplied by reference), `refused` (the eligibility gate),
+ * `failed`, or `cancelled` (failed because the run was cancelled).
+ */
+export const BUILD_OUTCOMES = [
+   "built",
+   "reused",
+   "refused",
+   "failed",
+   "cancelled",
+] as const;
+export type BuildOutcome = (typeof BUILD_OUTCOMES)[number];
+
+/**
+ * Why a build failed, for whoever decides on a retry: `deterministic`,
+ * `transient` and `unclassified` are `BuildRetryable` false, true and
+ * undefined (build_failure_class.ts); `billed_read_lost` is a `storage=` build
+ * whose warehouse read ran and was charged and whose rows were not captured,
+ * so a retry pays for it again. `none` is every outcome but `failed`.
+ */
+export const FAILURE_CLASSES = [
+   "none",
+   "deterministic",
+   "transient",
+   "unclassified",
+   "billed_read_lost",
+] as const;
+export type FailureClass = (typeof FAILURE_CLASSES)[number];
+
+/** Why an incremental refresh seeded or skipped (the step counter's `reason`). */
+export const INCREMENTAL_STEP_REASONS = [
+   // Seeds.
+   "forced",
+   "no_boundary",
+   "lineage_changed",
+   "table_renamed",
+   "merge_unsupported",
+   "table_unreadable",
+   "table_emptied",
+   "shape_mismatch",
+   "ledger_unreadable",
+   "plan_error",
+   "chained_storage",
+   "pair_parent_row",
+   // Skips.
+   "frontier_unreadable",
+   "not_advanced",
+] as const;
+export type IncrementalStepReason = (typeof INCREMENTAL_STEP_REASONS)[number];
+
+/** Bucket boundaries of the build-duration histogram, in milliseconds. */
+export const BUILD_DURATION_BUCKETS_MS = [
+   100, 500, 1_000, 5_000, 15_000, 60_000, 300_000, 900_000, 3_600_000,
+];
+/** Bucket boundaries of the build-read histogram, in bytes: 1 MB to 10 TB by decades. */
+export const BUILD_READ_BYTES_BUCKETS = [
+   1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13,
+];
 /**
  * `partial` is a run that committed a manifest while some of its sources failed:
  * distinct from `success` because the manifest is missing tables a consumer
  * expected, and from `failed` because the sources that did build are usable.
  */
-export type MaterializationOutcome =
-   | "success"
-   | "partial"
-   | "failed"
-   | "cancelled";
+export const MATERIALIZATION_OUTCOMES = [
+   "success",
+   "partial",
+   "failed",
+   "cancelled",
+] as const;
+export type MaterializationOutcome = (typeof MATERIALIZATION_OUTCOMES)[number];
 /** Manifest bind outcome: timeout is split out from generic failure on purpose. */
 export type ManifestBindOutcome = "success" | "failure" | "timeout";
 /**
- * Which engine a source build / table drop ran against: the source's own
- * warehouse (colocated, in-warehouse CTAS) or a DuckDB/DuckLake `storage=`
- * destination (federated passthrough CTAS). The two have very different latency
- * and failure profiles, so build/drop metrics are labeled with it rather than
- * pooling the two into one series. `delta` is an incremental refresh advancing
- * an in-warehouse table in place — typically far cheaper than a CTAS, which is
- * why it gets its own series instead of skewing `in_warehouse`.
- *
- * `delta_storage` is the same advance applied to a `storage=` table, kept apart
- * from `delta` for the reason `storage` is kept apart from `in_warehouse`: its
- * rows cross an egress boundary and its DML runs on a different engine, so
- * pooling the two would average two different cost profiles into one number.
+ * Which engine a table drop ran against (`publisher_materialization_drop_tables_total`):
+ * the source's own warehouse (`in_warehouse`) or a DuckDB/DuckLake `storage=`
+ * destination (`storage`). `delta` and `delta_storage` are kept on the union
+ * for the label's history; a build's tier and method are labels of their own
+ * on the build instruments ({@link BuildTier}, {@link BuildMethod}).
  */
 export type StorageBuildEngine =
    | "storage"
@@ -106,9 +192,28 @@ const runDuration = lazyHistogram(
    "publisher_materialization_run_duration_ms",
    "Wall-clock duration of a materialization build. Label: mode ('auto'|'orchestrated').",
 );
-const sourcesCounter = lazyCounter(
-   "publisher_materialization_sources_total",
-   "Persist sources processed by a materialization run. Labels: outcome ('built'|'reused'|'failed'|'refused'), mode ('auto'|'orchestrated').",
+const buildCounter = lazyCounter(
+   "publisher_materialization_build_total",
+   "Source builds, one per source per run at its finish or failure. Labels: " +
+      "kind ('materialize'|'persist'|'rollup'|'view'|'pair'), tier " +
+      "('colocated'|'storage'), outcome ('built'|'reused'|'refused'|'failed'|" +
+      "'cancelled'), failure_class ('none' unless outcome is 'failed'; then " +
+      "'deterministic'|'transient'|'unclassified'|'billed_read_lost'). " +
+      "'billed_read_lost' is the expensive one: the warehouse read ran and was " +
+      "charged and its rows were not captured, so a retry pays for it again.",
+);
+const buildDuration = lazyHistogram(
+   "publisher_materialization_build_duration_ms",
+   "Wall-clock duration of one source's build, for builds that ran (built or " +
+      "failed; a skipped incremental refresh did no work and is not timed). " +
+      "Labels: kind, tier, method ('full'|'delta').",
+   { buckets: BUILD_DURATION_BUCKETS_MS },
+);
+const buildReadBytes = lazyHistogram(
+   "publisher_materialization_build_read_bytes",
+   "Warehouse bytes scanned by one source's build read, when the warehouse " +
+      "reported a count; absent otherwise, never zero. Label: tier.",
+   { unit: "By", buckets: BUILD_READ_BYTES_BUCKETS },
 );
 const annotationFindingsCounter = lazyCounter(
    "publisher_annotation_findings_total",
@@ -179,10 +284,6 @@ const tableCollisionCounter = lazyCounter(
       "PERSIST_COLLISION_ENFORCE=false opts out, in which case the build " +
       "continues.",
 );
-const sourceBuildDuration = lazyHistogram(
-   "publisher_materialization_source_build_duration_ms",
-   "Wall-clock duration of building a single persist source.",
-);
 const dropTablesCounter = lazyCounter(
    "publisher_materialization_drop_tables_total",
    "Physical tables dropped on delete. Label: outcome ('success'|'failure').",
@@ -224,22 +325,14 @@ const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
    "Tables a FAILED run left in a storage= destination and deliberately did not " +
       "reclaim, because the source is refreshed incrementally and the name may be " +
-      "the one it serves from. Label: destination. Not all of these are orphans — " +
+      "the one it serves from. Not all of these are orphans — " +
       "a rebuild at a fresh generational name is, a seed on the live serving name " +
       "is not, and the manifest entry cannot separate them — so read this as an " +
       "upper bound on what is accumulating rather than a leak count. It is the " +
       "only accounting there is until reclaiming a destination exists, which is " +
       "why it is a counter and not just a log line: the question is a rate, not " +
-      "whether it ever happened.",
-);
-const storageBuildFailureCounter = lazyCounter(
-   "publisher_storage_build_failures_total",
-   "storage= build failures (federation/passthrough/attach/CTAS), distinct from " +
-      "in-warehouse build failures. Labels: destination (connection name), " +
-      "reason ('build_failed'|'billed_read_not_captured'). The second is the " +
-      "expensive one: the warehouse read ran and was charged, and the rows could " +
-      "not be captured — so a re-drive pays for it again. Worth alerting on " +
-      "separately from a failure that costs only a retry.",
+      "whether it ever happened. Unlabelled: the destination is on the warn " +
+      "log that accompanies each count.",
 );
 const attributionSkippedCounter = lazyCounter(
    "publisher_storage_build_attribution_skipped_total",
@@ -332,22 +425,70 @@ export function recordMaterializationRun(
 }
 
 /**
- * Record how many persist sources a run built vs. reused (carried forward
- * unchanged via skip-if-unchanged). Lets a dashboard show the reuse ratio,
- * the main lever on materialization cost.
+ * One source's build outcome in a run. `failureClass` is required with
+ * `failed` and absent otherwise, so the counter's `failure_class` is `none`
+ * exactly when the outcome is not `failed`.
+ */
+export type BuildOutcomeLabels =
+   | {
+        kind: BuildKind;
+        tier: BuildTier;
+        outcome: "failed";
+        failureClass: Exclude<FailureClass, "none">;
+     }
+   | {
+        kind: BuildKind;
+        tier: BuildTier;
+        outcome: Exclude<BuildOutcome, "failed">;
+        failureClass?: never;
+     };
+
+/**
+ * Count one source's build outcome. Called once per source per run, at the
+ * build loop (instructed_build.ts) for a source the run tried, and at the
+ * commit for one it reused; never from inside a tier's strategies, whose
+ * retries and fallbacks would count one source twice.
  *
- * `refused` counts sources the eligibility gate refused. With
- * `mode="orchestrated"` it should stay at zero, because a host that builds from
- * the build plan never instructs a source the plan refused; a nonzero count
+ * `refused` with an orchestrated run should stay rare: a host that builds
+ * from the build plan never instructs a source the plan refused, so a count
  * there means the plan and the build's own gate disagreed about a source.
  */
-export function recordSourcesOutcome(
-   outcome: "built" | "reused" | "failed" | "refused",
-   count: number,
-   mode: MaterializationMode,
+export function recordBuildOutcome(labels: BuildOutcomeLabels): void {
+   buildCounter().add(1, {
+      kind: labels.kind,
+      tier: labels.tier,
+      outcome: labels.outcome,
+      failure_class: labels.outcome === "failed" ? labels.failureClass : "none",
+   });
+}
+
+/**
+ * Record how long one source's build ran. Labelled by kind, tier and method:
+ * a delta and a CTAS, or a passthrough into a destination and an in-warehouse
+ * build, have latency profiles too different to pool.
+ */
+export function recordBuildDuration(
+   durationMs: number,
+   labels: { kind: BuildKind; tier: BuildTier; method: BuildMethod },
 ): void {
-   if (count <= 0) return;
-   sourcesCounter().add(count, { outcome, mode });
+   buildDuration().record(durationMs, {
+      kind: labels.kind,
+      tier: labels.tier,
+      method: labels.method,
+   });
+}
+
+/**
+ * Record the warehouse bytes one build read, when the warehouse reported a
+ * count. Nothing is recorded for a missing or zero count: null is not zero,
+ * and a zero would average into the series as a free read.
+ */
+export function recordBuildReadBytes(
+   bytes: number | null | undefined,
+   tier: BuildTier,
+): void {
+   if (typeof bytes !== "number" || !(bytes > 0)) return;
+   buildReadBytes().record(bytes, { tier });
 }
 
 /**
@@ -379,7 +520,7 @@ export function recordAnnotationFindings(
  */
 export function recordIncrementalStep(
    step: "delta" | "seed" | "skip",
-   reason?: string,
+   reason?: IncrementalStepReason,
 ): void {
    incrementalStepCounter().add(1, reason ? { step, reason } : { step });
 }
@@ -473,18 +614,6 @@ export function recordManifestBindDegraded(): void {
    manifestBindDegradedCounter().add(1);
 }
 
-/**
- * Record the wall-clock duration of building one persist source's table,
- * labeled by engine so the DuckDB passthrough path and the in-warehouse CTAS
- * path (very different latency profiles) don't pool into one series.
- */
-export function recordSourceBuildDuration(
-   durationMs: number,
-   engine: StorageBuildEngine,
-): void {
-   sourceBuildDuration().record(durationMs, { engine });
-}
-
 /** Record a best-effort physical-table drop on materialization delete. */
 export function recordDropTables(
    outcome: "success" | "failure",
@@ -494,23 +623,12 @@ export function recordDropTables(
 }
 
 /**
- * Record a stored table a failed run left behind without reclaiming. Counted per
- * destination so accumulation is attributable to a store rather than to the fleet.
+ * Record a stored table a failed run left behind without reclaiming. The
+ * destination, which names a tenant's store, is on the accompanying log, not
+ * a label.
  */
-export function recordStorageTableRetained(destination: string): void {
-   storageTableRetainedCounter().add(1, { destination });
-}
-
-/**
- * Record a `storage=` build failure (federation / passthrough / attach / CTAS),
- * counted separately from in-warehouse build failures because the storage path
- * has its own failure modes and destination axis.
- */
-export function recordStorageBuildFailure(
-   destination: string,
-   reason: "build_failed" | "billed_read_not_captured" = "build_failed",
-): void {
-   storageBuildFailureCounter().add(1, { destination, reason });
+export function recordStorageTableRetained(): void {
+   storageTableRetainedCounter().add(1);
 }
 
 /**

@@ -8,10 +8,7 @@ import type {
 } from "@malloydata/malloy";
 import { ChainedUpstreamMissingError } from "../../../errors";
 import { logger } from "../../../logger";
-import {
-   recordChainedStorageBuild,
-   recordStorageBuildFailure,
-} from "../../../materialization_metrics";
+import { recordChainedStorageBuild } from "../../../materialization_metrics";
 import { getPersistStorageMode } from "../../../config";
 import { mergeQueryMetadata, type QueryMetadata } from "../../query_metadata";
 import {
@@ -376,7 +373,6 @@ export class SourceBuilder {
          // made here from the strict render (`compilerMissing`).
          if (manifest.strict && reuse.missing.length > 0) {
             recordChainedStorageBuild("strict_refused");
-            recordStorageBuildFailure(instruction.destination!);
             // Typed, so the failure can be attributed to an upstream that
             // failed earlier in this run (see build_failure_class.ts).
             throw new ChainedUpstreamMissingError(

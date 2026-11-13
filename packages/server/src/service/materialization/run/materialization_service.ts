@@ -10,10 +10,7 @@ import {
    PackageVersionError,
 } from "../../../errors";
 import { logger } from "../../../logger";
-import {
-   MaterializationMode,
-   recordSourcesOutcome,
-} from "../../../materialization_metrics";
+import { MaterializationMode } from "../../../materialization_metrics";
 import {
    Materialization,
    MaterializationUpdate,
@@ -82,6 +79,16 @@ import {
 import { nameViewOwner } from "./name_view_sql";
 import { Reclaimer } from "./reclaimer";
 import { RunLifecycle } from "./run_lifecycle";
+import {
+   buildKindOf,
+   buildKindsByAddress,
+   markRunFailureReported,
+   reportSourceRefused,
+   reportSourceReused,
+   RunTelemetry,
+   runTriggerOf,
+   withRunTelemetry,
+} from "./run_telemetry";
 import {
    deriveSelfInstructions,
    validateInstructions,
@@ -601,7 +608,29 @@ export class MaterializationService {
     * loads the fresh manifest into the package models; orchestrated leaves
     * distribution to the caller.
     */
-   private async runBuild(
+   private runBuild(
+      ...args: Parameters<MaterializationService["buildRun"]> extends [
+         RunTelemetry,
+         ...infer Rest,
+      ]
+         ? Rest
+         : never
+   ): Promise<void> {
+      const [id, , packageName, opts] = args;
+      const telemetry = new RunTelemetry(
+         id,
+         opts.buildInstructions !== undefined ? "orchestrated" : "auto",
+         packageName,
+      );
+      // Every source event of the run, however deep, belongs to this run.
+      return withRunTelemetry(telemetry, () =>
+         this.buildRun(telemetry, ...args),
+      );
+   }
+
+   /** {@link runBuild}'s body, inside the run's telemetry. */
+   private async buildRun(
+      telemetry: RunTelemetry,
       id: string,
       environmentName: string,
       packageName: string,
@@ -625,12 +654,7 @@ export class MaterializationService {
       // Set once this run has recorded the shared tables it rebuilds: from
       // then on, a failure must rebind the other loaded versions too.
       let markedShared = false;
-      const mode: MaterializationMode = orchestrated ? "orchestrated" : "auto";
-      logger.info("Materialization build started", {
-         materializationId: id,
-         packageName,
-         mode,
-      });
+      const mode: MaterializationMode = telemetry.mode;
       const startedAt = Date.now();
 
       try {
@@ -848,6 +872,23 @@ export class MaterializationService {
             );
          }
 
+         telemetry.started(
+            runTriggerOf({
+               trigger: opts.trigger,
+               runContextTrigger: opts.runContext?.trigger,
+               orchestrated,
+            }),
+            instructions.length,
+         );
+         // Auto-run's refusals never reach the build loop, which counts the
+         // rest of the run's sources.
+         for (const refusal of Object.values(derivedRefused)) {
+            reportSourceRefused(
+               buildKindOf(compiled, refusal.sourceID),
+               refusal.tier === "storage" ? "storage" : "colocated",
+            );
+         }
+
          // A rollup this run may rewrite in place no longer holds what its
          // bound key check said (known limitation 29): forget it before any
          // table is written, so a run that fails part-way never leaves a
@@ -861,9 +902,6 @@ export class MaterializationService {
             entries,
             failures,
             sourcesRefused: instructedRefused,
-            // Defaults keep a seam that predates the split meaning "every
-            // refusal is in failures".
-            refusalsInFailures = instructedRefused,
             refusedBesideBuilt = {},
             nameViews = [],
             uniquenessChecks,
@@ -1055,15 +1093,23 @@ export class MaterializationService {
             );
          }
 
-         recordSourcesOutcome("built", sourcesBuilt, mode);
-         recordSourcesOutcome("reused", sourcesReused, mode);
-         // An instructed refusal in `failures` is metered once, as refused.
-         recordSourcesOutcome(
-            "failed",
-            sourcesFailed - refusalsInFailures,
-            mode,
+         // Carried forward, so never in the build loop: counted once the run
+         // has committed them. A host's reference to an address this run
+         // rebuilt was counted as built.
+         const kindByAddress = buildKindsByAddress(
+            compiled,
+            pkg.getBuildPlan(),
          );
-         recordSourcesOutcome("refused", sourcesRefused, mode);
+         for (const [address, entry] of Object.entries(carried)) {
+            if (failures[address] || telemetry.builtAddresses.has(address)) {
+               continue;
+            }
+            reportSourceReused(
+               kindByAddress.get(address) ??
+                  (entry.origin === "preaggregate" ? "rollup" : "persist"),
+               entry.storageDestinationName ? "storage" : "colocated",
+            );
+         }
          // A run that lost sources is partial: its manifest is missing tables a
          // consumer expected. An auto-run refusal is not a loss: it is a property
          // of the model, and counting it would make every run partial.
@@ -1073,25 +1119,12 @@ export class MaterializationService {
             partial ? "partial" : "success",
             startedAt,
          );
-         logger[partial || sourcesRefused > 0 ? "warn" : "info"](
-            sourcesFailed > 0
-               ? "Materialization build complete with failed sources"
-               : sourcesRefused > 0
-                 ? "Materialization build complete with refused sources"
-                 : "Materialization build complete",
-            {
-               materializationId: id,
-               packageName,
-               mode,
-               sourcesBuilt,
-               sourcesReused,
-               sourcesFailed,
-               sourcesRefused,
-               durationMs,
-            },
-         );
+         telemetry.finished(partial ? "partial" : "success", durationMs);
       } catch (err) {
-         this.lifecycle.recordRun(mode, outcomeFor(err, signal), startedAt);
+         const outcome = outcomeFor(err, signal);
+         this.lifecycle.recordRun(mode, outcome, startedAt);
+         telemetry.finished(outcome, Date.now() - startedAt, err);
+         markRunFailureReported(err);
          if (markedShared && opts.version !== null) {
             // The run may have rebuilt some shared tables before it failed.
             // Its record stays, so rebinding now leaves those tables unbound

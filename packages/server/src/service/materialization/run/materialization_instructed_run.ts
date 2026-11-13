@@ -7,7 +7,12 @@ import {
    MaterializationEligibilityError,
 } from "../../../errors";
 import { logger } from "../../../logger";
-import type { EligibilityRefusalReason } from "../../../materialization_metrics";
+import type {
+   BuildKind,
+   BuildMethod,
+   BuildTier,
+   EligibilityRefusalReason,
+} from "../../../materialization_metrics";
 import {
    recordSharedAddressInstructions,
    recordTableCollision,
@@ -45,6 +50,7 @@ import {
 } from "./materialization_run_support";
 import type { NameViewIntent, NameViewRecord, OwnNameTable } from "./name_view";
 import type { UniquenessLedger } from "./inline_uniqueness";
+import { reportSourceFailed } from "./run_telemetry";
 
 /** The eligibility gate a source was cleared by. */
 export type EligibilityTier = "storage" | "colocated";
@@ -130,6 +136,8 @@ export interface InstructedRun {
     * table this package's own run wrote, which the view replaces.
     */
    nameViewOwnTables?: Map<string, OwnNameTable>;
+   /** The run's cancellation: a source failing after it is `cancelled`. */
+   signal?: AbortSignal;
    /** This package's own views a built table replaced at its name. */
    replacedNameViews?: NameViewRecord[];
    /** Whether this package's records say it wrote a table at a view's name. */
@@ -406,6 +414,13 @@ export function recordInstructedBuildFailure(
    instruction: BuildInstruction,
    sourceEntityId: string,
    buildErr: unknown,
+   /** What the source's build would make and how, for its build event. */
+   build: {
+      kind: BuildKind;
+      tier: BuildTier;
+      method: BuildMethod;
+      durationMs?: number;
+   },
 ): void {
    // One source failing does not end the build; the reason is recorded per
    // source so a consumer can attribute it. A build that loses every source
@@ -445,15 +460,27 @@ export function recordInstructedBuildFailure(
       reason,
       retryable,
    });
-   // A build that lost a source does not throw, so without this log the
-   // failure is invisible in the server's own output.
-   logger.warn("Source failed to materialize", {
-      packageName: run.owner?.packageName,
-      sourceName: persistSource.name,
-      physicalTableName: instruction.physicalTableName,
-      reason,
-      retryable,
-   });
+   // A build that lost a source does not throw, so without this event the
+   // failure is invisible in the server's own output. The reason stays on the
+   // run's record: a driver's message can quote SQL, so the log has its code.
+   // Once per address, as the record counts it: a base and its `extend` share
+   // one table, and the loop tries it again for the second.
+   if (!run.failures[sourceEntityId]) {
+      reportSourceFailed(
+         {
+            ...build,
+            sourceEntityId,
+            sourceName: persistSource.name,
+            physicalTableName: instruction.physicalTableName,
+            ...(instruction.destination
+               ? { destination: instruction.destination }
+               : {}),
+         },
+         buildErr,
+         retryable,
+         run.signal?.aborted ?? false,
+      );
+   }
    run.failedReasons.push(`${persistSource.name}: ${reason}`);
    run.failures[sourceEntityId] = {
       sourceEntityId,

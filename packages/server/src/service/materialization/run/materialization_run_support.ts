@@ -965,7 +965,7 @@ export function reportRetainedStorageTables(
    packageName: string,
 ): void {
    for (const entry of retained) {
-      recordStorageTableRetained(entry.storageDestinationName ?? "unknown");
+      recordStorageTableRetained();
       logger.warn(
          "A failed run left a table in a storage destination and did not reclaim " +
             "it: the source is refreshed incrementally, so this name may be the " +
