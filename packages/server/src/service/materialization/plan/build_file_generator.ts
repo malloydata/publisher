@@ -187,6 +187,13 @@ import {
    inverseRenameBlocks,
    type TextEdit,
 } from "../declaration_text";
+import {
+   dropJoinDefinition,
+   inlinedJoinRenames,
+   inlinedJoinStatements,
+   intoFirstExtend,
+   type InlinedJoinText,
+} from "../inlined_join_text";
 import { offsetOf } from "../malloy_lexer";
 import {
    classifyWhereTerms,
@@ -885,9 +892,10 @@ function storableArray(field: FieldLike): string | undefined {
  * A private or internal dimension is a candidate too, marked with its
  * `access` (P3): whether the build can select it is settled on the build
  * copy (`materialize_compile.ts`), which drops the ones it cannot, such as a
- * field private on a source this one extends. One with a timeframe is not
- * stored: the served copy restores a timeframe by redefining the field
- * publicly, which would expose it.
+ * field private on a source this one extends. One with a timeframe is stored
+ * too: the served copy restores its timeframe with the same `__stored`
+ * redefinition a public one gets, both statements carrying the field's own
+ * modifier (`served_copy.ts`).
  */
 export function materializeColumns(
    def: SourceDefLike,
@@ -910,12 +918,6 @@ export function materializeColumns(
       if (dimension === undefined) continue;
       if (perRead.has(dimension)) continue;
       const access = hiddenAccess(field);
-      if (
-         access &&
-         typeof (field as { timeframe?: unknown }).timeframe === "string"
-      ) {
-         continue;
-      }
       const computed = field.e !== undefined;
       if (computed && options.joinReads) {
          const reads = options.joinReads.get(dimension);
@@ -955,12 +957,17 @@ function columnType(def: SourceDefLike, dimension: string): string {
  * dimensions (never a hidden one) that read no join of their own (one hop),
  * each stored as `<join>__<field>`, or, for a join further down an inlined
  * path of join_manys, as `<join>__<next join>__…__<field>` (`path` names the
- * joins from the source to this one).
+ * joins from the source to this one). When the join itself is private or
+ * internal on the source, `access` is its modifier and each column carries
+ * it: the build copy lifts the join so its build can read it (P3), and the
+ * served copy's record keeps the join's modifier, so a caller reads
+ * `<join>.<field>` exactly where live lets it.
  */
 function inlinedJoinColumns(
    map: SourceMap,
    join: SourceJoin,
    path: readonly string[] = [join.name],
+   access?: "private" | "internal",
 ): MaterializeColumn[] {
    const joined = map.joinedReadsOf(join);
    const reads = joined.fieldJoins;
@@ -988,6 +995,7 @@ function inlinedJoinColumns(
          computed: true,
          join: path[0],
          ...(path.length > 1 ? { path: [...path] } : {}),
+         ...(access ? { access } : {}),
       });
    }
    return out;
@@ -1734,26 +1742,36 @@ export function planModelMaterialize(
          });
          continue;
       }
+      // A private or internal join's access, by name. An inlined join_one
+      // keeps it: its build reads the join through the build copy's lift
+      // (P3), and the served record carries the join's modifier. A pair
+      // table's record (an inlined join_many) does not carry one yet, so a
+      // hidden join_many is refused here, and this source serves live while
+      // the companion still compiles for every other source in the model.
+      const joinAccess = new Map<string, "private" | "internal">();
+      for (const raw of def.fields ?? []) {
+         const f = raw as FieldLike;
+         const access = hiddenAccess(f);
+         const fieldName = f.as ?? f.name;
+         if (access && typeof fieldName === "string" && f.join !== undefined) {
+            joinAccess.set(fieldName, access);
+         }
+      }
       const entries = (resolved as { path: SourceJoin[] }[]).map((r) => r.path);
-      // A private or internal join cannot be read by the generated build
-      // (its query selects `<join>.<field>`), and the served record would not
-      // carry its access: refused here, so this source serves live and the
-      // companion still compiles for every other source in the model.
-      const hiddenJoin = entries
+      const hiddenMany = entries
          .map((p) => p[0].name)
-         .find((j) =>
-            (def.fields ?? []).some((raw) => {
-               const f = raw as FieldLike;
-               return (f.as ?? f.name) === j && hiddenAccess(f) !== undefined;
-            }),
+         .find(
+            (j) =>
+               joinAccess.has(j) &&
+               joins.find((x) => x.name === j)?.relationship !== "one",
          );
-      if (hiddenJoin !== undefined) {
+      if (hiddenMany !== undefined) {
          refused.push({
             sourceName: name,
             sourceID: def.sourceID,
             reason:
-               `inline= names ${quotedName(hiddenJoin)}, a join that is not ` +
-               "public, which cannot be inlined yet",
+               `inline= names ${quotedName(hiddenMany)}, a join_many that is ` +
+               "not public, which cannot be inlined as a pair table yet",
          });
          continue;
       }
@@ -1808,6 +1826,8 @@ export function planModelMaterialize(
             inlinedJoinColumns(
                map,
                joins.find((x) => x.name === j) as SourceJoin,
+               undefined,
+               joinAccess.get(j),
             ),
          ),
          ...paths.flatMap((p) =>
@@ -2429,6 +2449,7 @@ function copyEdits(
    plan: MaterializePlan,
    parent?: MaterializePlan,
    liftAccess = false,
+   joinRecords = false,
 ): { edits: TextEdit[] } | { reason: string } {
    const edits: TextEdit[] = [];
    const given = givenReadTerms(plan);
@@ -2445,7 +2466,9 @@ function copyEdits(
       const to = range ? offsetOf(text, range.end) : -1;
       const rerooted =
          from >= 0 && to >= from
-            ? rerootOnBuildSource(text.slice(from, to), parent)
+            ? rerootOnBuildSource(text.slice(from, to), parent, {
+                 joinRecords,
+              })
             : undefined;
       if (
          rerooted === undefined ||
@@ -2487,8 +2510,13 @@ function copyEdits(
  * extension's, edited as the build copy edits them (the parent re-rooted on
  * its build source, the extension's given-reading terms out) and nothing else
  * of the file, so the build reads no source but the parent's stored table.
- * Undefined when the copy's edits cannot be made, or a declaration is not
- * where the plan says.
+ * Each join_one the parent inlines is read from the parent's stored
+ * `<join>__<field>` columns, as the served copy reads it: its definition taken
+ * out of the parent's block and a record of those columns in its place,
+ * under the join's own modifier, so an extension that reads `<join>.<field>`
+ * builds over the parent's table rather than the raw chain. Undefined when
+ * the copy's edits cannot be made, or a declaration is not where the plan
+ * says.
  */
 export function storedChainText(
    text: string,
@@ -2498,7 +2526,7 @@ export function storedChainText(
 ): StoredChain | undefined {
    const over = plan.buildsOver;
    if (!over) return undefined;
-   const edits = copyEdits(text, plan, parent, options.liftAccess);
+   const edits = copyEdits(text, plan, parent, options.liftAccess, true);
    if ("reason" in edits) return undefined;
    const statements: string[] = [];
    for (const { range } of [over.declaration, ...over.path]) {
@@ -2587,12 +2615,17 @@ const PARENT_NOT_REROOTED =
  * computed dimension its table stores, so the stored column stands in for it,
  * as the served copy re-roots a source on its table. Its measures, joins,
  * views, its fields computed at read and its `where:` are kept as written, so
- * the extension reads every field it read from the parent. Undefined when the
- * declaration does not parse.
+ * the extension reads every field it read from the parent. With
+ * `joinRecords` (the build in a `storage=` destination, {@link storedChainText}),
+ * each join_one the parent inlines is replaced by the record of its stored
+ * columns ({@link inlinedJoinStatements}), since the destination holds no
+ * joined source. Undefined when the declaration does not parse, or a join to
+ * replace is declared there by another kind of join.
  */
 function rerootOnBuildSource(
    declaration: string,
    parent: MaterializePlan,
+   options: { joinRecords?: boolean } = {},
 ): string | undefined {
    const spans = declarationSpans(declaration);
    if (!spans) return undefined;
@@ -2612,8 +2645,54 @@ function rerootOnBuildSource(
       new Set(stored.map((c) => c.column)),
    );
    if (renames === undefined) return undefined;
+   let text = kept.text;
+   if (options.joinRecords) {
+      const records = parentJoinRecords(parent);
+      for (const j of records) {
+         const dropped = dropJoinDefinition(text, j.join);
+         if (dropped === undefined) return undefined;
+         text = dropped;
+      }
+      if (records.length > 0) {
+         const opened = intoFirstExtend(
+            text,
+            inlinedJoinStatements(
+               records,
+               inlinedJoinRenames(
+                  records,
+                  parent.columns.map((c) => c.column),
+               ),
+               true,
+            ),
+         );
+         if (opened === undefined) return undefined;
+         text = opened;
+      }
+   }
    const base = identifier(parent.buildSourceName);
-   return `${name} is ${base}${renames}${kept.text ? ` ${kept.text}` : ""}`;
+   return `${name} is ${base}${renames}${text ? ` ${text}` : ""}`;
+}
+
+/**
+ * The join_ones a parent's table stores inline (`inline=`), each with its
+ * stored columns and the join's modifier, as {@link inlinedJoinStatements}
+ * writes their records. A pair table's join_many is not one: its table is
+ * a row per pair, never chained on as the parent's rows.
+ */
+function parentJoinRecords(parent: MaterializePlan): InlinedJoinText[] {
+   const out: InlinedJoinText[] = [];
+   for (const join of parent.inline ?? []) {
+      if (join === parent.pair?.join) continue;
+      const columns = parent.columns.filter((c) => c.join === join);
+      if (columns.length === 0) continue;
+      const access = columns[0].access;
+      out.push({
+         join,
+         columns: columns.map((c) => ({ name: c.dimension, column: c.column })),
+         ...(access ? { access } : {}),
+      });
+   }
+   return out;
 }
 
 /** Ends a level file's name: one depth of a chain's generated sources (P10). */

@@ -175,15 +175,23 @@ source: orders is base extend { dimension: east is region_code = 'EAST' }
    );
 
    it(
-      "never stores an except:ed field, nor a hidden one with a timeframe",
+      "never stores an except:ed field, and stores a hidden one with a timeframe",
       async () => {
          const { plans } = await planOf(`${HEAD}
 #(materialize) storage="lake"
 source: orders is raw include { public: *; except: region } extend {
   private dimension: order_day is ts.day
+  internal dimension: order_month is ts.month
 }
 `);
-         expect(stored(plans[0])).toEqual(["id", "org_id", "amount", "ts"]);
+         expect(stored(plans[0])).toEqual([
+            "id",
+            "org_id",
+            "amount",
+            "ts",
+            "order_day:private",
+            "order_month:internal",
+         ]);
       },
       { timeout: 30000 },
    );
@@ -282,7 +290,7 @@ source: orders is raw include { internal: org_id; private: id; public: * }
 
 describe("an inlined join that is not public", () => {
    it(
-      "refuses only that source, and the companion still builds the rest",
+      "plans a private or internal join_one, each joined column carrying the join's modifier, and builds it through the lifted copy",
       async () => {
          settings({ PERSIST_STORAGE_MODE: "on" });
          const { c, plans } =
@@ -300,14 +308,83 @@ source: by_region is orders0 extend {
 #(materialize) storage="lake" inline=["r"]
 source: hidden_join is orders0 extend {
   internal join_one: r is regions with region
+  dimension: region_label is r.label
+}
+
+#(materialize) storage="lake" inline=["r"]
+source: private_join is orders0 extend {
+  private join_one: r is regions with region
 }
 `);
-         expect(plans.map((p) => p.sourceName)).toEqual(["by_region"]);
+         const byName = new Map(plans.map((p) => [p.sourceName, p]));
+         expect([...byName.keys()].sort()).toEqual([
+            "by_region",
+            "hidden_join",
+            "private_join",
+         ]);
+         expect(stored(byName.get("by_region") as MaterializePlan)).toEqual([
+            "id",
+            "region",
+            "amount",
+            "r__code",
+            "r__label",
+         ]);
+         expect(stored(byName.get("hidden_join") as MaterializePlan)).toEqual([
+            "id",
+            "region",
+            "amount",
+            "region_label",
+            "r__code:internal",
+            "r__label:internal",
+         ]);
+         expect(stored(byName.get("private_join") as MaterializePlan)).toEqual([
+            "id",
+            "region",
+            "amount",
+            "r__code:private",
+            "r__label:private",
+         ]);
+         for (const name of ["hidden_join", "private_join"]) {
+            const p = byName.get(name) as MaterializePlan;
+            const sql = addressSQL(
+               c.sources[p.sourceID],
+               c.targets?.[p.sourceID],
+            );
+            expect(sql).toContain('"r__label"');
+         }
+         expect(
+            (c.annotationFindings ?? []).filter(
+               (f) => f.code === "materialize-not-built",
+            ),
+         ).toEqual([]);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "refuses a hidden join_many, whose pair table's record carries no modifier yet",
+      async () => {
+         settings({ PERSIST_STORAGE_MODE: "on" });
+         const { c, plans } =
+            await planOf(`##! experimental { access_modifiers }
+source: orders0 is duckdb.sql("select 1 as id, 'east' as region, 2.0 as amount") extend {
+  primary_key: id
+}
+source: items is duckdb.sql("select 1 as item_id, 1 as order_id, 'x' as sku") extend {
+  primary_key: item_id
+}
+
+#(materialize) storage="lake" inline=["i"]
+source: hidden_many is orders0 extend {
+  internal join_many: i is items on id = i.order_id
+}
+`);
+         expect(plans.map((p) => p.sourceName)).toEqual([]);
          const finding = (c.annotationFindings ?? []).find(
-            (f) => f.subject === "hidden_join",
+            (f) => f.subject === "hidden_many",
          );
          expect(finding?.code).toBe("materialize-not-built");
-         expect(finding?.message).toContain("a join that is not public");
+         expect(finding?.message).toContain("a join_many that is not public");
       },
       { timeout: 30000 },
    );

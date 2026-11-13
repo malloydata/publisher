@@ -1975,9 +1975,13 @@ export function keepsGivenTerms(author: unknown, served: unknown): boolean {
  * author's field of that name has (P3): `public` and none read alike, and a
  * modifier it does not know reads as private, so it never matches a public
  * one. A field only the served copy has (a timeframe column's internal
- * rename, `order_month__stored`) is the re-root's own and must not be public,
- * so a stored column never surfaces under a name the author's source lacks.
- * Unreadable sources fail closed.
+ * rename, `order_month__stored`; an inlined join's stored column,
+ * `carriers__name__stored`) is the re-root's own and must not be public, so a
+ * stored column never surfaces under a name the author's source lacks. Nor
+ * may it be less hidden than the author's field it is named after (`<field>__…`,
+ * the field a timeframe column or an inlined join's column stores): a private
+ * field's stored column renamed only `internal` would let a caller's own
+ * `extend` read it. Unreadable sources fail closed.
  */
 export function keepsAccess(author: unknown, served: unknown): boolean {
    const accessByName = (def: unknown) => {
@@ -1998,11 +2002,23 @@ export function keepsAccess(author: unknown, served: unknown): boolean {
    const before = accessByName(author);
    const after = accessByName(served);
    if (!before || !after) return false;
+   const rank = (access: string) =>
+      access === "public" ? 0 : access === "internal" ? 1 : 2;
    for (const [name, access] of after) {
       const was = before.get(name);
-      if (was === undefined ? access === "public" : was !== access) {
-         return false;
+      if (was !== undefined) {
+         if (was !== access) return false;
+         continue;
       }
+      // The re-root's own: hidden, and at least as hidden as every author
+      // field whose stored column it could be.
+      let floor = 1;
+      for (const [field, fieldAccess] of before) {
+         if (name.startsWith(`${field}__`)) {
+            floor = Math.max(floor, rank(fieldAccess));
+         }
+      }
+      if (rank(access) < floor) return false;
    }
    return true;
 }
@@ -2087,7 +2103,8 @@ export function classifyServedCopyFailure(
 /**
  * The join_ones a `#(materialize)` plan inlines, as the served copy answers
  * them from stored columns: each stored `<join>__<field>` column with its
- * stored type and the joined field's timeframe. A join whose joined source
+ * stored type and the joined field's timeframe, and the join's own access
+ * modifier when the author hides it, read off the author's compiled source. A join whose joined source
  * filters by a given is left out (kept as written, so each caller's read
  * applies the filter through the join). Undefined when the table lacks a
  * column the plan stores.
@@ -2108,13 +2125,9 @@ function inlinedJoinsOf(
             accessModifier?: unknown;
          }[]
       )
-         // A join the author hides stays as written: the record that would
-         // replace it is a public dimension.
-         .filter(
-            (f) =>
-               f.join === "one" &&
-               (f.accessModifier == null || f.accessModifier === "public"),
-         )
+         // A join the author hides is replaced by a record under the
+         // join's own modifier ({@link InlinedJoin.access}).
+         .filter((f) => f.join === "one")
          .map((f) => [String(f.as ?? f.name), f] as const),
    );
    const out: InlinedJoin[] = [];
@@ -2151,7 +2164,15 @@ function inlinedJoinsOf(
             ...(typeof timeframe === "string" ? { timeframe } : {}),
          });
       }
-      if (columns.length > 0) out.push({ join, columns, annotatedFields });
+      const access = hiddenAccess(def);
+      if (columns.length > 0) {
+         out.push({
+            join,
+            columns,
+            annotatedFields,
+            ...(access ? { access } : {}),
+         });
+      }
    }
    return out;
 }
