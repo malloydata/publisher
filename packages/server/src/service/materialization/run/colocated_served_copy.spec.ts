@@ -78,6 +78,9 @@ const TIERS: Tier[] = [
       : []),
 ];
 
+/** A model of the test's own, in place of {@link modelFor}'s. */
+let modelOverride: ((q: (name: string) => string) => string) | undefined;
+
 function modelFor(tier: Tier): string {
    const q = (name: string) => (tier.schema ? `${tier.schema}.${name}` : name);
    const incremental = tier.incremental
@@ -170,7 +173,13 @@ for (const tier of TIERS)
          const location = path.join(sourcesPath, `${PKG}-${version}`);
          writePackageFiles(
             location,
-            { "model.malloy": modelFor(tier) },
+            {
+               "model.malloy": modelOverride
+                  ? modelOverride((name) =>
+                       tier.schema ? `${tier.schema}.${name}` : name,
+                    )
+                  : modelFor(tier),
+            },
             {
                manifest: {
                   name: PKG,
@@ -188,9 +197,10 @@ for (const tier of TIERS)
          );
       }
 
-      async function build(): Promise<Materialization> {
+      async function build(forceRefresh = false): Promise<Materialization> {
          const created = await service.createMaterialization(ENV, PKG, {
             versionId: VersionRef.parse("1.0.0"),
+            ...(forceRefresh ? { forceRefresh } : {}),
          });
          return settledRun(repo, service, created.id);
       }
@@ -198,6 +208,17 @@ for (const tier of TIERS)
       async function sql(text: string): Promise<Row[]> {
          const connection = await env.getMalloyConnection("warehouse");
          return (await connection.runSQL(text)).rows as Row[];
+      }
+
+      /** A row count, read back on either warehouse (Postgres's runSQL reads a `row` column). */
+      async function countOf(from: string): Promise<number> {
+         const select = `SELECT count(*) AS c FROM ${from}`;
+         const rows = await sql(
+            tier.schema
+               ? `SELECT row_to_json(t) AS row FROM (${select}) t`
+               : select,
+         );
+         return Number(rows[0].c);
       }
 
       async function pkg(): Promise<Package> {
@@ -306,6 +327,7 @@ for (const tier of TIERS)
          await env.closeAllConnections().catch(() => undefined);
          await db.close();
          fs.rmSync(root, { recursive: true, force: true });
+         modelOverride = undefined;
          restoreSettings();
          await __setPackageLoadPoolForTests(null);
       });
@@ -359,6 +381,52 @@ for (const tier of TIERS)
                (await pkg()).getServeVerdicts().map((v) => v.verdict),
             ).toEqual(built.map(() => "serves"));
             for (const source of built) await expectServedEqualsLive(source);
+         },
+         { timeout: 60_000 },
+      );
+
+      it(
+         "never builds over a table at name= that no run of the package wrote, and rebuilds its own",
+         async () => {
+            // An author's table in the warehouse the source reads, at the
+            // name= one source asks for: the build swap would drop it.
+            await sql(
+               `CREATE TABLE ${table("customers")} AS SELECT 1 AS cid, 'alice' AS cname`,
+            );
+            modelOverride = (q) => `source: ev is warehouse.table('${q("ev")}')
+
+#(materialize) name="${q("customers")}"
+source: ev_taken is ev extend { measure: n is count() }
+
+#(materialize) name="${q("ev_own")}"
+source: ev_own is ev extend {
+  where: region = 'east'
+  measure: n is count()
+}
+`;
+            await publish("1.0.0");
+            const first = await build();
+            // The run commits the source that built; the other fails alone.
+            const failures = Object.values(
+               (first.manifest as { failures?: Record<string, unknown> })
+                  ?.failures ?? {},
+            ) as { sourceName?: string; reason?: string }[];
+            expect(failures.map((f) => f.sourceName)).toEqual(["ev_taken"]);
+            expect(failures[0].reason).toContain(
+               "held by a table no run of this package wrote",
+            );
+            // The author's table is untouched, and the other source built.
+            expect(
+               await countOf(
+                  `${table("customers")} WHERE cid = 1 AND cname = 'alice'`,
+               ),
+            ).toBe(1);
+            expect(await countOf(table("ev_own"))).toBe(2);
+            // A table this package's own run wrote at its name= is rebuilt.
+            await sql(`INSERT INTO ${table("ev")} VALUES
+            (9, 'east', 1.0, CAST(current_date AS TIMESTAMP))`);
+            await build(true);
+            expect(await countOf(table("ev_own"))).toBe(3);
          },
          { timeout: 60_000 },
       );
