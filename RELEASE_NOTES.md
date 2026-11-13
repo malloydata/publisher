@@ -99,6 +99,10 @@ A wrong answer is fixed, with the default settings as well as under the v1 cutov
 
 A legacy `.malloynb` notebook cell failed with "A non-empty `buildManifest` was supplied, but the model is missing `##! experimental.persistence`" whenever its package had a colocated `#@ persist` table bound and the cell's model did not import a model that carries the flag. A cell now gets the bound tables only when its own model carries the flag, as a query on a model already did.
 
+## [Unreleased] — `/compile`'s SQL preview no longer names a table past its freshness window
+
+With `includeSql`, `POST …/models/{path}/compile` and the `compile_model` MCP tool previewed SQL against every bound colocated table, including one past its freshness window that execution no longer reads. The preview now uses the same freshness-filtered manifest as execution, so its SQL reads the base table where the query would. A table within its window is still previewed.
+
 ## [Unreleased] — In development: join-to-rollup checks the querying source's primary key, and declines a count beside a re-pointed join
 
 Behind `PUBLISHER_MATERIALIZE` (off by default). Two wrong answers from a joined source's `#(preaggregate)` rollup read through a join are fixed; each now answers live (`COUNT_SEMANTICS`) and equals live.
