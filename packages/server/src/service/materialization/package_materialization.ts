@@ -17,6 +17,7 @@ import {
    getPersistCollisionEnforce,
    getMaterializeEnabled,
    getPersistStorageMode,
+   getV1ServedCopyMode,
 } from "../../config";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
 import { BuildPlanRefreshingError } from "../../errors";
@@ -71,7 +72,10 @@ import {
    SERVED_COPY_WARNING_CODE,
    type ServedCopyProblem,
 } from "./serve/served_copy_serve";
-import { deriveColocatedServeBindings } from "./serve/colocated_bindings";
+import {
+   deriveColocatedServeBindings,
+   v1StoredColumnsOf,
+} from "./serve/colocated_bindings";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import {
    computeServeVerdicts,
@@ -921,13 +925,37 @@ export class PackageMaterialization {
       const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
       const sources = plan?.sources ?? {};
       const eligible = this.colocatedSourceEligibility?.eligibleEntityIds;
+      // The v1 cutover (G1): v1 colocated `#@ persist` tables too, once the
+      // switch is past `off` (under `shadow` the model keeps them off its own
+      // served copy; Model.setServeBindings).
+      const v1 = getV1ServedCopyMode() !== "off";
+      const viewBuilds = v1 ? this.persistedViewBuildIDs() : undefined;
       return deriveColocatedServeBindings({
          entries: this.freshnessEntries,
          planSources: sources,
          materializePlans: this.materializePlans,
          eligible: (sourceID) =>
             !!eligible?.has(sources[sourceID]?.sourceEntityId ?? ""),
+         ...(v1
+            ? {
+                 v1Schema: (sourceID: string) =>
+                    v1StoredColumnsOf(this.declarationOf(sourceID)),
+                 notV1: (sourceID: string) => !!viewBuilds?.has(sourceID),
+              }
+            : {}),
       });
+   }
+
+   /** Every model's persisted views' generated build sources, by sourceID. */
+   private persistedViewBuildIDs(): Set<string> {
+      const ids = new Set<string>();
+      for (const model of this.owner.models().values()) {
+         // Optional: a model a spec stands in for need not implement it.
+         for (const b of model.persistedViewBuilds?.() ?? []) {
+            ids.add(b.buildSourceID);
+         }
+      }
+      return ids;
    }
 
    /** What {@link pushStorageServeBindingsToModels} last pushed, colocated. */

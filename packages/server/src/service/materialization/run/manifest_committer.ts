@@ -16,6 +16,7 @@ import type { MaterializationHost } from "../host";
 import {
    BuildInstruction,
    BuildManifestResult,
+   boundSchemaOf,
    FreshnessManifest,
    isLegacyFailedEntry,
    ManifestEntry,
@@ -115,6 +116,9 @@ export class ManifestCommitter {
                // build CREATEd it quoted, so an unquoted read misses on a
                // case-folding engine.
                connectionName: entry.connectionName,
+               // The columns a colocated build captured (v1 cutover), which
+               // the served copy binds a v1 table with.
+               ...boundSchemaOf(entry.schema),
             };
          }
       }

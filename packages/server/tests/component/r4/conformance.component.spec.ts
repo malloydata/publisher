@@ -5,8 +5,10 @@
  * The conformance fixture (ms2data/service#7098): synthetic packages shaped
  * like real ones, each served three ways (v1 `#@ persist` with `storage=`,
  * v1 colocated, and `#(materialize)`), with the materialize switch off
- * (today's serve shape) and on (the served copy), through the real package
- * path (conformance/package_harness.ts). Every query's served answer must
+ * (today's serve shape), on (the served copy) and with the v1 cutover on
+ * (`cutover`: `PUBLISHER_V1_SERVED_COPY=on`, so v1 tables are read by the
+ * served copy, the rollup and view legs, or not at all), through the real
+ * package path (conformance/package_harness.ts). Every query's served answer must
  * equal live, rows and result metadata (field types with their timeframes,
  * and annotations), and a stored table must have answered it.
  *
@@ -49,7 +51,7 @@ import { rowDifference } from "./harness";
 
 const RUN_GAPS = process.env.CONFORMANCE_GAPS === "run";
 const REPORT = process.env.CONFORMANCE_REPORT === "1";
-const SWITCHES: Switch[] = ["off", "on"];
+const SWITCHES: Switch[] = ["off", "on", "cutover"];
 
 /**
  * Metadata differences every stored read has on main, tolerated per case so
@@ -136,7 +138,9 @@ function tolerancesNeeded(live: Answer, served: Answer): Tolerance[] {
 }
 
 function tierOf(answer: Answer): string {
-   if (answer.servedBy !== "materialized") return answer.servedBy;
+   if (answer.servedBy !== "materialized") {
+      return answer.servedBy === "live" ? "live" : `served:${answer.servedBy}`;
+   }
    if (answer.via) return `served:${answer.via}`;
    return answer.servedFrom === "storage"
       ? "served:serve_shape"
@@ -176,7 +180,15 @@ function gapFor(
    on: Switch,
 ): Gap | undefined {
    for (const map of [query.gaps, shape.gaps]) {
-      const gap = map?.[`${variant}/${on}`] ?? map?.[variant] ?? map?.["*"];
+      const gap =
+         map?.[`${variant}/${on}`] ??
+         // The v1 cutover changes nothing for `#(materialize)`: its gaps
+         // with the switch on are its gaps after the cutover.
+         (variant === "materialize" && on === "cutover"
+            ? map?.[`${variant}/on`]
+            : undefined) ??
+         map?.[variant] ??
+         map?.["*"];
       if (gap) return gap;
    }
    return undefined;
@@ -235,6 +247,8 @@ for (const shape of SHAPES) {
                for (const on of SWITCHES) {
                   restore();
                   restore = withSwitch(on);
+                  // The v1 cutover's bindings follow the switch at bind.
+                  if (on === "cutover") await fixture.rebind();
                   for (const q of shape.queries) {
                      served.set(key(q, on), await runIn(fixture, q));
                   }
@@ -318,18 +332,27 @@ for (const shape of SHAPES) {
                      );
                   }
                   if (want === "live") {
-                     expect(s.answer.servedBy).not.toBe("materialized");
+                     expect(s.answer.servedBy).toBe("live");
+                     return;
+                  }
+                  if (want === "rollup" || want === "view") {
+                     expect(s.answer.servedBy).toBe(want);
                      return;
                   }
                   expect(s.answer.servedBy).toBe("materialized");
                   if (variant === "colocated" || want === "colocated") {
                      expect(s.answer.servedFrom).toBeNull();
+                     // After the cutover a colocated table is read by the
+                     // served copy, never Malloy's build manifest.
+                     if (on === "cutover") {
+                        expect(s.answer.via).toBe("served_copy");
+                     }
                      return;
                   }
                   expect(s.answer.servedFrom).toBe("storage");
                   // The switch decides which storage path answers.
                   expect(s.answer.via).toBe(
-                     on === "on" ? "served_copy" : undefined,
+                     on === "off" ? undefined : "served_copy",
                   );
                };
                if (gap && !RUN_GAPS) {

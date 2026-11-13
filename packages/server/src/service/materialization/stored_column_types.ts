@@ -463,7 +463,10 @@ function storedTypeOfField(
       case "string":
          return "VARCHAR";
       case "number":
-         return f.numberType === "integer" ? "BIGINT" : "DOUBLE";
+         // A schema read back from a table says `bigint` for a 64-bit integer.
+         return f.numberType === "integer" || f.numberType === "bigint"
+            ? "BIGINT"
+            : "DOUBLE";
       case "boolean":
          return "BOOLEAN";
       case "date":

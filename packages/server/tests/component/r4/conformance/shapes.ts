@@ -12,6 +12,10 @@
  * (`@PERSIST()` renders no `name=`, so the table takes the source's name.)
  *  - `materialize`: `#(materialize) storage="lake"` (v2)
  *
+ * `@PREAGG(dim)` marks a rollup measure (`#@ preaggregate grain=…`, with
+ * `storage=` for the `storage` variant, and `#(preaggregate)` for
+ * `materialize`), and `@PVIEW(name)` a persisted view (`#@ persist name=…`).
+ *
  * A shape lists its queries and, per variant and switch, any outcome main does
  * not give yet (a gap): recorded with its reason so the v1 cutover can read
  * the list, and skipped rather than failed.
@@ -29,7 +33,11 @@ export type Expect =
    /** Live by design: the query reads no stored source, or opts out. */
    | "live"
    /** A colocated table answered, whatever the variant renders. */
-   | "colocated";
+   | "colocated"
+   /** A rollup answered (`servedBy: rollup`). */
+   | "rollup"
+   /** A persisted view answered (`servedBy: view`). */
+   | "view";
 
 export interface ConformanceQuery {
    name: string;
@@ -94,6 +102,18 @@ export function renderFiles(
    const out: Record<string, string> = { "raw.malloy": RAW_MODEL };
    for (const [file, text] of Object.entries(shape.files)) {
       out[file] = text
+         .replace(/@PREAGG\(([^)]*)\)/g, (_m, grain: string) =>
+            variant === "storage"
+               ? `#@ preaggregate grain="${grain}" storage="lake"`
+               : variant === "colocated"
+                 ? `#@ preaggregate grain="${grain}"`
+                 : `#(preaggregate) grain=["${grain}"] storage="lake"`,
+         )
+         .replace(/@PVIEW\(([^)]*)\)/g, (_m, name: string) =>
+            variant === "storage"
+               ? `#@ persist name="${name}" storage="lake"`
+               : `#@ persist name="${name}"`,
+         )
          .replace(/@PERSIST_SPLIT\(([^)]*)\)/g, (_m, name: string) =>
             variant === "storage"
                ? `#@ persist name="${name}"\n#@ storage="lake"`
@@ -142,6 +162,36 @@ const SHARED_TABLE_LIVE: Expect = "live";
  */
 const SAME_NAMED_MATERIALIZE: Partial<Record<Variant, Expect>> = {
    materialize: SHARED_TABLE_LIVE,
+};
+
+/** Today's serve shape answers a v1 `storage=` rollup without its measures' annotations. */
+const V1_STORAGE_ROLLUP_ANNOTATIONS: Gap = {
+   kind: "metadata",
+   issue: "#1691",
+   reason:
+      "today's serve shape answers a v1 #@ preaggregate storage= rollup with its measures' annotations (# currency, #(doc)) dropped",
+};
+
+/** G4: nothing reads a v1 `storage=` rollup after the cutover until the rollup leg does. */
+const V1_STORAGE_ROLLUP_LIVE: Gap = {
+   kind: "live",
+   reason:
+      "G4: after the cutover a v1 #@ preaggregate storage= rollup is read by no candidate (the serve shape is gone and the rollup leg reads only #(preaggregate) plans), so the query answers live",
+};
+
+/** A `#@ persist` view is planned and read only with the materialize switch on. */
+const PERSISTED_VIEW_OFF: Gap = {
+   kind: "live",
+   reason:
+      "a #@ persist view is planned and served only with PUBLISHER_MATERIALIZE on (phase 4's view leg)",
+};
+
+/** A `storage=` persisted view drops its measures' annotations. */
+const PERSISTED_VIEW_ANNOTATIONS: Gap = {
+   kind: "metadata",
+   issue: "#1691",
+   reason:
+      "a storage= persisted view answers with its measures' annotations (# currency, #(doc)) dropped; not the cutover's (the view leg is unchanged)",
 };
 
 export const SHAPES: Shape[] = [
@@ -781,7 +831,13 @@ source: orders_j is orders_raw extend {
                "run: orders_j -> { group_by: c.segment; aggregate: t is amount.sum() }",
             expect: LIVE_ACROSS_CONNECTIONS,
             gaps: {
-               colocated: {
+               "colocated/off": {
+                  kind: "live",
+                  issue: "#6643",
+                  reason:
+                     "a warehouse source joining a colocated persisted source is answered live: the colocated manifest is not applied to a joined source",
+               },
+               "colocated/on": {
                   kind: "live",
                   issue: "#6643",
                   reason:
@@ -795,6 +851,13 @@ source: orders_j is orders_raw extend {
       name: "joined persisted source with hidden fields, from an index",
       issue: "#1666",
       about: "A persisted dimension source with an internal column, and measures over it (one private), held by the index only as a join of a persisted fact in another file (P3 with #6643's shape)",
+      gaps: {
+         "colocated/cutover": {
+            kind: "live",
+            reason:
+               "G2: the served copy binds a v1 table with its public columns only, right for storage= and wrong for a colocated table Malloy built with its internal column, so the copy does not compile and both sources answer live",
+         },
+      },
       files: {
          "index.malloy": `import "facts.malloy"
 export { order_facts }
@@ -893,7 +956,13 @@ source: orders_k is orders_raw extend {
                "run: orders_k -> { group_by: c.segment; aggregate: t is amount.sum() }",
             expect: LIVE_ACROSS_CONNECTIONS,
             gaps: {
-               colocated: {
+               "colocated/off": {
+                  kind: "live",
+                  issue: "#6983",
+                  reason:
+                     "a warehouse source joining a colocated persisted source is answered live: the colocated manifest is not applied to a joined source",
+               },
+               "colocated/on": {
                   kind: "live",
                   issue: "#6983",
                   reason:
@@ -1078,7 +1147,13 @@ source: orders_b is orders_raw extend {
                "run: orders_b -> { group_by: c.segment; aggregate: t is amount.sum() }",
             expect: LIVE_ACROSS_CONNECTIONS,
             gaps: {
-               colocated: {
+               "colocated/off": {
+                  kind: "live",
+                  issue: "#6643",
+                  reason:
+                     "a warehouse source joining a colocated persisted source is answered live: the colocated manifest is not applied to a joined source",
+               },
+               "colocated/on": {
                   kind: "live",
                   issue: "#6643",
                   reason:
@@ -1140,6 +1215,20 @@ source: gated is orders_raw -> {
             name: "an access-filtered persisted source",
             malloy: "run: gated -> { group_by: region; aggregate: total }",
             givens: { REGIONS: ["north", "east"] },
+            expect: { storage: "live", materialize: "live" },
+         },
+         {
+            // The same table, another caller: after the cutover a colocated
+            // table is read past the gate (G3), each caller's rows only.
+            name: "an access-filtered persisted source, another caller",
+            malloy: "run: gated -> { group_by: region; aggregate: total }",
+            givens: { REGIONS: ["west"] },
+            expect: { storage: "live", materialize: "live" },
+         },
+         {
+            name: "an access-filtered extension, another caller",
+            malloy: "run: gated_ext -> { group_by: status; aggregate: total }",
+            givens: { REGION: "west", REGIONS: ["west"] },
             expect: { storage: "live", materialize: "live" },
          },
       ],
@@ -1402,6 +1491,92 @@ source: east_west_ext is east_west extend {
             name: "an extension",
             malloy:
                "run: east_west_ext -> { group_by: region; aggregate: n, total }",
+         },
+      ],
+   },
+   {
+      name: "v1 rollup on annotated measures",
+      about: "A #@ preaggregate rollup over measures carrying # currency and #(doc) (v2: #(preaggregate)); the v1 cutover's G4",
+      files: {
+         "m.malloy": `${HEADER}
+import "raw.malloy"
+
+source: orders is orders_raw extend {
+  dimension: zone is upper(region)
+  # currency
+  #(doc) "Revenue"
+  @PREAGG(region)
+  measure: total is amount.sum()
+  #(doc) "Orders"
+  @PREAGG(region)
+  measure: n is count()
+}
+`,
+      },
+      queries: [
+         {
+            name: "covered by the rollup",
+            malloy: "run: orders -> { group_by: region; aggregate: total, n }",
+            expect: "rollup",
+            gaps: {
+               "storage/off": V1_STORAGE_ROLLUP_ANNOTATIONS,
+               "storage/on": V1_STORAGE_ROLLUP_ANNOTATIONS,
+               "storage/cutover": V1_STORAGE_ROLLUP_LIVE,
+            },
+         },
+         {
+            name: "a measure expression over the rollup",
+            malloy:
+               "run: orders -> { group_by: region; aggregate: avg_ is total / n }",
+            expect: "rollup",
+            gaps: { "storage/cutover": V1_STORAGE_ROLLUP_LIVE },
+         },
+         {
+            name: "not covered (status)",
+            malloy: "run: orders -> { group_by: status; aggregate: total }",
+            expect: "live",
+         },
+      ],
+   },
+   {
+      name: "persisted view",
+      about: "#@ persist on a view, served only to a query that calls the view exactly (phase 4's view leg, behind PUBLISHER_MATERIALIZE)",
+      variants: ["storage", "colocated"],
+      files: {
+         "m.malloy": `${HEADER}
+import "raw.malloy"
+
+source: ov is orders_raw extend {
+  # currency
+  #(doc) "Revenue"
+  measure: total is amount.sum()
+  @PVIEW(ov_by_region)
+  view: by_region is { group_by: region; aggregate: total }
+}
+`,
+      },
+      gaps: {
+         // The view leg exists only with the materialize switch on.
+         "storage/off": PERSISTED_VIEW_OFF,
+         "colocated/off": PERSISTED_VIEW_OFF,
+         "storage/on": PERSISTED_VIEW_ANNOTATIONS,
+         "storage/cutover": PERSISTED_VIEW_ANNOTATIONS,
+      },
+      queries: [
+         {
+            name: "the view called",
+            malloy: "run: ov -> by_region",
+            expect: "view",
+         },
+         {
+            name: "a later stage after the view",
+            malloy: "run: ov -> by_region -> { select: region, total }",
+            expect: "view",
+         },
+         {
+            name: "a refinement (live)",
+            malloy: "run: ov -> by_region + { limit: 2 }",
+            expect: "live",
          },
       ],
    },

@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 import { components } from "../../../api";
 import { logger } from "../../../logger";
 import {
+   boundSchemaOf,
    FreshnessManifest,
    isLegacyFailedEntry,
    ManifestEntry,
@@ -138,6 +139,7 @@ export function splitManifestEntries(
          dataAsOf: entry.dataAsOf,
          freshnessWindowSeconds: entry.freshnessWindowSeconds,
          freshnessFallback: entry.freshnessFallback,
+         ...boundSchemaOf(entry.schema),
       };
    }
    return { tableNameManifest, storageEntries };

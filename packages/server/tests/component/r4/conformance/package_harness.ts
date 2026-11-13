@@ -38,6 +38,14 @@ import {
 } from "../../../../src/service/materialization/stored_column_types";
 import type { Row } from "../harness";
 
+/** `value` with every `reference_id = "…"` (minted per compile) blanked. */
+function withoutReferenceIds(value: unknown): unknown {
+   if (value === undefined) return value;
+   return JSON.parse(
+      JSON.stringify(value).replace(/reference_id = \\"[^"\\]*\\"/g, ""),
+   );
+}
+
 /** The storage destination every `storage=` source in the fixture names. */
 export const LAKE = "lake";
 
@@ -62,21 +70,30 @@ export interface Answer {
 /** What querying a package produced: an answer, or the error it threw. */
 export type Outcome = { answer: Answer } | { error: string };
 
-/** The switch a served run is taken under. */
-export type Switch = "off" | "on";
+/**
+ * The switches a served run is taken under: `off` (today's serve shape),
+ * `on` (`PUBLISHER_MATERIALIZE`: the served copy beside today's paths), and
+ * `cutover` (`PUBLISHER_MATERIALIZE` and `PUBLISHER_V1_SERVED_COPY=on`: the
+ * served copy, the rollup and view legs, or live; no serve shape and no build
+ * manifest on the live compile).
+ */
+export type Switch = "off" | "on" | "cutover";
 
 function settingsFor(materialize: Switch) {
    return {
       env: {
          PERSIST_STORAGE_MODE: "on",
-         PUBLISHER_MATERIALIZE: materialize === "on" ? "true" : "false",
+         PUBLISHER_MATERIALIZE: materialize === "off" ? "false" : "true",
+         PUBLISHER_V1_SERVED_COPY: materialize === "cutover" ? "on" : "off",
       },
    };
 }
 
 /**
- * Install the fixture's settings with the materialize switch as given. The
- * router reads it per query, so a loaded package can be queried both ways.
+ * Install the fixture's settings with the switches as given. The router reads
+ * them per query, so a loaded package can be queried every way; the v1
+ * cutover's bindings are pushed at bind, so a fixture queried under
+ * `cutover` is rebound first ({@link LoadedFixture.rebind}).
  */
 export function withSwitch(materialize: Switch): () => void {
    return installSettings(settingsFor(materialize)).restore;
@@ -103,6 +120,12 @@ export interface LoadedFixture {
    built: { name: string; tier: "storage" | "colocated" }[];
    /** Problems building a planned source, by name. */
    buildErrors: Record<string, string>;
+   /**
+    * Bind the built tables again under the settings installed now, and settle
+    * every model's served copy: the bindings a switch read at bind (the v1
+    * cutover's colocated tables) follow it.
+    */
+   rebind(): Promise<void>;
    run(
       modelPath: string,
       query: string,
@@ -171,7 +194,9 @@ export async function loadFixture(files: Record<string, string>): Promise<{
                rows: result.compactResult as unknown as Row[],
                fields: (result.result?.schema?.fields ?? []).map((f) => ({
                   name: f.name,
-                  type: (f as { type?: unknown }).type,
+                  // A nest's fields carry annotations too, with the same
+                  // per-compile reference id.
+                  type: withoutReferenceIds((f as { type?: unknown }).type),
                   annotations: (
                      (f as { annotations?: { value: string }[] }).annotations ??
                      []
@@ -198,16 +223,29 @@ export async function loadFixture(files: Record<string, string>): Promise<{
       run,
       dispose,
       async bind() {
-         const { built, buildErrors } = await buildAll(pkg, lake);
+         const { built, buildErrors, colocated, stored } = await buildAll(
+            pkg,
+            lake,
+         );
          // The served copy compiles at bind, asynchronously; settle it so its
          // warnings and its first answer are not a race.
-         for (const modelPath of pkg.getModelPaths()) {
-            await pkg.getModel(modelPath)?.prepareServedCopy();
-         }
+         const settle = async () => {
+            for (const modelPath of pkg.getModelPaths()) {
+               await pkg.getModel(modelPath)?.prepareServedCopy();
+            }
+         };
+         await settle();
          return {
             pkg,
             built,
             buildErrors,
+            async rebind() {
+               // Empty first, so the package derives every binding afresh.
+               pkg.bindColocatedServeManifest({});
+               pkg.bindColocatedServeManifest(colocated as never);
+               pkg.bindStorageServeBindings(stored as never);
+               await settle();
+            },
             warnings: (pkg.getPackageMetadata().warnings ?? []).map((w) => ({
                code: (w as { code?: string }).code,
                subject: (w as { subject?: string }).subject,
@@ -239,6 +277,8 @@ async function buildAll(
 ): Promise<{
    built: LoadedFixture["built"];
    buildErrors: Record<string, string>;
+   colocated: Record<string, Record<string, unknown>>;
+   stored: Record<string, Record<string, unknown>>;
 }> {
    const warehouse = (await pkg.getMalloyConnection(
       "duckdb",
@@ -251,13 +291,13 @@ async function buildAll(
    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "conform-build-"));
    // The declaring source first, so a table is recorded under it rather than
    // an extension that inherits its annotation.
-   const entries = Object.values(pkg.getBuildPlan()?.sources ?? {})
-      .filter((e) => e.origin !== "preaggregate")
-      .sort(
-         (a, b) =>
-            Number(b.annotationFields?.name === b.name) -
-            Number(a.annotationFields?.name === a.name),
-      );
+   // Rollups too (`#@ preaggregate`, `#(preaggregate)`), each recorded with
+   // its origin, as a build records it.
+   const entries = Object.values(pkg.getBuildPlan()?.sources ?? {}).sort(
+      (a, b) =>
+         Number(b.annotationFields?.name === b.name) -
+         Number(a.annotationFields?.name === a.name),
+   );
    try {
       for (const entry of entries) {
          if (seen.has(entry.sourceEntityId)) continue;
@@ -308,6 +348,7 @@ async function buildAll(
                   storageDestinationName: storage,
                   realization: "COPY",
                   rowCount: null,
+                  ...(entry.origin ? { origin: entry.origin } : {}),
                   schema: (
                      described.rows as {
                         column_name: string;
@@ -336,7 +377,7 @@ async function buildAll(
    }
    pkg.bindColocatedServeManifest(colocated as never);
    pkg.bindStorageServeBindings(stored as never);
-   return { built, buildErrors };
+   return { built, buildErrors, colocated, stored };
 }
 
 /**

@@ -109,6 +109,28 @@ export interface FreshnessAwareManifestEntry {
    dataAsOf?: string;
    freshnessWindowSeconds?: number;
    freshnessFallback?: "live" | "stale_ok" | "fail";
+   /**
+    * The colocated table's columns as its build captured them (the wire
+    * entry's `schema`), in DuckDB's spelling; absent for a table built
+    * before the v1 cutover captured one. The served copy binds a v1 colocated
+    * table with it (colocated_bindings.ts).
+    */
+   schema?: { name: string; type: string }[];
+}
+
+/**
+ * A wire entry's captured `schema` as a bound entry carries it: only columns
+ * with both a name and a type, and undefined when none is left.
+ */
+export function boundSchemaOf(
+   schema: readonly { name?: string; type?: string }[] | undefined,
+): { schema: { name: string; type: string }[] } | Record<string, never> {
+   const columns = (schema ?? []).flatMap((c) =>
+      typeof c.name === "string" && typeof c.type === "string"
+         ? [{ name: c.name, type: c.type }]
+         : [],
+   );
+   return columns.length > 0 ? { schema: columns } : {};
 }
 
 /** Full (unfiltered) manifest map keyed by sourceEntityId. */

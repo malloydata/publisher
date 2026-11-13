@@ -201,6 +201,15 @@ const storageServeRoutingCounter = lazyCounter(
       "which QueryResult.servedFrom reports as null - that field's " +
       "'live_fallback' is this counter's 'runtime_live_fallback'.",
 );
+const v1ServedCopyShadowCounter = lazyCounter(
+   "publisher_v1_served_copy_shadow_total",
+   "Under PUBLISHER_V1_SERVED_COPY=shadow, one count per query text a v1 table " +
+      "answered, comparing that answer with the one the v1 cutover would give. " +
+      "Label: outcome ('equal' served by the cutover and equal; 'live' the " +
+      "cutover would answer live; 'rows_differ'; 'metadata_differ'; 'error' the " +
+      "cutover's run failed). Anything but 'equal' and an expected 'live' is a " +
+      "shape to fix before the cutover.",
+);
 const queryVariantRoutingCounter = lazyCounter(
    "publisher_query_variant_routing_total",
    "The variant router's decision on each candidate it considered for a query, " +
@@ -647,6 +656,13 @@ export function recordStorageServeRouting(
       outcome,
       ...(origin ? { origin } : {}),
    });
+}
+
+/** One shadow comparison's outcome (see v1ServedCopyShadowCounter). */
+export function recordV1ServedCopyShadow(
+   outcome: "equal" | "live" | "rows_differ" | "metadata_differ" | "error",
+): void {
+   v1ServedCopyShadowCounter().add(1, { outcome });
 }
 
 /**
