@@ -102,6 +102,32 @@ class Kinds(unittest.TestCase):
         self.assertIn("voided twice and left out: b", r["reason"])
         self.assertIn("--recover", next(c for c in calls if c[0] == "run"))
 
+    def test_a_run_stopped_at_the_cost_cap_has_no_number(self):
+        code, ran, r, calls = self.go(
+            "quality", {"run": 1},
+            {"run": lambda: self.answer_run(self.run_dir, "aborted", abortReason="max_cost")},
+            "--max-cost-usd", "5")
+        self.assertEqual((code, ran[-1]), (5, "run"))
+        self.assertIn("--max-cost-usd 5", r["reason"])
+        run = next(c for c in calls if c[0] == "run")
+        self.assertEqual(run[run.index("--max-cost-usd") + 1], "5.0")
+
+    def test_a_run_that_reached_the_cap_keeps_its_number_and_is_not_diagnosed(self):
+        code, ran, r, _ = self.go(
+            "quality", None,
+            {"run": lambda: self.answer_run(self.run_dir, answererCostUsd=4.5, judgeCostUsd=0.6)},
+            "--max-cost-usd", "5")
+        self.assertEqual((code, ran), (4, ["check", "verify", "run", "history"]))
+        self.assertIn("was not diagnosed", r["reason"])
+        self.assertEqual(r["number"]["passed"], 1)
+
+    def test_under_the_cap_everything_runs(self):
+        code, ran, _, _ = self.go(
+            "quality", None,
+            {"run": lambda: self.answer_run(self.run_dir, answererCostUsd=1.0, judgeCostUsd=0.1)},
+            "--max-cost-usd", "5")
+        self.assertEqual((code, "diagnose" in ran), (0, True))
+
     def test_the_run_is_shared_after_the_diagnosis_is_written_into_it(self):
         def diagnose():
             with (self.run_dir / "events.jsonl").open("a") as f:

@@ -1073,6 +1073,7 @@ def main(argv: list[str] | None = None) -> int:
     invalid = [i for i in good if i.get("_invalid")]
     spend = sum(i.get("cost_usd") or 0 for i in issues) + \
         (clusters.get("_cost_usd") or 0)
+    ledger.update_run(a.run, diagnoseCostUsd=round(spend, 4))
     print(f"\n{len(good)}/{len(to_diagnose)} diagnosed, "
           f"{len(clusters.get('clusters', []))} clusters, "
           f"{len(new) // 2} issues in {ev_path}")

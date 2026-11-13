@@ -227,6 +227,14 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 # still lists a case above after that is `complete` with the
                 # case left out of its rate, when at most half are voided.
                 "recovered",
+                # Why an `aborted` run stopped: `four_strikes` (four
+                # consecutive attempts errored or found the server dead) or
+                # `max_cost` (answerers reached --max-cost-usd).
+                "abortReason",
+                # What diagnosing this run cost: every per-case agent and the
+                # clustering call. Written by diagnose.py, so a run's whole
+                # model spend can be read off its run.json.
+                "diagnoseCostUsd",
                 # Where this run's attempts CAME FROM. `spawned` is an
                 # answerer this harness ran; `logs` is a transcript rebuilt
                 # from a host's request logs for a session that ran elsewhere.

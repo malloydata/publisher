@@ -2861,6 +2861,13 @@ class Recovery(unittest.TestCase):
         self.assertNotIn("recovered_from",
                          rb.attempt_event({"qid": "cut", "question": "q"}, att, "baseline", {}))
 
+    def test_the_cost_cap_stops_a_run_only_while_cases_remain(self):
+        f = rb.over_cost_cap
+        self.assertFalse(f(100.0, None, 1, 10))     # no cap
+        self.assertFalse(f(4.99, 5.0, 1, 10))
+        self.assertTrue(f(5.0, 5.0, 1, 10))
+        self.assertFalse(f(9.0, 5.0, 10, 10))       # the last case is in: nothing to stop
+
     def test_what_may_be_left_out(self):
         f = rb.may_leave_out
         self.assertTrue(f(["a"], ["a", "b"], 4))

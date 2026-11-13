@@ -2743,6 +2743,15 @@ def recover_voided(cases: list[dict[str, Any]], attempts: dict[str, dict[str, An
     return sorted(done)
 
 
+def over_cost_cap(spent: float, cap: float | None, done: int, total: int) -> bool:
+    """Has the run spent its cap with cases still to answer?
+
+    Not once the last case is in: there is nothing left to stop, and aborting
+    a run that finished would throw its number away for nothing.
+    """
+    return cap is not None and spent >= cap and done < total
+
+
 def may_leave_out(still: list[str], recovered: list[str], n_cases: int) -> bool:
     """May the cases still voided be left out of the rate, and the run recorded?
 
@@ -3944,6 +3953,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rejudge", action="store_true",
                     help="reuse the saved answers but score them again, for a "
                          "judge or rubric change. Implies --rebuild")
+    ap.add_argument("--max-cost-usd", type=float, default=None,
+                    help="stop starting answerers once they have cost this "
+                         "much. Attempts already running finish, so the run "
+                         "can pass it by up to --parallel cases. The run is "
+                         "then aborted: it has no number and is not shared")
     ap.add_argument("--recover", action="store_true",
                     help="answer each truncated or contaminated case once more "
                          "(a truncated one at double --max-turns), keeping the "
@@ -4453,6 +4467,7 @@ def main(argv: list[str] | None = None) -> int:
     # on attempts nobody will trust. eval-loop mandates this; the harness
     # had no such check until 2026-09-02.
     strikes, aborted = 0, False
+    spent, abort_reason = 0.0, None
     with futures.ThreadPoolExecutor(max_workers=a.parallel) as ex:
         fut = {ex.submit(run_answerer, c, a, art): c for c in cases}
         for i, f in enumerate(futures.as_completed(fut), 1):
@@ -4474,12 +4489,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [{i}/{len(cases)}] {flag} {c['qid']} "
                   f"({att.get('n_get_context',0)}gc/{att.get('n_execute',0)}eq "
                   f"{att.get('wall_seconds','?')}s)", flush=True)
+            spent += att.get("cost_usd") or 0
             if strikes >= 4 and not aborted:
-                aborted = True
+                aborted, abort_reason = True, "four_strikes"
                 ex.shutdown(wait=False, cancel_futures=True)
                 print("  !! four consecutive failed or dead attempts -- aborting "
                       "the run; the remaining cases were not attempted",
                       flush=True)
+                break
+            if over_cost_cap(spent, a.max_cost_usd, i, len(cases)) and not aborted:
+                aborted, abort_reason = True, "max_cost"
+                ex.shutdown(wait=False, cancel_futures=True)
+                print(f"  !! answerers have cost ${spent:.2f}, at or over "
+                      f"--max-cost-usd {a.max_cost_usd:g}, with {len(cases) - i} "
+                      f"case(s) not finished -- aborting the run; no more are "
+                      f"started", flush=True)
                 break
     if aborted:
         cases = [c for c in cases if c["qid"] in attempts]
@@ -4806,6 +4830,7 @@ def main(argv: list[str] | None = None) -> int:
                       # because `flip_table.py` reads `truncated` and
                       # `contaminated` off this file to name which cases one
                       # arm left unscored that the other scored.
+                      abortReason=abort_reason,
                       status=run_status(aborted, moved, still, left_out))
     # An aborted arm wrote a partial ledger and said so in run.json; it did not
     # do what was asked, and a caller reading 0 would treat it as an arm. A run

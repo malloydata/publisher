@@ -25,6 +25,9 @@ agent). There are two kinds, and each reports one number:
     4. package       the replay's page
     5. history
 
+`--max-cost-usd` bounds a quality routine's model spend: answering stops once
+answerers have cost that much, and a run that reached it is not diagnosed.
+
 It stops at the first step that fails, so a broken server or a drifted key
 never produces a number. The run is shared last, once everything about it is
 written, when [store] is set and it is a record. `--serve` starts the servers
@@ -38,10 +41,10 @@ the last line printed. The exit status says whether the number can be used:
   1  a step failed; nothing after it ran
   3  could not start (the set's config, or no run to take queries from)
   4  done, and something needs a person: a case was voided twice and left
-     out, a stored answer's rows changed, or a query errored. The number is
-     recorded
-  5  the run did not finish, or more than half its cases are voided, so there
-     is no number
+     out, the diagnosis was skipped at the cost cap, a stored answer's rows
+     changed, or a query errored. The number is recorded
+  5  the run did not finish, stopped at the cost cap, or more than half its
+     cases are voided, so there is no number
 """
 from __future__ import annotations
 
@@ -86,7 +89,8 @@ def quality_number(run: pathlib.Path) -> dict[str, Any]:
             "contaminated": meta.get("contaminated") or [],
             "recovered": meta.get("recovered") or [],
             "costUsd": {"answerer": meta.get("answererCostUsd"),
-                        "judge": meta.get("judgeCostUsd")}}
+                        "judge": meta.get("judgeCostUsd"),
+                        "diagnose": meta.get("diagnoseCostUsd")}}
 
 
 def speed_number(run: pathlib.Path) -> dict[str, Any]:
@@ -174,10 +178,18 @@ class Routine:
             print(f"\n! {self.result['shared']}")
 
     def quality(self) -> tuple[int, str]:
+        cap = (("--max-cost-usd", str(self.a.max_cost_usd))
+               if self.a.max_cost_usd is not None else ())
         for name, *args in (("check", "check", *self.s), ("verify", "verify", *self.s),
                             ("run", "run", *self.s, "--label", self.label, "--no-share", "--recover",
-                             "--max-turns", self.a.max_turns, "--parallel", self.a.parallel)):
+                             "--max-turns", self.a.max_turns, "--parallel", self.a.parallel,
+                             *cap)):
             code = self.do(name, *args)
+            if code != 0 and name == "run" and read_json(
+                    self.run_dir / "run.json").get("abortReason") == "max_cost":
+                self.result["number"] = quality_number(self.run_dir)
+                return NO_NUMBER, (f"the run stopped at --max-cost-usd {self.a.max_cost_usd:g} "
+                                   f"before every case was answered. No number is recorded")
             if code != 0:
                 return STEP_FAILED, f"stopped at {name} (exit {code}); nothing after it ran"
         status = read_json(self.run_dir / "run.json").get("status")
@@ -188,16 +200,28 @@ class Routine:
             n = self.result["number"]
             return NO_NUMBER, (f"the run is {status}: {len(n['truncated'])} truncated, "
                                f"{len(n['contaminated'])} contaminated. No number is recorded")
-        for name, *args in (("diagnose", "diagnose", *self.s, "--label", self.label,
-                             "--verdicts", "no_match,near_match"),
-                            ("package", "package", *self.s, "--label", self.label),
-                            ("history", "history", *self.s)):
+        spent = sum(self.result["number"]["costUsd"].get(k) or 0 for k in ("answerer", "judge"))
+        # The number is in hand. A diagnosis costs an agent per failure, so with
+        # the cap already reached it waits for a person to ask for it, and the
+        # run's page, which is built from the diagnosis, waits with it.
+        capped = self.a.max_cost_usd is not None and spent >= self.a.max_cost_usd
+        for name, *args in (() if capped else (
+                ("diagnose", "diagnose", *self.s, "--label", self.label,
+                 "--verdicts", "no_match,near_match"),
+                ("package", "package", *self.s, "--label", self.label))) + (
+                ("history", "history", *self.s),):
             code = self.do(name, *args)
             if code != 0:
                 return STEP_FAILED, f"stopped at {name} (exit {code}); nothing after it ran"
+        self.result["number"] = quality_number(self.run_dir)      # with the diagnosis cost
         self.share()
         n = self.result["number"]
         said = f"{n['passed']} of {n['decided']} decided cases passed"
+        if capped:
+            return NEEDS_A_LOOK, (f"{said}. The run and its judging cost ${spent:.2f}, at or "
+                                  f"over --max-cost-usd {self.a.max_cost_usd:g}, so it was not "
+                                  f"diagnosed. Fix: eval.py diagnose --set {self.a.set_dir} "
+                                  f"--label {self.label}")
         voided = n["truncated"] + n["contaminated"]
         if voided:
             # Each was answered twice and is still voided. The number stands
@@ -272,6 +296,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="default: <kind>-<UTC date and time>")
     ap.add_argument("--serve", action="store_true",
                     help="start the servers this kind needs, and stop the ones it started")
+    ap.add_argument("--max-cost-usd", type=float, default=None,
+                    help="quality only: stop answering once answerers have cost this "
+                         "much (no number), and skip the diagnosis when the run and "
+                         "its judging already reached it")
     ap.add_argument("--max-turns", default="40")
     ap.add_argument("--parallel", default="4")
     a = ap.parse_args(argv)

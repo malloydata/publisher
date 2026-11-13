@@ -94,13 +94,20 @@ off at the turn cap (at double the cap), or one whose isolation broke. A case
 voided twice is left out of the rate and named in the result, so one case that
 will not finish does not stop the record moving.
 
+`--max-cost-usd 20` bounds what a quality routine spends on the model. Answering
+stops once answerers have cost that much: attempts already running finish, so
+it can pass the cap by up to `--parallel` cases, and the run has no number. A
+run that finished at or over the cap keeps its number and is not diagnosed,
+because a diagnosis costs an agent per failure. The result file carries what
+the answerers, the judge and the diagnosis each cost.
+
 | Exit | Meaning |
 | --- | --- |
 | 0 | Done. The number is recorded. |
 | 1 | A step failed. Nothing after it ran. |
 | 3 | Could not start: the set's config, or no run to take queries from. |
-| 4 | Done, and a person should look: a case was voided twice and left out of the rate, a stored answer's rows changed, or a query errored. The number is recorded. |
-| 5 | The run did not finish, or more than half its cases are voided, so there is no number. |
+| 4 | Done, and a person should look: a case was voided twice and left out of the rate, the diagnosis was skipped at the cost cap, a stored answer's rows changed, or a query errored. The number is recorded. |
+| 5 | The run did not finish, stopped at the cost cap, or more than half its cases are voided, so there is no number. |
 
 `eval.py versions` shows how each version scored and how fast its queries
 ran. `eval.py history` builds the same as a page.
