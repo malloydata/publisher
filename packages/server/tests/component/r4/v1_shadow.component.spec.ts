@@ -17,6 +17,7 @@ import {
    type MetricsHarness,
 } from "../../../src/test_helpers/metrics_harness";
 import { installSettings } from "../../../src/test_helpers/settings_env";
+import { ShadowScheduler } from "../../../src/service/materialization/serve/v1_shadow";
 import { DATA_FILES } from "./conformance/data";
 import {
    freshLoadPool,
@@ -63,6 +64,20 @@ async function settled(
       }
       if (total >= want || Date.now() > deadline) return counts;
       await new Promise((r) => setTimeout(r, 50));
+   }
+}
+
+/**
+ * Until no comparison runs on the server. The scheduler skips a comparison
+ * while {@link ShadowScheduler} is at its cap (two at once), and a skip is
+ * counted as `skipped`, so a spec that asks several queries in a row waits
+ * for each one's comparison before the next; on a slow runner the third
+ * would otherwise be skipped.
+ */
+async function comparisonsDone(): Promise<void> {
+   const deadline = Date.now() + 30_000;
+   while (ShadowScheduler.inFlightForTests() > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
    }
 }
 
@@ -141,6 +156,7 @@ describe("v1 served copy: shadow", () => {
             await fixture.rebind();
             for (const [i, q] of queries.entries()) {
                const shadowed = answerOf(await fixture.run(entry, q.malloy));
+               await comparisonsDone();
                // Served exactly as with the switch off.
                expect(shadowed).toEqual(today[i]);
                expect(shadowed.servedBy).not.toBe("live");
