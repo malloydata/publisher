@@ -38,6 +38,7 @@ import {
    UNREPRODUCIBLE_FILTER,
    bindingServesModelSource,
    buildVirtualMap,
+   sqlReadsTable,
    deriveServeBindings,
    planSourceIds,
    duckdbTypeToMalloy,
@@ -116,6 +117,33 @@ describe("buildServeShapeModel", () => {
          schema: [{ name: "odd name", type: "VARCHAR" }],
       });
       expect(modelText).toContain("`odd name`::string");
+   });
+});
+
+describe("sqlReadsTable", () => {
+   it("reads a table named after FROM or JOIN, never a result column of the same name", () => {
+      expect(sqlReadsTable('SELECT 1 FROM "orders" as base', '"orders"')).toBe(
+         true,
+      );
+      expect(
+         sqlReadsTable('SELECT 1 FROM t LEFT JOIN "orders" AS j', '"orders"'),
+      ).toBe(true);
+      expect(
+         sqlReadsTable(
+            'SELECT 1 FROM (SELECT * FROM "s"."orders") x',
+            '"s"."orders"',
+         ),
+      ).toBe(true);
+      expect(
+         sqlReadsTable(
+            'SELECT count(1) as "orders" FROM "ev" as base',
+            '"orders"',
+         ),
+      ).toBe(false);
+      // Only a whole name: not the leading part of a longer path.
+      expect(sqlReadsTable('SELECT 1 FROM "orders"."x"', '"orders"')).toBe(
+         false,
+      );
    });
 });
 

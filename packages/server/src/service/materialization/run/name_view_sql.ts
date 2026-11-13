@@ -138,6 +138,35 @@ export function isNameViewComment(comment: unknown): boolean {
    return parseNameViewComment(comment) !== undefined;
 }
 
+/**
+ * The prefix of the ownership mark on a table an auto-run built at the
+ * author's `name=` (table_ownership.ts).
+ */
+export const OWNED_TABLE_MARK = "malloy-publisher:table";
+
+/**
+ * The owner a table's ownership mark names (`<environment>/<package>`), or
+ * undefined when the comment is not one: exactly the prefix, then `owner=`
+ * once. Accepts BigQuery's double-quoted TABLE_OPTIONS spelling.
+ */
+export function parseOwnedTableComment(comment: unknown): string | undefined {
+   if (typeof comment !== "string") return undefined;
+   let text = comment.trim();
+   if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) {
+      text = text.slice(1, -1);
+   }
+   const fields = text.split(" ");
+   if (fields.length !== 2 || fields[0] !== OWNED_TABLE_MARK) return undefined;
+   if (!fields[1].startsWith("owner=")) return undefined;
+   const encoded = fields[1].slice("owner=".length);
+   if (encoded === "") return undefined;
+   try {
+      return decodeURIComponent(encoded);
+   } catch {
+      return undefined;
+   }
+}
+
 /** A SQL string literal for `dialect`. */
 export function sqlString(value: string, dialect: string): string {
    switch (dialect) {
@@ -285,7 +314,11 @@ export function nameViewProbeSql(segments: string[], dialect: string): string {
 export type NameViewSlot =
    | { state: "empty" }
    | { state: "ours"; target: string; owner: string }
-   | { state: "taken"; kind: string };
+   /**
+    * `tableOwner`: the package a table's ownership mark names
+    * ({@link parseOwnedTableComment}), when it carries one.
+    */
+   | { state: "taken"; kind: string; tableOwner?: string };
 
 /** Read {@link nameViewProbeSql}'s rows. */
 export function nameViewSlotOf(rows: Record<string, unknown>[]): NameViewSlot {
@@ -293,7 +326,14 @@ export function nameViewSlotOf(rows: Record<string, unknown>[]): NameViewSlot {
    let found: NameViewMark | undefined;
    for (const row of rows) {
       const kind = String(field(row, "kind") ?? "").toUpperCase();
-      if (kind !== "VIEW") return { state: "taken", kind: kind || "TABLE" };
+      if (kind !== "VIEW") {
+         const tableOwner = parseOwnedTableComment(field(row, "comment"));
+         return {
+            state: "taken",
+            kind: kind || "TABLE",
+            ...(tableOwner !== undefined ? { tableOwner } : {}),
+         };
+      }
       const mark = parseNameViewComment(field(row, "comment"));
       if (!mark) return { state: "taken", kind: "VIEW" };
       found ??= mark;

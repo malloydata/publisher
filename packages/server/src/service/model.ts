@@ -442,7 +442,12 @@ export class Model {
    private servedCopy = new ServedCopyServe({
       modelPath: () => this.modelPath,
       modelDef: () => this.modelDef,
-      serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
+      // Storage tables only while the storage tier serves; colocated tables
+      // (on the source's own connection) need no destination.
+      serveDestinationConfig: () =>
+         getPersistStorageMode() === "on"
+            ? this.storageServe.serveDestinationConfig
+            : undefined,
    });
    /**
     * The `#(preaggregate)` rollup leg (materialization v2, phase 4): a router
@@ -2867,16 +2872,18 @@ export class Model {
 
    /**
     * Whether the router may try the served copy: a model file, with the
-    * materialize switch and the storage tier both on. Warnings and the compile at bind follow the
-    * same rule, so a package never warns about a copy that is not routed.
+    * materialize switch on. It reads a colocated table on the source's own
+    * connection, and a storage table only while `PERSIST_STORAGE_MODE=on`
+    * (its host withholds the destinations otherwise). Warnings and the
+    * compile at bind follow the same rule, so a package never warns about a
+    * copy that is not routed.
     */
    private servedCopyEnabled(): boolean {
       // A notebook or report is not a model file the served copy can load.
       return (
          this.modelType === "model" &&
          !this.isNotebook() &&
-         getMaterializeEnabled() &&
-         getPersistStorageMode() === "on"
+         getMaterializeEnabled()
       );
    }
 
@@ -2942,10 +2949,17 @@ export class Model {
       // their own legs read them.
       const views = this.persistedViews.buildSourceIDs();
       const rollups = this.rollupVariants.buildSourceIDs(bindings);
+      // A colocated `#(materialize)` table is read on its own connection by
+      // the served copy alone; no other leg reads one.
+      const colocated = bindings.filter((b) => b.colocated);
+      const stored =
+         colocated.length === 0
+            ? bindings
+            : bindings.filter((b) => !b.colocated);
       const others =
          views.size === 0 && rollups.size === 0
-            ? bindings
-            : bindings.filter(
+            ? stored
+            : stored.filter(
                  (b) =>
                     !(b.sourceIDs ?? []).some(
                        (id) => views.has(id) || rollups.has(id),
@@ -2958,9 +2972,11 @@ export class Model {
                  (b) => !(b.sourceIDs ?? []).some((id) => materialized.has(id)),
               ),
       );
-      this.servedCopy.setBindings(others);
-      this.rollupVariants.setBindings(bindings);
-      this.persistedViews.setBindings(bindings);
+      this.servedCopy.setBindings(
+         colocated.length === 0 ? others : [...others, ...colocated],
+      );
+      this.rollupVariants.setBindings(stored);
+      this.persistedViews.setBindings(stored);
    }
 
    /** See {@link StorageServeShape.storedColumnTypeMismatches}. */
@@ -3337,10 +3353,10 @@ export class Model {
             !!this.storageServe.serveDestinationConfig;
          // The served copy holds bindings the serve shape drops (a
          // `#(materialize)` build source is no source of this model by name).
+         // `hasBindings` counts a storage table only while the storage tier
+         // serves, and a colocated table always.
          const servedCopyPossible =
-            this.servedCopyEnabled() &&
-            this.servedCopy.hasBindings() &&
-            !!this.storageServe.serveDestinationConfig;
+            this.servedCopyEnabled() && this.servedCopy.hasBindings();
          // Captured once so the guard and the use below see the same companion.
          const preaggServeMaterializer = this.preaggregateServeMaterializer;
          const route = await routeQuery<RoutedExtra>(
@@ -3510,11 +3526,13 @@ export class Model {
                ? { answeredBy: "served_copy" as const }
                : {}),
          },
-         // The served copy is the author's text, gates included: a row-level
-         // gate is grafted and proven on its own compile, so the routed answer
-         // keeps it (R3), and an answer let past an entry-point gate is
-         // re-proven there. Any other routed shape carries no annotations and
-         // is never reached past a row-level gate (the router's veto).
+         // The served copy is the author's text, gates included, as are a
+         // persisted view's and a `#(preaggregate)` rollup's variants: a
+         // row-level gate is grafted and proven on its own compile, so the
+         // routed answer keeps it (R3), and an answer let past an entry-point
+         // gate is re-proven there. Any other routed shape carries no
+         // annotations and is never reached past a row-level gate (the
+         // router's veto).
          graftScope: answer.graftScope,
          routedPastEntryPointGate: answer.pastEntryPointGate,
       };
@@ -3549,11 +3567,13 @@ export class Model {
       // After the gate, so a denied caller gets its 403 rather than a 400 about
       // a value; before prepare, which is where Malloy would parse it.
       this.assertFilterGivens(givens);
-      // No post-hoc gate check is possible on a serve-shape or rollup
-      // runnable (it carries no annotations): their correctness rests
-      // entirely on `queryEntryPointHasRowLevelGate`. The served copy is the
-      // exception (R3): it keeps the author's gates, and `govern()` above
-      // grafted and proved them on its own compile.
+      // No post-hoc gate check is possible on a serve-shape or v1
+      // `#@ preaggregate` runnable (it carries no annotations): their
+      // correctness rests entirely on `queryEntryPointHasRowLevelGate`. The
+      // served copy, a persisted view and a `#(preaggregate)` rollup are the
+      // exceptions (R3): each keeps the author's gates on the run target's
+      // own `sourceID`, and `govern()` above grafted and proved them on its
+      // own compile.
 
       const maxRows = getMaxQueryRows();
       const maxBytes = getMaxResponseBytes();

@@ -32,6 +32,7 @@ import {
    generateBuildFiles,
    givenReadTerms,
    hiddenAccess,
+   keptBasesInText,
    levelFileName,
    MATERIALIZE_COMPANION_SUFFIX,
    planModelMaterialize,
@@ -45,6 +46,13 @@ import {
 } from "./build_file_generator";
 import type { TermUse } from "./persist_dynamic_terms";
 import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
+import { leftOutWindowTerms } from "./rolling_window";
+import { storedColumnsOfOutput } from "../stored_column_types";
+import {
+   probeSourceDependence,
+   type FieldDependence,
+   type ProbeCompiler,
+} from "../../probe_compiler";
 
 export interface GeneratedMaterialize {
    /** The sources the generator planned. Never empty. */
@@ -101,6 +109,12 @@ export async function tryCompileMaterializeCompanion(args: {
     */
    givens: Record<string, unknown>;
    getRuntime: SynthesizedRuntimeFactory;
+   /**
+    * Compiles probes against the author's model (P9): which of each planned
+    * source's computed dimensions read a given, the current time or the query
+    * time zone. Absent: the IR walks alone decide.
+    */
+   probe?: ProbeCompiler;
 }): Promise<{
    generated?: GeneratedMaterialize;
    refused: MaterializeRefusal[];
@@ -108,17 +122,32 @@ export async function tryCompileMaterializeCompanion(args: {
    const modelFile = path.resolve(args.packagePath, args.modelPath);
    const refused: MaterializeRefusal[] = [];
    try {
+      const declaredHere = (declaringURL: string) => {
+         try {
+            return path.resolve(fileURLToPath(declaringURL)) === modelFile;
+         } catch {
+            // Not a local file (a host, another scheme): planned, as before.
+            return true;
+         }
+      };
+      // P9: plan once from the IR, probe the computed dimensions that plan
+      // would store, and plan again with the answers. A probe only ever
+      // leaves a dimension out or refuses a source, so every dimension the
+      // second plan stores was probed.
+      const probed = args.probe
+         ? await probeMaterializeDimensions(
+              args.probe,
+              planModelMaterialize(args.contents, declaredHere, args.givens)
+                 .plans,
+              args.contents,
+           )
+         : undefined;
       const planned = planModelMaterialize(
          args.contents,
-         (declaringURL) => {
-            try {
-               return path.resolve(fileURLToPath(declaringURL)) === modelFile;
-            } catch {
-               // Not a local file (a host, another scheme): planned, as before.
-               return true;
-            }
-         },
+         declaredHere,
          args.givens,
+         probed?.fields,
+         probed?.zoneFreeRows,
       );
       refused.push(...planned.refused);
       // The text the author's model was compiled from, through the reader
@@ -222,7 +251,10 @@ export async function tryCompileMaterializeCompanion(args: {
          for (const plan of plans) {
             const names = leaked.get(plan.sourceID);
             if (!names) continue;
-            if (givenReadTerms(plan).length === 0) {
+            if (
+               givenReadTerms(plan).length === 0 &&
+               leftOutWindowTerms(plan.readTimeTerms).length === 0
+            ) {
                // A copy made only to store hidden columns (P3): build from the
                // author's file instead, storing the public ones.
                copies.delete(plan.sourceID);
@@ -245,8 +277,10 @@ export async function tryCompileMaterializeCompanion(args: {
                sourceName: plan.sourceName,
                sourceID: plan.sourceID,
                reason:
-                  givenReadTerms(plan).length > 0
-                     ? "a `where:` reading a given cannot yet be left out of the " +
+                  givenReadTerms(plan).length > 0 ||
+                  leftOutWindowTerms(plan.readTimeTerms).length > 0
+                     ? "a `where:` reading a given or keeping rows older than a " +
+                       "moving cut-off cannot yet be left out of the " +
                        "build of a source that reads a #@ persist source " +
                        `(${names.join(", ")}): its build would declare that source ` +
                        "a second time"
@@ -259,7 +293,9 @@ export async function tryCompileMaterializeCompanion(args: {
             plans.filter((p) => !leaked.has(p.sourceID)),
          ));
       }
-      return generated ? { generated, refused } : { refused };
+      return generated
+         ? { generated: withStoredColumns(generated), refused }
+         : { refused };
    } catch (error) {
       logger.error(
          "Failed to plan or compile the generated #(materialize) companion",
@@ -270,6 +306,84 @@ export async function tryCompileMaterializeCompanion(args: {
       );
       return { refused };
    }
+}
+
+/**
+ * Each plan with its build source's compiled output columns
+ * ({@link MaterializePlan.storedColumns}): what a colocated build writes,
+ * which its serve binding declares. A nested column is kept only on DuckDB,
+ * whose tables hold nests natively; elsewhere a nest is stored as JSON, which
+ * the served copy cannot declare, so the column is left out and the source
+ * serves live.
+ */
+function withStoredColumns(
+   generated: GeneratedMaterialize,
+): GeneratedMaterialize {
+   const contents = (
+      generated.model as unknown as {
+         _modelDef?: { contents?: Record<string, unknown> };
+      }
+   )._modelDef?.contents;
+   return {
+      ...generated,
+      plans: generated.plans.map((plan) => {
+         const def = contents?.[plan.buildSourceName] as
+            | { fields?: unknown[]; dialect?: unknown }
+            | undefined;
+         if (!def?.fields) return plan;
+         return {
+            ...plan,
+            storedColumns: storedColumnsOfOutput(def.fields, {
+               nested: def.dialect === "duckdb",
+            }),
+         };
+      }),
+   };
+}
+
+/**
+ * The probe compiler's answers for each plan's own computed dimensions, by
+ * `sourceID` then dimension, and the sources whose rows it found the same in
+ * every query time zone (P9). Compiled against the author's model by the
+ * source's name there; never run.
+ */
+async function probeMaterializeDimensions(
+   compiler: ProbeCompiler,
+   plans: readonly MaterializePlan[],
+   contents: Record<string, unknown>,
+): Promise<{
+   fields: Map<string, Map<string, FieldDependence>>;
+   zoneFreeRows: Set<string>;
+}> {
+   const fields = new Map<string, Map<string, FieldDependence>>();
+   const zoneFreeRows = new Set<string>();
+   for (const plan of plans) {
+      // Every plan is probed, one with no computed dimension too: its rows
+      // can depend on the zone through its own `where:` or base relation.
+      const computed = plan.columns
+         .filter((c) => c.computed && c.join === undefined)
+         .map((c) => c.dimension);
+      // By sourceID (the keying rule); the probe names the source as this
+      // model does, which for a source planned here is its own name.
+      const def = Object.values(contents).find(
+         (o) =>
+            !!o &&
+            typeof o === "object" &&
+            (o as { sourceID?: unknown }).sourceID === plan.sourceID,
+      ) as { fields?: { name?: unknown; as?: unknown }[] } | undefined;
+      const reserved = new Set(
+         (def?.fields ?? []).map((f) => String(f.as ?? f.name)),
+      );
+      const answer = await probeSourceDependence(
+         compiler,
+         plan.sourceName,
+         computed,
+         reserved,
+      );
+      if (computed.length > 0) fields.set(plan.sourceID, answer.fields);
+      if (answer.rowsZoneFree) zoneFreeRows.add(plan.sourceID);
+   }
+   return { fields, zoneFreeRows };
 }
 
 /** A planned source's build copy: its file name beside the model, and text. */
@@ -583,8 +697,9 @@ function liftedName(c: { dimension: string; join?: string }): string {
 
 /**
  * Give each plan that needs one a build copy of the author's model, whose
- * text is read back here: a plan with given-reading terms (P2), which the
- * copy takes out; an extension table that builds over its parent's build
+ * text is read back here: a plan with given-reading terms (P2) or
+ * current-time terms holding an upper bound (Rolling windows), which the copy
+ * takes out; an extension table that builds over its parent's build
  * source (P10), whose copy re-roots the parent on it; and a plan with hidden
  * columns (P3), whose own access modifiers the copy lifts. One copy does all
  * three a plan needs.
@@ -594,6 +709,10 @@ function liftedName(c: { dimension: string; join?: string }): string {
  * term not placed in it, the plan is refused (fail closed: built from the
  * author's file, the term would be baked into the table with the given's
  * default). Each given declared in another file is imported from that file.
+ * A current-time term the build leaves out must be written in the model file
+ * itself, its own declaration or a base declared there; otherwise the plan is
+ * refused the same way (built from the author's file, the table would hold
+ * only the rows older than the build's cut-off).
  *
  * Extension tables: one whose copy cannot be written (its parent no longer
  * planned, a declaration that does not re-root) builds over the raw chain
@@ -638,8 +757,10 @@ async function withBuildCopies(
       !plans.some(
          (p) =>
             givenReadTerms(p).length > 0 ||
+            leftOutWindowTerms(p.readTimeTerms).length > 0 ||
             p.buildsOver ||
-            hiddenOf(p).length > 0,
+            hiddenOf(p).length > 0 ||
+            p.keptBases !== undefined,
       )
    ) {
       return { plans, copies, refused };
@@ -749,6 +870,30 @@ async function withBuildCopies(
          );
          continue;
       }
+      // A term or dimension a base writes is left out of the build only when
+      // the served copy keeps that base's block: confirmed against the text
+      // before anything is built.
+      if (plan.keptBases) {
+         const bases =
+            text === undefined
+               ? {
+                    reason:
+                       "the model file could not be read to confirm the " +
+                       `blocks its served copy keeps: ${unreadable}`,
+                 }
+               : declaredIn !== modelFile
+                 ? {
+                      reason:
+                         "a `where:` reading a given or a caller-dependent " +
+                         "dimension written on a base can only be left out " +
+                         "of the build for a source declared in a local model file",
+                   }
+                 : keptBasesInText(text, plan);
+         if ("reason" in bases) {
+            refuse(plan, bases.reason);
+            continue;
+         }
+      }
       const liftAccess = lifted !== undefined;
       const given = givenReadTerms(plan).length > 0;
       const givens = (plan.givenDeclarations ?? []).map((g) => ({
@@ -772,6 +917,31 @@ async function withBuildCopies(
          );
          continue;
       }
+      // An upper-bound current-time term (option A): taken out of the copy
+      // wherever this file writes it, the source's own or a base's.
+      const windowsOut = leftOutWindowTerms(plan.readTimeTerms);
+      const elsewhere = windowsOut.find((t) =>
+         t.at.some((use) => localPath(use.url) !== modelFile),
+      );
+      if (elsewhere) {
+         refuse(
+            plan,
+            `\`where: ${elsewhere.code}\` keeps rows older than a moving ` +
+               "cut-off and is written in another file than this source's " +
+               "model, so the build cannot leave it out. Write it in this " +
+               "file, or materialize the source in the file that writes it",
+         );
+         continue;
+      }
+      if (windowsOut.length > 0 && text === undefined) {
+         refuse(
+            plan,
+            "the model file could not be read to leave its `where:` keeping " +
+               `rows older than a moving cut-off out of the build: ${unreadable}`,
+         );
+         continue;
+      }
+      const leftOut = given || windowsOut.length > 0;
       const parent = plan.buildsOver
          ? kept.get(plan.buildsOver.sourceID)
          : undefined;
@@ -794,7 +964,7 @@ async function withBuildCopies(
             ? { ...plan, buildsOver: { ...plan.buildsOver, overStored } }
             : withoutParent(plan);
       }
-      if (!given && !plan.buildsOver && !liftAccess) {
+      if (!leftOut && !plan.buildsOver && !liftAccess) {
          kept.set(plan.sourceID, plan);
          levels.set(plan.sourceID, 0);
          continue;
@@ -815,7 +985,7 @@ async function withBuildCopies(
       );
       if ("reason" in copy && plan.buildsOver) {
          plan = withoutParent(plan);
-         if (!given && !liftAccess) {
+         if (!leftOut && !liftAccess) {
             kept.set(plan.sourceID, plan);
             levels.set(plan.sourceID, 0);
             continue;
