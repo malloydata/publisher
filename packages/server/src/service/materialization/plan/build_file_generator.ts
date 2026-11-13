@@ -56,10 +56,35 @@
  * generated group-by over the joined source on the join's key, and a build
  * whose check finds a key matched twice fails, naming the join.
  *
+ * `inline=["j"]` on a join_many (phase 4, P5) stores a pair table: one row per
+ * row of live's LEFT JOIN through the join, as `select:` through it reads them,
+ * so a parent with no child keeps one row with null child columns. The build
+ * is a `group_by:` of the source's own stored columns and the joined source's
+ * `j__<field>` columns, whose rows are distinct because the pair's keys (the
+ * source's primary key and the joined source's) are among them, and one flag
+ * written by a window over them (Evidence 8): {@link PAIR_PARENT_ROW}, true on
+ * exactly one row per parent, childless parents included.
+ *
+ * The served copy reads the table as the source itself, with no join (see
+ * served_copy.ts): the join's name is a record of the `j__<field>` columns, a
+ * measure over the source's own fields aggregates the rows the flag marks, and
+ * an aggregate through the join reads every row, which are exactly the rows
+ * live aggregates through it (malloydata/malloy#1762's count of a childless
+ * parent included). One flag is enough: a second, child-row flag would mark
+ * every row but a childless parent's, and live counts that row too.
+ *
+ * What reads through the join_many on the source itself is not stored (a
+ * dimension through it has one value per pair, not per parent): the served
+ * copy computes it at read, over the record. One join_many per source,
+ * declared on the same connection, its condition reading no other join, both
+ * sides with a declared primary key that is stored, the joined source with no
+ * joins of its own (one hop), and no incremental refresh (the flag is written
+ * over the whole table: an increment that adds a child to a parent already
+ * stored would mark that parent twice); anything else is refused.
+ *
  * Not yet (each is a later pull request's, and is refused or left out here
  * rather than built wrong):
- * - `inline=` on a join_many or join_cross (pair tables) is phase 4's; a
- *   declaration naming one is refused.
+ * - `inline=` on a join_cross is refused.
  * - A materialized extension builds from its own source over the raw tables,
  *   not from its parent's build source (P10): building over the parent needs
  *   the rewriter's re-rooted copy, so it waits for it.
@@ -111,6 +136,8 @@ import { Annotations } from "@malloydata/malloy";
 import { ownLevelNotes, sameNotePosition } from "../../annotations";
 import { declaredNotes } from "../../governance/ir/declared_notes";
 import {
+   MATERIALIZE_KEYS,
+   nearestKey,
    routeOfNote,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
@@ -197,6 +224,43 @@ const PLANNED_KEYS = ["inline"] as const;
 
 /** Keys `#(materialize)` accepts but a later pull request implements. */
 const DEFERRED_KEYS: Readonly<Record<string, string>> = {};
+
+/**
+ * A pair table's parent-row flag column: true on exactly one row per parent
+ * (see the module comment).
+ */
+export const PAIR_PARENT_ROW = "__parent_row";
+
+/** How a pair table (an inlined join_many, P5) is laid out. */
+export interface MaterializePair {
+   /** The inlined join_many's name on the materialized source. */
+   join: string;
+   /** The source's primary key, a stored column: one parent per value. */
+   parentKey: string;
+   /** The joined source's primary key, as the joined source names it. */
+   childKey: string;
+   /** The joined source's declaration, whose text the served copy re-roots. */
+   childSourceID: string;
+   /** The parent-row flag's column ({@link PAIR_PARENT_ROW}). */
+   parentRowColumn: string;
+}
+
+/**
+ * Every key the generator reads, which must be the route's closed set in the
+ * annotation reader (`MATERIALIZE_KEYS`); a spec holds the two equal.
+ */
+export const GENERATOR_KEYS: readonly string[] = [
+   ...CARRIED_KEYS,
+   ...CARRIED_GROUPS,
+   ...PLANNED_KEYS,
+   ...Object.keys(DEFERRED_KEYS),
+];
+
+/** The code of a `#(materialize)` key outside the route's closed set. */
+export const MATERIALIZE_UNKNOWN_KEY_CODE = "materialize-unknown-key";
+
+/** The code of a `#(materialize)` line that does not parse. */
+export const MATERIALIZE_UNPARSEABLE_CODE = "materialize-unparseable";
 
 /** One stored column of a materialized source. */
 export interface MaterializeColumn {
@@ -323,10 +387,12 @@ export interface MaterializePlan {
    declaration?: TermUse;
    /** The givens its given-reading terms read, for the generated file to import. */
    givenDeclarations?: MaterializeGivenDeclaration[];
-   /** The joins the declaration inlines (`inline=[…]`), each a join_one. */
+   /** The joins the declaration inlines (`inline=[…]`). */
    inline?: string[];
-   /** One uniqueness check per inlined join (P8). */
+   /** One uniqueness check per inlined join_one (P8). */
    uniquenessChecks?: InlineUniquenessCheck[];
+   /** For an inlined join_many: the pair table's layout (P5). */
+   pair?: MaterializePair;
    /**
     * The table takes the source's own name because the declaration has no
     * `name=`, which the refusal of a colliding table name says (see
@@ -340,6 +406,13 @@ export interface MaterializeRefusal {
    sourceName: string;
    sourceID?: string;
    reason: string;
+   /**
+    * Set when the declaration cannot be read as written (it does not parse,
+    * or has an unknown key):
+    * the finding is `malformed` under this code, refused at publish, rather
+    * than the `unservable` `materialize-not-built`.
+    */
+   malformedCode?: string;
 }
 
 interface SourceDefLike {
@@ -350,6 +423,7 @@ interface SourceDefLike {
       range?: { start?: { line: number; character: number } };
    };
    connection?: unknown;
+   primaryKey?: unknown;
    annotations?: Parameters<typeof ownLevelNotes>[0];
    fields?: unknown[];
    filterList?: unknown;
@@ -497,28 +571,34 @@ function inheritedPersist(
 }
 
 /**
+ * The declaration's key outside the route's closed set, as a malformed
+ * refusal, or undefined. A misspelt `name=` must never fall back to a default
+ * table, so the source is not built, and the publish is refused.
+ */
+function unknownKeyRefusal(
+   declaration: NonNullable<ReturnType<typeof readMaterializeDeclaration>>,
+): string | undefined {
+   const unknown = declaration.keys.filter((key) => !MATERIALIZE_KEYS.has(key));
+   if (unknown.length === 0) return undefined;
+   const near = unknown
+      .map((k) => nearestKey(k, MATERIALIZE_KEYS))
+      .find((k) => k !== undefined);
+   return (
+      `#(materialize) does not accept ${unknown.map((k) => `\`${k}=\``).join(", ")}; ` +
+      `it reads ${[...CARRIED_KEYS, ...CARRIED_GROUPS, ...PLANNED_KEYS].join(", ")}` +
+      (near ? ` (did you mean \`${near}=\`?)` : "")
+   );
+}
+
+/**
  * The declaration's `#@ persist` keys by key path, or why one cannot be
- * carried: a key `#(materialize)` does not accept (a misspelt `name=` must not
- * fall back to a default table), or a value of the wrong shape (an array where
- * a string goes would otherwise be dropped silently).
+ * carried: a value of the wrong shape (an array where a string goes would
+ * otherwise be dropped silently). Unknown keys are refused first
+ * ({@link unknownKeyRefusal}).
  */
 function carriedPersistKeys(
    declaration: NonNullable<ReturnType<typeof readMaterializeDeclaration>>,
 ): { persist: Record<string, string> } | { reason: string } {
-   const accepted = new Set<string>([
-      ...CARRIED_KEYS,
-      ...CARRIED_GROUPS,
-      ...PLANNED_KEYS,
-      ...Object.keys(DEFERRED_KEYS),
-   ]);
-   const unknown = declaration.keys.filter((key) => !accepted.has(key));
-   if (unknown.length > 0) {
-      return {
-         reason:
-            `#(materialize) does not accept ${unknown.map((k) => `\`${k}=\``).join(", ")}; ` +
-            `it reads ${[...CARRIED_KEYS, ...CARRIED_GROUPS, ...PLANNED_KEYS].join(", ")}`,
-      };
-   }
    const persist: Record<string, string> = {};
    for (const key of CARRIED_KEYS) {
       if (!declaration.keys.includes(key)) continue;
@@ -715,9 +795,10 @@ function quotedName(name: string): string {
 
 /**
  * Why `inline=` cannot inline the join named `name` on a source, or undefined
- * when it can: a join_one on the source's own connection, keyed by one
- * equality on a column of a declared source (what the uniqueness check groups
- * by).
+ * when it can: a join_one or join_many on the source's own connection, its
+ * condition reading no other join, joining a declared source; a join_one keyed
+ * by one equality on a column of it (what the uniqueness check groups by).
+ * What a join_many needs beyond this is {@link pairRefusal}'s.
  */
 function inlineRefusal(
    name: string,
@@ -728,10 +809,10 @@ function inlineRefusal(
    if (!join) {
       return `inline= names \`${name}\`, which is not a join of this source`;
    }
-   if (join.relationship !== "one") {
+   if (join.relationship === "cross") {
       return (
-         `inline= names \`${name}\`, a join_${join.relationship}: inlining a ` +
-         "join_many or join_cross (a pair table) arrives in a later release"
+         `inline= names \`${name}\`, a join_cross: inlining a join_cross ` +
+         "arrives in a later release"
       );
    }
    if (
@@ -757,7 +838,7 @@ function inlineRefusal(
          "inline only a join keyed on the source's own columns"
       );
    }
-   if (!join.keyColumn) {
+   if (join.relationship === "one" && !join.keyColumn) {
       return (
          `inline= names \`${name}\`, whose condition is not one equality on a ` +
          "column of the joined source, so its uniqueness cannot be checked"
@@ -766,10 +847,85 @@ function inlineRefusal(
    if (!join.sourceID || !splitSourceID(join.sourceID)) {
       return (
          `inline= names \`${name}\`, which joins a source defined in place; ` +
-         "declare it as a source so its uniqueness can be checked at build"
+         (join.relationship === "one"
+            ? "declare it as a source so its uniqueness can be checked at build"
+            : "declare it as a source so the served copy can read it from the pair table")
       );
    }
    return undefined;
+}
+
+/**
+ * Why an inlined join_many cannot be stored as a pair table, or its layout
+ * (see the module comment for each rule). `columns` are the source's own
+ * stored columns; `joined` the join's `j__<field>` columns.
+ */
+function pairRefusal(
+   join: SourceJoin,
+   def: SourceDefLike,
+   map: SourceMap,
+   columns: readonly MaterializeColumn[],
+   joined: readonly MaterializeColumn[],
+   persist: Readonly<Record<string, string>>,
+): { pair: MaterializePair } | { reason: string } {
+   const name = quotedName(join.name);
+   const parentKey =
+      typeof def.primaryKey === "string" ? def.primaryKey : undefined;
+   if (!parentKey || !columns.some((c) => c.column === parentKey)) {
+      return {
+         reason:
+            `inline= names ${name}, a join_many, and a pair table needs the ` +
+            "source's own primary key, declared and stored (a public " +
+            "dimension), to keep one row per parent",
+      };
+   }
+   const childKey = join.primaryKey;
+   if (
+      !childKey ||
+      !joined.some((c) => c.join === join.name && c.dimension === childKey)
+   ) {
+      return {
+         reason:
+            `inline= names ${name}, a join_many, and a pair table needs the ` +
+            "joined source's primary key, declared and stored (a public " +
+            "dimension), to keep one row per child",
+      };
+   }
+   if (map.joinedReadsOf(join).joins.length > 0) {
+      return {
+         reason:
+            `inline= names ${name}, a join_many whose joined source has joins ` +
+            "of its own; a pair table stores one hop, so inline only a " +
+            "join_many to a source with no joins",
+      };
+   }
+   if (persist.refresh === "incremental") {
+      return {
+         reason:
+            `inline= names ${name}, a join_many, on an incremental source; a ` +
+            "pair table's parent-row flag is written over the whole table " +
+            "(an increment that adds a child to a stored parent would mark " +
+            "that parent twice), so it is rebuilt in full",
+      };
+   }
+   const taken = new Set([...columns, ...joined].map((c) => c.column));
+   const clash = [PAIR_PARENT_ROW].find((c) => taken.has(c));
+   if (clash) {
+      return {
+         reason:
+            `the pair table's \`${clash}\` column has the name of one of the ` +
+            "source's dimensions",
+      };
+   }
+   return {
+      pair: {
+         join: join.name,
+         parentKey,
+         childKey,
+         childSourceID: join.sourceID as string,
+         parentRowColumn: PAIR_PARENT_ROW,
+      },
+   };
 }
 
 /** Whether `inner` lies within `outer` (both zero-based, end exclusive). */
@@ -971,6 +1127,7 @@ export function planModelMaterialize(
             sourceName: name,
             sourceID: def.sourceID,
             reason: `#(materialize) does not parse: ${error instanceof Error ? error.message : String(error)}`,
+            malformedCode: MATERIALIZE_UNPARSEABLE_CODE,
          });
          continue;
       }
@@ -980,6 +1137,19 @@ export function planModelMaterialize(
             sourceName: name,
             sourceID: def.sourceID,
             reason: `#(materialize) does not parse: ${declaration.errors.join("; ")}`,
+            malformedCode: MATERIALIZE_UNPARSEABLE_CODE,
+         });
+         continue;
+      }
+      // Before any other refusal: a key outside the closed set is malformed,
+      // refused at publish, whatever else the source would be refused for.
+      const unknownKey = unknownKeyRefusal(declaration);
+      if (unknownKey) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: unknownKey,
+            malformedCode: MATERIALIZE_UNKNOWN_KEY_CODE,
          });
          continue;
       }
@@ -1043,9 +1213,25 @@ export function planModelMaterialize(
          });
          continue;
       }
+      // An inlined join_many is a pair table (P5): at most one per source.
+      const fanned = inline.filter(
+         (j) => joins.find((x) => x.name === j)?.relationship === "many",
+      );
+      if (fanned.length > 1) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason:
+               `inline= names more than one join_many (${fanned.map(quotedName).join(", ")}); ` +
+               "a pair table pairs a parent with the children of one",
+         });
+         continue;
+      }
+      // What reads through an inlined join_many has one value per pair, not
+      // per parent, so it is computed at read through the served join.
       const columns = materializeColumns(def, {
          joinReads: map.fieldJoinsOf(def.sourceID),
-         inline: new Set(inline),
+         inline: new Set(inline.filter((j) => !fanned.includes(j))),
          hasJoins: joins.length > 0,
       });
       const ownColumns = new Set(columns.map((c) => c.column));
@@ -1132,8 +1318,29 @@ export function planModelMaterialize(
          }
          persist.name = tableName;
       }
+      let pair: MaterializePair | undefined;
+      if (fanned.length === 1) {
+         const laid = pairRefusal(
+            joins.find((x) => x.name === fanned[0]) as SourceJoin,
+            def,
+            map,
+            columns.filter((c) => c.join === undefined),
+            joinedColumns,
+            persist,
+         );
+         if ("reason" in laid) {
+            refused.push({
+               sourceName: name,
+               sourceID: def.sourceID,
+               reason: laid.reason,
+            });
+            continue;
+         }
+         pair = laid.pair;
+      }
       const build = buildSourceName(name);
-      const uniquenessChecks = inline.map((j): InlineUniquenessCheck => {
+      const checked = inline.filter((j) => !fanned.includes(j));
+      const uniquenessChecks = checked.map((j): InlineUniquenessCheck => {
          const join = joins.find((x) => x.name === j) as SourceJoin;
          return {
             join: j,
@@ -1160,7 +1367,9 @@ export function planModelMaterialize(
             : columns.some((c) => c.access)
               ? withDeclaration(declarationOf(def))
               : {}),
-         ...(inline.length > 0 ? { inline, uniquenessChecks } : {}),
+         ...(inline.length > 0 ? { inline } : {}),
+         ...(uniquenessChecks.length > 0 ? { uniquenessChecks } : {}),
+         ...(pair ? { pair } : {}),
          ...(declaration.keys.includes("name") ? {} : { nameDefaulted: true }),
       });
    }
@@ -1169,7 +1378,8 @@ export function planModelMaterialize(
 
 /**
  * A refused declaration as a package warning: the source is not materialized
- * and serves live, which is the `unservable` tier.
+ * and serves live, which is the `unservable` tier, or `malformed` (refused at
+ * publish) when the declaration cannot be read as written.
  */
 export function materializeRefusalFinding(
    refusal: MaterializeRefusal,
@@ -1177,8 +1387,8 @@ export function materializeRefusalFinding(
 ): PackageAnnotationFinding {
    return {
       route: MATERIALIZE_ROUTE,
-      tier: "unservable",
-      code: "materialize-not-built",
+      tier: refusal.malformedCode ? "malformed" : "unservable",
+      code: refusal.malformedCode ?? "materialize-not-built",
       message:
          `#(materialize) on source "${refusal.sourceName}" is not built, ` +
          `so the source is served live: ${refusal.reason}.`,
@@ -1213,16 +1423,33 @@ function emitBuildSource(plan: MaterializePlan): string {
             : `    ${identifier(c.column)} is ${identifier(c.join)}.${identifier(c.dimension)}`,
       )
       .join(",\n");
+   const body = plan.pair
+      ? pairBody(plan.pair, select)
+      : `  select:\n${select}`;
    const given = givenReadTerms(plan);
    // malloy-text: each term is the author's own given-reading where:, re-applied as written on its own declaration
    const readTime = given.length
       ? ` extend {\n${given.map((term) => `  where: ${term.code}`).join("\n")}\n}`
       : "";
-   return `${persistLine(plan)}
-source: ${identifier(plan.buildSourceName)} is ${identifier(importAlias(plan))} -> {
-  select:
-${select}
-}${readTime}`;
+   const head = `source: ${identifier(plan.buildSourceName)} is ${identifier(importAlias(plan))} -> {`;
+   return `${persistLine(plan)}\n${head}\n${body}\n}${readTime}`;
+}
+
+/**
+ * A pair table's build: a `group_by:` of every stored column (distinct rows,
+ * since both keys are among them) that writes the parent-row flag (see the
+ * module comment) by ranking each row within its parent key. The rows are
+ * written in parent-key order, so a warehouse that keeps insertion order
+ * (DuckDB) reads a parent's rows together.
+ */
+function pairBody(pair: MaterializePair, columns: string): string {
+   const parent = identifier(pair.parentKey);
+   // malloy-text: columns is emitBuildSource's select list, every name through identifier
+   return `  group_by:
+${columns}
+  calculate:
+    ${identifier(pair.parentRowColumn)} is row_number() { partition_by: ${parent} } = 1
+  order_by: ${parent}`;
 }
 
 /**

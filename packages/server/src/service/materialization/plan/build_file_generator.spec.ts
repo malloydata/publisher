@@ -535,9 +535,216 @@ source: orders is orders_raw extend {
       { timeout: 30000 },
    );
 
+   const PAIRED = `${BASE}
+source: lines is duckdb.sql("""
+  select * from (values (1, 1, 2.0), (2, 1, 3.0), (3, 2, 4.0), (4, 9, 1.0)) as t(line_id, order_id, qty)
+""") extend {
+  primary_key: line_id
+  dimension: big_line is qty > 2
+  measure: total_qty is qty.sum()
+}
+`;
+
+   it(
+      "inlines a join_many as a pair table: parent and child columns, and a parent-row flag written at build",
+      async () => {
+         const pkg = await packages.create(`${PAIRED}
+#(materialize) name="orders_all" storage="lake" inline=["lines"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+  dimension:
+    line_qty is lines.qty
+    doubled is amount * 2
+}
+`);
+         const c = await compilePackageBuildPlan(pkg);
+         const [plan] = generatedPlans(c);
+         expect(plan.inline).toEqual(["lines"]);
+         // A dimension through the join_many has a value per pair, so it is
+         // computed at read, never stored.
+         expect(plan.columns.map((x) => [x.column, x.join ?? null])).toEqual([
+            ["id", null],
+            ["region", null],
+            ["amount", null],
+            ["order_date", null],
+            ["doubled", null],
+            ["lines__line_id", "lines"],
+            ["lines__order_id", "lines"],
+            ["lines__qty", "lines"],
+            ["lines__big_line", "lines"],
+         ]);
+         expect(plan.uniquenessChecks).toBeUndefined();
+         expect(plan.pair).toEqual({
+            join: "lines",
+            parentKey: "id",
+            childKey: "line_id",
+            childSourceID: expect.stringMatching(/^lines@/),
+            parentRowColumn: "__parent_row",
+         });
+         const [sourceID, source] = Object.entries(c.sources).find(
+            ([, s]) => s.name === "orders",
+         )!;
+         const sql = buildSQLOf(source, { entries: {} }, c.targets?.[sourceID]);
+         const duckdb = await pkg.getMalloyConnection("duckdb");
+         const rows = (
+            await duckdb.runSQL(
+               `SELECT id, lines__line_id, __parent_row FROM (${sql}) t ORDER BY id, lines__line_id`,
+            )
+         ).rows.map((r) => [
+            Number(r.id),
+            r.lines__line_id === null ? null : Number(r.lines__line_id),
+            r.__parent_row,
+         ]);
+         // Order 3 has no line and keeps one row; line 4 pairs with no order.
+         expect(rows.map(([id, line]) => [id, line])).toEqual([
+            [1, 1],
+            [1, 2],
+            [2, 3],
+            [3, null],
+         ]);
+         // Exactly one parent row per order.
+         for (const id of [1, 2, 3]) {
+            expect(
+               rows.filter(([o, , parent]) => o === id && parent === true),
+            ).toHaveLength(1);
+         }
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "stores a many-to-many pair once per pair, and flags each parent once",
+      async () => {
+         const pkg = await packages.create(`${BASE}
+source: notes is duckdb.sql("""
+  select * from (values (1, 'east'), (2, 'east'), (3, 'north')) as t(note_id, region)
+""") extend { primary_key: note_id }
+#(materialize) name="orders_all" storage="lake" inline=["notes"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: notes on notes.region = region
+}
+`);
+         const c = await compilePackageBuildPlan(pkg);
+         const [sourceID, source] = Object.entries(c.sources).find(
+            ([, s]) => s.name === "orders",
+         )!;
+         const sql = buildSQLOf(source, { entries: {} }, c.targets?.[sourceID]);
+         const duckdb = await pkg.getMalloyConnection("duckdb");
+         const rows = (
+            await duckdb.runSQL(
+               `SELECT id, notes__note_id AS n, __parent_row AS p FROM (${sql}) t ORDER BY id, n`,
+            )
+         ).rows.map((r) => [
+            Number(r.id),
+            r.n === null ? null : Number(r.n),
+            r.p,
+         ]);
+         expect(rows.map(([id, n]) => [id, n])).toEqual([
+            [1, 1],
+            [1, 2],
+            [2, null],
+            [3, 1],
+            [3, 2],
+         ]);
+         // A note shared by two orders is stored with each, as live's LEFT
+         // JOIN pairs it with each; each order is flagged once.
+         for (const id of [1, 2, 3]) {
+            expect(
+               rows.filter(([o, , flag]) => o === id && flag === true),
+            ).toHaveLength(1);
+         }
+      },
+      { timeout: 30000 },
+   );
+
+   for (const [name, declaration, why] of [
+      [
+         "a join_many to a source with no primary key",
+         `#(materialize) name="orders_all" storage="lake" inline=["raw_lines"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: raw_lines is lines_raw on raw_lines.order_id = id
+}`,
+         /the joined source's primary key/,
+      ],
+      [
+         "a join_many whose joined source has joins of its own",
+         `source: lines_joined is lines extend {
+  join_one: o is orders_raw on o.id = order_id
+}
+#(materialize) name="orders_all" storage="lake" inline=["lj"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lj is lines_joined on lj.order_id = id
+}`,
+         /joins of its own/,
+      ],
+      [
+         "two join_manys",
+         `#(materialize) name="orders_all" storage="lake" inline=["lines", "l2"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+  join_many: l2 is lines on l2.order_id = id
+}`,
+         /more than one join_many/,
+      ],
+      [
+         "a join_many on an incremental source",
+         `#(materialize) name="orders_all" storage="lake" inline=["lines"] refresh="incremental" watermark="order_date"
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+}`,
+         /incremental source/,
+      ],
+      [
+         "a join_many whose flag clashes with a dimension",
+         `#(materialize) name="orders_all" storage="lake" inline=["lines"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+  dimension: __parent_row is amount > 0
+}`,
+         /`__parent_row` column/,
+      ],
+      [
+         "a join_cross",
+         `#(materialize) name="orders_all" storage="lake" inline=["lc"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_cross: lc is lines on lc.order_id = id
+}`,
+         /join_cross/,
+      ],
+   ] as const) {
+      it(
+         `refuses inline= naming ${name}, as a package warning`,
+         async () => {
+            const c = await compiled(`${PAIRED}
+source: lines_raw is duckdb.sql("""select 1 as order_id, 2.0 as qty""")
+${declaration}
+`);
+            expect(generatedPlans(c)).toEqual([]);
+            const findings = (c.annotationFindings ?? []).filter(
+               (f) => f.code === "materialize-not-built",
+            );
+            expect(findings.map((f) => f.subject)).toEqual(["orders"]);
+            expect(findings[0].message).toMatch(why);
+         },
+         { timeout: 30000 },
+      );
+   }
+
    for (const [name, inline, why] of [
       ["a name that is not a join", '["nope"]', /not a join/],
-      ["a join_many", '["lines"]', /join_many/],
+      [
+         "a join_many from a source with no primary key",
+         '["lines"]',
+         /join_many, and a pair table needs the source's own primary key/,
+      ],
       ["a join defined in place", '["r2"]', /defined in place/],
       ["a list of something else", '"regions"', /list of join names/],
       ["a join with no single key", '["r3"]', /not one equality/],
@@ -669,14 +876,20 @@ source: orders is orders_raw
 `);
          expect(generatedPlans(c).map((p) => p.sourceName)).toEqual(["orders"]);
          const findings = (c.annotationFindings ?? []).filter(
-            (f) => f.code === "materialize-not-built",
+            (f) =>
+               f.code === "materialize-not-built" ||
+               f.code === "materialize-unknown-key",
          );
-         expect(findings.map((f) => [f.subject, f.tier, f.model])).toEqual([
-            ["misspelt", "unservable", "m.malloy"],
-            ["unnamed", "unservable", "m.malloy"],
+         expect(
+            findings.map((f) => [f.subject, f.code, f.tier, f.model]),
+         ).toEqual([
+            ["misspelt", "materialize-unknown-key", "malformed", "m.malloy"],
+            ["unnamed", "materialize-not-built", "unservable", "m.malloy"],
          ]);
-         // A misspelt name= is refused, never defaulted to the source's name.
+         // A misspelt name= is malformed (refused at publish), never defaulted
+         // to the source's name.
          expect(findings[0].message).toContain("`nmae=`");
+         expect(findings[0].message).toContain("did you mean `name=`?");
          expect(findings[1].message).toContain(
             "colocated #(materialize) is not served yet",
          );
@@ -885,8 +1098,9 @@ source: orders is orders_raw -> { select: * }
          },
          fields: [{ name: "id", type: "number" }],
       });
-      const reason = (text: string) =>
-         planModelMaterialize({ orders: declared(text) }).refused[0]?.reason;
+      const refusal = (text: string) =>
+         planModelMaterialize({ orders: declared(text) }).refused[0];
+      const reason = (text: string) => refusal(text)?.reason;
       expect(reason('#(materialize) name=["a", "b"]\n')).toContain(
          "`name=` must be a string",
       );
@@ -894,6 +1108,16 @@ source: orders is orders_raw -> { select: * }
          "`freshness` takes properties",
       );
       expect(reason('#(materialize) name="a\n')).toContain("does not parse");
+      // A value of the wrong shape is unservable (the source serves live); a
+      // line that does not parse is malformed, refused at publish.
+      expect(
+         refusal('#(materialize) name=["a", "b"]\n')?.malformedCode,
+      ).toBeUndefined();
+      const unparseable = refusal('#(materialize) name="a\n');
+      expect(unparseable?.malformedCode).toBe("materialize-unparseable");
+      expect(materializeRefusalFinding(unparseable!, "m.malloy")).toMatchObject(
+         { tier: "malformed", code: "materialize-unparseable" },
+      );
    });
 
    it(
