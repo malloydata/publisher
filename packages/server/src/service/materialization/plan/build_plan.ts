@@ -13,7 +13,7 @@ import type {
    SourceDef,
 } from "@malloydata/malloy";
 import * as path from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import {
    persistAnnotationFindings,
    persistUnparseableFinding,
@@ -1060,6 +1060,23 @@ export async function collectModelBuildPlan(
    // A `#@` line that does not parse is reported by what it cost. Malloy drops
    // a source only when none of its `#@` lines parse; when another does, the
    // source is still planned, built without the broken line's directives.
+   // A location in the build copy (D3) sits one line below the author's,
+   // since the copy opens with the flag: the finding names the author's line.
+   // The copy's own location still matches the planned sources' notes.
+   const companionURL =
+      planModel !== malloyModel
+         ? pathToFileURL(path.resolve(packagePath, modelPath)).href
+         : undefined;
+   const authorAt = (at: (typeof parseErrors)[number]["at"]) =>
+      at && companionURL && at.url === companionURL
+         ? {
+              ...at,
+              range: {
+                 start: { ...at.range.start, line: at.range.start.line - 1 },
+                 end: { ...at.range.end, line: at.range.end.line - 1 },
+              },
+           }
+         : at;
    for (const msg of parseErrors) {
       const at = msg.at;
       const onPlanned = at
@@ -1075,7 +1092,7 @@ export async function collectModelBuildPlan(
       addAnnotationFinding(
          parts,
          persistUnparseableFinding(
-            msg,
+            { ...msg, at: authorAt(msg.at) },
             declaringModelPath(at?.url, packagePath, modelPath),
             onPlanned?.note
                ? { subject: onPlanned.source.name, line: onPlanned.note.text }
