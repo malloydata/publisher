@@ -59,7 +59,16 @@
 
 import { Annotations } from "@malloydata/malloy";
 import { createHash } from "node:crypto";
-import { ownLevelNotes } from "../../annotations";
+import {
+   annotationTexts,
+   ownLevelNotes,
+   type AnnotationNote,
+} from "../../annotations";
+import {
+   declaredFieldNotes,
+   type NotedSourceDef,
+   type SourceScope,
+} from "../../governance/ir/declared_notes";
 import {
    payloadsOnRoute,
    PREAGGREGATE_ROUTE_KEYS,
@@ -78,6 +87,7 @@ import {
    currentTimeFields,
    readsCurrentTime,
 } from "./persist_dynamic_terms";
+import { splitSourceID } from "./persisted_view";
 import { isSpliceableNamespace } from "./preaggregation_namespace";
 import type { RollupPlan } from "./preaggregation_synthesis";
 import {
@@ -115,6 +125,14 @@ export interface RollupMeasure {
    partials: RollupPartial[];
    /** The measure re-stated over its merged partials. */
    merged: MeasureExpr;
+   /**
+    * Grain dimensions this measure's join-level `sum` or `count` merges across
+    * (A2): every grain dimension but the join's key. Its partial is the joined
+    * rows' total within one group, and two groups that share a key hold the
+    * same joined rows, so a query reads the measure from the rollup only when
+    * each of these is grouped or fixed at every level that aggregates it.
+    */
+   fanOutDimensions: string[];
 }
 
 /**
@@ -165,17 +183,6 @@ interface SourceLike {
    fields?: unknown[];
 }
 
-interface NoteLike {
-   text: string;
-   at?: {
-      url: string;
-      range: {
-         start: { line: number; character: number };
-         end: { line: number; character: number };
-      };
-   };
-}
-
 const fieldNameOf = (f: FieldLike): string | undefined =>
    typeof f.as === "string"
       ? f.as
@@ -199,52 +206,31 @@ const isDimension = (f: FieldLike) =>
 const isHidden = (f: FieldLike | undefined) =>
    f?.accessModifier != null && f.accessModifier !== "public";
 
-function noteKey(note: NoteLike): string | undefined {
-   const at = note.at;
-   return at
-      ? `${at.url}#${at.range.start.line}:${at.range.start.character}`
-      : undefined;
-}
-
-/** Every note on an annotation chain, its own and every inherited level. */
-function allNotes(annotations: unknown, depth = 0): NoteLike[] {
-   if (!annotations || typeof annotations !== "object" || depth > 64) {
-      return [];
+/** Every compiled source of `map`, once per map: what A1's reader looks among. */
+const scopes = new WeakMap<SourceMap, unknown[]>();
+function scopeOf(map: SourceMap): unknown[] {
+   let scope = scopes.get(map);
+   if (!scope) {
+      scope = map.nodes().map((n) => n.def);
+      scopes.set(map, scope);
    }
-   const a = annotations as {
-      notes?: NoteLike[];
-      blockNotes?: NoteLike[];
-      inherits?: unknown;
-   };
-   return [
-      ...(a.blockNotes ?? []),
-      ...(a.notes ?? []),
-      ...allNotes(a.inherits, depth + 1),
-   ];
+   return scope;
 }
 
 /**
- * The `#(preaggregate)` notes a field of `node` declares itself: its own notes
- * on the route, less any its base source's field of the same name also
- * carries (by position), which the base wrote and this source inherited.
+ * The `#(preaggregate)` notes `def`'s own statement declared on `field` (A1),
+ * by the shared rule (`declaredFieldNotes`): a note a source inherited from
+ * the source it extends, renames or imports is that source's, and an
+ * include-list item's note is the including source's own.
  */
 function declaredRollupNotes(
+   def: SourceLike,
    field: FieldLike,
-   baseField: FieldLike | undefined,
-): NoteLike[] {
-   const own = ownLevelNotes(field.annotations).filter(
+   scope: SourceScope,
+): AnnotationNote[] {
+   return declaredFieldNotes(def as NotedSourceDef, field, scope).filter(
       (n) => routeOfNote(n.text) === PREAGGREGATE_ROUTE,
-   ) as NoteLike[];
-   if (own.length === 0 || !baseField) return own;
-   const inherited = new Set(
-      allNotes(baseField.annotations)
-         .map(noteKey)
-         .filter((k): k is string => k !== undefined),
    );
-   return own.filter((n) => {
-      const key = noteKey(n);
-      return key === undefined || !inherited.has(key);
-   });
 }
 
 /** One `#(preaggregate)` line, read. */
@@ -262,7 +248,7 @@ interface Declaration {
  * reference, which is never read from a route Publisher owns.
  */
 function readDeclaration(
-   note: NoteLike,
+   note: AnnotationNote,
    measure: string,
    sourceName: string,
 ): Declaration | RollupRefusal {
@@ -394,14 +380,6 @@ export function rollupName(
    )}`;
 }
 
-/** A Malloy `sourceID`'s declared name and declaring file, or undefined. */
-export function splitSourceID(
-   sourceID: string,
-): { name: string; url: string } | undefined {
-   const match = /^(.+)@([a-z][a-z0-9+.-]*:.*)$/i.exec(sourceID);
-   return match ? { name: match[1], url: match[2] } : undefined;
-}
-
 /** What planning needs beyond the source map. */
 export interface RollupPlanContext {
    /** The base's `sourceID` relative to the package (`orders@models/o.malloy`). */
@@ -426,13 +404,7 @@ export function planSourceRollups(
       const n = fieldNameOf(f);
       if (n !== undefined) byName.set(n, f);
    }
-   const baseFields = new Map<string, FieldLike>();
-   if (node.base && node.base.hop !== "query") {
-      for (const f of (node.base.def?.fields ?? []) as FieldLike[]) {
-         const n = fieldNameOf(f);
-         if (n !== undefined) baseFields.set(n, f);
-      }
-   }
+   const sources = scopeOf(map);
 
    // Every declaration this source writes, and a refusal for one on a field
    // that is not a measure (the wrong kind of field: malformed).
@@ -440,7 +412,7 @@ export function planSourceRollups(
    for (const field of fields) {
       const name = fieldNameOf(field);
       if (name === undefined) continue;
-      const notes = declaredRollupNotes(field, baseFields.get(name));
+      const notes = declaredRollupNotes(def, field, sources);
       if (notes.length === 0) continue;
       if (!isMeasure(field)) {
          refused.push({
@@ -638,7 +610,24 @@ export function planSourceRollups(
       // A2: a join-level aggregate merges only when each joined row falls in
       // one group, which the join's key in the grain guarantees.
       let joinProblem: string | undefined;
+      const measureFanOut = new Set<string>();
       for (const leaf of d.leaves) {
+         // A join-level sum or count is deduplicated at the joined rows, so
+         // its partials add up only across groups with different keys: every
+         // other grain dimension must be fixed when it is read. Through more
+         // than one join, two keys in the grain can share a joined row.
+         if (
+            leaf.joinPath.length > 0 &&
+            leaf.aggregate !== "min" &&
+            leaf.aggregate !== "max"
+         ) {
+            if (leaf.joinPath.length > 1) {
+               joinProblem = `it aggregates through more than one join (\`${leaf.joinPath.join(".")}\`), so a joined row could be counted in two groups`;
+               break;
+            }
+            const key = joins.get(leaf.joinPath[0] as string)?.baseKey;
+            for (const g of decl.grain) if (g !== key) measureFanOut.add(g);
+         }
          const read = new Set<string>();
          let unknown = false;
          for (const path of [leaf.joinPath, ...leaf.reads]) {
@@ -697,6 +686,7 @@ export function planSourceRollups(
                leaf,
             })),
             merged: d.merged(columns),
+            fanOutDimensions: [...measureFanOut].sort(byCodepoint),
          });
       }
       groups.set(key, group);
@@ -797,7 +787,7 @@ function gateFieldNames(
    def: SourceLike,
    byName: ReadonlyMap<string, FieldLike>,
 ): { dimensions: string[]; unkeepable: string[] } {
-   const texts = allNotes(def.annotations).map((n) => n.text);
+   const texts = annotationTexts(def.annotations) ?? [];
    const dimensions = new Set<string>();
    const unkeepable = new Set<string>();
    for (const route of ["access_filter", "authorize"]) {

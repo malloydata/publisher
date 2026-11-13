@@ -197,6 +197,50 @@ source: orders is ${ROWS} extend {
       const { plans } = await plan({ "orders.malloy": MODEL });
       expect(plans.map((p) => p.fanOutDimensions)).toEqual([[], ["line_kind"]]);
    });
+
+   it("marks every grain dimension but the key as fan-out for a join-level sum or count", async () => {
+      const { plans, refused } = await plan({
+         "orders.malloy": `source: carriers is ${CARRIERS} extend { primary_key: code }
+source: orders is ${ROWS} extend {
+  primary_key: id
+  join_one: carriers with carrier
+  #(preaggregate) grain=["carrier", "category"]
+  measure: fleet is carriers.fleet.sum()
+  #(preaggregate) grain=["carrier", "category"]
+  measure: carrier_count is carriers.count()
+  #(preaggregate) grain=["carrier", "category"]
+  measure: total is amount.sum()
+}`,
+      });
+      expect(refused).toEqual([]);
+      expect(
+         plans[0]?.rollupMeasures.map((m) => [m.name, m.fanOutDimensions]),
+      ).toEqual([
+         ["carrier_count", ["category"]],
+         ["fleet", ["category"]],
+         ["total", []],
+      ]);
+   });
+
+   it("leaves out a join-level sum taken through more than one join", async () => {
+      const { plans, refused } = await plan({
+         "orders.malloy": `source: hubs is duckdb.sql("SELECT 'h' AS hub, 3 AS gates") extend { primary_key: hub }
+source: carriers is duckdb.sql("SELECT 'AA' AS code, 'h' AS hub UNION ALL SELECT 'BB', 'h'") extend {
+  primary_key: code
+  join_one: hubs with hub
+}
+source: orders is ${ROWS} extend {
+  primary_key: id
+  join_one: carriers with carrier
+  #(preaggregate) grain=["carrier"]
+  measure: gates is carriers.hubs.gates.sum()
+}`,
+      });
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => [r.measure, r.code])).toEqual([
+         ["gates", "preaggregate-join-level"],
+      ]);
+   });
 });
 
 describe("#(preaggregate) access filters (A4)", () => {
