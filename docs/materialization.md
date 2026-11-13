@@ -9,6 +9,8 @@ Materialization pre-builds a Malloy source into a physical table so queries read
 
 This doc covers the open-source Publisher's materialization surface — how to declare it, the rules Publisher enforces, how to build on demand or on a schedule, the `malloy-pub` CLI, and how a self-hosted (standalone) deployment differs from a control-plane-driven (hosted) one.
 
+> **v1 and v2.** Most of this page documents v1, `#@ persist` on a source and `#@ preaggregate` on a measure, which is what a server runs by default. Materialization v2, `#(materialize)` on a source and `#(preaggregate)` on a measure, is in development behind `PUBLISHER_MATERIALIZE` (default off). With the switch off, Publisher ignores both v2 annotations and answers the source live; a `#(materialize)` it ignores gets no warning and no serve verdict. With it on, write a new materialization as `#(materialize) storage="…"`, which is served only with `PERSIST_STORAGE_MODE=on` too, and a new rollup as `#(preaggregate) grain=[…]`. A `#(materialize)` with no `storage=` is not built yet, so keep `#@ persist` for a table in the source's own warehouse. `#@ preaggregate` is deprecated in v2; `#@ persist` on a view and `#@ -persist` are not. [materialization-migration.md](materialization-migration.md) is the recipe for moving v1 annotations to v2, and [the served copy](#the-served-copy-in-development-publisher_materialize) documents how v2 serves.
+
 ## Declare what to persist
 
 Annotate a source with `#@ persist` (the persistence experiment must be enabled in the model):
@@ -477,7 +479,8 @@ example `amount_text::"double"`: a cast to a type Malloy already believes the fi
 ## Will it serve? The serve verdict
 
 Every source a package materializes (each `#@ persist` source, and each rollup a `#@ preaggregate`
-synthesizes) carries a **serve verdict**: whether queries are answered from its table, and when
+synthesizes; with `PUBLISHER_MATERIALIZE` on, also each `#(materialize)` source, `#(preaggregate)`
+rollup and persisted view) carries a **serve verdict**: whether queries are answered from its table, and when
 not, why and what to change. A materialized table that no query reads otherwise looks exactly like
 a working one: the build succeeds, the manifest binds, and every query is quietly answered live.
 
