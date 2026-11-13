@@ -1003,6 +1003,51 @@ source: orders is orders_raw extend {
    );
 
    it(
+      "proves a middle level one parent per row only down joins keyed on each parent level's primary key",
+      async () => {
+         const pkg = await packages.create(`${PAIRED}
+source: picks is duckdb.sql("""
+  select * from (values (10, 1, 'a'), (11, 1, 'b')) as t(pick_id, line_id, bin)
+""") extend { primary_key: pick_id }
+source: bins is duckdb.sql("""
+  select * from (values (100, 10, 'x')) as t(bin_id, pick_id, tag)
+""") extend { primary_key: bin_id }
+source: picks_binned is picks extend {
+  join_many: bins on bins.pick_id = pick_id
+}
+source: lines_picked is lines extend {
+  join_many: picks on picks.line_id = line_id
+}
+source: lines_by_qty is lines extend {
+  dimension: qty_key is qty
+  join_many: picks is picks_binned on picks.line_id = qty_key
+}
+#(materialize) name="by_key" storage="lake" inline=["lp.picks"]
+source: by_key is orders_raw extend {
+  primary_key: id
+  dimension: id2 is id
+  join_many: lp is lines_picked on lp.order_id = id2
+}
+#(materialize) name="by_qty" storage="lake" inline=["lq.picks.bins"]
+source: by_qty is orders_raw extend {
+  primary_key: id
+  join_many: lq is lines_by_qty on lq.order_id = id
+}
+`);
+         const c = await compilePackageBuildPlan(pkg);
+         const plans = new Map(
+            generatedPlans(c).map((p) => [p.sourceName, p] as const),
+         );
+         // Keyed on a dimension of the order, not its primary key.
+         expect(plans.get("by_key")?.pair?.oneParentLevels).toBeUndefined();
+         // The first level is keyed on the order's key; the second on a
+         // dimension of the line, so it and every level below stop there.
+         expect(plans.get("by_qty")?.pair?.oneParentLevels).toEqual([1]);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
       "inlines a path of join_manys as one pair table, with a row flag per level above the last",
       async () => {
          const pkg = await packages.create(`${PAIRED}
@@ -1028,6 +1073,9 @@ source: orders is orders_raw extend {
             childKey: "line_id",
             childSourceID: expect.stringMatching(/^lines_picked@/),
             parentRowColumn: "__parent_row",
+            // `lp` is keyed on the order's primary key: each line has one
+            // order, so its flag marks one row per line under any order.
+            oneParentLevels: [1],
             hops: [
                {
                   join: "picks",

@@ -77,6 +77,7 @@ source: items is duckdb.table('items') extend {
   primary_key: item_id
   join_many: opts on opts.item_id = item_id
   dimension: pricey is price > 2
+  dimension: pricey_n is pick 1 when price > 2 else 0
   measure:
     item_cnt is count()
     price_total is price.sum()
@@ -101,6 +102,7 @@ const measures = `  measure:
     price_max is items.price.max()
     color_n is count(items.color)
     pricey_items is item_n { where: items.pricey }
+    pricey_avg is items.pricey_n.avg()
     price_per_order is price_sum / order_n
     opt_n is items.opts.count()
     extra_sum is items.opts.extra.sum()
@@ -122,6 +124,16 @@ ${measures}
     group_by: items.color
     aggregate: item_n, price_sum
   }
+}
+
+// A path whose first join is keyed on a dimension, not the primary key: its
+// items are not proven to have one order each.
+#(materialize) storage="lake" inline=["items.opts"]
+source: orders_alias_key is duckdb.table('orders') extend {
+  primary_key: id
+  dimension: oid2 is id
+  join_many: items on items.order_id = oid2
+${measures}
 }
 
 // A path and another join_many: two blocks of one table.
@@ -293,6 +305,33 @@ describe("R4: a path of join_manys and more than one join_many, served flat from
          "a having on a parent measure",
          "run: orders_hop -> { group_by: cat; aggregate: order_n, opt_n; having: order_n > 1 }",
       ],
+      // A middle level whose rows have one order each (each join keyed on its
+      // parent's primary key, checked at build), beside the leaf: a sum or an
+      // average of a stored middle column, as live's by the item key.
+      [
+         "middle sums and averages beside leaf measures",
+         "run: orders_hop -> { group_by: cat; aggregate: price_sum, price_avg, opt_n, extra_sum }",
+      ],
+      [
+         "middle and parent measures beside the leaf, by order (childless orders included)",
+         "run: orders_hop -> { group_by: id; aggregate: order_n, amt_sum, price_sum, price_avg, opt_n }",
+      ],
+      [
+         "middle measures beside the leaf, grouped by the middle level",
+         "run: orders_hop -> { group_by: items.color; aggregate: price_sum, price_avg, extra_sum }",
+      ],
+      [
+         "middle measures beside the leaf, under a middle filter",
+         "run: orders_hop -> { where: items.color = 'red'; group_by: cat; aggregate: price_sum, opt_n }",
+      ],
+      [
+         "a middle measure beside a nest that reads the leaf",
+         "run: orders_hop -> { group_by: cat; aggregate: price_sum; nest: k is { group_by: items.opts.kind; aggregate: opt_n; order_by: kind } }",
+      ],
+      [
+         "a middle ratio beside the leaf",
+         "run: orders_hop -> { group_by: cat; aggregate: price_per_order, extra_per_order }",
+      ],
    ] as const;
    for (const [name, query] of served) {
       for (const malloy of both(query)) {
@@ -377,8 +416,18 @@ describe("R4: a path of join_manys and more than one join_many, served flat from
          "COUNT_SEMANTICS",
       ],
       [
-         "a middle measure in a query whose nest reads the leaf",
-         "run: orders_hop -> { group_by: cat; aggregate: price_sum; nest: k is { group_by: items.opts.kind; aggregate: opt_n } }",
+         "a middle count in a query whose nest reads the leaf",
+         "run: orders_hop -> { group_by: cat; aggregate: item_n; nest: k is { group_by: items.opts.kind; aggregate: opt_n } }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "a middle average of a computed field beside the leaf (its null row is not null)",
+         "run: orders_hop -> { group_by: cat; aggregate: pricey_avg, opt_n }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "a middle sum beside the leaf, its join keyed on a dimension, not the primary key",
+         "run: orders_alias_key -> { group_by: cat; aggregate: price_sum, opt_n }",
          "COUNT_SEMANTICS",
       ],
       [
@@ -604,6 +653,14 @@ source: ${rerootDeclaration(declaration, {
             ...(pair.block
                ? { otherRecords: pair.block.others.map((o) => o.join) }
                : {}),
+            ...(pair.oneParentLevels
+               ? {
+                    oneParentLevels: pair.oneParentLevels,
+                    computedFields: pair.childStoredDimensions.map(
+                       (d) => `${pair.join}.${d}`,
+                    ),
+                 }
+               : {}),
          },
       );
       const rows = (
@@ -651,6 +708,7 @@ source: ${rerootDeclaration(declaration, {
          "price",
          "color",
          "pricey",
+         "pricey_n",
       ]),
       hops: [
          {
@@ -725,6 +783,82 @@ source: ${rerootDeclaration(declaration, {
       );
       expect(rowDifference(live, flagged.rows)).toBeDefined();
       expect(flagged.refusal).toMatch(/beside fields below it/);
+   });
+
+   it("a middle sum or average of a stored column beside the leaf answers right under the flag only where each item has one order", async () => {
+      const declaration = `orders_hop is duckdb.table('orders') extend {
+  primary_key: id
+  join_many: items on items.order_id = id
+  measure:
+    order_n is count()
+    price_sum is items.price.sum()
+    price_avg is items.price.avg()
+    pricey_avg is items.pricey_n.avg()
+    item_n is items.count()
+    opt_n is items.opts.count()
+}`;
+      const flaggedMiddle = [
+         { name: "order_n", internalName: "order_n__pair" },
+         { name: "price_sum", internalName: "price_sum__pair", level: 1 },
+         { name: "price_avg", internalName: "price_avg__pair", level: 1 },
+         { name: "pricey_avg", internalName: "pricey_avg__pair", level: 1 },
+         { name: "item_n", internalName: "item_n__pair", level: 1 },
+      ];
+      const proven = {
+         ...(await hopPair(flaggedMiddle)),
+         oneParentLevels: [1],
+         childStoredDimensions: ["pricey", "pricey_n"],
+      };
+      const sums =
+         "run: orders_hop -> { group_by: id; aggregate: price_sum, price_avg, opt_n }";
+      const live = (await fixture.run({ name: "sums", malloy: sums })).live;
+      const served = await answer(
+         "hop",
+         declaration,
+         proven,
+         ["id", "cat", "amt"],
+         sums,
+         "orders_hop",
+      );
+      expect(rowDifference(live, served.rows)).toBeUndefined();
+      expect(served.refusal).toBeUndefined();
+      // Not proven one order per item: refused, though this data has one.
+      const unproven = await answer(
+         "hop",
+         declaration,
+         await hopPair(flaggedMiddle),
+         ["id", "cat", "amt"],
+         sums,
+         "orders_hop",
+      );
+      expect(unproven.refusal).toMatch(/beside fields below it/);
+      // A middle count reads a childless order's null row under the flag,
+      // where live's count by the item key skips it: wrong, and refused.
+      const counts =
+         "run: orders_hop -> { group_by: id; aggregate: item_n, opt_n }";
+      const want = (await fixture.run({ name: counts, malloy: counts })).live;
+      const got = await answer(
+         "hop",
+         declaration,
+         proven,
+         ["id", "cat", "amt"],
+         counts,
+         "orders_hop",
+      );
+      expect(rowDifference(want, got.rows)).toBeDefined();
+      expect(got.refusal).toMatch(/beside fields below it/);
+      // A computed column is 0, not null, on that null row; whether live's
+      // symmetric average reads it depends on the dialect (DuckDB's hash of a
+      // null key is not null, so it does here), so it is refused.
+      const computed = await answer(
+         "hop",
+         declaration,
+         proven,
+         ["id", "cat", "amt"],
+         "run: orders_hop -> { group_by: cat; aggregate: pricey_avg, opt_n }",
+         "orders_hop",
+      );
+      expect(computed.refusal).toMatch(/beside fields below it/);
    });
 
    it("a query read from the wrong block answers wrong, and is refused", async () => {

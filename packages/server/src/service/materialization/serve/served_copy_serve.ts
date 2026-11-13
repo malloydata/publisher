@@ -1706,6 +1706,14 @@ function flatPairOf(pair: PairReroot): FlatPair {
       ...(pair.levelRows
          ? { levelRowFields: pair.levelRows.map((l) => l.field) }
          : {}),
+      ...(pair.oneParentLevels
+         ? {
+              oneParentLevels: pair.oneParentLevels,
+              computedFields: pair.childStoredDimensions.map(
+                 (d) => `${pair.join}.${d}`,
+              ),
+           }
+         : {}),
       ...(pair.block
          ? { otherRecords: pair.block.others.map((o) => o.join) }
          : {}),
@@ -1906,6 +1914,9 @@ function pairRerootOf(
       childStoredDimensions,
       ...(own.hops ? { hops: own.hops } : {}),
       ...(levelRows.length > 0 ? { levelRows } : {}),
+      ...(block.oneParentLevels && block.oneParentLevels.length > 0
+         ? { oneParentLevels: block.oneParentLevels }
+         : {}),
       ...(blockReroot ? { block: blockReroot } : {}),
    };
 }

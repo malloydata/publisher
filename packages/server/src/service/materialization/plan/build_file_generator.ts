@@ -415,6 +415,18 @@ export interface MaterializePair {
     * at least one of the source's own and one of the joined source's.
     */
    watermark?: { column: string; parts: string[] };
+   /**
+    * For a path of more than one hop: the levels between the source and the
+    * leaf (1 for the path's first join) each of whose rows has exactly one
+    * row of every level above it, so its row flag marks one row per row of
+    * that level whichever parent it is read under. Proven from the joins and
+    * the build's key check ({@link pairKeyChecks}): each join down to the
+    * level is keyed on its parent level's primary key, which the build checks
+    * unique and never null, so a row meets at most one parent row. A middle
+    * level's aggregate beside a deeper level is served only at these levels
+    * (see `governance/ir/pair_flat_query.ts`). Absent: none.
+    */
+   oneParentLevels?: number[];
 }
 
 /**
@@ -1588,6 +1600,17 @@ function pairRefusal(
             "source's dimensions",
       };
    }
+   // A middle level whose join, and every join above it, is keyed on its
+   // parent level's primary key: each of its rows has one parent row.
+   const oneParentLevels: number[] = [];
+   for (let k = 1; k < path.length; k++) {
+      const parentLevelKey = k === 1 ? parentKey : path[k - 2].primaryKey;
+      const keyed =
+         path[k - 1].baseKey !== undefined &&
+         path[k - 1].baseKey === parentLevelKey;
+      if (!keyed) break;
+      oneParentLevels.push(k);
+   }
    return {
       pair: {
          join: join.name,
@@ -1595,6 +1618,7 @@ function pairRefusal(
          childKey: join.primaryKey as string,
          childSourceID: join.sourceID as string,
          parentRowColumn: PAIR_PARENT_ROW,
+         ...(oneParentLevels.length > 0 ? { oneParentLevels } : {}),
          ...(path.length > 1
             ? {
                  hops: path.slice(1).map((j, k) => ({

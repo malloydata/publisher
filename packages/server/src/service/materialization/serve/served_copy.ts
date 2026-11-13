@@ -206,6 +206,11 @@ export interface PairReroot {
     */
    levelRows?: readonly { column: ServedColumn; field: string }[];
    /**
+    * The plan's {@link MaterializePair.oneParentLevels}: the middle levels each
+    * of whose rows has one row of every level above it.
+    */
+   oneParentLevels?: readonly number[];
+   /**
     * For a table that stores more than one inlined path: which block this
     * served source reads, and the other blocks' records.
     */
