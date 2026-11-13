@@ -127,7 +127,7 @@ describe("versionAtLeast", () => {
 
 describe("joinRollupLegs", () => {
    const legsOf = (j: SourceJoin, p = plan(), filters = new Set<string>()) =>
-      joinRollupLegs([j], new Map([[CHILD, [p]]]), filters);
+      joinRollupLegs([j], new Map([[CHILD, [p]]]), filters, "id");
 
    it("offers a join keyed on one field each side, join_one at the key alone", () => {
       const [only] = legsOf(join());
@@ -143,7 +143,7 @@ describe("joinRollupLegs", () => {
    it("offers nothing for a join defined in place, a join_cross, or a source without rollups", () => {
       expect(legsOf(join({ sourceID: undefined }))).toEqual([]);
       expect(legsOf(join({ relationship: "cross" }))).toEqual([]);
-      expect(joinRollupLegs([join()], new Map(), new Set())).toEqual([]);
+      expect(joinRollupLegs([join()], new Map(), new Set(), "id")).toEqual([]);
    });
 
    it("refuses, with reasons, what the rollup's rows cannot stand in for", () => {
@@ -187,6 +187,29 @@ describe("joinRollupLegs", () => {
       expect(legsOf(join(), p)[0]?.refusal).toBeUndefined();
    });
 
+   it("refuses a join read as a join_many keyed on a field the query source does not keep unique", () => {
+      const fine = plan({ grainDimensions: ["flight_id", "kind"] });
+      const keyed = (j: SourceJoin, p: RollupVariantPlan, pk?: string) =>
+         joinRollupLegs([j], new Map([[CHILD, [p]]]), new Set(), pk)[0]
+            ?.refusal;
+      // A declared join_many keyed on the query source's primary key.
+      expect(keyed(join(), plan(), "id")).toBeUndefined();
+      expect(keyed(join(), fine, "id")).toBeUndefined();
+      // A declared join_many from a source without one, or keyed elsewhere.
+      expect(keyed(join(), plan(), undefined)?.code).toBe(
+         "rollup_count_semantics",
+      );
+      expect(keyed(join(), plan(), "seg_id")?.callerDetail).toContain(
+         "not the query source's primary key",
+      );
+      // A declared join_one at its key: many parents to one key is a join_one.
+      const one = join({ relationship: "one" });
+      expect(keyed(one, plan(), undefined)).toBeUndefined();
+      // A declared join_one re-pointed as a join_many at a finer grain.
+      expect(keyed(one, fine, undefined)?.code).toBe("rollup_count_semantics");
+      expect(keyed(one, fine, "id")).toBeUndefined();
+   });
+
    it("refuses a join another join's condition reads", () => {
       const other = join({
          name: "legs",
@@ -196,7 +219,7 @@ describe("joinRollupLegs", () => {
       const legs = joinRollupLegs(
          [join(), other],
          new Map([[CHILD, [plan()]]]),
-         new Set(),
+         new Set(), "id",
       );
       expect(legs[0]?.refusal?.code).toBe("rollup_count_semantics");
    });
@@ -208,12 +231,12 @@ describe("unmatchedRowProblem", () => {
    const many = joinRollupLegs(
       [join()],
       new Map([[CHILD, [plan()]]]),
-      new Set(),
+      new Set(), "id",
    )[0]!.leg;
    const one = joinRollupLegs(
       [join({ relationship: "one" })],
       new Map([[CHILD, [plan()]]]),
-      new Set(),
+      new Set(), "id",
    )[0]!.leg;
 
    it("before malloydata/malloy#3208: a join_many count and a non-column operand are declined", () => {
@@ -245,7 +268,7 @@ describe("unmatchedRowProblem", () => {
       const [{ leg }] = joinRollupLegs(
          [join()],
          new Map([[CHILD, [p]]]),
-         new Set(),
+         new Set(), "id",
       ) as [{ leg: Parameters<typeof unmatchedRowProblem>[0] }];
       const read = new Set(["seg_miles"]);
       const seen: (readonly string[])[] = [];
@@ -290,7 +313,7 @@ describe("checkJoinCoverage (row 27)", () => {
       fanOutDimensions: ["line_kind"],
    });
    const legOf = (p: RollupVariantPlan) =>
-      joinRollupLegs([join()], new Map([[CHILD, [p]]]), new Set())[0]!.leg;
+      joinRollupLegs([join()], new Map([[CHILD, [p]]]), new Set(), "id")[0]!.leg;
    const none = () => "none" as const;
    const miles = { name: "seg_miles", ref: ["segments", "seg_miles"] };
    const kind = { name: "line_kind", ref: ["segments", "line_kind"] };

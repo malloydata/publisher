@@ -667,6 +667,107 @@ describe("R4: join-to-rollup (A7) with fan-out grain dimensions and join-level m
    );
 });
 
+/**
+ * A join read as a join_many (declared one, or a declared join_one re-pointed
+ * as one at a grain finer than its key) assumes each joined row meets one
+ * parent row. Keyed on a field the query source does not keep unique (not
+ * its primary key), a rollup row meets several parent rows: a fact table's
+ * join_one to a dimension read at a finer grain, or a join_many from a source
+ * without a primary key. Live deduplicates or repeats at the joined row; the
+ * rollup row cannot, so the leg declines.
+ */
+describe("R4: join-to-rollup (A7) through a join keyed on a field the query source repeats", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `source: certs is duckdb.table('certs_raw') extend { primary_key: cert_id }
+source: crew is duckdb.table('crew_raw') extend {
+  primary_key: flight_id
+  join_many: certs on certs.flight_id = flight_id
+  dimension: cert_kind is certs.kind
+  #(preaggregate) grain=["flight_id"]
+  measure: crew_size is size.sum()
+  #(preaggregate) grain=["flight_id", "cert_kind"]
+  measure: crew_by_cert is size.sum()
+  #(preaggregate) grain=["flight_id", "duty_hours"]
+  measure: crew_by_hours is size.sum()
+}
+source: segments is duckdb.table('segs_raw') extend {
+  primary_key: seg_id
+  join_one: crew with flight_id
+  #(preaggregate) grain=["flight_id"]
+  measure: seg_miles is miles.sum()
+}
+source: legs is duckdb.table('legs_raw') extend {
+  join_many: segments on segments.flight_id = id
+  measure: leg_count is count()
+}
+`,
+         },
+         seedSql: [
+            ...seedSql,
+            `CREATE TABLE certs_raw AS SELECT * FROM (VALUES
+               (1, 1, 'pilot'), (2, 1, 'medic'), (3, 3, 'pilot'), (4, 5, NULL)
+             ) AS t(cert_id, flight_id, kind)`,
+            // Flight 1 flown as two legs; no primary key.
+            `CREATE TABLE legs_raw AS SELECT * FROM (VALUES
+               (1, 'AA'), (1, 'BB'), (2, 'AA'), (4, 'CC')
+             ) AS t(id, carrier)`,
+         ],
+         preaggregate: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   for (const [name, malloy] of [
+      [
+         "a fact's join_one to a dimension read at a finer grain",
+         "run: segments -> { aggregate: crew.crew_by_hours }",
+      ],
+      [
+         "a fact's join_one read at a finer grain, its fan-out dimension grouped",
+         "run: segments -> { group_by: crew.cert_kind; aggregate: crew.crew_by_cert }",
+      ],
+      [
+         "a fact's join_one read at a finer grain, its fan-out dimension fixed",
+         "run: segments -> { where: crew.cert_kind = 'pilot'; aggregate: crew.crew_by_cert }",
+      ],
+      [
+         "a join_many from a source without a primary key",
+         "run: legs -> { aggregate: segments.seg_miles, leg_count }",
+      ],
+      [
+         "a join_many from a source without a primary key, by its key",
+         "run: legs -> { group_by: id; aggregate: segments.seg_miles }",
+      ],
+   ] as const) {
+      it(`answers ${name} live`, async () => {
+         // Rows first: served from the rollup, these differ from live.
+         const run = await fixture.run({ name, malloy });
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         expect(run.servedBy?.kind).not.toBe("rollup");
+      });
+   }
+
+   it("serves a fact's join_one read at its key, many facts to one key", async () => {
+      expectServedFromRollup(
+         await fixture.run({
+            name: "join_one at its key",
+            malloy:
+               "run: segments -> { group_by: kind; aggregate: crew.crew_size }",
+         }),
+      );
+   });
+});
+
 describe("R4: join-to-rollup (A7) declines a joined source's rollup in a storage destination", () => {
    let restore: () => void;
    let fixture: R4Fixture;

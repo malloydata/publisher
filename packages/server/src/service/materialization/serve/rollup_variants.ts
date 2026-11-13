@@ -529,6 +529,7 @@ export class RollupVariantServe {
          filter === undefined || filter.nested
             ? new Set(joins.map((j) => j.name))
             : filter.joins,
+         primaryKeyOf(map.node(sourceID)?.def),
       );
       if (memo) {
          memo.joinLegs ??= new Map();
@@ -1404,6 +1405,12 @@ export function rollupSourceID(plan: RollupVariantPlan): string | undefined {
    const declared = splitSourceID(plan.baseSourceID);
    const companion = declared ? rollupCompanionURLOf(declared.url) : undefined;
    return companion ? `${plan.rollupSourceName}@${companion.href}` : undefined;
+}
+
+/** A source's declared primary key, if it has one. */
+function primaryKeyOf(def: unknown): string | undefined {
+   const key = (def as { primaryKey?: unknown } | undefined)?.primaryKey;
+   return typeof key === "string" ? key : undefined;
 }
 
 /** The author's source, imported for a join leg under this name. */

@@ -135,14 +135,15 @@ export interface JoinRollupRefusal {
 
 /**
  * The legs a join of the query's source offers: the join's rollups, each with
- * why it cannot be used, if it cannot. `filterReadsJoin` is whether the
- * source's own `where:` reads the join; `otherConditionsRead` the joins whose
- * conditions read another join.
+ * why it cannot be used, if it cannot. `sourceFilterReads` holds the joins
+ * the source's own `where:` reads; `parentPrimaryKey` is the query source's
+ * declared primary key, if it has one.
  */
 export function joinRollupLegs(
    joins: readonly SourceJoin[],
    plansByBase: ReadonlyMap<string, readonly RollupVariantPlan[]>,
    sourceFilterReads: ReadonlySet<string>,
+   parentPrimaryKey: string | undefined,
 ): { leg: JoinRollupLeg; refusal?: JoinRollupRefusal }[] {
    const out: { leg: JoinRollupLeg; refusal?: JoinRollupRefusal }[] = [];
    for (const join of joins) {
@@ -162,10 +163,41 @@ export function joinRollupLegs(
                   ? ("one" as const)
                   : ("many" as const),
          };
-         out.push({ leg, ...refusalOf(join, plan, joins, sourceFilterReads) });
+         out.push({
+            leg,
+            ...(leg.relationship === "many" || join.relationship === "many"
+               ? keyRepeatRefusal(join, parentPrimaryKey)
+               : {}),
+            // The condition's own refusal, when it has one, is the reason given.
+            ...refusalOf(join, plan, joins, sourceFilterReads),
+         });
       }
    }
    return out;
+}
+
+/**
+ * Why a join read as a join_many (declared one, or re-pointed as one at a
+ * grain finer than its key) cannot take the leg: its key on the query's side
+ * is not that source's primary key. A join_many is read as if each joined row
+ * met one parent row, so live sums a joined row once per parent row that
+ * meets it, and a declared join_one deduplicates at its joined row; a rollup
+ * row met by several parent rows sharing a key answers neither way. Keyed on
+ * the primary key, each rollup row meets one parent row.
+ */
+function keyRepeatRefusal(
+   join: SourceJoin,
+   parentPrimaryKey: string | undefined,
+): { refusal?: JoinRollupRefusal } {
+   if (join.baseKey === undefined || join.baseKey === parentPrimaryKey) {
+      return {};
+   }
+   return {
+      refusal: {
+         code: "rollup_count_semantics",
+         callerDetail: `\`${join.name}\` is keyed on \`${join.baseKey}\`, which is not the query source's primary key, so a row of its rollup could meet more than one of the source's rows`,
+      },
+   };
 }
 
 function refusalOf(
