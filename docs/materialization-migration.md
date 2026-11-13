@@ -19,27 +19,23 @@ rest is marked with the phase that brings it, so keep the v1 form until then.
 ## What is deprecated, and when
 
 Moving to `#(materialize)` is optional. `#@ persist` itself is not deprecated: a v1 package keeps its
-meaning, and `#@ persist` on a view stays the way to persist a view. Two v1 forms have no future in
-v2:
+meaning, and `#@ persist` on a view stays the way to persist a view. `#@ -persist` is not deprecated
+either: it is Malloy core's own opt-out, which Malloy's persistence documentation teaches, and
+Publisher keeps honouring it under `#(materialize)` too ([below](#persist-opt-out)). One v1 form has
+no future in v2:
 
-| v1 form           | Why                                                                          | v2 form                                      |
-| ----------------- | ---------------------------------------------------------------------------- | -------------------------------------------- |
-| `#@ -persist`     | A materialized source serves every reader, so there is nothing to opt out of | None. [Rewrite it](#persist-opt-out)         |
-| `#@ preaggregate` | Renamed onto the `#(…)` routes Publisher owns                                | [`#(preaggregate)`](#preaggregate) (phase 4) |
+| v1 form           | Why                                           | v2 form                                      |
+| ----------------- | --------------------------------------------- | -------------------------------------------- |
+| `#@ preaggregate` | Renamed onto the `#(…)` routes Publisher owns | [`#(preaggregate)`](#preaggregate) (phase 4) |
 
-Both follow the Publisher v1 plan's rule for a deprecated form: a package warning through 0.x,
-refused at 1.0.0, and the reader removed in 1.1. The warnings start in the release that ships v2's
-annotations:
-
-- `deprecated-persist-opt-out`, one per source that declares `#@ -persist`. Until that release it
-  shows only with `PUBLISHER_MATERIALIZE` on.
-- `deprecated-preaggregate-annotation`, one per measure that declares `#@ preaggregate`. Until that
-  release it shows only with `PUBLISHER_MATERIALIZE` on, where `#(preaggregate)` is read, built and
-  served. `#@ preaggregate` keeps working.
-
-Each names the source (`subject`) and the file that declares it (`model`). A source that extends or
-imports an annotated one is not reported again. Neither warning changes what the package builds or
-serves: an opted-out reader still recomputes live, and a rollup still builds and serves.
+It follows the Publisher v1 plan's rule for a deprecated form: a package warning through 0.x,
+refused at 1.0.0, and the reader removed in 1.1. Its warning, `deprecated-preaggregate-annotation`,
+comes one per measure that declares `#@ preaggregate`, naming the source (`subject`) and the file
+that declares it (`model`). It starts for everyone in the release that ships v2's annotations; until
+then it shows only with `PUBLISHER_MATERIALIZE` on, where `#(preaggregate)` is read, built and
+served. A source that extends or imports an annotated one is not reported again. The warning does
+not change what the package builds or serves: `#@ preaggregate` keeps working, and a rollup still
+builds and serves.
 
 ## What changes when you move
 
@@ -266,9 +262,11 @@ storing gated sources' columns in the managed tier.
 
 ### `#@ -persist`
 
-**Deprecated, and has no v2 form.** In v1 it opts a reader of a persisted source out of the table,
-so the reader recomputes. In v2 a materialized source serves every use. To keep a reader live, base
-the reader on a source with no annotation, and materialize a separate source that reads the same one.
+**Supported, with no rewrite.** `#@ -persist` is Malloy core's opt-out: on a reader of a persisted
+source, it makes the reader recompute rather than read the table. Keep it when you move the source
+it reads to `#(materialize)`: a materialized source serves every reader except one that opts out
+this way. The opted-out reader, and any source built on it, recomputes live, and the served copy
+declines it (its path report's skip carries the code `persist-opt-out`).
 
 ```malloy
 // v1
@@ -278,17 +276,16 @@ source: order_summary is raw_orders -> { group_by: region; aggregate: total is a
 #@ -persist
 source: summary_fresh is order_summary extend { dimension: r2 is region }
 
-// v2
-source: summary_live is raw_orders -> { group_by: region; aggregate: total is amount.sum() }
-
+// v2: only the persisted source's annotation changes
 #(materialize) name="order_summary" storage="lake"
-source: order_summary is summary_live
+source: order_summary is raw_orders -> { group_by: region; aggregate: total is amount.sum() }
 
-source: summary_fresh is summary_live extend { dimension: r2 is region }
+#@ -persist
+source: summary_fresh is order_summary extend { dimension: r2 is region }
 ```
 
 **Works**, with `storage=`: `order_summary` is answered from its table, and `summary_fresh` from the
-warehouse. Callers keep the same source names.
+warehouse.
 
 <a id="preaggregate"></a>
 
@@ -357,7 +354,7 @@ it. The build plan, the manifest and reuse all key on it.
 - **Set the switch the same on every worker.** `PUBLISHER_MATERIALIZE` and
   `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` are read at startup. Workers that disagree plan
   different sources or compute different addresses for one source.
-- **Read warning codes as open strings.** This page adds `deprecated-persist-opt-out`, and reserves
+- **Read warning codes as open strings.** This page reserves
   `deprecated-preaggregate-annotation` (with the switch on), beside `materialize-not-built`,
   `served-copy-not-served`, `materialization-destination-missing` and
   `materialization-connection-cannot-hold-table`. None is an error, and the package loads.

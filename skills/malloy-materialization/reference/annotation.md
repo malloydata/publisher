@@ -39,7 +39,7 @@ A persist source's identity is its **`sourceEntityId`**: a content address of it
 
 - **An `extend` of a persisted source reads the stored table** and is not a build target of its own: it inherits the parent's tag and the same address, so the two names are one table. To make a distinct non-persisted intermediate, pipe first: `base -> { select: * } extend { ... }`.
 - **A query over a persisted source** (`orders is _orders_fact -> { select: * }`, the private-fact / public-wrapper idiom) reads the table too, with the fact's `extend`-block filters applied per caller, and is not a build target.
-- **`#@ -persist`** on an extension opts it out: it recomputes from raw on every query and never reads the table. Reach for it when a reader must not see stale rows, and remember it forgoes exactly the work persistence was there to save.
+- **`#@ -persist`** on an extension opts it out: it recomputes from raw on every query and never reads the table. Reach for it when a reader must not see stale rows, and remember it forgoes exactly the work persistence was there to save. It is Malloy core's own opt-out, not a Publisher extension, and it stays supported: it is not deprecated, and the in-development `#(materialize)` path honours it the same way.
 - Which queries over a reader route to the table is decided per query - a join to a non-persisted source or a nested column serves live for the queries that touch it (`reference/storage.md`).
 
 ## Every option
