@@ -22,6 +22,7 @@
 import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
 import {
    fieldJoinUsage,
+   filterJoinReads,
    inferredExtendedSource,
    joinedSourceReads,
    nextSourceInChain,
@@ -220,6 +221,11 @@ export class SourceMap {
       });
    }
 
+   /** The compiled model this map was built from. */
+   model(): unknown {
+      return this.modelDef;
+   }
+
    /** The node for a declaration. */
    node(sourceID: string): SourceNode | undefined {
       return this.nodesById.get(sourceID);
@@ -247,6 +253,15 @@ export class SourceMap {
    fieldJoinsOf(sourceID: string): Map<string, FieldJoinReads | undefined> {
       const node = this.nodesById.get(sourceID);
       return node ? fieldJoinUsage(node.def) : new Map();
+   }
+
+   /**
+    * The joins a declaration's own `where:` reads (see {@link filterJoinReads});
+    * undefined when unknown.
+    */
+   filterJoinsOf(sourceID: string): FieldJoinReads | undefined {
+      const node = this.nodesById.get(sourceID);
+      return node ? filterJoinReads(node.def) : undefined;
    }
 
    /**

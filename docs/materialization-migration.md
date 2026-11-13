@@ -94,11 +94,12 @@ is Publisher's, and the existing checks refuse two sources that land on one tabl
 
 ### Colocated: build into the source's own warehouse
 
-**Not built yet.** A `#(materialize)` source without `storage=` is not built until the served copy
-can serve it, in phase 3's pull request 6 (the v1 cutover). Until then it gets a
-`materialize-not-built` warning ("colocated #(materialize) is not served yet; use storage= or
-#@ persist") and its queries are answered live from its warehouse. Keep the v1 form, or use
-`storage=`, for anything that needs a table now.
+**Works.** A `#(materialize)` source without `storage=` is built into its own warehouse, and the
+served copy answers it from that table on the source's own connection, with everything it does for
+`storage=` (stored computed dimensions, `inline=`, private and internal fields, terms re-applied at
+read, extension tables, gates). It needs `PUBLISHER_MATERIALIZE` only, not a storage tier. A column
+whose type the served copy cannot declare as stored (a `timestamptz`, a `json` or driver-specific
+type, or a nest outside DuckDB) leaves that source answered live.
 
 ```malloy
 // v1
@@ -216,8 +217,10 @@ source: scoped is raw extend { where: org_id = $ORG_ID }
 ```
 
 The gates v1 applies to a given still apply, because the generated build source is judged like any
-`#@ persist` source: a given in a declared `dimension:` or `measure:`, or in a join's `on:`, is
-refused, and the source serves live.
+`#@ persist` source. A dimension that reads a given is left out of the build and computed at read, and
+a given-reading `where:` on a base the source extends in the same file is left out of the build and
+re-applied at read too, unlike v1, which refuses a given there
+([materialization.md](materialization.md#the-served-copy-in-development-publisher_materialize)).
 
 ### A rolling window: a current-time `where:`
 
@@ -317,7 +320,6 @@ Each of these is a later pull request. The warning text names the reason when it
 
 | v2 form                                                                        | Status                                                               |
 | ------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
-| Building and serving a colocated `#(materialize)` table                        | Phase 3. Not built; `materialize-not-built`, answered live           |
 | `inline=` on a join_many or join_cross                                         | Phase 4. Not built; `materialize-not-built`                          |
 | The `name=` view, and a materialized extension built from its parent's table   | Phase 3                                                              |
 | A stored computed dimension under a query's own `timezone:`                    | Answered live today, since the build computed it in the default zone |

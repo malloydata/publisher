@@ -5,7 +5,9 @@ import type { QueryMaterializer, VirtualMap } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
 import type { BuildManifest } from "./materialization/types";
+import type { GraftScope } from "./gate_classification";
 import type { RouteDecision } from "./query_router";
+import { installSettings } from "../test_helpers/settings_env";
 import {
    answeredWith,
    buildManifestFor,
@@ -13,6 +15,8 @@ import {
    LIVE_ANSWER,
    liveFallbackAnswer,
    recordingManifest,
+   routeCandidates,
+   type QueryServingHost,
    type RoutedExtra,
    routedAnswer,
    servedFromOf,
@@ -262,5 +266,53 @@ describe("recordingManifest", () => {
 
    it("is undefined for no manifest", () => {
       expect(recordingManifest(undefined, new Set())).toBeUndefined();
+   });
+});
+
+describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)", () => {
+   const host = {
+      modelPath: "m.malloy",
+      rollupVariants: {},
+      persistedViews: {},
+   } as unknown as QueryServingHost;
+   const rollupCandidate = () =>
+      routeCandidates(host, {
+         queryString: "run: orders -> { aggregate: total }",
+         surfaceGivens: undefined,
+         buildManifest: undefined,
+         storageRoutingPossible: false,
+         servedCopyPossible: false,
+         preaggServeMaterializer: undefined,
+         rollupVariantsFor: runnable,
+      }).find((c) => c.kind === "rollup");
+
+   for (const on of [true, false]) {
+      it(`keeps the contracts only with gated sources on (${on ? "on" : "off"})`, () => {
+         const { restore } = installSettings({
+            env: {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: on ? "true" : "false",
+            },
+         });
+         try {
+            expect(rollupCandidate()?.keepsContracts).toBe(on);
+         } finally {
+            restore();
+         }
+      });
+   }
+
+   it("carries the variant's graft scope into the answer, for govern()", () => {
+      const graftScope = { cacheScope: "rollup" } as unknown as GraftScope;
+      const answer = routedAnswer({
+         served: "variant",
+         kind: "rollup",
+         runnable,
+         extra: { kind: "rollup", resolvedMember: "r", graftScope },
+         considered: [],
+         pastEntryPointGate: true,
+      });
+      expect(answer.graftScope).toBe(graftScope);
+      expect(answer.pastEntryPointGate).toBe(true);
    });
 });

@@ -137,6 +137,13 @@ export type RoutedExtra =
         virtualMap?: VirtualMap;
         /** A `#(preaggregate) storage=` rollup: its binding. */
         binding?: ServeBinding;
+        /**
+         * A `#(preaggregate)` rollup's graft scope, for `govern()` (R3): the
+         * variant that redeclares the run target over the rollup, gates
+         * included. Absent for a v1 `#@ preaggregate` rollup, which no gated
+         * entry point reaches.
+         */
+        graftScope?: GraftScope;
      };
 
 /**
@@ -161,7 +168,7 @@ export interface Answer {
    readonly storageTablesRead: readonly ServeBinding[] | undefined;
    /** For a storage answer: `served_copy` when the served copy on `virtual` answered rather than the serve shape. */
    readonly via: "served_copy" | undefined;
-   /** For a served-copy answer: where `govern()` grafts a row-level gate (R3). */
+   /** For a served-copy, persisted-view or rollup answer: where `govern()` grafts a row-level gate (R3). */
    readonly graftScope: GraftScope | undefined;
    /**
     * The answering variant was let past an entry-point gate because it keeps
@@ -235,6 +242,7 @@ export function routedAnswer(route: RouteDecision<RoutedExtra>): Answer {
       tier: "rollup",
       routedRunnable: route.runnable,
       rollupMember: route.extra.resolvedMember,
+      graftScope: route.extra.graftScope,
       // A stored rollup reads through `virtual()`; a run failure on it may
       // degrade to live, since a rollup only accelerates (its binding's
       // `preaggregate` origin never vetoes).
@@ -269,6 +277,17 @@ export function answeredWith(
  */
 export function servedFromOf(answer: Answer): ServedFrom | undefined {
    if (answer.runFailed) return "live_fallback";
+   // A served-copy answer that read only colocated `#(materialize)` tables
+   // read the source's own warehouse, as a colocated `#@ persist` answer
+   // does, which reports no storage hit; its path report names the table.
+   if (
+      answer.tier === "storage" &&
+      answer.storageTablesRead !== undefined &&
+      answer.storageTablesRead.length > 0 &&
+      answer.storageTablesRead.every((b) => b.colocated)
+   ) {
+      return undefined;
+   }
    // A `storage=` persisted view or `#(preaggregate)` rollup reads the
    // storage tier too, through `virtual()`.
    return answer.tier === "storage" ||
@@ -568,6 +587,12 @@ export function routeCandidates(
       candidates.push({
          kind: "rollup",
          applicable: true,
+         // R3 for rollups, behind the served copy's switch: the run target is
+         // redeclared over the rollup with its gates, proven exact on the
+         // rollup before it is used (RollupVariantServe), then grafted and
+         // re-proven by `govern()`. A `storage=` rollup over a gated base
+         // waits for question 14's review (rollupsServeGatedBases).
+         keepsContracts: getMaterializeGatedSources(),
          attempt: async () => {
             const answer = await host.rollupVariants.attempt({
                queryString,
@@ -580,6 +605,9 @@ export function routeCandidates(
                extra: {
                   kind: "rollup",
                   resolvedMember: answer.rollupSourceName,
+                  ...(answer.graftScope
+                     ? { graftScope: answer.graftScope }
+                     : {}),
                   ...(answer.virtualMap
                      ? { virtualMap: answer.virtualMap }
                      : {}),
@@ -873,6 +901,7 @@ export async function queryPathFor(
          origin: b.origin,
          tablePath: b.tablePath,
          freshAsOf: b.freshAsOf,
+         ...(b.colocated ? { colocated: true as const } : {}),
       });
       const published = args.includeHidden ? undefined : host.publishedNames();
       return buildQueryPath({
@@ -919,6 +948,14 @@ export async function queryPathFor(
          colocatedRead: answer.colocatedRead,
          ...(viewTable ? { view: viewTable } : {}),
          ...(answer.rollupMember ? { rollupMember: answer.rollupMember } : {}),
+         ...(variantRollups.length > 0
+            ? {
+                 joinedRollupBases: host.rollupVariants.joinedRollupBaseIDs(
+                    struct,
+                    prepared,
+                 ),
+              }
+            : {}),
          chains: host.sourceChains(),
          // The discovery surface: a name the caller cannot list is never
          // named, unless the caller may see hidden sources.

@@ -12,6 +12,8 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as path from "path";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
@@ -41,7 +43,7 @@ const seedSql = [
 
 /** `#(preaggregate)` lines, colocated or into the scenario's destination. */
 function model(placement: string): string {
-   return `##! experimental.givens
+   return `##! experimental { givens sql_functions }
 given: MIN_AMOUNT :: number is 0
 
 source: carriers is duckdb.table('carriers_raw') extend { primary_key: code }
@@ -71,7 +73,52 @@ source: orders is duckdb.table('orders_raw') extend {
   measure: fleet_by_category is carriers.fleet.sum()
   #(preaggregate) grain=["category", "line_kind"]${placement}
   measure: line_total is amount.sum()
+  #(preaggregate) grain=["carrier", "category"]${placement}
+  measure: top_fleet is carriers.fleet.max()
+  #(preaggregate) grain=["carrier", "category"]${placement}
+  measure: low_fleet is carriers.fleet.min()
   view: by_category is { group_by: category; aggregate: total }
+  # bar_chart
+  view: by_day is {
+    group_by: order_day
+    aggregate: total
+    order_by: order_day desc
+  }
+  view: categories_by_day is { group_by: category; nest: by_day }
+  view: by_region is { group_by: region; aggregate: total }
+  view: counted is { group_by: category; aggregate: c is count() }
+  view: east_by_sql is {
+    where: sql_boolean("\${TABLE}.region = 'east'")
+    group_by: category
+    aggregate: total
+  }
+}
+
+// Extensions of orders (row 22): what each adds decides whether orders's
+// rollups answer for it.
+source: orders_ext is orders extend {
+  dimension:
+    cat_lower is lower(category)
+    cat_tag is concat(cat_lower, '!')
+    region_lower is lower(region)
+  measure: double_total is total * 2
+  view: by_lower is { group_by: cat_lower; aggregate: total }
+}
+source: orders_alias is orders
+source: orders_east is orders extend { where: region = 'east' }
+source: orders_west_coast is orders extend { timezone: 'America/Los_Angeles' }
+// Each binds a name the base's stored fields read to another field: the
+// rollup stores them as the base defines them.
+source: orders_region_rebound is orders extend {
+  rename: region_was is region
+  dimension: region is 'east'
+}
+source: orders_amount_rebound is orders extend {
+  rename: amount_was is amount
+  dimension: amount is 1.0
+}
+source: orders_raw_sql is orders extend {
+  dimension: region_sql is sql_string("lower(\${TABLE}.region)")
 }
 `;
 }
@@ -167,6 +214,64 @@ const SERVED = [
       "a calculate: over a fan-out measure with its dimension grouped (A6)",
       "run: orders -> { group_by: category, line_kind; calculate: prev is lag(line_total); order_by: category, line_kind }",
    ],
+   [
+      "a join-level max and min keyed in the grain (row 23)",
+      "run: orders -> { group_by: category; aggregate: top_fleet, low_fleet }",
+   ],
+   [
+      "a join-level max across its other grain dimension (row 23: max is the same over repeats)",
+      "run: orders -> { aggregate: top_fleet, low_fleet }",
+   ],
+   [
+      "a join-level max grouped by its key alone (row 23)",
+      "run: orders -> { group_by: carrier; aggregate: top_fleet }",
+   ],
+   ["a named view (row 11)", "run: orders -> by_category"],
+   [
+      "a named view with its own ordering and notes (row 11)",
+      "run: orders -> by_day",
+   ],
+   [
+      "a named view that nests a named view (row 11)",
+      "run: orders -> categories_by_day",
+   ],
+   [
+      "a named view refined (row 11)",
+      "run: orders -> by_category + { where: category = 'A' }",
+   ],
+   [
+      "a query that starts from a named view (row 11)",
+      "run: orders -> by_category -> { group_by: big is total > 20; aggregate: n is count() }",
+   ],
+   [
+      "a named view nested in the query (row 11)",
+      "run: orders -> { group_by: category; nest: by_day }",
+   ],
+   [
+      "an extension's dimension over the grain (row 22)",
+      "run: orders_ext -> { group_by: cat_lower; aggregate: total }",
+   ],
+   [
+      "an extension's dimension over its own dimension (row 22)",
+      "run: orders_ext -> { group_by: cat_tag; aggregate: total, order_count }",
+   ],
+   [
+      "a filter on an extension's dimension (row 22)",
+      "run: orders_ext -> { where: cat_lower = 'a'; aggregate: total }",
+   ],
+   [
+      "a grain dimension and stored measure through an extension (row 22)",
+      "run: orders_ext -> { group_by: category; aggregate: total }",
+   ],
+   ["an extension's own view (rows 11 and 22)", "run: orders_ext -> by_lower"],
+   [
+      "the base's view through an extension (rows 11 and 22)",
+      "run: orders_ext -> by_category",
+   ],
+   [
+      "a rename of the base (row 22)",
+      "run: orders_alias -> { group_by: category; aggregate: total }",
+   ],
 ] as const;
 
 const LIVE = [
@@ -226,9 +331,54 @@ const LIVE = [
       "COUNT_SEMANTICS",
    ],
    [
-      "a named view, which the rollup does not carry",
-      "run: orders -> by_category",
+      "a named view that groups outside the grain (row 11)",
+      "run: orders -> by_region",
+      "GRAIN_TOO_COARSE",
+   ],
+   [
+      "a named view that counts rows itself (row 11)",
+      "run: orders -> counted",
+      "COUNT_SEMANTICS",
+   ],
+   [
+      "an extension's dimension over a field outside the grain (row 22)",
+      "run: orders_ext -> { group_by: region_lower; aggregate: total }",
+      "GRAIN_TOO_COARSE",
+   ],
+   [
+      "an extension's own measure (row 22)",
+      "run: orders_ext -> { aggregate: double_total }",
       "MISSING_FIELD",
+   ],
+   [
+      "an extension that filters its rows (row 22)",
+      "run: orders_east -> { group_by: category; aggregate: total }",
+      "GRAIN_TOO_COARSE",
+   ],
+   [
+      "an extension that binds a name a stored filtered measure reads to another field (row 22)",
+      "run: orders_region_rebound -> { group_by: category; aggregate: east_total }",
+      "MISSING_FIELD",
+   ],
+   [
+      "an extension that binds a name a stored sum reads to another field (row 22)",
+      "run: orders_amount_rebound -> { group_by: category; aggregate: total }",
+      "MISSING_FIELD",
+   ],
+   [
+      "an extension's dimension written in raw SQL (row 22)",
+      "run: orders_raw_sql -> { group_by: region_sql; aggregate: total }",
+      "GRAIN_TOO_COARSE",
+   ],
+   [
+      "a named view that filters in raw SQL (row 11)",
+      "run: orders -> east_by_sql",
+      "MISSING_FIELD",
+   ],
+   [
+      "an extension in its own time zone (row 22)",
+      "run: orders_west_coast -> { group_by: order_day; aggregate: total }",
+      "TIME_ZONE",
    ],
    [
       "a query in its own time zone (A5)",
@@ -496,6 +646,17 @@ source: orders is duckdb.table('orders_raw') extend {
   #(preaggregate) grain=["category", "region"]
   measure: total is amount.sum()
 }
+source: open is duckdb.table('orders_raw') extend {
+  #(preaggregate) grain=["category"]
+  measure: total is amount.sum()
+}
+// An ungated base, read through a gated extension.
+source: base is duckdb.table('orders_raw') extend {
+  #(preaggregate) grain=["category", "region"]
+  measure: base_total is amount.sum()
+}
+#(access_filter) region = $REGION
+source: mine is base extend {}
 `,
          },
          seedSql,
@@ -522,6 +683,38 @@ source: orders is duckdb.table('orders_raw') extend {
          ]),
       );
    });
+
+   it("builds no rollup over the gated source, though its grain keeps the gate's field (row 21)", () => {
+      const built = Object.keys(fixture.rollupTables);
+      expect(built.filter((n) => n.startsWith("orders__rollup__"))).toEqual([]);
+      // The ungated sources' rollups are still built.
+      expect(built.some((n) => n.startsWith("open__rollup__"))).toBe(true);
+      expect(built.some((n) => n.startsWith("base__rollup__"))).toBe(true);
+   });
+
+   it("answers a gated extension of an ungated base live, with CONTRACT (row 22)", async () => {
+      const malloy =
+         "run: mine -> { group_by: category; aggregate: base_total }";
+      const run = await fixture.run({
+         name: "gated extension",
+         malloy,
+         givens: { REGION: "east" },
+      });
+      expectLive(run);
+      expect(run.live).toEqual(
+         expect.arrayContaining([
+            expect.objectContaining({ category: "A", base_total: 10 }),
+         ]),
+      );
+      // The base itself, ungated, reads its rollup.
+      expectServedFromRollup(
+         await fixture.run({
+            name: "the ungated base",
+            malloy:
+               "run: base -> { group_by: category; aggregate: base_total }",
+         }),
+      );
+   });
 });
 
 describe("R4: a #(preaggregate) rollup under #(authorize)", () => {
@@ -537,6 +730,10 @@ describe("R4: a #(preaggregate) rollup under #(authorize)", () => {
 given: ROLE :: string is 'viewer'
 #(authorize) 'admin' = $ROLE
 source: orders is duckdb.table('orders_raw') extend {
+  #(preaggregate) grain=["category"]
+  measure: total is amount.sum()
+}
+source: open is duckdb.table('orders_raw') extend {
   #(preaggregate) grain=["category"]
   measure: total is amount.sum()
 }
@@ -559,6 +756,12 @@ source: orders is duckdb.table('orders_raw') extend {
             givens: { ROLE: "viewer" },
          }),
       ).rejects.toThrow();
+   });
+
+   it("builds no rollup over the gated source (row 21)", () => {
+      const built = Object.keys(fixture.rollupTables);
+      expect(built.filter((n) => n.startsWith("orders__rollup__"))).toEqual([]);
+      expect(built.some((n) => n.startsWith("open__rollup__"))).toBe(true);
    });
 
    it("answers an admitted caller live, never from the rollup (CONTRACT)", async () => {
@@ -637,5 +840,190 @@ source: orders is duckdb.table('orders_raw') extend {
                "run: orders -> { group_by: category; aggregate: all_total }",
          }),
       );
+   });
+});
+
+describe("R4: a join-level max and min over a rollup, with NULLs and empty groups (row 23)", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   // Category C's only carrier matches no carrier row, D's carrier is NULL,
+   // and carrier BB's fleet is NULL: each live max or min there is NULL.
+   const seed = [
+      `CREATE TABLE orders_raw AS SELECT * FROM (VALUES
+         (1, 10.0, 'A', 'AA'), (2, 20.0, 'A', 'BB'), (3, 30.0, 'B', 'AA'),
+         (4, 5.0, 'B', 'CC'), (5, 12.5, 'C', 'ZZ'), (6, 1.0, 'D', NULL)
+       ) AS t(id, amount, category, carrier)`,
+      `CREATE TABLE carriers_raw AS SELECT * FROM (VALUES
+         ('AA', 5), ('BB', NULL), ('CC', 11)
+       ) AS t(code, fleet)`,
+   ];
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `source: carriers is duckdb.table('carriers_raw') extend { primary_key: code }
+source: orders is duckdb.table('orders_raw') extend {
+  primary_key: id
+  join_one: carriers with carrier
+  #(preaggregate) grain=["carrier", "category"]
+  measure: top_fleet is carriers.fleet.max()
+  #(preaggregate) grain=["carrier", "category"]
+  measure: low_fleet is carriers.fleet.min()
+  #(preaggregate) grain=["carrier", "category"]
+  measure: spread is coalesce(carriers.fleet.max() - carriers.fleet.min(), -1)
+}
+`,
+         },
+         seedSql: seed,
+         preaggregate: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("serves each group's max and min, NULL where live is NULL", async () => {
+      const run = await fixture.run({
+         name: "by category",
+         malloy:
+            "run: orders -> { group_by: category; aggregate: top_fleet, low_fleet, spread; order_by: category }",
+      });
+      expectServedFromRollup(run);
+      expect(run.served).toEqual([
+         { category: "A", top_fleet: 5, low_fleet: 5, spread: 0 },
+         { category: "B", top_fleet: 11, low_fleet: 5, spread: 6 },
+         { category: "C", top_fleet: null, low_fleet: null, spread: -1 },
+         { category: "D", top_fleet: null, low_fleet: null, spread: -1 },
+      ]);
+   });
+
+   it("serves a grand total, a key grouped, and a NULL key, equal to live", async () => {
+      for (const malloy of [
+         "run: orders -> { aggregate: top_fleet, low_fleet, spread }",
+         "run: orders -> { group_by: carrier; aggregate: top_fleet, low_fleet }",
+         "run: orders -> { where: carrier = null; aggregate: top_fleet }",
+      ]) {
+         expectServedFromRollup(await fixture.run({ name: malloy, malloy }));
+      }
+   });
+
+   it("serves an empty group as live does: NULL, not zero", async () => {
+      const run = await fixture.run({
+         name: "empty",
+         malloy:
+            "run: orders -> { where: category = 'Z'; aggregate: top_fleet, low_fleet, spread }",
+      });
+      expectServedFromRollup(run);
+      expect(run.served).toEqual([
+         { top_fleet: null, low_fleet: null, spread: -1 },
+      ]);
+   });
+});
+
+describe("R4: a persisted view of the name answers before a rollup (R1, row 11)", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `##! experimental.persistence
+source: orders is duckdb.table('orders_raw') extend {
+  #(preaggregate) grain=["category"]
+  measure: total is amount.sum()
+  #@ persist storage="${DESTINATION}"
+  view: by_category is { group_by: category; aggregate: total }
+  view: by_category_too is { group_by: category; aggregate: total }
+}
+`,
+         },
+         seedSql,
+         preaggregate: true,
+         persistedViews: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("answers the persisted view's call from its own table", async () => {
+      const run = await fixture.run({
+         name: "persisted",
+         malloy: "run: orders -> by_category",
+      });
+      expect(run.servedBy?.kind).toBe("view");
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+
+   it("answers a view that is not persisted from the rollup", async () => {
+      expectServedFromRollup(
+         await fixture.run({
+            name: "not persisted",
+            malloy: "run: orders -> by_category_too",
+         }),
+      );
+   });
+});
+
+describe("R4: a named view whose file changed since the model compiled (row 11)", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `source: orders is duckdb.table('orders_raw') extend {
+  #(preaggregate) grain=["category"]
+  measure: total is amount.sum()
+  #(preaggregate) grain=["category"]
+  measure: east_ is amount.sum() { where: region = 'east' }
+  view: by_category is { group_by: category; aggregate: total }
+}
+`,
+         },
+         seedSql,
+         preaggregate: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("answers live, never the view as the file now reads", async () => {
+      // An edit not yet reloaded: the served model still runs \`total\`.
+      const file = path.join(fixture.packagePath, "m.malloy");
+      fs.writeFileSync(
+         file,
+         fs
+            .readFileSync(file, "utf8")
+            .replace(
+               "group_by: category; aggregate: total }",
+               "group_by: category; aggregate: east_ }",
+            ),
+      );
+      const malloy = "run: orders -> by_category";
+      const run = await fixture.run({ name: "stale view", malloy });
+      expectLive(run);
+      expect(run.live).toEqual(
+         expect.arrayContaining([
+            expect.objectContaining({ category: "A", total: 30 }),
+         ]),
+      );
+      fixture.setBindings(fixture.bindings);
+      const { path: report } = await fixture.runAsIs(malloy);
+      expect(
+         report?.considered
+            .filter((c) => c.kind === "rollup")
+            .map((c) => c.reason),
+      ).toContain("MISSING_FIELD");
    });
 });
