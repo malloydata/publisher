@@ -42,6 +42,7 @@ import {
 } from "./materialization_serve_transform";
 import { declarationSpans, topLevelTokens } from "../declaration_text";
 import { isName, lexAll, offsetOf, statementStarts } from "../malloy_lexer";
+import { definitionCutAt } from "../plan/cross_connection_joins";
 
 export { declarationSpans };
 
@@ -101,6 +102,12 @@ export interface Reroot {
     * ({@link PairReroot}).
     */
    pair?: PairReroot;
+   /**
+    * For a `#(materialize)` re-root: the join_ones it inlines (`inline=`),
+    * each answered from its stored `<join>__<field>` columns with no join at
+    * read ({@link InlinedJoin}).
+    */
+   inlinedJoins?: readonly InlinedJoin[];
 }
 
 /**
@@ -150,6 +157,32 @@ export interface PairReroot {
  * child columns.
  */
 export type JoinedColumn = ServedColumn & { column: string };
+
+/**
+ * An inlined join_one in the served copy. Its definition is taken out of the
+ * re-rooted source's own text and a dimension of the join's name takes its
+ * place: a record of the joined source's stored fields, each reading its
+ * `<join>__<field>` column (renamed internally, so only the record shows
+ * them). `j.field` in a caller's query, a view or a gate compiles unchanged
+ * and reads the column, with no join in the SQL; an unmatched row reads
+ * nulls, as live's LEFT JOIN does. What the record cannot answer fails to
+ * compile (a measure, view or join of the joined source: no such field) or is
+ * declined at read (an aggregate at the join's grain, which a record would
+ * compute per row), and is answered live.
+ */
+export interface InlinedJoin {
+   /** The join's name on the re-rooted source. */
+   join: string;
+   /** The joined source's stored fields. */
+   columns: readonly JoinedColumn[];
+   /**
+    * The joined fields the author annotated. Their notes are on the stored
+    * columns, so the record's fields keep their class, but a result column
+    * that is one of them comes back without them; such a query is answered
+    * live (governance/ir/joined_field_output.ts).
+    */
+   annotatedFields?: readonly string[];
+}
 
 /** One measure a pair table's served source re-declares over its parent rows. */
 export interface PairMeasure {
@@ -414,6 +447,7 @@ export function rerootDeclaration(
       | "reservedNames"
       | "readTimeTerms"
       | "pair"
+      | "inlinedJoins"
    > & { columns?: Reroot["columns"] },
 ): string | undefined {
    const spans = declarationSpans(declaration);
@@ -422,15 +456,40 @@ export function rerootDeclaration(
       `${identifier(r.connectionAlias)}.virtual(${stringLiteral(r.virtualHandle)})` +
       `::${identifier(r.typeName)}`;
    const name = declaration.slice(0, spans.nameEnd).trimEnd();
+   const inlined = r.inlinedJoins ?? [];
+   // No stored timeframe column is renamed to an inlined join's column.
+   const reserved = [
+      ...(r.reservedNames ?? []),
+      ...inlined.flatMap((j) => j.columns.map((c) => c.column)),
+   ];
    let extend = servedExtend(
       spans.extendStart === undefined
          ? ""
          : declaration.slice(spans.extendStart).trimEnd(),
       r.columns ?? [],
       r.storedDimensions,
-      r.reservedNames ?? [],
+      reserved,
    );
    if (extend === undefined) return undefined;
+   if (inlined.length > 0) {
+      for (const j of inlined) {
+         const dropped = dropJoinDefinition(extend, j.join);
+         if (dropped === undefined) return undefined;
+         extend = dropped;
+      }
+      const opened = intoFirstExtend(
+         extend,
+         inlinedJoinStatements(inlined, [
+            ...(r.reservedNames ?? []),
+            ...(r.columns ?? []).map((c) => c.name),
+            ...timeframedColumns(r.columns ?? [], reserved).map(
+               (c) => c.internalName,
+            ),
+         ]),
+      );
+      if (opened === undefined) return undefined;
+      extend = opened;
+   }
    let pairHead = "";
    if (r.pair) {
       const replaced = replacePairJoin(extend, r.pair.join, pairRecord(r.pair));
@@ -714,6 +773,91 @@ function timeframeStatements(
 }
 
 /**
+ * The statements that replace inlined joins: each stored `<join>__<field>`
+ * column renamed internally (to a name none of `reserved` and no stored
+ * column has), and per join a dimension of the join's name, a record of the
+ * joined source's fields over those columns, a timeframe field truncated
+ * again as {@link timeframeStatements} does for the source's own.
+ */
+function inlinedJoinStatements(
+   inlined: readonly InlinedJoin[],
+   reserved: readonly string[],
+): string {
+   const taken = new Set([
+      ...reserved,
+      ...inlined.flatMap((j) => j.columns.map((c) => c.column)),
+   ]);
+   const internalOf = new Map<string, string>();
+   for (const j of inlined) {
+      for (const c of j.columns) {
+         let internal = `${c.column}__stored`;
+         for (let n = 2; taken.has(internal); n++) {
+            internal = `${c.column}__stored_${n}`;
+         }
+         taken.add(internal);
+         internalOf.set(c.column, internal);
+      }
+   }
+   const renames = [...internalOf]
+      .map(
+         ([column, internal]) =>
+            `    ${identifier(internal)} is ${identifier(column)}`,
+      )
+      .join("\n");
+   // malloy-text: names through identifier and a timeframe from TIMEFRAMES
+   const records = inlined
+      .map((j) => {
+         const fields = j.columns
+            .map((c) => {
+               const internal = identifier(internalOf.get(c.column) as string);
+               const read =
+                  c.timeframe && TIMEFRAMES.has(c.timeframe)
+                     ? `${internal}.${c.timeframe}`
+                     : internal;
+               return `      ${identifier(c.name)} is ${read}`;
+            })
+            .join(",\n");
+         return `    ${identifier(j.join)} is {\n${fields}\n    }`;
+      })
+      .join("\n");
+   return `\n  internal rename:\n${renames}\n  dimension:\n${records}`;
+}
+
+/** The access modifiers a statement can open with. */
+const ACCESS_WORDS = new Set(["public", "private", "internal"]);
+
+/**
+ * A run of `extend { … }` blocks with the join_one named `join` taken out:
+ * its definition, with the annotation lines written on it, or its whole
+ * statement when it is the statement's only definition. The text unchanged
+ * when it declares no such join (one inherited from a base the re-root
+ * replaces is not in it); undefined when the text does not lex, or the name
+ * is defined there by another kind of join.
+ */
+export function dropJoinDefinition(
+   text: string,
+   join: string,
+): string | undefined {
+   const tokens = lexAll(text);
+   if (!tokens) return undefined;
+   const nameOf = (t: { text: string }) =>
+      t.text.startsWith("`") ? t.text.slice(1, -1) : t.text;
+   for (const t of tokens) {
+      if (!isName(t) || nameOf(t) !== join) continue;
+      const cut = definitionCutAt(text, t.start);
+      if (!cut || cut.left.name !== join) continue;
+      if (!cut.left.keyword.startsWith("join_")) continue;
+      if (cut.left.keyword !== "join_one") return undefined;
+      // An access modifier written on the statement would be left on what
+      // follows it (or the record would drop the join's access): refused.
+      const before = tokens.filter((x) => x.end <= cut.start).pop();
+      if (before && ACCESS_WORDS.has(before.text)) return undefined;
+      return text.slice(0, cut.start) + text.slice(cut.end);
+   }
+   return text;
+}
+
+/**
  * `statements` placed just inside the first `extend {` of a run of extend
  * blocks, or as a new block when there is none. Undefined when the text does
  * not lex.
@@ -989,10 +1133,23 @@ function parseNestedType(
 
 /** The emitted `type:` declaration for one re-rooted source. */
 export function typeDeclaration(
-   r: Pick<Reroot, "typeName" | "columns">,
+   r: Pick<Reroot, "typeName" | "columns" | "inlinedJoins">,
 ): string {
+   // An inlined join's columns under their stored names, each with its
+   // joined field's notes: a record literal's field cannot carry an
+   // annotation, so the field it reads carries them, and the record's field
+   // takes its class from it.
+   const joined = (r.inlinedJoins ?? []).flatMap((j) =>
+      j.columns.map(
+         (c): ServedColumn => ({
+            name: c.column,
+            type: c.type,
+            ...(c.notes ? { notes: c.notes } : {}),
+         }),
+      ),
+   );
    // malloy-text: the author's own notes, then names through identifier and a Malloy type name
-   const fields = r.columns
+   const fields = [...r.columns, ...joined]
       .map(
          (c) =>
             // A timeframe column's notes go on its redefined field instead.
@@ -1033,6 +1190,7 @@ function withTypes(text: string, applied: readonly Reroot[]): string {
             r.pair
                ? {
                     typeName: r.typeName,
+                    inlinedJoins: r.inlinedJoins,
                     // Each child column carries its field's annotations, so
                     // the record's fields, derived from it, keep its
                     // classification (a record's own fields cannot be

@@ -627,6 +627,9 @@ export const VARIANT_SKIP_CODES = {
    served_copy_cross_connection: "CROSS_CONNECTION",
    served_copy_not_served: "WARNED",
    served_copy_opt_out: "WARNED",
+   served_copy_count_semantics: "COUNT_SEMANTICS",
+   // The table lacks the field as live returns it: with its annotations.
+   served_copy_joined_annotations: "MISSING_FIELD",
    served_copy_pair_shape: "COUNT_SEMANTICS",
    // Exact or not, a query that reads nothing through the inlined join_many
    // reads each parent off a flag over every pair row: the table's rows are
