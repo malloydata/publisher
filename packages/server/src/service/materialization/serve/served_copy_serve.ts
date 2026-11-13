@@ -26,7 +26,16 @@ import {
    type ModelMaterializer,
    type QueryMaterializer,
 } from "@malloydata/malloy";
-import type { GraftRuntime, GraftScope } from "../../gate_classification";
+import {
+   collectEntryPointGates,
+   type GraftRuntime,
+   type GraftScope,
+} from "../../gate_classification";
+import {
+   buildRowLevelProbe,
+   gateFilterText,
+   liftProbeFilterCondition,
+} from "../../authorize";
 import { quoteManifestTablePath } from "../../quoting";
 import { keyedOverlay, overlayKey } from "../../overlay_key";
 import {
@@ -51,6 +60,7 @@ import {
 } from "../../governance/ir/prepared_query";
 import {
    flatPairQueryVerdict,
+   pairConditionReadsChild,
    pairMeasureLevels,
    type FlatPair,
 } from "../../governance/ir/pair_flat_query";
@@ -248,6 +258,12 @@ interface Compiled {
       tablePath: string;
       pair: FlatPair;
    }[];
+   /**
+    * Whether the row-level gates on a pair source's entry point read its
+    * inlined join, by entry point and gate text: they are grafted on the
+    * copy after the query is checked, so the check reads them itself.
+    */
+   pairGatesReadChild?: Map<string, Promise<boolean>>;
    /**
     * Definitions left out because a join they read crosses connections in the
     * served copy (question 11): a query that reads one skips the served copy
@@ -483,7 +499,12 @@ export class ServedCopyServe {
                     reason:
                        "the query reads a pair table through a join to it, whose rows would fan out the joining source",
                  }
-               : flatPairQueryVerdict(prepared.query, struct, own.pair);
+               : flatPairQueryVerdict(
+                    prepared.query,
+                    struct,
+                    own.pair,
+                    await pairGatesReadChild(compiled, struct, own.pair.join),
+                 );
          if (verdict.kind !== "served") {
             // A query that reads no child field goes to the next candidate
             // (another stored table, or live) even when the flat rows would
@@ -1049,6 +1070,67 @@ export class ServedCopyServe {
       }
       return { key, generation, rerooted: [], aliased: [], problems };
    }
+}
+
+/**
+ * Whether a row-level gate (`#(access_filter)`) on the queried entry point
+ * reads a pair table's inlined join. The governor grafts the gate on the
+ * served copy after the router chose it, so the pair check never sees it in
+ * the query: a gate that filters on a child field would drop a parent's
+ * flagged row while its other rows stay, and its parent measures would
+ * undercount. Each gate is compiled as the governor's own probe and read from
+ * its IR; one that does not compile or cannot be read counts as reading it.
+ */
+async function pairGatesReadChild(
+   compiled: Compiled,
+   struct: unknown,
+   join: string,
+): Promise<boolean> {
+   const gates = collectEntryPointGates(
+      struct as never,
+      compiled.modelDef as never,
+   ).filter((g) => g.route === "access_filter");
+   if (gates.length === 0) return false;
+   const materializer = compiled.materializer;
+   if (!materializer) return true;
+   const reads = async (): Promise<boolean> => {
+      for (const gate of gates) {
+         const target = gate.struct?.as ?? gate.struct?.name;
+         if (typeof target !== "string") return true;
+         const filterText = gateFilterText(gate.exprs);
+         try {
+            const prepared = await materializer
+               .loadQuery(buildRowLevelProbe(target, filterText))
+               .getPreparedQuery();
+            const lifted = liftProbeFilterCondition(
+               prepared,
+               `row-level probe for "${target}"`,
+               filterText,
+            );
+            // The gate reads the entry point's fields, as it is grafted there.
+            const source = (gate.struct ?? struct) as { fields?: unknown };
+            if (pairConditionReadsChild(lifted, source, join) !== false) {
+               return true;
+            }
+         } catch {
+            return true;
+         }
+      }
+      return false;
+   };
+   const key = gates
+      .map(
+         (g) =>
+            `${g.struct?.as ?? g.struct?.name}\u0000${g.exprs.join("\u0000")}`,
+      )
+      .join("\u0001");
+   const memo = (compiled.pairGatesReadChild ??= new Map());
+   let answer = memo.get(key);
+   if (answer === undefined) {
+      answer = reads();
+      memo.set(key, answer);
+   }
+   return answer;
 }
 
 /**

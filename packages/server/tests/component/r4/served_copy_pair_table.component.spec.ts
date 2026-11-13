@@ -586,3 +586,109 @@ describe("R4: a pair table keeps the joined source's classifications", () => {
       expect(rowDifference(out.live, out.served)).toBeUndefined();
    });
 });
+
+// A row-level gate is grafted on the served copy after the query is checked,
+// so the check reads the entry point's gates itself: one that filters on a
+// child field would drop a parent's flagged row while its other rows stay.
+const gatedSeed = [
+   `CREATE TABLE flights AS SELECT * FROM (VALUES
+      (1, 'AA', 100.0), (2, 'AA', 250.0), (3, 'UA', 300.0), (4, 'DL', 50.0), (8, 'AA', 410.0)
+    ) AS t(id, carrier, distance)`,
+   // Flight 1's first segment (its flagged row) is west, its second east.
+   `CREATE TABLE segs AS SELECT * FROM (VALUES
+      (1, 1, 'west', 5.0), (2, 1, 'east', 7.0), (3, 2, 'west', 11.0),
+      (4, 3, 'east', 13.0), (5, 8, 'east', 1.0)
+    ) AS t(seg_id, flight_id, region, w)`,
+];
+
+const gatedModel = `##! experimental.givens
+given: R :: string
+given: C :: string
+
+source: segs is duckdb.table('segs') extend { primary_key: seg_id }
+
+#(access_filter) segs.region = $R
+#(materialize) storage="lake" inline=["segs"]
+source: by_region is duckdb.table('flights') extend {
+  primary_key: id
+  join_many: segs on segs.flight_id = id
+  measure:
+    flight_count is count()
+    total_distance is distance.sum()
+    seg_n is segs.count()
+    seg_w is segs.w.sum()
+}
+
+#(access_filter) carrier = $C
+#(materialize) storage="lake" inline=["segs"]
+source: by_carrier is duckdb.table('flights') extend {
+  primary_key: id
+  join_many: segs on segs.flight_id = id
+  measure:
+    flight_count is count()
+    total_distance is distance.sum()
+    seg_n is segs.count()
+    seg_w is segs.w.sum()
+}
+`;
+
+describe("R4: a row-level gate on a pair source", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: {
+            PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+         },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": gatedModel },
+         seedSql: gatedSeed,
+         materialize: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   const mixed = (source: string) =>
+      `run: ${source} -> { group_by: carrier; aggregate: flight_count, total_distance, seg_n, seg_w }`;
+
+   it("answers parent measures live under a gate that reads the child", async () => {
+      const malloy = mixed("by_region");
+      const run = await fixture.run({
+         name: "child gate",
+         malloy,
+         givens: { R: "east" },
+      });
+      expect(run.servedVia).toBeUndefined();
+      // Live keeps flight 1 (an east segment); its flagged row is west.
+      expect(run.live.find((r) => r.carrier === "AA")?.flight_count).toBe(2);
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+
+   it("serves child measures under a gate that reads the child", async () => {
+      const run = await fixture.run({
+         name: "child gate, child measures",
+         malloy:
+            "run: by_region -> { group_by: carrier; aggregate: seg_n, seg_w }",
+         givens: { R: "east" },
+      });
+      expect(run.servedVia).toBe("served_copy");
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+
+   it("serves parent and child measures under a gate on the parent", async () => {
+      const run = await fixture.run({
+         name: "parent gate",
+         malloy: mixed("by_carrier"),
+         givens: { C: "AA" },
+      });
+      expect(run.servedVia).toBe("served_copy");
+      expect(run.served.map((r) => r.carrier)).toEqual(["AA"]);
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+});

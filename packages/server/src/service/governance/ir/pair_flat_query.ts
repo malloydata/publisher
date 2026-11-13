@@ -362,6 +362,12 @@ export function flatPairQueryRefusal(
    query: { pipeline?: unknown } | undefined,
    source: { fields?: unknown; filterList?: unknown } | undefined,
    pair: FlatPair,
+   /**
+    * A filter applied to the source outside the query reads the child (a
+    * row-level gate grafted at read, {@link pairConditionReadsChild}): parent
+    * aggregates are then refused as under a source `where:` on the child.
+    */
+   childScoped = false,
 ): string | undefined {
    try {
       const fields = fieldsByName(source?.fields);
@@ -376,7 +382,8 @@ export function flatPairQueryRefusal(
          : [];
       if (pipeline.length === 0) throw new Refusal("a query with no stage");
       const walker = new Walker(fields, pair.join, pair.parentRowField);
-      const sourceFilter = filtersReadChild(walker, source?.filterList, 0);
+      const sourceFilter =
+         childScoped || filtersReadChild(walker, source?.filterList, 0);
       checkSegment(walker, fields, pipeline[0], pair, sourceFilter, 0);
       return undefined;
    } catch (e) {
@@ -579,6 +586,28 @@ export function pairQueryReadsChild(
 }
 
 /**
+ * Whether a compiled filter condition (a row-level gate's, lifted from its
+ * probe) on `source` reads anything through the inlined join. Undefined when
+ * it cannot be read; the caller then counts it as reading the child.
+ */
+export function pairConditionReadsChild(
+   condition: unknown,
+   source: { fields?: unknown } | undefined,
+   join: string,
+): boolean | undefined {
+   try {
+      return new ChildScan(join).value(
+         condition,
+         fieldsByName(source?.fields),
+         0,
+      );
+   } catch (e) {
+      if (e instanceof Refusal) return undefined;
+      throw e;
+   }
+}
+
+/**
  * The walk behind {@link pairQueryReadsChild}: every node of a stage, each
  * field reference resolved by name through its definition, each nest by its
  * first stage. Later stages read the first stage's output, not the source.
@@ -688,6 +717,8 @@ export function flatPairQueryVerdict(
    query: { pipeline?: unknown } | undefined,
    source: { fields?: unknown; filterList?: unknown } | undefined,
    pair: FlatPair,
+   /** As {@link flatPairQueryRefusal} takes it. */
+   childScoped = false,
 ): FlatPairVerdict {
    const child = pairQueryReadsChild(query, source, pair.join);
    if (child === undefined) {
@@ -698,7 +729,7 @@ export function flatPairQueryVerdict(
       };
    }
    if (!child) return { kind: "parent_only" };
-   const reason = flatPairQueryRefusal(query, source, pair);
+   const reason = flatPairQueryRefusal(query, source, pair, childScoped);
    return reason === undefined
       ? { kind: "served" }
       : { kind: "refused", reason };
