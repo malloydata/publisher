@@ -19,6 +19,7 @@
 
 import { loadLeavingOutCrossConnectionJoins } from "../../../src/service/materialization/plan/cross_connection_joins";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
+import { tryCompilePersistedViewCompanion } from "../../../src/service/materialization/plan/persisted_view_compile";
 import {
    extensionOverStoredModel,
    type MaterializePlan,
@@ -46,7 +47,10 @@ import {
    buildSQLOf,
    plannedSources,
 } from "../../../src/service/materialization/plan/build_plan";
-import { presentAs } from "../../../src/service/materialization/plan/addressing";
+import {
+   compilerBuildId,
+   presentAs,
+} from "../../../src/service/materialization/plan/addressing";
 import {
    buildVirtualMap,
    deriveServeBindings,
@@ -124,6 +128,17 @@ export interface R4Scenario {
    origins?: Record<string, string[]>;
    /** Planned sources, by name, to leave unbuilt (no table, no binding). */
    unbuilt?: string[];
+   /**
+    * Also build the generated `#@ persist` view sources (`<src>__<view>__view`,
+    * in the persisted-view companion), as a package with PUBLISHER_MATERIALIZE
+    * on does. Their refusals are on {@link R4Fixture.viewRefusals}.
+    */
+   persistedViews?: boolean;
+   /**
+    * Planned sources, by name, bound colocated: their tables are read through
+    * the build manifest (Malloy substitutes them), not a storage binding.
+    */
+   colocated?: string[];
 }
 
 export type Row = Record<string, unknown>;
@@ -182,6 +197,8 @@ export interface R4Fixture {
    servedCopy(): ServedCopyServe;
    /** Move a pinned clock (see {@link R4Scenario.clock}) for later runs. */
    setClock(at: string): void;
+   /** Why the persisted-view planner refused a view, one sentence each. */
+   viewRefusals: string[];
    /** Rows of a stored table, by its physical name, with SQL over it. */
    storedSQL(
       sql: (table: (sourceName: string) => string) => string,
@@ -382,7 +399,62 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
               ? [presentAs(s, { name: p.sourceName, sourceID: p.sourceID })]
               : [];
         })
-      : plannedSources(await runtime.getBuildTargets(compiled));
+      : !compiled
+             .tagParse({ prefix: /^##!\s*/ })
+             .tag.has("experimental", "persistence")
+        ? []
+        : plannedSources(await runtime.getBuildTargets(compiled));
+   // `#@ persist` views (phase 4, P14): their generated build sources keep
+   // their own sourceIDs, as the package's build plan keeps them.
+   const viewRefusals: string[] = [];
+   if (scenario.persistedViews) {
+      const views = await tryCompilePersistedViewCompanion({
+         packagePath: dir,
+         modelPath: entry,
+         modelDef: authorDef,
+         materializer,
+         getRuntime: async (overlay) => ({
+            runtime: new Runtime({
+               urlReader: new InMemoryURLReader(
+                  new Map([
+                     ...Object.entries(scenario.files).map(
+                        ([file, text]) => [urlOf(file), text] as const,
+                     ),
+                     ...buildView,
+                     ...overlay,
+                  ]),
+               ),
+               connections: authorConnections,
+            }),
+            importBaseURL: new URL(root),
+         }),
+      });
+      viewRefusals.push(...views.refused.map((r) => r.reason));
+      if (views.generated) {
+         const targets = await views.generated.runtime.getBuildTargets(
+            views.generated.model,
+         );
+         const names = new Set(
+            views.generated.plans.map((p) => p.buildSourceName),
+         );
+         for (const target of targets.connections.flatMap((c) => c.targets)) {
+            if (target.readsGivens) {
+               for (const s of target.sources) {
+                  if (names.has(s.name)) viewRefusals.push("reads a given");
+               }
+            }
+         }
+         sources.push(
+            ...plannedSources({
+               ...targets,
+               connections: targets.connections.map((c) => ({
+                  ...c,
+                  targets: c.targets.filter((t) => !t.readsGivens),
+               })),
+            }).filter((s) => names.has(s.name)),
+         );
+      }
+   }
    const buildReads: Record<string, string[]> = {};
    if (companion) {
       const targets = await companion.runtime.getBuildTargets(companion.model);
@@ -405,15 +477,32 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    for (const plan of companion?.plans ?? []) {
       materializePlans[plan.sourceID] = plan;
    }
+   // A colocated table is looked up by the compiler under its own build id.
+   const entityIdOf = (source: (typeof sources)[number], i: number) =>
+      scenario.colocated?.includes(source.name)
+         ? compilerBuildId(source, {})
+         : `h${i}`;
    sources.forEach((source, i) => {
-      plan[source.sourceID] = { name: source.name, sourceEntityId: `h${i}` };
+      plan[source.sourceID] = {
+         name: source.name,
+         sourceEntityId: entityIdOf(source, i),
+      };
    });
    // Each built source's entry by sourceID, for an extension table built over
    // its parent's stored table.
    const entryBySourceID = new Map<string, ManifestEntry>();
    const storedBuildSQL: Record<string, string> = {};
+   const colocatedEntries: Record<string, { tableName: string }> = {};
    for (const [i, source] of sources.entries()) {
       if (scenario.unbuilt?.includes(source.name)) continue;
+      if (scenario.colocated?.includes(source.name)) {
+         const table = `r4_${source.name}_${i}`;
+         await duckdb.runSQL(
+            `CREATE TABLE ${table} AS ${buildSQLOf(source, { entries: {} })}`,
+         );
+         colocatedEntries[entityIdOf(source, i)] = { tableName: table };
+         continue;
+      }
       const table = `r4_${source.name}_${i}`;
       // A `storage=` extension table (P10) is built as its storage build
       // builds it: from its plan's chain, over its parent's stored table, in
@@ -513,7 +602,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const modelDef = authorDef;
    // The plan's catalog, as a package hands it to its models, so the path
    // report names each stored table by its content address.
+   // The manifest is passed only on a served run, so a live run reads live.
+   let manifestOn = false;
    const policy = ModelPolicy.fixed({
+      freshBuildManifestEntries: () =>
+         manifestOn && Object.keys(colocatedEntries).length > 0
+            ? colocatedEntries
+            : undefined,
       materializedTables: {
          planned: new Map(
             sources.map((source) => [
@@ -526,7 +621,12 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                },
             ]),
          ),
-         bound: {},
+         bound: Object.fromEntries(
+            Object.entries(colocatedEntries).map(([id, e]) => [
+               id,
+               { tableName: e.tableName },
+            ]),
+         ),
       },
    });
    const model = new Model({
@@ -591,6 +691,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       storedBuildSQL,
       physicalTables: Object.fromEntries(physicalNames),
       model,
+      viewRefusals,
       setClock(at) {
          if (!pinned) throw new Error("the scenario's clock is not pinned");
          pinned.clock = at;
@@ -605,6 +706,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       },
       setBindings(next) {
          model.setServeBindings(next);
+         manifestOn = next.length > 0 || next === bindings;
       },
       runAsIs: runOnce,
       async servedFieldNotes(source, field) {
@@ -651,8 +753,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       },
       async run(query: R4Query): Promise<R4Run> {
          model.setServeBindings([]);
+         manifestOn = false;
          const live = await runOnce(query.malloy, query.givens);
          model.setServeBindings(bindings);
+         manifestOn = true;
          const served = await runOnce(query.malloy, query.givens);
          const truth = query.truthSql
             ? ((await duckdb.runSQL(query.truthSql, { rowLimit: 10_000 }))

@@ -175,6 +175,14 @@ export interface ServeVerdictFacts {
    materialize?(sourceID: string): "serves" | "off" | "not_served" | undefined;
    /** Rollups over a stored base (#6293), left out of the plan. */
    rollupsOverStoredBase?: readonly { baseName: string; modelPath?: string }[];
+   /**
+    * A persisted view's generated build source (`#@ persist` on a view, P14),
+    * by its plan sourceID: the source and view it stores. A query reaches it
+    * by calling the view on that source, so reach and gates are the source's.
+    */
+   persistedViewOf?(
+      sourceID: string,
+   ): { sourceID: string; sourceName: string; viewName: string } | undefined;
    /** Per stored source's plan sourceID, its views' verdicts (a preview). */
    views?: ReadonlyMap<string, ViewServeVerdict[]>;
    /**
@@ -264,10 +272,15 @@ function verdictFor(
    };
    // A rollup is never queried by name: its base is what a query names.
    const rollupBase = source.preaggregate?.baseSourceName;
+   // Nor is a persisted view's build source: a call of the view on its source.
+   const view = facts.persistedViewOf?.(sourceID);
    // malloy-text: markdown code formatting in a verdict message, not Malloy
-   const subject = rollupBase
+   const named = rollupBase
       ? `The rollup of \`${rollupBase}\` at (${source.preaggregate?.grainDimensions.join(", ")})`
       : `\`${source.name}\``;
+   const subject = view
+      ? `The persisted view \`${view.viewName}\` of \`${view.sourceName}\``
+      : named;
    const live = (
       reason: ServeVerdictReason,
       message: string,
@@ -341,8 +354,8 @@ function verdictFor(
       );
    }
 
-   const readName = rollupBase ?? source.name;
-   const readID = rollupBase ? undefined : sourceID;
+   const readName = rollupBase ?? view?.sourceName ?? source.name;
+   const readID = rollupBase ? undefined : (view?.sourceID ?? sourceID);
    if (!facts.reachable(readID, readName)) {
       return live(
          "unreachable",
