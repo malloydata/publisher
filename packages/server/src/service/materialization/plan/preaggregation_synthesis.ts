@@ -65,6 +65,7 @@ import {
    type ReaggregateFunction,
 } from "./preaggregation_classifier";
 import { isSpliceableNamespace } from "./preaggregation_namespace";
+import { fieldNotes } from "../serve/served_copy";
 import type { ValidatableSource } from "./preaggregation_validation";
 
 /** The alias the base is imported under, and the last compose() member. */
@@ -81,6 +82,13 @@ interface RollupMeasure {
    partialName: string;
    /** The aggregate applied to `partialName` to merge it. */
    reaggregate: ReaggregateFunction;
+   /**
+    * The measure's annotation lines (`#(classification)`, `#(doc)`, a render
+    * tag such as `# currency`), written again on the merged measure so a
+    * rollup's result column carries what live's does. `#@` directives are
+    * left out: they declare builds, not the column.
+    */
+   notes?: string[];
 }
 
 /** One synthesized rollup: one base, one grain, one table, one `GROUP BY`. */
@@ -333,6 +341,7 @@ export function planSourcePreaggregation(
             name,
             partialName: `${name}${PARTIAL_SUFFIX}`,
             reaggregate: additivity.reaggregate,
+            notes: fieldNotes(field).filter((n) => !n.startsWith("#@")),
          });
          // First one named wins. Safe only because differing values at ONE
          // grain are refused at publish (`conflicting_namespace`,
@@ -410,10 +419,15 @@ function emitRollup(plan: RollupPlan): string {
       .join("\n");
    // The re-declared measure keeps the base's NAME, so a query asking for
    // `total` finds it on the member; only the stored column is renamed.
+   // Each merged measure carries the author's measure's notes, so a result
+   // column read from the rollup has the annotations live's does. Notes sit
+   // on the source's `extend`, which the build SQL (and so the BuildID)
+   // never reads.
    const merged = plan.measures
       .map(
          (m) =>
-            // malloy-text: the re-aggregate method is a fixed name from RollupPlan (sum, min, max), not a value
+            // malloy-text: the author's own notes, then the re-aggregate method, a fixed name from RollupPlan (sum, min, max), not a value
+            (m.notes ?? []).map((n) => `    ${n.trimEnd()}\n`).join("") +
             `    ${identifier(m.name)} is ${identifier(m.partialName)}.${m.reaggregate}()`,
       )
       .join("\n");
