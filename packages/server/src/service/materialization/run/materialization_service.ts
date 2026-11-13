@@ -1094,13 +1094,16 @@ export class MaterializationService {
          }
 
          // Carried forward, so never in the build loop: counted once the run
-         // has committed them.
+         // has committed them. A host's reference to an address this run
+         // rebuilt was counted as built.
          const kindByAddress = buildKindsByAddress(
             compiled,
             pkg.getBuildPlan(),
          );
          for (const [address, entry] of Object.entries(carried)) {
-            if (failures[address]) continue;
+            if (failures[address] || telemetry.builtAddresses.has(address)) {
+               continue;
+            }
             reportSourceReused(
                kindByAddress.get(address) ??
                   (entry.origin === "preaggregate" ? "rollup" : "persist"),

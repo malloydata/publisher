@@ -128,20 +128,26 @@ const CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
  * An error reduced to a code a log may carry: an eligibility refusal's
  * reason, else Publisher's error kind, else a driver's own code (a SQLSTATE,
  * `ECONNREFUSED`), else the error's class name. Never its message, which can
- * quote SQL or a value.
+ * quote SQL or a value. The cause chain is read outermost first: a strategy
+ * rewraps a driver's error in a plain `Error` to redact its message.
  */
 export function errorCodeOf(err: unknown): string {
-   if (err instanceof MaterializationEligibilityError && err.reason) {
-      return err.reason;
-   }
-   if (err instanceof Error) {
-      const { kind, code } = err as Error & { kind?: unknown; code?: unknown };
-      for (const candidate of [kind, code, err.name]) {
+   const chain = [...causeChain(err)];
+   for (const e of chain) {
+      if (e instanceof MaterializationEligibilityError && e.reason) {
+         return e.reason;
+      }
+      const { kind, code } = e as Error & { kind?: unknown; code?: unknown };
+      for (const candidate of [kind, code]) {
          if (typeof candidate === "string" && CODE_PATTERN.test(candidate)) {
             return candidate;
          }
       }
       if (typeof code === "number") return String(code);
+   }
+   // No code anywhere: the most specific class name, outermost first.
+   for (const e of chain) {
+      if (e.name !== "Error" && CODE_PATTERN.test(e.name)) return e.name;
    }
    return "Error";
 }
@@ -160,6 +166,11 @@ export class RunTelemetry {
       failed: 0,
       cancelled: 0,
    };
+   /**
+    * The addresses this run built, so a host's reference to one of them is
+    * not counted again as reused.
+    */
+   readonly builtAddresses = new Set<string>();
 
    constructor(
       readonly runId: string,
@@ -274,7 +285,10 @@ export function reportSourceBuilt(
    >,
 ): void {
    const run = currentRun.getStore();
-   if (run) run.tally.built++;
+   if (run) {
+      run.tally.built++;
+      run.builtAddresses.add(source.sourceEntityId);
+   }
    const method: BuildMethod = entry.refresh === "delta" ? "delta" : "full";
    recordBuildOutcome({
       kind: source.kind,

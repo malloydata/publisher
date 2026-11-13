@@ -22,6 +22,7 @@ import {
    setPackage,
 } from "../../../test_helpers/materialization_service_harness";
 import { logger } from "../../../logger";
+import { reportSourceBuilt } from "./run_telemetry";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
 import { startMetricsHarness } from "../../../test_helpers/metrics_harness";
 
@@ -787,6 +788,78 @@ describe("runBuild (branch behavior)", () => {
          });
       } finally {
          info.restore();
+         resetMaterializationTelemetryForTesting();
+         await harness.shutdown();
+      }
+   });
+
+   it("counts a source the run rebuilt once, as built, when the host also supplied it by reference", async () => {
+      const harness = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+      try {
+         const svc = stubEngine();
+         // The build loop (stubbed) builds the instructed address and counts
+         // it; the host's reference names the same address.
+         svc.executeInstructedBuild.callsFake(async () => {
+            reportSourceBuilt(
+               {
+                  kind: "persist",
+                  tier: "colocated",
+                  sourceEntityId: "build-orders",
+                  sourceName: "orders",
+               },
+               {},
+            );
+            return {
+               entries: {
+                  "build-orders": {
+                     sourceEntityId: "build-orders",
+                     physicalTableName: '"orders_v2"',
+                     connectionName: "duckdb",
+                  },
+               },
+               failures: {},
+               sourcesRefused: 0,
+            };
+         });
+
+         await svc.runBuild(
+            "mat-1",
+            "my-env",
+            "pkg",
+            {
+               sourceNames: undefined,
+               forceRefresh: false,
+               buildInstructions: [makeInstruction()],
+               referenceManifest: [
+                  {
+                     sourceEntityId: "build-orders",
+                     physicalTableName: '"orders_v1"',
+                     connectionName: "duckdb",
+                  },
+               ],
+            },
+            new AbortController().signal,
+         );
+
+         expect(
+            await harness.collectAttributes(
+               "publisher_materialization_build_total",
+            ),
+         ).toEqual([
+            {
+               kind: "persist",
+               tier: "colocated",
+               outcome: "built",
+               failure_class: "none",
+            },
+         ]);
+         expect(
+            await harness.collectCounter(
+               "publisher_materialization_build_total",
+            ),
+         ).toBe(1);
+      } finally {
          resetMaterializationTelemetryForTesting();
          await harness.shutdown();
       }

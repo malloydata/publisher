@@ -463,20 +463,24 @@ export function recordInstructedBuildFailure(
    // A build that lost a source does not throw, so without this event the
    // failure is invisible in the server's own output. The reason stays on the
    // run's record: a driver's message can quote SQL, so the log has its code.
-   reportSourceFailed(
-      {
-         ...build,
-         sourceEntityId,
-         sourceName: persistSource.name,
-         physicalTableName: instruction.physicalTableName,
-         ...(instruction.destination
-            ? { destination: instruction.destination }
-            : {}),
-      },
-      buildErr,
-      retryable,
-      run.signal?.aborted ?? false,
-   );
+   // Once per address, as the record counts it: a base and its `extend` share
+   // one table, and the loop tries it again for the second.
+   if (!run.failures[sourceEntityId]) {
+      reportSourceFailed(
+         {
+            ...build,
+            sourceEntityId,
+            sourceName: persistSource.name,
+            physicalTableName: instruction.physicalTableName,
+            ...(instruction.destination
+               ? { destination: instruction.destination }
+               : {}),
+         },
+         buildErr,
+         retryable,
+         run.signal?.aborted ?? false,
+      );
+   }
    run.failedReasons.push(`${persistSource.name}: ${reason}`);
    run.failures[sourceEntityId] = {
       sourceEntityId,

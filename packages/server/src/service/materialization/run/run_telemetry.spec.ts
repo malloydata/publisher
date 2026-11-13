@@ -603,3 +603,128 @@ describe("run events", () => {
       });
    });
 });
+
+describe("run telemetry review findings", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   let harness: MetricsHarness;
+   let captured: ReturnType<typeof captureLogs>;
+
+   beforeEach(async () => {
+      ctx = createMocks();
+      harness = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+      captured = captureLogs();
+   });
+
+   afterEach(async () => {
+      captured.restore();
+      resetMaterializationTelemetryForTesting();
+      await harness.shutdown();
+   });
+
+   it("counts a failed address once when a base and its extend share it", async () => {
+      const connection = {
+         runSQL: sinon.stub().resolves(),
+      } as unknown as MalloyConnection;
+      // A base and its `extend` (`#@ persist` is inherited) share one
+      // content address: one table, one build.
+      const compiled = compiledWith(
+         {
+            base: fakeSource({
+               name: "base",
+               sourceEntityId: "a1aaaaaaaaaaaaaa",
+            }),
+            ext: fakeSource({
+               name: "ext",
+               sourceEntityId: "a1aaaaaaaaaaaaaa",
+            }),
+            other: fakeSource({
+               name: "other",
+               sourceEntityId: "a2bbbbbbbbbbbbbb",
+            }),
+         },
+         [["base", "ext"], ["other"]],
+         new Map([["duckdb", connection]]),
+      );
+      const build = sinon.stub().callsFake(async (_s, i: BuildInstruction) => {
+         if (i.sourceEntityId === "a1aaaaaaaaaaaaaa") {
+            throw new Error("Permission denied");
+         }
+         return {
+            sourceEntityId: i.sourceEntityId,
+            physicalTableName: `${i.sourceEntityId}_t`,
+            connectionName: "duckdb",
+            buildDurationMs: 10,
+         };
+      });
+      (ctx.service as unknown as { buildOneSource: unknown }).buildOneSource =
+         build;
+      const telemetry = new RunTelemetry("run-1", "auto", "pkg");
+      const result = (await withRunTelemetry(telemetry, () =>
+         (
+            ctx.service as unknown as {
+               executeInstructedBuild: (...args: unknown[]) => Promise<unknown>;
+            }
+         ).executeInstructedBuild(
+            compiled,
+            {
+               getApiConnection: () => {
+                  throw new Error("no config");
+               },
+               getEnvironmentPath: () => "/tmp/env",
+            },
+            [
+               {
+                  sourceEntityId: "a1aaaaaaaaaaaaaa",
+                  materializedTableId: "mt-1",
+                  physicalTableName: "t1",
+                  realization: "COPY",
+               },
+               {
+                  sourceEntityId: "a2bbbbbbbbbbbbbb",
+                  materializedTableId: "mt-2",
+                  physicalTableName: "t2",
+                  realization: "COPY",
+               },
+            ],
+            {},
+            new AbortController().signal,
+            false,
+         ),
+      )) as { failures: Record<string, unknown> };
+
+      // The run's record holds one failure for the address ...
+      expect(Object.keys(result.failures)).toEqual(["a1aaaaaaaaaaaaaa"]);
+      // ... and the counter, the tally and the log agree with it.
+      expect(
+         await harness.collectCounter("publisher_materialization_build_total", {
+            outcome: "failed",
+         }),
+      ).toBe(1);
+      expect(telemetry.tally).toMatchObject({ built: 1, failed: 1 });
+      expect(
+         captured.logs.filter(
+            (l) => l.message === "materialization.build.failed",
+         ),
+      ).toHaveLength(1);
+   });
+
+   it("reduces a wrapped driver error to the driver's code", () => {
+      // The storage strategy rewraps every failure in a plain Error (its
+      // message redacted) with the driver's error as the cause.
+      const driver = Object.assign(new Error("SELECT 'v' FROM secret"), {
+         code: "42P01",
+      });
+      expect(
+         errorCodeOf(new Error("Failed to materialize", { cause: driver })),
+      ).toBe("42P01");
+      // A billed read lost keeps its own class name over a plain cause.
+      expect(
+         errorCodeOf(
+            new BilledReadNotCapturedError("lost", {
+               cause: new Error("x"),
+            }),
+         ),
+      ).toBe("BilledReadNotCapturedError");
+   });
+});
