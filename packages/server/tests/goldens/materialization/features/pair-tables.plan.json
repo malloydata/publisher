@@ -212,6 +212,9 @@
             }
           ],
           "join": "orders",
+          "oneParentLevels": [
+            1
+          ],
           "parentKey": "id",
           "parentRowColumn": "__parent_row"
         },
@@ -229,6 +232,9 @@
                 }
               ],
               "join": "orders",
+              "oneParentLevels": [
+                1
+              ],
               "parentKey": "id",
               "parentRowColumn": "__parent_row"
             },
@@ -558,6 +564,9 @@
             }
           ],
           "join": "orders",
+          "oneParentLevels": [
+            1
+          ],
           "parentKey": "id",
           "parentRowColumn": "__parent_row"
         },
@@ -817,6 +826,17 @@
           {
             "name": "__parent_row",
             "type": "BOOLEAN"
+          }
+        ],
+        "uniquenessChecks": [
+          {
+            "connectionName": "duckdb",
+            "join": "",
+            "joinedSourceID": "orders_pair@<pkg>/m.malloy",
+            "keyColumn": "id",
+            "pairLevel": 0,
+            "queryName": "orders_pair__mat__pair_key",
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"id\",\n     COUNT(1) as \"matches\"\n  FROM (\n    SELECT CAST(id AS BIGINT) AS id, CAST(customer_id AS BIGINT) AS customer_id,\n           region, status,\n           CAST(amount AS DOUBLE) AS amount, CAST(discount AS DOUBLE) AS discount,\n           CAST(order_date AS DATE) AS order_date,\n           CAST(created_at AS TIMESTAMP) AS created_at,\n           CAST(\"order\" AS BIGINT) AS \"order\"\n    FROM read_csv('data/orders.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"id\" as \"id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"id\" IS NULL\nLIMIT 1\n"
           }
         ],
         "zoneFreeRows": true

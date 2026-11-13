@@ -18,15 +18,28 @@
     "warnings": [
       {
         "code": "served-copy-not-served",
-        "message": "This model's served copy does not compile, so its stored sources serve through the serve shape or live."
+        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
+        "subject": "customer_dim"
       },
       {
         "code": "served-copy-not-served",
-        "message": "This model's served copy does not compile, so its stored sources serve through the serve shape or live."
+        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
+        "subject": "customer_dim"
       },
       {
         "code": "served-copy-not-served",
-        "message": "This model's served copy does not compile, so its stored sources serve through the serve shape or live."
+        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
+        "subject": "order_facts"
+      },
+      {
+        "code": "served-copy-not-served",
+        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
+        "subject": "customer_dim"
+      },
+      {
+        "code": "served-copy-not-served",
+        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
+        "subject": "order_facts"
       }
     ]
   },

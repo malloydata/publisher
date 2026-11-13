@@ -215,6 +215,7 @@ import { customers_path__mat__base is customers_path } from 'm.malloy'
 import { customers_path__mat__pair_key__source is customers_path } from 'm.malloy'
 import { customers_path__mat__pair_key__orders__source is orders_with_lines } from 'm.malloy'
 import { orders_pair__mat__base is orders_pair } from 'm.malloy'
+import { orders_pair__mat__pair_key__source is orders_pair } from 'm.malloy'
 
 #@ persist name="customers_blocks" storage="lake"
 source: customers_blocks__mat is duckdb.sql("""
@@ -373,4 +374,13 @@ source: orders_pair__mat is orders_pair__mat__base -> {
   calculate:
     __parent_row is row_number() { partition_by: id } = 1
   order_by: id
+}
+
+query: orders_pair__mat__pair_key is orders_pair__mat__pair_key__source -> {
+  group_by: id
+  aggregate: matches is count()
+} -> {
+  where: matches > 1 or id is null
+  select: id
+  limit: 1
 }
