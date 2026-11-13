@@ -94,9 +94,9 @@
  * join_one is refused: live aggregates past it by the joined row's key,
  * however many parents share the row, which no stored row reproduces.
  *
- * An incremental one-hop pair table refreshes whole parents over a per-parent
- * watermark ({@link pairIncremental}), or is rebuilt in full with a warning;
- * a path's table and a table of several blocks are always rebuilt in full.
+ * An incremental pair table, of one hop, a path or several blocks, refreshes
+ * whole parents over a per-parent watermark ({@link pairIncremental}; across
+ * blocks, {@link PAIR_BLOCK_WATERMARK}), or is rebuilt in full with a warning.
  *
  * Not yet (each is a later pull request's, and is refused or left out here
  * rather than built wrong):
@@ -1761,6 +1761,11 @@ const PAIR_WATERMARK_TYPES: ReadonlySet<string> = new Set([
  * with a warning. So too for a `merge_key=` other than the source's primary
  * key (the unit is the parent), and a rolling window over a child field
  * (its delete would remove part of a parent).
+ *
+ * A path or a table of several blocks needs a field at every level of every
+ * path: a row added at a level with nothing below it moves its parent only
+ * through its own level's field. Each level's row flag partitions on the keys
+ * from the parent down, so replacing whole parents keeps it exact too.
  *
  * Returns nothing to do when no watermark is named: the incremental gate
  * refuses that as it refuses it on any source.

@@ -23,12 +23,13 @@
  *    level: a flagged row is one of its level's rows, so a deeper value would
  *    place it in that row's group alone, where live places it in every group
  *    one of its rows is in;
- *  - an aggregate at a level between the source and the leaf is exact only
- *    when the query reads nothing deeper: live then joins down to that level
- *    and aggregates its rows plainly, which the flag marks, but once the query
- *    reads deeper live aggregates that level symmetrically, keyed by its
- *    primary key (a childless parent then counts as no row), which no flag
- *    reproduces.
+ *  - an aggregate at a level between the source and the leaf is exact when
+ *    the query reads nothing deeper: live then joins down to that level and
+ *    aggregates its rows plainly, which the flag marks. Once the query reads
+ *    deeper live aggregates that level symmetrically, keyed by its primary key
+ *    (a childless parent then counts as no row): the flag reproduces that only
+ *    for a sum or average of a stored column, where each row of the level has
+ *    one parent row ({@link FlatPair.oneParentLevels}).
  *
  * {@link pairMeasureLevels} says which measures the served copy re-declares
  * under the flag; {@link flatPairQueryRefusal} says whether one compiled query
