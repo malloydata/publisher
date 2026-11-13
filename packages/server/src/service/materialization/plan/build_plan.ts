@@ -54,6 +54,7 @@ import {
 import type { RollupPlan } from "./preaggregation_synthesis";
 import {
    materializeRefusalFinding,
+   pairFullRefreshFinding,
    type MaterializePlan,
 } from "./build_file_generator";
 import { tryCompileMaterializeCompanion } from "./materialize_compile";
@@ -600,6 +601,8 @@ async function collectGeneratedMaterialize(
       ...args,
       contents: authorDef.contents ?? {},
       givens: authorDef.givens ?? {},
+      // P9's probes compile against the author's model, never run.
+      probe: args.materializer,
    });
    for (const refusal of refused) {
       addAnnotationFinding(
@@ -608,6 +611,14 @@ async function collectGeneratedMaterialize(
       );
    }
    if (!generated) return;
+   for (const plan of generated.plans) {
+      if (plan.pairFullRefresh) {
+         addAnnotationFinding(
+            parts,
+            pairFullRefreshFinding(plan, plan.pairFullRefresh, args.modelPath),
+         );
+      }
+   }
    const targets = await generated.runtime.getBuildTargets(generated.model);
    const planByName = new Map(
       generated.plans.map((p) => [p.buildSourceName, p]),
@@ -1399,6 +1410,28 @@ export function deriveBuildPlanOutcome(
 }
 
 /**
+ * What an incremental pair table's plan adds to its declaration: the parent
+ * key each refresh replaces rows by, and its two generated windows taken off
+ * `calculateFields`. Both are partitioned by that key, and the watermark is
+ * one value per parent, so a delta holds whole parents and the windows over
+ * it compute what the full build's do; the window gate exists for frames that
+ * reach outside a delta, which these cannot. Nothing for any other source.
+ */
+function pairDeclaration(
+   declaration: IncrementalDeclaration,
+   pair: MaterializePlan["pair"],
+): Partial<IncrementalDeclaration> {
+   if (!pair?.watermark) return {};
+   const generated = new Set([pair.parentRowColumn, pair.watermark.column]);
+   return {
+      pair: { parentKey: pair.parentKey, parentRow: pair.parentRowColumn },
+      calculateFields: declaration.calculateFields.filter(
+         (name) => !generated.has(name),
+      ),
+   };
+}
+
+/**
  * Each source's resolved incremental declaration, keyed by sourceID (two models
  * may declare same-named sources). Computed here because the gates need the
  * compiled output schema and query definition, which the wire plan does not
@@ -1419,14 +1452,15 @@ export function collectIncrementalDeclarations(
             source,
             deriveAnnotationFields(source),
          );
+         const plan = materializePlans[sourceID];
          // Only a lower bound deletes; an upper bound is left out of the
          // build, so every refresh appends and keeps every row.
-         const window = deletingWindowsOf(
-            materializePlans[sourceID]?.readTimeTerms,
-         );
-         declarations[sourceID] = window.length
-            ? { ...declaration, rollingWindow: window }
-            : declaration;
+         const window = deletingWindowsOf(plan?.readTimeTerms);
+         declarations[sourceID] = {
+            ...declaration,
+            ...(window.length ? { rollingWindow: window } : {}),
+            ...pairDeclaration(declaration, plan?.pair),
+         };
       } catch (err) {
          // One unreadable source must not cost the package its plan. "No
          // declaration" is safe: the build path dispatches a delta only for a

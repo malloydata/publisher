@@ -70,6 +70,7 @@ import {
    RollupSkip,
    type RollupVariantServe,
 } from "./materialization/serve/rollup_variants";
+import { rollupsReadUnderGates } from "./materialization/plan/rollup_plan";
 import {
    type PersistedViewServe,
    type ViewTable,
@@ -269,6 +270,17 @@ export function answeredWith(
  */
 export function servedFromOf(answer: Answer): ServedFrom | undefined {
    if (answer.runFailed) return "live_fallback";
+   // A served-copy answer that read only colocated `#(materialize)` tables
+   // read the source's own warehouse, as a colocated `#@ persist` answer
+   // does, which reports no storage hit; its path report names the table.
+   if (
+      answer.tier === "storage" &&
+      answer.storageTablesRead !== undefined &&
+      answer.storageTablesRead.length > 0 &&
+      answer.storageTablesRead.every((b) => b.colocated)
+   ) {
+      return undefined;
+   }
    // A `storage=` persisted view or `#(preaggregate)` rollup reads the
    // storage tier too, through `virtual()`.
    return answer.tier === "storage" ||
@@ -568,6 +580,10 @@ export function routeCandidates(
       candidates.push({
          kind: "rollup",
          applicable: true,
+         // Not yet past an entry-point gate (CONTRACT, known limitation 1):
+         // the one switch the planner also reads, so a rollup over a gated
+         // source is neither built nor read until it flips.
+         keepsContracts: rollupsReadUnderGates(),
          attempt: async () => {
             const answer = await host.rollupVariants.attempt({
                queryString,
@@ -873,6 +889,7 @@ export async function queryPathFor(
          origin: b.origin,
          tablePath: b.tablePath,
          freshAsOf: b.freshAsOf,
+         ...(b.colocated ? { colocated: true as const } : {}),
       });
       const published = args.includeHidden ? undefined : host.publishedNames();
       return buildQueryPath({
@@ -919,6 +936,14 @@ export async function queryPathFor(
          colocatedRead: answer.colocatedRead,
          ...(viewTable ? { view: viewTable } : {}),
          ...(answer.rollupMember ? { rollupMember: answer.rollupMember } : {}),
+         ...(variantRollups.length > 0
+            ? {
+                 joinedRollupBases: host.rollupVariants.joinedRollupBaseIDs(
+                    struct,
+                    prepared,
+                 ),
+              }
+            : {}),
          chains: host.sourceChains(),
          // The discovery surface: a name the caller cannot list is never
          // named, unless the caller may see hidden sources.
