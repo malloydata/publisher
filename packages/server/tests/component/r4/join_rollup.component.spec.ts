@@ -1364,3 +1364,77 @@ describe("R4: join-to-rollup (A7) through a join_many whose parent key the data 
       });
    }
 });
+
+// The query source's rows depend on a given: a primary key check compiled
+// once at plan time reads the default caller's rows (flight 3 is held once
+// among AA's), while another caller's query reads its own (BB's hold flight
+// 3 twice), so the check cannot stand for every caller and is not run.
+const GIVEN_KEY_MODEL = `##! experimental.givens
+given: CARRIER :: string is 'AA'
+
+source: segments is duckdb.table('segs_raw') extend {
+  primary_key: seg_id
+  #(preaggregate) grain=["flight_id"]
+  measure: seg_miles is miles.sum()
+}
+source: flights_g is duckdb.table('flights_g_raw') extend {
+  primary_key: id
+  where: carrier = $CARRIER
+  join_many: segments on segments.flight_id = id
+  measure: flight_count is count()
+}
+`;
+const GIVEN_KEY_SEED = [
+   ...seedSql,
+   `CREATE TABLE flights_g_raw AS SELECT * FROM (VALUES
+      (1, 'AA', 100), (2, 'AA', 200), (3, 'BB', 300), (3, 'BB', 350), (5, 'BB', 500)
+    ) AS t(id, carrier, distance)`,
+];
+
+describe("R4: join-to-rollup (A7) through a join_many on the key of a query source whose rows depend on a given", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": GIVEN_KEY_MODEL },
+         seedSql: GIVEN_KEY_SEED,
+         preaggregate: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   for (const malloy of [
+      "run: flights_g -> { group_by: id; aggregate: segments.seg_miles; order_by: id }",
+      "run: flights_g -> { aggregate: segments.seg_miles, flight_count }",
+   ]) {
+      it(`answers ${malloy} live for every caller (COUNT_SEMANTICS)`, async () => {
+         for (const givens of [{ CARRIER: "AA" }, { CARRIER: "BB" }]) {
+            // Rows first: served from the rollup, BB's differ from live.
+            const run = await fixture.run({ name: malloy, malloy, givens });
+            expect(rowDifference(run.live, run.served)).toBeUndefined();
+            expect(run.servedBy?.kind).not.toBe("rollup");
+            fixture.setBindings(fixture.bindings);
+            const { path } = await fixture.runAsIs(malloy, givens);
+            const considered = (path?.considered ?? []).filter(
+               (c) => c.kind === "rollup",
+            );
+            expect(considered.map((c) => c.reason)).toContain(
+               "COUNT_SEMANTICS",
+            );
+            expect(
+               considered.some((c) =>
+                  ((c as { detail?: string }).detail ?? "").includes(
+                     "was not checked unique",
+                  ),
+               ),
+            ).toBe(true);
+         }
+      });
+   }
+});

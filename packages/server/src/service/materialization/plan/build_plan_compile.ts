@@ -31,7 +31,10 @@ import {
    type ParentKeyNeed,
    type RollupVariantPlan,
 } from "./rollup_plan";
-import { compileParentKeyChecks } from "./rollup_compile";
+import {
+   compileParentKeyChecks,
+   parentKeyCheckCompiler,
+} from "./rollup_compile";
 import { SourceMap } from "./source_map";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import { Model } from "../../model";
@@ -118,7 +121,7 @@ export async function compilePackageBuildPlan(
       for (const need of parentKeyNeedsOf(map)) {
          parentKeyNeeds.push({
             need,
-            compile: (text) => materializer.loadQuery(text).getSQL(),
+            compile: parentKeyCheckCompiler(materializer),
          });
       }
       await collectModelBuildPlan(parts, {
