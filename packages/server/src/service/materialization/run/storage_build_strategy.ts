@@ -9,6 +9,7 @@ import {
    WarehouseRecomputeRefusedError,
 } from "../../../errors";
 import { logger } from "../../../logger";
+import { errorCodeOf } from "./error_code";
 import {
    recordStoredColumnTypeMismatch,
    recordChainedStorageBuild,
@@ -385,7 +386,9 @@ export class StorageBuildStrategy
                   sourceName: persistSource.name,
                   destinationName,
                   strict: manifest.strict,
-                  reason: safeDetail,
+                  // The reason is on the entry (upstreamRecomputeReason); a
+                  // compile error in it can quote the build's text.
+                  code: errorCodeOf(err),
                },
             );
             // A recompute because a parent's entry is at the wrong tier reads

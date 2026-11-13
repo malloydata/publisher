@@ -50,6 +50,7 @@ import {
    type SqlRunner,
    type WatermarkBound,
 } from "./incremental_apply";
+import { capturedNativeSchema } from "./colocated_native_types";
 import type { IncrementalDeclaration } from "../plan/incremental_declaration";
 
 /**
@@ -480,7 +481,8 @@ export async function advanceLedgerAfterSeed(params: {
             {
                packageName: params.context.packageName,
                physicalTableName: params.lineage.physicalTableName,
-               error: boundary.error,
+               // The code only: the error can quote the watermark value read.
+               errorCode: boundary.errorCode,
             },
          );
       }
@@ -574,8 +576,6 @@ export async function applyIncrementalStep(params: {
       packageName: context.packageName,
       sourceName: params.sourceName,
       physicalTableName: lineage.physicalTableName,
-      rangeStart: step.start.value,
-      rangeEnd: step.end.value,
       durationMs,
    });
    return {
@@ -603,7 +603,9 @@ export function reportIncrementalStep(params: {
    const { step, sourceName, packageName, physicalTableName } = params;
    recordIncrementalStep(step.mode, step.reasonCode);
    // Warn: a seed's reason is the only signal that an incremental source is
-   // quietly being rebuilt in full every run.
+   // quietly being rebuilt in full every run. The code only: the free-text
+   // reason can quote a watermark boundary, which is a value from the data,
+   // or a driver's error. The boundary in force is on the manifest entry.
    logger.warn(
       step.mode === "seed"
          ? "Rebuilding an incremental source in full"
@@ -613,21 +615,20 @@ export function reportIncrementalStep(params: {
          sourceName,
          physicalTableName,
          reasonCode: step.reasonCode,
-         reason: step.reason,
       },
    );
 }
 
 /**
  * Count and log a delta that COMMITTED. With {@link reportIncrementalStep}, every
- * step is reported exactly once.
+ * step is reported exactly once. The range is not logged: its bounds are
+ * watermark values, from the data. The boundary reached is on the manifest
+ * entry.
  */
 function reportDeltaApplied(params: {
    sourceName: string;
    packageName: string;
    physicalTableName: string;
-   rangeStart: string;
-   rangeEnd: string;
    durationMs: number;
 }): void {
    recordIncrementalStep("delta");
@@ -787,6 +788,18 @@ export async function refreshOneSourceIncrementally(params: {
    params.manifest.update(sourceEntityId, {
       tableName: target.quotedTablePath,
    });
+   // A colocated table's warehouse column types, read again as a full build
+   // reads them (colocated_native_types.ts): the entry replaces the last
+   // build's, and without them its big-integer columns would answer live.
+   const nativeSchema =
+      lineage.storageDestinationName === undefined
+         ? await capturedNativeSchema({
+              run: target.runner,
+              physicalTableName: target.logicalTablePath,
+              dialect: target.dialect,
+              sourceName: persistSource.name,
+           })
+         : undefined;
    return {
       sourceEntityId,
       sourceName: persistSource.name,
@@ -802,6 +815,7 @@ export async function refreshOneSourceIncrementally(params: {
       // A delta reports where it advanced to; a skip, the boundary in force.
       ...ledgerFields(lineage, outcome.coveredThrough),
       ...refreshFields(outcome.refresh),
+      ...(nativeSchema?.length ? { nativeSchema } : {}),
    };
 }
 

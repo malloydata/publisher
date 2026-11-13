@@ -34,6 +34,7 @@ import type {
    QueryMaterializer,
    VirtualMap,
 } from "@malloydata/malloy";
+import { EMPTY_BUILD_MANIFEST } from "@malloydata/malloy";
 import {
    getMaterializeEnabled,
    getMaterializeGatedSources,
@@ -835,10 +836,11 @@ export function routeCandidates(
             // with exactly what the run uses: the build manifest and the
             // givens. A model `given:` does not cross the companion's
             // `import`, so a given-supplying query must fail HERE and serve
-            // live (see preaggregation_seams.spec.ts).
+            // live (see preaggregation_seams.spec.ts). Never an undefined
+            // manifest, which Malloy reads as the Runtime's, unfiltered.
             await candidate.getSQL({
                givens: surfaceGivens,
-               buildManifest,
+               buildManifest: buildManifest ?? EMPTY_BUILD_MANIFEST,
             });
             // Compiling proves only that the chosen member DEFINES every
             // field used; `count()` uses none and resolves to a rollup.

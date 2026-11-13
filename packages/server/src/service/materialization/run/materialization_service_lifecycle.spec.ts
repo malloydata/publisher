@@ -1161,20 +1161,22 @@ describe("runInBackground (terminal recording)", () => {
       const errorStub = sinon.stub(logger, "error");
       try {
          background().runInBackground("bg-4", async () => {
-            throw new Error("boom");
+            throw Object.assign(new Error("boom"), { code: "XX000" });
          });
          await flush();
 
          expect(errorStub.calledOnce).toBe(true);
          const [message, meta] = errorStub.firstCall.args as unknown as [
             string,
-            { materializationId: string; error: string; stack?: string },
+            { materializationId: string; code: string; stack?: string },
          ];
          expect(message).toBe("Materialization run failed");
          expect(meta.materializationId).toBe("bg-4");
-         expect(meta.error).toBe("boom");
-         // The stack is the half that locates the throw; a message alone cannot.
-         expect(meta.stack).toContain("Error: boom");
+         expect(meta.code).toBe("XX000");
+         // The stack's frames locate the throw; its message line, which can
+         // quote SQL, is left off (it is on the run's record).
+         expect(meta.stack).toContain("at ");
+         expect(meta.stack).not.toContain("boom");
       } finally {
          errorStub.restore();
       }
@@ -1195,19 +1197,20 @@ describe("runInBackground (terminal recording)", () => {
          expect(infoStub.calledOnce).toBe(true);
          const [message, meta] = infoStub.firstCall.args as unknown as [
             string,
-            { materializationId: string; error: string },
+            { materializationId: string; code: string },
          ];
          expect(message).toBe("Materialization run cancelled");
          // An abort that races a genuine failure records "Cancelled", so this is
-         // the only place the real error is reported.
-         expect(meta.error).toBe("boom");
+         // the only place the real error's code is reported.
+         expect(meta.code).toBe("Error");
+         expect(JSON.stringify(meta)).not.toContain("boom");
       } finally {
          errorStub.restore();
          infoStub.restore();
       }
    });
 
-   it("redacts a DSN from the run-level message it logs and records", async () => {
+   it("keeps a DSN out of the run-level log and redacts it from the record", async () => {
       // A whole-run throw has no connection to redact against, but a connect
       // failure while resolving the package's connections echoes the DSN.
       const errorStub = sinon.stub(logger, "error");
@@ -1219,12 +1222,10 @@ describe("runInBackground (terminal recording)", () => {
          });
          await flush();
 
-         const [, meta] = errorStub.firstCall.args as unknown as [
-            string,
-            { error: string },
-         ];
-         expect(meta.error).not.toContain("hunter2");
-         expect(meta.error).toContain("connect failed");
+         // The log carries no message at all, only the code.
+         expect(JSON.stringify(errorStub.firstCall.args)).not.toContain(
+            "hunter2",
+         );
 
          const recorded = ctx.repository.updateMaterialization.firstCall
             .args[1] as { error?: string };

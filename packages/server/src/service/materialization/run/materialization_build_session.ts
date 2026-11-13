@@ -24,6 +24,7 @@ import {
    StorageCatalogNotFoundError,
 } from "../../../errors";
 import { logger } from "../../../logger";
+import { errorCodeOf } from "./error_code";
 import { getPartitionedWriteFlushThreshold } from "../../../config";
 import { errMessage } from "../../../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "../../quoting";
@@ -1757,7 +1758,8 @@ export async function createTableWithDeclaredTypes(
          {
             code: STORED_COLUMN_TYPE_MISMATCH_CODE,
             table: quotedTablePath,
-            error: errMessage(err),
+            // Not the message: it quotes the value the cast refused.
+            errorCode: errorCodeOf(err),
          },
       );
       return await createTableAndDescribe(
@@ -1987,7 +1989,9 @@ async function inTransaction<T>(
             {
                table: quotedTablePath,
                error: errMessage(rollbackErr),
-               cause: errMessage(buildErr),
+               // The build's error can quote its SQL or a value; it is
+               // rethrown to the run's record.
+               causeCode: errorCodeOf(buildErr),
             },
          );
       }

@@ -615,15 +615,21 @@ const HUGEINT_EXACT =
  *   what DESCRIBE reported: an integer column, or a DECIMAL with no scale, is
  *   read as HUGEINT (UHUGEINT as itself), which holds every value exactly;
  *   one stored as a float has lost digits already and is left out.
- * - A colocated table is in the source's own warehouse and holds the type
- *   Malloy built: read as the dialect's own type for a `bigint` number
- *   (`malloyTypeToSQLType`), when Malloy types that type back as one, else
- *   left out.
+ * - A colocated table is in the source's own warehouse, and its column can
+ *   be wider than any type Malloy names for a `bigint` number (Postgres
+ *   stores a sum of BIGINTs as `numeric`, SQL Server's `decimal(38,0)` is
+ *   typed `bigint`, DuckDB's UHUGEINT holds values past HUGEINT). It is read
+ *   through a cast to exactly the type its build captured from the
+ *   warehouse's catalog (`nativeTypeOf`, `ManifestEntry.nativeSchema`), when
+ *   Malloy types that type as a `bigint` number, so nothing is narrowed and
+ *   the value keeps live's representation. A column of any other type (a
+ *   `numeric`, which Malloy reads as a float), or one whose type its build
+ *   did not capture, is left out.
  */
 export function bigIntegerReads(
    schema: readonly { name: string; type: string }[],
    fields: readonly unknown[] | undefined,
-   options: { dialect: unknown; colocated?: boolean },
+   options: BigIntegerReadOptions,
 ): BigIntegerRead[] {
    // A colocated table is read on the same connection live runs on, so a
    // cast to the warehouse's own bigint type takes live's own data path and
@@ -660,16 +666,78 @@ export function bigIntegerReads(
 export function bigIntegerReadOf(
    field: unknown,
    column: { name: string; type: string },
-   options: { dialect: unknown; colocated?: boolean },
+   options: BigIntegerReadOptions,
 ): BigIntegerRead | undefined {
    if (!options.colocated && !liveKeepsBigIntegers(options.dialect)) {
       return undefined;
    }
    if (!isBigIntegerField(field)) return undefined;
    const castTo = options.colocated
-      ? warehouseBigIntegerType(options.dialect)
+      ? exactWarehouseCast(options.dialect, options.nativeTypeOf?.(column.name))
       : duckdbBigIntegerCast(column.type);
    return { column: column.name, ...(castTo ? { castTo } : {}) };
+}
+
+/** Where a stored table is, and what is known of its columns' types. */
+export interface BigIntegerReadOptions {
+   /** The author's source's dialect: the one live answers on. */
+   dialect: unknown;
+   /** A colocated table, in the source's own warehouse (else `storage=`). */
+   colocated?: boolean;
+   /**
+    * For a colocated table: a stored column's type as the warehouse's catalog
+    * names it, as its build captured it, or undefined when it did not.
+    */
+   nativeTypeOf?: (column: string) => string | undefined;
+}
+
+/**
+ * A colocated column's captured warehouse type, as the cast that reads it
+ * exactly, when Malloy types that type as a `bigint` number (`bigint`,
+ * `NUMBER(38,0)`, `decimal(38,0)`, `UHUGEINT`); undefined for any other type
+ * (`numeric`, read as a float), a type the dialect's CAST does not take by
+ * that name (MySQL's `bigint`), or none captured: no cast keeps both the
+ * value and live's representation, so the column is left out.
+ */
+function exactWarehouseCast(
+   dialect: unknown,
+   nativeType: string | undefined,
+): string | undefined {
+   if (typeof dialect !== "string" || !nativeType?.trim()) return undefined;
+   // MySQL's CAST names no integer type (`CAST(x AS bigint)` is a syntax
+   // error; its SIGNED and UNSIGNED are not numbers to Malloy), so only a
+   // DECIMAL is a type the column can be read through.
+   if (dialect === "mysql" && !/^decimal\b/i.test(nativeType.trim())) {
+      return undefined;
+   }
+   try {
+      return isBigIntegerField(
+         getDialect(dialect).sqlTypeToMalloyType(nativeType),
+      )
+         ? nativeType.trim()
+         : undefined;
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * A lookup of a stored column's captured warehouse type, by name, exactly and
+ * then by a unique case fold (a warehouse may fold the names its catalog
+ * reports).
+ */
+export function nativeTypeLookup(
+   nativeSchema: readonly { name: string; type: string }[] | undefined,
+): (column: string) => string | undefined {
+   const columns = nativeSchema ?? [];
+   return (column) => {
+      const exact = columns.find((c) => c.name === column);
+      if (exact) return exact.type;
+      const folded = columns.filter(
+         (c) => c.name.toLowerCase() === column.toLowerCase(),
+      );
+      return folded.length === 1 ? folded[0].type : undefined;
+   };
 }
 
 /** Whether a compiled field is a number Malloy types with the `bigint` subtype. */
@@ -683,24 +751,4 @@ function duckdbBigIntegerCast(storedType: string): string | undefined {
    const base = storedType.trim().toUpperCase();
    if (base === "UHUGEINT") return "UHUGEINT";
    return HUGEINT_EXACT.test(base) ? "HUGEINT" : undefined;
-}
-
-/**
- * A dialect's own SQL type for a `bigint` number, when Malloy types it back as
- * one (MySQL's `SIGNED` comes back as `sql native`), else undefined.
- */
-function warehouseBigIntegerType(dialect: unknown): string | undefined {
-   if (typeof dialect !== "string") return undefined;
-   try {
-      const d = getDialect(dialect);
-      const sqlType = d.malloyTypeToSQLType({
-         type: "number",
-         numberType: "bigint",
-      });
-      return isBigIntegerField(d.sqlTypeToMalloyType(sqlType))
-         ? sqlType.toUpperCase()
-         : undefined;
-   } catch {
-      return undefined;
-   }
 }
