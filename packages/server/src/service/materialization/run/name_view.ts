@@ -151,9 +151,9 @@ export function nameViewName(name: string, physicalTableName: string): string {
 
 /**
  * The `name=` view a source's build calls for, or undefined: only a
- * `#(materialize)` source, only with `PUBLISHER_MATERIALIZE` on, and only
- * when its table is not already called `name=` (a self-instructed,
- * unversioned build names the table itself).
+ * `#(materialize)` source that declares `name=`, only with
+ * `PUBLISHER_MATERIALIZE` on, and only when its table is not already called
+ * `name=` (a self-instructed, unversioned build names the table itself).
  */
 export function nameViewIntentFor(
    compiled: Pick<CompiledBuildPlan, "materializePlans">,
@@ -163,8 +163,7 @@ export function nameViewIntentFor(
    owner: string,
 ): NameViewIntent | undefined {
    if (!getMaterializeEnabled()) return undefined;
-   const name =
-      compiled.materializePlans?.[persistSource.sourceID]?.persist.name;
+   const name = declaredName(compiled, persistSource.sourceID);
    if (!name) return undefined;
    const viewName = nameViewName(name, instruction.physicalTableName);
    if (viewName === instruction.physicalTableName) return undefined;
@@ -179,6 +178,22 @@ export function nameViewIntentFor(
          ? { storageDestinationName: instruction.destination }
          : {}),
    };
+}
+
+/**
+ * The `name=` a `#(materialize)` declaration states, or undefined. A table
+ * that only defaults to its source's name gets no view: that name is
+ * Publisher's, not the author's, so no outside reader was promised it, and
+ * the table itself is named for its package or version (packageTableSuffix,
+ * versionTableSuffix), which two packages declaring a source of the same
+ * name would otherwise each claim a view at.
+ */
+function declaredName(
+   compiled: Pick<CompiledBuildPlan, "materializePlans">,
+   sourceID: string,
+): string | undefined {
+   const plan = compiled.materializePlans?.[sourceID];
+   return plan && !plan.nameDefaulted ? plan.persist.name : undefined;
 }
 
 /** The views a run's metadata records, or empty. */
@@ -441,9 +456,27 @@ export function ownedSlot(slot: NameViewSlot, owner: string): OwnedSlot {
       case "taken":
          return {
             state: "taken",
-            holder: `a ${slot.kind.toLowerCase()} Publisher did not create`,
+            holder:
+               slot.tableOwner !== undefined && slot.tableOwner !== owner
+                  ? `a table package '${slot.tableOwner}' built`
+                  : `a ${slot.kind.toLowerCase()} Publisher did not create`,
          };
    }
+}
+
+/**
+ * Whether `slot` is a table this package's records may claim as its own: a
+ * table, and not one another package has marked as its own since
+ * (table_ownership.ts). The records say this package wrote a table at the
+ * name once; another package's mark says that package has built there
+ * since, so the table is no longer this package's to replace.
+ */
+function claimableTable(slot: NameViewSlot, owner: string): boolean {
+   return (
+      slot.state === "taken" &&
+      slot.kind !== "VIEW" &&
+      (slot.tableOwner === undefined || slot.tableOwner === owner)
+   );
 }
 
 /** Make or repoint the view to read `mark.target`, mark and all. */
@@ -788,8 +821,7 @@ export function tableAtNameIntentFor(
    owner: string,
 ): NameViewIntent | undefined {
    if (!getMaterializeEnabled()) return undefined;
-   const name =
-      compiled.materializePlans?.[persistSource.sourceID]?.persist.name;
+   const name = declaredName(compiled, persistSource.sourceID);
    if (!name) return undefined;
    if (
       nameViewName(name, instruction.physicalTableName) !==
@@ -868,8 +900,15 @@ export async function preflightColocatedTableAtName(
          if (!nameViewDialectSupported(site.dialect)) return undefined;
          const raw = await probeNameView(site, intent.viewName);
          if (raw.state === "empty") return {};
-         // A table: rebuilt only when this package's own run wrote it.
+         // A table: rebuilt only when this package's own run wrote it, and
+         // no other package has marked it as its own since.
          if (raw.state === "taken" && raw.kind !== "VIEW") {
+            if (
+               raw.tableOwner !== undefined &&
+               raw.tableOwner !== intent.owner
+            ) {
+               return { holder: `a table package '${raw.tableOwner}' built` };
+            }
             return (await context.ownTableAt?.(intent))
                ? {}
                : {
@@ -1020,9 +1059,10 @@ export async function preflightNameView(
       probed = await atNameViewSite(intent, context, async (site) => {
          if (!nameViewDialectSupported(site.dialect)) return undefined;
          const raw = await probeNameView(site, intent.viewName);
-         // A table this package's own run wrote at the name: the view
-         // replaces it once this build is done.
-         if (raw.state === "taken" && raw.kind !== "VIEW") {
+         // A table this package's own run wrote at the name, and no other
+         // package has marked as its own since: the view replaces it once
+         // this build is done.
+         if (claimableTable(raw, intent.owner)) {
             const table = await context.ownTableAt?.(intent);
             if (table) {
                return {
@@ -1148,7 +1188,7 @@ async function publishNameView(
                };
             }
             const raw = await probeNameView(site, intent.viewName);
-            if (ownTable && raw.state === "taken" && raw.kind !== "VIEW") {
+            if (ownTable && claimableTable(raw, intent.owner)) {
                const asideTableName = await replaceOwnTableWithView(
                   site,
                   intent,
