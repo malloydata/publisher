@@ -628,6 +628,8 @@ export const VARIANT_SKIP_CODES = {
    served_copy_not_served: "WARNED",
    served_copy_opt_out: "WARNED",
    served_copy_count_semantics: "COUNT_SEMANTICS",
+   // The table lacks the field as live returns it: with its annotations.
+   served_copy_joined_annotations: "MISSING_FIELD",
 } as const satisfies Record<string, SkipReason>;
 
 /**

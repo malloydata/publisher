@@ -130,6 +130,13 @@ export interface InlinedJoin {
    join: string;
    /** The joined source's stored fields. */
    columns: readonly JoinedColumn[];
+   /**
+    * The joined fields the author annotated. Their notes are on the stored
+    * columns, so the record's fields keep their class, but a result column
+    * that is one of them comes back without them; such a query is answered
+    * live (governance/ir/joined_field_output.ts).
+    */
+   annotatedFields?: readonly string[];
 }
 
 /** One stored column of a re-rooted source. */
@@ -809,10 +816,18 @@ function parseNestedType(
 export function typeDeclaration(
    r: Pick<Reroot, "typeName" | "columns" | "inlinedJoins">,
 ): string {
-   // An inlined join's columns under their stored names; the record that
-   // reads them carries no notes (a record literal's field cannot).
+   // An inlined join's columns under their stored names, each with its
+   // joined field's notes: a record literal's field cannot carry an
+   // annotation, so the field it reads carries them, and the record's field
+   // takes its class from it.
    const joined = (r.inlinedJoins ?? []).flatMap((j) =>
-      j.columns.map((c): ServedColumn => ({ name: c.column, type: c.type })),
+      j.columns.map(
+         (c): ServedColumn => ({
+            name: c.column,
+            type: c.type,
+            ...(c.notes ? { notes: c.notes } : {}),
+         }),
+      ),
    );
    // malloy-text: the author's own notes, then names through identifier and a Malloy type name
    const fields = [...r.columns, ...joined]
