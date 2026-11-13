@@ -15,6 +15,7 @@ import {
    storedTypeText,
    typeDeclaration,
    type Reroot,
+   replacePairJoin,
 } from "./served_copy";
 
 /** The zero-based range of `needle`'s declaration (after `source: `) in `text`. */
@@ -644,5 +645,121 @@ describe("a stored timeframe truncation (decision 3)", () => {
       expect(out?.text).toBe("extend { dimension: m is m__stored.month }");
       expect([...(out?.rewritten ?? [])]).toEqual(["m"]);
       expect([...(out?.dropped ?? [])].sort()).toEqual(["a", "b"]);
+   });
+});
+
+describe("replacePairJoin (pair tables, P5)", () => {
+   const to = "dimension: segments is { miles is m }";
+   it("replaces the join_many statement from its keyword, keeping its annotations and access", () => {
+      expect(
+         replacePairJoin(
+            "extend {\n  # doc\n  internal join_many: segments on segments.flight_id = id\n  measure: c is count()\n}",
+            "segments",
+            to,
+         ),
+      ).toBe(
+         "extend {\n  # doc\n  internal dimension: segments is { miles is m }\n  measure: c is count()\n}",
+      );
+   });
+   it("replaces `<join> is <source> on …`, a quoted name, and a statement at the block's end", () => {
+      expect(
+         replacePairJoin(
+            "extend { join_many: `segments` is segs extend { where: miles > 0 } on segments.flight_id = id }",
+            "segments",
+            to,
+         ),
+      ).toBe(`extend { ${to} }`);
+   });
+   it("refuses a statement that declares other joins too, a join_one, and a missing join", () => {
+      expect(
+         replacePairJoin(
+            "extend {\n  join_many:\n    segments on segments.k = id\n    b on b.k = id\n}",
+            "segments",
+            to,
+         ),
+      ).toBeUndefined();
+      expect(
+         replacePairJoin(
+            "extend { join_many: a on a.k = id, segments on segments.k = id }",
+            "segments",
+            to,
+         ),
+      ).toBeUndefined();
+      expect(
+         replacePairJoin(
+            "extend { join_one: segments with flight_id; join_many: s on s.k = segments.k }",
+            "segments",
+            to,
+         ),
+      ).toBeUndefined();
+      expect(replacePairJoin("extend { }", "segments", to)).toBeUndefined();
+   });
+});
+
+describe("rerootDeclaration (pair tables, P5)", () => {
+   it("reads the pair table as the source: a record for the join, internal columns, measures over the parent rows", () => {
+      const text = `flights is duckdb.table('flights') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  measure:
+    flight_count is count()
+    leg_miles is segments.miles.sum()
+}`;
+      const out = rerootDeclaration(text, {
+         sourceName: "flights",
+         connectionAlias: "a",
+         virtualHandle: "h",
+         typeName: "flights__served",
+         columns: [{ name: "id", type: "BIGINT" }],
+         pair: {
+            join: "segments",
+            parentRowColumn: { name: "__parent_row", type: "BOOLEAN" },
+            parentRowField: "__parent_row__pair",
+            childColumns: [
+               {
+                  name: "miles",
+                  column: "segments__miles",
+                  internalName: "segments__miles__pair",
+                  type: "DOUBLE",
+               },
+               {
+                  name: "seg_day",
+                  column: "segments__day",
+                  internalName: "segments__day__pair",
+                  type: "DATE",
+                  timeframe: "day",
+               },
+            ],
+            parentMeasures: [
+               {
+                  name: "flight_count",
+                  internalName: "flight_count__pair",
+                  notes: ['#(doc) "Flights"'],
+               },
+            ],
+            childStoredDimensions: [],
+         },
+      });
+      expect(out).toBe(`flights is a.virtual('h')::flights__served extend {
+  internal rename:
+    __parent_row__pair is __parent_row
+    segments__miles__pair is segments__miles
+    segments__day__pair is segments__day
+} extend {
+  primary_key: id
+  dimension: segments is {
+    miles is segments__miles__pair,
+    seg_day is segments__day__pair.day
+  }
+  measure:
+    flight_count is count()
+    leg_miles is segments.miles.sum()
+} extend {
+  internal rename:
+    flight_count__pair is flight_count
+  measure:
+    #(doc) "Flights"
+    flight_count is flight_count__pair { where: __parent_row__pair }
+}`);
    });
 });

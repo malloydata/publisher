@@ -3,7 +3,7 @@
 
 // The gate's safety property, asserted WITHOUT reference to where a given sits.
 //
-// `classifyDynamicTerms` decides by position, reading `query.givenUsage` — a
+// `admitGivenPositions` decides by position, reading `query.givenUsage` — a
 // summary of what the pipeline REFERENCES. The property that actually matters is
 // what the build BAKES, and those two are not the same question. They have
 // already diverged once: a given bound as a source ARGUMENT
@@ -33,7 +33,7 @@ import {
    compilePersistSources,
    duckdbTestConnections,
 } from "../test_helpers/incremental_test_harness";
-import { classifyDynamicTerms } from "./materialization/plan/persist_dynamic_terms";
+import { admitGivenPositions } from "./materialization/plan/persist_dynamic_terms";
 
 let connections: FixedConnectionMap;
 
@@ -162,7 +162,7 @@ describe("the build's dependence on a given's value decides the gate", () => {
             connections,
             `${preamble("1")}\n${body}`,
          );
-         const refused = !classifyDynamicTerms(sources["p"]).ok;
+         const refused = !admitGivenPositions(sources["p"]).ok;
 
          if (bakesTheValue) {
             expect(refused).toBe(true);
@@ -184,7 +184,7 @@ describe("the build's dependence on a given's value decides the gate", () => {
          );
          return {
             bakes: a === null || b === null || a !== b,
-            admitted: classifyDynamicTerms(sources["p"]).ok,
+            admitted: admitGivenPositions(sources["p"]).ok,
          };
       };
       expect(
