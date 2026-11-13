@@ -298,6 +298,108 @@ source: daily is duckdb.table('orders_raw') -> {
    });
 });
 
+describe("R4: a #(preaggregate) rollup and the model's givens", () => {
+   // The given is declared in a file the model imports whole, so the model's
+   // `contents` carries it with no location: a query reading $MIN_AMOUNT
+   // compiles against the rollup only because the variant imports the model's
+   // givens from the file declaring each (author_imports.ts).
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `##! experimental.givens
+import "givens.malloy"
+
+source: orders is duckdb.table('orders_raw') extend {
+  #(preaggregate) grain=["category"]
+  measure: total is amount.sum()
+}
+`,
+            "givens.malloy": `##! experimental.givens
+given: MIN_AMOUNT :: number is 0
+`,
+         },
+         seedSql,
+         preaggregate: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("serves a query that supplies a given from the rollup, equal to live", async () => {
+      const run = await fixture.run({
+         name: "supplied",
+         malloy:
+            "run: orders -> { group_by: category; aggregate: total; having: total > $MIN_AMOUNT }",
+         givens: { MIN_AMOUNT: 20 },
+      });
+      expectServedFromRollup(run);
+      // The given took effect: category C (12.5) is below it.
+      expect(run.served.map((r) => r.category).sort()).toEqual(["A", "B"]);
+   });
+
+   it("serves a query that reads a given at its default from the rollup", async () => {
+      expectServedFromRollup(
+         await fixture.run({
+            name: "default",
+            malloy:
+               "run: orders -> { group_by: category; aggregate: total; having: total > $MIN_AMOUNT }",
+         }),
+      );
+   });
+});
+
+describe("R4: a #(preaggregate) rollup over a source whose rows read a given", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `##! experimental.givens
+given: REGION :: string is 'east'
+
+source: scoped is duckdb.table('orders_raw') extend {
+  where: region = $REGION
+  #(preaggregate) grain=["category"]
+  measure: scoped_total is amount.sum()
+}
+`,
+         },
+         seedSql,
+         preaggregate: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("leaves out a rollup whose rows read a given, and answers live", async () => {
+      expect(
+         Object.keys(fixture.rollupTables).filter((n) =>
+            n.startsWith("scoped__rollup__"),
+         ),
+      ).toEqual([]);
+      const run = await fixture.run({
+         name: "scoped",
+         malloy:
+            "run: scoped -> { group_by: category; aggregate: scoped_total }",
+         givens: { REGION: "west" },
+      });
+      expectLive(run);
+      expect(run.live.map((r) => r.category).sort()).toEqual(["A", "C"]);
+   });
+});
+
 describe("R4: a #(preaggregate) rollup under a gated entry point", () => {
    let restore: () => void;
    let fixture: R4Fixture;

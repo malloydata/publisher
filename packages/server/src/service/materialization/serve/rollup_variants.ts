@@ -92,6 +92,7 @@ import {
    type RollupVariantPlan,
 } from "../plan/rollup_plan";
 import { SourceMap } from "../plan/source_map";
+import { authorNameImports, relativeImport } from "./author_imports";
 import { typeDeclaration } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import type { ServeBinding } from "./materialization_serve_transform";
@@ -569,19 +570,6 @@ export function rollupSourceID(plan: RollupVariantPlan): string | undefined {
    return companion ? `${plan.rollupSourceName}@${companion.href}` : undefined;
 }
 
-/** `url` relative to the query model's directory, for an `import`. */
-function relativeImport(from: URL, url: string): string | undefined {
-   try {
-      const target = fileURLToPath(url);
-      return path
-         .relative(path.dirname(fileURLToPath(from)), target)
-         .split(path.sep)
-         .join("/");
-   } catch {
-      return undefined;
-   }
-}
-
 /** The rollup's merged measures. */
 function rollupStatements(plan: RollupVariantPlan): string {
    const measures = plan.rollupMeasures
@@ -679,52 +667,11 @@ function queryModelText(
    localName: string,
    declaration: string,
 ): string {
-   const model = modelDef as {
-      contents?: Record<string, unknown>;
-      exports?: string[];
-   };
-   const exported = new Set(model.exports ?? []);
-   const byFile = new Map<string, string[]>();
-   const add = (url: string, item: string) => {
-      const list = byFile.get(url) ?? [];
-      list.push(item);
-      byFile.set(url, list);
-   };
-   for (const [name, entry] of Object.entries(model.contents ?? {})) {
-      if (name === localName) continue;
-      if (exported.has(name)) {
-         add(modelURL, identifier(name));
-         continue;
-      }
-      const e = entry as {
-         sourceID?: unknown;
-         name?: unknown;
-         location?: { url?: unknown };
-      };
-      const declared =
-         typeof e.sourceID === "string" ? splitSourceID(e.sourceID) : undefined;
-      const url =
-         declared?.url ??
-         (typeof e.location?.url === "string" ? e.location.url : undefined);
-      const declaredName =
-         declared?.name ?? (typeof e.name === "string" ? e.name : name);
-      if (!url) continue;
-      add(
-         url,
-         declaredName === name
-            ? identifier(name)
-            : `${identifier(name)} is ${identifier(declaredName)}`,
-      );
-   }
-   const imports = [...byFile.entries()]
-      .map(([url, items]) => {
-         const from = relativeImport(queryModelURL, url);
-         if (from === undefined) return "";
-         // malloy-text: each item is identifier(name) or identifier(name) is identifier(declared)
-         return `import { ${items.join(", ")} } from ${doubleQuotedString(from)}`;
-      })
-      .filter((line) => line !== "")
-      .join("\n");
+   // Every name but the one the variant declares, givens included, so a query
+   // that supplies or reads a given compiles against the rollup.
+   const imports = authorNameImports(modelDef, queryModelURL, modelURL, {
+      skip: new Set([localName]),
+   });
    return `${flagLine(modelDef)}
 ${imports}
 
