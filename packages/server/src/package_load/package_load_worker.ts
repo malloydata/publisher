@@ -91,6 +91,7 @@ import {
    type EligibilityRefusalReason,
 } from "../materialization_metrics";
 import { logger } from "../logger";
+import { getV1ServedCopyMode } from "../config";
 import {
    tryCompileSynthesizedPreaggregation,
    type SynthesizedPreaggregation,
@@ -1217,15 +1218,19 @@ async function prepareForMainThread(
       (job.withPreaggregateCompanions || wantsPlan) &&
       !load.failed &&
       !pastDeadline()
-         ? ((await tryCompileSynthesizedPreaggregation({
-              packagePath: job.packagePath,
-              modelPath,
-              contents: model.model._modelDef.contents as Record<
-                 string,
-                 unknown
-              >,
-              getRuntime: companionRuntime,
-           })) ?? null)
+         ? // Under the v1 cutover a v1 rollup is the rollup leg's (G4), so
+           // no composite is compiled; null, so the plan is still made here.
+           getV1ServedCopyMode() === "on"
+            ? null
+            : ((await tryCompileSynthesizedPreaggregation({
+                 packagePath: job.packagePath,
+                 modelPath,
+                 contents: model.model._modelDef.contents as Record<
+                    string,
+                    unknown
+                 >,
+                 getRuntime: companionRuntime,
+              })) ?? null)
          : undefined;
 
    // Rechecked, since another model may have left the plan to the main

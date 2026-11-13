@@ -251,7 +251,9 @@ export function compareRollupBreadth(a: RollupPlan, b: RollupPlan): number {
  * Not the NAMESPACE, because the base's `name=` is a name in the destination's
  * catalog and means nothing in the source warehouse where the rollup is built.
  */
-function basePersistNamespace(source: ValidatableSource): string | undefined {
+export function basePersistNamespace(
+   source: ValidatableSource,
+): string | undefined {
    if (!source.annotations) return undefined;
    try {
       const tag = parseRouteTag(

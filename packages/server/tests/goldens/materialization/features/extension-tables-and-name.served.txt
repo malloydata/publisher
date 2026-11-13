@@ -1,6 +1,6 @@
 // feature: extension tables and name=: files generated while serving
 
-// ==== <pkg>/m.malloy (text 1 of 3)
+// ==== <pkg>/m.malloy (text 1 of 2)
 ##! experimental.givens
 ##! experimental { virtual_source }
 type: colocated_ext__served is {
@@ -61,10 +61,14 @@ source: colocated_ext is duckdb.virtual('bfd63fc0b64f3eb8051d97c6733d8cfd5603c84
     id is id__stored::"HUGEINT"
     customer_id is customer_id__stored::"HUGEINT"
     order is order__stored::"HUGEINT"
+  measure:
+    n is count()
+    total is amount.sum()
+} extend {
   where: status = 'shipped'
 }
 
-// ==== <pkg>/m.malloy (text 2 of 3)
+// ==== <pkg>/m.malloy (text 2 of 2)
 ##! experimental.givens
 ##! experimental { virtual_source }
 type: colocated_ext__served is {
@@ -159,6 +163,10 @@ source: stored is __served_copy_alias_of_lake.virtual('4c8462933bea4ad5a18f5d69a
     id is id__stored::"HUGEINT"
     customer_id is customer_id__stored::"HUGEINT"
     order is order__stored::"HUGEINT"
+  measure:
+    n is count()
+    total is amount.sum()
+} extend {
 }
 
 #(materialize) storage="lake" name="east_t"
@@ -249,155 +257,9 @@ source: colocated_ext is duckdb.virtual('bfd63fc0b64f3eb8051d97c6733d8cfd5603c84
     id is id__stored::"HUGEINT"
     customer_id is customer_id__stored::"HUGEINT"
     order is order__stored::"HUGEINT"
-  where: status = 'shipped'
-}
-
-// ==== <pkg>/m.malloy (text 3 of 3)
-##! experimental.givens
-##! experimental { virtual_source }
-type: renamed__served is {
-   customer_id::number,
-   region::string,
-   status::string,
-   amount::number,
-   discount::number,
-   order_date::date,
-   created_at::timestamp,
-   order::number,
-   is_big::boolean,
-   order_id::number
-}
-type: by_given__served is {
-   id::number,
-   customer_id::number,
-   region::string,
-   status::string,
-   amount::number,
-   discount::number,
-   order_date::date,
-   created_at::timestamp,
-   order::number,
-   is_big::boolean
-}
-type: east_big__served is {
-   id::number,
-   customer_id::number,
-   region::string,
-   status::string,
-   amount::number,
-   discount::number,
-   order_date::date,
-   created_at::timestamp,
-   order::number,
-   is_big::boolean
-}
-type: east__served is {
-   id::number,
-   customer_id::number,
-   region::string,
-   status::string,
-   amount::number,
-   discount::number,
-   order_date::date,
-   created_at::timestamp,
-   order::number,
-   is_big::boolean
-}
-
-given: REGION :: string is 'east'
-
-import "raw.malloy"
-
-source: orders is orders_raw extend {
-  measure:
-    n is count()
-    total is amount.sum()
-}
-
-#(materialize) storage="lake" name="stored_t"
-source: stored is orders extend {
-  dimension: is_big is amount > 100
-}
-
-#(materialize) storage="lake" name="east_t"
-source: east is __served_copy_alias_of_lake.virtual('00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13')::east__served extend {
-  internal rename:
-    id__stored is id
-    customer_id__stored is customer_id
-    order__stored is order
-  dimension:
-    id is id__stored::"HUGEINT"
-    customer_id is customer_id__stored::"HUGEINT"
-    order is order__stored::"HUGEINT"
   measure:
     n is count()
     total is amount.sum()
 } extend {
-} extend {
-  where: region = 'east'
-}
-
-#(materialize) storage="lake" name="east_big_t"
-source: east_big is __served_copy_alias_of_lake.virtual('42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5')::east_big__served extend {
-  internal rename:
-    id__stored is id
-    customer_id__stored is customer_id
-    order__stored is order
-  dimension:
-    id is id__stored::"HUGEINT"
-    customer_id is customer_id__stored::"HUGEINT"
-    order is order__stored::"HUGEINT"
-  measure:
-    n is count()
-    total is amount.sum()
-} extend {
-} extend {
-  where: region = 'east'
-} extend {
-  where: is_big
-}
-
-#(materialize) storage="lake" name="by_given_t"
-source: by_given is __served_copy_alias_of_lake.virtual('89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a')::by_given__served extend {
-  internal rename:
-    id__stored is id
-    customer_id__stored is customer_id
-    order__stored is order
-  dimension:
-    id is id__stored::"HUGEINT"
-    customer_id is customer_id__stored::"HUGEINT"
-    order is order__stored::"HUGEINT"
-  measure:
-    n is count()
-    total is amount.sum()
-} extend {
-} extend {
-  where: region = $REGION
-}
-
-#(materialize) storage="lake" name="renamed_t"
-source: renamed is __served_copy_alias_of_lake.virtual('d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda')::renamed__served extend {
-  internal rename:
-    order_id__stored is order_id
-  dimension:
-    order_id is order_id__stored::"HUGEINT"
-} extend { rename: id is order_id } extend {
-  internal rename:
-    customer_id__stored is customer_id
-    order__stored is order
-  dimension:
-    customer_id is customer_id__stored::"HUGEINT"
-    order is order__stored::"HUGEINT"
-  measure:
-    n is count()
-    total is amount.sum()
-} extend {
-} extend {
-  rename: order_id is id
-  measure: id_total is order_id.sum()
-}
-
-#(materialize) name="colocated_ext_t"
-source: colocated_ext is orders extend {
   where: status = 'shipped'
 }

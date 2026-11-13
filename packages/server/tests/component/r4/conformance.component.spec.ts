@@ -5,8 +5,10 @@
  * The conformance fixture (ms2data/service#7098): synthetic packages shaped
  * like real ones, each served three ways (v1 `#@ persist` with `storage=`,
  * v1 colocated, and `#(materialize)`), with the materialize switch off
- * (today's serve shape) and on (the served copy), through the real package
- * path (conformance/package_harness.ts). Every query's served answer must
+ * (today's serve shape), on (the served copy) and with the v1 cutover on
+ * (`cutover`: `PUBLISHER_V1_SERVED_COPY=on`, so v1 tables are read by the
+ * served copy, the rollup and view legs, or not at all), through the real
+ * package path (conformance/package_harness.ts). Every query's served answer must
  * equal live, rows and result metadata (field types with their timeframes,
  * and annotations), and a stored table must have answered it.
  *
@@ -46,10 +48,11 @@ import {
    VARIANTS,
 } from "./conformance/shapes";
 import { rowDifference } from "./harness";
+import { shadowRowDifference } from "../../../src/service/materialization/serve/v1_shadow";
 
 const RUN_GAPS = process.env.CONFORMANCE_GAPS === "run";
 const REPORT = process.env.CONFORMANCE_REPORT === "1";
-const SWITCHES: Switch[] = ["off", "on"];
+const SWITCHES: Switch[] = ["off", "on", "cutover"];
 
 /**
  * Metadata differences every stored read has on main, tolerated per case so
@@ -74,12 +77,35 @@ const tolerated: Record<Tolerance, string[]> = {
    "drill-metadata": [],
 };
 
-function withoutSubtype(type: unknown): unknown {
-   if (type && typeof type === "object" && "subtype" in type) {
-      const { subtype: _subtype, ...rest } = type as Record<string, unknown>;
-      return rest;
+/**
+ * A result type with the tolerated differences set aside, a nest's fields
+ * included: every number's subtype, and every `#(malloy)` drill annotation.
+ */
+function tolerantType(
+   type: unknown,
+   tolerate: readonly Tolerance[],
+   depth = 0,
+): unknown {
+   if (depth > 32 || type === null || typeof type !== "object") return type;
+   if (Array.isArray(type)) {
+      return type
+         .filter(
+            (a) =>
+               !(
+                  tolerate.includes("drill-metadata") &&
+                  typeof (a as { value?: unknown })?.value === "string" &&
+                  isDrill((a as { value: string }).value)
+               ),
+         )
+         .map((t) => tolerantType(t, tolerate, depth + 1));
    }
-   return type;
+   return Object.fromEntries(
+      Object.entries(type as Record<string, unknown>)
+         .filter(
+            ([k]) => !(k === "subtype" && tolerate.includes("number-subtype")),
+         )
+         .map(([k, v]) => [k, tolerantType(v, tolerate, depth + 1)]),
+   );
 }
 
 const isDrill = (a: string) => a.startsWith("#(malloy)");
@@ -98,8 +124,7 @@ function fieldDifference(
    if (a.length !== b.length) {
       return `fields ${a.map((f) => f.name).join(",")} against ${b.map((f) => f.name).join(",")}`;
    }
-   const type = (f: WireField) =>
-      tolerate.includes("number-subtype") ? withoutSubtype(f.type) : f.type;
+   const type = (f: WireField) => tolerantType(f.type, tolerate);
    const notes = (f: WireField) =>
       tolerate.includes("drill-metadata")
          ? f.annotations.filter((n) => !isDrill(n))
@@ -136,7 +161,9 @@ function tolerancesNeeded(live: Answer, served: Answer): Tolerance[] {
 }
 
 function tierOf(answer: Answer): string {
-   if (answer.servedBy !== "materialized") return answer.servedBy;
+   if (answer.servedBy !== "materialized") {
+      return answer.servedBy === "live" ? "live" : `served:${answer.servedBy}`;
+   }
    if (answer.via) return `served:${answer.via}`;
    return answer.servedFrom === "storage"
       ? "served:serve_shape"
@@ -176,7 +203,15 @@ function gapFor(
    on: Switch,
 ): Gap | undefined {
    for (const map of [query.gaps, shape.gaps]) {
-      const gap = map?.[`${variant}/${on}`] ?? map?.[variant] ?? map?.["*"];
+      const gap =
+         map?.[`${variant}/${on}`] ??
+         // The v1 cutover changes nothing for `#(materialize)`: its gaps
+         // with the switch on are its gaps after the cutover.
+         (variant === "materialize" && on === "cutover"
+            ? map?.[`${variant}/on`]
+            : undefined) ??
+         map?.[variant] ??
+         map?.["*"];
       if (gap) return gap;
    }
    return undefined;
@@ -208,10 +243,11 @@ for (const shape of SHAPES) {
       describe(`conformance: ${shape.name} [${variant}]`, () => {
          let restore: () => void = () => {};
          let fixture: LoadedFixture | undefined;
+         let cutover: LoadedFixture | undefined;
          let loadError: string | undefined;
          const live = new Map<string, Outcome>();
          const served = new Map<string, Outcome>();
-         const key = (q: ConformanceQuery, on?: Switch) =>
+         const key = (q: ConformanceQuery, on?: Switch | "live-cutover") =>
             on ? `${q.name}/${on}` : q.name;
          const runIn = (
             target: { run: LoadedFixture["run"] },
@@ -222,8 +258,13 @@ for (const shape of SHAPES) {
          beforeAll(async () => {
             // Loaded with the switch on, so `#(materialize)` is planned; the
             // router reads the switch per query, so both are queried here.
+            // The v1 cutover is read at load (it plans v1 rollups as the
+            // rollup leg's, under their v2 names) and at bind, so it gets a
+            // package of its own, loaded, built and bound under it, by a
+            // load pool spawned with it.
             restore = withSwitch("on");
             try {
+               await freshLoadPool();
                const loader = await loadFixture({
                   ...DATA_FILES,
                   ...renderFiles(shape, variant),
@@ -231,13 +272,34 @@ for (const shape of SHAPES) {
                for (const q of shape.queries) {
                   live.set(key(q), await runIn(loader, q));
                }
-               fixture = await loader.bind();
-               for (const on of SWITCHES) {
+               fixture = await loader.bind({ includeRollups: true });
+               for (const on of SWITCHES.filter((s) => s !== "cutover")) {
                   restore();
                   restore = withSwitch(on);
                   for (const q of shape.queries) {
                      served.set(key(q, on), await runIn(fixture, q));
                   }
+               }
+               restore();
+               restore = withSwitch("cutover");
+               await freshLoadPool();
+               const cutoverLoader = await loadFixture({
+                  ...DATA_FILES,
+                  ...renderFiles(shape, variant),
+               });
+               // Live as the cutover package answers before any table is
+               // bound: no composite exists to answer it (with today's
+               // switches, a v1 rollup's composite answers even unbuilt, as
+               // its base, without the measures' annotations).
+               for (const q of shape.queries) {
+                  live.set(
+                     key(q, "live-cutover"),
+                     await runIn(cutoverLoader, q),
+                  );
+               }
+               cutover = await cutoverLoader.bind({ includeRollups: true });
+               for (const q of shape.queries) {
+                  served.set(key(q, "cutover"), await runIn(cutover, q));
                }
             } catch (error) {
                loadError =
@@ -264,24 +326,33 @@ for (const shape of SHAPES) {
                      on,
                      q.name,
                      describeOutcome(
-                        live.get(key(q))!,
+                        live.get(
+                           key(
+                              q,
+                              on === "cutover" ? "live-cutover" : undefined,
+                           ),
+                        )!,
                         served.get(key(q, on))!,
                      ),
                   );
                }
             }
-            if (fixture) {
-               const errors = Object.entries(fixture.buildErrors);
+            for (const [label, f] of [
+               ["-", fixture],
+               ["cutover", cutover],
+            ] as const) {
+               if (!f) continue;
+               const errors = Object.entries(f.buildErrors);
                row(
-                  "-",
+                  label,
                   "(package)",
                   [
-                     `verdicts ${fixture.verdicts.join(", ")}`,
-                     `built ${fixture.built.map((b) => `${b.name}/${b.tier}`).join(", ")}`,
+                     `verdicts ${f.verdicts.join(", ")}`,
+                     `built ${f.built.map((b) => `${b.name}/${b.tier}`).join(", ")}`,
                      ...(errors.length
                         ? [`build errors ${JSON.stringify(errors)}`]
                         : []),
-                     `warnings ${fixture.warnings.map((w) => `${w.code}:${w.subject}: ${(w.message ?? "").slice(0, 200)}`).join(" ;; ")}`,
+                     `warnings ${f.warnings.map((w) => `${w.code}:${w.subject}: ${(w.message ?? "").slice(0, 200)}`).join(" ;; ")}`,
                   ].join("; "),
                );
             }
@@ -290,6 +361,7 @@ for (const shape of SHAPES) {
          afterAll(async () => {
             restore();
             await fixture?.dispose();
+            await cutover?.dispose();
          });
 
          for (const on of SWITCHES) {
@@ -299,7 +371,10 @@ for (const shape of SHAPES) {
                const title = `${q.name}, switch ${on}: ${want === "colocated" ? "served" : want}, equal to live`;
                const test = () => {
                   expect(loadError).toBeUndefined();
-                  const l = live.get(key(q))!;
+                  const l =
+                     on === "cutover"
+                        ? live.get(key(q, "live-cutover"))!
+                        : live.get(key(q))!;
                   const s = served.get(key(q, on))!;
                   if ("error" in l) throw new Error(`live failed: ${l.error}`);
                   if ("error" in s) {
@@ -308,6 +383,13 @@ for (const shape of SHAPES) {
                   expect(
                      rowDifference(l.answer.rows, s.answer.rows),
                   ).toBeUndefined();
+                  // After the cutover, by the shadow comparison's exact rule
+                  // too (strings as strings, integers and bigints exact).
+                  if (on === "cutover") {
+                     expect(
+                        shadowRowDifference(l.answer.rows, s.answer.rows),
+                     ).toBeUndefined();
+                  }
                   const needed = tolerancesNeeded(l.answer, s.answer);
                   expect(
                      fieldDifference(l.answer, s.answer, needed),
@@ -318,18 +400,27 @@ for (const shape of SHAPES) {
                      );
                   }
                   if (want === "live") {
-                     expect(s.answer.servedBy).not.toBe("materialized");
+                     expect(s.answer.servedBy).toBe("live");
+                     return;
+                  }
+                  if (want === "rollup" || want === "view") {
+                     expect(s.answer.servedBy).toBe(want);
                      return;
                   }
                   expect(s.answer.servedBy).toBe("materialized");
                   if (variant === "colocated" || want === "colocated") {
                      expect(s.answer.servedFrom).toBeNull();
+                     // After the cutover a colocated table is read by the
+                     // served copy, never Malloy's build manifest.
+                     if (on === "cutover") {
+                        expect(s.answer.via).toBe("served_copy");
+                     }
                      return;
                   }
                   expect(s.answer.servedFrom).toBe("storage");
                   // The switch decides which storage path answers.
                   expect(s.answer.via).toBe(
-                     on === "on" ? "served_copy" : undefined,
+                     on === "off" ? undefined : "served_copy",
                   );
                };
                if (gap && !RUN_GAPS) {
