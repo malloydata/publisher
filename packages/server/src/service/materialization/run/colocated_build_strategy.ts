@@ -4,7 +4,7 @@
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { getV1ServedCopyMode } from "../../../config";
 import { logger } from "../../../logger";
-import { errorCodeOf } from "./run_telemetry";
+import { errorCodeOf } from "./error_code";
 import { errMessage } from "../../../utils";
 import { quoteRenameTarget, quoteTablePath } from "../../quoting";
 import { storedColumnsOfOutput } from "../stored_column_types";

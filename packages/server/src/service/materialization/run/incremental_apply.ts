@@ -4,7 +4,7 @@
 import { decodeDottedTablePath } from "@malloydata/malloy";
 
 import { logger } from "../../../logger";
-import { errorCodeOf } from "./run_telemetry";
+import { errorCodeOf } from "./error_code";
 import type { IncrementalStepReason } from "../../../materialization_metrics";
 import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface";
 import type { IncrementalStrategy } from "../types";

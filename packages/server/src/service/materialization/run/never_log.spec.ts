@@ -16,7 +16,7 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { createTableWithDeclaredTypes } from "./materialization_build_session";
 import { stackFrames } from "./run_lifecycle";
-import { errorCodeOf } from "./run_telemetry";
+import { errorCodeOf } from "./error_code";
 
 // The never-log rule (docs/materialization-v2-plan.md, "Step 4
 // specification"): no log call, at any level, carries a value from the data

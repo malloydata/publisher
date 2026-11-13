@@ -21,7 +21,8 @@ import {
 import { errMessage } from "../../../utils";
 import { MaterializationStatus } from "../types";
 import { VALID_TRANSITIONS } from "./materialization_run_support";
-import { errorCodeOf, runFailureReported } from "./run_telemetry";
+import { errorCodeOf } from "./error_code";
+import { runFailureReported } from "./run_telemetry";
 
 /**
  * A run's state machine and its life in this process: every status change goes
