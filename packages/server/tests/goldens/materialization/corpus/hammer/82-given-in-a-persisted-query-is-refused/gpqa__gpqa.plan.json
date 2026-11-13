@@ -1,0 +1,57 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "arg_bound@<hammer>/gpqa/gpqa.malloy": []
+        },
+        "order": [
+          "arg_bound@<hammer>/gpqa/gpqa.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "arg_bound@<hammer>/gpqa/gpqa.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "arg_bound@<hammer>/gpqa/gpqa.malloy": "gpqa.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "arg_bound@<hammer>/gpqa/gpqa.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {
+      "arg_bound@<hammer>/gpqa/gpqa.malloy": {
+        "message": "Source 'arg_bound' cannot be materialized (colocated '#@ persist'): its persisted query references a given. A given the persisted query is built with is substituted at BUILD time, so the table would hold the default's rows and serve them to every caller, ignoring the value each one supplies. Keep the given OUT of the persisted query and apply it when the source is read — a `where:` in the source's extend block, or a dimension, measure or join declared there — where it binds per caller over the materialized rows. Otherwise stop persisting this source.",
+        "modelPath": "gpqa.malloy",
+        "name": "arg_bound",
+        "reason": "given_in_persisted_query",
+        "sourceID": "arg_bound@<hammer>/gpqa/gpqa.malloy",
+        "tier": "colocated"
+      }
+    },
+    "sources": {}
+  }
+}

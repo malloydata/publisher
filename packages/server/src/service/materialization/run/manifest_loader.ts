@@ -134,7 +134,17 @@ export function splitManifestEntries(
          continue;
       }
       if (entry.storageDestinationName) {
-         storageEntries[sourceEntityId] = entry;
+         // The internal key record only from the local store
+         // (withRollupKeyRecords); a host's entry never brings one.
+         const { keyUniqueness: _unread, ...plain } = entry as ManifestEntry & {
+            keyUniqueness?: unknown;
+         };
+         const keyUniqueness = readKeyUniqueness
+            ? keyUniquenessOnEntry(entry)
+            : undefined;
+         storageEntries[sourceEntityId] = keyUniqueness
+            ? ({ ...plain, keyUniqueness } as ManifestEntry)
+            : plain;
          continue;
       }
       tableNameManifest[sourceEntityId] = {
@@ -158,7 +168,21 @@ export function splitManifestEntries(
 function keyUniquenessOnEntry(entry: ManifestEntry): KeyUniqueness | undefined {
    const k = (entry as { keyUniqueness?: Partial<KeyUniqueness> })
       .keyUniqueness;
-   return k && typeof k.keyColumn === "string" && typeof k.unique === "boolean"
-      ? { keyColumn: k.keyColumn, unique: k.unique }
+   if (!k) return undefined;
+   const own =
+      typeof k.keyColumn === "string" && typeof k.unique === "boolean"
+         ? { keyColumn: k.keyColumn, unique: k.unique }
+         : undefined;
+   const parentKeys =
+      k.parentKeys && typeof k.parentKeys === "object"
+         ? Object.fromEntries(
+              Object.entries(k.parentKeys).filter(
+                 ([, unique]) => typeof unique === "boolean",
+              ),
+           )
+         : {};
+   const anyParent = Object.keys(parentKeys).length > 0;
+   return own || anyParent
+      ? { ...(own ?? {}), ...(anyParent ? { parentKeys } : {}) }
       : undefined;
 }

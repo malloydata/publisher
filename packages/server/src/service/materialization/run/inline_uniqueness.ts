@@ -143,6 +143,22 @@ export interface RollupKeyRecord {
    unique: boolean;
    /** The run whose check ran (a carried record keeps it). */
    checkedInRun?: string;
+   /**
+    * Set on a query source's primary key check (see `ParentKeyCheck`): the
+    * source whose key it read, beside the rollup at the record's address.
+    * Absent on the rollup's own key check. `unique` then says the key was
+    * held once per row and never NULL.
+    */
+   sourceID?: string;
+}
+
+/**
+ * The key a rollup key record is held under: the rollup's content address,
+ * and for a query source's primary key check the source too. Every record
+ * under an address describes the rollup's table, so writing it loses them all.
+ */
+export function rollupKeyRecordKey(address: string, sourceID?: string): string {
+   return sourceID === undefined ? address : `${address}#${sourceID}`;
 }
 
 /**
@@ -211,7 +227,7 @@ export class UniquenessLedger {
     * record stands for that table until it is written again.
     */
    recordRollupKey(address: string, record: RollupKeyRecord): void {
-      this.rollupKeys.set(address, {
+      this.rollupKeys.set(rollupKeyRecordKey(address, record.sourceID), {
          ...record,
          ...(this.runId ? { checkedInRun: this.runId } : {}),
       });
@@ -220,19 +236,31 @@ export class UniquenessLedger {
    /**
     * Keep the previous run's record for a rollup this run did not build (its
     * entry carried): only when this run wrote neither its address nor its
-    * table, and the record names the same table and the same check.
+    * table, and the record names the same table and the same check. With
+    * `sourceID`, the record of that query source's primary key check.
     */
-   carryRollupKey(address: string, table: string, digest: string): void {
+   carryRollupKey(
+      address: string,
+      table: string,
+      digest: string,
+      sourceID?: string,
+   ): void {
+      const key = rollupKeyRecordKey(address, sourceID);
       if (
-         this.rollupKeys.has(address) ||
+         this.rollupKeys.has(key) ||
          this.writtenAddresses.has(address) ||
          this.writtenTables.has(table)
       ) {
          return;
       }
-      const prior = this.priorRollupKeys?.[address];
-      if (prior && prior.table === table && prior.digest === digest) {
-         this.rollupKeys.set(address, prior);
+      const prior = this.priorRollupKeys?.[key];
+      if (
+         prior &&
+         prior.table === table &&
+         prior.digest === digest &&
+         prior.sourceID === sourceID
+      ) {
+         this.rollupKeys.set(key, prior);
       }
    }
 
@@ -282,7 +310,11 @@ export class UniquenessLedger {
          }
       }
       for (const [key, record] of this.rollupKeys) {
-         if (key === address || record.table === table) {
+         if (
+            key === address ||
+            key.startsWith(`${address}#`) ||
+            record.table === table
+         ) {
             this.rollupKeys.delete(key);
          }
       }
@@ -384,6 +416,7 @@ export function rollupKeyRecordsIn(
             ...(typeof r.checkedInRun === "string"
                ? { checkedInRun: r.checkedInRun }
                : {}),
+            ...(typeof r.sourceID === "string" ? { sourceID: r.sourceID } : {}),
          };
       }
    }
@@ -518,6 +551,19 @@ export async function assertInlinedJoinsUnique(
 }
 
 /**
+ * The SQL of a stored table's primary key check, over `quotedTable` (a
+ * DuckDB path, as the destination's session reads it): one row when a value
+ * of `keyColumn` repeats or is NULL.
+ */
+export function storedKeyCheckSql(
+   quotedTable: string,
+   keyColumn: string,
+): string {
+   const k = `"${keyColumn.replace(/"/g, '""')}"`;
+   return `SELECT ${k} FROM ${quotedTable} GROUP BY ${k} HAVING COUNT(*) > 1 OR ${k} IS NULL LIMIT 1`;
+}
+
+/**
  * Run a rollup's key check (known limitation 29) on `connection` and say what
  * it found: unique when no non-NULL key value repeats. Undefined when the
  * check could not run, which the join-to-rollup leg reads as unknown and
@@ -617,6 +663,7 @@ export function keyUniquenessOf(
       !record ||
       !entry.physicalTableName ||
       !entry.connectionName ||
+      record.sourceID !== undefined ||
       record.table !==
          tableIdentityKey(
             "connection",
@@ -627,6 +674,55 @@ export function keyUniquenessOf(
       return undefined;
    }
    return { keyColumn: record.keyColumn, unique: record.unique };
+}
+
+/**
+ * Everything `records` say of the colocated table of the rollup at `address`:
+ * its own key check ({@link keyUniquenessOf}) and each query source's primary
+ * key check taken at its build, by sourceID. A record over another table is
+ * left out; undefined when none describes this one.
+ */
+export function keyUniquenessAt(
+   records: Readonly<Record<string, RollupKeyRecord>> | undefined,
+   address: string,
+   entry: Pick<
+      ManifestEntry,
+      "physicalTableName" | "connectionName" | "storageDestinationName"
+   >,
+): KeyUniqueness | undefined {
+   if (!records || !entry.physicalTableName) return undefined;
+   // A stored table carries only its own source's primary key check; a
+   // colocated one, its rollup's key check and each query source's.
+   const table = entry.storageDestinationName
+      ? tableIdentityKey(
+           "destination",
+           entry.storageDestinationName,
+           entry.physicalTableName,
+        )
+      : entry.connectionName
+        ? tableIdentityKey(
+             "connection",
+             entry.connectionName,
+             entry.physicalTableName,
+          )
+        : undefined;
+   if (table === undefined) return undefined;
+   const own = entry.storageDestinationName
+      ? undefined
+      : keyUniquenessOf(records[address], entry);
+   const parentKeys: Record<string, boolean> = {};
+   for (const [key, record] of Object.entries(records)) {
+      if (
+         record.sourceID !== undefined &&
+         key === rollupKeyRecordKey(address, record.sourceID) &&
+         record.table === table
+      ) {
+         parentKeys[record.sourceID] = record.unique;
+      }
+   }
+   const anyParent = Object.keys(parentKeys).length > 0;
+   if (!own && !anyParent) return undefined;
+   return { ...(own ?? {}), ...(anyParent ? { parentKeys } : {}) };
 }
 
 /**
@@ -643,9 +739,7 @@ export function withRollupKeyRecords<E extends ManifestEntry>(
    if (!records || Object.keys(records).length === 0) return entries;
    const out: Record<string, E & { keyUniqueness?: KeyUniqueness }> = {};
    for (const [address, entry] of Object.entries(entries)) {
-      const keyUniqueness = entry.storageDestinationName
-         ? undefined
-         : keyUniquenessOf(records[address], entry);
+      const keyUniqueness = keyUniquenessAt(records, address, entry);
       out[address] = keyUniqueness ? { ...entry, keyUniqueness } : entry;
    }
    return out;

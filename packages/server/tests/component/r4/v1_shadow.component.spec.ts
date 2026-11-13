@@ -128,7 +128,7 @@ describe("v1 served copy: shadow", () => {
             ...renderFiles(shape, variant),
          });
          try {
-            const fixture = await loader.bind();
+            const fixture = await loader.bind({ includeRollups: true });
             const entry = Object.keys(shape.files)[0];
             const today = [];
             for (const q of queries) {

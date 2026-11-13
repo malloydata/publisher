@@ -1,0 +1,57 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders@<hammer>/gbb/gbb.malloy": []
+        },
+        "order": [
+          "orders@<hammer>/gbb/gbb.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "orders@<hammer>/gbb/gbb.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders@<hammer>/gbb/gbb.malloy": "gbb.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders@<hammer>/gbb/gbb.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {
+      "orders@<hammer>/gbb/gbb.malloy": {
+        "message": "Source 'orders' cannot be materialized into a storage destination: a given is read while the persisted relation is BUILT, so its value is substituted at build time — from the declaration's default, the only value available then — and every caller is served that one slice. Move the given out of the persisted query and into the source's extend block (`where: …`), where it is left out of the build and applied per caller when the artifact is read.",
+        "modelPath": "gbb.malloy",
+        "name": "orders",
+        "reason": "given_in_persisted_query",
+        "sourceID": "orders@<hammer>/gbb/gbb.malloy",
+        "tier": "storage"
+      }
+    },
+    "sources": {}
+  }
+}

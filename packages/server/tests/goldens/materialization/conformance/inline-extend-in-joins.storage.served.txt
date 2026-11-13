@@ -1,0 +1,28 @@
+// conformance: inline extend in joins [storage]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: by_customer__served is {
+   customer_id::number,
+   seg_up::string,
+   total::number,
+   n::number
+}
+
+import "raw.malloy"
+
+#@ persist name="by_customer" storage="lake"
+source: by_customer is __served_copy_alias_of_lake.virtual('6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973')::by_customer__served
+
+// ==== <pkg>/plus.malloy
+##! experimental { persistence }
+import "raw.malloy"
+import "m.malloy"
+
+source: by_customer_plus is by_customer extend {
+                                          
+                                         
+                            
+  measure: grand is total.sum()
+}

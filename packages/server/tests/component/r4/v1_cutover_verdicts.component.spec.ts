@@ -32,7 +32,7 @@ async function preview(
       ...renderFiles(shape, variant),
    });
    try {
-      const pkg = (await loader.bind()).pkg;
+      const pkg = (await loader.bind({ includeRollups: true })).pkg;
       const verdicts = await pkg.previewServeVerdicts();
       return Object.fromEntries(
          verdicts.map((v) => [v.sourceName, [v.cutoverPath, v.cutoverReason]]),

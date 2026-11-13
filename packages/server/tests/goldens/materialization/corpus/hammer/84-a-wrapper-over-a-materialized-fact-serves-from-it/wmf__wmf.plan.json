@@ -1,0 +1,93 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "_orders_fact@<hammer>/wmf/wmf.malloy": []
+        },
+        "order": [
+          "_orders_fact@<hammer>/wmf/wmf.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "_orders_fact@<hammer>/wmf/wmf.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "_orders_fact@<hammer>/wmf/wmf.malloy": "wmf.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "_orders_fact@<hammer>/wmf/wmf.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "_orders_fact@<hammer>/wmf/wmf.malloy": {
+        "annotationFields": {
+          "name": "wmf_orders_fact",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "org_id",
+            "type": "number"
+          },
+          {
+            "name": "region_id",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "wmf.malloy",
+        "name": "_orders_fact",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "f53e38ebc79dae53078691595c194b4e45f21c3a6a8284b4163b76abf28242c6",
+        "sourceID": "_orders_fact@<hammer>/wmf/wmf.malloy",
+        "sql": "sha256:6ef54ac9444e1bcc",
+        "strippedTerms": [
+          {
+            "code": "org_id = $ORG_ID",
+            "givens": [
+              "ORG_ID"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

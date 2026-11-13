@@ -1,0 +1,35 @@
+// conformance: materialize: a refined source [materialize]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: east_west__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number,
+   order_month::date,
+   big::boolean
+}
+
+import "raw.malloy"
+
+#(materialize) storage="lake"
+source: east_west is __served_copy_alias_of_lake.virtual('66844921999eecf1f00874459a3b65a47e4947dad08dbb52d961e11f2951bbf8')::east_west__served extend {
+  internal rename:
+    order_month__stored is order_month
+  where: region = 'east' or region = 'west'
+  dimension:
+    #(doc) "Month of the order"
+    order_month is order_month__stored.month
+  measure: total is amount.sum()
+}
+
+source: east_west_ext is east_west extend {
+  measure: n is count()
+}

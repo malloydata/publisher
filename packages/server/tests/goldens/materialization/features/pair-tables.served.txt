@@ -1,0 +1,465 @@
+// feature: pair tables: files generated while serving
+
+// ==== <pkg>/m.malloy (text 1 of 2)
+##! experimental { virtual_source }
+type: customers_blocks__served is {
+   id::number,
+   name::string,
+   segment::string,
+   home_region::string,
+   signup_date::date,
+   __parent_row::boolean,
+   __child_row::boolean,
+   __pair_lane::number,
+   orders__id::number,
+   orders__customer_id::number,
+   orders__region::string,
+   orders__status::string,
+   orders__amount::number,
+   orders__discount::number,
+   orders__order_date::date,
+   orders__created_at::timestamp,
+   orders__order::number,
+   orders__lines__line_id::number,
+   orders__lines__order_id::number,
+   orders__lines__sku::string,
+   orders__lines__qty::number,
+   big_orders__id::number,
+   big_orders__customer_id::number,
+   big_orders__region::string,
+   big_orders__status::string,
+   big_orders__amount::number,
+   big_orders__discount::number,
+   big_orders__order_date::date,
+   big_orders__created_at::timestamp,
+   big_orders__order::number
+}
+type: customers_path__served is {
+   id::number,
+   name::string,
+   segment::string,
+   home_region::string,
+   signup_date::date,
+   __parent_row::boolean,
+   __child_row::boolean,
+   orders__id::number,
+   orders__customer_id::number,
+   orders__region::string,
+   orders__status::string,
+   orders__amount::number,
+   orders__discount::number,
+   orders__order_date::date,
+   orders__created_at::timestamp,
+   orders__order::number,
+   orders__lines__line_id::number,
+   orders__lines__order_id::number,
+   orders__lines__sku::string,
+   orders__lines__qty::number
+}
+type: orders_pair__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number,
+   __parent_row::boolean,
+   lines__line_id::number,
+   lines__order_id::number,
+   lines__sku::string,
+   lines__qty::number
+}
+
+import "raw.malloy"
+
+source: lines is lines_raw extend {
+  measure: qty_total is qty.sum()
+}
+
+// One join_many: a one-hop pair table.
+#(materialize) storage="lake" inline=["lines"]
+source: orders_pair is __served_copy_alias_of_lake.virtual('19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016')::orders_pair__served extend {
+  internal rename:
+    __parent_row__pair is __parent_row
+    lines__line_id__pair is lines__line_id
+    lines__order_id__pair is lines__order_id
+    lines__sku__pair is lines__sku
+    lines__qty__pair is lines__qty
+} extend {
+  dimension: lines is {
+    line_id is lines__line_id__pair,
+    order_id is lines__order_id__pair,
+    sku is lines__sku__pair,
+    qty is lines__qty__pair
+  }
+  measure:
+    order_n is count()
+    amount_sum is amount.sum()
+    line_n is lines.count()
+    qty_sum is lines.qty.sum()
+} extend {
+  internal rename:
+    order_n__pair is order_n
+    amount_sum__pair is amount_sum
+  measure:
+    order_n is order_n__pair { where: __parent_row__pair }
+    amount_sum is amount_sum__pair { where: __parent_row__pair }
+}
+
+source: orders_with_lines is orders_raw extend {
+  join_many: lines on lines.order_id = id
+}
+
+// A path of two join_manys: one table, a row flag per level.
+#(materialize) storage="lake" inline=["orders", "orders.lines"]
+source: customers_path is __served_copy_alias_of_lake.virtual('86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373')::customers_path__served extend {
+  internal rename:
+    __parent_row__pair is __parent_row
+    __child_row__pair is __child_row
+    orders__id__pair is orders__id
+    orders__customer_id__pair is orders__customer_id
+    orders__region__pair is orders__region
+    orders__status__pair is orders__status
+    orders__amount__pair is orders__amount
+    orders__discount__pair is orders__discount
+    orders__order_date__pair is orders__order_date
+    orders__created_at__pair is orders__created_at
+    orders__order__pair is orders__order
+    orders__lines__line_id__pair is orders__lines__line_id
+    orders__lines__order_id__pair is orders__lines__order_id
+    orders__lines__sku__pair is orders__lines__sku
+    orders__lines__qty__pair is orders__lines__qty
+} extend {
+  dimension: orders is {
+    id is orders__id__pair,
+    customer_id is orders__customer_id__pair,
+    region is orders__region__pair,
+    status is orders__status__pair,
+    amount is orders__amount__pair,
+    discount is orders__discount__pair,
+    order_date is orders__order_date__pair,
+    created_at is orders__created_at__pair,
+    order is orders__order__pair,
+    lines is {
+      line_id is orders__lines__line_id__pair,
+      order_id is orders__lines__order_id__pair,
+      sku is orders__lines__sku__pair,
+      qty is orders__lines__qty__pair
+    }
+  }
+  measure:
+    customer_n is count()
+    order_n is orders.count()
+    qty_sum is orders.lines.qty.sum()
+} extend {
+  internal rename:
+    customer_n__pair is customer_n
+    order_n__pair is order_n
+  measure:
+    customer_n is customer_n__pair { where: __parent_row__pair }
+    order_n is order_n__pair { where: __child_row__pair }
+}
+
+// A path and another join_many: two blocks of one table.
+#(materialize) storage="lake" inline=["orders.lines", "big_orders"]
+source: customers_blocks is __served_copy_alias_of_lake.virtual('c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9')::customers_blocks__served extend {
+  internal rename:
+    __parent_row__pair is __parent_row
+    __child_row__pair is __child_row
+    __pair_lane__pair is __pair_lane
+    orders__id__pair is orders__id
+    orders__customer_id__pair is orders__customer_id
+    orders__region__pair is orders__region
+    orders__status__pair is orders__status
+    orders__amount__pair is orders__amount
+    orders__discount__pair is orders__discount
+    orders__order_date__pair is orders__order_date
+    orders__created_at__pair is orders__created_at
+    orders__order__pair is orders__order
+    orders__lines__line_id__pair is orders__lines__line_id
+    orders__lines__order_id__pair is orders__lines__order_id
+    orders__lines__sku__pair is orders__lines__sku
+    orders__lines__qty__pair is orders__lines__qty
+    big_orders__id__pair is big_orders__id
+    big_orders__customer_id__pair is big_orders__customer_id
+    big_orders__region__pair is big_orders__region
+    big_orders__status__pair is big_orders__status
+    big_orders__amount__pair is big_orders__amount
+    big_orders__discount__pair is big_orders__discount
+    big_orders__order_date__pair is big_orders__order_date
+    big_orders__created_at__pair is big_orders__created_at
+    big_orders__order__pair is big_orders__order
+  where: __pair_lane__pair = 0
+} extend {
+  dimension: orders is {
+    id is orders__id__pair,
+    customer_id is orders__customer_id__pair,
+    region is orders__region__pair,
+    status is orders__status__pair,
+    amount is orders__amount__pair,
+    discount is orders__discount__pair,
+    order_date is orders__order_date__pair,
+    created_at is orders__created_at__pair,
+    order is orders__order__pair,
+    lines is {
+      line_id is orders__lines__line_id__pair,
+      order_id is orders__lines__order_id__pair,
+      sku is orders__lines__sku__pair,
+      qty is orders__lines__qty__pair
+    }
+  }
+  dimension: big_orders is {
+    id is big_orders__id__pair,
+    customer_id is big_orders__customer_id__pair,
+    region is big_orders__region__pair,
+    status is big_orders__status__pair,
+    amount is big_orders__amount__pair,
+    discount is big_orders__discount__pair,
+    order_date is big_orders__order_date__pair,
+    created_at is big_orders__created_at__pair,
+    order is big_orders__order__pair
+  }
+  measure:
+    customer_n is count()
+    qty_sum is orders.lines.qty.sum()
+    big_n is big_orders.count()
+} extend {
+  internal rename:
+    customer_n__pair is customer_n
+  measure:
+    customer_n is customer_n__pair { where: __parent_row__pair }
+}
+
+// ==== <pkg>/m.malloy (text 2 of 2)
+##! experimental { virtual_source }
+type: customers_blocks__served is {
+   id::number,
+   name::string,
+   segment::string,
+   home_region::string,
+   signup_date::date,
+   __parent_row::boolean,
+   __pair_lane::number,
+   big_orders__id::number,
+   big_orders__customer_id::number,
+   big_orders__region::string,
+   big_orders__status::string,
+   big_orders__amount::number,
+   big_orders__discount::number,
+   big_orders__order_date::date,
+   big_orders__created_at::timestamp,
+   big_orders__order::number,
+   orders__id::number,
+   orders__customer_id::number,
+   orders__region::string,
+   orders__status::string,
+   orders__amount::number,
+   orders__discount::number,
+   orders__order_date::date,
+   orders__created_at::timestamp,
+   orders__order::number,
+   orders__lines__line_id::number,
+   orders__lines__order_id::number,
+   orders__lines__sku::string,
+   orders__lines__qty::number
+}
+type: customers_path__served is {
+   id::number,
+   name::string,
+   segment::string,
+   home_region::string,
+   signup_date::date,
+   __parent_row::boolean,
+   __child_row::boolean,
+   orders__id::number,
+   orders__customer_id::number,
+   orders__region::string,
+   orders__status::string,
+   orders__amount::number,
+   orders__discount::number,
+   orders__order_date::date,
+   orders__created_at::timestamp,
+   orders__order::number,
+   orders__lines__line_id::number,
+   orders__lines__order_id::number,
+   orders__lines__sku::string,
+   orders__lines__qty::number
+}
+type: orders_pair__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number,
+   __parent_row::boolean,
+   lines__line_id::number,
+   lines__order_id::number,
+   lines__sku::string,
+   lines__qty::number
+}
+
+import "raw.malloy"
+
+source: lines is lines_raw extend {
+  measure: qty_total is qty.sum()
+}
+
+// One join_many: a one-hop pair table.
+#(materialize) storage="lake" inline=["lines"]
+source: orders_pair is __served_copy_alias_of_lake.virtual('19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016')::orders_pair__served extend {
+  internal rename:
+    __parent_row__pair is __parent_row
+    lines__line_id__pair is lines__line_id
+    lines__order_id__pair is lines__order_id
+    lines__sku__pair is lines__sku
+    lines__qty__pair is lines__qty
+} extend {
+  dimension: lines is {
+    line_id is lines__line_id__pair,
+    order_id is lines__order_id__pair,
+    sku is lines__sku__pair,
+    qty is lines__qty__pair
+  }
+  measure:
+    order_n is count()
+    amount_sum is amount.sum()
+    line_n is lines.count()
+    qty_sum is lines.qty.sum()
+} extend {
+  internal rename:
+    order_n__pair is order_n
+    amount_sum__pair is amount_sum
+  measure:
+    order_n is order_n__pair { where: __parent_row__pair }
+    amount_sum is amount_sum__pair { where: __parent_row__pair }
+}
+
+source: orders_with_lines is orders_raw extend {
+  join_many: lines on lines.order_id = id
+}
+
+// A path of two join_manys: one table, a row flag per level.
+#(materialize) storage="lake" inline=["orders", "orders.lines"]
+source: customers_path is __served_copy_alias_of_lake.virtual('86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373')::customers_path__served extend {
+  internal rename:
+    __parent_row__pair is __parent_row
+    __child_row__pair is __child_row
+    orders__id__pair is orders__id
+    orders__customer_id__pair is orders__customer_id
+    orders__region__pair is orders__region
+    orders__status__pair is orders__status
+    orders__amount__pair is orders__amount
+    orders__discount__pair is orders__discount
+    orders__order_date__pair is orders__order_date
+    orders__created_at__pair is orders__created_at
+    orders__order__pair is orders__order
+    orders__lines__line_id__pair is orders__lines__line_id
+    orders__lines__order_id__pair is orders__lines__order_id
+    orders__lines__sku__pair is orders__lines__sku
+    orders__lines__qty__pair is orders__lines__qty
+} extend {
+  dimension: orders is {
+    id is orders__id__pair,
+    customer_id is orders__customer_id__pair,
+    region is orders__region__pair,
+    status is orders__status__pair,
+    amount is orders__amount__pair,
+    discount is orders__discount__pair,
+    order_date is orders__order_date__pair,
+    created_at is orders__created_at__pair,
+    order is orders__order__pair,
+    lines is {
+      line_id is orders__lines__line_id__pair,
+      order_id is orders__lines__order_id__pair,
+      sku is orders__lines__sku__pair,
+      qty is orders__lines__qty__pair
+    }
+  }
+  measure:
+    customer_n is count()
+    order_n is orders.count()
+    qty_sum is orders.lines.qty.sum()
+} extend {
+  internal rename:
+    customer_n__pair is customer_n
+    order_n__pair is order_n
+  measure:
+    customer_n is customer_n__pair { where: __parent_row__pair }
+    order_n is order_n__pair { where: __child_row__pair }
+}
+
+// A path and another join_many: two blocks of one table.
+#(materialize) storage="lake" inline=["orders.lines", "big_orders"]
+source: customers_blocks is __served_copy_alias_of_lake.virtual('c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9')::customers_blocks__served extend {
+  internal rename:
+    __parent_row__pair is __parent_row
+    __pair_lane__pair is __pair_lane
+    big_orders__id__pair is big_orders__id
+    big_orders__customer_id__pair is big_orders__customer_id
+    big_orders__region__pair is big_orders__region
+    big_orders__status__pair is big_orders__status
+    big_orders__amount__pair is big_orders__amount
+    big_orders__discount__pair is big_orders__discount
+    big_orders__order_date__pair is big_orders__order_date
+    big_orders__created_at__pair is big_orders__created_at
+    big_orders__order__pair is big_orders__order
+    orders__id__pair is orders__id
+    orders__customer_id__pair is orders__customer_id
+    orders__region__pair is orders__region
+    orders__status__pair is orders__status
+    orders__amount__pair is orders__amount
+    orders__discount__pair is orders__discount
+    orders__order_date__pair is orders__order_date
+    orders__created_at__pair is orders__created_at
+    orders__order__pair is orders__order
+    orders__lines__line_id__pair is orders__lines__line_id
+    orders__lines__order_id__pair is orders__lines__order_id
+    orders__lines__sku__pair is orders__lines__sku
+    orders__lines__qty__pair is orders__lines__qty
+  where: __pair_lane__pair = 1
+} extend {
+  dimension: orders is {
+    id is orders__id__pair,
+    customer_id is orders__customer_id__pair,
+    region is orders__region__pair,
+    status is orders__status__pair,
+    amount is orders__amount__pair,
+    discount is orders__discount__pair,
+    order_date is orders__order_date__pair,
+    created_at is orders__created_at__pair,
+    order is orders__order__pair,
+    lines is {
+      line_id is orders__lines__line_id__pair,
+      order_id is orders__lines__order_id__pair,
+      sku is orders__lines__sku__pair,
+      qty is orders__lines__qty__pair
+    }
+  }
+  dimension: big_orders is {
+    id is big_orders__id__pair,
+    customer_id is big_orders__customer_id__pair,
+    region is big_orders__region__pair,
+    status is big_orders__status__pair,
+    amount is big_orders__amount__pair,
+    discount is big_orders__discount__pair,
+    order_date is big_orders__order_date__pair,
+    created_at is big_orders__created_at__pair,
+    order is big_orders__order__pair
+  }
+  measure:
+    customer_n is count()
+    qty_sum is orders.lines.qty.sum()
+    big_n is big_orders.count()
+} extend {
+  internal rename:
+    customer_n__pair is customer_n
+  measure:
+    customer_n is customer_n__pair { where: __parent_row__pair }
+}

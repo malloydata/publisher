@@ -174,6 +174,13 @@ export const BUILD_PLAN_REFRESH_WAIT_MS = 10_000;
  */
 export const PERSIST_SOURCE_REFUSED_CODE = "persist-source-refused";
 
+/**
+ * The code on the warning for a rollup whose build found its join_one key
+ * repeated ({@link PackageMaterialization.repeatedJoinOneKeyWarnings}).
+ */
+export const PREAGGREGATE_JOIN_ONE_KEY_REPEATED_CODE =
+   "preaggregate-join-one-key-repeated";
+
 /** The live serve verdicts the path report reads, by table and by source. */
 interface LiveVerdicts {
    byTable: ReadonlyMap<string, LiveTableVerdict>;
@@ -716,10 +723,24 @@ export class PackageMaterialization {
     * binds a new check.
     */
    forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
+      const ids = new Set(sourceEntityIds);
+      // A stored table's own primary key check, on its storage binding.
+      if (
+         this.storageServeBindings.some(
+            (b) => b.primaryKeys && ids.has(b.virtualHandle),
+         )
+      ) {
+         this.storageServeBindings = this.storageServeBindings.map((b) => {
+            if (!b.primaryKeys || !ids.has(b.virtualHandle)) return b;
+            const { primaryKeys: _forgotten, ...rest } = b;
+            return rest;
+         });
+         this.pushStorageServeBindingsToModels();
+      }
       const entries = this.freshnessEntries;
       if (!entries) return;
       let next: FreshnessManifest | undefined;
-      for (const id of sourceEntityIds) {
+      for (const id of ids) {
          const entry = entries[id];
          if (!entry?.keyUniqueness) continue;
          next ??= { ...entries };
@@ -1297,6 +1318,47 @@ export class PackageMaterialization {
          code: finding.code,
          severity: findingSeverity(finding),
       }));
+   }
+
+   /**
+    * One warning per bound `#(preaggregate)` rollup whose last build found its
+    * join_one key repeated (known limitation 29's check, `keyUniqueness`
+    * false): the data breaks a `join_one` declared on that key, so queries
+    * that read it beside other aggregates are answered live, and live itself
+    * counts each parent once per repeated row. Recomputed from what is bound,
+    * so it clears once a build finds the key unique, or forgets the check.
+    */
+   repeatedJoinOneKeyWarnings(): ApiPackageWarning[] {
+      const warnings: ApiPackageWarning[] = [];
+      const bySourceEntity = new Map(
+         Object.values(this.buildPlan?.sources ?? {}).flatMap((source) =>
+            source.sourceEntityId ? [[source.sourceEntityId, source]] : [],
+         ),
+      );
+      for (const [sourceEntityId, entry] of Object.entries(
+         this.freshnessEntries ?? {},
+      )) {
+         const check = entry.keyUniqueness;
+         if (!check || check.unique) continue;
+         const rollup = bySourceEntity.get(sourceEntityId)?.preaggregate;
+         if (!rollup) continue;
+         const source = bySourceEntity.get(sourceEntityId);
+         warnings.push({
+            ...(source?.modelPath ? { model: source.modelPath } : {}),
+            subject: rollup.baseSourceName,
+            code: PREAGGREGATE_JOIN_ONE_KEY_REPEATED_CODE,
+            severity: "warn",
+            message:
+               `holds \`${check.keyColumn}\` more than once, found by its ` +
+               `#(preaggregate) rollup's last build (grain ` +
+               `${rollup.grainDimensions.join(", ")}): a join_one keyed on it ` +
+               `is not unique in the data, so live repeats each joining row ` +
+               `once per match. Queries that read that join_one beside other ` +
+               `aggregates are answered live. Fix the data or declare the ` +
+               `join as join_many.`,
+         });
+      }
+      return warnings;
    }
 
    /**

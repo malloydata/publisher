@@ -1,0 +1,198 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "gated@<pkg>/m.malloy": [],
+          "gated_ext@<pkg>/m.malloy": [],
+          "scoped@<pkg>/m.malloy": []
+        },
+        "order": [
+          "scoped@<pkg>/m.malloy",
+          "gated_ext@<pkg>/m.malloy",
+          "gated@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "gated@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "gated_ext@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "scoped@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "gated@<pkg>/m.malloy": "m.malloy",
+      "gated_ext@<pkg>/m.malloy": "m.malloy",
+      "scoped@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "scoped@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "gated_ext@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "gated@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "gated@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "gated"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "gated",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792",
+        "sourceID": "gated@<pkg>/m.malloy",
+        "sql": "sha256:1c11c4f32b8df464"
+      },
+      "gated_ext@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "scoped"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "gated_ext",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9",
+        "sourceID": "gated_ext@<pkg>/m.malloy",
+        "sql": "sha256:9c53cda73d07f582",
+        "strippedTerms": [
+          {
+            "code": "region = $REGION",
+            "givens": [
+              "REGION"
+            ]
+          }
+        ]
+      },
+      "scoped@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "scoped"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "scoped",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9",
+        "sourceID": "scoped@<pkg>/m.malloy",
+        "sql": "sha256:9c53cda73d07f582",
+        "strippedTerms": [
+          {
+            "code": "region = $REGION",
+            "givens": [
+              "REGION"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

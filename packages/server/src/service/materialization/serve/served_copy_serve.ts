@@ -384,6 +384,13 @@ interface Compiled {
     * with reason `cross_connection`.
     */
    leftOut?: readonly LeftOutDefinition[];
+   /**
+    * The overlay the copy compiled from (the re-rooted files, by overlay
+    * key) and the connections it compiled with: the join-to-rollup leg
+    * compiles a variant over the same files (see {@link ServedCopyServe.joinRollupBasis}).
+    */
+   files?: ReadonlyMap<string, string>;
+   config?: ModelConnectionInput;
 }
 
 /**
@@ -409,6 +416,36 @@ type AuthorReroot = Reroot & {
     */
    columnsLeftOut?: readonly string[];
 };
+
+/**
+ * What the join-to-rollup leg reads of a compiled served copy, to answer a
+ * query in a storage destination (see {@link ServedCopyServe.joinRollupBasis}).
+ */
+export interface ServedCopyJoinBasis {
+   /** The compiled copy's identity: a variant over it is cached under this. */
+   key: string;
+   /** The re-rooted files, by overlay key, as the copy compiled them. */
+   files: ReadonlyMap<string, string>;
+   /** The connections the copy compiled with: the package's and its destinations under their aliases. */
+   config: ModelConnectionInput;
+   /** The copy's compiled model, for reading only. */
+   modelDef: unknown;
+   /** The bindings the copy re-rooted. */
+   rerooted: readonly ServeBinding[];
+   /** The same, each under the connection the copy reads it through (for the virtual map). */
+   aliased: readonly ServeBinding[];
+   /** The definitions the copy left out because a join they read crosses connections. */
+   leftOut: readonly LeftOutDefinition[];
+   /** The copy's checks on a query a variant over it answers; throws a {@link ServedCopyDecline}. */
+   check(args: {
+      /** The query source's author `sourceID`. */
+      sourceID: string;
+      runnable: QueryMaterializer;
+      queryString: string;
+      /** The re-rooted tables the variant's SQL reads. */
+      tablesRead: readonly ServeBinding[];
+   }): Promise<void>;
+}
 
 /** How many declined queries one compiled copy remembers before starting over. */
 const DECLINED_LIMIT = 1000;
@@ -726,42 +763,14 @@ export class ServedCopyServe {
       for (const p of pairsRead) {
          annotated.set(p.pair.join, p.annotatedChildFields);
       }
-      if (inlined.size > 0) {
-         const grain = joinGrainAggregatePaths(await prepared());
-         if (
-            grain.unreadable ||
-            grain.paths.some((p) => p.some((name) => inlined.has(name))) ||
-            readsJoinStar(queryString, inlined)
-         ) {
-            decline(
-               "the query aggregates at the grain of a join the served copy answers from stored columns",
-               "count_semantics",
-               JOIN_GRAIN_DETAIL,
-            );
-         }
-      }
-      // A record literal's field carries no annotation onto a result, so a
-      // query that returns an annotated joined field as a column (its
-      // `#(doc)`, `#(classification)`, render tags) is answered live, and
-      // every other query keeps the table: one check for both legs, before
-      // the pair table's own.
-      if ([...annotated.values()].some((f) => f.size > 0)) {
-         const { structRef, pipeline } = await prepared();
-         const struct = resolveStructRefSource<{ fields?: unknown }>(
-            structRef,
-            compiled.modelDef as never,
-         );
-         const out = annotatedJoinedOutput(pipeline, struct?.fields, annotated);
-         if (out.unreadable || out.output) {
-            decline(
-               out.output
-                  ? `the query returns ${out.output.path.join(".")}, whose annotations the served copy's record of stored columns cannot carry`
-                  : "the query's output columns cannot be read",
-               "joined_annotations",
-               JOINED_ANNOTATIONS_DETAIL,
-            );
-         }
-      }
+      await checkRecordJoins({
+         inlined,
+         annotated,
+         prepared,
+         modelDef: compiled.modelDef,
+         queryString,
+         decline,
+      });
       // A pair table (an inlined join_many) is read flat: exact only for the
       // aggregates pair_flat_query.ts proves, and only as the queried
       // source's own table, never through a join to it (its rows would fan
@@ -858,6 +867,113 @@ export class ServedCopyServe {
             runtime: compiled.runtime,
          },
       };
+   }
+
+   /**
+    * What the join-to-rollup leg (A7) builds on to answer a query in a
+    * storage destination (known limitation 26): the copy's re-rooted files
+    * and connections, over which it compiles the query's source with one
+    * join re-pointed at a joined source's rollup in the same destination,
+    * and the checks this copy runs on a query it answers, for the tables
+    * that variant reads. Undefined when the copy re-roots nothing.
+    */
+   async joinRollupBasis(): Promise<ServedCopyJoinBasis | undefined> {
+      const compiled = await this.ensureCompiled();
+      const { materializer, files, config } = compiled;
+      if (
+         !materializer ||
+         !files ||
+         !config ||
+         compiled.rerooted.length === 0
+      ) {
+         return undefined;
+      }
+      return {
+         key: `${compiled.generation}\u0000${compiled.key}`,
+         files,
+         config,
+         modelDef: compiled.modelDef,
+         rerooted: compiled.rerooted,
+         aliased: compiled.aliased,
+         leftOut: compiled.leftOut ?? [],
+         check: (args) => this.checkJoinVariant(compiled, args),
+      };
+   }
+
+   /**
+    * The served copy's own checks on a query a join-to-rollup variant
+    * compiled over it answers (see {@link joinRollupBasis}): the queried
+    * source must not opt out of persist or be one whose served surface the
+    * load-time classification checks flag; a pair table is never read
+    * through it (its rows fan out per child, and the join would read the
+    * rollup once per pair row); a join the copy answers from stored columns
+    * keeps its grain and annotation rules. The copy's time-zone rule needs
+    * no check here: the join leg declines every query that sets a
+    * `timezone:` (`TIME_ZONE`) before it compiles one. Throws a
+    * {@link ServedCopyDecline}.
+    */
+   private async checkJoinVariant(
+      compiled: Compiled,
+      args: {
+         sourceID: string;
+         runnable: QueryMaterializer;
+         queryString: string;
+         tablesRead: readonly ServeBinding[];
+      },
+   ): Promise<void> {
+      const decline = (
+         reason: string,
+         code: ServedCopyDeclineCode,
+         callerDetail?: string,
+      ): never => {
+         throw new ServedCopyDecline(reason, code, callerDetail);
+      };
+      const map = SourceMap.of(compiled.modelDef);
+      const node = map.node(args.sourceID);
+      const chain = node ? map.chainOf(node.def) : [args.sourceID];
+      if (chain.some((id) => compiled.unsafeIDs?.has(id))) {
+         decline(
+            "the query reads a source whose served copy exposes a field the compile of record does not classify or carry",
+            "not_served",
+         );
+      }
+      if (chain.some((id) => compiled.optOutIDs?.has(id))) {
+         decline(
+            "the query reads a source that opts out of persist",
+            "opt_out",
+         );
+      }
+      const { tablesRead } = args;
+      if (
+         (compiled.pairs ?? []).some((p) =>
+            tablesRead.some((b) => b.tablePath === p.tablePath),
+         )
+      ) {
+         decline(
+            "the query reads a pair table, which holds its source once per child of its inlined join_many",
+            "pair_shape",
+         );
+      }
+      let preparedRead: ReturnType<typeof readPreparedQuery> | undefined;
+      const prepared = () =>
+         (preparedRead ??= readPreparedQuery(args.runnable));
+      const inlined = new Set<string>();
+      const annotated = new Map<string, ReadonlySet<string>>();
+      for (const b of tablesRead) {
+         for (const [join, fields] of compiled.inlinedJoins?.get(b.tablePath) ??
+            []) {
+            inlined.add(join);
+            annotated.set(join, fields);
+         }
+      }
+      await checkRecordJoins({
+         inlined,
+         annotated,
+         prepared,
+         modelDef: (await prepared()).modelDef ?? compiled.modelDef,
+         queryString: args.queryString,
+         decline,
+      });
    }
 
    /** Whether a binding stores a `#(materialize)` source with a rolling window. */
@@ -1452,6 +1568,7 @@ export class ServedCopyServe {
          let servedDef: unknown;
          let servedRuntime: GraftRuntime;
          let leftOut: LeftOutDefinition[] = [];
+         let files: ReadonlyMap<string, string> = overlay;
          // The record that replaces an inlined join is the one text the
          // served copy writes over a join's place; when the copy does not
          // compile with it (the source's own text reads the join in a way
@@ -1670,11 +1787,12 @@ export class ServedCopyServe {
                };
             }
             try {
+               files = keyedOverlay(kept.overlay);
                ({
                   materializer,
                   def: servedDef,
                   runtime: servedRuntime,
-               } = await load(keyedOverlay(kept.overlay)));
+               } = await load(files));
             } catch (again) {
                if (contain(again, kept.overlay, "precise")) continue;
                if (keepInlinedJoins(again)) continue;
@@ -1895,9 +2013,71 @@ export class ServedCopyServe {
                   : [],
             ),
             ...(leftOut.length > 0 ? { leftOut } : {}),
+            files,
+            config,
          };
       }
       return { key, generation, lane, rerooted: [], aliased: [], problems };
+   }
+}
+
+/**
+ * The checks for a join the copy answers from a record of stored columns (an
+ * inlined join_one, or a pair table's join_many read flat), on one query
+ * compiled over the copy: an aggregate at such a join's grain is declined
+ * (`count_semantics`), and so is a query that returns one of its annotated
+ * fields as a column (`joined_annotations`). `inlined` are the inlined
+ * join_ones the query's tables answer from records, `annotated` each record
+ * join's annotated fields; `modelDef` resolves the query's source.
+ */
+async function checkRecordJoins(args: {
+   inlined: ReadonlySet<string>;
+   annotated: ReadonlyMap<string, ReadonlySet<string>>;
+   prepared: () => ReturnType<typeof readPreparedQuery>;
+   modelDef: unknown;
+   queryString: string;
+   decline: (
+      reason: string,
+      code: ServedCopyDeclineCode,
+      callerDetail?: string,
+   ) => never;
+}): Promise<void> {
+   const { inlined, annotated, prepared, decline } = args;
+   if (inlined.size > 0) {
+      const grain = joinGrainAggregatePaths(await prepared());
+      if (
+         grain.unreadable ||
+         grain.paths.some((p) => p.some((name) => inlined.has(name))) ||
+         readsJoinStar(args.queryString, inlined)
+      ) {
+         decline(
+            "the query aggregates at the grain of a join the served copy answers from stored columns",
+            "count_semantics",
+            JOIN_GRAIN_DETAIL,
+         );
+      }
+   }
+   // A record literal's field carries no annotation onto a result, so a
+   // query that returns an annotated joined field as a column (its
+   // `#(doc)`, `#(classification)`, render tags) is answered live, and
+   // every other query keeps the table: one check for both legs, before
+   // the pair table's own.
+   if ([...annotated.values()].some((f) => f.size > 0)) {
+      const { structRef, pipeline } = await prepared();
+      const struct = resolveStructRefSource<{ fields?: unknown }>(
+         structRef,
+         args.modelDef as never,
+      );
+      const out = annotatedJoinedOutput(pipeline, struct?.fields, annotated);
+      if (out.unreadable || out.output) {
+         decline(
+            out.output
+               ? `the query returns ${out.output.path.join(".")}, whose annotations the served copy's record of stored columns cannot carry`
+               : "the query's output columns cannot be read",
+            "joined_annotations",
+            JOINED_ANNOTATIONS_DETAIL,
+         );
+      }
    }
 }
 
@@ -1977,6 +2157,14 @@ function flatPairOf(pair: PairReroot): FlatPair {
       ...(pair.hops ? { hops: pair.hops.map((h) => h.join) } : {}),
       ...(pair.levelRows
          ? { levelRowFields: pair.levelRows.map((l) => l.field) }
+         : {}),
+      ...(pair.oneParentLevels
+         ? {
+              oneParentLevels: pair.oneParentLevels,
+              computedFields: pair.childStoredDimensions.map(
+                 (d) => `${pair.join}.${d}`,
+              ),
+           }
          : {}),
       ...(pair.block
          ? { otherRecords: pair.block.others.map((o) => o.join) }
@@ -2193,6 +2381,9 @@ function pairRerootOf(
       childStoredDimensions,
       ...(own.hops ? { hops: own.hops } : {}),
       ...(levelRows.length > 0 ? { levelRows } : {}),
+      ...(block.oneParentLevels && block.oneParentLevels.length > 0
+         ? { oneParentLevels: block.oneParentLevels }
+         : {}),
       ...(blockReroot ? { block: blockReroot } : {}),
       ...(own.access ? { access: own.access } : {}),
    };

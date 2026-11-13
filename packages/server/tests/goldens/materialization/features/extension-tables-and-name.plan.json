@@ -1,0 +1,1316 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "by_given@<pkg>/m.malloy": [
+            "stored@<pkg>/m.malloy"
+          ],
+          "colocated_ext@<pkg>/m.malloy": [],
+          "east@<pkg>/m.malloy": [
+            "stored@<pkg>/m.malloy"
+          ],
+          "east_big@<pkg>/m.malloy": [
+            "east@<pkg>/m.malloy"
+          ],
+          "renamed@<pkg>/m.malloy": [
+            "stored@<pkg>/m.malloy"
+          ],
+          "stored@<pkg>/m.malloy": []
+        },
+        "order": [
+          "colocated_ext@<pkg>/m.malloy",
+          "stored@<pkg>/m.malloy",
+          "by_given@<pkg>/m.malloy",
+          "east@<pkg>/m.malloy",
+          "renamed@<pkg>/m.malloy",
+          "east_big@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "by_given@<pkg>/m.malloy": {
+        "buildSourceName": "by_given__mat",
+        "buildsOver": {
+          "declaration": {
+            "range": {
+              "end": {
+                "character": 1,
+                "line": 14
+              },
+              "start": {
+                "character": 8,
+                "line": 12
+              }
+            },
+            "url": "<pkg>/m.malloy"
+          },
+          "overStored": {
+            "declarations": "source: stored is stored__mat extend {\n}\nsource: by_given is stored extend {\n  where: true\n}",
+            "flags": [
+              "##! experimental.givens"
+            ],
+            "parentBuildSourceName": "stored__mat"
+          },
+          "path": [
+            {
+              "range": {
+                "end": {
+                  "character": 1,
+                  "line": 29
+                },
+                "start": {
+                  "character": 8,
+                  "line": 27
+                }
+              },
+              "url": "<pkg>/m.malloy"
+            }
+          ],
+          "sourceID": "stored@<pkg>/m.malloy",
+          "sourceName": "stored"
+        },
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          },
+          {
+            "column": "is_big",
+            "computed": true,
+            "dimension": "is_big",
+            "zoneFree": true
+          }
+        ],
+        "declaration": {
+          "range": {
+            "end": {
+              "character": 1,
+              "line": 29
+            },
+            "start": {
+              "character": 8,
+              "line": 27
+            }
+          },
+          "url": "<pkg>/m.malloy"
+        },
+        "givenDeclarations": [
+          {
+            "name": "REGION",
+            "url": "<pkg>/m.malloy"
+          }
+        ],
+        "persist": {
+          "name": "by_given_t",
+          "storage": "lake"
+        },
+        "readTimeTerms": [
+          {
+            "at": [
+              {
+                "range": {
+                  "end": {
+                    "character": 15,
+                    "line": 28
+                  },
+                  "start": {
+                    "character": 9,
+                    "line": 28
+                  }
+                },
+                "url": "<pkg>/m.malloy"
+              },
+              {
+                "range": {
+                  "end": {
+                    "character": 25,
+                    "line": 28
+                  },
+                  "start": {
+                    "character": 18,
+                    "line": 28
+                  }
+                },
+                "url": "<pkg>/m.malloy"
+              }
+            ],
+            "code": "region = $REGION",
+            "columns": [
+              "region"
+            ],
+            "givens": [
+              "REGION"
+            ],
+            "kind": "given"
+          }
+        ],
+        "sourceID": "by_given@<pkg>/m.malloy",
+        "sourceName": "by_given",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "is_big",
+            "type": "BOOLEAN"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "colocated_ext@<pkg>/m.malloy": {
+        "buildSourceName": "colocated_ext__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          }
+        ],
+        "persist": {
+          "name": "colocated_ext_t"
+        },
+        "sourceID": "colocated_ext@<pkg>/m.malloy",
+        "sourceName": "colocated_ext",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "east@<pkg>/m.malloy": {
+        "buildSourceName": "east__mat",
+        "buildsOver": {
+          "declaration": {
+            "range": {
+              "end": {
+                "character": 1,
+                "line": 14
+              },
+              "start": {
+                "character": 8,
+                "line": 12
+              }
+            },
+            "url": "<pkg>/m.malloy"
+          },
+          "overStored": {
+            "declarations": "source: stored is stored__mat extend {\n}\nsource: east is stored extend {\n  where: region = 'east'\n}",
+            "flags": [
+              "##! experimental.givens"
+            ],
+            "parentBuildSourceName": "stored__mat"
+          },
+          "path": [
+            {
+              "range": {
+                "end": {
+                  "character": 1,
+                  "line": 19
+                },
+                "start": {
+                  "character": 8,
+                  "line": 17
+                }
+              },
+              "url": "<pkg>/m.malloy"
+            }
+          ],
+          "sourceID": "stored@<pkg>/m.malloy",
+          "sourceName": "stored"
+        },
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          },
+          {
+            "column": "is_big",
+            "computed": true,
+            "dimension": "is_big",
+            "zoneFree": true
+          }
+        ],
+        "persist": {
+          "name": "east_t",
+          "storage": "lake"
+        },
+        "sourceID": "east@<pkg>/m.malloy",
+        "sourceName": "east",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "is_big",
+            "type": "BOOLEAN"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "east_big@<pkg>/m.malloy": {
+        "buildSourceName": "east_big__mat",
+        "buildsOver": {
+          "declaration": {
+            "range": {
+              "end": {
+                "character": 1,
+                "line": 19
+              },
+              "start": {
+                "character": 8,
+                "line": 17
+              }
+            },
+            "url": "<pkg>/m.malloy"
+          },
+          "overStored": {
+            "declarations": "source: east is east__mat extend {\n  where: region = 'east'\n}\nsource: east_big is east extend {\n  where: is_big\n}",
+            "flags": [
+              "##! experimental.givens"
+            ],
+            "parentBuildSourceName": "east__mat"
+          },
+          "path": [
+            {
+              "range": {
+                "end": {
+                  "character": 1,
+                  "line": 24
+                },
+                "start": {
+                  "character": 8,
+                  "line": 22
+                }
+              },
+              "url": "<pkg>/m.malloy"
+            }
+          ],
+          "sourceID": "east@<pkg>/m.malloy",
+          "sourceName": "east"
+        },
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          },
+          {
+            "column": "is_big",
+            "computed": true,
+            "dimension": "is_big",
+            "zoneFree": true
+          }
+        ],
+        "persist": {
+          "name": "east_big_t",
+          "storage": "lake"
+        },
+        "sourceID": "east_big@<pkg>/m.malloy",
+        "sourceName": "east_big",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "is_big",
+            "type": "BOOLEAN"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "renamed@<pkg>/m.malloy": {
+        "buildSourceName": "renamed__mat",
+        "buildsOver": {
+          "declaration": {
+            "range": {
+              "end": {
+                "character": 1,
+                "line": 14
+              },
+              "start": {
+                "character": 8,
+                "line": 12
+              }
+            },
+            "url": "<pkg>/m.malloy"
+          },
+          "overStored": {
+            "declarations": "source: stored is stored__mat extend {\n}\nsource: renamed is stored extend {\n  rename: order_id is id\n  measure: id_total is order_id.sum()\n}",
+            "flags": [
+              "##! experimental.givens"
+            ],
+            "parentBuildSourceName": "stored__mat"
+          },
+          "path": [
+            {
+              "range": {
+                "end": {
+                  "character": 1,
+                  "line": 35
+                },
+                "start": {
+                  "character": 8,
+                  "line": 32
+                }
+              },
+              "url": "<pkg>/m.malloy"
+            }
+          ],
+          "sourceID": "stored@<pkg>/m.malloy",
+          "sourceName": "stored"
+        },
+        "columns": [
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          },
+          {
+            "column": "is_big",
+            "computed": true,
+            "dimension": "is_big",
+            "zoneFree": true
+          },
+          {
+            "column": "order_id",
+            "computed": false,
+            "dimension": "order_id"
+          }
+        ],
+        "persist": {
+          "name": "renamed_t",
+          "storage": "lake"
+        },
+        "sourceID": "renamed@<pkg>/m.malloy",
+        "sourceName": "renamed",
+        "storedColumns": [
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "is_big",
+            "type": "BOOLEAN"
+          },
+          {
+            "name": "order_id",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "stored@<pkg>/m.malloy": {
+        "buildSourceName": "stored__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          },
+          {
+            "column": "is_big",
+            "computed": true,
+            "dimension": "is_big",
+            "zoneFree": true
+          }
+        ],
+        "persist": {
+          "name": "stored_t",
+          "storage": "lake"
+        },
+        "sourceID": "stored@<pkg>/m.malloy",
+        "sourceName": "stored",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "is_big",
+            "type": "BOOLEAN"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "by_given@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "colocated_ext@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "east@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "east_big@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "renamed@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "stored@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "by_given@<pkg>/m.malloy": "m.malloy",
+      "colocated_ext@<pkg>/m.malloy": "m.malloy",
+      "east@<pkg>/m.malloy": "m.malloy",
+      "east_big@<pkg>/m.malloy": "m.malloy",
+      "renamed@<pkg>/m.malloy": "m.malloy",
+      "stored@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "colocated_ext@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "stored@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [
+                "stored@<pkg>/m.malloy"
+              ],
+              "sourceID": "by_given@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [
+                "stored@<pkg>/m.malloy"
+              ],
+              "sourceID": "east@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [
+                "stored@<pkg>/m.malloy"
+              ],
+              "sourceID": "renamed@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [
+                "east@<pkg>/m.malloy"
+              ],
+              "sourceID": "east_big@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "by_given@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "by_given_t",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          },
+          {
+            "name": "is_big",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "by_given",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a",
+        "sourceID": "by_given@<pkg>/m.malloy",
+        "sql": "sha256:1da1e3b92c732bab",
+        "strippedTerms": [
+          {
+            "code": "region = $REGION",
+            "givens": [
+              "REGION"
+            ]
+          }
+        ]
+      },
+      "colocated_ext@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "colocated_ext_t"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "colocated_ext",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1",
+        "sourceID": "colocated_ext@<pkg>/m.malloy",
+        "sql": "sha256:cdc29600329761ad"
+      },
+      "east@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "east_t",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          },
+          {
+            "name": "is_big",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "east",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13",
+        "sourceID": "east@<pkg>/m.malloy",
+        "sql": "sha256:dbf0347e4cbd5766"
+      },
+      "east_big@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "east_big_t",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          },
+          {
+            "name": "is_big",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "east_big",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5",
+        "sourceID": "east_big@<pkg>/m.malloy",
+        "sql": "sha256:931ef2901e0f46a3"
+      },
+      "renamed@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "renamed_t",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          },
+          {
+            "name": "is_big",
+            "type": "boolean"
+          },
+          {
+            "name": "order_id",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "renamed",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda",
+        "sourceID": "renamed@<pkg>/m.malloy",
+        "sql": "sha256:4dccbc134dac2ac9"
+      },
+      "stored@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "stored_t",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          },
+          {
+            "name": "is_big",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "stored",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7",
+        "sourceID": "stored@<pkg>/m.malloy",
+        "sql": "sha256:dbe6f48b1d20e1f8"
+      }
+    }
+  }
+}

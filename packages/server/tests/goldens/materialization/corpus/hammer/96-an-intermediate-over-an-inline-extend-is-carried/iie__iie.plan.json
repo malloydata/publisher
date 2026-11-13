@@ -1,0 +1,161 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/iie/iie.malloy": [],
+          "regions_kept@<hammer>/iie/iie.malloy": [],
+          "rollup@<hammer>/iie/iie.malloy": [
+            "daily@<hammer>/iie/iie.malloy",
+            "regions_kept@<hammer>/iie/iie.malloy"
+          ]
+        },
+        "order": [
+          "daily@<hammer>/iie/iie.malloy",
+          "regions_kept@<hammer>/iie/iie.malloy",
+          "rollup@<hammer>/iie/iie.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/iie/iie.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "regions_kept@<hammer>/iie/iie.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollup@<hammer>/iie/iie.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/iie/iie.malloy": "iie.malloy",
+      "regions_kept@<hammer>/iie/iie.malloy": "iie.malloy",
+      "rollup@<hammer>/iie/iie.malloy": "iie.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/iie/iie.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "regions_kept@<hammer>/iie/iie.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/iie/iie.malloy",
+                "regions_kept@<hammer>/iie/iie.malloy"
+              ],
+              "sourceID": "rollup@<hammer>/iie/iie.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/iie/iie.malloy": {
+        "annotationFields": {
+          "name": "iie_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region_id",
+            "type": "number"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "iie.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "ac1cb5568b19bda1d9472ea4e97ec242e757ea623b8155df506cea8602f06df2",
+        "sourceID": "daily@<hammer>/iie/iie.malloy",
+        "sql": "sha256:19c703df3eb94b5c"
+      },
+      "regions_kept@<hammer>/iie/iie.malloy": {
+        "annotationFields": {
+          "name": "iie_regions",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "region_id",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "iie.malloy",
+        "name": "regions_kept",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "040a61d03225555b2a8bc5216a1b0bbd245b84185b194929736b1eeb664fd11f",
+        "sourceID": "regions_kept@<hammer>/iie/iie.malloy",
+        "sql": "sha256:9fa137a0d56ca501"
+      },
+      "rollup@<hammer>/iie/iie.malloy": {
+        "annotationFields": {
+          "name": "iie_rollup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "grand_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "iie.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "33a0a8a71a03697f7e667ee6b75e9c0a964f7608fb06f7717431b5f1ce167150",
+        "sourceID": "rollup@<hammer>/iie/iie.malloy",
+        "sql": "sha256:4882ed161ff98e8c"
+      }
+    }
+  }
+}

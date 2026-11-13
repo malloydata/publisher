@@ -272,7 +272,7 @@ for (const shape of SHAPES) {
                for (const q of shape.queries) {
                   live.set(key(q), await runIn(loader, q));
                }
-               fixture = await loader.bind();
+               fixture = await loader.bind({ includeRollups: true });
                for (const on of SWITCHES.filter((s) => s !== "cutover")) {
                   restore();
                   restore = withSwitch(on);
@@ -297,7 +297,7 @@ for (const shape of SHAPES) {
                      await runIn(cutoverLoader, q),
                   );
                }
-               cutover = await cutoverLoader.bind();
+               cutover = await cutoverLoader.bind({ includeRollups: true });
                for (const q of shape.queries) {
                   served.set(key(q, "cutover"), await runIn(cutover, q));
                }

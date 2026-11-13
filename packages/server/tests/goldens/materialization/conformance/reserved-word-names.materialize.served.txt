@@ -1,0 +1,18 @@
+// conformance: reserved-word names [materialize]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: order__served is {
+   order::number,
+   `select`::string,
+   `count`::number,
+   amt::number
+}
+
+import "raw.malloy"
+
+#(materialize) storage="lake"
+source: `order` is __served_copy_alias_of_lake.virtual('f4c625d477b98206d172cedd4c593f384037d09cbe230405a47b44a43fa84627')::order__served extend {
+  measure: `group` is amt.sum()
+}

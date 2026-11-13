@@ -1,0 +1,155 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "split_daily",
+        "tier": "colocated"
+      }
+    ],
+    "verdicts": [
+      "split_daily:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "eb30c6bff30e379b",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "split_daily",
+          "stages": 1
+        },
+        "source": "split_daily"
+      },
+      "equalToLive": true,
+      "malloy": "run: split_daily -> { group_by: region; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "split_daily"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533"
+        },
+        "warnings": []
+      },
+      "query": "the source the split tag persists",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "eb30c6bff30e379b",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "split_daily",
+          "stages": 1
+        },
+        "source": "split_daily"
+      },
+      "equalToLive": true,
+      "malloy": "run: split_daily -> { group_by: region; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "split_daily"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533"
+        },
+        "warnings": []
+      },
+      "query": "the source the split tag persists",
+      "servedBy": "materialized",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

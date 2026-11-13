@@ -31,7 +31,9 @@ import type {
 } from "../types";
 import {
    INLINE_UNIQUENESS_KEY,
+   keyUniquenessAt,
    keyUniquenessOf,
+   rollupKeyRecordKey,
    rollupKeyRecordsIn,
    tableIdentityKey,
    UniquenessLedger,
@@ -42,8 +44,13 @@ import {
 import { InstructedBuild } from "./instructed_build";
 import { ManifestCommitter } from "./manifest_committer";
 import { splitManifestEntries } from "./manifest_loader";
+import { deriveServeBindings } from "../serve/materialization_serve_transform";
+import { storedKeyChecksOf } from "../plan/rollup_plan";
 import type { BuildEnvironment } from "./materialization_run_support";
 import { SourceBuilder } from "./source_build";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { storageDestinationRoot } from "../../connection_config";
 
 const packages = tempBuildPlanPackages();
 let restore: () => void;
@@ -74,6 +81,18 @@ const JOINED = `${CREW}
 source: flights is duckdb.table('flights_src') extend {
   primary_key: id
   join_one: crew with id
+  measure: flight_count is count()
+}
+`;
+
+/**
+ * `flights` reads `crew` through a join_many on its primary key, so the leg
+ * re-points it as a join_one at the key: the query source's key is checked.
+ */
+const MANY = `${CREW}
+source: flights is duckdb.table('flights_src') extend {
+  primary_key: id
+  join_many: crew on crew.flight_id = id
   measure: flight_count is count()
 }
 `;
@@ -166,7 +185,13 @@ async function scenario(model: string) {
       return result;
    }
    const record = (m: Metadata | undefined) => m?.rollupKeys?.[address];
-   return { duckdb, compiled, rollup, address, run, record };
+   const parentRecord = (m: Metadata | undefined) => {
+      const sourceID = rollup?.parentKeyChecks?.[0]?.sourceID;
+      return sourceID === undefined
+         ? undefined
+         : m?.rollupKeys?.[rollupKeyRecordKey(address, sourceID)];
+   };
+   return { duckdb, compiled, rollup, address, run, record, parentRecord };
 }
 
 describe("the rollup key check, on a build", () => {
@@ -261,6 +286,195 @@ describe("the rollup key check, on a build", () => {
    );
 });
 
+describe("the query source's primary key check, on a build", () => {
+   it("is planned for a rollup a source reads through a join_many on its key, and only then", async () => {
+      const many = await scenario(MANY);
+      expect(many.rollup?.parentKeyChecks?.map((c) => c.keyColumn)).toEqual([
+         "id",
+      ]);
+      expect(many.rollup?.parentKeyChecks?.[0]?.connectionName).toBe("duckdb");
+      // A join_one read at its key needs none.
+      const one = await scenario(JOINED);
+      expect(one.rollup?.parentKeyChecks).toBeUndefined();
+   });
+
+   it(
+      "records unique, carries it while the rollup's table stands, and checks again on a rebuild",
+      async () => {
+         const s = await scenario(MANY);
+         const first = await s.run(true);
+         expect(s.parentRecord(first.uniquenessChecks)).toMatchObject({
+            keyColumn: "id",
+            unique: true,
+            checkedInRun: "run-1",
+         });
+         const second = await s.run(false);
+         expect(s.parentRecord(second.uniquenessChecks)).toEqual(
+            s.parentRecord(first.uniquenessChecks),
+         );
+         // A repeated key, and a NULL one, each found on the next build.
+         await s.duckdb.runSQL("INSERT INTO flights_src VALUES (1, 'BB')");
+         const third = await s.run(true);
+         expect(s.parentRecord(third.uniquenessChecks)).toMatchObject({
+            unique: false,
+            checkedInRun: "run-3",
+         });
+         await s.duckdb.runSQL("DELETE FROM flights_src WHERE carrier = 'BB'");
+         await s.duckdb.runSQL("INSERT INTO flights_src VALUES (NULL, 'CC')");
+         const fourth = await s.run(true);
+         expect(s.parentRecord(fourth.uniquenessChecks)?.unique).toBe(false);
+         // Not relied on: nothing carried.
+         expect(
+            s.parentRecord((await s.run(false, false)).uniquenessChecks),
+         ).toBeUndefined();
+      },
+      { timeout: 60000 },
+   );
+});
+
+/**
+ * A source stored in a destination, checked over its table at its own build
+ * (the join-to-rollup leg in a destination reads that table). The destination
+ * is a plain DuckDB file under the environment, as a `storage=` destination
+ * of type duckdb is; the stand-in build writes the source's rows there.
+ */
+async function storedScenario() {
+   const pkg = await packages.create(JOINED);
+   const duckdb = (await pkg.getMalloyConnection(
+      "duckdb",
+   )) as unknown as MalloyConnection;
+   for (const sql of SEED) await duckdb.runSQL(sql);
+   const compiled = await compilePackageBuildPlan(pkg);
+   const [sourceID] = Object.keys(compiled.preaggregatePlans ?? {});
+   const source = compiled.sources[sourceID ?? ""];
+   if (!sourceID || !source) throw new Error("no planned source");
+   compiled.storedKeyChecks = { [sourceID]: "flight_id" };
+   const address = computeSourceEntityId(
+      source,
+      compiled.connectionDigests,
+      compiled.targets?.[sourceID],
+   );
+   const root = storageDestinationRoot(pkg.getPackagePath());
+   fs.mkdirSync(root, { recursive: true });
+   const file = path.join(root, "lake.duckdb");
+   const environment = {
+      getApiConnection: () => ({ name: "duckdb", type: "duckdb" }),
+      getStorageDestination: () => ({ name: "lake", type: "duckdb" }),
+      getEnvironmentPath: () => pkg.getPackagePath(),
+   } as unknown as BuildEnvironment;
+   // The stored rows: the base's, so a duplicate in it reaches the table.
+   const builder = new SourceBuilder(async (request) => {
+      const table = request.instruction.physicalTableName;
+      // Its own alias: the scenario's connection may be shared, and the
+      // check attaches the file as `lake` in a session of its own.
+      const alias = `stored_${Math.random().toString(36).slice(2)}`;
+      await duckdb.runSQL(`ATTACH '${file}' AS ${alias}`);
+      try {
+         await duckdb.runSQL(
+            `CREATE OR REPLACE TABLE ${alias}.${table} AS SELECT * FROM crew_src`,
+         );
+      } finally {
+         await duckdb.runSQL(`DETACH ${alias}`);
+      }
+      return {
+         sourceEntityId: request.contentSourceEntityId ?? "",
+         sourceName: request.persistSource.name,
+         physicalTableName: table,
+         connectionName: "duckdb",
+         storageDestinationName: "lake",
+         schema: [
+            { name: "flight_id", type: "INTEGER" },
+            { name: "size", type: "INTEGER" },
+         ],
+      } as ManifestEntry;
+   });
+   const build = new InstructedBuild({
+      buildOneSource: (...a) => builder.build(...a),
+      reclaimStorageTablesFromFailedRun: async () => {},
+   });
+   const instruction = {
+      sourceEntityId: address,
+      materializedTableId: "mt-stored",
+      physicalTableName: "crew_stored_t",
+      realization: "COPY",
+      destination: "lake",
+   } as BuildInstruction;
+   let previous: {
+      entries: Record<string, ManifestEntry>;
+      metadata?: Metadata;
+   } = { entries: {} };
+   let runs = 0;
+   async function run(rebuild: boolean, prior = true) {
+      runs += 1;
+      const ledger = new UniquenessLedger(
+         undefined,
+         `run-${runs}`,
+         prior && previous.metadata
+            ? rollupKeyRecordsIn({ [INLINE_UNIQUENESS_KEY]: previous.metadata })
+            : undefined,
+      );
+      const result = await build.run(
+         compiled,
+         environment,
+         rebuild ? [instruction] : [],
+         rebuild ? {} : previous.entries,
+         new AbortController().signal,
+         false,
+         undefined,
+         undefined,
+         undefined,
+         [],
+         undefined,
+         false,
+         "recompute",
+         ledger,
+      );
+      expect(result.failures).toEqual({});
+      previous = { entries: result.entries, metadata: result.uniquenessChecks };
+      return result;
+   }
+   const record = (m: Metadata | undefined) =>
+      m?.rollupKeys?.[rollupKeyRecordKey(address, sourceID)];
+   return { duckdb, run, record };
+}
+
+describe("a stored source's primary key check, on a build into a destination", () => {
+   it(
+      "records unique over the stored rows, carries it while the table stands, and checks again on a rebuild",
+      async () => {
+         const s = await storedScenario();
+         const first = await s.run(true);
+         expect(s.record(first.uniquenessChecks)).toMatchObject({
+            keyColumn: "flight_id",
+            unique: true,
+            checkedInRun: "run-1",
+            table: tableIdentityKey("destination", "lake", "crew_stored_t"),
+         });
+         const second = await s.run(false);
+         expect(s.record(second.uniquenessChecks)).toEqual(
+            s.record(first.uniquenessChecks),
+         );
+         // A repeated key and a NULL one, each found when the table is rebuilt.
+         await s.duckdb.runSQL("INSERT INTO crew_src VALUES (1, 9)");
+         const third = await s.run(true);
+         expect(s.record(third.uniquenessChecks)).toMatchObject({
+            unique: false,
+            checkedInRun: "run-3",
+         });
+         await s.duckdb.runSQL("DELETE FROM crew_src WHERE size = 9");
+         await s.duckdb.runSQL("INSERT INTO crew_src VALUES (NULL, 9)");
+         expect(s.record((await s.run(true)).uniquenessChecks)?.unique).toBe(
+            false,
+         );
+         // Not relied on: nothing carried.
+         expect(
+            s.record((await s.run(false, false)).uniquenessChecks),
+         ).toBeUndefined();
+      },
+      { timeout: 60000 },
+   );
+});
+
 describe("the rollup key record in the run ledger", () => {
    const table = tableIdentityKey("connection", "duckdb", "r_t");
    const record: RollupKeyRecord = {
@@ -288,6 +502,42 @@ describe("the rollup key record in the run ledger", () => {
       after.recordRollupKey("a", record);
       after.markWritten("b", table);
       expect(after.toMetadata()).toBeUndefined();
+   });
+
+   it("holds a query source's key check beside the rollup's, lost and carried with it", () => {
+      const parent: RollupKeyRecord = {
+         ...record,
+         keyColumn: "id",
+         sourceID: "s",
+      };
+      const key = rollupKeyRecordKey("a", "s");
+      expect(key).not.toBe("a");
+      const recorded = new UniquenessLedger(undefined, "run-2");
+      recorded.recordRollupKey("a", { ...parent, checkedInRun: undefined });
+      expect(Object.keys(recorded.rollupKeyRecords())).toEqual([key]);
+      recorded.markWritten("a", "elsewhere");
+      expect(recorded.rollupKeyRecords()).toEqual({});
+
+      const prior = { [key]: parent };
+      const carried = new UniquenessLedger(undefined, "run-2", prior);
+      carried.carryRollupKey("a", table, "d", "s");
+      expect(carried.rollupKeyRecords()).toEqual(prior);
+      // Not the rollup's own record, nor another source's.
+      const own = new UniquenessLedger(undefined, "run-2", prior);
+      own.carryRollupKey("a", table, "d");
+      own.carryRollupKey("a", table, "d", "t");
+      expect(own.rollupKeyRecords()).toEqual({});
+      // A record filed under one source's key but naming another is not it.
+      const misfiled = new UniquenessLedger(undefined, "run-2", {
+         [key]: { ...parent, sourceID: "t" },
+      });
+      misfiled.carryRollupKey("a", table, "d", "s");
+      expect(misfiled.rollupKeyRecords()).toEqual({});
+      expect(
+         rollupKeyRecordsIn({
+            [INLINE_UNIQUENESS_KEY]: { rollupKeys: prior },
+         }),
+      ).toEqual(prior);
    });
 
    it("reads only the records this Publisher writes", () => {
@@ -375,6 +625,199 @@ describe("the rollup key record, bound for serving", () => {
       expect(keyUniquenessOf(undefined, entry)).toBeUndefined();
    });
 
+   it("says what each query source's key check found of the same table", () => {
+      const records = {
+         a: record,
+         [rollupKeyRecordKey("a", "s")]: { ...record, sourceID: "s" },
+         [rollupKeyRecordKey("a", "t")]: {
+            ...record,
+            sourceID: "t",
+            unique: false,
+         },
+         [rollupKeyRecordKey("a", "u")]: {
+            ...record,
+            sourceID: "u",
+            table: tableIdentityKey("connection", "duckdb", "x"),
+         },
+         [rollupKeyRecordKey("b", "s")]: { ...record, sourceID: "s" },
+      };
+      expect(keyUniquenessAt(records, "a", entry)).toEqual({
+         keyColumn: "k",
+         unique: true,
+         parentKeys: { s: true, t: false },
+      });
+      // A source's record is never read as the rollup's own.
+      expect(
+         keyUniquenessOf(records[rollupKeyRecordKey("a", "s")], entry),
+      ).toBe(undefined);
+      expect(
+         splitManifestEntries(
+            {
+               a: { ...entry, keyUniqueness: { parentKeys: { s: true } } },
+            } as never,
+            "store",
+            true,
+         ).tableNameManifest.a?.keyUniqueness,
+      ).toEqual({ parentKeys: { s: true } });
+   });
+
+   it("says what a stored table's own key check found, only of that table in that destination", () => {
+      const stored = {
+         sourceEntityId: "h",
+         physicalTableName: "flights_t",
+         connectionName: "duckdb",
+         storageDestinationName: "lake",
+      } as ManifestEntry;
+      const at = (destination: string, table = "flights_t") => ({
+         ...record,
+         keyColumn: "id",
+         sourceID: "flights",
+         table: tableIdentityKey("destination", destination, table),
+      });
+      expect(
+         keyUniquenessAt(
+            { [rollupKeyRecordKey("h", "flights")]: at("lake") },
+            "h",
+            stored,
+         ),
+      ).toEqual({ parentKeys: { flights: true } });
+      for (const other of [at("other"), at("lake", "x")]) {
+         expect(
+            keyUniquenessAt(
+               { [rollupKeyRecordKey("h", "flights")]: other },
+               "h",
+               stored,
+            ),
+         ).toBeUndefined();
+      }
+      // A rollup's own check never describes a stored table.
+      expect(keyUniquenessAt({ h: record }, "h", stored)).toBeUndefined();
+   });
+
+   it("restores a stored table's own key check from an uncontested auto-run", () => {
+      const stored = {
+         sourceEntityId: "h",
+         physicalTableName: "flights_t",
+         storageDestinationName: "lake",
+      } as ManifestEntry;
+      const run = committed({
+         metadata: {
+            mode: "auto",
+            [INLINE_UNIQUENESS_KEY]: {
+               passes: {},
+               checks: [],
+               rollupKeys: {
+                  [rollupKeyRecordKey("h", "flights")]: {
+                     ...record,
+                     sourceID: "flights",
+                     unique: false,
+                     table: tableIdentityKey(
+                        "destination",
+                        "lake",
+                        "flights_t",
+                     ),
+                  },
+               },
+            },
+         },
+      });
+      expect(
+         withRollupKeyRecords({ h: stored }, [run]).h.keyUniqueness,
+      ).toEqual({ parentKeys: { flights: false } });
+   });
+
+   it("reaches a storage binding from the store, and never from a host's manifest", () => {
+      const stored = {
+         sourceEntityId: "h",
+         sourceName: "flights",
+         physicalTableName: "flights_t",
+         connectionName: "duckdb",
+         storageDestinationName: "lake",
+         schema: [{ name: "id", type: "INTEGER" }],
+         keyUniqueness: { parentKeys: { flights: true } },
+      } as unknown as ManifestEntry;
+      const fromStore = splitManifestEntries(
+         { h: stored },
+         "store",
+         true,
+      ).storageEntries;
+      const fromHost = splitManifestEntries(
+         { h: stored },
+         "host",
+      ).storageEntries;
+      expect(
+         (fromStore.h as { keyUniqueness?: unknown }).keyUniqueness,
+      ).toEqual({ parentKeys: { flights: true } });
+      expect(
+         (fromHost.h as { keyUniqueness?: unknown }).keyUniqueness,
+      ).toBeUndefined();
+      expect(deriveServeBindings(fromStore, {})[0]?.primaryKeys).toEqual({
+         flights: true,
+      });
+      expect(deriveServeBindings(fromHost, {})[0]?.primaryKeys).toBeUndefined();
+   });
+
+   it("forgets a storage binding's key check when a run is about to write its table", () => {
+      const materialization = new PackageMaterialization({
+         models: () => new Map(),
+         packageName: () => "pkg",
+      } as unknown as PackageMaterializationOwner);
+      const held = materialization as unknown as {
+         storageServeBindings: ReturnType<typeof deriveServeBindings>;
+      };
+      const binding = {
+         sourceName: "flights",
+         destinationName: "lake",
+         virtualHandle: "h",
+         tablePath: "lake.flights_t",
+         schema: [],
+         primaryKeys: { flights: true },
+      };
+      held.storageServeBindings = [
+         binding,
+         { ...binding, sourceName: "other", virtualHandle: "o" },
+      ];
+      materialization.forgetKeyUniqueness(["h"]);
+      expect(held.storageServeBindings[0]?.primaryKeys).toBeUndefined();
+      expect(held.storageServeBindings[1]?.primaryKeys).toEqual({
+         flights: true,
+      });
+   });
+
+   it("asks for stored-table key checks only when a storage rollup is read as a join_many", () => {
+      const need = {
+         sourceID: "flights",
+         name: "flights",
+         keyColumn: "id",
+         connectionName: "duckdb",
+         joinedSourceID: "segments",
+         joinKeyColumn: "flight_id",
+         relationship: "many" as const,
+      };
+      const rollup = (storage?: string) =>
+         ({
+            variant: true,
+            baseSourceID: "segments",
+            grainDimensions: ["flight_id"],
+            ...(storage ? { storage } : {}),
+         }) as unknown as RollupVariantPlan;
+      const pk = (id: string) => (id === "flights" ? "id" : undefined);
+      expect(
+         storedKeyChecksOf([rollup("lake")], [need], pk, ["flights", "x"]),
+      ).toEqual({ flights: "id" });
+      expect(storedKeyChecksOf([rollup()], [need], pk, ["flights"])).toEqual(
+         {},
+      );
+      expect(
+         storedKeyChecksOf(
+            [rollup("lake")],
+            [{ ...need, relationship: "one" }],
+            pk,
+            ["flights"],
+         ),
+      ).toEqual({});
+   });
+
    it("restores from the store only an uncontested auto-run's records", () => {
       const entries = { a: entry };
       expect(
@@ -451,6 +894,44 @@ describe("the rollup key record, bound for serving", () => {
       expect(bound?.b?.keyUniqueness).toBeUndefined();
    });
 
+   it("binds a stored table's own key check with its storage entry after the run commits", async () => {
+      let storage: Record<string, ManifestEntry> | undefined;
+      const committer = new ManifestCommitter({
+         repository: () => {
+            throw new Error("unused");
+         },
+         host: {} as never,
+         lifecycle: {} as never,
+      });
+      await committer.autoLoad(
+         {
+            reloadAllModelsForPackage: async () => {},
+            bindPackageStorageServeBindings: async (_p, entries) => {
+               storage = entries;
+            },
+         },
+         "pkg",
+         {
+            h: {
+               sourceEntityId: "h",
+               physicalTableName: "flights_t",
+               storageDestinationName: "lake",
+            } as ManifestEntry,
+         },
+         undefined,
+         {
+            [rollupKeyRecordKey("h", "flights")]: {
+               ...record,
+               sourceID: "flights",
+               table: tableIdentityKey("destination", "lake", "flights_t"),
+            },
+         },
+      );
+      expect(
+         (storage?.h as { keyUniqueness?: unknown } | undefined)?.keyUniqueness,
+      ).toEqual({ parentKeys: { flights: true } });
+   });
+
    it("forgets a bound record when a run is about to write its table", () => {
       const materialization = new PackageMaterialization({
          models: () => new Map(),
@@ -473,5 +954,47 @@ describe("the rollup key record, bound for serving", () => {
       const bound = materialization.materializedTableCatalog().bound;
       expect(bound.a).toEqual({ tableName: "r_t" });
       expect(bound.b?.keyUniqueness?.unique).toBe(false);
+   });
+
+   it("warns the package of a rollup whose build found its join_one key repeated, while that is bound", () => {
+      const materialization = new PackageMaterialization({
+         models: () => new Map(),
+         packageName: () => "pkg",
+      } as unknown as PackageMaterializationOwner);
+      const rollup = (id: string, base: string) => ({
+         name: `${base}__rollup`,
+         sourceEntityId: id,
+         modelPath: "m.malloy",
+         preaggregate: {
+            baseSourceName: base,
+            grainDimensions: ["flight_id"],
+            measures: ["crew_size"],
+         },
+      });
+      materialization.buildPlan = {
+         sources: {
+            "r1@m": rollup("a", "crew"),
+            "r2@m": rollup("b", "crew_ok"),
+            "p@m": { name: "plain", sourceEntityId: "c", preaggregate: null },
+         },
+      } as never;
+      const repeated = { keyColumn: "flight_id", unique: false };
+      materialization.recordManifestBinding({
+         a: { tableName: "r_t", keyUniqueness: repeated },
+         b: {
+            tableName: "s_t",
+            keyUniqueness: { keyColumn: "flight_id", unique: true },
+         },
+         // Not a rollup: no warning, whatever it carries.
+         c: { tableName: "p_t", keyUniqueness: repeated },
+      });
+      const warnings = materialization.repeatedJoinOneKeyWarnings();
+      expect(warnings.map((w) => [w.subject, w.code, w.model])).toEqual([
+         ["crew", "preaggregate-join-one-key-repeated", "m.malloy"],
+      ]);
+      expect(warnings[0].message).toContain("`flight_id` more than once");
+      // A run about to rewrite the table forgets the check, and the warning.
+      materialization.forgetKeyUniqueness(["a"]);
+      expect(materialization.repeatedJoinOneKeyWarnings()).toEqual([]);
    });
 });

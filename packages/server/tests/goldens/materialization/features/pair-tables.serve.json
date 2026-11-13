@@ -1,0 +1,1219 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "customers_blocks",
+        "tier": "storage"
+      },
+      {
+        "name": "customers_path",
+        "tier": "storage"
+      },
+      {
+        "name": "orders_pair",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "customers_blocks:serves",
+      "customers_path:serves",
+      "orders_pair:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "amount_sum"
+          },
+          {
+            "classifications": [],
+            "path": "line_n"
+          },
+          {
+            "classifications": [],
+            "path": "order_n"
+          },
+          {
+            "classifications": [],
+            "path": "qty_sum"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "293895f24d60c7e1",
+          "kind": "reduce",
+          "measures": [
+            "amount_sum",
+            "line_n",
+            "order_n",
+            "qty_sum"
+          ],
+          "source": "orders_pair",
+          "stages": 1
+        },
+        "source": "orders_pair"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_pair -> { group_by: region; aggregate: order_n, amount_sum, line_n, qty_sum }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "order_n",
+            "amount_sum",
+            "line_n",
+            "qty_sum"
+          ],
+          "sourceName": "orders_pair"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "one hop: child measures by a parent dimension",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "lines.sku"
+          },
+          {
+            "classifications": [],
+            "path": "qty_sum"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "lines.sku"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3d979704312654b9",
+          "kind": "reduce",
+          "measures": [
+            "qty_sum"
+          ],
+          "source": "orders_pair",
+          "stages": 1
+        },
+        "source": "orders_pair"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_pair -> { group_by: lines.sku; aggregate: qty_sum }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "lines.sku"
+          ],
+          "measures": [
+            "qty_sum"
+          ],
+          "sourceName": "orders_pair"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "one hop: grouped by the child",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "order_n"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "33e4347abda21f92",
+          "kind": "reduce",
+          "measures": [
+            "order_n"
+          ],
+          "source": "orders_pair",
+          "stages": 1
+        },
+        "source": "orders_pair"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_pair -> { aggregate: order_n }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [],
+          "measures": [
+            "order_n"
+          ],
+          "sourceName": "orders_pair"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "one hop: parent only",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customer_n"
+          },
+          {
+            "classifications": [],
+            "path": "qty_sum"
+          },
+          {
+            "classifications": [],
+            "path": "segment"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "1fa93ae8c492c9a6",
+          "kind": "reduce",
+          "measures": [
+            "customer_n",
+            "qty_sum"
+          ],
+          "source": "customers_path",
+          "stages": 1
+        },
+        "source": "customers_path"
+      },
+      "equalToLive": true,
+      "malloy": "run: customers_path -> { group_by: segment; aggregate: customer_n, qty_sum }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "customers_blocks",
+            "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "customer_n",
+            "qty_sum"
+          ],
+          "sourceName": "customers_path"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a path: the leaf by the root",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "order_n"
+          },
+          {
+            "classifications": [],
+            "path": "qty_sum"
+          },
+          {
+            "classifications": [],
+            "path": "segment"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "5134b59ac990829c",
+          "kind": "reduce",
+          "measures": [
+            "order_n",
+            "qty_sum"
+          ],
+          "source": "customers_path",
+          "stages": 1
+        },
+        "source": "customers_path"
+      },
+      "equalToLive": true,
+      "malloy": "run: customers_path -> { group_by: segment; aggregate: order_n, qty_sum }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "customers_blocks",
+            "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "order_n",
+            "qty_sum"
+          ],
+          "sourceName": "customers_path"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a path: the middle level beside the leaf",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "qty_sum"
+          },
+          {
+            "classifications": [],
+            "path": "segment"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "57ccd4e81b190492",
+          "kind": "reduce",
+          "measures": [
+            "qty_sum"
+          ],
+          "source": "customers_blocks",
+          "stages": 1
+        },
+        "source": "customers_blocks"
+      },
+      "equalToLive": true,
+      "malloy": "run: customers_blocks -> { group_by: segment; aggregate: qty_sum }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "customers_path",
+            "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "qty_sum"
+          ],
+          "sourceName": "customers_blocks"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "blocks: the first block",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "big_n"
+          },
+          {
+            "classifications": [],
+            "path": "segment"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "e44efe95d61d43be",
+          "kind": "reduce",
+          "measures": [
+            "big_n"
+          ],
+          "source": "customers_blocks",
+          "stages": 1
+        },
+        "source": "customers_blocks"
+      },
+      "equalToLive": true,
+      "malloy": "run: customers_blocks -> { group_by: segment; aggregate: big_n }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "customers_path",
+            "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "big_n"
+          ],
+          "sourceName": "customers_blocks"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "blocks: the second block",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "big_n"
+          },
+          {
+            "classifications": [],
+            "path": "qty_sum"
+          },
+          {
+            "classifications": [],
+            "path": "segment"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "18cb33f9e19a914a",
+          "kind": "reduce",
+          "measures": [
+            "big_n",
+            "qty_sum"
+          ],
+          "source": "customers_blocks",
+          "stages": 1
+        },
+        "source": "customers_blocks"
+      },
+      "equalToLive": true,
+      "malloy": "run: customers_blocks -> { group_by: segment; aggregate: qty_sum, big_n }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "customers_path",
+            "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "qty_sum",
+            "big_n"
+          ],
+          "sourceName": "customers_blocks"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "blocks: both blocks",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "amount_sum"
+          },
+          {
+            "classifications": [],
+            "path": "line_n"
+          },
+          {
+            "classifications": [],
+            "path": "order_n"
+          },
+          {
+            "classifications": [],
+            "path": "qty_sum"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "293895f24d60c7e1",
+          "kind": "reduce",
+          "measures": [
+            "amount_sum",
+            "line_n",
+            "order_n",
+            "qty_sum"
+          ],
+          "source": "orders_pair",
+          "stages": 1
+        },
+        "source": "orders_pair"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_pair -> { group_by: region; aggregate: order_n, amount_sum, line_n, qty_sum }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "order_n",
+            "amount_sum",
+            "line_n",
+            "qty_sum"
+          ],
+          "sourceName": "orders_pair"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "one hop: child measures by a parent dimension",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "lines.sku"
+          },
+          {
+            "classifications": [],
+            "path": "qty_sum"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "lines.sku"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3d979704312654b9",
+          "kind": "reduce",
+          "measures": [
+            "qty_sum"
+          ],
+          "source": "orders_pair",
+          "stages": 1
+        },
+        "source": "orders_pair"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_pair -> { group_by: lines.sku; aggregate: qty_sum }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "lines.sku"
+          ],
+          "measures": [
+            "qty_sum"
+          ],
+          "sourceName": "orders_pair"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "one hop: grouped by the child",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "order_n"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "33e4347abda21f92",
+          "kind": "reduce",
+          "measures": [
+            "order_n"
+          ],
+          "source": "orders_pair",
+          "stages": 1
+        },
+        "source": "orders_pair"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_pair -> { aggregate: order_n }",
+      "path": {
+        "considered": [
+          {
+            "detail": "The table stores this source once per child of its inlined join_many and the query reads no child field, so it is answered without this table, which would read every child row to count each parent once.",
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "COUNT_SEMANTICS",
+            "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [],
+          "measures": [
+            "order_n"
+          ],
+          "sourceName": "orders_pair"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "one hop: parent only",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customer_n"
+          },
+          {
+            "classifications": [],
+            "path": "qty_sum"
+          },
+          {
+            "classifications": [],
+            "path": "segment"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "1fa93ae8c492c9a6",
+          "kind": "reduce",
+          "measures": [
+            "customer_n",
+            "qty_sum"
+          ],
+          "source": "customers_path",
+          "stages": 1
+        },
+        "source": "customers_path"
+      },
+      "equalToLive": true,
+      "malloy": "run: customers_path -> { group_by: segment; aggregate: customer_n, qty_sum }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "customers_blocks",
+            "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "customer_n",
+            "qty_sum"
+          ],
+          "sourceName": "customers_path"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a path: the leaf by the root",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "order_n"
+          },
+          {
+            "classifications": [],
+            "path": "qty_sum"
+          },
+          {
+            "classifications": [],
+            "path": "segment"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "5134b59ac990829c",
+          "kind": "reduce",
+          "measures": [
+            "order_n",
+            "qty_sum"
+          ],
+          "source": "customers_path",
+          "stages": 1
+        },
+        "source": "customers_path"
+      },
+      "equalToLive": true,
+      "malloy": "run: customers_path -> { group_by: segment; aggregate: order_n, qty_sum }",
+      "path": {
+        "considered": [
+          {
+            "detail": "The table stores an inlined join_many flat, which cannot answer this query exactly (an aggregate above the inlined path's last join beside fields below it, which live aggregates by that join's key), so it is answered without this table.",
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "COUNT_SEMANTICS",
+            "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "customers_blocks",
+            "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "order_n",
+            "qty_sum"
+          ],
+          "sourceName": "customers_path"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a path: the middle level beside the leaf",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "qty_sum"
+          },
+          {
+            "classifications": [],
+            "path": "segment"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "57ccd4e81b190492",
+          "kind": "reduce",
+          "measures": [
+            "qty_sum"
+          ],
+          "source": "customers_blocks",
+          "stages": 1
+        },
+        "source": "customers_blocks"
+      },
+      "equalToLive": true,
+      "malloy": "run: customers_blocks -> { group_by: segment; aggregate: qty_sum }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "customers_path",
+            "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "qty_sum"
+          ],
+          "sourceName": "customers_blocks"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "blocks: the first block",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "big_n"
+          },
+          {
+            "classifications": [],
+            "path": "segment"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "e44efe95d61d43be",
+          "kind": "reduce",
+          "measures": [
+            "big_n"
+          ],
+          "source": "customers_blocks",
+          "stages": 1
+        },
+        "source": "customers_blocks"
+      },
+      "equalToLive": true,
+      "malloy": "run: customers_blocks -> { group_by: segment; aggregate: big_n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "customers_path",
+            "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "big_n"
+          ],
+          "sourceName": "customers_blocks"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "blocks: the second block",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "big_n"
+          },
+          {
+            "classifications": [],
+            "path": "qty_sum"
+          },
+          {
+            "classifications": [],
+            "path": "segment"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "18cb33f9e19a914a",
+          "kind": "reduce",
+          "measures": [
+            "big_n",
+            "qty_sum"
+          ],
+          "source": "customers_blocks",
+          "stages": 1
+        },
+        "source": "customers_blocks"
+      },
+      "equalToLive": true,
+      "malloy": "run: customers_blocks -> { group_by: segment; aggregate: qty_sum, big_n }",
+      "path": {
+        "considered": [
+          {
+            "detail": "The table stores more than one inlined join_many, one block of rows each, and the query reads more than one of them (live aggregates each by its own key over their cross product, which no block holds), so it is answered without this table.",
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "COUNT_SEMANTICS",
+            "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "customers_path",
+            "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "qty_sum",
+            "big_n"
+          ],
+          "sourceName": "customers_blocks"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "blocks: both blocks",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

@@ -39,6 +39,13 @@
  * column of the joined source. Through a join_one, a count already skips the
  * unmatched row (it counts the joined key), so it is served.
  *
+ * A rollup in a `storage=` destination is joined there, so only for a query
+ * source the served copy reads from the same destination: the variant is
+ * then compiled over the served copy's files (known limitation 26,
+ * `RollupVariantServe.answerJoinInDestination`); any other query source
+ * reads its own connection, and Malloy joins within one (`CROSS_CONNECTION`,
+ * malloydata/malloy#3032).
+ *
  * Fan-out grains and join-level measures (A6, A2, row 27): a rollup row is
  * one group of the joined rows, so a partial re-summed across groups that
  * share a joined row counts it twice. {@link checkJoinCoverage} holds each
@@ -297,6 +304,63 @@ export function unmatchedRowProblem(
             return `\`${leg.join.name}.${m.name}\` aggregates a value that is not NULL on a parent with no rows, which Malloy aggregates live (malloydata/malloy#1762)`;
          }
       }
+   }
+   return undefined;
+}
+
+/**
+ * Why the leg cannot read a join read as a join_many while the query
+ * source's primary key is not known unique and never NULL, or undefined.
+ * `parentKeyUnique` is what the rollup's build found of that key: true,
+ * false (repeated or NULL), or undefined (not checked). A rollup row is met
+ * by every parent row sharing its key: with the key repeated, the variant
+ * sums it once per parent row where live sums each joined row once, and with
+ * a NULL key the variant's `COUNT(1)` counts a parent live's
+ * `COUNT(DISTINCT key)` skips.
+ */
+export function parentKeyProblem(
+   leg: JoinRollupLeg,
+   parentKeyUnique: boolean | undefined,
+): string | undefined {
+   if (leg.relationship === "one" && leg.join.relationship === "one") {
+      return undefined;
+   }
+   if (parentKeyUnique === true) return undefined;
+   const key = leg.join.baseKey;
+   return parentKeyUnique === false
+      ? `the query source holds a value of its primary key \`${key}\` more than once or NULL, so a row of the rollup of \`${leg.join.name}\` would be read once per row that shares it`
+      : `the query source's primary key \`${key}\` was not checked unique and never NULL when the rollup of \`${leg.join.name}\` was built, so a row of it could be read once per row that shares it`;
+}
+
+/**
+ * Why a leg that re-points its join with another relationship (a join_many
+ * as a join_one at its key, or a join_one as a join_many at a finer grain)
+ * cannot answer a query that takes a `count()`, `sum` or `avg` through
+ * another join_many, or undefined. Re-pointing changes which joins Malloy
+ * sees fan out, so it changes how it writes those aggregates (`COUNT(1)`
+ * against `COUNT(DISTINCT key)`), and until malloydata/malloy#3208
+ * ({@link malloyCountsChildlessParentsAsZero}) the two count the row a LEFT
+ * JOIN writes for a parent with no rows differently. `keyed` is every
+ * aggregate Malloy needs a key for, by the join path it is taken at
+ * (`uniqueKeyAggregatePaths`); `fansOut` says whether a path passes through
+ * a join_many (or cannot be traced).
+ */
+export function relationshipChangeProblem(
+   leg: JoinRollupLeg,
+   keyed: readonly { path: readonly string[]; isCount: boolean }[] | undefined,
+   fansOut: (path: readonly string[]) => boolean,
+   skipsUnmatched = malloyCountsChildlessParentsAsZero(),
+): string | undefined {
+   if (skipsUnmatched || leg.relationship === leg.join.relationship) {
+      return undefined;
+   }
+   if (keyed === undefined) {
+      return "the query's aggregates could not be traced";
+   }
+   for (const { path, isCount } of keyed) {
+      if (path.length === 0 || path[0] === leg.join.name) continue;
+      if (!fansOut(path)) continue;
+      return `the query takes a ${isCount ? "count" : "sum or average"} through the join_many \`${path.join(".")}\`, which Malloy writes another way once \`${leg.join.name}\` is read as a join_${leg.relationship}, counting a parent with no rows differently (malloydata/malloy#1762)`;
    }
    return undefined;
 }

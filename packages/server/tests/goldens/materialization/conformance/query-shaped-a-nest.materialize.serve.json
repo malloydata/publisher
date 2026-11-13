@@ -1,0 +1,289 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "nested",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "nested:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3ddd6997287cf4a4",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "nested",
+          "stages": 1
+        },
+        "source": "nested"
+      },
+      "equalToLive": true,
+      "malloy": "run: nested -> { group_by: region; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "nested"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the top level",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "by_status"
+          },
+          {
+            "classifications": [],
+            "path": "by_status.n"
+          },
+          {
+            "classifications": [],
+            "path": "by_status.status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "by_status.status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "ded2f46c72a272e2",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(by_status.n)"
+          ],
+          "source": "nested",
+          "stages": 1
+        },
+        "source": "nested"
+      },
+      "equalToLive": true,
+      "malloy": "run: nested -> { group_by: by_status.status; aggregate: n is by_status.n.sum() }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "by_status.status"
+          ],
+          "measures": [
+            "by_status.n"
+          ],
+          "sourceName": "nested"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "through the nested rows",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3ddd6997287cf4a4",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "nested",
+          "stages": 1
+        },
+        "source": "nested"
+      },
+      "equalToLive": true,
+      "malloy": "run: nested -> { group_by: region; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "2dd1093d430137e8a6481be81760193ed55b86915c232e4d9ed5f68efd17443c"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "nested"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "2dd1093d430137e8a6481be81760193ed55b86915c232e4d9ed5f68efd17443c",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the top level",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "by_status"
+          },
+          {
+            "classifications": [],
+            "path": "by_status.n"
+          },
+          {
+            "classifications": [],
+            "path": "by_status.status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "by_status.status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "ded2f46c72a272e2",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(by_status.n)"
+          ],
+          "source": "nested",
+          "stages": 1
+        },
+        "source": "nested"
+      },
+      "equalToLive": true,
+      "malloy": "run: nested -> { group_by: by_status.status; aggregate: n is by_status.n.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "2dd1093d430137e8a6481be81760193ed55b86915c232e4d9ed5f68efd17443c"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "by_status.status"
+          ],
+          "measures": [
+            "by_status.n"
+          ],
+          "sourceName": "nested"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "2dd1093d430137e8a6481be81760193ed55b86915c232e4d9ed5f68efd17443c",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "through the nested rows",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

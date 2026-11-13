@@ -1,0 +1,25 @@
+{
+  "droppedPersistSources": [
+    {
+      "modelPath": "pd.malloy",
+      "name": "high_value"
+    }
+  ],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [],
+    "droppedPersistSources": [
+      {
+        "modelPath": "pd.malloy",
+        "name": "high_value"
+      }
+    ],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {},
+    "sourceModelPaths": {}
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": null
+}

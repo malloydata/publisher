@@ -1,0 +1,122 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "annotated@<pkg>/m.malloy": []
+        },
+        "order": [
+          "annotated@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "annotated@<pkg>/m.malloy": {
+        "buildSourceName": "annotated__mat",
+        "columns": [
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "order_month",
+            "computed": false,
+            "dimension": "order_month"
+          },
+          {
+            "column": "total",
+            "computed": false,
+            "dimension": "total"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "annotated",
+          "storage": "lake"
+        },
+        "sourceID": "annotated@<pkg>/m.malloy",
+        "sourceName": "annotated",
+        "storedColumns": [
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "order_month",
+            "type": "DATE"
+          },
+          {
+            "name": "total",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "annotated@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "annotated@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "annotated@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "annotated@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "annotated",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "order_month",
+            "type": "date"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "annotated",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "f1dee6fcac5854ef5cbc18ffe4c360fd800e9d68696ddab1c2c15deef9e85584",
+        "sourceID": "annotated@<pkg>/m.malloy",
+        "sql": "sha256:3051a723d696dab0"
+      }
+    }
+  }
+}

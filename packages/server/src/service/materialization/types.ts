@@ -127,8 +127,16 @@ export interface FreshnessAwareManifestEntry {
 
 /** See {@link FreshnessAwareManifestEntry.keyUniqueness}. */
 export interface KeyUniqueness {
-   keyColumn: string;
-   unique: boolean;
+   /** The rollup's own key check: absent when it was not checked. */
+   keyColumn?: string;
+   unique?: boolean;
+   /**
+    * Each query source's primary key check the rollup's build ran, by the
+    * source's sourceID: true when its key was held once per row and never
+    * NULL. The join-to-rollup leg reads a join read as a join_many only for a
+    * source known true here.
+    */
+   parentKeys?: Record<string, boolean>;
 }
 
 /**

@@ -1,0 +1,78 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "order_summary@<pkg>/persist_warn_test.malloy": []
+        },
+        "order": [
+          "order_summary@<pkg>/persist_warn_test.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "order_summary@<pkg>/persist_warn_test.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "order_summary@<pkg>/persist_warn_test.malloy": "persist_warn_test.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "order_summary@<pkg>/persist_warn_test.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {},
+    "sources": {
+      "order_summary@<pkg>/persist_warn_test.malloy": {
+        "annotationFields": {
+          "name": "order_summary"
+        },
+        "columns": [
+          {
+            "name": "category",
+            "type": "string"
+          },
+          {
+            "name": "total_orders",
+            "type": "number"
+          },
+          {
+            "name": "total_revenue",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "persist_warn_test.malloy",
+        "name": "order_summary",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "218fa4ffa546f2a111269e08a2004f00e5f76922c05e984890204e4a53107cb9",
+        "sourceID": "order_summary@<pkg>/persist_warn_test.malloy",
+        "sql": "sha256:5e69f4a7c8d758cd"
+      }
+    }
+  }
+}

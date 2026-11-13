@@ -1,0 +1,57 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "scoped_rollup@<hammer>/f1/f1.malloy": []
+        },
+        "order": [
+          "scoped_rollup@<hammer>/f1/f1.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "scoped_rollup@<hammer>/f1/f1.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "scoped_rollup@<hammer>/f1/f1.malloy": "f1.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "scoped_rollup@<hammer>/f1/f1.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {
+      "scoped_rollup@<hammer>/f1/f1.malloy": {
+        "message": "Source 'scoped_rollup' cannot be materialized into a storage destination: a given is read while the persisted relation is BUILT, so its value is substituted at build time — from the declaration's default, the only value available then — and every caller is served that one slice. Move the given out of the persisted query and into the source's extend block (`where: …`), where it is left out of the build and applied per caller when the artifact is read.",
+        "modelPath": "f1.malloy",
+        "name": "scoped_rollup",
+        "reason": "given_in_persisted_query",
+        "sourceID": "scoped_rollup@<hammer>/f1/f1.malloy",
+        "tier": "storage"
+      }
+    },
+    "sources": {}
+  }
+}

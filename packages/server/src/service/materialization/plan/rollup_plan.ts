@@ -184,6 +184,52 @@ export interface RollupVariantPlan extends RollupPlan {
     * {@link joinOneKeysOf}); the join-to-rollup leg (A7) reads its outcome.
     */
    keyCheck?: RollupKeyCheck;
+   /**
+    * The primary key checks of the query sources that read this rollup through
+    * a join read as a join_many (see {@link readsAsJoinMany}): set at plan time
+    * for each such source the package declares (see {@link parentKeyNeedsOf}),
+    * and run by the rollup's build. The join-to-rollup leg (A7) reads their
+    * outcome: a rollup row is met by every parent row that shares its key, so
+    * the leg answers as live does only when the query source's key is unique
+    * and never NULL.
+    */
+   parentKeyChecks?: ParentKeyCheck[];
+}
+
+/**
+ * A query source's primary key check: whether a source that reads a rollup
+ * through a join read as a join_many holds a value of its declared
+ * `primary_key` more than once, or a NULL. The SQL is compiled from the
+ * author's model, over the source's rows as a query reads them, and returns
+ * one row when the key repeats or is NULL.
+ */
+export interface ParentKeyCheck {
+   /** The query source whose key is checked. */
+   sourceID: string;
+   keyColumn: string;
+   /** The connection the query source reads; the check runs only on it. */
+   connectionName: string | undefined;
+   sql: string;
+}
+
+/**
+ * A source that may read a rollup through a join keyed on its declared
+ * primary key: what {@link readsAsJoinMany} matches against a rollup, and
+ * what its check is compiled from.
+ */
+export interface ParentKeyNeed {
+   /** The query source. */
+   sourceID: string;
+   /** Its name in the model it was found in. */
+   name: string;
+   /** Its declared primary key, which the join is keyed on. */
+   keyColumn: string;
+   connectionName: string | undefined;
+   /** The joined source's declaration. */
+   joinedSourceID: string;
+   /** The joined side's column the join is keyed on. */
+   joinKeyColumn: string;
+   relationship: "one" | "many";
 }
 
 /**
@@ -288,6 +334,7 @@ interface SourceLike {
    sourceID?: unknown;
    annotations?: Parameters<typeof ownLevelNotes>[0];
    fields?: unknown[];
+   queryTimezone?: unknown;
 }
 
 const fieldNameOf = (f: FieldLike): string | undefined =>
@@ -612,6 +659,29 @@ export function planSourceRollups(
             t.dependsOn.kind === "given_and_current_time",
       ) || readsCurrentTime((def as { query?: unknown }).query);
    const timeFields = currentTimeFields(def.fields);
+   // #1686: a source that sets its own `timezone:` (or inherits one) built
+   // its times in that zone, and the base leg reads no query on it from a
+   // rollup (`TIME_ZONE`), whose variant is redeclared without the zone. The
+   // only reader left is the join leg (A7): through a join from a source in
+   // the same zone, colocated or, since #1704, in a `storage=` destination
+   // the joining source is stored in too (the leg declines at read when it
+   // is not). Anything else is never read.
+   const zone =
+      typeof def.queryTimezone === "string" && def.queryTimezone !== ""
+         ? def.queryTimezone
+         : undefined;
+   const joinedInZone =
+      zone !== undefined &&
+      map
+         .nodes()
+         .some(
+            (n) =>
+               n.sourceID !== node.sourceID &&
+               (n.def as SourceLike).queryTimezone === zone &&
+               map
+                  .joinsOf(n.sourceID)
+                  .some((j) => j.sourceID === node.sourceID),
+         );
    const scope = {
       measureCode: (n: string) => {
          const f = byName.get(n);
@@ -701,6 +771,16 @@ export function planSourceRollups(
                "preaggregate-current-time",
                decl.measure,
                `${timeRead}, which a rollup would fix at build time while a live query reads it again at every read`,
+            ),
+         );
+         continue;
+      }
+      if (zone !== undefined && !joinedInZone) {
+         refused.push(
+            unservable(
+               "preaggregate-time-zone",
+               decl.measure,
+               `the source sets its own time zone (\`timezone: '${zone}'\`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads`,
             ),
          );
          continue;
@@ -1178,6 +1258,110 @@ export function rollupKeyCheckQuery(
   group_by: ${k}
   aggregate: key_rows__check is count()
   having: key_rows__check > 1
+  limit: 1
+}`;
+}
+
+/**
+ * Every named source in `map` with a declared primary key and a join, keyed
+ * on that key, to a declared source: the query sources whose key the
+ * join-to-rollup leg may need checked. A join keyed on another field never
+ * takes the leg as a join_many (`keyRepeatRefusal`), so it needs no check.
+ */
+export function parentKeyNeedsOf(map: SourceMap): ParentKeyNeed[] {
+   const out: ParentKeyNeed[] = [];
+   for (const node of map.nodes()) {
+      const def = node.def as { primaryKey?: unknown; connection?: unknown };
+      const keyColumn =
+         typeof def.primaryKey === "string" ? def.primaryKey : undefined;
+      if (node.name === undefined || keyColumn === undefined) continue;
+      for (const join of map.joinsOf(node.sourceID)) {
+         if (
+            join.relationship === "cross" ||
+            join.sourceID === undefined ||
+            join.keyColumn === undefined ||
+            join.baseKey !== keyColumn
+         ) {
+            continue;
+         }
+         out.push({
+            sourceID: node.sourceID,
+            name: node.name,
+            keyColumn,
+            connectionName:
+               typeof def.connection === "string" ? def.connection : undefined,
+            joinedSourceID: join.sourceID,
+            joinKeyColumn: join.keyColumn,
+            relationship: join.relationship,
+         });
+      }
+   }
+   return out;
+}
+
+/**
+ * Whether the join-to-rollup leg reads rollup `plan` through `need`'s join as
+ * a join_many: the join is declared one, or the rollup's grain is finer than
+ * the join's key, so the leg re-points it as one (`joinRollupLegs`).
+ */
+export function readsAsJoinMany(
+   plan: RollupVariantPlan,
+   need: ParentKeyNeed,
+): boolean {
+   if (
+      plan.baseSourceID !== need.joinedSourceID ||
+      !plan.grainDimensions.includes(need.joinKeyColumn)
+   ) {
+      return false;
+   }
+   const keyGrain =
+      plan.grainDimensions.length === 1 &&
+      plan.grainDimensions[0] === need.joinKeyColumn;
+   return need.relationship === "many" || !keyGrain;
+}
+
+/**
+ * The stored-table key checks a build runs (`CompiledBuildPlan.storedKeyChecks`):
+ * each of `sourceIDs` (the planned sources, the rollups left out) with a declared
+ * primary key, by sourceID, when some `storage=` rollup in `plans` is read
+ * through a join keyed on a source's primary key as a join_many. That leg
+ * reads the query source's stored table in the destination (#1704), so the
+ * key is checked over that table at its own build. Empty otherwise: no scan
+ * for nothing.
+ */
+export function storedKeyChecksOf(
+   plans: readonly RollupVariantPlan[],
+   needs: readonly ParentKeyNeed[],
+   primaryKeyOf: (sourceID: string) => string | undefined,
+   sourceIDs: Iterable<string>,
+): Record<string, string> {
+   const out: Record<string, string> = {};
+   const needed = plans.some(
+      (plan) =>
+         plan.variant === true &&
+         plan.storage !== undefined &&
+         needs.some((need) => readsAsJoinMany(plan, need)),
+   );
+   if (!needed) return out;
+   for (const sourceID of sourceIDs) {
+      const key = primaryKeyOf(sourceID);
+      if (key !== undefined) out[sourceID] = key;
+   }
+   return out;
+}
+
+/**
+ * The Malloy text of a query source's primary key check, run against the
+ * author's model that names it `name`: one row when a value of `keyColumn`
+ * is held by more than one row, or is NULL.
+ */
+export function parentKeyCheckQuery(name: string, keyColumn: string): string {
+   return `run: ${identifier(name)} -> {
+  group_by: key__check is ${identifier(keyColumn)}
+  aggregate: key_rows__check is count()
+} -> {
+  where: key_rows__check > 1 or key__check = null
+  select: key__check
   limit: 1
 }`;
 }

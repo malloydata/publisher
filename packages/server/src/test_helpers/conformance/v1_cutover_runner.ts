@@ -167,7 +167,7 @@ export async function runV1CutoverConformance(args: {
             for (const q of args.queries) {
                live.set(q.name, await loader.run(q.model, q.malloy, q.givens));
             }
-            const fixture = await loader.bind();
+            const fixture = await loader.bind({ includeRollups: true });
             const served = new Map<string, Outcome>();
             for (const q of args.queries) {
                served.set(

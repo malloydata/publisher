@@ -1,0 +1,677 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "daily",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "daily:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "98b991832c4bd851",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "daily",
+          "stages": 1
+        },
+        "source": "daily"
+      },
+      "equalToLive": true,
+      "malloy": "run: daily -> { group_by: region; aggregate: grand }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "daily"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "through the index's re-export",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "orders"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "21cb88fcf8b9421b",
+          "kind": "reduce",
+          "measures": [
+            "orders"
+          ],
+          "source": "daily_ext",
+          "stages": 1
+        },
+        "source": "daily_ext"
+      },
+      "equalToLive": true,
+      "malloy": "run: daily_ext -> { group_by: status; aggregate: orders }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "orders"
+          ],
+          "sourceName": "daily_ext"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an extension through the re-export",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "fa23845a75367841",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "d",
+          "stages": 1
+        },
+        "source": "d"
+      },
+      "equalToLive": true,
+      "malloy": "run: d -> { group_by: region; aggregate: grand }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "d"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "imported under another name, in the importer",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "is_returned"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "is_returned"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "0a634052b4025f1b",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "d_plus",
+          "stages": 1
+        },
+        "source": "d_plus"
+      },
+      "equalToLive": true,
+      "malloy": "run: d_plus -> { group_by: is_returned; aggregate: grand }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "is_returned"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "d_plus"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an importer's extension of the renamed import",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "s"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "43d1b512072f1247",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(s)"
+          ],
+          "source": "by_status",
+          "stages": 1
+        },
+        "source": "by_status"
+      },
+      "equalToLive": true,
+      "malloy": "run: by_status -> { group_by: status; aggregate: t is s.sum() }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "s"
+          ],
+          "sourceName": "by_status"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an importer's query-shaped source over it",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "98b991832c4bd851",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "daily",
+          "stages": 1
+        },
+        "source": "daily"
+      },
+      "equalToLive": true,
+      "malloy": "run: daily -> { group_by: region; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "daily"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "through the index's re-export",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "orders"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "21cb88fcf8b9421b",
+          "kind": "reduce",
+          "measures": [
+            "orders"
+          ],
+          "source": "daily_ext",
+          "stages": 1
+        },
+        "source": "daily_ext"
+      },
+      "equalToLive": true,
+      "malloy": "run: daily_ext -> { group_by: status; aggregate: orders }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "orders"
+          ],
+          "sourceName": "daily_ext"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "an extension through the re-export",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "fa23845a75367841",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "d",
+          "stages": 1
+        },
+        "source": "d"
+      },
+      "equalToLive": true,
+      "malloy": "run: d -> { group_by: region; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "d"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "imported under another name, in the importer",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "grand"
+          },
+          {
+            "classifications": [],
+            "path": "is_returned"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "is_returned"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "0a634052b4025f1b",
+          "kind": "reduce",
+          "measures": [
+            "grand"
+          ],
+          "source": "d_plus",
+          "stages": 1
+        },
+        "source": "d_plus"
+      },
+      "equalToLive": true,
+      "malloy": "run: d_plus -> { group_by: is_returned; aggregate: grand }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "is_returned"
+          ],
+          "measures": [
+            "grand"
+          ],
+          "sourceName": "d_plus"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "an importer's extension of the renamed import",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "s"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "43d1b512072f1247",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(s)"
+          ],
+          "source": "by_status",
+          "stages": 1
+        },
+        "source": "by_status"
+      },
+      "equalToLive": true,
+      "malloy": "run: by_status -> { group_by: status; aggregate: t is s.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "s"
+          ],
+          "sourceName": "by_status"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "an importer's query-shaped source over it",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

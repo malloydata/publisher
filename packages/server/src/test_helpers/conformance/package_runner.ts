@@ -137,6 +137,15 @@ export interface LoadedFixture {
    dispose(): Promise<void>;
 }
 
+/** How {@link loadFixture}'s `bind` builds the plan. */
+export interface BindOptions {
+   /**
+    * Build the `#(preaggregate)` and `#@ preaggregate` rollups too (default
+    * false: most callers serve no rollup, so they build none).
+    */
+   includeRollups?: boolean;
+}
+
 /**
  * Write `files` as a package under a fresh environment, load it, and return a
  * handle that can build and bind it (`bind`) and query it. Queries before
@@ -150,8 +159,12 @@ export async function loadFixture(
    files: Record<string, string> | { packageDir: string },
 ): Promise<{
    run: LoadedFixture["run"];
-   bind(): Promise<LoadedFixture>;
+   bind(options?: BindOptions): Promise<LoadedFixture>;
    dispose(): Promise<void>;
+   /** The loaded package, before any bind. */
+   pkg: Package;
+   /** The temporary directory the environment and the lake live in. */
+   root: string;
 }> {
    const root = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-conform-"));
    const envPath = path.join(root, "env");
@@ -239,10 +252,13 @@ export async function loadFixture(
    return {
       run,
       dispose,
-      async bind() {
+      pkg,
+      root,
+      async bind(options: BindOptions = {}) {
          const { built, buildErrors, colocated, stored } = await buildAll(
             pkg,
             lake,
+            options,
          );
          // The served copy compiles at bind, asynchronously; settle it so its
          // warnings and its first answer are not a race.
@@ -291,6 +307,7 @@ export async function loadFixture(
 async function buildAll(
    pkg: Package,
    lake: DuckDBConnection,
+   options: BindOptions = {},
 ): Promise<{
    built: LoadedFixture["built"];
    buildErrors: Record<string, string>;
@@ -311,13 +328,15 @@ async function buildAll(
    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "conform-build-"));
    // The declaring source first, so a table is recorded under it rather than
    // an extension that inherits its annotation.
-   // Rollups too (`#@ preaggregate`, `#(preaggregate)`), each recorded with
-   // its origin, as a build records it.
-   const entries = Object.values(pkg.getBuildPlan()?.sources ?? {}).sort(
-      (a, b) =>
-         Number(b.annotationFields?.name === b.name) -
-         Number(a.annotationFields?.name === a.name),
-   );
+   // Rollups only when asked (`#@ preaggregate`, `#(preaggregate)`), each
+   // recorded with its origin, as a build records it.
+   const entries = Object.values(pkg.getBuildPlan()?.sources ?? {})
+      .filter((e) => options.includeRollups || e.origin !== "preaggregate")
+      .sort(
+         (a, b) =>
+            Number(b.annotationFields?.name === b.name) -
+            Number(a.annotationFields?.name === a.name),
+      );
    try {
       for (const entry of entries) {
          if (seen.has(entry.sourceEntityId)) continue;

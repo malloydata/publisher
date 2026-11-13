@@ -783,7 +783,7 @@ source: legs is duckdb.table('legs_raw') extend {
    });
 });
 
-describe("R4: join-to-rollup (A7) declines a joined source's rollup in a storage destination", () => {
+describe("R4: join-to-rollup (A7) declines a joined source's rollup in a storage destination the query source is not stored in", () => {
    let restore: () => void;
    let fixture: R4Fixture;
    beforeAll(async () => {
@@ -1010,6 +1010,12 @@ source: flights_la is flights extend { timezone: 'America/Los_Angeles' }
          "a non-unique join_one's own measure, by parent dimensions",
          "run: flights -> { group_by: carrier, id; aggregate: crew_dup.crew_size }",
       ],
+      // A source with its own time zone keeps its rollup only for this read
+      // (#1686's decision 1): a join from a source in the same zone.
+      [
+         "a joined source with its own time zone, from a query source in the same zone",
+         "run: flights_la -> { group_by: segs_la.seg_day; aggregate: segs_la.seg_miles }",
+      ],
    ] as const) {
       it(`serves ${name}`, async () => {
          expectServedFromRollup(await fixture.run({ name, malloy }));
@@ -1090,6 +1096,21 @@ describe("R4: join-to-rollup (A7) where no build checked the join_one's key (kno
       ).toBe(true);
    });
 
+   it("answers a join_many whose query source's key was not checked live, fail closed (COUNT_SEMANTICS)", async () => {
+      const malloy =
+         "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }";
+      expectLive(await unique.run({ name: "unchecked parent key", malloy }));
+      const considered = await reasonsOf(unique, malloy);
+      expect(considered.map((c) => c.reason)).toContain("COUNT_SEMANTICS");
+      expect(
+         considered.some((c) =>
+            ((c as { detail?: string }).detail ?? "").includes(
+               "was not checked unique and never NULL",
+            ),
+         ),
+      ).toBe(true);
+   });
+
    it("still serves a join_one's own measures, which live sums once per joined row too", async () => {
       expectServedFromRollup(
          await repeated.run({
@@ -1142,4 +1163,204 @@ describe("R4: join-to-rollup (A7) and a key check that no longer describes the t
       expect(run.servedBy?.kind).toBe("rollup");
       expect(rowDifference(run.live, run.served)).toBeDefined();
    });
+});
+
+/**
+ * A join read as a join_many takes the leg only on the query source's
+ * declared primary key, and a declared key the data breaks breaks the leg: a
+ * rollup row met by two parent rows sharing a key is summed twice, where live
+ * sums each joined row once; a parent with a NULL key is counted by the
+ * variant's `COUNT(1)`, where live's `COUNT(DISTINCT id)` skips it. Served
+ * only when the rollup's build found the query source's key unique and never
+ * NULL.
+ */
+const PARENT_KEY_MODEL = `source: certs is duckdb.table('certs_raw') extend {
+  primary_key: cert_id
+  measure: cert_count is count()
+  measure: cert_rows is sum(1)
+}
+source: segments is duckdb.table('segs_raw') extend {
+  primary_key: seg_id
+  #(preaggregate) grain=["flight_id"]
+  #(preaggregate) grain=["flight_id", "kind"]
+  measure: seg_miles is miles.sum()
+  #(preaggregate) grain=["flight_id"]
+  measure: key_miles is miles.sum()
+}
+source: flights is duckdb.table('flights_raw') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  join_many: certs on certs.flight_id = id
+  measure: flight_count is count()
+  measure: written_cert_count is certs.count()
+}
+source: flights_dup is duckdb.table('flights_dup_raw') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  measure: flight_count is count()
+}
+source: flights_null is duckdb.table('flights_null_raw') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  measure: flight_count is count()
+}
+`;
+const PARENT_KEY_SEED = [
+   ...seedSql,
+   `CREATE TABLE certs_raw AS SELECT * FROM (VALUES
+      (1, 1, 'pilot'), (2, 1, 'medic'), (3, 3, 'pilot'), (4, 5, NULL)
+    ) AS t(cert_id, flight_id, kind)`,
+   // Flight 1 held twice.
+   `CREATE TABLE flights_dup_raw AS SELECT * FROM (VALUES
+      (1, 'AA', 100), (1, 'BB', 150), (2, 'AA', 200), (3, 'BB', 300), (4, 'CC', 400)
+    ) AS t(id, carrier, distance)`,
+   // One flight with no id.
+   `CREATE TABLE flights_null_raw AS SELECT * FROM (VALUES
+      (1, 'AA', 100), (2, 'AA', 200), (3, 'BB', 300), (NULL, 'BB', 350),
+      (4, 'CC', 400), (5, 'BB', 500)
+    ) AS t(id, carrier, distance)`,
+];
+
+describe("R4: join-to-rollup (A7) through a join_many whose parent key the data breaks", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": PARENT_KEY_MODEL },
+         seedSql: PARENT_KEY_SEED,
+         preaggregate: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   const reasonsOf = async (malloy: string) => {
+      fixture.setBindings(fixture.bindings);
+      const { path } = await fixture.runAsIs(malloy);
+      return (path?.considered ?? []).filter((c) => c.kind === "rollup");
+   };
+
+   for (const [name, malloy, says] of [
+      [
+         "a sum through a join_many, by a parent key the data repeats",
+         "run: flights_dup -> { group_by: id; aggregate: segments.seg_miles; order_by: id }",
+         "more than once",
+      ],
+      [
+         "a grand total through a join_many whose parent key the data repeats",
+         "run: flights_dup -> { aggregate: segments.seg_miles, flight_count }",
+         "more than once",
+      ],
+      [
+         "a fan-out read through a join_many whose parent key the data repeats",
+         "run: flights_dup -> { group_by: segments.kind; aggregate: segments.seg_miles }",
+         "more than once",
+      ],
+      [
+         "the parent's count beside a join_many, with a NULL parent key",
+         "run: flights_null -> { aggregate: flight_count, segments.seg_miles }",
+         "more than once",
+      ],
+      [
+         "the parent's count by a parent dimension, with a NULL parent key",
+         "run: flights_null -> { group_by: carrier; aggregate: flight_count, segments.seg_miles }",
+         "more than once",
+      ],
+   ] as const) {
+      it(`answers ${name} live (COUNT_SEMANTICS)`, async () => {
+         // Rows first: served from the rollup, these differ from live.
+         const run = await fixture.run({ name, malloy });
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         expect(run.servedBy?.kind).not.toBe("rollup");
+         const considered = await reasonsOf(malloy);
+         expect(considered.map((c) => c.reason)).toContain("COUNT_SEMANTICS");
+         expect(
+            considered.some((c) =>
+               ((c as { detail?: string }).detail ?? "").includes(says),
+            ),
+         ).toBe(true);
+      });
+   }
+
+   it("serves the same queries over a parent key the data keeps unique", async () => {
+      for (const malloy of [
+         "run: flights -> { group_by: id; aggregate: segments.seg_miles; order_by: id }",
+         "run: flights -> { aggregate: segments.seg_miles, flight_count }",
+         "run: flights -> { group_by: segments.kind; aggregate: segments.seg_miles }",
+      ]) {
+         expectServedFromRollup(await fixture.run({ name: malloy, malloy }));
+      }
+   });
+
+   // A count through another join_many beside a join_many the leg re-points
+   // as a join_one (`key_miles` is stored only at the key, so that leg is the
+   // only one): with the fan-out gone, Malloy before
+   // malloydata/malloy#3208 counts the row a LEFT JOIN writes for a parent
+   // with no certs as one cert (6 against live's 4).
+   const skipsUnmatched = malloyCountsChildlessParentsAsZero();
+   for (const [name, malloy] of [
+      [
+         "a count through another join_many",
+         "run: flights -> { aggregate: segments.key_miles, c is certs.count() }",
+      ],
+      [
+         "another join_many's count measure, by a parent dimension",
+         "run: flights -> { group_by: carrier; aggregate: segments.key_miles, certs.cert_count }",
+      ],
+      [
+         "a parent measure that counts through another join_many",
+         "run: flights -> { aggregate: segments.key_miles, written_cert_count }",
+      ],
+      [
+         "a sum of a constant through another join_many",
+         "run: flights -> { aggregate: segments.key_miles, certs.cert_rows }",
+      ],
+   ] as const) {
+      it.if(!skipsUnmatched)(
+         `answers ${name} beside a re-pointed join live until malloydata/malloy#3208 (COUNT_SEMANTICS)`,
+         async () => {
+            // Rows first: served from the rollup, these differ from live.
+            const run = await fixture.run({ name, malloy });
+            expect(rowDifference(run.live, run.served)).toBeUndefined();
+            expect(run.servedBy?.kind).not.toBe("rollup");
+            const considered = await reasonsOf(malloy);
+            expect(considered.map((c) => c.reason)).toContain(
+               "COUNT_SEMANTICS",
+            );
+            expect(
+               considered.some((c) =>
+                  ((c as { detail?: string }).detail ?? "").includes(
+                     "through the join_many `certs`",
+                  ),
+               ),
+            ).toBe(true);
+         },
+      );
+      it.if(skipsUnmatched)(
+         `serves ${name} beside a re-pointed join once malloydata/malloy#3208 is pinned`,
+         async () => {
+            expectServedFromRollup(await fixture.run({ name, malloy }));
+         },
+      );
+   }
+
+   for (const [name, malloy] of [
+      [
+         "another join_many's max beside a re-pointed join",
+         "run: flights -> { aggregate: segments.key_miles, m is certs.cert_id.max() }",
+      ],
+      [
+         "another join_many's grouped dimension beside a re-pointed join",
+         "run: flights -> { group_by: certs.kind; aggregate: segments.key_miles }",
+      ],
+   ] as const) {
+      it(`serves ${name}`, async () => {
+         expectServedFromRollup(await fixture.run({ name, malloy }));
+      });
+   }
 });

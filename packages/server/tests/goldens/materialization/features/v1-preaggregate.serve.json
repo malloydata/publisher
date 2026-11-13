@@ -1,0 +1,573 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "orders__preagg__m_region__3b5ca627",
+        "tier": "colocated"
+      }
+    ],
+    "verdicts": [],
+    "warnings": [
+      {
+        "code": "deprecated-preaggregate-annotation",
+        "message": "Measure total on source orders uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+        "subject": "orders"
+      }
+    ]
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "2bd46a5ba40df6d2",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+        },
+        "warnings": []
+      },
+      "query": "a covered grain",
+      "servedBy": "rollup",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "m"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "m"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "9017732092194ceb",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> { group_by: m; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "m"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+        },
+        "warnings": []
+      },
+      "query": "the timeframe grain",
+      "servedBy": "rollup",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "86409dfb25cb2e9e",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> { group_by: status; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "skipped",
+            "reason": "GRAIN_TOO_COARSE",
+            "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an uncovered dimension",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b915fc8915a88324",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> { group_by: region; aggregate: n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "skipped",
+            "reason": "GRAIN_TOO_COARSE",
+            "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a measure the rollup does not hold",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "2bd46a5ba40df6d2",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+        },
+        "warnings": []
+      },
+      "query": "a covered grain",
+      "servedBy": "rollup",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "m"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "m"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "9017732092194ceb",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> { group_by: m; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "m"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+        },
+        "warnings": []
+      },
+      "query": "the timeframe grain",
+      "servedBy": "rollup",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "86409dfb25cb2e9e",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> { group_by: status; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "skipped",
+            "reason": "GRAIN_TOO_COARSE",
+            "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an uncovered dimension",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b915fc8915a88324",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> { group_by: region; aggregate: n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "skipped",
+            "reason": "GRAIN_TOO_COARSE",
+            "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a measure the rollup does not hold",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

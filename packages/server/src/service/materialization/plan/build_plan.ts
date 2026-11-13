@@ -37,6 +37,7 @@ import { malloyGivenToApi, type MalloyGiven } from "../../given";
 import {
    resolveIncrementalDeclaration,
    type IncrementalDeclaration,
+   type PairDelta,
 } from "./incremental_declaration";
 import {
    assertColocatedPersistNotAuthorizeGated,
@@ -55,6 +56,8 @@ import type { RollupPlan } from "./preaggregation_synthesis";
 import {
    materializeRefusalFinding,
    pairFullRefreshFinding,
+   pairKeyColumns,
+   pairLevelRowColumn,
    type MaterializePlan,
 } from "./build_file_generator";
 import { tryCompileMaterializeCompanion } from "./materialize_compile";
@@ -197,6 +200,15 @@ export interface CompiledBuildPlan {
     * `origin`/`preaggregate` fields.
     */
    preaggregatePlans?: Record<string, RollupPlan>;
+   /**
+    * sourceID -> the declared primary key of a planned source whose stored
+    * table a build checks for a repeated or NULL key, when it is stored in a
+    * destination: set when a `storage=` rollup is read through a join keyed
+    * on a source's primary key as a join_many (`readsAsJoinMany`), so the
+    * join-to-rollup leg in a destination (#1704) can read the stored rows'
+    * key as unique. Absent when no such leg exists.
+    */
+   storedKeyChecks?: Record<string, string>;
    /**
     * sourceID -> entry-point `#(authorize)` gate classification, computed at
     * compile time where the `{modelDef, materializer}` pair exists (see
@@ -1453,16 +1465,58 @@ export function deriveBuildPlanOutcome(
  */
 function pairDeclaration(
    declaration: IncrementalDeclaration,
-   pair: MaterializePlan["pair"],
+   plan: MaterializePlan | undefined,
 ): Partial<IncrementalDeclaration> {
-   if (!pair?.watermark) return {};
-   const generated = new Set([pair.parentRowColumn, pair.watermark.column]);
+   const pair = plan?.pair;
+   const blocks = plan?.pairBlocks;
+   const watermark = blocks?.watermark ?? pair?.watermark;
+   if (!pair || !watermark) return {};
+   const delta = pairDelta(pair, blocks);
+   const generated = new Set([
+      pair.parentRowColumn,
+      watermark.column,
+      ...(delta.checks ?? []).map((c) => c.flag),
+   ]);
    return {
-      pair: { parentKey: pair.parentKey, parentRow: pair.parentRowColumn },
+      pair: delta,
       calculateFields: declaration.calculateFields.filter(
          (name) => !generated.has(name),
       ),
    };
+}
+
+/**
+ * The flags a pair table's delta checks, as the build writes them
+ * (`pairFlags`): one table of one hop checks its parent-row flag alone (the
+ * default); a path checks each level's flag over the keys down to it; a table
+ * of several blocks checks every flag within each block, over that block's
+ * own keys (a flag past a block's own leaf partitions on every key it has).
+ */
+export function pairDelta(
+   pair: NonNullable<MaterializePlan["pair"]>,
+   blocks: MaterializePlan["pairBlocks"],
+): PairDelta {
+   const base = { parentKey: pair.parentKey, parentRow: pair.parentRowColumn };
+   const flagsOf = (p: typeof pair, levels: number, lane?: number) => {
+      const keys = pairKeyColumns(p);
+      return Array.from({ length: levels }, (_, level) => ({
+         flag: level === 0 ? p.parentRowColumn : pairLevelRowColumn(level),
+         keys: keys.slice(0, Math.min(level, keys.length - 1) + 1),
+         ...(lane !== undefined ? { lane } : {}),
+      }));
+   };
+   if (blocks) {
+      return {
+         ...base,
+         checks: blocks.blocks.flatMap((p, lane) =>
+            flagsOf(p, blocks.levels, lane),
+         ),
+         laneColumn: blocks.laneColumn,
+         lanes: blocks.blocks.length,
+      };
+   }
+   if (!pair.hops || pair.hops.length === 0) return base;
+   return { ...base, checks: flagsOf(pair, 1 + pair.hops.length) };
 }
 
 /**
@@ -1493,7 +1547,7 @@ export function collectIncrementalDeclarations(
          declarations[sourceID] = {
             ...declaration,
             ...(window.length ? { rollingWindow: window } : {}),
-            ...pairDeclaration(declaration, plan?.pair),
+            ...pairDeclaration(declaration, plan),
          };
       } catch (err) {
          // One unreadable source must not cost the package its plan. "No

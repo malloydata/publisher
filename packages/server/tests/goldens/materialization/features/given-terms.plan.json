@@ -1,0 +1,1066 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "both@<pkg>/m.malloy": [],
+          "by_base_dimension@<pkg>/m.malloy": [],
+          "inherited@<pkg>/m.malloy": [],
+          "own@<pkg>/m.malloy": []
+        },
+        "order": [
+          "both@<pkg>/m.malloy",
+          "by_base_dimension@<pkg>/m.malloy",
+          "inherited@<pkg>/m.malloy",
+          "own@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "both@<pkg>/m.malloy": {
+        "buildSourceName": "both__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          }
+        ],
+        "declaration": {
+          "range": {
+            "end": {
+              "character": 1,
+              "line": 41
+            },
+            "start": {
+              "character": 8,
+              "line": 38
+            }
+          },
+          "url": "<pkg>/m.malloy"
+        },
+        "givenDeclarations": [
+          {
+            "name": "MIN_AMT",
+            "url": "<pkg>/m.malloy"
+          },
+          {
+            "name": "REGION",
+            "url": "<pkg>/m.malloy"
+          }
+        ],
+        "keptBases": [
+          {
+            "range": {
+              "end": {
+                "character": 1,
+                "line": 19
+              },
+              "start": {
+                "character": 8,
+                "line": 16
+              }
+            },
+            "sourceID": "base@<pkg>/m.malloy"
+          }
+        ],
+        "leftOut": [
+          {
+            "at": {
+              "range": {
+                "end": {
+                  "character": 43,
+                  "line": 18
+                },
+                "start": {
+                  "character": 13,
+                  "line": 18
+                }
+              },
+              "url": "<pkg>/m.malloy"
+            },
+            "dimension": "at_least",
+            "reads": [
+              "given"
+            ]
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "both",
+          "storage": "lake"
+        },
+        "readTimeTerms": [
+          {
+            "at": [
+              {
+                "range": {
+                  "end": {
+                    "character": 15,
+                    "line": 17
+                  },
+                  "start": {
+                    "character": 9,
+                    "line": 17
+                  }
+                },
+                "url": "<pkg>/m.malloy"
+              },
+              {
+                "range": {
+                  "end": {
+                    "character": 25,
+                    "line": 17
+                  },
+                  "start": {
+                    "character": 18,
+                    "line": 17
+                  }
+                },
+                "url": "<pkg>/m.malloy"
+              }
+            ],
+            "code": "region = $REGION",
+            "columns": [
+              "region"
+            ],
+            "givens": [
+              "REGION"
+            ],
+            "kind": "given"
+          },
+          {
+            "at": [
+              {
+                "range": {
+                  "end": {
+                    "character": 15,
+                    "line": 39
+                  },
+                  "start": {
+                    "character": 9,
+                    "line": 39
+                  }
+                },
+                "url": "<pkg>/m.malloy"
+              },
+              {
+                "range": {
+                  "end": {
+                    "character": 27,
+                    "line": 39
+                  },
+                  "start": {
+                    "character": 19,
+                    "line": 39
+                  }
+                },
+                "url": "<pkg>/m.malloy"
+              }
+            ],
+            "code": "amount >= $MIN_AMT",
+            "columns": [
+              "amount"
+            ],
+            "givens": [
+              "MIN_AMT"
+            ],
+            "kind": "given"
+          }
+        ],
+        "sourceID": "both@<pkg>/m.malloy",
+        "sourceName": "both",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "by_base_dimension@<pkg>/m.malloy": {
+        "buildSourceName": "by_base_dimension__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          }
+        ],
+        "declaration": {
+          "range": {
+            "end": {
+              "character": 1,
+              "line": 34
+            },
+            "start": {
+              "character": 8,
+              "line": 31
+            }
+          },
+          "url": "<pkg>/m.malloy"
+        },
+        "givenDeclarations": [
+          {
+            "name": "REGION",
+            "url": "<pkg>/m.malloy"
+          }
+        ],
+        "keptBases": [
+          {
+            "range": {
+              "end": {
+                "character": 1,
+                "line": 19
+              },
+              "start": {
+                "character": 8,
+                "line": 16
+              }
+            },
+            "sourceID": "base@<pkg>/m.malloy"
+          }
+        ],
+        "leftOut": [
+          {
+            "at": {
+              "range": {
+                "end": {
+                  "character": 43,
+                  "line": 18
+                },
+                "start": {
+                  "character": 13,
+                  "line": 18
+                }
+              },
+              "url": "<pkg>/m.malloy"
+            },
+            "dimension": "at_least",
+            "reads": [
+              "given"
+            ]
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "by_base_dimension",
+          "storage": "lake"
+        },
+        "readTimeTerms": [
+          {
+            "at": [
+              {
+                "range": {
+                  "end": {
+                    "character": 15,
+                    "line": 17
+                  },
+                  "start": {
+                    "character": 9,
+                    "line": 17
+                  }
+                },
+                "url": "<pkg>/m.malloy"
+              },
+              {
+                "range": {
+                  "end": {
+                    "character": 25,
+                    "line": 17
+                  },
+                  "start": {
+                    "character": 18,
+                    "line": 17
+                  }
+                },
+                "url": "<pkg>/m.malloy"
+              }
+            ],
+            "code": "region = $REGION",
+            "columns": [
+              "region"
+            ],
+            "givens": [
+              "REGION"
+            ],
+            "kind": "given"
+          }
+        ],
+        "sourceID": "by_base_dimension@<pkg>/m.malloy",
+        "sourceName": "by_base_dimension",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "inherited@<pkg>/m.malloy": {
+        "buildSourceName": "inherited__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          }
+        ],
+        "declaration": {
+          "range": {
+            "end": {
+              "character": 1,
+              "line": 27
+            },
+            "start": {
+              "character": 8,
+              "line": 23
+            }
+          },
+          "url": "<pkg>/m.malloy"
+        },
+        "givenDeclarations": [
+          {
+            "name": "REGION",
+            "url": "<pkg>/m.malloy"
+          }
+        ],
+        "keptBases": [
+          {
+            "range": {
+              "end": {
+                "character": 1,
+                "line": 19
+              },
+              "start": {
+                "character": 8,
+                "line": 16
+              }
+            },
+            "sourceID": "base@<pkg>/m.malloy"
+          }
+        ],
+        "leftOut": [
+          {
+            "at": {
+              "range": {
+                "end": {
+                  "character": 43,
+                  "line": 18
+                },
+                "start": {
+                  "character": 13,
+                  "line": 18
+                }
+              },
+              "url": "<pkg>/m.malloy"
+            },
+            "dimension": "at_least",
+            "reads": [
+              "given"
+            ]
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "inherited",
+          "storage": "lake"
+        },
+        "readTimeTerms": [
+          {
+            "at": [
+              {
+                "range": {
+                  "end": {
+                    "character": 15,
+                    "line": 17
+                  },
+                  "start": {
+                    "character": 9,
+                    "line": 17
+                  }
+                },
+                "url": "<pkg>/m.malloy"
+              },
+              {
+                "range": {
+                  "end": {
+                    "character": 25,
+                    "line": 17
+                  },
+                  "start": {
+                    "character": 18,
+                    "line": 17
+                  }
+                },
+                "url": "<pkg>/m.malloy"
+              }
+            ],
+            "code": "region = $REGION",
+            "columns": [
+              "region"
+            ],
+            "givens": [
+              "REGION"
+            ],
+            "kind": "given"
+          }
+        ],
+        "sourceID": "inherited@<pkg>/m.malloy",
+        "sourceName": "inherited",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "own@<pkg>/m.malloy": {
+        "buildSourceName": "own__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          }
+        ],
+        "declaration": {
+          "range": {
+            "end": {
+              "character": 1,
+              "line": 14
+            },
+            "start": {
+              "character": 8,
+              "line": 9
+            }
+          },
+          "url": "<pkg>/m.malloy"
+        },
+        "givenDeclarations": [
+          {
+            "name": "REGION",
+            "url": "<pkg>/m.malloy"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "own",
+          "storage": "lake"
+        },
+        "readTimeTerms": [
+          {
+            "at": [
+              {
+                "range": {
+                  "end": {
+                    "character": 15,
+                    "line": 10
+                  },
+                  "start": {
+                    "character": 9,
+                    "line": 10
+                  }
+                },
+                "url": "<pkg>/m.malloy"
+              },
+              {
+                "range": {
+                  "end": {
+                    "character": 25,
+                    "line": 10
+                  },
+                  "start": {
+                    "character": 18,
+                    "line": 10
+                  }
+                },
+                "url": "<pkg>/m.malloy"
+              }
+            ],
+            "code": "region = $REGION",
+            "columns": [
+              "region"
+            ],
+            "givens": [
+              "REGION"
+            ],
+            "kind": "given"
+          }
+        ],
+        "sourceID": "own@<pkg>/m.malloy",
+        "sourceName": "own",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "both@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "by_base_dimension@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "inherited@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "own@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "both@<pkg>/m.malloy": "m.malloy",
+      "by_base_dimension@<pkg>/m.malloy": "m.malloy",
+      "inherited@<pkg>/m.malloy": "m.malloy",
+      "own@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [
+    {
+      "code": "persist-source-refused",
+      "message": "Source 'by_base_dimension' cannot be materialized into a storage destination: a given is read while the persisted relation is BUILT, so its value is substituted at build time — from the declaration's default, the only value available then — and every caller is served that one slice. Move the given out of the persisted query and into the source's extend block (`where: …`), where it is left out of the build and applied per caller when the artifact is read.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "by_base_dimension"
+    }
+  ],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "both@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "by_base_dimension@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "inherited@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "own@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "refusedSources": {
+      "by_base_dimension@<pkg>/m.malloy": {
+        "message": "Source 'by_base_dimension' cannot be materialized into a storage destination: a given is read while the persisted relation is BUILT, so its value is substituted at build time — from the declaration's default, the only value available then — and every caller is served that one slice. Move the given out of the persisted query and into the source's extend block (`where: …`), where it is left out of the build and applied per caller when the artifact is read.",
+        "modelPath": "m.malloy",
+        "name": "by_base_dimension",
+        "reason": "given_in_persisted_query",
+        "sourceID": "by_base_dimension@<pkg>/m.malloy",
+        "tier": "storage"
+      }
+    },
+    "sources": {
+      "both@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "both",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "both",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "7f3ca981cd5837467a36b0de530a39e858e03410cc504ddb78d84cb82a51c2ef",
+        "sourceID": "both@<pkg>/m.malloy",
+        "sql": "sha256:dbbce2ae23b4034c",
+        "strippedTerms": [
+          {
+            "code": "region = $REGION",
+            "givens": [
+              "REGION"
+            ]
+          },
+          {
+            "code": "amount >= $MIN_AMT",
+            "givens": [
+              "MIN_AMT"
+            ]
+          }
+        ]
+      },
+      "inherited@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "inherited",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "inherited",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e",
+        "sourceID": "inherited@<pkg>/m.malloy",
+        "sql": "sha256:313cac3479f4fa00",
+        "strippedTerms": [
+          {
+            "code": "region = $REGION",
+            "givens": [
+              "REGION"
+            ]
+          }
+        ]
+      },
+      "own@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "own",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "own",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e",
+        "sourceID": "own@<pkg>/m.malloy",
+        "sql": "sha256:313cac3479f4fa00",
+        "strippedTerms": [
+          {
+            "code": "region = $REGION",
+            "givens": [
+              "REGION"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
