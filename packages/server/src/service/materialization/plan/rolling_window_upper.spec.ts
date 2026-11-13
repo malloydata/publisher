@@ -42,15 +42,23 @@ beforeEach(() => {
       env: { PUBLISHER_MATERIALIZE: "true" },
    }).restore;
 });
+const opened: { runSQL: (sql: string) => Promise<unknown> }[] = [];
 afterEach(async () => {
    restore?.();
+   // DuckDB shares one in-memory database by connection name across spec
+   // files, so leave none of these tables behind.
+   for (const db of opened.splice(0)) {
+      for (const t of ["rwu_ev", "rwu_inc", "rwu_full"]) {
+         await db.runSQL(`DROP TABLE IF EXISTS ${t}`).catch(() => {});
+      }
+   }
    await packages.cleanup();
 });
 
 // DuckDB shares one in-memory database by connection name, so each package
 // replaces the table. One row an hour, from 120 days before the warehouse's own clock to 2 days
 // before it: every row exists at build time.
-const SEED = `CREATE OR REPLACE TABLE ev AS
+const SEED = `CREATE OR REPLACE TABLE rwu_ev AS
   SELECT ts, row_number() OVER (ORDER BY ts) AS amount
   FROM range(date_trunc('hour', LOCALTIMESTAMP) - INTERVAL 120 DAY,
              date_trunc('hour', LOCALTIMESTAMP) - INTERVAL 2 DAY,
@@ -59,6 +67,7 @@ const SEED = `CREATE OR REPLACE TABLE ev AS
 async function compiled(files: string | Record<string, string>) {
    const pkg = await packages.create(files);
    const duckdb = await pkg.getMalloyConnection!("duckdb");
+   opened.push(duckdb);
    await duckdb.runSQL(SEED);
    return { pkg, duckdb, c: await compilePackageBuildPlan(pkg) };
 }
@@ -88,7 +97,7 @@ function buildSQL(c: Compiled, name: string): string {
 
 const NOW = /LOCALTIMESTAMP|CURRENT_TIMESTAMP/g;
 
-const MODEL = `source: ev is duckdb.table('ev')
+const MODEL = `source: ev is duckdb.table('rwu_ev')
 
 #(materialize) storage="lake"
 source: older is ev extend {
@@ -127,7 +136,7 @@ describe("an upper-bound window is left out of the build and kept for the read",
       "builds every row there is for an own and an inherited upper bound, and keeps the fixed terms",
       async () => {
          const { duckdb, c } = await compiled(MODEL);
-         const all = await count(duckdb, "SELECT * FROM ev");
+         const all = await count(duckdb, "SELECT * FROM rwu_ev");
          for (const name of ["older", "older_inherited"]) {
             const plan = planNamed(c, name);
             expect(
@@ -161,7 +170,7 @@ describe("an upper-bound window is left out of the build and kept for the read",
          const { duckdb, c } = await compiled(MODEL);
          const lower = await count(
             duckdb,
-            "SELECT * FROM ev WHERE ts >= LOCALTIMESTAMP - INTERVAL 60 DAY",
+            "SELECT * FROM rwu_ev WHERE ts >= LOCALTIMESTAMP - INTERVAL 60 DAY",
          );
          for (const name of ["between", "between_two"]) {
             const sql = buildSQL(c, name);
@@ -228,7 +237,7 @@ describe("an upper-bound window is left out of the build and kept for the read",
       async () => {
          const text = `##! experimental { givens }
 given: ORG :: number is 1
-source: ev is duckdb.table('ev')
+source: ev is duckdb.table('rwu_ev')
 #(materialize) storage="lake"
 source: older is ev extend {
   where: ts < now - 30 days
@@ -244,7 +253,7 @@ source: older is ev extend {
          const sql = buildSQL(c, "older");
          expect(sql.match(NOW)).toBeNull();
          expect(await count(duckdb, sql)).toBe(
-            await count(duckdb, "SELECT * FROM ev"),
+            await count(duckdb, "SELECT * FROM rwu_ev"),
          );
       },
       { timeout: 30000 },
@@ -253,7 +262,7 @@ source: older is ev extend {
    it(
       "does not chain an extension over a parent whose build leaves an upper bound out",
       async () => {
-         const text = `source: ev is duckdb.table('ev')
+         const text = `source: ev is duckdb.table('rwu_ev')
 #(materialize) storage="lake"
 source: older is ev extend { where: ts < now - 30 days }
 #(materialize) storage="lake"
@@ -265,7 +274,7 @@ source: older_big is older extend { where: amount > 100 }
          const sql = buildSQL(c, "older_big");
          expect(sql.match(NOW)).toBeNull();
          expect(await count(duckdb, sql)).toBe(
-            await count(duckdb, "SELECT * FROM ev WHERE amount > 100"),
+            await count(duckdb, "SELECT * FROM rwu_ev WHERE amount > 100"),
          );
       },
       { timeout: 30000 },
@@ -277,7 +286,7 @@ describe("what is still refused", () => {
       "refuses an upper bound written in another file, which the build copy cannot reach",
       async () => {
          const { c } = await compiled({
-            "base.malloy": `source: ev is duckdb.table('ev')
+            "base.malloy": `source: ev is duckdb.table('rwu_ev')
 source: older_base is ev extend { where: ts < now - 30 days }
 `,
             "m.malloy": `import { older_base } from 'base.malloy'
@@ -299,7 +308,7 @@ source: older is older_base extend { where: amount > 1 }
    it(
       "refuses any other now-reading shape, and now through a dimension",
       async () => {
-         const { c } = await compiled(`source: ev is duckdb.table('ev')
+         const { c } = await compiled(`source: ev is duckdb.table('rwu_ev')
 #(materialize) storage="lake"
 source: shifted is ev extend { where: ts < now.day - 30 days }
 #(materialize) storage="lake"
@@ -324,7 +333,7 @@ source: via_dim is ev extend {
 });
 
 describe("an incremental refresh equals a full rebuild", () => {
-   const INCREMENTAL = `source: ev is duckdb.table('ev')
+   const INCREMENTAL = `source: ev is duckdb.table('rwu_ev')
 #(materialize) refresh="incremental" watermark="ts" storage="lake"
 source: older is ev extend { where: ts < now - 30 days }
 #(materialize) refresh="incremental" watermark="ts" storage="lake"
@@ -366,11 +375,11 @@ source: between is ev extend { where: ts >= now - 60 days and ts < now - 30 days
             const plan = planNamed(c, name);
             const sql = buildSQL(c, name);
             // The seed, then a day of new rows the next refresh appends.
-            await duckdb.runSQL(`CREATE OR REPLACE TABLE inc AS ${sql}`);
+            await duckdb.runSQL(`CREATE OR REPLACE TABLE rwu_inc AS ${sql}`);
             const [seeded] = (
-               await duckdb.runSQL("SELECT max(ts) AS m FROM inc")
+               await duckdb.runSQL("SELECT max(ts) AS m FROM rwu_inc")
             ).rows as { m: unknown }[];
-            await duckdb.runSQL(`INSERT INTO ev
+            await duckdb.runSQL(`INSERT INTO rwu_ev
                SELECT ts, 1000000 + row_number() OVER (ORDER BY ts)
                FROM range(date_trunc('hour', LOCALTIMESTAMP) - INTERVAL 2 DAY,
                           date_trunc('hour', LOCALTIMESTAMP) - INTERVAL 1 DAY,
@@ -385,7 +394,7 @@ source: between is ev extend { where: ts >= now - 60 days and ts < now - 30 days
                // incremental range to read; the SQL itself runs on DuckDB.
                dialect: "postgres",
                targetDialect: "duckdb",
-               physicalTableName: "memory.inc",
+               physicalTableName: "memory.rwu_inc",
                connectionName: "duckdb",
                sourceEntityId: "sid",
             });
@@ -394,7 +403,7 @@ source: between is ev extend { where: ts >= now - 60 days and ts < now - 30 days
                target: warehouseDeltaTarget({
                   dialect: "duckdb",
                   runner,
-                  quotedTablePath: `"inc"`,
+                  quotedTablePath: `"rwu_inc"`,
                   lineage,
                   sourceSQL: sql,
                }),
@@ -409,7 +418,7 @@ source: between is ev extend { where: ts >= now - 60 days and ts < now - 30 days
                   watermarkDimension: "ts",
                   mergeKeyDimensions: [],
                   derivedStrategy: "range_replace",
-                  physicalTableName: "memory.inc",
+                  physicalTableName: "memory.rwu_inc",
                   connectionName: "duckdb",
                },
                forceRefresh: false,
@@ -424,21 +433,21 @@ source: between is ev extend { where: ts >= now - 60 days and ts < now - 30 days
             // below its lower bound only.
             // (The range replace's own DELETE bounds the range from below.)
             const windowDelete =
-               /^DELETE FROM "inc" WHERE "ts" < TIMESTAMP '[^']*'$/;
+               /^DELETE FROM "rwu_inc" WHERE "ts" < TIMESTAMP '[^']*'$/;
             expect(step.statements.some((s) => windowDelete.test(s))).toBe(
                name === "between",
             );
             await applyDeltaScript(runner, "duckdb", step.statements);
-            await duckdb.runSQL(`CREATE OR REPLACE TABLE full_build AS ${sql}`);
+            await duckdb.runSQL(`CREATE OR REPLACE TABLE rwu_full AS ${sql}`);
             if (name === "older") {
                // Every row there is, exactly as a full rebuild stores it.
                const diff = await count(
                   duckdb,
-                  "(SELECT * FROM inc EXCEPT ALL SELECT * FROM full_build) UNION ALL (SELECT * FROM full_build EXCEPT ALL SELECT * FROM inc)",
+                  "(SELECT * FROM rwu_inc EXCEPT ALL SELECT * FROM rwu_full) UNION ALL (SELECT * FROM rwu_full EXCEPT ALL SELECT * FROM rwu_inc)",
                );
                expect(diff).toBe(0);
-               expect(await count(duckdb, "SELECT * FROM inc")).toBe(
-                  await count(duckdb, "SELECT * FROM ev"),
+               expect(await count(duckdb, "SELECT * FROM rwu_inc")).toBe(
+                  await count(duckdb, "SELECT * FROM rwu_ev"),
                );
             }
             // Read as the served copy reads: the window re-applied.
@@ -447,10 +456,10 @@ source: between is ev extend { where: ts >= now - 60 days and ts < now - 30 days
                (name === "between"
                   ? " AND ts >= LOCALTIMESTAMP - INTERVAL 60 DAY"
                   : "");
-            expect(await count(duckdb, read("inc"))).toBe(
-               await count(duckdb, read("full_build")),
+            expect(await count(duckdb, read("rwu_inc"))).toBe(
+               await count(duckdb, read("rwu_full")),
             );
-            expect(await count(duckdb, read("inc"))).toBeGreaterThan(0);
+            expect(await count(duckdb, read("rwu_inc"))).toBeGreaterThan(0);
          },
          { timeout: 30000 },
       );
