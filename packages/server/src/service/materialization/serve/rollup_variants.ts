@@ -832,6 +832,20 @@ export class RollupVariantServe {
       if (query.gates && !rollupGateEnforcedAtRead(plan)) {
          throw contractSkip();
       }
+      // A source with its own `timezone:` truncated and compared its times in
+      // that zone when the rollup was built; the variant redeclares it over
+      // the rollup without one, so a time grain dimension would be read, and
+      // a grafted gate or a caller's filter on it compared, in another zone:
+      // live's answer would differ, and a truncation gate would admit groups
+      // live refuses.
+      const zone = (query.struct as { queryTimezone?: unknown }).queryTimezone;
+      if (typeof zone === "string" && zone !== "") {
+         throw new RollupSkip(
+            "rollup_time_zone",
+            "the query's source sets its own time zone, which the rollup's stored times are not read in",
+            true,
+         );
+      }
       // A view's `where: sql_boolean("${TABLE}.region = …")` reads a column
       // no field reference names, so no grain check sees it.
       if (query.rawSql) {

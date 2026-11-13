@@ -92,6 +92,16 @@ source: by_truncation is duckdb.table('orders_raw') extend {
   measure: total is amount.sum()
 }
 
+// A source with its own time zone: the rollup truncated in it, and the
+// variant reads the stored times in none, so it is never read (TIME_ZONE).
+#(access_filter) order_day = $ON_DAY
+source: by_zoned_truncation is duckdb.table('orders_raw') extend {
+  timezone: 'America/New_York'
+  dimension: order_day is order_time.day
+  #(preaggregate) grain=["category", "order_day"]${p}
+  measure: total is amount.sum()
+}
+
 #(access_filter) tenant = $REGION
 source: by_internal is duckdb.table('orders_raw') extend {
   internal dimension: tenant is region
@@ -533,6 +543,30 @@ for (const placement of ["colocated", "storage"] as const) {
             expectLive(await fixture.run({ name: label, malloy, givens }));
          });
       }
+
+      it("never answers a source with its own time zone from its rollup: a truncation gate admits only live's rows", async () => {
+         // 05:00 UTC is midnight in New York: read without the source's zone,
+         // the stored days equal it, while live's New York days never do.
+         for (const day of [
+            "2026-01-01 00:00:00",
+            "2026-01-01 05:00:00",
+            "2026-02-01 00:00:00",
+            "2026-02-01 05:00:00",
+         ]) {
+            for (const malloy of [
+               "run: by_zoned_truncation -> { group_by: category; aggregate: total }",
+               "run: by_zoned_truncation -> { group_by: category, order_day; aggregate: total }",
+            ]) {
+               expectLive(
+                  await fixture.run({
+                     name: `zoned ${day}`,
+                     malloy,
+                     givens: { ON_DAY: day },
+                  }),
+               );
+            }
+         }
+      });
 
       it("reports an unprovable extension's skip as CONTRACT without naming its gate", async () => {
          fixture.setBindings(fixture.bindings);
