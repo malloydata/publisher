@@ -919,6 +919,14 @@ export async function queryPathFor(
          colocatedRead: answer.colocatedRead,
          ...(viewTable ? { view: viewTable } : {}),
          ...(answer.rollupMember ? { rollupMember: answer.rollupMember } : {}),
+         ...(variantRollups.length > 0
+            ? {
+                 joinedRollupBases: host.rollupVariants.joinedRollupBaseIDs(
+                    struct,
+                    prepared,
+                 ),
+              }
+            : {}),
          chains: host.sourceChains(),
          // The discovery surface: a name the caller cannot list is never
          // named, unless the caller may see hidden sources.

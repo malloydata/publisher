@@ -842,7 +842,7 @@ function joinReader(def: unknown) {
       return result;
    };
 
-   return { fields, visit, conditionOf };
+   return { fields, visit, conditionOf, readsOf };
 }
 
 /** The joins `def` declares or inherits, in field order. */
@@ -947,6 +947,28 @@ export function fieldJoinUsage(
       out.set(n, reader.visit(n));
    }
    return out;
+}
+
+/**
+ * The joins `def`'s own `where:` reads, directly or through its fields
+ * (`where: segments.kind = 'p'`, or a dimension that reads one), with
+ * `nested` set when one reaches past a join into a join of the joined
+ * source; undefined when the compiler did not record what a field it reads
+ * uses, so a caller treats it as reading every join.
+ */
+export function filterJoinReads(def: unknown): FieldJoinReads | undefined {
+   const reader = joinReader(def);
+   const filters = ((def as { filterList?: unknown[] } | undefined)
+      ?.filterList ?? []) as { e?: unknown }[];
+   const joins = new Set<string>();
+   let nested = false;
+   for (const f of filters) {
+      const reads = reader.readsOf("", expressionPaths(f.e));
+      if (reads === undefined) return undefined;
+      for (const j of reads.joins) joins.add(j);
+      nested ||= reads.nested;
+   }
+   return { joins, nested };
 }
 
 /**
