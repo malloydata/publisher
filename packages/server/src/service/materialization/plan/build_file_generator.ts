@@ -2347,6 +2347,10 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
       // A table that stacks several inlined paths is a SQL source over the
       // author's model: neither builds over the other's build source.
       if (plan.pairBlocks || parent.pairBlocks) continue;
+      // A pair table holds its source once per child of the inlined
+      // join_many, not once per row: an extension built over it would store
+      // (and its served copy count) each parent once per child.
+      if (parent.pair) continue;
       if (givenReadTerms(parent).length > 0) continue;
       plan.buildsOver = {
          sourceID: parent.sourceID,

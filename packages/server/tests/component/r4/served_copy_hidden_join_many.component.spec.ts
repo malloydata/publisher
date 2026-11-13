@@ -704,3 +704,112 @@ describe("R4: row-level gates over a hidden join_many, gated serving on", () => 
       expect(String(served)).not.toMatch(HIDDEN);
    });
 });
+
+// Colocated (no `storage=`): an extension's build can read its parent's
+// build source in the same warehouse, which for a pair table holds each
+// parent once per child. Built over the raw chain instead, the extension's
+// table holds one row per parent and answers with live's rows, a public or a
+// hidden join_many alike.
+const colocatedModel = `##! experimental { access_modifiers }
+${children}
+#(materialize) name="r4h_pub" inline=["segments"]
+source: pub_many is duckdb.table('flights') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+${pairMeasures}
+}
+
+#(materialize) name="r4h_pub_ext"
+source: pub_ext is pub_many extend {
+  measure: double_seg is seg_total * 2
+}
+
+#(materialize) name="r4h_hidden" inline=["segments"]
+source: hidden_many is duckdb.table('flights') extend {
+  primary_key: id
+  internal join_many: segments on segments.flight_id = id
+${pairMeasures}
+}
+
+#(materialize) name="r4h_hidden_ext"
+source: hidden_ext is hidden_many extend {
+  measure: double_seg is seg_total * 2
+}
+
+#(materialize) name="r4h_private" inline=["segments"]
+source: private_many is duckdb.table('flights') extend {
+  primary_key: id
+  private join_many: segments on segments.flight_id = id
+${pairMeasures}
+}
+
+#(materialize) name="r4h_private_ext"
+source: private_ext is private_many extend {
+  measure: double_seg is seg_total * 2
+}
+`;
+
+describe("R4: a colocated extension of a pair table, hidden join_many or not", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "off", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": colocatedModel },
+         seedSql,
+         materialize: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("stores each extension once per parent, over the raw chain", async () => {
+      expect(await fixture.servedCopyProblems()).toEqual([]);
+      for (const ext of ["pub_ext", "hidden_ext", "private_ext"]) {
+         expect(`${ext}:${fixture.buildReads[ext]?.join(",") ?? ""}`).toBe(
+            `${ext}:`,
+         );
+         const rows = await fixture.duckdb.runSQL(
+            `SELECT count(*) AS n FROM ${fixture.physicalTables[ext]}`,
+         );
+         expect(`${ext}:${Number(rows.rows[0].n)}`).toBe(`${ext}:6`);
+      }
+   });
+
+   for (const ext of ["pub_ext", "hidden_ext", "private_ext"]) {
+      for (const aggregate of [
+         "flight_count, total_distance",
+         "double_seg, seg_total, seg_n, tag_n",
+         "distance_per_flight, long_legs",
+      ]) {
+         const malloy = `run: ${ext} -> { group_by: carrier; aggregate: ${aggregate} }`;
+         it(`answers with live's rows: ${malloy}`, async () => {
+            const run = await fixture.run({ name: malloy, malloy });
+            expect(run.live.length).toBeGreaterThan(0);
+            expect(run.servedVia).toBe("served_copy");
+            expect(rowDifference(run.live, run.served)).toBeUndefined();
+         });
+      }
+   }
+
+   for (const malloy of [
+      "run: hidden_ext -> { group_by: segments.tag }",
+      "run: hidden_ext -> { group_by: segments__tag }",
+      "run: private_ext -> { group_by: segments.tag }",
+      "run: private_ext extend { dimension: t is segments.tag } -> { group_by: t }",
+   ]) {
+      it(`refuses a hidden join through the extension, as live does: ${malloy}`, async () => {
+         fixture.setBindings([]);
+         const live = await failure(() => fixture.runAsIs(malloy));
+         fixture.setBindings(fixture.bindings);
+         const served = await failure(() => fixture.runAsIs(malloy));
+         expect(live).toBeDefined();
+         expect(served).toBeDefined();
+         expect(String(served)).not.toMatch(HIDDEN);
+      });
+   }
+});
