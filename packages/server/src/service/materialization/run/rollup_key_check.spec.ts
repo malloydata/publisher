@@ -357,7 +357,11 @@ describe("the rollup key record in the run ledger", () => {
    });
 
    it("holds a query source's key check beside the rollup's, lost and carried with it", () => {
-      const parent: RollupKeyRecord = { ...record, keyColumn: "id", sourceID: "s" };
+      const parent: RollupKeyRecord = {
+         ...record,
+         keyColumn: "id",
+         sourceID: "s",
+      };
       const key = rollupKeyRecordKey("a", "s");
       expect(key).not.toBe("a");
       const recorded = new UniquenessLedger(undefined, "run-2");
@@ -495,12 +499,14 @@ describe("the rollup key record, bound for serving", () => {
          parentKeys: { s: true, t: false },
       });
       // A source's record is never read as the rollup's own.
-      expect(keyUniquenessOf(records[rollupKeyRecordKey("a", "s")], entry)).toBe(
-         undefined,
-      );
+      expect(
+         keyUniquenessOf(records[rollupKeyRecordKey("a", "s")], entry),
+      ).toBe(undefined);
       expect(
          splitManifestEntries(
-            { a: { ...entry, keyUniqueness: { parentKeys: { s: true } } } } as never,
+            {
+               a: { ...entry, keyUniqueness: { parentKeys: { s: true } } },
+            } as never,
             "store",
             true,
          ).tableNameManifest.a?.keyUniqueness,

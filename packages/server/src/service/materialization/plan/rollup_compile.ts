@@ -216,7 +216,10 @@ export async function compileParentKeyChecks(
                      {
                         source: need.name,
                         keyColumn: need.keyColumn,
-                        error: error instanceof Error ? error.message : String(error),
+                        error:
+                           error instanceof Error
+                              ? error.message
+                              : String(error),
                      },
                   );
                   return undefined;

@@ -242,7 +242,9 @@ describe("parentKeyProblem", () => {
          legOf("many", "one"),
       ]) {
          expect(parentKeyProblem(leg, true)).toBeUndefined();
-         expect(parentKeyProblem(leg, false)).toContain("more than once or NULL");
+         expect(parentKeyProblem(leg, false)).toContain(
+            "more than once or NULL",
+         );
          expect(parentKeyProblem(leg, undefined)).toContain("was not checked");
       }
    });
