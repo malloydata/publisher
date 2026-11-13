@@ -785,6 +785,8 @@ export async function buildSourceIntoStorage(params: {
     * Absent for a non-incremental source, which always builds in full.
     */
    incremental?: StorageIncrementalRefresh;
+   /** The name holds this package's own `name=` view, which the table replaces. */
+   replacesNameView?: boolean;
    /**
     * Test seam for federation and the passthrough read; production passes
     * nothing. Lets a spec prove the `finally` closes a proxied source's tunnel
@@ -946,7 +948,10 @@ export async function buildSourceIntoStorage(params: {
          passthrough.selectSQL,
          { columns: params.declaredColumns ?? [], ...params.castOptions },
          params.partitionColumns ?? [],
-         { sourceType },
+         {
+            sourceType,
+            ...(params.replacesNameView ? { replacesView: true } : {}),
+         },
       );
       // Record where the new snapshot reaches, so the next refresh can be a
       // delta. On this session: the attach does not outlive this function.
@@ -1020,6 +1025,7 @@ async function buildSameCatalogIntoStorage(params: {
    declaredColumns?: readonly DeclaredColumn[];
    castOptions?: BuildCastOptions;
    environmentPath: string;
+   replacesNameView?: boolean;
 }): Promise<StorageBuildResult> {
    const { destinationName, destinationConnection, physicalTableName } = params;
    const alias = params.sourceConnection.name || destinationName;
@@ -1066,6 +1072,7 @@ async function buildSameCatalogIntoStorage(params: {
          params.buildSQL,
          { columns: params.declaredColumns ?? [], ...params.castOptions },
          params.partitionColumns ?? [],
+         params.replacesNameView ? { replacesView: true } : {},
       );
       // Reads no warehouse, as a chained build does: nothing was charged.
       return {
@@ -1196,6 +1203,8 @@ export async function buildDownstreamIntoStorage(params: {
     */
    partitionColumns?: string[];
    environmentPath: string;
+   /** The name holds this package's own `name=` view, which the table replaces. */
+   replacesNameView?: boolean;
 }): Promise<StorageBuildResult> {
    const {
       destinationName,
@@ -1262,6 +1271,7 @@ export async function buildDownstreamIntoStorage(params: {
          sql,
          { columns: casts.declaredColumns, ...casts.castOptions },
          params.partitionColumns ?? [],
+         params.replacesNameView ? { replacesView: true } : {},
       );
 
       return {
@@ -1364,6 +1374,11 @@ export async function dropStorageTable(params: {
    destinationConnection: ApiConnection;
    physicalTableName: string;
    environmentPath: string;
+   /**
+    * More tables to drop in the same session once the table is dropped (or
+    * found not to be one): a table's own backup name (reclaimer.ts).
+    */
+   alsoDrop?: string[];
 }): Promise<void> {
    const {
       destinationName,
@@ -1387,13 +1402,21 @@ export async function dropStorageTable(params: {
          destinationConnection,
          environmentPath,
       );
-      await session.runSQL(
-         dropStorageTableSql(
-            destinationName,
-            physicalTableName,
-            destinationSchemaOf(destinationConnection),
-         ),
-      );
+      const schema = destinationSchemaOf(destinationConnection);
+      let dropErr: unknown;
+      try {
+         await session.runSQL(
+            dropStorageTableSql(destinationName, physicalTableName, schema),
+         );
+      } catch (err) {
+         dropErr = err;
+      }
+      for (const table of params.alsoDrop ?? []) {
+         await session.runSQL(
+            dropStorageTableSql(destinationName, table, schema),
+         );
+      }
+      if (dropErr !== undefined) throw dropErr;
    } finally {
       await dispose();
    }
@@ -1772,6 +1795,12 @@ export async function createTableAndDescribe(
        * failure they prevent is the writer's, whatever the source.
        */
       sourceType?: FederatedSourceType;
+      /**
+       * The name holds this package's own `name=` view, which the table
+       * replaces: the view is dropped in the same transaction, so a failure
+       * leaves it (see viewToTableSwap in name_view.ts).
+       */
+      replacesView?: boolean;
    } = {},
 ): Promise<WireColumn[]> {
    if (partitionColumns.length === 0) {
@@ -1779,6 +1808,9 @@ export async function createTableAndDescribe(
       // CREATE OR REPLACE committed would delete the name the previous
       // manifest serves from.
       return await inTransaction(session, quotedTablePath, async () => {
+         if (options.replacesView) {
+            await session.runSQL(`DROP VIEW IF EXISTS ${quotedTablePath}`);
+         }
          await session.runSQL(
             `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
          );
@@ -1795,6 +1827,7 @@ export async function createTableAndDescribe(
       createStatement: "CREATE OR REPLACE TABLE",
       bounded: options.sourceType !== undefined,
       read: () => describeTable(session, quotedTablePath),
+      ...(options.replacesView ? { replacesView: true } : {}),
    });
 }
 
@@ -1872,6 +1905,8 @@ export async function writePartitionedTable<T>(
       createStatement: "CREATE TABLE" | "CREATE OR REPLACE TABLE";
       bounded: boolean;
       read: () => Promise<T>;
+      /** Drop this package's own `name=` view at the name first, in the transaction. */
+      replacesView?: boolean;
    },
 ): Promise<T> {
    const { quotedTablePath, selectSQL, keys } = params;
@@ -1897,6 +1932,9 @@ export async function writePartitionedTable<T>(
    }
    try {
       return await inTransaction(session, quotedTablePath, async () => {
+         if (params.replacesView) {
+            await session.runSQL(`DROP VIEW IF EXISTS ${quotedTablePath}`);
+         }
          await session.runSQL(
             `${params.createStatement} ${quotedTablePath} AS (${selectSQL}) WITH NO DATA`,
          );

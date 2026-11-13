@@ -203,10 +203,12 @@ interface SwapArgs {
    backupTableName: string;
    connectionName: string;
    /**
-    * A `name=` view that depends on the served table: the transactional swap
-    * runs each of its attempts' statements before its DROP and after its
-    * RENAME, trying the next attempt when one fails. Only Postgres asks for
-    * them; a non-transactional swap never gets any.
+    * A `name=` view the swap must carry: the transactional swap runs each of
+    * its attempts' statements before its DROP and after its RENAME, trying
+    * the next attempt when one fails (a view over the served table, which
+    * only Postgres asks for; or this package's own view AT the name, which
+    * the new table replaces). A non-transactional swap runs only its
+    * `aside` statements: `before` first, `restore` when the swap fails.
     */
    swapDependents?: ColocatedBuildRequest["swapDependents"];
 }
@@ -223,8 +225,39 @@ interface SwapArgs {
 export async function swapIntoPlace(args: SwapArgs): Promise<void> {
    if (TRANSACTIONAL_SWAP_DIALECTS.has(args.dialect)) {
       await swapInTransaction(args);
-   } else {
+      return;
+   }
+   const aside = args.swapDependents?.aside;
+   if (!aside) {
       await swapByRenamingAside(args);
+      return;
+   }
+   const run = (sql: string) => args.connection.runSQL(sql, args.runOptions);
+   try {
+      for (const sql of aside.before) await run(sql);
+   } catch (err) {
+      await dropStagingAfterFailure(args);
+      throw err;
+   }
+   try {
+      await swapByRenamingAside(args);
+   } catch (err) {
+      // The swap left the name as it found it (empty): put back what
+      // `before` removed.
+      try {
+         for (const sql of aside.restore) await run(sql);
+      } catch (restoreErr) {
+         logger.error(
+            "Failed to put back a name= view after a failed materialized table swap",
+            {
+               physicalTableName: args.physicalTableName,
+               connectionName: args.connectionName,
+               error: errMessage(err),
+               restoreError: errMessage(restoreErr),
+            },
+         );
+      }
+      throw err;
    }
 }
 
