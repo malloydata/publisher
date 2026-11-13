@@ -52,9 +52,11 @@
  * joined source), and the joined source's own exposed dimensions as
  * `j__<field>` columns, which the served copy answers `j.<field>` from with no
  * join at read (served_copy.ts, `InlinedJoin`).
- * An inlined join is checked unique at every build (P8): the plan carries a
+ * An inlined join is checked unique before a build (P8): the plan carries a
  * generated group-by over the joined source on the join's key, and a build
- * whose check finds a key matched twice fails, naming the join.
+ * whose check finds a key matched twice fails, naming the join. An auto-run
+ * skips it only when the joined table provably has not changed since it
+ * passed (run/inline_uniqueness.ts).
  *
  * `inline=["j"]` on a join_many (phase 4, P5) stores a pair table: one row per
  * row of live's LEFT JOIN through the join, as `select:` through it reads them,
