@@ -158,6 +158,37 @@ source: plain is duckdb.table('ev')
       ]);
    });
 
+   // A path stores every level's rows and fields, so a given read on its
+   // first join counts as much as one on its last.
+   it("refuses a path whose first join's rows read a given", async () => {
+      const { generated, refused } = await companionOf(`##! experimental.givens
+given: REGION :: string is 'east'
+
+source: opts is duckdb.table('rg') extend { primary_key: id }
+
+source: items is duckdb.table('ev') extend {
+  primary_key: id
+  where: region = $REGION
+  join_many: options is opts on rid = options.id
+}
+
+#(materialize) storage="lake" name="o_t" inline=["items.options"]
+source: o is duckdb.table('rg') extend {
+  primary_key: id
+  join_many: items on id = items.rid
+}
+`);
+      expect(generated).toBeUndefined();
+      expect(refused.map((r) => [r.sourceName, r.reason])).toEqual([
+         [
+            "o",
+            expect.stringContaining(
+               "inline= names `items.options`, through which a given is read",
+            ),
+         ],
+      ]);
+   });
+
    it("still inlines a join that reads no given, beside a referenced one that does", async () => {
       const { generated, refused } = await companionOf(`##! experimental.givens
 given: REGION :: string

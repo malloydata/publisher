@@ -1229,9 +1229,17 @@ export function callerDependentDimensions(
    | { reason: string } {
    const givenIR = givenReadingFields(def.fields);
    for (const j of inline) {
+      // Every level of a path (`items.options`) is stored, its rows and its
+      // fields, so a given read at any level holds one caller's values.
+      const levels = j
+         .split(".")
+         .map((_, i, all) => all.slice(0, i + 1).join("."));
       if (
-         givenIR.has(j) ||
-         [...givenIR].some((path) => path.startsWith(`${j}.`))
+         levels.some(
+            (level) =>
+               givenIR.has(level) ||
+               [...givenIR].some((path) => path.startsWith(`${level}.`)),
+         )
       ) {
          return {
             reason:
