@@ -27,8 +27,13 @@ What it proves, end to end with a Postgres origin and a DuckLake destination:
 - **Each flight is counted once**: `flight_count` aggregates the `__parent_row`
   rows, so a refresh that left a replaced flight's old rows beside its new ones
   would count it twice.
-- **It is a delta, not a rebuild**: the range is half-open, so flight 6, whose
-  segment is in the frontier batch 4, is absent until the `reseed`.
+- **The range is open above**: flight 6, whose segment is in the frontier batch
+  4, is read by the same refresh. A pair table's range has no upper bound, so a
+  parent held above the frontier by one child is read again rather than left
+  behind.
+- **It is a delta, not a rebuild**: flight 7's segment is deleted with no
+  watermark moved, so the refreshed table keeps it until the `reseed`, the
+  incremental contract.
 
 `flights_full` names only the flight's own batch, so a segment arriving for an
 old flight could never be seen: its refresh is not honoured, with a
@@ -48,6 +53,7 @@ built and served.
 | 2      | UA           | 1         |
 | 3      | AA           | 2         |
 | 4      | UA           | 2         |
+| 7      | AA           | 1         |
 
 ## Data orders_pg.pfx_segments
 
@@ -59,6 +65,7 @@ Flight 3 has no segment.
 | 11         | 1             | 50        | 1         |
 | 20         | 2             | 200       | 1         |
 | 40         | 4             | 300       | 2         |
+| 70         | 7             | 5         | 1         |
 
 ## Model pfx.malloy
 
@@ -116,18 +123,19 @@ Expect:
 
 | carrier | flight_count | seg_ids | seg_total |
 | ------- | ------------ | ------- | --------- |
-| AA      | 2            | 2       | 150       |
+| AA      | 3            | 3       | 155       |
 | UA      | 2            | 2       | 500       |
 
 ## Mutate orders_pg.pfx_segments
 
 A segment arrives for flight 1, built in batch 1 (a late-arriving child); flight
-3 gets its first; flight 2 loses its only one; new flight 5 has one; and new
-flight 6's segment is in batch 4, the frontier, which this refresh leaves out.
+3 gets its first; flight 2 loses its only one; new flight 5 has one; new flight
+6's segment is in batch 4, the frontier; and flight 7's segment is deleted with
+no watermark moved, which only a full build sees.
 
 ```sql
 INSERT INTO pfx_segments VALUES (12, 1, 25, 3), (30, 3, 70, 3), (50, 5, 10, 3), (60, 6, 1000, 4);
-DELETE FROM pfx_segments WHERE seg_id = 20;
+DELETE FROM pfx_segments WHERE seg_id IN (20, 70);
 ```
 
 ## Mutate orders_pg.pfx_flights
@@ -141,14 +149,16 @@ INSERT INTO pfx_flights VALUES (5, 'AA', 3), (6, 'UA', 4);
 
 ## Publish (forceRefresh)
 
-Build 2. `flights` advances by a delta over `[2, 4)`: every row of flights 1, 2,
-3, 4 and 5 is replaced, by key. `flights_full` is rebuilt in full
+Build 2. `flights` advances by a delta over every flight whose watermark is 2 or
+more, open above: every row of flights 1, 2, 3, 4, 5 and 6 is replaced, by key.
+Flight 7's watermark is 1, so its rows are left as they are. `flights_full` is rebuilt in full
 (`forceRefresh` defeats skip-if-unchanged, as a scheduled refresh does).
 
 ## Query by carrier (again)
 
-AA: flights 1, 3 and 5, each once, with five segments (three of flight 1's).
-UA: flight 2, now childless, and flight 4. Flight 6 is absent ⇒ a delta ran.
+AA: flights 1, 3, 5 and 7, each once, with six segments (three of flight 1's,
+and flight 7's deleted one, still stored ⇒ a delta ran). UA: flight 2, now
+childless, flight 4, and flight 6 from the frontier batch.
 
 servedFrom: storage
 
@@ -156,12 +166,12 @@ Expect:
 
 | carrier | flight_count | seg_ids | seg_total |
 | ------- | ------------ | ------- | --------- |
-| AA      | 3            | 5       | 255       |
-| UA      | 2            | 1       | 300       |
+| AA      | 4            | 6       | 260       |
+| UA      | 3            | 2       | 1300      |
 
 ## Query full rebuild by carrier
 
-The table rebuilt in full has flight 6.
+The table rebuilt in full has no segment for flight 7.
 
 ```malloy
 run: flights_full -> { group_by: carrier; aggregate: flight_count, seg_ids, seg_total; order_by: carrier }
@@ -173,7 +183,7 @@ Expect:
 
 | carrier | flight_count | seg_ids | seg_total |
 | ------- | ------------ | ------- | --------- |
-| AA      | 3            | 5       | 255       |
+| AA      | 4            | 5       | 255       |
 | UA      | 3            | 2       | 1300      |
 
 ## Publish (reseed)
@@ -182,7 +192,7 @@ Build 3 sends `flights` back to a full build.
 
 ## Query by carrier (again)
 
-Flight 6 appears, and the table agrees with the full rebuild.
+Flight 7's deleted segment is gone, and the table agrees with the full rebuild.
 
 servedFrom: storage
 
@@ -190,5 +200,5 @@ Expect:
 
 | carrier | flight_count | seg_ids | seg_total |
 | ------- | ------------ | ------- | --------- |
-| AA      | 3            | 5       | 255       |
+| AA      | 4            | 5       | 255       |
 | UA      | 3            | 2       | 1300      |

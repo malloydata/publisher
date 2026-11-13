@@ -214,6 +214,21 @@ describe("deltaSelect", () => {
       );
    });
 
+   it("leaves the range open above with no end, for a pair table's delta", () => {
+      expect(
+         deltaSelect({
+            dialect: "postgres",
+            sourceSQL: "SELECT 1 AS __pair_watermark",
+            watermarkName: "__pair_watermark",
+            start: { malloyType: "timestamp", value: "2024-06-01T00:00:00" },
+            end: undefined,
+         }),
+      ).toBe(
+         `SELECT * FROM (SELECT 1 AS __pair_watermark) AS __d ` +
+            `WHERE "__pair_watermark" >= TIMESTAMP '2024-06-01 00:00:00'`,
+      );
+   });
+
    it("filters the source's OUTPUT rows, and returns real columns", async () => {
       // The regression this composition exists for, end to end on a dialect that
       // can run it. The delta is built from PersistSource.getSQL(), so it selects
