@@ -1038,3 +1038,105 @@ describe("R4: row-level gates on multi-join and multi-hop pair sources", () => {
       });
    }
 });
+
+// A level's row flag marks one row per distinct key, so a key held twice or
+// null at a flagged level would count once where live counts each row: the
+// build checks every flagged level's key first and is refused, so the source
+// answers live, equal to live.
+const keyModel = `${children}
+#(materialize) storage="lake" inline=["items.opts"]
+source: orders_hop is duckdb.table('orders') extend {
+  primary_key: id
+  join_many: items on items.order_id = id
+${measures}
+}
+
+#(materialize) storage="lake" inline=["items.opts", "pays"]
+source: orders is duckdb.table('orders') extend {
+  primary_key: id
+  join_many: items on items.order_id = id
+  join_many: pays on pays.order_id = id
+${measures}
+    pay_n is pays.count()
+    paid_sum is pays.paid.sum()
+}
+`;
+
+const keySeeds = {
+   "null source keys": [
+      `CREATE TABLE orders AS SELECT * FROM (VALUES
+      (1, 'a', 10.0), (2, 'a', 20.0), (NULL, 'b', 30.0), (NULL, 'b', 40.0), (5, 'c', 5.0)
+    ) AS t(id, cat, amt)`,
+   ],
+   "null middle keys": [
+      `CREATE TABLE orders AS SELECT * FROM (VALUES
+      (1, 'a', 10.0), (2, 'a', 20.0), (5, 'c', 5.0)
+    ) AS t(id, cat, amt)`,
+      `CREATE TABLE items AS SELECT * FROM (VALUES
+      (11, 1, 1.0, 'red'), (NULL, 1, 2.0, 'blue'), (NULL, 1, 3.0, 'green'), (13, 2, 4.0, 'red')
+    ) AS t(item_id, order_id, price, color)`,
+   ],
+   "a middle key held twice": [
+      `CREATE TABLE orders AS SELECT * FROM (VALUES
+      (1, 'a', 10.0), (2, 'a', 20.0), (5, 'c', 5.0)
+    ) AS t(id, cat, amt)`,
+      `CREATE TABLE items AS SELECT * FROM (VALUES
+      (11, 1, 1.0, 'red'), (11, 1, 2.0, 'blue'), (13, 2, 4.0, 'red')
+    ) AS t(item_id, order_id, price, color)`,
+   ],
+};
+
+for (const [label, overrides] of Object.entries(keySeeds)) {
+   describe(`R4: a pair table over ${label} is not built, and answers live`, () => {
+      let restore: () => void;
+      let fixture: R4Fixture;
+      beforeAll(async () => {
+         restore = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+         }).restore;
+         const replaced = new Set(overrides.map((sql) => sql.split(" ")[2]));
+         fixture = await buildScenario({
+            files: { "m.malloy": keyModel },
+            seedSql: [
+               ...seedSql.filter((sql) => !replaced.has(sql.split(" ")[2])),
+               ...overrides,
+            ],
+            materialize: true,
+            checkKeys: true,
+         });
+      });
+      afterAll(async () => {
+         restore();
+         await disposeScenarios();
+      });
+
+      it("refuses both builds, naming the key", () => {
+         expect(Object.keys(fixture.checkFailures).sort()).toEqual([
+            "orders",
+            "orders_hop",
+         ]);
+         for (const message of Object.values(fixture.checkFailures)) {
+            expect(message).toMatch(/keys one row flag on '(id|item_id)'/);
+         }
+      });
+
+      // Each would differ from live over the table: the flag counts the
+      // shared key once.
+      for (const malloy of [
+         "run: orders_hop -> { group_by: cat; aggregate: order_n, amt_sum, opt_n }",
+         "run: orders_hop -> { group_by: cat; aggregate: item_n, price_sum }",
+         "run: orders -> { group_by: cat; aggregate: order_n, amt_sum, pay_n }",
+         "run: orders -> { group_by: cat; aggregate: item_n, price_sum }",
+      ]) {
+         it(`answers live, equal to live: ${malloy}`, async () => {
+            const run = await fixture.run({
+               name: malloy,
+               malloy,
+               expectLive: true,
+            });
+            expect(run.servedVia).toBeUndefined();
+            expect(rowDifference(run.live, run.served)).toBeUndefined();
+         });
+      }
+   });
+}

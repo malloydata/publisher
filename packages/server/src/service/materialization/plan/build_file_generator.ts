@@ -436,6 +436,15 @@ export interface InlineUniquenessCheck {
     * Any row it returns is a key the joined source holds twice.
     */
    sql?: string;
+   /**
+    * Set on a pair table's key check (a path of join_manys, or a table of
+    * several blocks): the level of the path whose key it checks, 0 for the
+    * source's own. Such a check also fails on a null key, since a level's row
+    * flag marks one row per distinct key, where live counts each row
+    * ({@link pairKeyChecks}). `join` is then the path down to that level
+    * (empty for the source).
+    */
+   pairLevel?: number;
 }
 
 /**
@@ -2014,16 +2023,29 @@ export function planModelMaterialize(
       }
       const build = buildSourceName(name);
       const checked = ones;
-      const uniquenessChecks = checked.map((j): InlineUniquenessCheck => {
-         const join = joins.find((x) => x.name === j) as SourceJoin;
-         return {
-            join: j,
-            keyColumn: join.keyColumn as string,
-            queryName: `${build}__unique__${j}`,
-            joinedSourceID: join.sourceID as string,
-            ...(join.connection ? { connectionName: join.connection } : {}),
-         };
-      });
+      const uniquenessChecks = [
+         ...checked.map((j): InlineUniquenessCheck => {
+            const join = joins.find((x) => x.name === j) as SourceJoin;
+            return {
+               join: j,
+               keyColumn: join.keyColumn as string,
+               queryName: `${build}__unique__${j}`,
+               joinedSourceID: join.sourceID as string,
+               ...(join.connection ? { connectionName: join.connection } : {}),
+            };
+         }),
+         ...(pair
+            ? pairKeyChecks(
+                 pair,
+                 pairBlocks,
+                 def.sourceID,
+                 build,
+                 typeof def.connection === "string"
+                    ? def.connection
+                    : undefined,
+              )
+            : []),
+      ];
       plans.push({
          sourceName: name,
          sourceID: def.sourceID,
@@ -2337,11 +2359,82 @@ function pairWatermarkCalculation(
 }
 
 /**
+ * The key checks of a pair table whose rows carry a flag below the parent's
+ * (a path of join_manys) or more than one block, run before each build like
+ * an inlined join_one's (P8): the source's primary key, and the key of each
+ * level between it and the leaf, must be unique and never null. A level's row
+ * flag marks one row per distinct key down to that level, so two rows of one
+ * key (or two null keys) share one flagged row, where live aggregates that
+ * level over each row: a middle-level measure, and a parent measure beside a
+ * deeper level, would come up short. The leaf needs no check: its aggregates
+ * read every row. A one-hop table of one block checks nothing, as before.
+ */
+function pairKeyChecks(
+   pair: MaterializePair,
+   blocks: MaterializePairBlocks | undefined,
+   sourceID: string,
+   build: string,
+   connection: string | undefined,
+): InlineUniquenessCheck[] {
+   const all = blocks?.blocks ?? [pair];
+   if (!blocks && !(pair.hops && pair.hops.length > 0)) return [];
+   const on = connection ? { connectionName: connection } : {};
+   const out: InlineUniquenessCheck[] = [
+      {
+         join: "",
+         keyColumn: pair.parentKey,
+         queryName: `${build}__pair_key`,
+         joinedSourceID: sourceID,
+         pairLevel: 0,
+         ...on,
+      },
+   ];
+   for (const p of all) {
+      // Each level above the leaf: the first join's source, then each hop's
+      // but the last.
+      const levels = [
+         { names: [p.join], key: p.childKey, sourceID: p.childSourceID },
+         ...(p.hops ?? []).map((h, k) => ({
+            names: [
+               p.join,
+               ...(p.hops ?? []).slice(0, k + 1).map((x) => x.join),
+            ],
+            key: h.key,
+            sourceID: h.sourceID,
+         })),
+      ].slice(0, p.hops?.length ?? 0);
+      levels.forEach((l, k) => {
+         out.push({
+            join: l.names.join("."),
+            keyColumn: l.key,
+            queryName: `${build}__pair_key__${l.names.join("__")}`,
+            joinedSourceID: l.sourceID,
+            pairLevel: k + 1,
+            ...on,
+         });
+      });
+   }
+   return out;
+}
+
+/**
  * One inlined join's uniqueness check (P8): the joined source's keys that
- * occur more than once. A build runs it first and fails on any row.
+ * occur more than once. A build runs it first and fails on any row. A pair
+ * table's key check ({@link pairKeyChecks}) also returns a null key.
  */
 function emitUniquenessCheck(check: InlineUniquenessCheck): string {
    const key = identifier(check.keyColumn);
+   if (check.pairLevel !== undefined) {
+      // malloy-text: every name through identifier
+      return `query: ${identifier(check.queryName)} is ${identifier(checkAlias(check))} -> {
+  group_by: ${key}
+  aggregate: matches is count()
+} -> {
+  where: matches > 1 or ${key} is null
+  select: ${key}
+  limit: 1
+}`;
+   }
    return `query: ${identifier(check.queryName)} is ${identifier(checkAlias(check))} -> {
   where: ${key} is not null
   group_by: ${key}
