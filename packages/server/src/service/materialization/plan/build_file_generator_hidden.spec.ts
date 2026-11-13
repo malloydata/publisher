@@ -362,7 +362,7 @@ source: private_join is orders0 extend {
    );
 
    it(
-      "refuses a hidden join_many, whose pair table's record carries no modifier yet",
+      "plans a private or internal join_many's pair table, each joined column carrying the join's modifier, and builds it through the lifted copy",
       async () => {
          settings({ PERSIST_STORAGE_MODE: "on" });
          const { c, plans } =
@@ -377,14 +377,89 @@ source: items is duckdb.sql("select 1 as item_id, 1 as order_id, 'x' as sku") ex
 #(materialize) storage="lake" inline=["i"]
 source: hidden_many is orders0 extend {
   internal join_many: i is items on id = i.order_id
+  measure: skus is count(i.sku)
+}
+
+#(materialize) storage="lake" inline=["i"]
+source: private_many is orders0 extend {
+  private join_many: i is items on id = i.order_id
+  rename: amt is amount
 }
 `);
-         expect(plans.map((p) => p.sourceName)).toEqual([]);
+         const byName = new Map(plans.map((p) => [p.sourceName, p]));
+         expect([...byName.keys()].sort()).toEqual([
+            "hidden_many",
+            "private_many",
+         ]);
+         expect(stored(byName.get("hidden_many") as MaterializePlan)).toEqual([
+            "id",
+            "region",
+            "amount",
+            "i__item_id:internal",
+            "i__order_id:internal",
+            "i__sku:internal",
+         ]);
+         expect(stored(byName.get("private_many") as MaterializePlan)).toEqual([
+            "id",
+            "region",
+            "amt",
+            "i__item_id:private",
+            "i__order_id:private",
+            "i__sku:private",
+         ]);
+         for (const name of ["hidden_many", "private_many"]) {
+            const p = byName.get(name) as MaterializePlan;
+            expect(p.pair?.join).toBe("i");
+            const sql = addressSQL(
+               c.sources[p.sourceID],
+               c.targets?.[p.sourceID],
+            );
+            expect(sql).toContain('"i__sku"');
+         }
+         expect(
+            (c.annotationFindings ?? []).filter(
+               (f) => f.code === "materialize-not-built",
+            ),
+         ).toEqual([]);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "refuses a path through a join its joined source hides, alone, so the model's other sources still build",
+      async () => {
+         settings({ PERSIST_STORAGE_MODE: "on" });
+         const { c, plans } =
+            await planOf(`##! experimental { access_modifiers }
+source: orders0 is duckdb.sql("select 1 as id, 2.0 as amount") extend {
+  primary_key: id
+}
+source: opts is duckdb.sql("select 7 as opt_id, 1 as item_id, 'k' as kind") extend {
+  primary_key: opt_id
+}
+source: items is duckdb.sql("select 1 as item_id, 1 as order_id, 'x' as sku") extend {
+  primary_key: item_id
+  internal join_many: opts on opts.item_id = item_id
+}
+
+#(materialize) storage="lake" inline=["i.opts"]
+source: hop is orders0 extend {
+  internal join_many: i is items on id = i.order_id
+}
+
+#(materialize) storage="lake" inline=["o"]
+source: one_hop is orders0 extend {
+  private join_many: o is opts on id = o.item_id
+}
+`);
+         expect(plans.map((p) => p.sourceName).sort()).toEqual(["one_hop"]);
          const finding = (c.annotationFindings ?? []).find(
-            (f) => f.subject === "hidden_many",
+            (f) => f.subject === "hop",
          );
          expect(finding?.code).toBe("materialize-not-built");
-         expect(finding?.message).toContain("a join_many that is not public");
+         expect(finding?.message).toContain(
+            "whose `opts` is not public on the source `i` joins",
+         );
       },
       { timeout: 30000 },
    );

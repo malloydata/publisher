@@ -1056,6 +1056,25 @@ function inlinedPathOf(
          };
       }
       if (next.relationship !== "many") return { reason: throughOne };
+      // A join the joined source hides is read by no source joining it, the
+      // build's included, so the build's query would not compile, and with it
+      // the companion every `#(materialize)` source of the model builds from.
+      const hidden = prev.fields.some((raw) => {
+         const f = raw as FieldLike;
+         return (
+            f.join !== undefined &&
+            (f.as ?? f.name) === names[k] &&
+            hiddenAccess(f) !== undefined
+         );
+      });
+      if (hidden) {
+         return {
+            reason:
+               `inline= names ${quoted}, whose ${quotedName(names[k])} is not ` +
+               `public on the source ${quotedName(prev.name)} joins, so no ` +
+               "source joining it reads through it",
+         };
+      }
       if (
          typeof connection === "string" &&
          next.connection !== undefined &&
@@ -1743,12 +1762,11 @@ export function planModelMaterialize(
          continue;
       }
       const entries = (resolved as { path: SourceJoin[] }[]).map((r) => r.path);
-      // A private or internal join's access, by name. An inlined join_one
-      // keeps it: its build reads the join through the build copy's lift
-      // (P3), and the served record carries the join's modifier. A pair
-      // table's record (an inlined join_many) does not carry one yet, so a
-      // hidden join_many is refused here, and this source serves live while
-      // the companion still compiles for every other source in the model.
+      // A private or internal join's access, by name. Its build reads the
+      // join through the build copy's lift (P3), and its joined columns carry
+      // the modifier: the served copy declares an inlined join_one's record,
+      // and a pair table's (an inlined join_many's), under it, and renames
+      // the stored columns behind it `private` in the record's own block.
       const joinAccess = new Map<string, "private" | "internal">();
       for (const raw of def.fields ?? []) {
          const f = raw as FieldLike;
@@ -1757,19 +1775,6 @@ export function planModelMaterialize(
          if (access && typeof fieldName === "string" && f.join !== undefined) {
             joinAccess.set(fieldName, access);
          }
-      }
-      const hiddenMany = entries
-         .map((p) => p[0])
-         .find((j) => joinAccess.has(j.name) && j.relationship !== "one")?.name;
-      if (hiddenMany !== undefined) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason:
-               `inline= names ${quotedName(hiddenMany)}, a join_many that is ` +
-               "not public, which cannot be inlined as a pair table yet",
-         });
-         continue;
       }
       const ones = entries
          .filter((p) => p[0].relationship !== "many")
