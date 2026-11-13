@@ -303,6 +303,16 @@ export interface ServedCopyHost {
     */
    perColumnTypes?(): boolean;
    /**
+    * The shape ({@link resultShapeOf}) of `queryString`'s result compiled
+    * against the author's model, reading no table; undefined when it does
+    * not compile there. Without it, a query reading a table whose re-root
+    * leaves a column out is declined.
+    */
+   authorResultShape?(
+      queryString: string,
+      givens?: Record<string, unknown>,
+   ): Promise<string | undefined>;
+   /**
     * Build the compiled copy's QueryModel once, so every query compiled
     * against it reuses it rather than building its own (the host's
     * `ensureSharedQueryModel`). Absent: each query builds its own.
@@ -365,6 +375,15 @@ interface Compiled {
     * column (`joined_annotations`), whose notes a record cannot carry.
     */
    inlinedJoins?: ReadonlyMap<string, ReadonlyMap<string, ReadonlySet<string>>>;
+   /**
+    * The tables whose re-root leaves stored columns out of its `type:`
+    * (`columnsLeftOut`: a column no cast reads as its declared type, a
+    * big-integer column no native cast reads exactly, an undeclarable one),
+    * by table path. A query naming one fails to compile and answers live;
+    * a wildcard (`select: *`) expands without it, so a query reading one of
+    * these tables is checked against the author's compile of it.
+    */
+   leftOutTables?: ReadonlySet<string>;
    aliased: ServeBinding[];
    problems: ServedCopyProblem[];
    /**
@@ -831,6 +850,31 @@ export class ServedCopyServe {
          // A table on the queried source's chain that is not re-rooted was
          // left unserved, with a package warning saying why.
          decline("the query reads no re-rooted table", "not_served");
+      }
+      // A table whose re-root leaves a stored column out answers a query
+      // naming that column live (it does not compile here), but a wildcard
+      // (`select: *`, in the query or a view it calls) expands without it:
+      // the answer would lack a column live returns. Such a query is
+      // answered here only when its result has the shape the author's
+      // compile gives it.
+      if (tablesRead.some((b) => compiled.leftOutTables?.has(b.tablePath))) {
+         const live = await this.host
+            .authorResultShape?.(queryString, givens)
+            .catch(() => undefined);
+         const served = resultShapeOf(
+            await compiling(() =>
+               runnable.getPreparedResult({
+                  virtualMap,
+                  givens: givens as never,
+               }),
+            ),
+         );
+         if (live === undefined || live !== served) {
+            decline(
+               "the query's result includes a column the served copy leaves out of a stored table's type",
+               "not_served",
+            );
+         }
       }
       // A join answered from stored columns is a record, so an aggregate at
       // its grain (`j.x.sum()`, `j.count()`, a measure that reads one) would
@@ -1407,10 +1451,15 @@ export class ServedCopyServe {
                name?: unknown;
                as?: unknown;
                join?: unknown;
+               type?: unknown;
             }[]) {
                const name = String(f.as ?? f.name ?? "");
+               // A nest is a repeated (or single) record; a join the source
+               // declares (`join_one: c is …`) is never a stored column, and
+               // its re-root keeps it as written.
                if (
                   typeof f.join === "string" &&
+                  (f.type === "array" || f.type === "record") &&
                   name !== "" &&
                   !stored.has(name.toLowerCase())
                ) {
@@ -2247,6 +2296,11 @@ export class ServedCopyServe {
                         (c.reroot.inlinedJoins ?? []).length > 0 ||
                         (c.reroot.pair?.childStoredDimensions ?? []).length > 0,
                   )
+                  .map((c) => c.binding.tablePath),
+            ),
+            leftOutTables: new Set(
+               candidates
+                  .filter((c) => (c.reroot.columnsLeftOut ?? []).length > 0)
                   .map((c) => c.binding.tablePath),
             ),
             inlinedJoins: new Map(
@@ -3191,4 +3245,26 @@ function refinesUnfilteredBase(
    } catch {
       return false;
    }
+}
+
+/**
+ * A query result's shape: its fields' names, nested results' fields in
+ * place, in order. Two compiles of one query that agree on it return the
+ * same columns.
+ */
+export function resultShapeOf(prepared: { resultExplore: unknown }): string {
+   type Field = {
+      name: string;
+      isExploreField?: () => boolean;
+      allFields?: Field[];
+   };
+   const shape = (fields: readonly Field[]): unknown[] =>
+      fields.map((f) =>
+         f.isExploreField?.() === true
+            ? { [f.name]: shape(f.allFields ?? []) }
+            : f.name,
+      );
+   return JSON.stringify(
+      shape((prepared.resultExplore as { allFields: Field[] }).allFields),
+   );
 }
