@@ -37,6 +37,7 @@ import type {
 import {
    getMaterializeEnabled,
    getMaterializeGatedSources,
+   getV1ServedCopyMode,
    getPersistStorageMode,
 } from "../config";
 import type { GraftScope } from "./gate_classification";
@@ -912,10 +913,11 @@ export async function queryPathFor(
       });
       const catalog = host.materializedTables();
       const plans = host.rollupPlans();
-      // The `#(preaggregate)` leg exists only with the switch on; off, its
-      // plans are never read.
+      // The rollup leg exists only with the materialize switch or the v1
+      // cutover on; off, its plans are never read.
       const variantRollups =
-         getMaterializeEnabled() && host.rollupVariants.hasRollups()
+         (getMaterializeEnabled() || getV1ServedCopyMode() === "on") &&
+         host.rollupVariants.hasRollups()
             ? host.rollupVariants.rollups()
             : [];
       // The persisted view the query calls, if any: its table is the first

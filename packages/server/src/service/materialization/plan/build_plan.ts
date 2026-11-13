@@ -64,7 +64,7 @@ import { deletingWindowsOf } from "./rolling_window";
 import { tryCompileRollupCompanion } from "./rollup_compile";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
 import { rollupRefusalFinding } from "./rollup_plan";
-import { getMaterializeEnabled } from "../../../config";
+import { getMaterializeEnabled, getV1ServedCopyMode } from "../../../config";
 import { admitGivenPositions, type DynamicTerm } from "./persist_dynamic_terms";
 import { resolvePartitionColumns } from "./persist_partition";
 import {
@@ -912,19 +912,23 @@ export async function collectModelBuildPlan(
       runtime,
       getRuntime,
    } = args;
+   const v1Cutover = getV1ServedCopyMode() === "on";
    // Pre-aggregation runs BEFORE the early `return`s below: a model may declare
    // `#@ preaggregate` with no persist source and no `experimental.persistence`
    // flag — the SYNTHESIZED model carries both — and must still get its rollup.
-   const synthesized =
-      args.synthesized !== undefined
-         ? args.synthesized
-         : await tryCompileSynthesizedPreaggregation({
-              packagePath,
-              modelPath,
-              getRuntime,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              contents: (malloyModel as any)._modelDef?.contents ?? {},
-           });
+   // Under the v1 cutover a v1 rollup is planned by the rollup leg instead
+   // (`#(preaggregate)`'s, below; G4), so v1's own synthesis is skipped.
+   const synthesized = v1Cutover
+      ? null
+      : args.synthesized !== undefined
+        ? args.synthesized
+        : await tryCompileSynthesizedPreaggregation({
+             packagePath,
+             modelPath,
+             getRuntime,
+             // eslint-disable-next-line @typescript-eslint/no-explicit-any
+             contents: (malloyModel as any)._modelDef?.contents ?? {},
+          });
    if (synthesized) {
       const rollupTargets = await synthesized.runtime.getBuildTargets(
          synthesized.model,
@@ -992,7 +996,10 @@ export async function collectModelBuildPlan(
          malloyModel,
          materializer,
       });
-      // `#(preaggregate)` (phase 4), under the same switch.
+   }
+   // `#(preaggregate)` (phase 4), under the same switch, and under the v1
+   // cutover, which reads v1 `#@ preaggregate` lines as its declarations.
+   if (getMaterializeEnabled() || v1Cutover) {
       await collectGeneratedRollups(parts, {
          modelPath,
          packagePath,

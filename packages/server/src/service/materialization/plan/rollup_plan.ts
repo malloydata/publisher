@@ -66,7 +66,11 @@
  */
 
 import { Annotations, type ModelDef, type SourceDef } from "@malloydata/malloy";
-import { getMaterializeGatedSources } from "../../../config";
+import {
+   getMaterializeGatedSources,
+   getV1ServedCopyMode,
+} from "../../../config";
+import { readPreaggregateAnnotation } from "./preaggregation_annotation";
 import { collectEntryPointGates } from "../../gate_classification";
 import { createHash } from "node:crypto";
 import { ownLevelNotes, type AnnotationNote } from "../../annotations";
@@ -113,6 +117,9 @@ import type { SourceMap, SourceNode } from "./source_map";
 
 /** The route `#(preaggregate)` is on. */
 export const PREAGGREGATE_ROUTE = "preaggregate";
+
+/** A v1 `#@ preaggregate` (or `#@ -preaggregate`) line. */
+const V1_PREAGGREGATE_NOTE = /^\s*#@\s*-?preaggregate\b/;
 
 /** Appended to a declaring model's path to name its rollup build companion. */
 export const ROLLUP_COMPANION_SUFFIX = ".preaggregate.malloy";
@@ -470,6 +477,12 @@ export interface RollupPlanContext {
     * standing in for {@link rollupsServeGatedBases} at every placement.
     */
    readUnderGates?: boolean;
+   /**
+    * Whether v1 `#@ preaggregate` lines are read as `#(preaggregate)`
+    * declarations (the v1 cutover's G4). Absent: under
+    * `PUBLISHER_V1_SERVED_COPY=on`.
+    */
+   readsV1?: boolean;
 }
 
 /**
@@ -514,6 +527,41 @@ export function planSourceRollups(
          const read = readDeclaration(note, name, sourceName);
          if ("tier" in read) refused.push(read);
          else declarations.push(read);
+      }
+   }
+   // The v1 cutover (G4): a measure's own `#@ preaggregate` lines, read by
+   // v1's own reader (a grain per line, `#@ -preaggregate` clearing those
+   // above it, `storage=` and `namespace=` bound to their line), are this
+   // leg's declarations too, so a v1 rollup is planned, built (under the v2
+   // rollup's table name, so it rebuilds once) and served here, and the v1
+   // composite is not. A line v1 reports as unusable is left to v1's own
+   // validation.
+   if (ctx.readsV1 ?? getV1ServedCopyMode() === "on") {
+      for (const field of fields) {
+         const name = fieldNameOf(field);
+         if (name === undefined || !isMeasure(field)) continue;
+         const notes = declaredFieldNotes(
+            def as NotedSourceDef,
+            field,
+            sources,
+         ).filter((n) => V1_PREAGGREGATE_NOTE.test(n.text));
+         if (notes.length === 0) continue;
+         const read = readPreaggregateAnnotation({
+            name,
+            annotations: { notes },
+         });
+         for (const grain of read.grains) {
+            declarations.push({
+               measure: name,
+               grain: grain.dimensions,
+               ...(grain.storage !== undefined
+                  ? { storage: grain.storage }
+                  : {}),
+               ...(grain.namespace !== undefined
+                  ? { namespace: grain.namespace }
+                  : {}),
+            });
+         }
       }
    }
    // A source-level declaration names no measure.

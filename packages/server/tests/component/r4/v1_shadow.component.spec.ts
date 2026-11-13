@@ -104,12 +104,15 @@ describe("v1 served copy: shadow", () => {
       }
    }, 120_000);
 
-   for (const [shapeName, variant] of [
-      ["baseline", "storage"],
-      ["baseline", "colocated"],
-      ["v1 rollup on annotated measures", "colocated"],
-   ] as [string, Variant][]) {
-      it(`serves ${shapeName} [${variant}] as today and finds the cutover's answer equal`, async () => {
+   for (const [shapeName, variant, outcome] of [
+      ["baseline", "storage", "equal"],
+      ["baseline", "colocated", "equal"],
+      // The cutover reads a v1 rollup as the rollup leg's, under its v2 name
+      // (decision 3), which a package built before it has not built: it
+      // answers live until its next build, and the shadow says so.
+      ["v1 rollup on annotated measures", "colocated", "live"],
+   ] as [string, Variant, "equal" | "live"][]) {
+      it(`serves ${shapeName} [${variant}] as today and finds the cutover's answer ${outcome}`, async () => {
          const shape = SHAPES.find((s) => s.name === shapeName)!;
          // Those today's paths answer (no gap for this variant).
          const queries = shape.queries.filter(
@@ -143,8 +146,8 @@ describe("v1 served copy: shadow", () => {
             }
             const counts = await settled(harness, queries.length);
             expect(counts).toEqual({
-               equal: queries.length,
-               live: 0,
+               equal: outcome === "equal" ? queries.length : 0,
+               live: outcome === "live" ? queries.length : 0,
                rows_differ: 0,
                metadata_differ: 0,
                error: 0,
@@ -152,7 +155,7 @@ describe("v1 served copy: shadow", () => {
             // Once per query text: asking again compares nothing new.
             await fixture.run(entry, queries[0].malloy);
             await new Promise((r) => setTimeout(r, 200));
-            expect((await settled(harness, queries.length)).equal).toBe(
+            expect((await settled(harness, queries.length))[outcome]).toBe(
                queries.length,
             );
          } finally {

@@ -704,3 +704,49 @@ source: orders is ${ROWS} extend {
       expect(plans).toHaveLength(1);
    });
 });
+
+describe("v1 #@ preaggregate read as the rollup leg's declarations (the v1 cutover's G4)", () => {
+   const V1 = `##! experimental.persistence
+source: orders is ${ROWS} extend {
+  dimension: order_day is order_time.day
+  #@ preaggregate grain="category" storage="lake"
+  #@ preaggregate grain="order_day, category"
+  measure: total is amount.sum()
+  #@ preaggregate grain="category"
+  #@ -preaggregate
+  measure: n is count()
+}`;
+
+   async function planV1(readsV1: boolean) {
+      const modelDef = await compile({ "orders.malloy": V1 });
+      return planModelRollups(SourceMap.of(modelDef), {
+         packageRelativeSourceID: (id) => id.replace("file:///pkg/", ""),
+         readsV1,
+      });
+   }
+
+   it("plans each v1 grain as a rollup, with its own line's placement, negation applied", async () => {
+      const { plans, refused } = await planV1(true);
+      expect(refused).toEqual([]);
+      expect(
+         plans.map((p) => [
+            p.grainDimensions,
+            p.storage ?? null,
+            p.measures.map((m) => m.name),
+         ]),
+      ).toEqual([
+         [["category"], "lake", ["total"]],
+         [["category", "order_day"], null, ["total"]],
+      ]);
+      // Under the v2 rollup's name: a v1 rollup rebuilds once (decision 3).
+      expect(plans[0]?.rollupSourceName).toBe(
+         rollupName("orders", "orders@orders.malloy", ["category"], {
+            storage: "lake",
+         }),
+      );
+   });
+
+   it("reads no v1 line before the cutover", async () => {
+      expect((await planV1(false)).plans).toEqual([]);
+   });
+});

@@ -172,13 +172,6 @@ const V1_STORAGE_ROLLUP_ANNOTATIONS: Gap = {
       "today's serve shape answers a v1 #@ preaggregate storage= rollup with its measures' annotations (# currency, #(doc)) dropped",
 };
 
-/** G4: nothing reads a v1 `storage=` rollup after the cutover until the rollup leg does. */
-const V1_STORAGE_ROLLUP_LIVE: Gap = {
-   kind: "live",
-   reason:
-      "G4: after the cutover a v1 #@ preaggregate storage= rollup is read by no candidate (the serve shape is gone and the rollup leg reads only #(preaggregate) plans), so the query answers live",
-};
-
 /** A `#@ persist` view is planned and read only with the materialize switch on. */
 const PERSISTED_VIEW_OFF: Gap = {
    kind: "live",
@@ -1514,7 +1507,6 @@ source: orders is orders_raw extend {
             gaps: {
                "storage/off": V1_STORAGE_ROLLUP_ANNOTATIONS,
                "storage/on": V1_STORAGE_ROLLUP_ANNOTATIONS,
-               "storage/cutover": V1_STORAGE_ROLLUP_LIVE,
             },
          },
          {
@@ -1522,7 +1514,6 @@ source: orders is orders_raw extend {
             malloy:
                "run: orders -> { group_by: region; aggregate: avg_ is total / n }",
             expect: "rollup",
-            gaps: { "storage/cutover": V1_STORAGE_ROLLUP_LIVE },
          },
          {
             name: "not covered (status)",

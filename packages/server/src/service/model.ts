@@ -2944,11 +2944,14 @@ export class Model {
     * Whether the router may try the `#(preaggregate)` rollup leg: a model file,
     * the materialize switch on, and a rollup declared on a source it sees.
     */
-   private rollupVariantsEnabled(): boolean {
+   private rollupVariantsEnabled(
+      mode: V1ServedCopyMode = getV1ServedCopyMode(),
+   ): boolean {
       return (
          this.modelType === "model" &&
          !this.isNotebook() &&
-         getMaterializeEnabled() &&
+         // The v1 cutover reads v1 `#@ preaggregate` rollups here too (G4).
+         (getMaterializeEnabled() || mode === "on") &&
          this.rollupVariants.hasRollups()
       );
    }
@@ -3449,7 +3452,10 @@ export class Model {
          const servedCopyPossible =
             this.servedCopyEnabled(v1Mode) && servedCopy.hasBindings();
          // Captured once so the guard and the use below see the same companion.
-         const preaggServeMaterializer = this.preaggregateServeMaterializer;
+         // None under the cutover: a v1 rollup is the rollup leg's (G4).
+         const preaggServeMaterializer = cutover
+            ? undefined
+            : this.preaggregateServeMaterializer;
          const route = await routeQuery<RoutedExtra>(
             routeCandidates(this.servingHost(servedCopy), {
                queryString,
@@ -3461,7 +3467,7 @@ export class Model {
                // row-level gate (it never leaves the author's warehouse).
                colocatedKeepsContracts: cutover,
                preaggServeMaterializer,
-               ...(this.rollupVariantsEnabled()
+               ...(this.rollupVariantsEnabled(v1Mode)
                   ? { rollupVariantsFor: runnable }
                   : {}),
                ...(this.persistedViewsEnabled()

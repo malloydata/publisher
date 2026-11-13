@@ -220,10 +220,11 @@ for (const shape of SHAPES) {
       describe(`conformance: ${shape.name} [${variant}]`, () => {
          let restore: () => void = () => {};
          let fixture: LoadedFixture | undefined;
+         let cutover: LoadedFixture | undefined;
          let loadError: string | undefined;
          const live = new Map<string, Outcome>();
          const served = new Map<string, Outcome>();
-         const key = (q: ConformanceQuery, on?: Switch) =>
+         const key = (q: ConformanceQuery, on?: Switch | "live-cutover") =>
             on ? `${q.name}/${on}` : q.name;
          const runIn = (
             target: { run: LoadedFixture["run"] },
@@ -234,8 +235,13 @@ for (const shape of SHAPES) {
          beforeAll(async () => {
             // Loaded with the switch on, so `#(materialize)` is planned; the
             // router reads the switch per query, so both are queried here.
+            // The v1 cutover is read at load (it plans v1 rollups as the
+            // rollup leg's, under their v2 names) and at bind, so it gets a
+            // package of its own, loaded, built and bound under it, by a
+            // load pool spawned with it.
             restore = withSwitch("on");
             try {
+               await freshLoadPool();
                const loader = await loadFixture({
                   ...DATA_FILES,
                   ...renderFiles(shape, variant),
@@ -244,14 +250,33 @@ for (const shape of SHAPES) {
                   live.set(key(q), await runIn(loader, q));
                }
                fixture = await loader.bind();
-               for (const on of SWITCHES) {
+               for (const on of SWITCHES.filter((s) => s !== "cutover")) {
                   restore();
                   restore = withSwitch(on);
-                  // The v1 cutover's bindings follow the switch at bind.
-                  if (on === "cutover") await fixture.rebind();
                   for (const q of shape.queries) {
                      served.set(key(q, on), await runIn(fixture, q));
                   }
+               }
+               restore();
+               restore = withSwitch("cutover");
+               await freshLoadPool();
+               const cutoverLoader = await loadFixture({
+                  ...DATA_FILES,
+                  ...renderFiles(shape, variant),
+               });
+               // Live as the cutover package answers before any table is
+               // bound: no composite exists to answer it (with today's
+               // switches, a v1 rollup's composite answers even unbuilt, as
+               // its base, without the measures' annotations).
+               for (const q of shape.queries) {
+                  live.set(
+                     key(q, "live-cutover"),
+                     await runIn(cutoverLoader, q),
+                  );
+               }
+               cutover = await cutoverLoader.bind();
+               for (const q of shape.queries) {
+                  served.set(key(q, "cutover"), await runIn(cutover, q));
                }
             } catch (error) {
                loadError =
@@ -278,24 +303,33 @@ for (const shape of SHAPES) {
                      on,
                      q.name,
                      describeOutcome(
-                        live.get(key(q))!,
+                        live.get(
+                           key(
+                              q,
+                              on === "cutover" ? "live-cutover" : undefined,
+                           ),
+                        )!,
                         served.get(key(q, on))!,
                      ),
                   );
                }
             }
-            if (fixture) {
-               const errors = Object.entries(fixture.buildErrors);
+            for (const [label, f] of [
+               ["-", fixture],
+               ["cutover", cutover],
+            ] as const) {
+               if (!f) continue;
+               const errors = Object.entries(f.buildErrors);
                row(
-                  "-",
+                  label,
                   "(package)",
                   [
-                     `verdicts ${fixture.verdicts.join(", ")}`,
-                     `built ${fixture.built.map((b) => `${b.name}/${b.tier}`).join(", ")}`,
+                     `verdicts ${f.verdicts.join(", ")}`,
+                     `built ${f.built.map((b) => `${b.name}/${b.tier}`).join(", ")}`,
                      ...(errors.length
                         ? [`build errors ${JSON.stringify(errors)}`]
                         : []),
-                     `warnings ${fixture.warnings.map((w) => `${w.code}:${w.subject}: ${(w.message ?? "").slice(0, 200)}`).join(" ;; ")}`,
+                     `warnings ${f.warnings.map((w) => `${w.code}:${w.subject}: ${(w.message ?? "").slice(0, 200)}`).join(" ;; ")}`,
                   ].join("; "),
                );
             }
@@ -304,6 +338,7 @@ for (const shape of SHAPES) {
          afterAll(async () => {
             restore();
             await fixture?.dispose();
+            await cutover?.dispose();
          });
 
          for (const on of SWITCHES) {
@@ -313,7 +348,10 @@ for (const shape of SHAPES) {
                const title = `${q.name}, switch ${on}: ${want === "colocated" ? "served" : want}, equal to live`;
                const test = () => {
                   expect(loadError).toBeUndefined();
-                  const l = live.get(key(q))!;
+                  const l =
+                     on === "cutover"
+                        ? live.get(key(q, "live-cutover"))!
+                        : live.get(key(q))!;
                   const s = served.get(key(q, on))!;
                   if ("error" in l) throw new Error(`live failed: ${l.error}`);
                   if ("error" in s) {
