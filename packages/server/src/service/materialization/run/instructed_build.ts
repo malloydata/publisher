@@ -237,6 +237,7 @@ export class InstructedBuild {
             ),
             hostInstructed,
             warehouseReach,
+            materializePlans: compiled.materializePlans,
          },
          ...this.seedInstructedRun(seedEntries, connections, strict),
          builtThisRun: [],

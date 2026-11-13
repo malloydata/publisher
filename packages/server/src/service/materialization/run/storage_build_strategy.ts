@@ -27,6 +27,7 @@ import {
    buildVirtualMap,
    bindingServesModelSource,
    deriveServeBindings,
+   duckdbTypeToMalloy,
    documentFlagsForLifts,
    liftDerivedSources,
    missingPersistedTables,
@@ -35,6 +36,12 @@ import {
    type SourceLocation,
 } from "../serve/materialization_serve_transform";
 import { reachPersisted } from "../plan/source_map";
+import {
+   extensionOverStoredModel,
+   type MaterializeParent,
+   type MaterializePlan,
+   type StoredChain,
+} from "../plan/build_file_generator";
 import {
    STORED_COLUMN_TYPE_MISMATCH_CODE,
    storageBuildCasts,
@@ -76,7 +83,7 @@ import {
    wrongTierDetail,
 } from "./materialization_run_support";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
-import { destinationSchemaOf } from "./storage_table_path";
+import { destinationSchemaOf, storageTablePath } from "./storage_table_path";
 
 /** What a `storage=` build of one source starts from. */
 export interface StorageBuildRequest {
@@ -236,6 +243,11 @@ export class StorageBuildStrategy
       // ineligibility it throws and we fall back to recompute (non-strict) or
       // refuse (`strictUpstreams`).
       if (dependsOnStorageUpstream) {
+         // An extension table (P10) builds over its parent's stored table from
+         // the chain its plan carries, never by lifting author text by name.
+         const extension = storedExtensionOf(
+            planFacts.materializePlans?.[persistSource.sourceID],
+         );
          try {
             // Reads stored parents and writes in the one destination, so its
             // seconds are the store's, as a same-catalog build's are.
@@ -248,19 +260,33 @@ export class StorageBuildStrategy
                      params.packageName ?? params.incremental?.packageName,
                },
                () =>
-                  this.seams.buildDownstreamViaParents(
-                     persistSource,
-                     destinationName,
-                     destinationConnection,
-                     builtEntries,
-                     environment,
-                     physicalTableName,
-                     planFacts,
-                     params.contentSourceEntityId ?? instruction.sourceEntityId,
-                     lift,
-                     // Passed only when set, so a seam's recorded call is unchanged.
-                     ...(params.replacesNameView ? ([true] as const) : []),
-                  ),
+                  extension
+                     ? this.buildExtensionOverStoredParent(
+                          persistSource,
+                          extension,
+                          destinationName,
+                          destinationConnection,
+                          builtEntries,
+                          environment,
+                          physicalTableName,
+                          planFacts,
+                          ...(params.replacesNameView ? ([true] as const) : []),
+                       )
+                     : this.seams.buildDownstreamViaParents(
+                          persistSource,
+                          destinationName,
+                          destinationConnection,
+                          builtEntries,
+                          environment,
+                          physicalTableName,
+                          planFacts,
+                          params.contentSourceEntityId ??
+                             instruction.sourceEntityId,
+                          lift,
+                          // Passed only when set, so a seam's recorded call
+                          // is unchanged.
+                          ...(params.replacesNameView ? ([true] as const) : []),
+                       ),
             );
             recordChainedStorageBuild("parent_reuse");
          } catch (err) {
@@ -714,41 +740,12 @@ export class StorageBuildStrategy
                sourceID === undefined
                   ? undefined
                   : planFacts.addressBySourceId[sourceID];
-            const entry =
-               address === undefined ? undefined : builtEntries[address];
-            if (
-               entry !== undefined &&
-               address !== undefined &&
-               !upstreamEntryIsCurrent(address, entry, planFacts)
-            ) {
-               return wrongTierDetail(name, address, entry, planFacts);
-            }
-            if (
-               entry?.storageDestinationName === destinationName &&
-               !entry.schema?.length
-            ) {
-               return (
-                  `'${name}' is materialized in destination '${destinationName}', ` +
-                  `but by a reference that carries no column list, which this ` +
-                  `build needs to read it`
-               );
-            }
-            if (entry?.storageDestinationName !== undefined) {
-               return (
-                  `'${name}' is materialized in destination ` +
-                  `'${entry.storageDestinationName}', not '${destinationName}'`
-               );
-            }
-            if (entry !== undefined) {
-               return (
-                  `'${name}' is materialized outside destination ` +
-                  `'${destinationName}' (a warehouse table, or a reference ` +
-                  `that does not say where it lives), which this build cannot read`
-               );
-            }
-            return (
-               `'${name}' is not materialized in destination ` +
-               `'${destinationName}' for this build`
+            return upstreamPlacement(
+               name,
+               address,
+               address === undefined ? undefined : builtEntries[address],
+               destinationName,
+               planFacts,
             );
          };
          const details = missing.map((name) => ({ name, detail: where(name) }));
@@ -859,6 +856,102 @@ export class StorageBuildStrategy
    }
 
    /**
+    * Build a `storage=` extension table over its parent's stored table in the
+    * same destination (P10): the parent's build source declared as the
+    * virtual source of that table, the extension's chain over it
+    * ({@link extensionOverStoredModel}), compiled and run on the destination
+    * alone, so nothing reads the warehouse. A parent with no current table in
+    * this destination is {@link ChainedUpstreamMissingError}, and a chain the
+    * destination cannot compile (the plan checked it can) is
+    * {@link ChainedShapeNotCarriedError}: the caller recomputes from raw, or,
+    * under `strictUpstreams`, refuses, as for any chained build.
+    */
+   async buildExtensionOverStoredParent(
+      persistSource: PersistSource,
+      extension: StoredExtension,
+      destinationName: string,
+      destinationConnection: ApiConnection,
+      builtEntries: Record<string, ManifestEntry>,
+      environment: BuildEnvironment,
+      physicalTableName: string,
+      planFacts: ChainedPlanFacts,
+      /** See StorageBuildRequest.replacesNameView. */
+      replacesNameView?: boolean,
+   ): Promise<StorageBuildResult> {
+      const { plan, parent, chain } = extension;
+      const address = planFacts.addressBySourceId[parent.sourceID];
+      const entry = address === undefined ? undefined : builtEntries[address];
+      if (
+         address === undefined ||
+         entry === undefined ||
+         !upstreamEntryIsCurrent(address, entry, planFacts) ||
+         entry.storageDestinationName !== destinationName ||
+         !entry.schema?.length
+      ) {
+         const detail = upstreamPlacement(
+            parent.sourceName,
+            address,
+            entry,
+            destinationName,
+            planFacts,
+         );
+         throw new ChainedUpstreamMissingError(
+            [parent.sourceName],
+            `persisted upstream of '${persistSource.name}': ${detail} — the ` +
+               `build cannot stack on it, and the recompute that remains ` +
+               `would rebuild the stored table its SQL inlines`,
+            [{ name: parent.sourceName, detail }],
+         );
+      }
+      const binding: ServeBinding = {
+         sourceName: chain.parentBuildSourceName,
+         destinationName,
+         virtualHandle: address,
+         tablePath: storageTablePath(
+            destinationName,
+            entry.physicalTableName,
+            destinationSchemaOf(destinationConnection),
+         ),
+         schema: entry.schema
+            .filter((c) => c.name && c.type)
+            .map((c) => ({ name: c.name as string, type: c.type as string })),
+      };
+      try {
+         return await buildDownstreamIntoStorage({
+            destinationName,
+            destinationConnection,
+            transientModel: extensionOverStoredModel({
+               plan,
+               chain,
+               connectionName: destinationName,
+               virtualHandle: address,
+               columns: binding.schema.map((c) => ({
+                  name: c.name,
+                  type: duckdbTypeToMalloy(c.type),
+               })),
+            }),
+            downstreamName: plan.buildSourceName,
+            virtualMap: buildVirtualMap([binding]),
+            physicalTableName,
+            partitionColumns: partitionColumnsForBuild(persistSource),
+            environmentPath: environment.getEnvironmentPath(),
+            ...(replacesNameView ? { replacesNameView } : {}),
+         });
+      } catch (err) {
+         if (!(err instanceof MaterializationEligibilityError)) throw err;
+         // Its text names the generated sources; logged, never returned.
+         logger.warn(
+            "A storage= extension table did not build over its parent's stored table",
+            { sourceName: persistSource.name, error: errMessage(err) },
+         );
+         throw new ChainedShapeNotCarriedError(
+            `'${persistSource.name}' could not be built over the stored table ` +
+               `of '${parent.sourceName}' in destination '${destinationName}'`,
+         );
+      }
+   }
+
+   /**
     * Lift `<name> is <def>` of a persist source's declaration from the author's
     * model file by its compiled `location` (the assembler prepends `source: `).
     * Undefined when there is no file-backed location or it can't be sliced.
@@ -872,4 +965,68 @@ export class StorageBuildStrategy
       ).location;
       return location ? liftText(location) : undefined;
    }
+}
+
+/** A `storage=` extension table (P10) and the parent it builds over. */
+interface StoredExtension {
+   plan: MaterializePlan;
+   parent: MaterializeParent;
+   chain: StoredChain;
+}
+
+/** `plan` as a {@link StoredExtension}, when its build reads a stored parent. */
+function storedExtensionOf(
+   plan: MaterializePlan | undefined,
+): StoredExtension | undefined {
+   const parent = plan?.buildsOver;
+   const chain = parent?.overStored;
+   return plan && parent && chain ? { plan, parent, chain } : undefined;
+}
+
+/**
+ * Where a persisted upstream's table is, for a chained build that cannot
+ * stack on it in `destinationName`: at the wrong tier, without a column list,
+ * in another destination, outside any destination, or nowhere this build has.
+ */
+function upstreamPlacement(
+   name: string,
+   address: string | undefined,
+   entry: ManifestEntry | undefined,
+   destinationName: string,
+   planFacts: ChainedPlanFacts,
+): string {
+   if (
+      entry !== undefined &&
+      address !== undefined &&
+      !upstreamEntryIsCurrent(address, entry, planFacts)
+   ) {
+      return wrongTierDetail(name, address, entry, planFacts);
+   }
+   if (
+      entry?.storageDestinationName === destinationName &&
+      !entry.schema?.length
+   ) {
+      return (
+         `'${name}' is materialized in destination '${destinationName}', ` +
+         `but by a reference that carries no column list, which this ` +
+         `build needs to read it`
+      );
+   }
+   if (entry?.storageDestinationName !== undefined) {
+      return (
+         `'${name}' is materialized in destination ` +
+         `'${entry.storageDestinationName}', not '${destinationName}'`
+      );
+   }
+   if (entry !== undefined) {
+      return (
+         `'${name}' is materialized outside destination ` +
+         `'${destinationName}' (a warehouse table, or a reference ` +
+         `that does not say where it lives), which this build cannot read`
+      );
+   }
+   return (
+      `'${name}' is not materialized in destination ` +
+      `'${destinationName}' for this build`
+   );
 }

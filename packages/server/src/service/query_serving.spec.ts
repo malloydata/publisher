@@ -99,6 +99,23 @@ describe("Answer", () => {
       expect(servedFromOf(answer)).toBeUndefined();
    });
 
+   it("reads a storage= #(preaggregate) rollup route as a storage hit", () => {
+      const b = { ...binding("rollup"), origin: "preaggregate" as const };
+      const answer = routedAnswer({
+         ...rollupRoute,
+         extra: {
+            kind: "rollup",
+            resolvedMember: "orders__rollup__category",
+            virtualMap,
+            binding: b,
+         },
+      });
+      expect(answer.tier).toBe("rollup");
+      expect(answer.virtualMap).toBe(virtualMap);
+      expect(answer.serveShapeBindings).toEqual([b]);
+      expect(servedFromOf(answer)).toBe("storage");
+   });
+
    it("never mutates: each stage returns a new frozen record", () => {
       const routed = routedAnswer(storageRoute([binding("daily")]));
       const failed = liveFallbackAnswer(routed);
