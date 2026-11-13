@@ -213,9 +213,9 @@ import { quotedIdentifier } from "./malloy_text";
 import { runReadsPublished, scrubHiddenIds } from "./model_projection";
 import { compileOnlyDestinationConfig } from "./connection";
 import {
-   StorageServeShape,
+   StorageBindings,
    type SourceTypeMismatches,
-} from "./materialization/serve/model_serve_shape";
+} from "./materialization/serve/storage_bindings";
 import type { MaterializePlan } from "./materialization/plan/build_file_generator";
 import { RollupVariantServe } from "./materialization/serve/rollup_variants";
 import {
@@ -413,7 +413,10 @@ export class Model {
       | DeprecatedPersistAnnotation[]
       | undefined;
    private modelInfo: Malloy.ModelInfo | undefined;
-   private storageServe = new StorageServeShape(this.serveShapeHost());
+   private storageServe = new StorageBindings({
+      modelPath: () => this.modelPath,
+      modelDef: () => this.modelDef,
+   });
    /**
     * The served copy on `virtual` (materialization v2, phase 3): the author's
     * own files with each stored source re-rooted on its table. A router
@@ -2694,7 +2697,7 @@ export class Model {
       });
    }
 
-   /** See {@link StorageServeShape.setServeDestinationConfig}. */
+   /** See {@link StorageBindings.setServeDestinationConfig}. */
    public setServeDestinationConfig(provider: () => MalloyConfig): void {
       this.storageServe.setServeDestinationConfig(provider);
       this.servedCopy.invalidate();
@@ -2812,19 +2815,18 @@ export class Model {
       return this.servedCopy.problems();
    }
 
-   /** See {@link StorageServeShape.invalidateServeShapeCache}. */
+   /** Drop every compiled leg (the destinations or the model changed). */
    public invalidateServeShapeCache(): void {
-      this.storageServe.invalidateServeShapeCache();
       this.servedCopy.invalidate();
       this.rollupVariants.invalidate();
       this.persistedViews.invalidate();
    }
 
-   /** See {@link StorageServeShape.setServeBindings}. */
+   /** See {@link StorageBindings.setServeBindings}. */
    public setServeBindings(bindings: ServeBinding[]): void {
       // A `#(materialize)` table is presented under its author's source name,
-      // but only the served copy may read it: the serve shape would rebuild
-      // the source over a table that already applied its definition.
+      // and only the served copy reads it, so it is kept off the storage
+      // bindings the path report and the type check read.
       const materialized = this.materializeSourceIDs;
       // A persisted view's table holds the view's result, and a
       // `#(preaggregate)` rollup's its partials, not a source's rows: only
@@ -2863,31 +2865,16 @@ export class Model {
       this.persistedViews.setBindings(stored);
    }
 
-   /** See {@link StorageServeShape.storedColumnTypeMismatches}. */
+   /** See {@link StorageBindings.storedColumnTypeMismatches}. */
    public storedColumnTypeMismatches(): readonly SourceTypeMismatches[] {
       return this.storageServe.storedColumnTypeMismatches();
-   }
-
-   /** What a serve shape reads from this model; one per shape instance. */
-   private serveShapeHost(): ConstructorParameters<
-      typeof StorageServeShape
-   >[0] {
-      return {
-         modelPath: () => this.modelPath,
-         modelDef: () => this.modelDef,
-         givens: () => this.givens,
-         rollupPlans: () => [],
-         rollupPlansVersion: () => 0,
-         ensureSharedQueryModel: (materializer) =>
-            this.ensureSharedQueryModel(materializer),
-      };
    }
 
    /**
     * The source names this model keeps a storage serve binding for: the
     * package pushes every binding to every model, and a model drops one that
     * materializes a same-named source declared elsewhere (see
-    * {@link StorageServeShape.setServeBindings}).
+    * {@link StorageBindings.setServeBindings}).
     */
    public servedStorageSourceNames(): string[] {
       return [
@@ -2957,22 +2944,46 @@ export class Model {
    ): Promise<Map<string, ViewServeVerdict[]>> {
       const out = new Map<string, ViewServeVerdict[]>();
       const destinations = this.storageServe.serveDestinationConfig;
-      if (!destinations || bindings.length === 0 || !this.modelDef) return out;
-      const shape = new StorageServeShape(this.serveShapeHost(), {
-         preview: true,
+      if (
+         !destinations ||
+         bindings.length === 0 ||
+         !this.modelDef ||
+         !this.servedCopyContext ||
+         !this.servedCopyEnabled()
+      ) {
+         return out;
+      }
+      // The same identity filter the model's own bindings pass (#1001).
+      const kept = new StorageBindings({
+         modelPath: () => this.modelPath,
+         modelDef: () => this.modelDef,
+         quiet: true,
       });
-      // Compile-only: before the first build a DuckLake destination's catalog
-      // does not exist yet, and the dialect must not depend on reaching it.
-      shape.setServeDestinationConfig(() =>
-         compileOnlyDestinationConfig(destinations()),
+      kept.setServeBindings(bindings);
+      const stored = kept.serveBindings.filter(
+         (b) => b.origin !== "preaggregate",
       );
+      if (stored.length === 0) return out;
+      // A throwaway served copy over these bindings, compile-only: before the
+      // first build a DuckLake destination's catalog does not exist yet, and
+      // the dialect must not depend on reaching it.
+      const copy = new ServedCopyServe({
+         modelPath: () => this.modelPath,
+         modelDef: () => this.modelDef,
+         perColumnTypes: () => true,
+         quiet: true,
+         serveDestinationConfig: () => () =>
+            compileOnlyDestinationConfig(destinations()),
+      });
+      copy.setContext(...this.servedCopyContext);
+      copy.setBindings(stored);
+      await copy.prepare();
+      const problems = copy.problems();
       // A view reading a given with no default serves once the caller
       // supplies it; the preview compiles with a placeholder in its place, so
       // it judges the stored columns, not the request.
       const placeholders = placeholderGivens(this.givens);
-      shape.setServeBindings(bindings);
-      for (const binding of shape.serveBindings) {
-         if (binding.origin === "preaggregate") continue;
+      for (const binding of stored) {
          const def = this.modelDef.contents?.[binding.sourceName] as
             | {
                  fields?: readonly {
@@ -2986,31 +2997,31 @@ export class Model {
             .filter((f) => f.type === "turtle")
             .map((f) => f.as ?? f.name)
             .filter((name): name is string => typeof name === "string");
+         // Why the copy left this source as written, when it did.
+         const left = problems.find(
+            (p) =>
+               p.sourceName === binding.sourceName &&
+               (p.sourceID === undefined ||
+                  (binding.sourceIDs ?? [p.sourceID]).includes(p.sourceID)),
+         );
          const verdicts: ViewServeVerdict[] = [];
          for (const view of views) {
             try {
-               await shape.loadServeShapeQuery(
+               await copy.loadQuery(
                   `run: ${quotedIdentifier(binding.sourceName)} -> ${quotedIdentifier(view)}`,
                   placeholders,
                );
                verdicts.push({ view, verdict: "serves" });
             } catch (error) {
-               const message = firstLine(
-                  error instanceof Error ? error.message : String(error),
-               );
-               // The shape left this view off because it does not compile
-               // against the stored columns: report that compile error, not
-               // the unknown name the query then hits.
-               const own = shape.prunedViews(binding.sourceName).get(view);
                verdicts.push({
                   view,
                   verdict: "live",
-                  detail:
-                     own !== undefined
-                        ? firstLine(own)
-                        : message.startsWith(`'${view}' is not defined`)
-                          ? VIEWS_DROPPED_DETAIL
-                          : message,
+                  detail: compileErrorLine(
+                     left?.detail ??
+                        (error instanceof Error
+                           ? error.message
+                           : String(error)),
+                  ),
                });
             }
          }
@@ -4782,17 +4793,6 @@ export class Model {
 }
 
 /**
- * Why a stored source's view is live when the serve shape left its views off
- * without naming a view: the shape could not isolate one (the shape failed
- * even without any view, or the file holding them could not be read), so it
- * dropped the view category and each view is answered live.
- */
-const VIEWS_DROPPED_DETAIL =
-   "The serve shape left this source's views off: it could not compile them " +
-   "against the stored columns and could not single out the view at fault " +
-   "(or could not read the file that declares them), so each is answered live.";
-
-/**
  * A value for each given with no default, for a compile that only asks
  * whether a query compiles: `null`, or an empty filter for a `filter<T>`
  * given, whose SQL needs a filter literal (as model_info.ts does for the same
@@ -4814,4 +4814,22 @@ function placeholderGivens(
 /** The first line of an error message, which is where Malloy says what failed. */
 function firstLine(message: string): string {
    return message.split("\n")[0].trim();
+}
+
+/**
+ * The line of a compile error that says what is wrong: past Malloy's
+ * "Error(s) compiling model:" and "FILE:" header lines, without the `line N:`
+ * prefix. The whole first line when there is no such line.
+ */
+function compileErrorLine(message: string): string {
+   const said = message
+      .split("\n")
+      .map((l) => l.trim())
+      .find(
+         (l) =>
+            l !== "" &&
+            !l.startsWith("Error(s) compiling model") &&
+            !l.startsWith("FILE:"),
+      );
+   return said ? said.replace(/^line \d+: /, "") : firstLine(message);
 }

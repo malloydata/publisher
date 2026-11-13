@@ -39,7 +39,7 @@ import { logger } from "../logger";
 import { recordStorageServeRouting } from "../materialization_metrics";
 import { sourceChain } from "./materialization/plan/source_map";
 import { type ServeBinding } from "./materialization/serve/materialization_serve_transform";
-import type { StorageServeShape } from "./materialization/serve/model_serve_shape";
+import type { StorageBindings } from "./materialization/serve/storage_bindings";
 import {
    ServedCopyDecline,
    type ServedCopyServe,
@@ -469,7 +469,8 @@ export function recordingManifest(
 /** What serving reads from the model that owns the query. */
 export interface QueryServingHost {
    readonly modelPath: string;
-   readonly storageServe: StorageServeShape;
+   /** The model's `storage=` bindings, for the path report. */
+   readonly storageServe: StorageBindings;
    /** The served copy on `virtual` (materialization v2), the `served` candidate. */
    readonly servedCopy: ServedCopyServe;
    modelDef(): ModelDef | undefined;

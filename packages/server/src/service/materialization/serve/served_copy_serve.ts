@@ -320,6 +320,12 @@ export interface ServedCopyHost {
     * `ensureSharedQueryModel`). Absent: each query builds its own.
     */
    ensureSharedQueryModel?(materializer: ModelMaterializer): Promise<void>;
+   /**
+    * A throwaway copy that only asks whether queries compile (a dry run's
+    * view verdicts): what a served copy logs as a warning, it logs at debug,
+    * since nothing is served.
+    */
+   quiet?: boolean;
 }
 
 interface Compiled {
@@ -2005,7 +2011,7 @@ export class ServedCopyServe {
                );
                if (!f) return [c];
                changed = true;
-               logger.warn(
+               logger[this.host.quiet ? "debug" : "warn"](
                   "A re-root does not compile in the served copy; that source alone steps back",
                   {
                      modelPath: this.host.modelPath(),
