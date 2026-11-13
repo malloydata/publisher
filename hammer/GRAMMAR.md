@@ -236,7 +236,7 @@ environment. A package name may recur across environments with a different model
 Every step defaults to the primary environment (`default`); naming another adds it
 to that scenario's config. One server process serves all of a scenario's
 environments (env is orthogonal to `pub`), and they share the same connections —
-including the same DuckLake destination, so a cross-environment collision is
+including the same DuckLake destination, so a cross-environment `name=` clash is
 observable (see `cross-environment-same-name`).
 
 Orchestrated (caller-instructed) builds — generational names, cross-run and
