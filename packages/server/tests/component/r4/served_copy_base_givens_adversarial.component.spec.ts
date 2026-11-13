@@ -430,7 +430,7 @@ for (const [shape, ev, tiers, expectedBuilt] of [
                const out = await attempt(() =>
                   fixture.run({ name: malloy, malloy, givens }),
                );
-               if ("run" in out) {
+               if (out.run !== undefined) {
                   expect(
                      rowDifference(out.run.live, out.run.served),
                   ).toBeUndefined();

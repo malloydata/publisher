@@ -111,8 +111,13 @@
  * zone, and a query that sets a `timezone:` over its table is answered live.
  * A stored computed dimension the probe cleared of the time zone is marked
  * `zoneFree`, so a `timezone:` query over a table that stores only such
- * dimensions is not declined for it. Each left-out dimension is listed on
- * the plan (`leftOut`).
+ * dimensions is not declined for it. The source's rows are probed too: a
+ * `where:` term or base relation whose SQL moves with the zone (a timestamp
+ * literal) filtered the table in the build's zone, so only a source the
+ * probe cleared is marked `zoneFreeRows`, and a `timezone:` query over any
+ * other's table is answered live. The probe compiles the source as the
+ * author's model declares it, so a term a kept base's block re-applies is
+ * probed too. Each left-out dimension is listed on the plan (`leftOut`).
  *
  * Bases' blocks. The served copy replaces the source's declaration base with
  * its table, so what a base declares is gone unless the re-root keeps that
@@ -528,6 +533,15 @@ export interface MaterializePlan {
     * when the source needs no base's block.
     */
    keptBases?: KeptAncestor[];
+   /**
+    * The probe compiler found the source's rows the same in every query time
+    * zone (P9): its `where:` terms and base relation compile to the same SQL
+    * at every probe zone. Absent: a `where: ts > @2026-03-08 09:00` (or a
+    * base the probe could not clear) filtered the table's rows in the
+    * build's zone, so a query that sets a `timezone:` over it is answered
+    * live.
+    */
+   zoneFreeRows?: true;
    /** One uniqueness check per inlined join_one (P8). */
    uniquenessChecks?: InlineUniquenessCheck[];
    /** For an inlined join_many: the pair table's layout (P5). */
@@ -1677,6 +1691,12 @@ export function planModelMaterialize(
     * no stored dimension is cleared of the time zone.
     */
    probed?: ReadonlyMap<string, ReadonlyMap<string, FieldDependence>>,
+   /**
+    * The sources, by `sourceID`, whose rows the probe compiler found the same
+    * in every query time zone (P9). Absent, or a source not in it: a
+    * `timezone:` query over its table is answered live.
+    */
+   zoneFreeRows?: ReadonlySet<string>,
 ): {
    plans: MaterializePlan[];
    refused: MaterializeRefusal[];
@@ -2042,6 +2062,9 @@ export function planModelMaterialize(
          ...(inline.length > 0 ? { inline } : {}),
          ...(dependence.leftOut.length > 0
             ? { leftOut: dependence.leftOut }
+            : {}),
+         ...(zoneFreeRows?.has(def.sourceID)
+            ? { zoneFreeRows: true as const }
             : {}),
          ...(uniquenessChecks.length > 0 ? { uniquenessChecks } : {}),
          ...(pair ? { pair } : {}),

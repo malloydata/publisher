@@ -17,7 +17,8 @@
  *    declared on a base in the same file included (the served copy keeps
  *    that base's block); over a table that stores a zone-dependent one
  *    (declared on a base in another file, so stored as built) it is
- *    answered live.
+ *    answered live, as it is over a table whose rows a zone-dependent
+ *    `where:` filtered at build (the source's own, or a kept base's).
  *
  * The harness builds each generated source with its SQL as compiled and does
  * not run the eligibility gates, so a dimension that were stored would be
@@ -100,6 +101,22 @@ source: zonal_ext is zonal extend {
 
 #(materialize) storage="lake"
 source: far is far_base extend {
+  measure: total is amt.sum()
+}
+
+#(materialize) storage="lake"
+source: since is ev extend {
+  where: ts > @2026-01-05 12:00
+  measure: total is amt.sum()
+}
+
+source: scoped_since_base is ev extend {
+  where: org = $ORG
+  where: ts > @2026-01-05 12:00
+}
+
+#(materialize) storage="lake"
+source: scoped_since is scoped_since_base extend {
   measure: total is amt.sum()
 }
 
@@ -331,6 +348,66 @@ describe("R4: a caller-dependent dimension is computed at read, never stored (P9
             "zone and given",
             "run: local -> { timezone: 'Asia/Kolkata'; group_by: mine, on_day; aggregate: total; order_by: on_day, mine }",
          );
+      });
+
+      it("answers live over a table whose rows a timestamp literal filtered in the build's zone", async () => {
+         // `since` stores no computed dimension, but its `where:` cut-off
+         // moves with the zone: at +05:30 it admits a row the build (in UTC)
+         // left out of the table, so serving from the table would miss it.
+         const zonedSince =
+            "run: since -> { timezone: 'Asia/Kolkata'; group_by: org; aggregate: total; order_by: org }";
+         const run = await fixture.run({
+            name: "since zoned",
+            malloy: zonedSince,
+            givens: CALLERS[0],
+         });
+         expect(run.servedVia).toBeUndefined();
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         const utc = await fixture.run({
+            name: "since",
+            malloy:
+               "run: since -> { group_by: org; aggregate: total; order_by: org }",
+            givens: CALLERS[0],
+         });
+         expect(utc.servedVia).toBe("served_copy");
+         expect(rowDifference(utc.live, utc.served)).toBeUndefined();
+         expect(run.live).not.toEqual(utc.live);
+      });
+
+      it("answers live over a table whose rows a kept base's timestamp literal filtered in the build's zone", async () => {
+         // `scoped_since_base` is kept (its `where:` reads a given, so the
+         // served copy re-applies its block over the table), and its other
+         // `where:` moves with the zone: at +05:30 it admits globex's row the
+         // build (in UTC) left out of the table. The kept block re-applies
+         // the cut-off at read, but cannot bring that row back, so the
+         // source is not zone-free and a `timezone:` query is answered live.
+         const globex = CALLERS[1];
+         const zonedQuery =
+            "run: scoped_since -> { timezone: 'Asia/Kolkata'; group_by: org; aggregate: total; order_by: org }";
+         const run = await fixture.run({
+            name: "scoped since zoned",
+            malloy: zonedQuery,
+            givens: globex,
+         });
+         expect(run.servedVia).toBeUndefined();
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         fixture.setBindings(fixture.bindings);
+         const asIs = await fixture.runAsIs(zonedQuery, globex);
+         expect(
+            (asIs.path?.considered ?? []).map((c) => [c.outcome, c.reason]),
+         ).toEqual([["skipped", "TIME_ZONE"]]);
+         // Without a zone the table answers, per caller, through the kept
+         // block; the zone changes globex's answer, so a served one could
+         // not have matched it.
+         const utc = await fixture.run({
+            name: "scoped since",
+            malloy:
+               "run: scoped_since -> { group_by: org; aggregate: total; order_by: org }",
+            givens: globex,
+         });
+         expect(utc.servedVia).toBe("served_copy");
+         expect(rowDifference(utc.live, utc.served)).toBeUndefined();
+         expect(run.live).not.toEqual(utc.live);
       });
 
       it("serves a timezone: query over a zone-dependent dimension declared on a base in the same file", async () => {

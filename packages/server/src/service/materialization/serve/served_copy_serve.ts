@@ -270,8 +270,10 @@ interface Compiled {
     * Tables that store a computed dimension (`#(materialize)`) whose value
     * may depend on the time zone, by table path: one of the source's own the
     * probe compiler did not clear (P9), or an inlined join's or pair table's
-    * child column. The build evaluated it in the default timezone, so a query
-    * that sets its own `timezone:` would read values live computes differently.
+    * child column; or whose rows the probe did not clear (a `where:` with a
+    * timestamp literal). The build evaluated it in the default timezone, so a
+    * query that sets its own `timezone:` would read values live computes
+    * differently.
     */
    computedTables?: ReadonlySet<string>;
    /**
@@ -330,9 +332,10 @@ type AuthorReroot = Reroot & {
    sourceID: string;
    authorDef: unknown;
    /**
-    * For a `#(materialize)` re-root: it stores a computed dimension of its own
-    * that the probe compiler did not clear of the query time zone (P9), which
-    * the build evaluated in the default zone.
+    * For a `#(materialize)` re-root: its table holds something the build
+    * evaluated in the default zone that the probe compiler did not clear of
+    * the query time zone (P9): a stored computed dimension, or its rows (a
+    * `where:` term or base relation whose SQL moves with the zone).
     */
    storesZonedDimension?: true;
 };
@@ -678,7 +681,7 @@ export class ServedCopyServe {
       if ((computed || windowed) && setsTimezone((await prepared()).query)) {
          decline(
             computed
-               ? "the query sets a timezone over a stored computed dimension"
+               ? "the query sets a timezone over a table built in the default zone (a stored computed dimension or a row filter that depends on it)"
                : "the query sets a timezone, which moves a rolling window's cut-off past what its table stores",
             "time_zone",
          );
@@ -937,9 +940,11 @@ export class ServedCopyServe {
                     .map((c) => c.dimension),
               }
             : {}),
-         ...(plan?.columns.some(
-            (c) => c.computed && c.join === undefined && !c.zoneFree,
-         )
+         ...(plan &&
+         (!plan.zoneFreeRows ||
+            plan.columns.some(
+               (c) => c.computed && c.join === undefined && !c.zoneFree,
+            ))
             ? { storesZonedDimension: true }
             : {}),
          ...(plan?.readTimeTerms?.length

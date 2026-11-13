@@ -44,7 +44,7 @@ import {
 } from "./build_file_generator";
 import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
 import {
-   probeFieldDependence,
+   probeSourceDependence,
    type FieldDependence,
    type ProbeCompiler,
 } from "../../probe_compiler";
@@ -141,7 +141,8 @@ export async function tryCompileMaterializeCompanion(args: {
          args.contents,
          declaredHere,
          args.givens,
-         probed,
+         probed?.fields,
+         probed?.zoneFreeRows,
       );
       refused.push(...planned.refused);
       // The text the author's model was compiled from, through the reader
@@ -310,20 +311,26 @@ export async function tryCompileMaterializeCompanion(args: {
 
 /**
  * The probe compiler's answers for each plan's own computed dimensions, by
- * `sourceID` then dimension (P9). Compiled against the author's model by the
+ * `sourceID` then dimension, and the sources whose rows it found the same in
+ * every query time zone (P9). Compiled against the author's model by the
  * source's name there; never run.
  */
 async function probeMaterializeDimensions(
    compiler: ProbeCompiler,
    plans: readonly MaterializePlan[],
    contents: Record<string, unknown>,
-): Promise<Map<string, Map<string, FieldDependence>>> {
-   const out = new Map<string, Map<string, FieldDependence>>();
+): Promise<{
+   fields: Map<string, Map<string, FieldDependence>>;
+   zoneFreeRows: Set<string>;
+}> {
+   const fields = new Map<string, Map<string, FieldDependence>>();
+   const zoneFreeRows = new Set<string>();
    for (const plan of plans) {
-      const fields = plan.columns
+      // Every plan is probed, one with no computed dimension too: its rows
+      // can depend on the zone through its own `where:` or base relation.
+      const computed = plan.columns
          .filter((c) => c.computed && c.join === undefined)
          .map((c) => c.dimension);
-      if (fields.length === 0) continue;
       // By sourceID (the keying rule); the probe names the source as this
       // model does, which for a source planned here is its own name.
       const def = Object.values(contents).find(
@@ -335,17 +342,16 @@ async function probeMaterializeDimensions(
       const reserved = new Set(
          (def?.fields ?? []).map((f) => String(f.as ?? f.name)),
       );
-      out.set(
-         plan.sourceID,
-         await probeFieldDependence(
-            compiler,
-            plan.sourceName,
-            fields,
-            reserved,
-         ),
+      const answer = await probeSourceDependence(
+         compiler,
+         plan.sourceName,
+         computed,
+         reserved,
       );
+      if (computed.length > 0) fields.set(plan.sourceID, answer.fields);
+      if (answer.rowsZoneFree) zoneFreeRows.add(plan.sourceID);
    }
-   return out;
+   return { fields, zoneFreeRows };
 }
 
 /** A planned source's build copy: its file name beside the model, and text. */

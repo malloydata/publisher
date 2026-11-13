@@ -216,8 +216,36 @@ export async function probeFieldDependence(
    fields: readonly string[],
    reservedNames: ReadonlySet<string> = new Set(),
 ): Promise<Map<string, FieldDependence>> {
+   if (fields.length === 0) return new Map();
+   return (await probeSourceDependence(compiler, source, fields, reservedNames))
+      .fields;
+}
+
+/** What a source's rows, and each of its probed fields, depend on (P9). */
+export interface SourceDependence {
+   /**
+    * Whether the source with no field selected compiles to the same SQL at
+    * every probe zone as at none, so the rows it holds (its `where:` terms,
+    * its base relation) do not depend on the query time zone. False when it
+    * moves with the zone, or when the probe could not tell.
+    */
+   rowsZoneFree: boolean;
+   fields: Map<string, FieldDependence>;
+}
+
+/**
+ * {@link probeFieldDependence}, and whether the source's own rows depend on
+ * the query time zone: a `where: ts > @2026-03-08 09:00` filters a different
+ * set of rows in every zone, so a table built in the default zone holds the
+ * wrong rows for a query that sets another (the baseline probe answers it).
+ */
+export async function probeSourceDependence(
+   compiler: ProbeCompiler,
+   source: string,
+   fields: readonly string[],
+   reservedNames: ReadonlySet<string> = new Set(),
+): Promise<SourceDependence> {
    const out = new Map<string, FieldDependence>();
-   if (fields.length === 0) return out;
    const nameFor = probeNames(reservedNames);
    const at = (
       of: readonly string[] | undefined,
@@ -254,8 +282,10 @@ export async function probeFieldDependence(
    } catch (error) {
       const why = `the source's baseline probe did not compile: ${messageOf(error)}`;
       for (const f of fields) out.set(f, { unprobed: why });
-      return out;
+      return { rowsZoneFree: false, fields: out };
    }
+   const rowsZoneFree = baseline.zoned === false;
+   if (fields.length === 0) return { rowsZoneFree, fields: out };
    const probe = async (of: readonly string[]): Promise<FieldDependence> => {
       const plain = await at(of, undefined);
       const givens = plain.givens.filter((g) => !baseline.givens.has(g));
@@ -289,7 +319,7 @@ export async function probeFieldDependence(
    );
    if (callerIndependent(all)) {
       for (const f of fields) out.set(f, all);
-      return out;
+      return { rowsZoneFree, fields: out };
    }
    for (const f of fields) {
       out.set(
@@ -299,7 +329,7 @@ export async function probeFieldDependence(
          ),
       );
    }
-   return out;
+   return { rowsZoneFree, fields: out };
 }
 
 /** The baseline probe: a constant selected from the source. */

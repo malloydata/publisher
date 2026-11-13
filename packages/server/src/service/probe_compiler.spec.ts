@@ -14,6 +14,7 @@ import {
    callerIndependent,
    currentTimeCalls,
    probeFieldDependence,
+   probeSourceDependence,
    readsAGiven,
 } from "./probe_compiler";
 
@@ -175,6 +176,24 @@ describe("probe compiler: the query time zone", () => {
       expect(up?.givens).toEqual([]);
       expect(up?.timeZone).toBeUndefined();
       expect(callerIndependent(up)).toBe(false);
+   });
+
+   it("clears a source's rows of the zone only when its own SQL does not move with it, with or without fields", async () => {
+      // A `where:` with a timestamp literal filters different rows per zone.
+      for (const fields of [[], ["up"]]) {
+         expect(
+            (await probeSourceDependence(materializer, "zoned_base", fields))
+               .rowsZoneFree,
+         ).toBe(false);
+         expect(
+            (await probeSourceDependence(materializer, "orders", fields))
+               .rowsZoneFree,
+         ).toBe(true);
+      }
+      expect(
+         (await probeSourceDependence(materializer, "no_such_source", []))
+            .rowsZoneFree,
+      ).toBe(false);
    });
 });
 
