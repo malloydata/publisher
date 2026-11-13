@@ -903,14 +903,17 @@ export class RollupVariantServe {
       const packageConfig = this.packageConfig;
       if (!packagePath || !packageConfig) return { error: "no context" };
       const modelPath = this.host.modelPath();
-      const { runtime: reader } = await createModelRuntime(
-         packagePath,
-         modelPath,
-         packageConfig,
-      );
+      // The package's own reader, made once and only when a file is read.
+      let reader: ReturnType<typeof createModelRuntime> | undefined;
       const readText = async (url: string) => {
          try {
-            const read = await reader.urlReader.readURL(new URL(url));
+            reader ??= createModelRuntime(
+               packagePath,
+               modelPath,
+               packageConfig,
+            );
+            const { runtime } = await reader;
+            const read = await runtime.urlReader.readURL(new URL(url));
             return typeof read === "string" ? read : read.contents;
          } catch {
             return undefined;
