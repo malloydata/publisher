@@ -515,10 +515,10 @@ export interface InlineUniquenessCheck {
     */
    sql?: string;
    /**
-    * Set on a pair table's key check (a path of join_manys, or a table of
-    * several blocks): the level of the path whose key it checks, 0 for the
-    * source's own. Such a check also fails on a null key, since a level's row
-    * flag marks one row per distinct key, where live counts each row
+    * Set on a pair table's key check: the level of the path whose key it
+    * checks, 0 for the source's own. Such a check also fails on a null key,
+    * since a level's row flag marks one row per distinct key, where live
+    * counts each row
     * ({@link pairKeyChecks}). `join` is then the path down to that level
     * (empty for the source).
     */
@@ -2844,15 +2844,15 @@ function pairWatermarkCalculation(
 }
 
 /**
- * The key checks of a pair table whose rows carry a flag below the parent's
- * (a path of join_manys) or more than one block, run before each build like
- * an inlined join_one's (P8): the source's primary key, and the key of each
- * level between it and the leaf, must be unique and never null. A level's row
- * flag marks one row per distinct key down to that level, so two rows of one
- * key (or two null keys) share one flagged row, where live aggregates that
- * level over each row: a middle-level measure, and a parent measure beside a
- * deeper level, would come up short. The leaf needs no check: its aggregates
- * read every row. A one-hop table of one block checks nothing, as before.
+ * The key checks of a pair table, run before each build like an inlined
+ * join_one's (P8): the source's primary key, and the key of each level between
+ * it and the leaf (a path of join_manys), must be unique and never null. A
+ * level's row flag marks one row per distinct key down to that level, so two
+ * rows of one key (or two null keys) share one flagged row, where live
+ * aggregates that level over each row: a parent measure, and a middle-level
+ * measure beside a deeper level, would come out wrong. A one-hop table of one
+ * block checks only the source's key. The leaf needs no check: its aggregates
+ * read every row.
  */
 function pairKeyChecks(
    pair: MaterializePair,
@@ -2862,7 +2862,6 @@ function pairKeyChecks(
    connection: string | undefined,
 ): InlineUniquenessCheck[] {
    const all = blocks?.blocks ?? [pair];
-   if (!blocks && !(pair.hops && pair.hops.length > 0)) return [];
    const on = connection ? { connectionName: connection } : {};
    const out: InlineUniquenessCheck[] = [
       {
@@ -2926,6 +2925,30 @@ function emitUniquenessCheck(check: InlineUniquenessCheck): string {
   having: matches > 1
   limit: 1
 }`;
+}
+
+/**
+ * The import of one uniqueness check's source. A joined source's check reads
+ * it from the file that declares it. A pair table's own key check (level 0)
+ * reads the source from the file its build reads it from, its build copy when
+ * it has one: the copy leaves out the terms the build leaves out (a given's,
+ * a rolling window's upper bound), so the check counts the rows the table
+ * stores. Over the author's source it would count only the rows those terms
+ * keep, and pass while the table holds a key twice.
+ */
+function checkImport(
+   check: InlineUniquenessCheck,
+   plan: MaterializePlan,
+   importPath: string,
+   importPathForFile: ((url: string) => string | undefined) | undefined,
+   buildCopyPaths: ReadonlyMap<string, string>,
+): string {
+   const joined = splitSourceID(check.joinedSourceID);
+   const own = check.pairLevel === 0 && check.joinedSourceID === plan.sourceID;
+   const path = own
+      ? (buildCopyPaths.get(plan.sourceID) ?? importPath)
+      : ((joined && importPathForFile?.(joined.url)) ?? importPath);
+   return `import { ${identifier(checkAlias(check))} is ${identifier(joined?.name ?? check.join)} } from ${stringLiteral(path)}`;
 }
 
 /** The alias a generated file imports a uniqueness check's joined source under. */
@@ -3670,11 +3693,15 @@ export function generateBuildFile(
    const copyOf = (plan: MaterializePlan) => buildCopyPaths.get(plan.sourceID);
    const imports = plans.map((plan) => {
       const own = `import { ${identifier(importAlias(plan))} is ${identifier(plan.sourceName)} } from ${stringLiteral(copyOf(plan) ?? importPath)}`;
-      const checks = (plan.uniquenessChecks ?? []).map((check) => {
-         const joined = splitSourceID(check.joinedSourceID);
-         const path = (joined && importPathForFile?.(joined.url)) ?? importPath;
-         return `import { ${identifier(checkAlias(check))} is ${identifier(joined?.name ?? check.join)} } from ${stringLiteral(path)}`;
-      });
+      const checks = (plan.uniquenessChecks ?? []).map((check) =>
+         checkImport(
+            check,
+            plan,
+            importPath,
+            importPathForFile,
+            buildCopyPaths,
+         ),
+      );
       return [own, ...checks].join("\n");
    });
    const givensByPath = new Map<string, Set<string>>();
@@ -3775,12 +3802,18 @@ export function generateBuildFiles(
       );
    }
    const checks = plans.flatMap((plan) => plan.uniquenessChecks ?? []);
-   for (const check of checks) {
-      const joined = splitSourceID(check.joinedSourceID);
-      const path = (joined && importPathForFile?.(joined.url)) ?? importPath;
-      imports.push(
-         `import { ${identifier(checkAlias(check))} is ${identifier(joined?.name ?? check.join)} } from ${stringLiteral(path)}`,
-      );
+   for (const plan of plans) {
+      for (const check of plan.uniquenessChecks ?? []) {
+         imports.push(
+            checkImport(
+               check,
+               plan,
+               importPath,
+               importPathForFile,
+               buildCopyPaths,
+            ),
+         );
+      }
    }
    const queries = checks.map(emitUniquenessCheck).join("\n\n");
    return {
