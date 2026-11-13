@@ -156,6 +156,14 @@ export interface Reroot {
     */
    dropsUnstoredExcepts?: true;
    /**
+    * A v1 `#@ persist` source declared by refinement alone (`high_value is
+    * raw extend { where: … }`) whose base chain carries no filter and no
+    * gate: its table holds its root's rows, so re-rooting it with its own
+    * `extend` run kept (its `where:` applied again) loses nothing. Without
+    * it such a declaration is left as written (`not_query_shaped`).
+    */
+   refinementRooted?: true;
+   /**
     * For a `#(materialize)` source that inlines a join_many: its stored table
     * is a pair table (P5), read as the source itself with no join
     * ({@link PairReroot}).
@@ -567,7 +575,8 @@ export function buildServedCopy(
             spans &&
             !spans.queryShaped &&
             !spans.connectionRooted &&
-            !r.storedDimensions
+            !r.storedDimensions &&
+            !r.refinementRooted
          ) {
             refused.push({
                sourceName: r.sourceName,

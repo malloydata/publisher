@@ -1497,6 +1497,9 @@ export class ServedCopyServe {
             ? {
                  keepsIncludes: true as const,
                  dropsUnstoredExcepts: true as const,
+                 ...(refinesUnfilteredBase(map.node(node.sourceID), map)
+                    ? { refinementRooted: true as const }
+                    : {}),
               }
             : {}),
          sourceID: node.sourceID,
@@ -3024,4 +3027,29 @@ export function unnamedStoredColumns(
    return schema
       .filter((c) => !names.has(c.name.toLowerCase()))
       .map((c) => ({ name: c.name, type: c.type }));
+}
+
+/**
+ * Whether `node` is declared by refinement (`extend` or rename) of a base
+ * whose compiled chain carries no filter and no row-level gate, so its
+ * stored table (its root's rows) re-rooted with its own `extend` run kept
+ * answers exactly as the source: nothing the base applies is lost.
+ */
+function refinesUnfilteredBase(
+   node: { base?: { hop: string; def?: unknown } } | undefined,
+   map: SourceMap,
+): boolean {
+   const base = node?.base;
+   if (!base || (base.hop !== "extends" && base.hop !== "rename")) {
+      return false;
+   }
+   const def = base.def as { filterList?: unknown[] } | undefined;
+   if (!def || (def.filterList?.length ?? 0) > 0) return false;
+   try {
+      return (
+         collectEntryPointGates(def as never, map.model() as never).length === 0
+      );
+   } catch {
+      return false;
+   }
 }
