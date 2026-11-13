@@ -39,7 +39,7 @@ Each source needs a table of its own. When two different sources resolve to one 
 
 ### Opting a reader out: `#@ -persist`
 
-> **Deprecated in materialization v2.** Under `#(materialize)` a materialized source serves every reader, so `#@ -persist` has no v2 form. It keeps working through 0.x; [materialization-migration.md](materialization-migration.md#persist-opt-out) has the rewrite.
+`#@ -persist` is Malloy core's own opt-out, and it is not deprecated: Publisher honours it for `#@ persist` sources and, in development, for `#(materialize)` sources alike ([materialization-migration.md](materialization-migration.md#persist-opt-out)).
 
 A source that `extend`s a persisted source reads the persisted table too — the extension adds computed fields on top of the stored rows rather than recomputing them. Annotate the extension with `#@ -persist` when you want it recomputed live instead:
 
