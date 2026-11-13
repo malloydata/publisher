@@ -486,7 +486,6 @@ source: ${rerootDeclaration(flightsDeclaration, {
                {
                   join: "segments",
                   parentRowField: "__parent_row__pair",
-                  annotatedChildFields: new Set(),
                },
             );
             // Raw DuckDB returns a DOUBLE sum as text; Malloy's run, a number.
@@ -546,6 +545,20 @@ source: flights is duckdb.table('flights') include {
   #(classification) "none"
   measure: flight_count is count()
 }
+
+// The same joined source through an inlined join_one (each flight id names
+// at most one segment), for the other leg of the same check.
+#(carries) ["none"]
+#(materialize) storage="lake" inline=["segments"]
+source: flights_one is duckdb.table('flights') include {
+  #(classification) "none"
+  public: id, carrier, distance
+} extend {
+  primary_key: id
+  join_one: segments with id
+  #(classification) "none"
+  measure: flight_count is count()
+}
 `;
 
 describe("R4: a pair table keeps the joined source's classifications", () => {
@@ -584,6 +597,173 @@ describe("R4: a pair table keeps the joined source's classifications", () => {
       });
       expect(out.servedVia).toBeUndefined();
       expect(rowDifference(out.live, out.served)).toBeUndefined();
+      fixture.setBindings(fixture.bindings);
+      const { path } = await fixture.runAsIs(
+         "run: flights -> { group_by: segments.miles; aggregate: n is segments.count() }",
+      );
+      expect(path?.considered?.map((c) => c.reason)).toContain("MISSING_FIELD");
+   });
+
+   // One check declines an annotated joined field returned as a column,
+   // whichever record of stored columns answers the join: the pair table's
+   // (an inlined join_many, one row per pair) and an inlined join_one's.
+   const legs = [
+      [
+         "an inlined join_many, one row per pair",
+         "run: flights -> { group_by: id, segments.seg_id, segments.miles }",
+      ],
+      [
+         "an inlined join_one",
+         "run: flights_one -> { group_by: id, segments.seg_id, segments.miles }",
+      ],
+   ] as const;
+   for (const [name, malloy] of legs) {
+      it(`answers an annotated joined field as a column live (MISSING_FIELD): ${name}`, async () => {
+         const fixture = await buildScenario({
+            files: { "m.malloy": classified },
+            seedSql,
+            materialize: true,
+         });
+         expect(await fixture.servedCopyProblems()).toEqual([]);
+         const run = await fixture.run({ name, malloy, expectLive: true });
+         expect(run.servedVia).toBeUndefined();
+         expect(run.live.length).toBeGreaterThan(0);
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         fixture.setBindings(fixture.bindings);
+         const { path } = await fixture.runAsIs(malloy);
+         const reasons = path?.considered?.map((c) => c.reason);
+         expect(reasons).toContain("MISSING_FIELD");
+         expect(reasons).not.toContain("COUNT_SEMANTICS");
+      });
+   }
+});
+
+// What live attaches to a joined field returned as a column, beyond its own
+// notes: notes inherited from the joined source's base, a render tag, and a
+// class inferred from what the field reads (no note of its own). The pair
+// table's record must keep each, or the query must be answered live.
+const inherited = `##! experimental.access_modifiers
+source: seg_base is duckdb.table('segments') include {
+  #(classification) "none"
+  public: seg_id, flight_id
+  #(classification) "sensitive"
+  public: miles
+} extend {
+  primary_key: seg_id
+  #(doc) "Twice the leg's miles."
+  dimension: doubled is miles * 2
+  dimension: tripled is miles * 3
+  # label="Leg"
+  dimension: leg is seg_id
+}
+
+source: segments is seg_base extend {
+  measure: seg_n is count()
+}
+
+#(carries) ["none", "sensitive"]
+#(materialize) storage="lake" inline=["segments"]
+source: flights is duckdb.table('flights') include {
+  #(classification) "none"
+  public: id, carrier, distance
+} extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  #(classification) "none"
+  measure: flight_count is count()
+  view: by_leg is { group_by: segments.leg; aggregate: n is segments.count() }
+}
+
+#(carries) ["none", "sensitive"]
+#(materialize) storage="lake" inline=["segments"]
+source: flights_one is duckdb.table('flights') include {
+  #(classification) "none"
+  public: id, carrier, distance
+} extend {
+  primary_key: id
+  join_one: segments with id
+  #(classification) "none"
+  measure: flight_count is count()
+}
+`;
+
+describe("R4: an inherited, render-tagged or inferred-class joined field", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": inherited },
+         seedSql,
+         materialize: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("loads the served copy with no problems", async () => {
+      expect(await fixture.servedCopyProblems()).toEqual([]);
+   });
+
+   const live = [
+      [
+         "a doc note inherited from the joined source's base",
+         "run: flights -> { group_by: segments.doubled; aggregate: n is segments.count() }",
+      ],
+      [
+         "a render tag (# label)",
+         "run: flights -> { group_by: segments.leg; aggregate: n is segments.count() }",
+      ],
+      [
+         "the field in a nest",
+         "run: flights -> { group_by: carrier; nest: legs is { group_by: segments.leg; aggregate: n is segments.count() } }",
+      ],
+      ["a view read by name", "run: flights -> by_leg"],
+      [
+         "the field in the first stage of two",
+         "run: flights -> { group_by: segments.leg; aggregate: n is segments.count() } -> { group_by: leg; aggregate: t is n.sum() }",
+      ],
+   ] as const;
+   for (const [name, malloy] of live) {
+      it(`answers it live (MISSING_FIELD): ${name}`, async () => {
+         const run = await fixture.run({ name, malloy, expectLive: true });
+         expect(run.servedVia).toBeUndefined();
+         expect(run.live.length).toBeGreaterThan(0);
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         fixture.setBindings(fixture.bindings);
+         const { path } = await fixture.runAsIs(malloy);
+         const reasons = path?.considered?.map((c) => c.reason);
+         expect(reasons).toContain("MISSING_FIELD");
+         expect(reasons).not.toContain("COUNT_SEMANTICS");
+      });
+   }
+
+   it("serves an inferred-class field (no note of its own), keeping its class on the stored column", async () => {
+      // Each leg's own exact aggregate: a child count on the pair table, a
+      // parent measure on the join_one's record.
+      for (const [source, aggregate] of [
+         ["flights", "segments.count()"],
+         ["flights_one", "flight_count"],
+      ]) {
+         const malloy = `run: ${source} -> { group_by: segments.tripled; aggregate: n is ${aggregate} }`;
+         const run = await fixture.run({ name: source, malloy });
+         expect(run.servedVia).toBe("served_copy");
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+      }
+   });
+
+   it("serves a query that reads the annotated fields only in aggregates and filters", async () => {
+      const run = await fixture.run({
+         name: "aggregate and filter",
+         malloy:
+            "run: flights -> { where: segments.leg > 2; group_by: carrier; aggregate: m is segments.doubled.sum() }",
+      });
+      expect(run.servedVia).toBe("served_copy");
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 });
 

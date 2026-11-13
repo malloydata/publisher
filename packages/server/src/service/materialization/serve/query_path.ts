@@ -127,6 +127,11 @@ export interface ModelRollup {
    rollupSourceName: string;
    baseSourceName: string;
    baseSourceID?: string;
+   /**
+    * A `#(preaggregate)` rollup, which the router's rollup leg answers on
+    * either tier (its `storage=` table too), never the serve shape.
+    */
+   variant?: boolean;
 }
 
 /** One table the report can name, with what is known about it now. */
@@ -157,6 +162,8 @@ interface TableState {
    binding?: StorageTable;
    /** For a rollup: its synthesized source name (the composite member). */
    rollupName?: string;
+   /** A `#(preaggregate)` rollup: the rollup leg decides it on either tier. */
+   variant?: boolean;
 }
 
 /** What happened to the query, as the model saw it. */
@@ -234,7 +241,12 @@ export interface QueryPathInput {
  */
 export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    const onChain = new Set(input.chain);
-   const decided = new Map(input.considered.map((c) => [c.kind, c]));
+   // One decision per kind; where two candidates share a kind (the v1 and
+   // `#(preaggregate)` rollup legs), the one that answered.
+   const decided = new Map<ConsideredVariant["kind"], ConsideredVariant>();
+   for (const c of input.considered) {
+      if (!decided.has(c.kind) || c.outcome === "used") decided.set(c.kind, c);
+   }
    // The served copy on `virtual` reads the same stored tables as the serve
    // shape; when it answered, its decision is the storage tier's.
    const servedCopyAnswered = input.via === "served_copy";
@@ -332,7 +344,9 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
 
    // `storage=`: tried only when the tier was a candidate at all (mode on,
    // bindings and a destination present).
-   const storageTables = tables.filter((t) => t.tier === "storage");
+   const storageTables = tables.filter(
+      (t) => t.tier === "storage" && !t.variant,
+   );
    let storageAnswered = false;
    if (storageDecision) {
       const read = new Set(
@@ -395,7 +409,10 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
 
    // Colocated rollups, through the pre-aggregation companion.
    const colocatedRollups = tables.filter(
-      (t) => t.tier === "colocated" && t.kind === "rollup" && !t.unbuilt,
+      (t) =>
+         (t.tier === "colocated" || t.variant) &&
+         t.kind === "rollup" &&
+         !t.unbuilt,
    );
    let rollupAnswered = false;
    if (rollupDecision && !storageAnswered) {
@@ -620,6 +637,9 @@ export function verdictWarningMessage(reason: string): string {
 export const VARIANT_SKIP_CODES = {
    rollup_missing_field: "MISSING_FIELD",
    rollup_count_semantics: "COUNT_SEMANTICS",
+   rollup_grain_too_coarse: "GRAIN_TOO_COARSE",
+   rollup_time_zone: "TIME_ZONE",
+   rollup_not_built: "NOT_BUILT",
    view_missing_field: "MISSING_FIELD",
    view_not_built: "NOT_BUILT",
    view_stale: "STALE",
@@ -688,8 +708,17 @@ function tablesFor(
       plan: PlannedTable | undefined,
       kind: TableState["kind"],
       rollupName?: string,
+      variant?: boolean,
    ) => {
-      const named = rollupName ? { rollupName } : {};
+      const named = {
+         ...(rollupName ? { rollupName } : {}),
+         ...(variant ? { variant } : {}),
+      };
+      // A `#(preaggregate)` table is the rollup leg's on either tier.
+      if (variant && binding) {
+         add({ ...storageState(binding, plan, kind, fresh), ...named });
+         return;
+      }
       if (binding) {
          if (storageCandidate) {
             add({ ...storageState(binding, plan, kind, fresh), ...named });
@@ -737,6 +766,7 @@ function tablesFor(
          planForRollup(input, rollup.rollupSourceName),
          "rollup",
          rollup.rollupSourceName,
+         rollup.variant,
       );
    }
    // Storage first, then colocated; chain order within each.

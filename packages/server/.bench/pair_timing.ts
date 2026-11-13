@@ -79,7 +79,7 @@ for (const [name, q] of queries) {
     const sq = sm.loadQuery(q);
     ssql = await sq.getSQL({ virtualMap } as never);
     const pq: any = await sq.getPreparedQuery();
-    const v = flatPairQueryVerdict(pq._query, pq._modelDef.contents.flights, { join: "segments", parentRowField: "__parent_row__pair", annotatedChildFields: new Set() });
+    const v = flatPairQueryVerdict(pq._query, pq._modelDef.contents.flights, { join: "segments", parentRowField: "__parent_row__pair" });
     refusal = v.kind === "served" ? undefined : v.kind === "parent_only" ? "parent only: next candidate" : v.reason;
   } catch (e) { refusal = `does not compile: ${(e as Error).message.split("\n")[0]}`; }
   if (refusal) { console.log(`| ${name} | ${L.ms.toFixed(1)} | live (declined) | 1.00 | ${refusal} |`); continue; }

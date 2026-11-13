@@ -443,8 +443,19 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          `the #(preaggregate) companion did not compile: ${JSON.stringify(rollups?.refused)}`,
       );
    }
-   const rollupTargets = rollups?.generated
+   // A rollup whose build reads a given is left out, as the package's build
+   // plan leaves it out (`preaggregate-reads-given`).
+   const allRollupTargets = rollups?.generated
       ? await rollups.generated.runtime.getBuildTargets(rollups.generated.model)
+      : undefined;
+   const rollupTargets = allRollupTargets
+      ? {
+           ...allRollupTargets,
+           connections: allRollupTargets.connections.map((c) => ({
+              ...c,
+              targets: c.targets.filter((t) => !t.readsGivens),
+           })),
+        }
       : undefined;
    const rollupPlanByName = new Map(
       (rollups?.generated?.plans ?? []).map((p) => [p.rollupSourceName, p]),
