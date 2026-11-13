@@ -35,7 +35,7 @@ const packages = tempBuildPlanPackages();
 let restore: () => void;
 beforeEach(() => {
    restore = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true" },
+      env: { PUBLISHER_MATERIALIZE: "true", PERSIST_STORAGE_MODE: "on" },
    }).restore;
 });
 afterEach(async () => {
@@ -55,7 +55,7 @@ source: regions_raw is duckdb.table('regions_src')
 source: regions is regions_raw -> { select: code, label } extend {
   primary_key: code
 }
-#(materialize) name="orders_t" inline=["regions"]
+#(materialize) storage="lake" name="orders_t" inline=["regions"]
 source: orders is duckdb.table('orders_src') extend {
   join_one: regions with region
 }
@@ -65,7 +65,7 @@ source: orders is duckdb.table('orders_src') extend {
 const RAW_JOIN = `source: regions is duckdb.table('regions_src') extend {
   primary_key: code
 }
-#(materialize) name="orders_t" inline=["regions"]
+#(materialize) storage="lake" name="orders_t" inline=["regions"]
 source: orders is duckdb.table('orders_src') extend {
   join_one: regions with region
 }
@@ -79,9 +79,9 @@ source: orders is duckdb.table('orders_src') extend {
 const MATERIALIZED_JOIN = `source: regions is duckdb.table('regions_src') extend {
   primary_key: code
 }
-#(materialize) name="regions_view"
+#(materialize) storage="lake" name="regions_view"
 source: regions_m is regions extend {}
-#(materialize) name="orders_t" inline=["regions_m"]
+#(materialize) storage="lake" name="orders_t" inline=["regions_m"]
 source: orders is duckdb.table('orders_src') extend {
   join_one: regions_m with region
 }
@@ -113,19 +113,39 @@ async function scenario(model: string) {
       },
       getEnvironmentPath: () => pkg.getPackagePath(),
    } as unknown as BuildEnvironment;
-   const builder = new SourceBuilder(async () => {
-      throw new Error("no storage in this spec");
+   // The storage tier, stood in for by the scenario's own database: the
+   // build SQL it is handed (the warehouse recompute a `storage=` build
+   // copies) is written to the table there, so the stored rows can be read.
+   const builder = new SourceBuilder(async (request) => {
+      const table = request.instruction.physicalTableName;
+      await duckdb.runSQL(
+         `CREATE OR REPLACE TABLE ${table} AS ${request.publicBuildSQL}`,
+      );
+      return {
+         sourceEntityId: request.contentSourceEntityId ?? "",
+         sourceName: request.persistSource.name,
+         physicalTableName: table,
+         connectionName: "duckdb",
+         storageDestinationName: "lake",
+      } as ManifestEntry;
    });
    const build = new InstructedBuild({
       buildOneSource: (...a) => builder.build(...a),
       reclaimStorageTablesFromFailedRun: async () => {},
    });
+   const sourceIdOf = (name: string) =>
+      Object.entries(compiled.sources).find(([, s]) => s.name === name)?.[0] ??
+      "";
    const instruction = (name: string): BuildInstruction =>
       ({
          sourceEntityId: addresses.get(name),
          materializedTableId: `mt-${name}`,
          physicalTableName: `${name}_t`,
          realization: "COPY",
+         // A `#(materialize)` source is built only into a destination.
+         ...(compiled.materializePlans?.[sourceIdOf(name)]
+            ? { destination: "lake" }
+            : {}),
       }) as BuildInstruction;
 
    let previous: {
