@@ -481,6 +481,21 @@ export function setsTimezone(query: unknown, depth = 0): boolean {
    return false;
 }
 
+/**
+ * Whether a compiled expression or query holds raw SQL (the `sql_*` family,
+ * `genericSQLExpr`) anywhere it computes or reads. Its text names columns by
+ * itself (`${TABLE}.region`, or a bare `region`), which the compiler records
+ * as no field read, so a reader of field references cannot tell what it
+ * needs.
+ */
+export function readsRawSql(node: unknown): boolean {
+   let found = false;
+   eachQueryNode(node, (n) => {
+      if (n.node === "genericSQLExpr") found = true;
+   });
+   return found;
+}
+
 /** Keys of a stage that hold no expression the query computes or reads. */
 const NOT_QUERY_READS = new Set([
    ...NOT_EXPRESSIONS,
