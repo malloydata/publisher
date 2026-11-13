@@ -1191,7 +1191,8 @@ export class ServedCopyServe {
     * base declares, which the build left out and only the base's block
     * re-applies at read. Undefined when the source is neither, or no such
     * ancestor is on the walk: a source with none keeps only its own blocks
-    * (decision 2).
+    * (decision 2); and for one whose bases declare a measure, view or join it
+    * inherits (G8), which the re-root would otherwise lose.
     */
    private keptBlocksFor(
       reroot: Reroot & { sourceID: string },
@@ -1209,7 +1210,13 @@ export class ServedCopyServe {
       );
       const needed =
          (plan.keptBases?.length ?? 0) > 0 ||
-         confirmed.some((a) => this.materializePlans[a.sourceID] !== undefined);
+         confirmed.some(
+            (a) => this.materializePlans[a.sourceID] !== undefined,
+         ) ||
+         // G8: a base the re-root replaces declares a measure, view or join
+         // the source inherits; only its block, written again over the
+         // table, keeps it (else the source is not carried, call 2).
+         confirmed.some((a) => declaresBlocks(map.node(a.sourceID)?.def));
       if (!needed) return undefined;
       return confirmed
          .flatMap((a) =>
@@ -2494,4 +2501,21 @@ export function storedColumnsWithAccess(
       out.push({ name, type: c.type, ...(access ? { access } : {}) });
    }
    return out;
+}
+
+/**
+ * Whether a compiled source declares (or inherits) a measure, a view or a
+ * join: what a re-root that replaces it as a base would lose unless it keeps
+ * its blocks (G8).
+ */
+function declaresBlocks(def: unknown): boolean {
+   const fields = (def as { fields?: unknown[] } | undefined)?.fields ?? [];
+   return fields.some((f) => {
+      const x = f as { type?: unknown; expressionType?: unknown };
+      return (
+         x.type === "turtle" ||
+         (typeof x === "object" && x !== null && "join" in x) ||
+         (typeof x.expressionType === "string" && x.expressionType !== "scalar")
+      );
+   });
 }

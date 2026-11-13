@@ -76,12 +76,35 @@ const tolerated: Record<Tolerance, string[]> = {
    "drill-metadata": [],
 };
 
-function withoutSubtype(type: unknown): unknown {
-   if (type && typeof type === "object" && "subtype" in type) {
-      const { subtype: _subtype, ...rest } = type as Record<string, unknown>;
-      return rest;
+/**
+ * A result type with the tolerated differences set aside, a nest's fields
+ * included: every number's subtype, and every `#(malloy)` drill annotation.
+ */
+function tolerantType(
+   type: unknown,
+   tolerate: readonly Tolerance[],
+   depth = 0,
+): unknown {
+   if (depth > 32 || type === null || typeof type !== "object") return type;
+   if (Array.isArray(type)) {
+      return type
+         .filter(
+            (a) =>
+               !(
+                  tolerate.includes("drill-metadata") &&
+                  typeof (a as { value?: unknown })?.value === "string" &&
+                  isDrill((a as { value: string }).value)
+               ),
+         )
+         .map((t) => tolerantType(t, tolerate, depth + 1));
    }
-   return type;
+   return Object.fromEntries(
+      Object.entries(type as Record<string, unknown>)
+         .filter(
+            ([k]) => !(k === "subtype" && tolerate.includes("number-subtype")),
+         )
+         .map(([k, v]) => [k, tolerantType(v, tolerate, depth + 1)]),
+   );
 }
 
 const isDrill = (a: string) => a.startsWith("#(malloy)");
@@ -100,8 +123,7 @@ function fieldDifference(
    if (a.length !== b.length) {
       return `fields ${a.map((f) => f.name).join(",")} against ${b.map((f) => f.name).join(",")}`;
    }
-   const type = (f: WireField) =>
-      tolerate.includes("number-subtype") ? withoutSubtype(f.type) : f.type;
+   const type = (f: WireField) => tolerantType(f.type, tolerate);
    const notes = (f: WireField) =>
       tolerate.includes("drill-metadata")
          ? f.annotations.filter((n) => !isDrill(n))

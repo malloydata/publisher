@@ -1564,4 +1564,38 @@ source: ov is orders_raw extend {
          },
       ],
    },
+   {
+      name: "materialize: a base with measures and views",
+      about: "A #(materialize) source extending a base that declares measures and a view in the same file (G8: the re-root replaces the base, so it keeps the base's blocks)",
+      variants: ["materialize"],
+      files: {
+         "m.malloy": `${HEADER}
+import "raw.malloy"
+
+source: orders_base is orders_raw extend {
+  # currency
+  measure: total is amount.sum()
+  measure: n is count()
+  view: by_region is { group_by: region; aggregate: total, n }
+}
+
+@PERSIST()
+source: orders_m is orders_base extend {
+  dimension: zone is upper(region)
+}
+`,
+      },
+      queries: [
+         {
+            name: "a base measure by a stored dimension",
+            malloy: "run: orders_m -> { group_by: zone; aggregate: total }",
+         },
+         { name: "the base's view", malloy: "run: orders_m -> by_region" },
+         {
+            name: "a base measure in a nest",
+            malloy:
+               "run: orders_m -> { group_by: status; nest: by_zone is { group_by: zone; aggregate: n; order_by: zone } }",
+         },
+      ],
+   },
 ];
