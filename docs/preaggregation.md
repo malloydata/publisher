@@ -11,7 +11,7 @@ Queries do not change. They name the source they always named, ask for the measu
 
 This is the same machinery as [materialization](materialization.md) with a different trigger. `#@ persist` stores a source you wrote; `#@ preaggregate` stores a rollup Publisher derives from a measure you annotated. Both build through the same plan, manifest, and scheduler.
 
-Materialization v2 renames `#@ preaggregate` to `#(preaggregate)`; [materialization-migration.md](materialization-migration.md#preaggregate) maps one to the other.
+Materialization v2 renames `#@ preaggregate` to `#(preaggregate)`; [materialization-migration.md](materialization-migration.md#preaggregate) maps one to the other. Which to write depends on the server: with `PUBLISHER_MATERIALIZE` on, write `#(preaggregate)` (below), and `#@ preaggregate` carries a deprecation warning; with it off (the default), `#(preaggregate)` is not read (an `annotation-near-miss` warning) and its measure serves live, so `#@ preaggregate` is the spelling that builds.
 
 ## `#(preaggregate)` (materialization v2, behind `PUBLISHER_MATERIALIZE`)
 
