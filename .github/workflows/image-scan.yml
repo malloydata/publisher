@@ -69,7 +69,7 @@ jobs:
         include:
           - platform: linux/amd64
             arch: amd64
-            runner: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-latest' || 'ubuntu-latest' }}
+            runner: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-latest' || 'ubuntu-latest' }}
           - platform: linux/arm64
             arch: arm64
             runner: ubuntu-24.04-arm

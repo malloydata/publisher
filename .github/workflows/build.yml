@@ -32,7 +32,7 @@ concurrency:
 jobs:
   lint:
     name: Typecheck
-    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-latest' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-latest' || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -63,7 +63,7 @@ jobs:
           bun run typecheck
   lint_format:
     name: Lint and check formatting
-    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-latest' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-latest' || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -149,7 +149,7 @@ jobs:
   # Bun bin entry).
   runtime_test:
     name: ${{ matrix.runtime }} test
-    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-latest' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-latest' || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -273,7 +273,7 @@ jobs:
   # that the bundled .mjs executes under Bun (which runtime_test covers).
   docker_smoke_test:
     name: Docker smoke test
-    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-latest' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-latest' || 'ubuntu-latest' }}
     timeout-minutes: 45
     # id-token is used only on main, to write the donated runners' layer cache;
     # a pull request's token cannot impersonate the writer (it is bound to the
@@ -290,7 +290,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Authenticate as the layer-cache writer
-        if: vars.CREDIBLE_RUNNERS == 'true' && github.ref == 'refs/heads/main'
+        if: vars.DONATED_RUNNERS == 'true' && github.ref == 'refs/heads/main'
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: projects/160497775026/locations/global/workloadIdentityPools/oss-github/providers/github
@@ -335,10 +335,10 @@ jobs:
           tags: malloy-publisher:smoke-test
           # The donated runners' registry cache when on them (GitHub's runners
           # cannot reach it), GitHub's cache otherwise. Only main writes.
-          cache-from: ${{ vars.CREDIBLE_RUNNERS == 'true' && format('type=registry,ref={0}', env.LAYER_CACHE) || 'type=gha' }}
+          cache-from: ${{ vars.DONATED_RUNNERS == 'true' && format('type=registry,ref={0}', env.LAYER_CACHE) || 'type=gha' }}
           cache-to: >-
             ${{ github.ref != 'refs/heads/main' && '' ||
-                vars.CREDIBLE_RUNNERS == 'true' && format('type=registry,ref={0},mode=max', env.LAYER_CACHE) ||
+                vars.DONATED_RUNNERS == 'true' && format('type=registry,ref={0},mode=max', env.LAYER_CACHE) ||
                 'type=gha,mode=max' }}
       - name: Inspect image metadata
         run: |
@@ -661,7 +661,7 @@ jobs:
   python_sdk_smoke_test:
     name: Python SDK smoke test
     needs: python_sdk_build
-    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-latest' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-latest' || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       PUBLISHER_PORT: "4010"

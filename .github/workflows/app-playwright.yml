@@ -34,8 +34,8 @@ jobs:
     # `playwright install --with-deps chromium` refuses that image ("does not
     # support chromium on ubuntu26.04"), failing the job before any test runs.
     # On Credible's donated runners (an ubuntu-24.04-like image) when
-    # CREDIBLE_RUNNERS is on.
-    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-latest' || 'ubuntu-24.04' }}
+    # DONATED_RUNNERS is on.
+    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-latest' || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

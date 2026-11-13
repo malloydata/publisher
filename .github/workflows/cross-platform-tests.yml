@@ -35,9 +35,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ ubuntu-latest, windows-latest, macos-latest ]
-    # The Linux leg on Credible's donated runners when CREDIBLE_RUNNERS is on
+    # The Linux leg on Credible's donated runners when DONATED_RUNNERS is on
     # (they are Linux x64 only); macOS and Windows stay on GitHub's.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-latest' || matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-latest' || matrix.os }}
     timeout-minutes: 75
 
     steps:

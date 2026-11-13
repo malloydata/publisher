@@ -71,11 +71,11 @@ Docker, one job per machine), which do not count against GitHub's 20-concurrent-
 opts in with:
 
 ```yaml
-runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-latest' || 'ubuntu-latest' }}
+runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-latest' || 'ubuntu-latest' }}
 timeout-minutes: 30
 ```
 
-The organization variable `CREDIBLE_RUNNERS` is the kill switch: set it to `false` and every such job
+The organization variable `DONATED_RUNNERS` is the kill switch: set it to `false` and every such job
 goes back to GitHub's runners with no PR. On them: `build.yml`'s jobs, the Linux leg of
 `cross-platform-tests.yml`, `app-playwright.yml`, the Trivy jobs in `security-scan.yml` and
 `image-scan.yml` (amd64 build only), and `python-sdk.yml` when `build.yml` calls it (not when
