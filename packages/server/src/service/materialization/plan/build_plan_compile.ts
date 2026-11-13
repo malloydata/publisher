@@ -23,6 +23,12 @@ import {
    type CompiledBuildPlan,
 } from "./build_plan";
 import { refuseCollidingMaterialize } from "./eligibility_collect";
+import {
+   joinOneKey,
+   joinOneKeysOf,
+   type RollupVariantPlan,
+} from "./rollup_plan";
+import { SourceMap } from "./source_map";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import { Model } from "../../model";
 import { keyedOverlay } from "../../overlay_key";
@@ -36,6 +42,8 @@ export async function compilePackageBuildPlan(
    signal?: AbortSignal,
 ): Promise<CompiledBuildPlan> {
    const parts = emptyBuildPlanParts();
+   // Every join_one of every model, for the rollup key checks a build runs.
+   const joinOneKeys = new Set<string>();
    const yielder = createEventLoopYielder();
 
    for (const modelPath of pkg.getModelPaths()) {
@@ -85,6 +93,9 @@ export async function compilePackageBuildPlan(
          buildView = keyedOverlay(view.overlay);
       }
       const { runtime, materializer, malloyModel } = loaded;
+      for (const key of joinOneKeysOf(SourceMap.of(malloyModel._modelDef))) {
+         joinOneKeys.add(key);
+      }
       await collectModelBuildPlan(parts, {
          modelPath,
          packagePath: pkg.getPackagePath(),
@@ -99,6 +110,20 @@ export async function compilePackageBuildPlan(
                { overlay: new Map([...(buildView ?? []), ...overlay]) },
             ),
       });
+   }
+
+   // A rollup key check no join_one of the package reads is not run: it
+   // would scan the base for nothing (known limitation 29).
+   for (const plan of Object.values(parts.preaggregatePlans)) {
+      const rollup = plan as RollupVariantPlan;
+      if (
+         rollup.keyCheck &&
+         !joinOneKeys.has(
+            joinOneKey(rollup.baseSourceID, rollup.keyCheck.keyColumn),
+         )
+      ) {
+         delete rollup.keyCheck;
+      }
    }
 
    const connections = await resolvePackageConnections(
