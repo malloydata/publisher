@@ -30,6 +30,7 @@ import {
    generateBuildFiles,
    givenReadTerms,
    hiddenAccess,
+   keptBasesInText,
    levelFileName,
    MATERIALIZE_COMPANION_SUFFIX,
    planModelMaterialize,
@@ -729,7 +730,8 @@ async function withBuildCopies(
          (p) =>
             givenReadTerms(p).length > 0 ||
             p.buildsOver ||
-            hiddenOf(p).length > 0,
+            hiddenOf(p).length > 0 ||
+            p.keptBases !== undefined,
       )
    ) {
       return { plans, copies, refused };
@@ -838,6 +840,30 @@ async function withBuildCopies(
                "re-applied over the table at read",
          );
          continue;
+      }
+      // A term or dimension a base writes is left out of the build only when
+      // the served copy keeps that base's block: confirmed against the text
+      // before anything is built.
+      if (plan.keptBases) {
+         const bases =
+            text === undefined
+               ? {
+                    reason:
+                       "the model file could not be read to confirm the " +
+                       `blocks its served copy keeps: ${unreadable}`,
+                 }
+               : declaredIn !== modelFile
+                 ? {
+                      reason:
+                         "a `where:` reading a given or a caller-dependent " +
+                         "dimension written on a base can only be left out " +
+                         "of the build for a source declared in a local model file",
+                   }
+                 : keptBasesInText(text, plan);
+         if ("reason" in bases) {
+            refuse(plan, bases.reason);
+            continue;
+         }
       }
       const liftAccess = lifted !== undefined;
       const given = givenReadTerms(plan).length > 0;
