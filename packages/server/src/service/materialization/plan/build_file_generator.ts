@@ -710,6 +710,16 @@ export interface MaterializeParent {
     * build source in its own warehouse.
     */
    overStored?: StoredChain;
+   /**
+    * Declarations of the same file, off the chain, that the build copy
+    * replaces with an empty source over the parent's build source: each read
+    * the parent's re-rooted declaration and did not compile over it, which
+    * would fail this extension's build copy for another source's sake
+    * (materialize_compile.ts, `compileContained`). Empty, so anything on the
+    * chain that reads one fails to compile and the extension builds over the
+    * raw chain instead: an omission never changes what the build reads.
+    */
+   omit?: TermUse[];
 }
 
 /**
@@ -1219,9 +1229,17 @@ export function callerDependentDimensions(
    | { reason: string } {
    const givenIR = givenReadingFields(def.fields);
    for (const j of inline) {
+      // Every level of a path (`items.options`) is stored, its rows and its
+      // fields, so a given read at any level holds one caller's values.
+      const levels = j
+         .split(".")
+         .map((_, i, all) => all.slice(0, i + 1).join("."));
       if (
-         givenIR.has(j) ||
-         [...givenIR].some((path) => path.startsWith(`${j}.`))
+         levels.some(
+            (level) =>
+               givenIR.has(level) ||
+               [...givenIR].some((path) => path.startsWith(`${level}.`)),
+         )
       ) {
          return {
             reason:
@@ -1417,6 +1435,25 @@ function inlinedPathOf(
          };
       }
       if (next.relationship !== "many") return { reason: throughOne };
+      // A join the joined source hides is read by no source joining it, the
+      // build's included, so the build's query would not compile, and with it
+      // the companion every `#(materialize)` source of the model builds from.
+      const hidden = prev.fields.some((raw) => {
+         const f = raw as FieldLike;
+         return (
+            f.join !== undefined &&
+            (f.as ?? f.name) === names[k] &&
+            hiddenAccess(f) !== undefined
+         );
+      });
+      if (hidden) {
+         return {
+            reason:
+               `inline= names ${quoted}, whose ${quotedName(names[k])} is not ` +
+               `public on the source ${quotedName(prev.name)} joins, so no ` +
+               "source joining it reads through it",
+         };
+      }
       if (
          typeof connection === "string" &&
          next.connection !== undefined &&
@@ -2139,12 +2176,11 @@ export function planModelMaterialize(
          });
          continue;
       }
-      // A private or internal join's access, by name. An inlined join_one
-      // keeps it: its build reads the join through the build copy's lift
-      // (P3), and the served record carries the join's modifier. A pair
-      // table's record (an inlined join_many) does not carry one yet, so a
-      // hidden join_many is refused here, and this source serves live while
-      // the companion still compiles for every other source in the model.
+      // A private or internal join's access, by name. Its build reads the
+      // join through the build copy's lift (P3), and its joined columns carry
+      // the modifier: the served copy declares an inlined join_one's record,
+      // and a pair table's (an inlined join_many's), under it, and renames
+      // the stored columns behind it `private` in the record's own block.
       const joinAccess = new Map<string, "private" | "internal">();
       for (const raw of def.fields ?? []) {
          const f = raw as FieldLike;
@@ -2155,23 +2191,6 @@ export function planModelMaterialize(
          }
       }
       const entries = (resolved as { path: SourceJoin[] }[]).map((r) => r.path);
-      const hiddenMany = entries
-         .map((p) => p[0].name)
-         .find(
-            (j) =>
-               joinAccess.has(j) &&
-               joins.find((x) => x.name === j)?.relationship !== "one",
-         );
-      if (hiddenMany !== undefined) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason:
-               `inline= names ${quotedName(hiddenMany)}, a join_many that is ` +
-               "not public, which cannot be inlined as a pair table yet",
-         });
-         continue;
-      }
       const ones = entries
          .filter((p) => p[0].relationship !== "many")
          .map((p) => p[0].name);
@@ -2252,6 +2271,7 @@ export function planModelMaterialize(
                   map,
                   j,
                   p.slice(0, k + 1).map((x) => x.name),
+                  joinAccess.get(p[0].name),
                ),
             ),
          ),
@@ -2573,6 +2593,10 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
       // A table that stacks several inlined paths is a SQL source over the
       // author's model: neither builds over the other's build source.
       if (plan.pairBlocks || parent.pairBlocks) continue;
+      // A pair table holds its source once per child of the inlined
+      // join_many, not once per row: an extension built over it would store
+      // (and its served copy count) each parent once per child.
+      if (parent.pair) continue;
       if (givenReadTerms(parent).length > 0) continue;
       // The re-rooted parent keeps its `where:` as written, so a term its
       // table leaves out would be applied to the extension's build.
@@ -2935,6 +2959,23 @@ export function generatedNameOwner(
 }
 
 /**
+ * Every name a generated file declares or imports for one plan: its build
+ * source, the alias its build reads its base by, and each uniqueness check's
+ * query and the alias it reads the joined source by. A compile problem on a
+ * line naming one of these is that plan's (materialize_compile.ts).
+ */
+export function generatedNamesOf(plan: MaterializePlan): string[] {
+   return [
+      plan.buildSourceName,
+      importAlias(plan),
+      ...(plan.uniquenessChecks ?? []).flatMap((check) => [
+         check.queryName,
+         checkAlias(check),
+      ]),
+   ];
+}
+
+/**
  * The build copy of one planned source's declaring file: `text` with that
  * source's left-out read-time terms replaced by `true` (P2, and a current-time
  * upper bound), so a query over the
@@ -2966,16 +3007,134 @@ export function buildCopyText(
    chain?: { parent: MaterializePlan; importFrom: string },
    options: { liftAccess?: boolean } = {},
 ): { copy: string } | { reason: string } {
-   const edits = copyEdits(text, plan, chain?.parent, options.liftAccess);
-   if ("reason" in edits) return edits;
-   let copy = applyEdits(text, edits.edits);
-   if (copy === undefined) return { reason: NOT_FOUND };
+   const parts = buildCopyParts(text, plan, chain, options);
+   return "reason" in parts ? parts : { copy: parts.copy };
+}
+
+/**
+ * {@link buildCopyText}, with the edits it made to `text` and where it put
+ * the parent's import line, so a place in the copy can be traced back to the
+ * author's text ({@link buildCopyDeclarationAt}).
+ */
+function buildCopyParts(
+   text: string,
+   plan: MaterializePlan,
+   chain?: { parent: MaterializePlan; importFrom: string },
+   options: { liftAccess?: boolean } = {},
+):
+   | {
+        copy: string;
+        edits: TextEdit[];
+        imported?: { at: number; length: number };
+     }
+   | { reason: string } {
+   const found = copyEdits(text, plan, chain?.parent, options.liftAccess);
+   if ("reason" in found) return found;
+   const edits = [...found.edits];
    if (chain) {
-      const at = afterModelHeader(copy);
-      const line = `import { ${identifier(chain.parent.buildSourceName)} } from ${stringLiteral(chain.importFrom)}\n`;
-      copy = `${copy.slice(0, at)}${line}${copy.slice(at)}`;
+      for (const omitted of plan.buildsOver?.omit ?? []) {
+         const from = offsetOf(text, omitted.range.start);
+         const to = offsetOf(text, omitted.range.end);
+         const stub =
+            from >= 0 && to >= from
+               ? emptySourceOver(text.slice(from, to), chain.parent)
+               : undefined;
+         if (stub === undefined) return { reason: PARENT_NOT_REROOTED };
+         edits.push({ start: from, end: to, insert: stub });
+      }
    }
-   return { copy };
+   let copy = applyEdits(text, edits);
+   if (copy === undefined) return { reason: NOT_FOUND };
+   if (!chain) return { copy, edits };
+   const at = afterModelHeader(copy);
+   const line = `import { ${identifier(chain.parent.buildSourceName)} } from ${stringLiteral(chain.importFrom)}\n`;
+   copy = `${copy.slice(0, at)}${line}${copy.slice(at)}`;
+   return { copy, edits, imported: { at, length: line.length } };
+}
+
+/**
+ * A declaration replaced by an empty source of the same name over the
+ * parent's build source: every column taken away, so nothing can read a
+ * field of it and compile. Undefined when the name cannot be read.
+ */
+function emptySourceOver(
+   declaration: string,
+   parent: MaterializePlan,
+): string | undefined {
+   const spans = declarationSpans(declaration);
+   if (!spans) return undefined;
+   const name = declaration.slice(0, spans.nameEnd).trimEnd();
+   if (name === "") return undefined;
+   const columns = parent.columns.map((c) => identifier(c.column));
+   return (
+      `${name} is ${identifier(parent.buildSourceName)}` +
+      (columns.length > 0 ? ` extend { except: ${columns.join(", ")} }` : "")
+   );
+}
+
+/**
+ * Which of `candidates` (declarations in `text`, the author's file) the place
+ * `at` in `plan`'s build copy (zero-based line and character, as Malloy
+ * reports a problem) lies in, or undefined: one the copy edits (the plan's
+ * own, its parent's, or one already omitted) or a place in none.
+ */
+export function buildCopyDeclarationAt(
+   text: string,
+   plan: MaterializePlan,
+   chain: { parent: MaterializePlan; importFrom: string },
+   options: { liftAccess?: boolean },
+   contents: Record<string, unknown>,
+   at: { line: number; character: number },
+): { sourceID: string; declaration: TermUse } | undefined {
+   const parts = buildCopyParts(text, plan, chain, options);
+   if ("reason" in parts) return undefined;
+   const own = plan.declaration;
+   const onChain = [
+      ...(own ? [own] : []),
+      ...(plan.buildsOver ? [plan.buildsOver.declaration] : []),
+      ...(plan.buildsOver?.path ?? []),
+   ];
+   // The chain is all in one file (see chainExtensionTables).
+   const chainURL = plan.buildsOver?.declaration.url;
+   const same = (a: TermUse, b: TermUse) =>
+      a.url === b.url &&
+      a.range.start.line === b.range.start.line &&
+      a.range.start.character === b.range.start.character;
+   const candidates = Object.values(contents).flatMap((def) => {
+      const d = def as SourceDefLike | null;
+      const declaration =
+         d && typeof d === "object" && typeof d.sourceID === "string"
+            ? declarationOf(d)
+            : undefined;
+      return declaration &&
+         declaration.url === chainURL &&
+         !onChain.some((c) => same(c, declaration))
+         ? [{ sourceID: d?.sourceID as string, declaration }]
+         : [];
+   });
+   const point = offsetOf(parts.copy, at);
+   if (point < 0) return undefined;
+   // An author offset outside every edit, where the copy has it.
+   const inCopy = (offset: number) => {
+      let out = offset;
+      for (const e of parts.edits) {
+         if (e.end <= offset) out += e.insert.length - (e.end - e.start);
+      }
+      if (parts.imported && parts.imported.at <= out) {
+         out += parts.imported.length;
+      }
+      return out;
+   };
+   for (const { sourceID, declaration } of candidates) {
+      const from = offsetOf(text, declaration.range.start);
+      const to = offsetOf(text, declaration.range.end);
+      if (from < 0 || to < from) continue;
+      if (parts.edits.some((e) => e.start < to && from < e.end)) continue;
+      if (inCopy(from) <= point && point <= inCopy(to)) {
+         return { sourceID, declaration };
+      }
+   }
+   return undefined;
 }
 
 /** Lifts the `internal` fields a build copy's source inherits (P3). */
