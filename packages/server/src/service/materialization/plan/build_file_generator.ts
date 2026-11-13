@@ -2908,7 +2908,6 @@ ${flags}${watermark}
       PAIR_BLOCK_WATERMARK,
    ];
    const parent = identifier(blocks.blocks[0].parentKey);
-   // malloy-text: every name through identifier
    return `${sql} -> {
   group_by:
 ${stored.map((c) => `    ${identifier(c)}`).join(",\n")}

@@ -684,7 +684,6 @@ export function planSourceRollups(
             unservable(
                "preaggregate-time-zone",
                decl.measure,
-               // malloy-text: a warning message for a person, not Malloy
                `the source sets its own time zone (\`timezone: '${zone}'\`), and a query on it is never read from a rollup, whose stored times would be read in another zone${decl.storage !== undefined ? "; a colocated rollup is read only through a join from a source in the same zone" : ", nor through a join (no source in the same zone joins it)"}, so its table would cost a build no query reads`,
             ),
          );
