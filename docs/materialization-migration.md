@@ -57,13 +57,18 @@ its extensions, views, joins, named queries and importing files are unchanged
   source's table through the served copy, as its own text says.
 - **One annotation per source.** A source that carries both `#(materialize)` and its own
   `#@ persist` is not built, and is reported as `materialize-not-built`.
-- **A declaration Publisher cannot build serves live, with a warning.** It is never refused. The
-  warning is `materialize-not-built`, and it names the reason.
+- **A declaration Publisher cannot build serves live, with a warning.** It is not refused at
+  publish. The warning is `materialize-not-built`, and it names the reason. The exception is a
+  declaration that cannot be read as written (below): it is not built either, and a publish is
+  refused.
 - **`#(materialize)` takes only these keys:** `name`, `storage`, `refresh`, `watermark`,
   `merge_key`, `partition`, `freshness.*`, `queryMetadata.*`, and `inline` (v2 only; [joins](#joins-reference-by-default-inline-to-store-a-join_one)).
-  Any other key, a misspelled
-  `name=` for example, is a `materialize-not-built` warning rather than a default table. v1's
-  `realization=` has no v2 form.
+  Any other key, a misspelled `name=` for example, is malformed rather than a default table: the
+  source is not built, the package warning is `materialize-unknown-key` at severity `error`, naming
+  the key it was likely meant to be, and a publish is refused. A package already published keeps
+  loading with the warning. A `#(materialize)` line that does not parse (`name="t` with no closing
+  quote) is malformed the same way, as `materialize-unparseable`. v1's `realization=` has no v2
+  form. A misspelled route, such as `#(materialise)`, is an `annotation-near-miss` warning.
 
 ## Form by form
 
