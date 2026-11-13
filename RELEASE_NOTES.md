@@ -25,6 +25,15 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A cancelled run keeps the error it raced, and a failed shared table is built once
+
+- A materialization run that was cancelled while a real failure was in flight still records `error:
+  "Cancelled"`, and now also keeps that failure's message in its metadata as `errorAtCancel`, on the
+  record only; the logs carry its code.
+- When a base and its `extend` share one table and its build fails, the second source takes the
+  same failure (reason and `retryable`) without running the build again. The run's `failures` keep
+  one entry per table, as before.
+
 ## [Unreleased] — (BREAKING) Materialization build metrics: one build counter, and structured run and build events
 
 Three materialization metrics are replaced, and one loses a label. Dashboards or alerts on the old
