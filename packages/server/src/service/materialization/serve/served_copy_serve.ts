@@ -2611,15 +2611,6 @@ export function classifyServedCopyFailure(
       : "compile_failed";
 }
 
-/**
- * The join_ones a `#(materialize)` plan inlines, as the served copy answers
- * them from stored columns: each stored `<join>__<field>` column with its
- * stored type and the joined field's timeframe, and the join's own access
- * modifier when the author hides it, read off the author's compiled source. A join whose joined source
- * filters by a given is left out (kept as written, so each caller's read
- * applies the filter through the join). Undefined when the table lacks a
- * column the plan stores.
- */
 /** A compiled field's name on its source (`as`, else `name`). */
 function fieldNameOf(field: unknown): string | undefined {
    const f = (field ?? {}) as { name?: unknown; as?: unknown };
@@ -2669,6 +2660,15 @@ function bigIntegerReadsOf(
    );
 }
 
+/**
+ * The join_ones a `#(materialize)` plan inlines, as the served copy answers
+ * them from stored columns: each stored `<join>__<field>` column with its
+ * stored type and the joined field's timeframe, and the join's own access
+ * modifier when the author hides it, read off the author's compiled source. A join whose joined source
+ * filters by a given is left out (kept as written, so each caller's read
+ * applies the filter through the join). Undefined when the table lacks a
+ * column the plan stores.
+ */
 function inlinedJoinsOf(
    plan: MaterializePlan,
    fields: unknown[] | undefined,
