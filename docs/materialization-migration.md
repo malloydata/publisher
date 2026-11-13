@@ -45,9 +45,10 @@ source's own query produces. The served copy then reads that table under the sou
 its extensions, views, joins, named queries and importing files are unchanged
 ([the served copy](materialization.md#the-served-copy-in-development-publisher_materialize)).
 
-- **No `##! experimental.persistence` in your file**, for a `storage=` source. The flag lives in the
-  build source Publisher generates. A file that also has v1 `#@ persist` sources still needs it, and
-  so, today, does a file with a colocated `#(materialize)` source ([below](#colocated-build-into-the-sources-own-warehouse)).
+- **No `##! experimental.persistence` in your file** for a `#(materialize)` source. The flag lives
+  in the build source Publisher generates. A file that also has v1 `#@ persist` sources still needs
+  it: a v1 file without the flag is skipped by the build, as before, until that requirement (D3) is
+  removed after colocated tables move onto the served copy.
 - **An extension does not inherit `#(materialize)`.** Only the source whose own statement carries it
   is built. A source that extends or renames it is not a second table: it reads the materialized
   source's table through the served copy, as its own text says.
@@ -93,14 +94,11 @@ is Publisher's, and the existing checks refuse two sources that land on one tabl
 
 ### Colocated: build into the source's own warehouse
 
-**Builds today. Serving is coming in phase 3.** The build plan builds the table under your
-source's name, but queries on the source are still computed live from its warehouse. Keep the v1
-form for anything that needs to be served from its table now.
-
-**Keep `##! experimental.persistence` in a file with a colocated `#(materialize)` source.** Without
-it, once the table is built, queries on that model answer 400 (`A non-empty buildManifest was
-supplied, but the model is missing ##! experimental.persistence`). This is a defect, and the
-colocated serving work removes the need for the flag.
+**Not built yet.** A `#(materialize)` source without `storage=` is not built until the served copy
+can serve it, in phase 3's pull request 6 (the v1 cutover). Until then it gets a
+`materialize-not-built` warning ("colocated #(materialize) is not served yet; use storage= or
+#@ persist") and its queries are answered live from its warehouse. Keep the v1 form, or use
+`storage=`, for anything that needs a table now.
 
 ```malloy
 // v1
@@ -319,7 +317,7 @@ Each of these is a later pull request. The warning text names the reason when it
 
 | v2 form                                                                        | Status                                                               |
 | ------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
-| Serving a colocated `#(materialize)` table                                     | Phase 3. It builds, and queries are computed live                    |
+| Building and serving a colocated `#(materialize)` table                        | Phase 3. Not built; `materialize-not-built`, answered live           |
 | `inline=` on a join_many or join_cross                                         | Phase 4. Not built; `materialize-not-built`                          |
 | The `name=` view, and a materialized extension built from its parent's table   | Phase 3                                                              |
 | A stored computed dimension under a query's own `timezone:`                    | Answered live today, since the build computed it in the default zone |
@@ -354,7 +352,7 @@ it. The build plan, the manifest and reuse all key on it.
 - **Set the switch the same on every worker.** `PUBLISHER_MATERIALIZE` and
   `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` are read at startup. Workers that disagree plan
   different sources or compute different addresses for one source.
-- **Read warning codes as open strings.** This page reserves
+- **Read warning codes as open strings.** This page adds
   `deprecated-preaggregate-annotation` (with the switch on), beside `materialize-not-built`,
   `served-copy-not-served`, `materialization-destination-missing` and
   `materialization-connection-cannot-hold-table`. None is an error, and the package loads.

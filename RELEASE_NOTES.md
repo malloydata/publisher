@@ -39,7 +39,7 @@ Behind `PUBLISHER_MATERIALIZE` (off by default). A `#(materialize)` key outside 
 
 Materialization v2 deprecates one v1 form: `#@ preaggregate` is renamed `#(preaggregate)`, which phase 4 builds. It follows the Publisher v1 plan's rule for a deprecated form: a package warning through 0.x, refused at 1.0.0, and the reader removed in 1.1. `#@ persist` itself is not deprecated, and moving to `#(materialize)` is optional.
 
-**`#@ -persist` is not deprecated.** It is Malloy core's own opt-out, which Malloy's persistence documentation teaches, so Publisher keeps honouring it, under `#@ persist` and `#(materialize)` alike: an opted-out reader, and any source built on it, recomputes live. It gets no warning, and it will not be ignored at the v1 cutover or refused at 1.0.0. An earlier build of this work warned about it with `deprecated-persist-opt-out` while `PUBLISHER_MATERIALIZE` was on; that warning, and its `persist_opt_out` count, are gone.
+**`#@ -persist` is not deprecated.** It is Malloy core's own opt-out, which Malloy's persistence documentation teaches, so Publisher keeps honouring it, under `#@ persist` and `#(materialize)` alike: an opted-out reader, and any source built on it, recomputes live. It gets no warning, and it is not on the path to being refused or removed.
 
 **`#@ preaggregate` gets `deprecated-preaggregate-annotation` with the switch on**, once per measure that declares it (`model` its file, `subject` its source), now that `#(preaggregate)` is read, built and served there. It is `warn`; `#@ preaggregate` keeps working, and its rollups still build and serve. `publisher_deprecated_usage_total` counts it (`preaggregate_annotation`, per measure) at every load, whether or not a warning shows.
 
