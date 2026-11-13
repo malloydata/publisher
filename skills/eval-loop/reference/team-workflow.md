@@ -89,13 +89,18 @@ writes what happened to `<workdir>/routines/<label>.json`: the kind, the
 number, each step with its exit code and seconds, whether the run was shared,
 and the reason it ended. Its exit status says whether the number can be used:
 
+A quality routine answers a voided case once more before it scores: one cut
+off at the turn cap (at double the cap), or one whose isolation broke. A case
+voided twice is left out of the rate and named in the result, so one case that
+will not finish does not stop the record moving.
+
 | Exit | Meaning |
 | --- | --- |
 | 0 | Done. The number is recorded. |
 | 1 | A step failed. Nothing after it ran. |
 | 3 | Could not start: the set's config, or no run to take queries from. |
-| 4 | Done, and a person should look: a stored answer's rows changed, or a query errored. The number is recorded. |
-| 5 | The run did not finish, so there is no number. |
+| 4 | Done, and a person should look: a case was voided twice and left out of the rate, a stored answer's rows changed, or a query errored. The number is recorded. |
+| 5 | The run did not finish, or more than half its cases are voided, so there is no number. |
 
 `eval.py versions` shows how each version scored and how fast its queries
 ran. `eval.py history` builds the same as a page.

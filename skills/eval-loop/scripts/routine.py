@@ -10,7 +10,9 @@ agent). There are two kinds, and each reports one number:
   quality   answers every case and scores it. The number is the pass rate.
     1. check       the set and the servers are ready
     2. verify      every golden still re-derives from the truth package
-    3. run         every case, against the model server's package as served
+    3. run         every case, against the model server's package as served.
+                   A case cut off at the turn cap, or whose isolation broke,
+                   is answered once more (run --recover)
     4. diagnose    each failure, then cluster them
     5. package     the run's page, on the truth server
     6. history     the set's history page, rebuilt
@@ -35,9 +37,11 @@ the last line printed. The exit status says whether the number can be used:
   0  done: the number is recorded
   1  a step failed; nothing after it ran
   3  could not start (the set's config, or no run to take queries from)
-  4  done, and something needs a person: a stored answer's rows changed, or a
-     query errored. The number is recorded
-  5  the run did not finish, so there is no number
+  4  done, and something needs a person: a case was voided twice and left
+     out, a stored answer's rows changed, or a query errored. The number is
+     recorded
+  5  the run did not finish, or more than half its cases are voided, so there
+     is no number
 """
 from __future__ import annotations
 
@@ -80,6 +84,7 @@ def quality_number(run: pathlib.Path) -> dict[str, Any]:
             "passRate": round(passed / decided, 4) if decided else None,
             "truncated": meta.get("truncated") or [],
             "contaminated": meta.get("contaminated") or [],
+            "recovered": meta.get("recovered") or [],
             "costUsd": {"answerer": meta.get("answererCostUsd"),
                         "judge": meta.get("judgeCostUsd")}}
 
@@ -170,7 +175,7 @@ class Routine:
 
     def quality(self) -> tuple[int, str]:
         for name, *args in (("check", "check", *self.s), ("verify", "verify", *self.s),
-                            ("run", "run", *self.s, "--label", self.label, "--no-share",
+                            ("run", "run", *self.s, "--label", self.label, "--no-share", "--recover",
                              "--max-turns", self.a.max_turns, "--parallel", self.a.parallel)):
             code = self.do(name, *args)
             if code != 0:
@@ -192,7 +197,14 @@ class Routine:
                 return STEP_FAILED, f"stopped at {name} (exit {code}); nothing after it ran"
         self.share()
         n = self.result["number"]
-        return DONE, f"{n['passed']} of {n['decided']} decided cases passed"
+        said = f"{n['passed']} of {n['decided']} decided cases passed"
+        voided = n["truncated"] + n["contaminated"]
+        if voided:
+            # Each was answered twice and is still voided. The number stands
+            # over the rest; a person reads why these will not finish.
+            return NEEDS_A_LOOK, (f"{said}. {len(voided)} case(s) voided twice and left "
+                                  f"out: {', '.join(voided)}")
+        return DONE, said
 
     def speed(self) -> tuple[int, str]:
         code = self.do("check", "check", *self.s)

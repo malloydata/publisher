@@ -210,7 +210,7 @@ these in order and put every one that fires into the list, with its command:
 | a passing case with recall below 1.0 | check whether `required` over-specifies one path |
 | the same golden search target never asked, or asked as the wrong type, on several cases | an `agent-skill` finding: the decomposition rule belongs in the skill the answerer reads before `get_context` (`malloy-phrase-detection`) |
 | a golden target asked for, with recall below 1.0 on that target | send it as written with `check_findable.py`; if that misses too, the target or the docs need fixing before the agent is blamed |
-| `truncated` non-empty | re-run those cases at a higher cap with `--from` |
+| `truncated` non-empty | answer those cases again in place, at double the cap: `eval.py run --set <set> --label <run> --rebuild --recover` |
 | diagnose did not run | run it, or say the failures have no owner yet |
 | a cluster with `owner: model` | `skill:eval-improve`, then the acceptance check |
 | a cluster with `owner: agent-skill` | **edit that skill.** This is NOT a dead end |
@@ -272,7 +272,7 @@ that these are NOT evidence about the model:
 
 | What happened | How it reads in the ledger | Who fixes it |
 |---|---|---|
-| Answerer ran out of turns | `reason: answerer_truncated`, and `run.json` `truncated` | raise `--max-turns`, re-run those cases with `--from` |
+| Answerer ran out of turns | `reason: answerer_truncated`, and `run.json` `truncated` | answer them again in place with `eval.py run --set <set> --label <run> --rebuild --recover`; if one is cut off twice, raise `--max-turns` for the set |
 | Isolation breached | `reason: contaminated`, `contamination_reasons` on the attempt | harness config; the answerer held a tool it should not |
 | Harness or server failed | `reason: environment_failure: <what>` | fix the environment, re-run the arm |
 | Answer key not established | `reason: golden_provisional` / `_invalid` / `_ambiguous` / `_missing` | derive the key (`skill:eval-import`), or the golden side door |

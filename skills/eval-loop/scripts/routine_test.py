@@ -95,6 +95,13 @@ class Kinds(unittest.TestCase):
         self.assertEqual((code, ran[-1]), (5, "run"))
         self.assertIn("1 truncated", r["reason"])
 
+    def test_a_case_voided_twice_is_left_out_and_the_routine_exits_4(self):
+        code, ran, r, calls = self.go("quality", on={"run": lambda: self.answer_run(
+            self.run_dir, "complete", truncated=["b"], recovered=["b"])})
+        self.assertEqual((code, ran[-1]), (4, "history"))
+        self.assertIn("voided twice and left out: b", r["reason"])
+        self.assertIn("--recover", next(c for c in calls if c[0] == "run"))
+
     def test_the_run_is_shared_after_the_diagnosis_is_written_into_it(self):
         def diagnose():
             with (self.run_dir / "events.jsonl").open("a") as f:

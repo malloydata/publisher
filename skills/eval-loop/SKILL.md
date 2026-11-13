@@ -580,6 +580,10 @@ conductor. Do not:
   the harness now enforces the parts it can. A run with a truncated or
   contaminated attempt prints no pass rate and records `status: incomplete`,
   and `flip_table.py` names what one arm left unscored that the other did not.
+  `run --recover` answers each such case once more (a truncated one at double
+  the cap) and keeps the first attempt; with `--rebuild` it finishes a run that
+  ended incomplete, in place. A case voided twice is left out of the rate and
+  named. The routine passes `--recover`.
   Read `run_error` on the attempts
   and the INCOMPLETE line before quoting any number.
 - When a subagent disagrees with you, probe. Do not win by authority.

@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures as futures
+import copy
 import hashlib
 import json
 import os
@@ -1772,6 +1773,8 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   truncated: list[str] | None = None,
                   contaminated: list[str] | None = None,
                   aborted: bool = False,
+                  left_out: bool = False,
+                  recovered: list[str] | None = None,
                   contamination_reasons: dict[str, int] | None = None,
                   max_turns: int | None = None,
                   retrieval_mode: str, tally: dict, rs: dict,
@@ -1816,8 +1819,16 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
     # beside it and do not: the first is a dataset state that an arm cannot
     # fix, and the second already has a retry.
     trunc, contam = list(truncated or []), list(contaminated or [])
-    incomplete = len(trunc) + len(contam) + bool(aborted)
+    # `left_out`: each voided case was answered a second time and at most half
+    # are voided still. The rate is then over cases that have a verdict, with
+    # the rest named, which is a number somebody earned. Without the second
+    # attempt it is still withheld.
+    incomplete = (0 if left_out and not aborted
+                  else len(trunc) + len(contam) + bool(aborted))
     pct = f" ({100 * passed / decided:.0f}%)" if decided else ""
+    if left_out and (trunc or contam) and not aborted:
+        pct += (f"  -- {len(trunc) + len(contam)} voided after a second attempt, "
+                f"left out of the rate")
     if incomplete:
         why = ", ".join(
             ["the arm ABORTED"] * bool(aborted)
@@ -1852,10 +1863,12 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
         lines += [f"  truncated     {len(trunc)} (hit the turn cap{cap}; not "
                   f"judged, and not evidence about the model)",
                   f"                {', '.join(sorted(trunc))}",
-                  f"                re-run just these, at a higher cap:",
-                  f"                  --from {out.name} --out <new-run> "
-                  f"--only {','.join(sorted(trunc))} "
-                  f"--max-turns {(max_turns or 30) * 2}"]
+                  *([f"                answer them again in place, at double "
+                     f"the cap:",
+                     f"                  eval.py run --set {set_dir} --label "
+                     f"{out.name} --rebuild --recover"] if not left_out else
+                    [f"                each was answered twice; raise --max-turns "
+                     f"for the set, or read why the case needs so many"])]
     if contam:
         lines += [f"  contaminated  {len(contam)} (isolation breached; the "
                   f"judge's verdict is kept as judge_verdict and withheld)",
@@ -1863,6 +1876,10 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
         for reason, n in sorted((contamination_reasons or {}).items(),
                                 key=lambda kv: (-kv[1], kv[0])):
             lines += [f"                {n}x {reason}"]
+    if recovered:
+        lines += [f"  recovered     {len(recovered)} answered a second time "
+                  f"(first attempts kept under voided/)",
+                  f"                {', '.join(sorted(recovered))}"]
     if by_tag and not incomplete:
         # Per tag, so a slice's movement shows against the kind of question it
         # targets. Withheld with the headline on an incomplete arm, for the
@@ -2615,6 +2632,141 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                 "host_tool_uses": 0, "transcriptPath": None,
                 "breaches": ["server unreachable before the attempt"]}
     return derive_attempt(events, case, a, art, elapsed)
+
+
+# ------------------------------------------------------------------ recovery
+
+def voided_reason(att: dict[str, Any]) -> str | None:
+    """Why this attempt can carry no verdict, or None when it can.
+
+    The two harness-owned exclusions: an answer cut off at the turn cap, and
+    one whose isolation broke. Neither is evidence about the model, which is
+    the only reason answering it again is not answer-shopping.
+    """
+    if att.get("error") == "error_max_turns":
+        return "truncated"
+    if att.get("breaches"):
+        return "contaminated"
+    return None
+
+
+def recovery_marker(out: pathlib.Path, qid: str) -> dict[str, Any] | None:
+    """What a recovered case's first attempt was, kept beside its transcript."""
+    try:
+        return json.loads((out / "voided" / qid / "recovered.json").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def recover_voided(cases: list[dict[str, Any]], attempts: dict[str, dict[str, Any]],
+                   a: argparse.Namespace, art: pathlib.Path) -> list[str]:
+    """Answer each voided case once more, and return the qids answered again.
+
+    A truncated case gets double the turn cap: the cap is a harness setting,
+    and the same cap would cut it off at the same place. A contaminated case
+    gets the same settings: a server that dropped recovers, and a harness
+    fault (a tool the CLI added, a path into the key) breaches again and stays
+    voided, which is the right outcome.
+
+    Once per case, ever. The first attempt moves to <run>/voided/<qid>/ with a
+    recovered.json naming why and what it cost, so nothing is lost and a case
+    that already has one is not tried a third time. It is outside artifacts/
+    because a rebuild walks that directory for cases.
+
+    Not when more than half the cases are voided. That is a broken harness, and
+    paying for every case again would measure the same fault.
+    """
+    todo = [(c, voided_reason(attempts[c["qid"]])) for c in cases]
+    todo = [(c, why) for c, why in todo
+            if why and not (a.out / "voided" / c["qid"]).exists()]
+    if not todo:
+        return []
+    if 2 * len(todo) > len(cases):
+        print(f"  ! {len(todo)} of {len(cases)} cases are voided. That is the harness, "
+              f"not the cases, so none is answered again. Read the reasons below.",
+              flush=True)
+        return []
+    print(f"recovering {len(todo)} voided case(s), once each", flush=True)
+
+    def again(c: dict[str, Any], why: str) -> dict[str, Any] | None:
+        qid, first = c["qid"], attempts[c["qid"]]
+        b = copy.copy(a)
+        b.rebuild = b.rejudge = False
+        if why == "truncated":
+            b.max_turns = (a.max_turns or 30) * 2
+        kept = a.out / "voided" / qid
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        if (art / qid).exists():
+            shutil.move(str(art / qid), str(kept))
+        else:
+            kept.mkdir()
+        marker = {"reason": why, "cost_usd": first.get("cost_usd"),
+                  "num_turns": first.get("num_turns"),
+                  "breaches": first.get("breaches") or [],
+                  "max_turns": b.max_turns}
+        (kept / "recovered.json").write_text(json.dumps(marker, indent=1) + "\n")
+        try:
+            att = run_answerer(c, b, art)
+        except Exception as e:
+            att = {"qid": qid, "submitted": False, "final_query": None,
+                   "answer_text": "", "calls": [], "error": str(e)[:200],
+                   "n_get_context": 0, "n_execute": 0, "n_execute_errors": 0,
+                   "host_tool_uses": 0, "transcriptPath": None}
+        if not (art / qid / "answerer.jsonl").exists():
+            # No answerer ran (the server was down, or the spawn failed), so
+            # this was not a second attempt. Put the first one back: it keeps
+            # its place in the run, and the case can still be recovered once.
+            shutil.rmtree(art / qid, ignore_errors=True)
+            (kept / "recovered.json").unlink()
+            shutil.move(str(kept), str(art / qid))
+            return None
+        att["recovered_from"] = marker
+        return att
+
+    done = []
+    with futures.ThreadPoolExecutor(max_workers=a.parallel) as ex:
+        fut = {ex.submit(again, c, why): (c, why) for c, why in todo}
+        for f in futures.as_completed(fut):
+            c, why = fut[f]
+            att = f.result()
+            if att is None:
+                print(f"  {c['qid']}: was {why}, and no answerer could be started. "
+                      f"Left as it was", flush=True)
+                continue
+            attempts[c["qid"]] = att
+            now = voided_reason(att)
+            print(f"  {c['qid']}: was {why}, now "
+                  f"{now + ' again' if now else 'answered'}", flush=True)
+            done.append(c["qid"])
+    if (a.out / "voided").is_dir() and not any((a.out / "voided").iterdir()):
+        (a.out / "voided").rmdir()
+    return sorted(done)
+
+
+def may_leave_out(still: list[str], recovered: list[str], n_cases: int) -> bool:
+    """May the cases still voided be left out of the rate, and the run recorded?
+
+    Only when every one of them has had its second attempt, and at most half
+    the cases are voided. More than half is the harness, and has no number.
+    Read off the attempts, not off `--recover`, so a later `--rebuild` or
+    `--rejudge` of a recovered run reaches the same answer without the flag.
+    """
+    return bool(still and 2 * len(still) <= n_cases
+                and all(q in recovered for q in still))
+
+
+def run_status(aborted: bool, moved: Any, still: list[str], left_out: bool) -> str:
+    """`complete`, `incomplete` or `aborted`, for run.json.
+
+    A run whose voided cases each had a second attempt is `complete` with
+    those cases named: its rate is over the cases that have a verdict, and a
+    comparison sets the named ones aside (flip_table reads both lists).
+    Leaving it `incomplete` meant one case that would not finish stopped the
+    record moving for good.
+    """
+    if aborted:
+        return "aborted"
+    return "incomplete" if (moved or (still and not left_out)) else "complete"
 
 
 JUDGE_PROMPT = """/eval-judge
@@ -3578,6 +3730,9 @@ def attempt_event(c: dict[str, Any], att: dict[str, Any], phase: str | None,
         wall_seconds=att.get("wall_seconds"),
         answer_text=att.get("answer_text"),
         run_error=att.get("error"),
+        # Present only on a case answered a second time: why the first attempt
+        # was voided, what it cost, and the turn cap this one ran under.
+        **({"recovered_from": att["recovered_from"]} if att.get("recovered_from") else {}),
         transcriptPath=att["transcriptPath"])
 
 
@@ -3789,6 +3944,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rejudge", action="store_true",
                     help="reuse the saved answers but score them again, for a "
                          "judge or rubric change. Implies --rebuild")
+    ap.add_argument("--recover", action="store_true",
+                    help="answer each truncated or contaminated case once more "
+                         "(a truncated one at double --max-turns), keeping the "
+                         "first attempt under voided/. With --rebuild it "
+                         "finishes a run that ended incomplete, in place. A run "
+                         "with at most half its cases still voided is then "
+                         "recorded, with those cases left out of the score")
     a = ap.parse_args(argv)
     cfg = resolve_config(a)
     imply_flags(a)
@@ -4322,11 +4484,26 @@ def main(argv: list[str] | None = None) -> int:
     if aborted:
         cases = [c for c in cases if c["qid"] in attempts]
 
+    recovered = (recover_voided(cases, attempts, a, art)
+                 if a.recover and not aborted else [])
+    # A rebuild re-derives each attempt from its transcript, which does not
+    # say the case was answered twice. The marker beside the first attempt does.
+    for qid, att in attempts.items():
+        if "recovered_from" not in att:
+            marker = recovery_marker(a.out, qid)
+            if marker:
+                att["recovered_from"] = marker
+    # A case answered again in this pass has no saved verdict to reuse, so on a
+    # rebuild it is judged fresh while the rest keep theirs.
+    fresh = copy.copy(a)
+    fresh.rebuild = fresh.rejudge = False
+
     verdicts: dict[str, dict[str, Any]] = {}
     if not a.no_judge:
         print("judging")
         with futures.ThreadPoolExecutor(max_workers=a.parallel) as ex:
-            fut = {ex.submit(run_judge, c, attempts[c["qid"]], a, art, rubric,
+            fut = {ex.submit(run_judge, c, attempts[c["qid"]],
+                             fresh if c["qid"] in recovered else a, art, rubric,
                              case_model_src(a, c, model_src), reexec): c
                    for c in cases}
             for i, f in enumerate(futures.as_completed(fut), 1):
@@ -4445,7 +4622,10 @@ def main(argv: list[str] | None = None) -> int:
     conf = sum(1 for v in scored.values() if v.get("verdict") in
                ("match", "no_match"))
     human = sum(1 for v in scored.values() if v.get("verdict") == "needs_human")
-    cost = sum(a.get("cost_usd") or 0 for a in attempts.values())
+    # A recovered case was paid for twice, and the run spent both.
+    cost = sum((a.get("cost_usd") or 0)
+               + ((a.get("recovered_from") or {}).get("cost_usd") or 0)
+               for a in attempts.values())
     # Printed rather than left in the ledger: a doubted answer key sends the
     # next agent to fix a model that is already right, and the whole point of
     # asking the judge was to catch that before anyone acts on the run.
@@ -4526,6 +4706,12 @@ def main(argv: list[str] | None = None) -> int:
             contamination_reasons[reason] = \
                 contamination_reasons.get(reason, 0) + 1
 
+    # Every case answered twice, in this pass or an earlier one, and whether
+    # what is still voided may be left out of the rate.
+    recovered_all = sorted(q for q, x in attempts.items() if x.get("recovered_from"))
+    still = truncated + contaminated
+    left_out = may_leave_out(still, recovered_all, len(cases))
+
     # Read off the attempts before the summary, which words its warnings by
     # where the answers came from.
     source, tier = run_provenance(attempts.values())
@@ -4540,6 +4726,7 @@ def main(argv: list[str] | None = None) -> int:
             human=human, doubted=doubted, vetoed=vetoed, alt_path=alt,
             unscorable=unscorable, unparseable=unparseable,
             truncated=truncated, contaminated=contaminated, aborted=aborted,
+            left_out=left_out, recovered=recovered_all,
             contamination_reasons=contamination_reasons,
             max_turns=a.max_turns,
             retrieval_mode=mode, tally=tally, rs=rs, evidence=evidence,
@@ -4610,6 +4797,7 @@ def main(argv: list[str] | None = None) -> int:
                                        "gold_note": note, "declaredBy": src}
                                       for q, st, note, src in doubted],
                       truncated=truncated, contaminated=contaminated,
+                      recovered=recovered_all,
                       # `incomplete` beside `complete` and `aborted`: the arm
                       # ran to the end and still cannot report a rate, which is
                       # a different state from both. Recorded rather than only
@@ -4618,10 +4806,7 @@ def main(argv: list[str] | None = None) -> int:
                       # because `flip_table.py` reads `truncated` and
                       # `contaminated` off this file to name which cases one
                       # arm left unscored that the other scored.
-                      status=("aborted" if aborted
-                              else "incomplete" if (truncated or contaminated
-                                                    or moved)
-                              else "complete"))
+                      status=run_status(aborted, moved, still, left_out))
     # An aborted arm wrote a partial ledger and said so in run.json; it did not
     # do what was asked, and a caller reading 0 would treat it as an arm. A run
     # split across two package versions is refused the same way.

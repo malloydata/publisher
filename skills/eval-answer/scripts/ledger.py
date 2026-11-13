@@ -70,6 +70,7 @@ EVENTS: dict[str, dict[str, set[str]]] = {
                      "input_tokens", "output_tokens", "cache_read_tokens",
                      "cache_write_tokens", "skills_invoked",
                      "cost_usd", "num_turns", "wall_seconds", "run_error",
+                     "recovered_from",
                      # False when the SOURCE of this attempt could not carry
                      # the agent's prose at all -- a transcript rebuilt from a
                      # host's request logs, where only the tool calls were
@@ -221,6 +222,11 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 # is the HARNESS's, not the model's. Both leave the denominator
                 # and both suppress the pass rate (`incomplete` below).
                 "truncated", "contaminated",
+                # The cases answered a second time because the first attempt
+                # was truncated or contaminated (`run --recover`). A run that
+                # still lists a case above after that is `complete` with the
+                # case left out of its rate, when at most half are voided.
+                "recovered",
                 # Where this run's attempts CAME FROM. `spawned` is an
                 # answerer this harness ran; `logs` is a transcript rebuilt
                 # from a host's request logs for a session that ran elsewhere.

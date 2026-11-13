@@ -3,6 +3,8 @@
 credited with, which retriever answered, what was actually re-executed, and
 when an attempt is unjudgeable."""
 import argparse
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -959,11 +961,24 @@ class AnUnreadableVerdictIsNotLost(unittest.TestCase):
         self.assertNotIn("(50%)", body)   # 4 of 8 would have printed this
 
     def test_it_names_the_command_that_finishes_the_arm(self):
-        # Four cases, not a whole arm: the answers already paid for are kept
-        # and only the truncated ones are re-run, at twice the cap.
+        # The answers already paid for are kept and only the voided cases are
+        # answered again. The command this replaced (`--from ... --only ...
+        # --max-turns 60`) re-scored the cut-off transcripts and answered
+        # nothing: `--from` implies `--rebuild`.
         body = self.summary(truncated=["cq-05", "cq-01"], max_turns=30)
-        self.assertIn("--only cq-01,cq-05", body)
-        self.assertIn("--max-turns 60", body)
+        self.assertIn("eval.py run --set s --label r --rebuild --recover", body)
+        self.assertNotIn("--from", body)
+
+    def test_cases_voided_after_a_second_attempt_are_left_out_and_the_rate_prints(self):
+        body = self.summary(truncated=["cq-01"], left_out=True, recovered=["cq-01", "cq-02"])
+        self.assertIn("(50%)", body)
+        self.assertIn("1 voided after a second attempt, left out of the rate", body)
+        self.assertNotIn("INCOMPLETE", body)
+        self.assertIn("recovered     2 answered a second time", body)
+        self.assertNotIn("--rebuild --recover", body)   # already tried
+
+    def test_an_aborted_arm_is_never_left_out(self):
+        self.assertIn("INCOMPLETE", self.summary(aborted=True, left_out=True))
 
     def test_a_contaminated_case_suppresses_it_too(self):
         body = self.summary(contaminated=["cq-03"])
@@ -2756,6 +2771,112 @@ class VersionPin(unittest.TestCase):
             self.assertIsNone(rb.version_moved(a, {"id": "1.4.0"}))
         # A working copy has no published version to move away from.
         self.assertIsNone(rb.version_moved(a, {"id": None}))
+
+
+class Recovery(unittest.TestCase):
+    """`--recover`: a voided case is answered once more, and what that makes the run."""
+
+    def setUp(self):
+        self.out = pathlib.Path(tempfile.mkdtemp())
+        self.art = self.out / "artifacts"
+        self.a = argparse.Namespace(out=self.out, max_turns=30, parallel=2,
+                                    rebuild=True, rejudge=False)
+        self.cases = [{"qid": q} for q in ("ok", "cut", "dirty", "ok2")]
+        self.attempts = {
+            "ok": {"qid": "ok", "cost_usd": 0.1},
+            "ok2": {"qid": "ok2", "cost_usd": 0.1},
+            "cut": {"qid": "cut", "error": "error_max_turns", "cost_usd": 0.5, "num_turns": 31},
+            "dirty": {"qid": "dirty", "breaches": ["server unreachable before the attempt"]}}
+        for q in self.attempts:
+            (self.art / q).mkdir(parents=True)
+            (self.art / q / "answerer.jsonl").write_text("first\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.out, ignore_errors=True)
+
+    def recover(self, result=None, dead=False):
+        seen = {}
+
+        def answer(case, a, art):
+            seen[case["qid"]] = (a.max_turns, a.rebuild)
+            (art / case["qid"]).mkdir(parents=True, exist_ok=True)
+            if not dead:
+                (art / case["qid"] / "answerer.jsonl").write_text("second\n")
+            return dict((result or {}).get(case["qid"], {"qid": case["qid"], "cost_usd": 0.2}))
+        with mock.patch.object(rb, "run_answerer", side_effect=answer), \
+                contextlib.redirect_stdout(io.StringIO()):
+            done = rb.recover_voided(self.cases, self.attempts, self.a, self.art)
+        return done, seen
+
+    def test_why_an_attempt_is_voided(self):
+        self.assertEqual([rb.voided_reason(self.attempts[q]) for q in ("ok", "cut", "dirty")],
+                         [None, "truncated", "contaminated"])
+
+    def test_only_voided_cases_are_answered_again_fresh_and_a_truncated_one_at_double_the_cap(self):
+        done, seen = self.recover()
+        self.assertEqual(done, ["cut", "dirty"])
+        # rebuild is off for the second attempt: on, it would re-read the
+        # cut-off transcript and answer nothing.
+        self.assertEqual(seen, {"cut": (60, False), "dirty": (30, False)})
+
+    def test_the_first_attempt_is_kept_outside_artifacts_with_why_and_its_cost(self):
+        self.recover()
+        self.assertEqual((self.out / "voided" / "cut" / "answerer.jsonl").read_text(), "first\n")
+        marker = rb.recovery_marker(self.out, "cut")
+        self.assertEqual((marker["reason"], marker["cost_usd"], marker["max_turns"]),
+                         ("truncated", 0.5, 60))
+        self.assertEqual(self.attempts["cut"]["recovered_from"], marker)
+        self.assertNotIn("voided", [d.name for d in self.art.iterdir()])
+
+    def test_a_case_is_answered_twice_at_most(self):
+        again = {"cut": {"qid": "cut", "error": "error_max_turns"}}
+        self.recover(again)
+        done, seen = self.recover(again)
+        self.assertEqual((done, seen), ([], {}))
+
+    def test_an_attempt_no_answerer_started_for_is_not_a_second_attempt(self):
+        # The server was down. The first attempt goes back where it was, so a
+        # rebuild still finds the case and it can be recovered once it is up.
+        done, _ = self.recover(dead=True)
+        self.assertEqual(done, [])
+        self.assertEqual((self.art / "cut" / "answerer.jsonl").read_text(), "first\n")
+        self.assertFalse((self.out / "voided").exists())
+        self.assertNotIn("recovered_from", self.attempts["cut"])
+        done, _ = self.recover()
+        self.assertEqual(done, ["cut", "dirty"])
+
+    def test_more_than_half_voided_is_the_harness_and_nothing_is_answered_again(self):
+        self.attempts["ok"]["breaches"] = ["PublishPlugin"]
+        done, seen = self.recover()
+        self.assertEqual((done, seen), ([], {}))
+        self.assertFalse((self.out / "voided").exists())
+
+    def test_the_attempt_event_says_it_was_recovered(self):
+        att = {"submitted": True, "final_query": None, "n_get_context": 0, "n_execute": 0,
+               "n_execute_errors": 0, "host_tool_uses": 0, "transcriptPath": None,
+               "answer_text": "x", "recovered_from": {"reason": "truncated"}}
+        e = rb.attempt_event({"qid": "cut", "question": "q"}, att, "baseline", {})
+        self.assertEqual(e["recovered_from"], {"reason": "truncated"})
+        del att["recovered_from"]
+        self.assertNotIn("recovered_from",
+                         rb.attempt_event({"qid": "cut", "question": "q"}, att, "baseline", {}))
+
+    def test_what_may_be_left_out(self):
+        f = rb.may_leave_out
+        self.assertTrue(f(["a"], ["a", "b"], 4))
+        self.assertFalse(f(["a"], [], 4))                     # no second attempt yet
+        self.assertFalse(f(["a", "b"], ["a"], 4))             # one of them has had none
+        self.assertFalse(f(["a", "b", "c"], ["a", "b", "c"], 4))   # more than half
+        self.assertTrue(f(["a", "b"], ["a", "b"], 4))         # exactly half
+        self.assertFalse(f([], [], 4))
+
+    def test_the_status_a_run_records(self):
+        f = rb.run_status
+        self.assertEqual(f(False, None, [], False), "complete")
+        self.assertEqual(f(False, None, ["a"], False), "incomplete")
+        self.assertEqual(f(False, None, ["a"], True), "complete")
+        self.assertEqual(f(False, "1.0.1", ["a"], True), "incomplete")   # latest moved
+        self.assertEqual(f(True, None, ["a"], True), "aborted")
 
 
 if __name__ == "__main__":
