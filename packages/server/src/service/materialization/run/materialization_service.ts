@@ -64,7 +64,12 @@ import {
    tallySources,
    type WarehouseReach,
 } from "./materialization_run_support";
-import { NAME_VIEWS_KEY, restoreNameViews } from "./name_view";
+import {
+   dropReplacedTablesAside,
+   NAME_VIEWS_KEY,
+   restoreNameViews,
+   type NameViewRecord,
+} from "./name_view";
 import { Reclaimer } from "./reclaimer";
 import { RunLifecycle } from "./run_lifecycle";
 import {
@@ -902,20 +907,30 @@ export class MaterializationService {
             // The views were pointed at this run's tables just before the
             // commit; a run that did not commit must not leave them there.
             if (nameViews.length > 0) {
-               await restoreNameViews(
+               const restored = await restoreNameViews(
                   nameViews,
                   nameViewContext({ compiled, environment }),
                );
+               // What became of each table a view had replaced, on the
+               // failed run's record (the failure keeps its metadata).
+               if (restored.length > 0) {
+                  await this.recordRestoredNameViews(id, restored);
+               }
             }
             throw err;
          }
 
          // A view that replaced a table this package's own run wrote at its
-         // name: the older entries for that table are retired.
+         // name: the table kept aside until this commit goes, and the older
+         // entries for it are retired.
          const replacedTables = nameViews.filter(
             (v) => v.outcome === "replaced_own_table",
          );
          if (replacedTables.length > 0) {
+            await dropReplacedTablesAside(
+               replacedTables,
+               nameViewContext({ compiled, environment }),
+            );
             try {
                await this.claims.markReplacedByView(
                   environmentId,
@@ -1007,6 +1022,33 @@ export class MaterializationService {
             );
          }
          throw err;
+      }
+   }
+
+   /**
+    * Best-effort: record on a run whose commit failed what became of each
+    * table one of its `name=` views had replaced ({@link restoreNameViews}).
+    */
+   private async recordRestoredNameViews(
+      id: string,
+      restored: NameViewRecord[],
+   ): Promise<void> {
+      try {
+         const current = await this.repository.getMaterializationById(id);
+         await this.repository.updateMaterialization(id, {
+            metadata: {
+               ...(current?.metadata ?? {}),
+               [NAME_VIEWS_KEY]: restored,
+            },
+         });
+      } catch (err) {
+         logger.warn(
+            "Could not record the name= tables a failed run put back",
+            {
+               materializationId: id,
+               error: errMessage(err),
+            },
+         );
       }
    }
 

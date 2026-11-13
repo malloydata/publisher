@@ -11,7 +11,10 @@ import type { components } from "../../../api";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import { storageDestinationRoot } from "../../connection_config";
 import { swapIntoPlace } from "./colocated_build_strategy";
-import { createTableAndDescribe } from "./materialization_build_session";
+import {
+   createTableAndDescribe,
+   dropStorageTable,
+} from "./materialization_build_session";
 import { backupSuffix } from "./materialization_run_support";
 import {
    colocatedNameViewSite,
@@ -21,6 +24,9 @@ import {
    pointNameView,
    preflightNameView,
    replaceOwnTableWithView,
+   restoreNameViews,
+   restoreReplacedTableAt,
+   dropReplacedTablesAside,
    probeNameView,
    publishNameViews,
    storageNameViewSite,
@@ -31,7 +37,11 @@ import {
    type NameViewRecord,
    type OwnNameTable,
 } from "./name_view";
-import { nameViewComment, nameViewReplaceTableDdl } from "./name_view_sql";
+import {
+   nameViewComment,
+   nameViewReplaceTableDdl,
+   renameTableSql,
+} from "./name_view_sql";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -172,26 +182,48 @@ describe("the DDL that puts a view in place of a table", () => {
          dialect,
       );
 
-   it("is one transaction on DuckDB and Postgres", () => {
+   it("is one transaction on DuckDB and Postgres, and keeps the old table aside", () => {
       expect(ddl("duckdb")).toEqual({
          transactional: true,
-         primary: [
+         replace: [
             "BEGIN TRANSACTION;",
-            'DROP TABLE "mz"."summary";',
+            'ALTER TABLE "mz"."summary" RENAME TO "summary_o1";',
             'CREATE VIEW "mz"."summary" AS SELECT * FROM "mz"."summary_g1";',
             `COMMENT ON VIEW "mz"."summary" IS '${mark("mz.summary_g1")}';`,
             "COMMIT;",
          ].join("\n"),
-         rollback: "ROLLBACK",
-      });
-      expect(ddl("postgres")).toEqual({
-         transactional: true,
-         primary: [
-            'DROP TABLE "mz"."summary";',
-            'CREATE VIEW "mz"."summary" AS SELECT * FROM "mz"."summary_g1";',
-            `COMMENT ON VIEW "mz"."summary" IS '${mark("mz.summary_g1")}';`,
+         restore: [
+            "BEGIN TRANSACTION;",
+            'DROP VIEW IF EXISTS "mz"."summary";',
+            'ALTER TABLE "mz"."summary_o1" RENAME TO "summary";',
+            "COMMIT;",
          ].join("\n"),
+         rollback: "ROLLBACK",
+         dropAside: 'DROP TABLE IF EXISTS "mz"."summary_o1"',
       });
+      const postgres = ddl("postgres");
+      if (!postgres.transactional) throw new Error("not transactional");
+      // A reader's view over the old table would follow it aside: refused.
+      expect(postgres.replace).toStartWith("DO $guard$ BEGIN IF EXISTS (");
+      expect(postgres.replace).toContain(`'"mz"."summary"'::regclass`);
+      expect(postgres.replace.split("\n").slice(1)).toEqual([
+         'ALTER TABLE "mz"."summary" RENAME TO "summary_o1";',
+         'CREATE VIEW "mz"."summary" AS SELECT * FROM "mz"."summary_g1";',
+         `COMMENT ON VIEW "mz"."summary" IS '${mark("mz.summary_g1")}';`,
+      ]);
+      expect(postgres.restore).toBe(
+         [
+            'DROP VIEW IF EXISTS "mz"."summary";',
+            'ALTER TABLE "mz"."summary_o1" RENAME TO "summary";',
+         ].join("\n"),
+      );
+      expect(postgres.rollback).toBeUndefined();
+   });
+
+   it("renames with sp_rename on SQL Server", () => {
+      expect(
+         renameTableSql(["dbo", "summary"], ["dbo", "summary_o1"], "sqlserver"),
+      ).toBe(`EXEC sp_rename N'"dbo"."summary"', N'summary_o1'`);
    });
 
    it("elsewhere keeps the table aside until the view stands", () => {
@@ -324,10 +356,19 @@ describe("in a plain-DuckDB storage= destination", () => {
             viewName: "summary",
             physicalTableName: "summary_g1",
             outcome: "replaced_own_table",
+            asideTableName: "summary_oaddr",
          }),
       ]);
-      expect(await relations()).toEqual(["TABLE:summary_g1", "VIEW:summary"]);
+      // The old table is kept aside until the run commits.
+      expect(await relations()).toEqual([
+         "TABLE:summary_g1",
+         "TABLE:summary_oaddr",
+         "VIEW:summary",
+      ]);
       expect(await answer()).toBe(2);
+      // The run committed: the aside copy goes.
+      await dropReplacedTablesAside(records, context);
+      expect(await relations()).toEqual(["TABLE:summary_g1", "VIEW:summary"]);
       expect(
          await onLake(async (run) =>
             run(
@@ -346,6 +387,128 @@ describe("in a plain-DuckDB storage= destination", () => {
             context,
          ),
       ).toBe(false);
+   });
+
+   it("a commit that fails drops the view and puts the table back", async () => {
+      const records = await publishNameViews(
+         [intent],
+         context,
+         new Map([[nameViewKey(intent), OWN]]),
+      );
+      expect(records[0].outcome).toBe("replaced_own_table");
+      const restored = await restoreNameViews(records, context);
+      expect(restored).toEqual([
+         expect.objectContaining({
+            viewName: "summary",
+            outcome: "table_restored",
+            asideTableName: "summary_oaddr",
+         }),
+      ]);
+      expect(await relations()).toEqual(["TABLE:summary", "TABLE:summary_g1"]);
+      expect(await answer()).toBe(1);
+   });
+
+   it("a replacement the server never committed is put back by the next build's preflight", async () => {
+      // Interrupted: the view stands, the table is aside, nothing committed.
+      await publishNameViews(
+         [intent],
+         context,
+         new Map([[nameViewKey(intent), OWN]]),
+      );
+      expect(await relations()).toContain("TABLE:summary_oaddr");
+      // The next build's preflight: the records still say the table is
+      // this package's (the replacement never committed).
+      const next = { ...intent, physicalTableName: "summary_g2" };
+      expect(
+         await preflightNameView(next, {
+            ...context,
+            ownTableAt: () => OWN,
+            otherRunActive: () => false,
+         }),
+      ).toEqual({
+         slot: { state: "own_table", table: OWN },
+         dialect: "duckdb",
+      });
+      expect(await relations()).toEqual(["TABLE:summary", "TABLE:summary_g1"]);
+      expect(await answer()).toBe(1);
+
+      // Interrupted between the rename and the view: the name is empty.
+      await onLake((run) => run("ALTER TABLE summary RENAME TO summary_oaddr"));
+      expect(
+         await preflightNameView(next, {
+            ...context,
+            ownTableAt: () => OWN,
+            otherRunActive: () => false,
+         }),
+      ).toEqual({
+         slot: { state: "own_table", table: OWN },
+         dialect: "duckdb",
+      });
+      expect(await answer()).toBe(1);
+
+      // While another run builds, what looks interrupted may be its
+      // replacement in flight: nothing is touched.
+      await onLake((run) => run("ALTER TABLE summary RENAME TO summary_oaddr"));
+      for (const otherRunActive of [() => true, undefined]) {
+         expect(
+            await preflightNameView(next, {
+               ...context,
+               ownTableAt: () => OWN,
+               ...(otherRunActive ? { otherRunActive } : {}),
+            }),
+         ).toEqual({ slot: { state: "empty" }, dialect: "duckdb" });
+      }
+      await onLake((run) => run("ALTER TABLE summary_oaddr RENAME TO summary"));
+
+      // Without the records' say-so, nothing is touched.
+      await onLake((run) => run("ALTER TABLE summary RENAME TO summary_oaddr"));
+      expect(
+         await preflightNameView(next, {
+            ...context,
+            ownTableAt: () => undefined,
+         }),
+      ).toEqual({ slot: { state: "empty" }, dialect: "duckdb" });
+      expect(await relations()).toEqual([
+         "TABLE:summary_g1",
+         "TABLE:summary_oaddr",
+      ]);
+   });
+
+   it("the old run's drop takes an aside copy left behind, even where the view now stands", async () => {
+      await publishNameViews(
+         [intent],
+         context,
+         new Map([[nameViewKey(intent), OWN]]),
+      );
+      // The drop after the commit failed: the aside copy is still there.
+      expect(await relations()).toContain("TABLE:summary_oaddr");
+      // The old run's table drop meets the view (retired, by the dropper's
+      // probe), and still drops the aside copy.
+      await expect(
+         dropStorageTable({
+            destinationName: "lake",
+            destinationConnection: destination,
+            physicalTableName: "summary",
+            environmentPath: dir,
+            alsoDrop: [`summary${backupSuffix(OWN.sourceEntityId)}`],
+         }),
+      ).rejects.toThrow(/View/);
+      expect(await relations()).toEqual(["TABLE:summary_g1", "VIEW:summary"]);
+   });
+
+   it("a stale copy under the backup name does not block the replacement", async () => {
+      await onLake((run) => run("CREATE TABLE summary_oaddr AS SELECT 0 AS x"));
+      const records = await publishNameViews(
+         [intent],
+         context,
+         new Map([[nameViewKey(intent), OWN]]),
+      );
+      expect(records[0].outcome).toBe("replaced_own_table");
+      expect(
+         await onLake(async (run) =>
+            Number((await run("SELECT x FROM summary_oaddr"))[0].x),
+         ),
+      ).toBe(1);
    });
 
    it("without the preflight's finding the table is never touched", async () => {
@@ -405,6 +568,27 @@ describe("in a DuckLake catalog", () => {
          connectionName: "wh",
          storageDestinationName: "lake",
       };
+      const lakeTables = async () =>
+         (
+            await rows(
+               "SELECT table_name FROM duckdb_tables() WHERE database_name = 'lake' ORDER BY 1",
+            )
+         ).map((r) => r.table_name);
+      // A commit that fails: the view goes, the table comes back.
+      const asideTableName = await replaceOwnTableWithView(site, intent, OWN);
+      expect(asideTableName).toBe("summary_oaddr");
+      expect(await rows("SELECT x FROM lake.main.summary")).toEqual([{ x: 2 }]);
+      expect(await lakeTables()).toEqual(["summary_g1", "summary_oaddr"]);
+      const restored = await restoreReplacedTableAt(site, {
+         ...intent,
+         outcome: "replaced_own_table",
+         asideTableName,
+      });
+      expect(restored.outcome).toBe("table_restored");
+      expect(await lakeTables()).toEqual(["summary", "summary_g1"]);
+      expect(await rows("SELECT x FROM lake.main.summary")).toEqual([{ x: 1 }]);
+
+      // A commit that succeeds: the aside copy is dropped after it.
       await replaceOwnTableWithView(site, intent, OWN);
       expect(await probeNameView(site, "summary")).toEqual({
          state: "ours",
@@ -412,11 +596,10 @@ describe("in a DuckLake catalog", () => {
          owner: OWNER,
       });
       expect(await rows("SELECT x FROM lake.main.summary")).toEqual([{ x: 2 }]);
-      expect(
-         await rows(
-            "SELECT table_name FROM duckdb_tables() WHERE database_name = 'lake' ORDER BY 1",
-         ),
-      ).toEqual([{ table_name: "summary_g1" }]);
+      await session.runSQL(
+         'DROP TABLE IF EXISTS "lake"."main"."summary_oaddr"',
+      );
+      expect(await lakeTables()).toEqual(["summary_g1"]);
 
       // The other way: a storage build of a table called `name=` drops the
       // package's view in the transaction that creates its table.
@@ -617,23 +800,48 @@ describe("where DDL is not transactional", () => {
    };
    const aside = `mz.summary${backupSuffix(OWN.sourceEntityId)}`;
 
-   it("moves the table aside, makes the view, and drops the old table only then", async () => {
+   it("moves the table aside, makes the view, and drops the old table only after the commit", async () => {
       const { connection, held } = warehouse();
+      const context: NameViewContext = {
+         connectionFor: () => connection as never,
+         destinationFor: () => undefined,
+         environmentPath: "",
+      };
       const records = await publishNameViews(
          [intent],
-         {
-            connectionFor: () => connection as never,
-            destinationFor: () => undefined,
-            environmentPath: "",
-         },
+         context,
          new Map([[nameViewKey(intent), OWN]]),
       );
       expect(records[0].outcome).toBe("replaced_own_table");
-      expect([...held.keys()].sort()).toEqual(["mz.summary", "mz.summary_g1"]);
+      expect([...held.keys()].sort()).toEqual([
+         "mz.summary",
+         "mz.summary_g1",
+         aside,
+      ]);
       expect(held.get("mz.summary")).toEqual({
          kind: "VIEW",
          comment: mark("mz.summary_g1"),
       });
+      await dropReplacedTablesAside(records, context);
+      expect([...held.keys()].sort()).toEqual(["mz.summary", "mz.summary_g1"]);
+   });
+
+   it("a commit that fails drops the view and renames the table back", async () => {
+      const { connection, held } = warehouse();
+      const context: NameViewContext = {
+         connectionFor: () => connection as never,
+         destinationFor: () => undefined,
+         environmentPath: "",
+      };
+      const records = await publishNameViews(
+         [intent],
+         context,
+         new Map([[nameViewKey(intent), OWN]]),
+      );
+      const restored = await restoreNameViews(records, context);
+      expect(restored.map((r) => r.outcome)).toEqual(["table_restored"]);
+      expect(held.get("mz.summary")).toEqual({ kind: "BASE TABLE" });
+      expect(held.has(aside)).toBe(false);
    });
 
    it("a view that cannot be made puts the table back", async () => {

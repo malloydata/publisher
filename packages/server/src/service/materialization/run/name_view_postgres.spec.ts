@@ -6,10 +6,12 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { swapIntoPlace } from "./colocated_build_strategy";
 import {
    colocatedNameViewSite,
+   dropReplacedTablesAside,
    ownedSlot,
    pointNameView,
    probeNameView,
    replaceOwnTableWithView,
+   restoreReplacedTableAt,
    settleNameViewsBeforeDrop,
    swapDependentsFor,
    viewToTableSwap,
@@ -225,7 +227,46 @@ describe.skipIf(!url)("the name= view on Postgres", () => {
       });
       await run("DROP VIEW name_view_test.summary_reader");
 
+      // The old table is kept aside until the commit; a commit that fails
+      // drops the view and renames the table back.
+      const asideTableName = await replaceOwnTableWithView(
+         site,
+         replacing,
+         own,
+      );
+      expect(asideTableName).toBe("name_view_test.summary_oold");
+      expect(await summary()).toEqual([{ x: 2 }]);
+      expect(await probeNameView(site, "name_view_test.summary_oold")).toEqual({
+         state: "taken",
+         kind: "TABLE",
+      });
+      expect(
+         (
+            await restoreReplacedTableAt(site, {
+               ...replacing,
+               outcome: "replaced_own_table",
+               asideTableName,
+            })
+         ).outcome,
+      ).toBe("table_restored");
+      expect(await summary()).toEqual([{ x: 1 }]);
+      expect(await probeNameView(site, "name_view_test.summary_oold")).toEqual({
+         state: "empty",
+      });
+
+      // A commit that succeeds drops the aside copy after it.
       await replaceOwnTableWithView(site, replacing, own);
+      await dropReplacedTablesAside(
+         [{ ...replacing, outcome: "replaced_own_table", asideTableName }],
+         {
+            connectionFor: () => pg,
+            destinationFor: () => undefined,
+            environmentPath: "",
+         },
+      );
+      expect(await probeNameView(site, "name_view_test.summary_oold")).toEqual({
+         state: "empty",
+      });
       expect(await summary()).toEqual([{ x: 2 }]);
       expect(await probeNameView(site, "name_view_test.summary")).toEqual({
          state: "ours",

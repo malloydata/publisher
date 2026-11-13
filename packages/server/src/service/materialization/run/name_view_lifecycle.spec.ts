@@ -22,6 +22,7 @@ import {
    storageBindingResolverFor,
    versionTableSuffix,
 } from "../../versions/materialization_scope";
+import { backupSuffix } from "./materialization_run_support";
 import { MaterializationService } from "./materialization_service";
 import { NAME_VIEWS_KEY, nameViewsIn } from "./name_view";
 import { nameViewComment, nameViewOwner } from "./name_view_sql";
@@ -519,6 +520,89 @@ describe("the name= view through real builds", () => {
             answer: 2,
             comment: mark("summary_g1"),
          });
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
+      "self-instructed, then orchestrated, whose commit fails: the table is put back",
+      async () => {
+         await publish("1.0.0", 1, "package");
+         const self = await build({ versionId: VersionRef.parse("1.0.0") });
+         expect(self.status).toBe("MANIFEST_FILE_READY");
+         await publish("2.0.0", 2, "package");
+         const committing = service as unknown as {
+            commitManifest: (...args: unknown[]) => Promise<void>;
+         };
+         const commit = committing.commitManifest;
+         committing.commitManifest = async () => {
+            throw new Error("commit lost");
+         };
+         let failed: Materialization;
+         try {
+            failed = await buildInstructed("2.0.0", "summary_g1");
+         } finally {
+            committing.commitManifest = commit;
+         }
+         expect(failed.status).toBe("FAILED");
+         // The view is gone, and the table the self run wrote is back.
+         expect(await summaryView()).toBeUndefined();
+         expect(await sql('SELECT answer FROM "summary"')).toEqual([
+            { answer: 1 },
+         ]);
+         expect(await tables()).toEqual(["summary", "summary_g1"]);
+         expect(nameViewsIn(failed.metadata)).toEqual([
+            expect.objectContaining({
+               viewName: "summary",
+               outcome: "table_restored",
+            }),
+         ]);
+         // Nothing was retired.
+         expect(
+            (await repo.getMaterializationById(self.id))?.metadata
+               ?.supersededTables,
+         ).toBeUndefined();
+
+         // The next build replaces it, and drops the old table after its
+         // commit.
+         const g2 = await buildInstructed("2.0.0", "summary_g2");
+         expect(g2.status).toBe("MANIFEST_FILE_READY");
+         expect(nameViewsIn(g2.metadata)[0].outcome).toBe("replaced_own_table");
+         expect(await tables()).toEqual(["summary_g1", "summary_g2"]);
+         expect(await summaryView()).toEqual({
+            answer: 2,
+            comment: mark("summary_g2"),
+         });
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
+      "a replacement a crash interrupted before its commit is put back, then done, by the next build",
+      async () => {
+         await publish("1.0.0", 1, "package");
+         const self = await build({ versionId: VersionRef.parse("1.0.0") });
+         const entry = Object.values(self.manifest!.entries!)[0];
+         const aside = `summary${backupSuffix(entry.sourceEntityId)}`;
+         // As a crash leaves it: the table renamed aside, the view made over
+         // a generation no committed run names, and no commit.
+         await sql("CREATE TABLE summary_gx AS SELECT 9 AS answer");
+         await sql(`ALTER TABLE "summary" RENAME TO "${aside}"`);
+         await sql(
+            `CREATE VIEW "summary" AS SELECT * FROM summary_gx; COMMENT ON VIEW "summary" IS '${mark("summary_gx")}'`,
+         );
+
+         await publish("2.0.0", 2, "package");
+         const g1 = await buildInstructed("2.0.0", "summary_g1");
+         expect(g1.status).toBe("MANIFEST_FILE_READY");
+         expect(nameViewsIn(g1.metadata)[0].outcome).toBe("replaced_own_table");
+         expect(await summaryView()).toEqual({
+            answer: 2,
+            comment: mark("summary_g1"),
+         });
+         // The aside copy went after the commit; the crashed generation is
+         // left to whoever wrote it.
+         expect(await tables()).toEqual(["summary_g1", "summary_gx"]);
       },
       { timeout: 60_000 },
    );

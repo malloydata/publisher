@@ -130,6 +130,8 @@ export interface InstructedRun {
    ownNameTableAt?: (
       intent: NameViewIntent,
    ) => Promise<OwnNameTable | undefined>;
+   /** Whether another run of this package is building now. */
+   otherRunActive?: () => Promise<boolean>;
 }
 
 /** One source the colocated gate refuses, as colocatedRefusalOn reports it. */

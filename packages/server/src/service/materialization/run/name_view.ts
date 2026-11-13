@@ -29,12 +29,14 @@ import {
    nameViewProbeSql,
    nameViewReplaceDdl,
    nameViewReplaceTableDdl,
+   renameTableSql,
    nameViewSlotOf,
    NameViewUnsupportedError,
    pathSegments,
    sqlString,
    type NameViewMark,
    type NameViewSlot,
+   type NameViewTableReplaceDdl,
 } from "./name_view_sql";
 import { backupSuffix } from "./materialization_run_support";
 import { destinationSchemaOf, storageTablePath } from "./storage_table_path";
@@ -108,13 +110,21 @@ export interface NameViewIntent {
  * view took the place of a table this package's own run wrote at the name),
  * `replaced_by_table` (this run's table took the place of this package's
  * view; `physicalTableName` is that table, `previousTarget` what the view
- * read), `name_taken`, `unsupported`, `conflict` or `failed`.
+ * read), `name_taken`, `unsupported`, `conflict` or `failed`. A run whose
+ * commit fails records, for each table it had replaced with a view, whether
+ * the table was put back: `table_restored` or `restore_failed`.
  */
 export interface NameViewRecord extends NameViewIntent {
    outcome: string;
    message?: string;
    /** On `repointed`: the table the view read before. */
    previousTarget?: string;
+   /**
+    * On `replaced_own_table`: where the replaced table was kept aside until
+    * the run committed (the old entry's backup name, see
+    * {@link replaceOwnTableWithView}).
+    */
+   asideTableName?: string;
 }
 
 /** The outcomes after which the view reads the record's table. */
@@ -349,6 +359,13 @@ export interface NameViewContext {
    ownTableAt?(
       intent: NameViewIntent,
    ): Promise<OwnNameTable | undefined> | OwnNameTable | undefined;
+   /**
+    * Whether another run of this package is building now, read fresh: an
+    * interrupted replacement is put back only when none is
+    * ({@link recoverInterruptedReplacement}), since what looks interrupted
+    * may be another run's replacement in flight. Absent: never recovered.
+    */
+   otherRunActive?(): Promise<boolean> | boolean;
 }
 
 /**
@@ -465,27 +482,39 @@ export async function dropNameView(
 }
 
 /**
+ * The name a table this package's own run wrote at `viewName` is kept under
+ * while a view replaces it: that entry's own backup name, which its run's
+ * reclaim drops with the table (reclaimer.ts drops `<table><backupSuffix>`),
+ * so a copy a crash or a failed restore leaves there is never stranded.
+ */
+export function asideTableNameFor(
+   viewName: string,
+   table: Pick<OwnNameTable, "sourceEntityId">,
+): string {
+   return `${viewName}${backupSuffix(table.sourceEntityId)}`;
+}
+
+/**
  * Put the view `intent` names in place of the table this package's own run
  * wrote at that name (`table`), reading `intent.physicalTableName`, the
  * generation the run just built. Called only once that generation stands.
  *
- * As one transaction on DuckDB (a file, or a DuckLake or DuckDB storage
- * destination) and Postgres: the old table is gone only when the view
- * reading the new one is in its place, and a failure leaves the table. On
- * every other dialect the table is renamed aside, the view made and its mark
- * read back, and only then is the aside copy dropped; a view that cannot be
- * made puts the table back. Throws when the view is not in place; the run
- * records `failed` with why.
+ * The old table is renamed aside ({@link asideTableNameFor}) and kept there
+ * until the run commits: {@link dropReplacedTablesAside} drops it after the
+ * commit, and {@link restoreNameViews} puts it back when the commit fails.
+ * On DuckDB (a file, or a DuckLake or DuckDB storage destination) and
+ * Postgres the rename and the view are one transaction, so a failure leaves
+ * the table as it was; elsewhere a view that cannot be made, or whose mark
+ * does not read back, puts the table back. Returns the aside name; throws
+ * when the view is not in place (the run records `failed` with why).
  */
 export async function replaceOwnTableWithView(
    site: NameViewSite,
    intent: NameViewIntent,
    table: OwnNameTable,
-): Promise<void> {
+): Promise<string> {
    const mark = { target: intent.physicalTableName, owner: intent.owner };
-   // The old entry's own backup name: its run's reclaim drops a copy a crash
-   // left there (reclaimer.ts drops `<table><backupSuffix>` with the table).
-   const aside = `${intent.viewName}${backupSuffix(table.sourceEntityId)}`;
+   const aside = asideTableNameFor(intent.viewName, table);
    const ddl = nameViewReplaceTableDdl(
       site.segments(intent.viewName),
       site.segments(aside),
@@ -502,9 +531,15 @@ export async function replaceOwnTableWithView(
          after.state === "ours" && after.target === intent.physicalTableName
       );
    };
+   // The table is at the name, so a table under its backup name is a stale
+   // older copy (a crashed swap's, as swapByRenamingAside reads it), and
+   // would make the rename fail.
+   if ((await probeNameView(site, aside)).state === "taken") {
+      await site.run(ddl.dropAside);
+   }
    if (ddl.transactional) {
       try {
-         await site.run(ddl.primary);
+         await site.run(ddl.replace);
       } catch (err) {
          if (ddl.rollback) {
             try {
@@ -515,58 +550,118 @@ export async function replaceOwnTableWithView(
          }
          throw err;
       }
-      if (!(await markReadsBack())) {
-         throw new Error(
-            `the view's mark did not read back from '${intent.viewName}'`,
-         );
-      }
-      return;
-   }
-   // Not transactional: the old table is kept aside until the view stands.
-   await site.run(ddl.moveAside);
-   try {
+   } else {
+      await site.run(ddl.moveAside);
       try {
-         await site.run(ddl.create.primary);
+         try {
+            await site.run(ddl.create.primary);
+         } catch (err) {
+            if (!ddl.create.fallback) throw err;
+            await site.run(ddl.create.fallback);
+         }
       } catch (err) {
-         if (!ddl.create.fallback) throw err;
-         await site.run(ddl.create.fallback);
+         await putTableBack(site, intent, aside, ddl, err);
+         throw err;
       }
-      if (!(await markReadsBack())) {
-         throw new Error(
-            `the view's mark did not read back from '${intent.viewName}'`,
-         );
-      }
-   } catch (err) {
-      try {
+   }
+   if (!(await markReadsBack())) {
+      const err = new Error(
+         `the view's mark did not read back from '${intent.viewName}'`,
+      );
+      await putTableBack(site, intent, aside, ddl, err);
+      throw err;
+   }
+   return aside;
+}
+
+/**
+ * Drop the view at `intent`'s name and rename the aside table back. False,
+ * logged, when that fails: the table is then still under its aside name.
+ */
+async function putTableBack(
+   site: NameViewSite,
+   intent: Pick<NameViewIntent, "viewName">,
+   aside: string,
+   ddl: NameViewTableReplaceDdl,
+   cause: unknown,
+): Promise<boolean> {
+   try {
+      if (ddl.transactional) {
+         try {
+            await site.run(ddl.restore);
+         } catch (err) {
+            if (ddl.rollback) {
+               try {
+                  await site.run(ddl.rollback);
+               } catch {
+                  // Usually no transaction was left open.
+               }
+            }
+            throw err;
+         }
+      } else {
          await site.run(
             nameViewDropSql(site.segments(intent.viewName), site.dialect),
          );
          await site.run(ddl.restore);
-      } catch (restoreErr) {
-         logger.error(
-            "Failed to put back a table a name= view was to replace; it is kept under its aside name",
-            {
-               viewName: intent.viewName,
-               asideName: aside,
-               error: errMessage(err),
-               restoreError: errMessage(restoreErr),
-            },
-         );
       }
-      throw err;
-   }
-   try {
-      await site.run(ddl.dropAside);
-   } catch (err) {
-      // The view stands; the old table's record drops the aside copy with it.
-      logger.warn(
-         "Failed to drop a table a name= view replaced; its run's reclaim drops it",
+   } catch (restoreErr) {
+      logger.error(
+         "Failed to put back a table a name= view was to replace; it is kept under its aside name",
          {
             viewName: intent.viewName,
             asideName: aside,
-            error: errMessage(err),
+            error: errMessage(cause),
+            restoreError: errMessage(restoreErr),
          },
       );
+      return false;
+   }
+   return true;
+}
+
+/** The DDL a recorded replacement is undone or finished with. */
+function replaceDdlFor(
+   site: NameViewSite,
+   record: Pick<NameViewRecord, "viewName" | "physicalTableName" | "owner">,
+   aside: string,
+): NameViewTableReplaceDdl {
+   return nameViewReplaceTableDdl(
+      site.segments(record.viewName),
+      site.segments(aside),
+      site.targetSql(record.physicalTableName),
+      { target: record.physicalTableName, owner: record.owner },
+      site.dialect,
+   );
+}
+
+/**
+ * After the run that recorded `records` committed: drop each table a
+ * `replaced_own_table` view kept aside. Best-effort, never throws: a copy
+ * that stays is dropped with the old entry's table when its run's tables
+ * are dropped (it carries that entry's backup name).
+ */
+export async function dropReplacedTablesAside(
+   records: NameViewRecord[],
+   context: NameViewContext,
+): Promise<void> {
+   for (const record of records) {
+      const aside = record.asideTableName;
+      if (record.outcome !== "replaced_own_table" || !aside) continue;
+      try {
+         await atNameViewSite(record, context, async (site) => {
+            await site.run(replaceDdlFor(site, record, aside).dropAside);
+         });
+      } catch (err) {
+         logger.warn(
+            "Failed to drop a table a name= view replaced; its run's reclaim drops it",
+            {
+               viewName: record.viewName,
+               asideName: aside,
+               error: errMessage(err),
+            },
+         );
+      }
    }
 }
 
@@ -772,6 +867,67 @@ export function viewToTableSwap(
 }
 
 /**
+ * A replacement of this package's own table that never committed (the
+ * server stopped between renaming the table aside and the run's commit)
+ * leaves the name empty, or holding this package's view of a generation no
+ * committed run names, and the table under its aside name, while the
+ * package's records still say the table is at the name. Put it back: drop
+ * that view, rename the table back, provided no other run of the package is
+ * building (whose replacement in flight would look the same). Returns the table, which the build then
+ * replaces as usual; undefined when the name is in no such state.
+ */
+async function recoverInterruptedReplacement(
+   site: NameViewSite,
+   intent: NameViewIntent,
+   raw: NameViewSlot,
+   context: NameViewContext,
+): Promise<OwnNameTable | undefined> {
+   const ourView = raw.state === "ours" && raw.owner === intent.owner;
+   if (raw.state !== "empty" && !ourView) return undefined;
+   const table = await context.ownTableAt?.(intent);
+   if (!table) return undefined;
+   const aside = asideTableNameFor(intent.viewName, table);
+   const asideSlot = await probeNameView(site, aside);
+   if (asideSlot.state !== "taken" || asideSlot.kind === "VIEW") {
+      return undefined;
+   }
+   // Another run's replacement in flight looks the same: leave it.
+   if (!context.otherRunActive || (await context.otherRunActive())) {
+      return undefined;
+   }
+   const record = {
+      viewName: intent.viewName,
+      owner: intent.owner,
+      physicalTableName: raw.state === "ours" ? raw.target : "",
+   };
+   if (ourView) {
+      if (
+         !(await putTableBack(
+            site,
+            record,
+            aside,
+            replaceDdlFor(site, record, aside),
+            new Error("an interrupted replacement"),
+         ))
+      ) {
+         return undefined;
+      }
+   } else {
+      await site.run(renameBack(site, record, aside));
+   }
+   logger.warn(
+      "Put back a table an interrupted name= view replacement left aside",
+      {
+         sourceName: intent.sourceName,
+         viewName: intent.viewName,
+         asideName: aside,
+         materializationId: table.materializationId,
+      },
+   );
+   return table;
+}
+
+/**
  * Before a source builds: what holds its `name=`. Throws
  * {@link NameViewTakenError} when something Publisher did not mark, or
  * another package's view, holds it, so the source fails before any table is
@@ -798,6 +954,18 @@ export async function preflightNameView(
                   dialect: site.dialect,
                };
             }
+         }
+         const recovered = await recoverInterruptedReplacement(
+            site,
+            intent,
+            raw,
+            context,
+         );
+         if (recovered) {
+            return {
+               slot: { state: "own_table", table: recovered },
+               dialect: site.dialect,
+            };
          }
          return { slot: ownedSlot(raw, intent.owner), dialect: site.dialect };
       });
@@ -905,10 +1073,15 @@ async function publishNameView(
             }
             const raw = await probeNameView(site, intent.viewName);
             if (ownTable && raw.state === "taken" && raw.kind !== "VIEW") {
-               await replaceOwnTableWithView(site, intent, ownTable);
+               const asideTableName = await replaceOwnTableWithView(
+                  site,
+                  intent,
+                  ownTable,
+               );
                return {
                   ...intent,
                   outcome: "replaced_own_table",
+                  asideTableName,
                   message:
                      `the view replaced the table '${intent.viewName}' that ` +
                      `materialization ${ownTable.materializationId} of this ` +
@@ -982,14 +1155,24 @@ async function publishNameView(
  * Undo {@link publishNameViews} for a run that did not commit, so no view
  * is left reading a table no committed manifest names (and which the failed
  * run's cleanup may drop): a view the run created is dropped, one it
- * repointed is pointed back. Only a view that is still this package's and
- * still reads the run's table is touched. Never throws.
+ * repointed is pointed back, and one that replaced this package's own table
+ * is dropped and the table, kept aside until the commit, renamed back. Only
+ * a view that is still this package's and still reads the run's table is
+ * touched. Never throws.
+ *
+ * Returns what became of each replaced table, for the failed run to record:
+ * `table_restored`, or `restore_failed` with why.
  */
 export async function restoreNameViews(
    records: NameViewRecord[],
    context: NameViewContext,
-): Promise<void> {
+): Promise<NameViewRecord[]> {
+   const restored: NameViewRecord[] = [];
    for (const record of records) {
+      if (record.outcome === "replaced_own_table") {
+         restored.push(await restoreReplacedTable(record, context));
+         continue;
+      }
       if (record.outcome !== "created" && record.outcome !== "repointed") {
          continue;
       }
@@ -1022,6 +1205,104 @@ export async function restoreNameViews(
          });
       }
    }
+   return restored;
+}
+
+/**
+ * Put back the table a `replaced_own_table` view took the place of, for a
+ * run that did not commit ({@link restoreReplacedTableAt}, at the view's
+ * site). Never throws.
+ */
+async function restoreReplacedTable(
+   record: NameViewRecord,
+   context: NameViewContext,
+): Promise<NameViewRecord> {
+   try {
+      return (
+         (await atNameViewSite(record, context, (site) =>
+            restoreReplacedTableAt(site, record),
+         )) ?? restoreFailed(record, "the view's site could not be reached")
+      );
+   } catch (err) {
+      return restoreFailed(record, errMessage(err));
+   }
+}
+
+function restoreFailed(
+   record: NameViewRecord,
+   message: string,
+): NameViewRecord {
+   logger.warn("Could not put back a table a name= view replaced", {
+      viewName: record.viewName,
+      asideName: record.asideTableName,
+      error: message,
+   });
+   return { ...record, outcome: "restore_failed", message };
+}
+
+/**
+ * At `site`: drop the view a `replaced_own_table` record made (when it is
+ * still this package's and reads the run's table) and rename the aside
+ * table back to the name. When the aside table is gone (its own run's
+ * tables were dropped meanwhile) the view is still dropped: the run that
+ * made it did not commit. A name that holds anything else is left alone.
+ */
+export async function restoreReplacedTableAt(
+   site: NameViewSite,
+   record: NameViewRecord,
+): Promise<NameViewRecord> {
+   const aside = record.asideTableName;
+   if (!aside) return restoreFailed(record, "no aside name was recorded");
+   const slot = ownedSlot(
+      await probeNameView(site, record.viewName),
+      record.owner,
+   );
+   const viewIsTheRuns =
+      slot.state === "ours" && slot.target === record.physicalTableName;
+   if (!viewIsTheRuns && slot.state !== "empty") {
+      return restoreFailed(
+         record,
+         `'${record.viewName}' no longer holds this run's view; ` +
+            `the table stays at '${aside}'`,
+      );
+   }
+   const asideSlot = await probeNameView(site, aside);
+   if (asideSlot.state !== "taken" || asideSlot.kind === "VIEW") {
+      if (viewIsTheRuns) await dropNameView(site, record.viewName);
+      return restoreFailed(record, `the table kept at '${aside}' is gone`);
+   }
+   if (!viewIsTheRuns) {
+      // Nothing at the name: only the rename back is left to do.
+      await site.run(renameBack(site, record, aside));
+   } else if (
+      !(await putTableBack(
+         site,
+         record,
+         aside,
+         replaceDdlFor(site, record, aside),
+         undefined,
+      ))
+   ) {
+      return restoreFailed(record, `the table stays at '${aside}'`);
+   }
+   return {
+      ...record,
+      outcome: "table_restored",
+      message: `the commit failed: '${record.viewName}' is the table again`,
+   };
+}
+
+/** The rename alone that puts an aside table back at `record`'s name. */
+function renameBack(
+   site: NameViewSite,
+   record: Pick<NameViewRecord, "viewName">,
+   aside: string,
+): string {
+   return renameTableSql(
+      site.segments(aside),
+      site.segments(record.viewName),
+      site.dialect,
+   );
 }
 
 /**

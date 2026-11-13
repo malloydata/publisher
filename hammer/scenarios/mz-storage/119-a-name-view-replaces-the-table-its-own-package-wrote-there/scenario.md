@@ -15,15 +15,17 @@ A self-instructed build of a `#(materialize)` source names its table `name=`
 itself. When the package later moves to orchestrated builds, the host names
 each table by generation and Publisher puts a view at `name=` reading it. The
 table already at `name=` was written by this package's own committed run, as
-Publisher's records show, so the view replaces it, in one DuckLake
-transaction, rather than refusing the build. Back on self-instructed builds,
+Publisher's records show, so the view replaces it rather than refusing the
+build: the table is renamed aside and the view made in one DuckLake
+transaction, and the aside copy is dropped once the run commits. Back on self-instructed builds,
 the table replaces the package's own view.
 
 Proves, against a real DuckLake destination:
 
 - the orchestrated build succeeds, and `nvt_daily` is now a view reading the
   generation the host named, so a reader outside Malloy sees the new rows;
-- the destination's table listing no longer holds the old table;
+- the destination's table listing no longer holds the old table, nor its
+  aside copy, once the run has committed;
 - a forced self-instructed build puts a table back at `nvt_daily`.
 
 ## Publisher
@@ -79,7 +81,8 @@ own, so the view replaces it instead of refusing the build.
 
 ## Destination tables
 
-The old table is gone; a view is never listed as a table.
+The old table is gone, and so is the copy kept aside until the commit; a view
+is never listed as a table.
 
 Expect:
 

@@ -1350,6 +1350,11 @@ export async function dropStorageTable(params: {
    destinationConnection: ApiConnection;
    physicalTableName: string;
    environmentPath: string;
+   /**
+    * More tables to drop in the same session once the table is dropped (or
+    * found not to be one): a table's own backup name (reclaimer.ts).
+    */
+   alsoDrop?: string[];
 }): Promise<void> {
    const {
       destinationName,
@@ -1373,13 +1378,21 @@ export async function dropStorageTable(params: {
          destinationConnection,
          environmentPath,
       );
-      await session.runSQL(
-         dropStorageTableSql(
-            destinationName,
-            physicalTableName,
-            destinationSchemaOf(destinationConnection),
-         ),
-      );
+      const schema = destinationSchemaOf(destinationConnection);
+      let dropErr: unknown;
+      try {
+         await session.runSQL(
+            dropStorageTableSql(destinationName, physicalTableName, schema),
+         );
+      } catch (err) {
+         dropErr = err;
+      }
+      for (const table of params.alsoDrop ?? []) {
+         await session.runSQL(
+            dropStorageTableSql(destinationName, table, schema),
+         );
+      }
+      if (dropErr !== undefined) throw dropErr;
    } finally {
       await dispose();
    }

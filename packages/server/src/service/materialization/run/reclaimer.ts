@@ -516,6 +516,12 @@ export class Reclaimer {
                      destinationConnection,
                      physicalTableName,
                      environmentPath: environment.getEnvironmentPath(),
+                     // Where a `name=` view's replacement keeps the table
+                     // until its run commits (name_view.ts), as a crash or
+                     // a failed restore may leave it.
+                     alsoDrop: [
+                        `${physicalTableName}${backupSuffix(entry.sourceEntityId)}`,
+                     ],
                   });
                } catch (err) {
                   if (!(await replacedByOwnView(entry))) throw err;

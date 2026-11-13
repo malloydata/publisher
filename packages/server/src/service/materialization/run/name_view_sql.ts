@@ -414,7 +414,7 @@ export function nameViewReplaceDdl(
 
 /**
  * Dialects whose DDL is transactional and reached in one call, so a table
- * can be dropped and a view made in its place as one change (as the
+ * can be renamed aside and a view made in its place as one change (as the
  * colocated swap does, colocated_build_strategy.ts).
  */
 const TRANSACTIONAL_REPLACE_DIALECTS: ReadonlySet<string> = new Set([
@@ -433,20 +433,32 @@ export function nameViewReplaceIsTransactional(dialect: string): boolean {
  * names its table `name=` itself), which a build that names its table by
  * generation now replaces with the view reading that generation.
  *
- * - `transactional` (DuckDB, Postgres): `primary` drops the table, makes the
- *   view and comments it, as one transaction in one call; `rollback` (when
- *   given) closes a transaction a failed `primary` left open. A reader sees
- *   the old table or the view, never neither, and a failure (a Postgres view
- *   a reader built over the table refuses the drop) leaves the table as it
- *   was.
+ * On every dialect the old table is kept, renamed to `aside`, until the run
+ * that replaced it commits: only then is it dropped (`dropAside`). A run
+ * that does not commit drops the view and renames the table back
+ * (`restore`), so the name reads what the last committed run left there.
+ *
+ * - `transactional` (DuckDB, Postgres): `replace` renames the table aside,
+ *   makes the view and comments it, as one transaction in one call, and
+ *   `restore` drops the view and renames the table back the same way;
+ *   `rollback` (when given) closes a transaction a failed call left open. A
+ *   reader sees the old table or the view, never neither. On Postgres a
+ *   view a reader built over the old table refuses the replacement (it
+ *   would follow the table to its aside name and keep reading it): the
+ *   table stays as it was.
  * - otherwise: `moveAside` renames the table to `aside`; `create` makes the
  *   view as {@link nameViewReplaceDdl} would; `restore` renames the table
- *   back when the view cannot be made; `dropAside` drops the old table only
- *   once the view reads the new generation. Between the rename and the view
- *   a reader finds nothing at the name (a not-found, never a partial table).
+ *   back once the view is dropped. Between the rename and the view a reader
+ *   finds nothing at the name (a not-found, never a partial table).
  */
 export type NameViewTableReplaceDdl =
-   | { transactional: true; primary: string; rollback?: string }
+   | {
+        transactional: true;
+        replace: string;
+        restore: string;
+        rollback?: string;
+        dropAside: string;
+     }
    | {
         transactional: false;
         moveAside: string;
@@ -456,9 +468,44 @@ export type NameViewTableReplaceDdl =
      };
 
 /**
+ * `ALTER TABLE … RENAME` (`sp_rename` on SQL Server) of the table `from`
+ * names to the last segment of `to`, within its own schema.
+ */
+export function renameTableSql(
+   from: string[],
+   to: string[],
+   dialect: string,
+): string {
+   if (dialect === "sqlserver") {
+      // sp_rename takes the current name as a (bracket-quoted) path and the
+      // new one bare: brackets there would become part of the name.
+      return `EXEC sp_rename ${sqlString(quotedPath(from, dialect), dialect)}, ${sqlString(to[to.length - 1], dialect)}`;
+   }
+   return `ALTER TABLE ${quotedPath(from, dialect)} RENAME TO ${quoteRenameTarget(to.join("."), dialect)}`;
+}
+
+/**
+ * Postgres: fail when any view or rule reads the table `segments` names. A
+ * renamed table keeps its dependents, so a reader's view would follow it to
+ * its aside name, keep reading the old rows, and refuse its drop.
+ */
+function postgresNoDependentsGuard(segments: string[]): string {
+   const table = sqlString(quotedPath(segments, "postgres"), "postgres");
+   return (
+      `DO $guard$ BEGIN IF EXISTS (SELECT 1 FROM pg_catalog.pg_depend d ` +
+      `JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid ` +
+      `WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass ` +
+      `AND d.refclassid = 'pg_catalog.pg_class'::regclass ` +
+      `AND d.refobjid = ${table}::regclass AND r.ev_class <> d.refobjid) ` +
+      `THEN RAISE EXCEPTION 'a view or rule depends on table %', ${table}; ` +
+      `END IF; END $guard$`
+   );
+}
+
+/**
  * The DDL that replaces the table `segments` names with a view reading
- * `targetSql`, carrying `mark`. `asideSegments` names where a dialect
- * without transactional DDL keeps the old table until the view stands.
+ * `targetSql`, carrying `mark`, keeping the old table at `asideSegments`
+ * until the replacing run commits.
  */
 export function nameViewReplaceTableDdl(
    segments: string[],
@@ -470,34 +517,44 @@ export function nameViewReplaceTableDdl(
    if (!nameViewDialectSupported(dialect)) throw unsupportedDialect(dialect);
    if (dialect === "sqlserver") assertSqlServerShape(segments);
    const view = quotedPath(segments, dialect);
+   const aside = quotedPath(asideSegments, dialect);
+   const moveAside = renameTableSql(segments, asideSegments, dialect);
+   const moveBack = renameTableSql(asideSegments, segments, dialect);
+   const dropAside = `DROP TABLE IF EXISTS ${aside}`;
    if (nameViewReplaceIsTransactional(dialect)) {
-      const body = [
-         `DROP TABLE ${view}`,
+      const replace = [
+         ...(dialect === "postgres"
+            ? [postgresNoDependentsGuard(segments)]
+            : []),
+         moveAside,
          `CREATE VIEW ${view} AS SELECT * FROM ${targetSql}`,
          `COMMENT ON VIEW ${view} IS ${sqlString(nameViewComment(mark), dialect)}`,
       ];
+      const restore = [`DROP VIEW IF EXISTS ${view}`, moveBack];
       // DuckDB autocommits each statement of a string: bracketed. Postgres
-      // runs a multi-statement string as one implicit transaction.
-      return dialect === "duckdb"
-         ? {
-              transactional: true,
-              primary: ["BEGIN TRANSACTION", ...body, "COMMIT"]
-                 .map((s) => `${s};`)
-                 .join("\n"),
-              rollback: "ROLLBACK",
-           }
-         : {
-              transactional: true,
-              primary: body.map((s) => `${s};`).join("\n"),
-           };
+      // runs a multi-statement string as one implicit transaction (an
+      // explicit BEGIN would leave an aborted one open on failure).
+      const oneCall = (statements: string[]) =>
+         (dialect === "duckdb"
+            ? ["BEGIN TRANSACTION", ...statements, "COMMIT"]
+            : statements
+         )
+            .map((s) => `${s};`)
+            .join("\n");
+      return {
+         transactional: true,
+         replace: oneCall(replace),
+         restore: oneCall(restore),
+         ...(dialect === "duckdb" ? { rollback: "ROLLBACK" } : {}),
+         dropAside,
+      };
    }
-   const aside = quotedPath(asideSegments, dialect);
    return {
       transactional: false,
-      moveAside: `ALTER TABLE ${view} RENAME TO ${quoteRenameTarget(asideSegments.join("."), dialect)}`,
+      moveAside,
       create: nameViewReplaceDdl(segments, targetSql, mark, dialect),
-      restore: `ALTER TABLE ${aside} RENAME TO ${quoteRenameTarget(segments.join("."), dialect)}`,
-      dropAside: `DROP TABLE IF EXISTS ${aside}`,
+      restore: moveBack,
+      dropAside,
    };
 }
 

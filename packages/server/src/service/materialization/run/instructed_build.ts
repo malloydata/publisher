@@ -256,6 +256,7 @@ export class InstructedBuild {
          replacedNameViews: [],
       };
       run.ownNameTableAt = this.ownNameTableLookup(run);
+      run.otherRunActive = this.otherRunActiveLookup(run);
       assertNoTableCollisions(builds, sources, connectionDigests, index);
 
       let settled: ReturnType<typeof settleRefusals> = {
@@ -375,6 +376,34 @@ export class InstructedBuild {
          if (!packageRuns || !environmentName || !packageName) return undefined;
          runs ??= packageRuns(environmentName, packageName);
          return ownNameTableIn(await runs, intent);
+      };
+   }
+
+   /**
+    * Whether a run of this package other than this one is building, read
+    * fresh from the package's records: this run is itself active, so more
+    * than one active run means another. Unknown counts as yes.
+    */
+   private otherRunActiveLookup(run: InstructedRun): () => Promise<boolean> {
+      const packageRuns = this.seams.packageRuns;
+      const environmentName =
+         run.buildMetadata?.context.environment ??
+         run.environment.getEnvironmentName?.();
+      const packageName =
+         run.buildMetadata?.context.package ?? run.owner?.packageName;
+      return async () => {
+         if (!packageRuns || !environmentName || !packageName) return true;
+         try {
+            const active = (
+               await packageRuns(environmentName, packageName)
+            ).filter(
+               (m) =>
+                  m.status === "PENDING" || m.status === "MANIFEST_ROWS_READY",
+            );
+            return active.length > 1;
+         } catch {
+            return true;
+         }
       };
    }
 
@@ -741,11 +770,15 @@ function nameViewOwnerOf(run: InstructedRun): string {
  * one this build holds, when given), or the destination the run builds into.
  */
 export function nameViewContext(
-   run: Pick<InstructedRun, "compiled" | "environment" | "ownNameTableAt">,
+   run: Pick<
+      InstructedRun,
+      "compiled" | "environment" | "ownNameTableAt" | "otherRunActive"
+   >,
    connection?: MalloyConnection,
 ): NameViewContext {
    return {
       ...(run.ownNameTableAt ? { ownTableAt: run.ownNameTableAt } : {}),
+      ...(run.otherRunActive ? { otherRunActive: run.otherRunActive } : {}),
       connectionFor: (name) =>
          (connection && connection.name === name ? connection : undefined) ??
          run.compiled.connections.get(name),
