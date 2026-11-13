@@ -219,6 +219,7 @@ import {
 import type { MaterializePlan } from "./materialization/plan/build_file_generator";
 import { RollupVariantServe } from "./materialization/serve/rollup_variants";
 import {
+   resultShapeOf,
    ServedCopyServe,
    type ServedCopyProblem,
 } from "./materialization/serve/served_copy_serve";
@@ -2664,6 +2665,20 @@ export class Model {
    private newServedCopy(): ServedCopyServe {
       return new ServedCopyServe({
          perColumnTypes: () => true,
+         // The author's compile of a query, reading no table: what a query
+         // over a table with a column left out is checked against.
+         authorResultShape: async (queryString, givens) => {
+            const materializer = this.modelMaterializer;
+            if (!materializer) return undefined;
+            return resultShapeOf(
+               await materializer
+                  .loadRestrictedQuery(queryString)
+                  .getPreparedResult({
+                     buildManifest: EMPTY_BUILD_MANIFEST,
+                     givens: givens as never,
+                  }),
+            );
+         },
          ensureSharedQueryModel: (materializer) =>
             this.ensureSharedQueryModel(materializer),
          modelPath: () => this.modelPath,

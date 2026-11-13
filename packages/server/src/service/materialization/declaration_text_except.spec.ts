@@ -40,4 +40,24 @@ describe("dropExceptItems", () => {
       const text = "extend { accept: a, b; measure: n is count() }";
       expect(dropExceptItems(text, () => true)).toEqual({ text, dropped: [] });
    });
+
+   it("never deletes an except: inside a join's own extend, which hides the joined source's field", () => {
+      // The re-rooted table stores none of the joined source's columns, so
+      // every such name is "unstored"; deleting it would expose c.name.
+      const text =
+         "extend {\n  join_one: c is customers extend { except: name } on c.id = customer_id\n  except: region\n}";
+      expect(dropExceptItems(text, absent(["name", "region"]))).toEqual({
+         text: "extend {\n  join_one: c is customers extend { except: name } on c.id = customer_id\n  \n}",
+         dropped: ["region"],
+      });
+   });
+
+   it("deletes an unstored item of a top-level include's except:", () => {
+      expect(
+         dropExceptItems(
+            "include { public: *; except: region }",
+            absent(["region"]),
+         ),
+      ).toEqual({ text: "include { public: *;  }", dropped: ["region"] });
+   });
 });
