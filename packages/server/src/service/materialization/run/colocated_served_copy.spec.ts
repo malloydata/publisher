@@ -381,6 +381,12 @@ for (const tier of TIERS)
                (await pkg()).getServeVerdicts().map((v) => v.verdict),
             ).toEqual(built.map(() => "serves"));
             for (const source of built) await expectServedEqualsLive(source);
+            // A query that reads no stored table, but names a result column
+            // as the table is named, is not answered from that table.
+            const { served } = await both(
+               "run: ev -> { group_by: region; aggregate: ev_all is count() }",
+            );
+            expect(served.path?.servedBy.kind ?? "live").toBe("live");
          },
          { timeout: 60_000 },
       );

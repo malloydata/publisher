@@ -75,6 +75,7 @@ import {
 import {
    authorModelLiftContext,
    boundTablePath,
+   sqlReadsTable,
    buildVirtualMap,
    narrowSchemaToPublic,
    optsOutOfPersist,
@@ -575,7 +576,7 @@ export class ServedCopyServe {
          }),
       );
       const tablesRead = compiled.rerooted.filter((b) =>
-         sql.includes(boundTablePath(b)),
+         sqlReadsTable(sql, boundTablePath(b)),
       );
       if (tablesRead.length === 0) {
          // The query reads no stored table: the served copy would only add

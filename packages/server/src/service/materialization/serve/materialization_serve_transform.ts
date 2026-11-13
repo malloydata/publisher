@@ -1661,6 +1661,20 @@ export function boundTablePath(b: ServeBinding): string {
 }
 
 /**
+ * Whether `sql` reads the table at `tablePath` (as {@link boundTablePath}
+ * spells it): the path right after a `FROM` or `JOIN`, and not followed by
+ * more of a name. A bare substring test is not enough: a colocated table's
+ * path is often one quoted name (`"orders"`), which a result column of the
+ * same name (`AS "orders"`) also spells.
+ */
+export function sqlReadsTable(sql: string, tablePath: string): boolean {
+   const path = tablePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   return new RegExp(`\\b(?:FROM|JOIN)\\s+${path}(?![\\w$".\x60])`, "i").test(
+      sql,
+   );
+}
+
+/**
  * Assemble the per-call `virtualMap` (`destinationName -> handle -> table
  * path`). Core pastes each path verbatim, so it must be quoted canonical
  * DuckDB SQL. {@link quoteManifestTablePath} is the same quoting authority the
