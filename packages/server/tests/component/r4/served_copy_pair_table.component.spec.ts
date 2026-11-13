@@ -486,7 +486,6 @@ source: ${rerootDeclaration(flightsDeclaration, {
                {
                   join: "segments",
                   parentRowField: "__parent_row__pair",
-                  annotatedChildFields: new Set(),
                },
             );
             // Raw DuckDB returns a DOUBLE sum as text; Malloy's run, a number.
@@ -546,6 +545,20 @@ source: flights is duckdb.table('flights') include {
   #(classification) "none"
   measure: flight_count is count()
 }
+
+// The same joined source through an inlined join_one (each flight id names
+// at most one segment), for the other leg of the same check.
+#(carries) ["none"]
+#(materialize) storage="lake" inline=["segments"]
+source: flights_one is duckdb.table('flights') include {
+  #(classification) "none"
+  public: id, carrier, distance
+} extend {
+  primary_key: id
+  join_one: segments with id
+  #(classification) "none"
+  measure: flight_count is count()
+}
 `;
 
 describe("R4: a pair table keeps the joined source's classifications", () => {
@@ -584,7 +597,45 @@ describe("R4: a pair table keeps the joined source's classifications", () => {
       });
       expect(out.servedVia).toBeUndefined();
       expect(rowDifference(out.live, out.served)).toBeUndefined();
+      fixture.setBindings(fixture.bindings);
+      const { path } = await fixture.runAsIs(
+         "run: flights -> { group_by: segments.miles; aggregate: n is segments.count() }",
+      );
+      expect(path?.considered?.map((c) => c.reason)).toContain("MISSING_FIELD");
    });
+
+   // One check declines an annotated joined field returned as a column,
+   // whichever record of stored columns answers the join: the pair table's
+   // (an inlined join_many, one row per pair) and an inlined join_one's.
+   const legs = [
+      [
+         "an inlined join_many, one row per pair",
+         "run: flights -> { group_by: id, segments.seg_id, segments.miles }",
+      ],
+      [
+         "an inlined join_one",
+         "run: flights_one -> { group_by: id, segments.seg_id, segments.miles }",
+      ],
+   ] as const;
+   for (const [name, malloy] of legs) {
+      it(`answers an annotated joined field as a column live (MISSING_FIELD): ${name}`, async () => {
+         const fixture = await buildScenario({
+            files: { "m.malloy": classified },
+            seedSql,
+            materialize: true,
+         });
+         expect(await fixture.servedCopyProblems()).toEqual([]);
+         const run = await fixture.run({ name, malloy, expectLive: true });
+         expect(run.servedVia).toBeUndefined();
+         expect(run.live.length).toBeGreaterThan(0);
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         fixture.setBindings(fixture.bindings);
+         const { path } = await fixture.runAsIs(malloy);
+         const reasons = path?.considered?.map((c) => c.reason);
+         expect(reasons).toContain("MISSING_FIELD");
+         expect(reasons).not.toContain("COUNT_SEMANTICS");
+      });
+   }
 });
 
 // A row-level gate is grafted on the served copy after the query is checked,

@@ -294,6 +294,12 @@ interface Compiled {
       sourceID: string;
       tablePath: string;
       pair: FlatPair;
+      /**
+       * The joined source's fields that carry annotations, which the record
+       * cannot: a query that returns one as a column is declined
+       * (`joined_annotations`), as for an inlined join_one.
+       */
+      annotatedChildFields: ReadonlySet<string>;
    }[];
    /**
     * Whether the row-level gates on a pair source's entry point read its
@@ -538,17 +544,29 @@ export class ServedCopyServe {
       // be computed per row of the source instead of per joined row. Malloy
       // marks each such aggregate where it needs a symmetric one; live's
       // join answers those.
+      // Read once, when a check below needs it.
+      let preparedRead: ReturnType<typeof readPreparedQuery> | undefined;
+      const prepared = () => (preparedRead ??= readPreparedQuery(runnable));
+      const inlined = new Set<string>();
+      // Each join the copy answers from a record of stored columns (an
+      // inlined join_one, or the inlined join_many of a pair table read
+      // flat), with its fields that carry annotations.
       const annotated = new Map<string, ReadonlySet<string>>();
       for (const b of tablesRead) {
          for (const [join, fields] of compiled.inlinedJoins?.get(b.tablePath) ??
             []) {
+            inlined.add(join);
             annotated.set(join, fields);
          }
       }
-      if (annotated.size > 0) {
-         const inlined = new Set(annotated.keys());
-         const prepared = await readPreparedQuery(runnable);
-         const grain = joinGrainAggregatePaths(prepared);
+      const pairsRead = (compiled.pairs ?? []).filter((p) =>
+         tablesRead.some((b) => b.tablePath === p.tablePath),
+      );
+      for (const p of pairsRead) {
+         annotated.set(p.pair.join, p.annotatedChildFields);
+      }
+      if (inlined.size > 0) {
+         const grain = joinGrainAggregatePaths(await prepared());
          if (
             grain.unreadable ||
             grain.paths.some((p) => p.some((name) => inlined.has(name))) ||
@@ -560,44 +578,39 @@ export class ServedCopyServe {
                JOIN_GRAIN_DETAIL,
             );
          }
-         // A record literal's field carries no annotation onto a result, so
-         // a query that returns an annotated joined field as a column (its
-         // `#(doc)`, `#(classification)`, render tags) is answered live, and
-         // every other query keeps the table.
-         if ([...annotated.values()].some((f) => f.size > 0)) {
-            const struct = resolveStructRefSource<{ fields?: unknown }>(
-               prepared.structRef,
-               compiled.modelDef as never,
+      }
+      // A record literal's field carries no annotation onto a result, so a
+      // query that returns an annotated joined field as a column (its
+      // `#(doc)`, `#(classification)`, render tags) is answered live, and
+      // every other query keeps the table: one check for both legs, before
+      // the pair table's own.
+      if ([...annotated.values()].some((f) => f.size > 0)) {
+         const { structRef, pipeline } = await prepared();
+         const struct = resolveStructRefSource<{ fields?: unknown }>(
+            structRef,
+            compiled.modelDef as never,
+         );
+         const out = annotatedJoinedOutput(pipeline, struct?.fields, annotated);
+         if (out.unreadable || out.output) {
+            decline(
+               out.output
+                  ? `the query returns ${out.output.path.join(".")}, whose annotations the served copy's record of stored columns cannot carry`
+                  : "the query's output columns cannot be read",
+               "joined_annotations",
+               JOINED_ANNOTATIONS_DETAIL,
             );
-            const out = annotatedJoinedOutput(
-               prepared.pipeline,
-               struct?.fields,
-               annotated,
-            );
-            if (out.unreadable || out.output) {
-               decline(
-                  out.output
-                     ? `the query returns ${out.output.path.join(".")}, whose annotations the served copy's record of stored columns cannot carry`
-                     : "the query's output columns cannot be read",
-                  "joined_annotations",
-                  JOINED_ANNOTATIONS_DETAIL,
-               );
-            }
          }
       }
       // A pair table (an inlined join_many) is read flat: exact only for the
       // aggregates pair_flat_query.ts proves, and only as the queried
       // source's own table, never through a join to it (its rows would fan
       // out the joining source).
-      const pairsRead = (compiled.pairs ?? []).filter((p) =>
-         tablesRead.some((b) => b.tablePath === p.tablePath),
-      );
       if (pairsRead.length > 0) {
-         const prepared = await readPreparedQuery(runnable);
+         const { structRef, query } = await prepared();
          const struct = resolveStructRefSource<{
             fields?: unknown;
             filterList?: unknown;
-         }>(prepared.structRef, compiled.modelDef as never);
+         }>(structRef, compiled.modelDef as never);
          const chain = struct
             ? SourceMap.of(compiled.modelDef).chainOf(struct as never)
             : [];
@@ -610,7 +623,7 @@ export class ServedCopyServe {
                        "the query reads a pair table other than as the source it stores (through a join to it, whose rows would fan out the joining source, or from a source built on it)",
                  }
                : flatPairQueryVerdict(
-                    prepared.query,
+                    query,
                     struct,
                     own.pair,
                     await pairGatesReadChild(compiled, struct, own.pair.join),
@@ -646,10 +659,7 @@ export class ServedCopyServe {
          compiled.computedTables?.has(b.tablePath),
       );
       const windowed = tablesRead.some((b) => this.readsRollingWindow(b));
-      if (
-         (computed || windowed) &&
-         setsTimezone((await readPreparedQuery(runnable)).query)
-      ) {
+      if ((computed || windowed) && setsTimezone((await prepared()).query)) {
          decline(
             computed
                ? "the query sets a timezone over a stored computed dimension"
@@ -1292,14 +1302,12 @@ export class ServedCopyServe {
                           pair: {
                              join: c.reroot.pair.join,
                              parentRowField: c.reroot.pair.parentRowField,
-                             annotatedChildFields: new Set(
-                                c.reroot.pair.childColumns
-                                   .filter(
-                                      (col) => (col.notes ?? []).length > 0,
-                                   )
-                                   .map((col) => col.name),
-                             ),
                           },
+                          annotatedChildFields: new Set(
+                             c.reroot.pair.childColumns
+                                .filter((col) => (col.notes ?? []).length > 0)
+                                .map((col) => col.name),
+                          ),
                        },
                     ]
                   : [],
