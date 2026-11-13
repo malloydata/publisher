@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Materialization v2: the implementation plan
 
-**Status: plan of record, as of 2026-11-12.** How Publisher implements materialization v2: `#(materialize)`, `#(preaggregate)` and routed `#@ persist` views, built and served in Publisher alone, with no Malloy change. It is sequenced with the Publisher v1 plan ([#1563](https://github.com/malloydata/publisher/pull/1563), `docs/publisher-v1.md`): the path report is part of `/api/v1` (decision A52), generations build on v1's Track B1 records, and the deprecations and outcome tiers follow v1's package rules. Requirement numbers (P, A, R, D, C, T) and scenario numbers (S) refer to the materialization v2 requirements and programming model; issue numbers without a repository are in Credible's tracker.
+**Status: plan of record, as of 2026-11-12.** How Publisher implements materialization v2: `#(materialize)`, `#(preaggregate)` and routed `#@ persist` views, built and served in Publisher alone, with no Malloy change. It is sequenced with the Publisher v1 plan ([#1563](https://github.com/malloydata/publisher/pull/1563), `docs/publisher-v1.md`): the path report's `/api/v1` form (decision A52) and the agent tools' `/api/v1` routes are scheduled in the v1 plan, and the deprecations and outcome tiers follow v1's package rules. The consistency work that needs v1's Track B1 records (whole-run generations, upstream pinning, as-of reads and recording, and the control plane's promote and cleanup) moved to the Publisher v1 plan on 2026-11-13, so this plan completes without waiting on v1 (Phase 5 design, section 2). Requirement numbers (P, A, R, D, C, T) and scenario numbers (S) refer to the materialization v2 requirements and programming model; issue numbers without a repository are in Credible's tracker.
 
 ## Summary
 
@@ -123,7 +123,7 @@ The split in the hand-off holds with two corrections. Core needs to expose nothi
 
 Why generations need a Publisher half: an OSS server running the opt-in scheduler builds tables too, and it must never serve a rollup beside a newer base either. A run already commits one manifest per package (`ManifestCommitter` in `materialization/run/manifest_committer.ts`, called from `materialization_service.ts`), so C1 extends that rather than starting fresh.
 
-**Generations build on the v1 storage plan.** The Publisher v1 plan's Track B1 ([#1563](https://github.com/malloydata/publisher/pull/1563)) owns the records: `physical_tables` and `manifest_entries`, generational table names (`base__g<N>`), the claim and commit transactions, and the reclaimer. Phase 5 builds C1–C4 on those records instead of a manifest of its own. Under generational names a physical table never equals `name=`, so `name=` always yields the view, and the v1 plan drops its `alias=true` in favour of it (decided 2026-11-10). Until then the `name=` view exists only for generational or versioned runs: a self-instructed, unversioned build names its table `name=` itself, with no view, and a v1 `#@ persist name=` gets none (decided 2026-11-12, #1648).
+**Generations moved to the v1 storage plan.** The generation records (`physical_tables` and `manifest_entries`, generational table names, the claim and commit transactions, the reclaimer) are the [Publisher v1 plan](https://github.com/malloydata/publisher/pull/1563)'s Track B1, and the consistency work built on them is scheduled there (moved 2026-11-13; Phase 5 design, section 2). Until generational names land, the `name=` view exists only for generational or versioned runs: a self-instructed, unversioned build names its table `name=` itself, with no view, and a v1 `#@ persist name=` gets none (decided 2026-11-12, #1648).
 
 **Control-plane contract, to specify before phase 3.** The table above gives the control plane generations, cleanup and the workload log. Four more things cross the boundary and each needs an owner on both sides.
 
@@ -266,8 +266,8 @@ Seven phases in two lanes: telemetry work runs beside the core. The core (phases
 | 2. v1 defects and telemetry base | #7096, #6646, #6293 (interim; real fix in phase 4), #6642, #6145, #6986 and #6847 (failure classification), #7078; workload log on the access record and an opt-in local store (T1), which also carries each query's path report and a `storage=` build's row count; build_plan.ts moved off the deprecated getSQL() and makeBuildId() | S17 |
 | 3. `#(materialize)` | Source map; re-root rewriter (cross-file, query-shaped segments, inline joins); build-file generator; served model on `virtual` with load-time compile; reference joins; inline join_one with the uniqueness check; P9 probes; rolling windows with the incremental delete; extension tables; `name=` view; contracts at read (R3); phase 0's three open checks (pinned-clock rolling-window reads, the text reader for a query starting from a view, and the served copy against the #7098 fixture); the shared chain, probe service and generated-file host (the host, the probe service and P9 moved to pull request 6 and the chain to phase 5, 2026-11-12); P12, the storage destination in the content address (#7087), shipped with P2's re-address so each `storage=` table moves once (question 13); v1 packages served through the same rewriter, gated on the #7098 fixture; joins across origin connections between sources stored in one destination (#6982): builds planned from the author's file with those joins removed (the file does not compile live), the build view as the compile of record for discovery and gates, and a coded refusal from build state, leaving the join out of the served copy while one side is unbuilt (#1643); the v1-to-#(materialize) migration recipe, which ships with the minor that ships the v2 annotations; publish warnings for a connection that can't hold a table or a missing destination (P13); the orchestrator refusing the warehouse recompute (#6756) | S1–S7, S2c, S2d, S3, S3a, S6a, S12, S25–S25c |
 | 4. Rollups, view routing, inline join_many | `#(preaggregate)` A1–A7 on the source map and measure grammar; the real fix for a rollup over a storage base (#6293); rollup variants in the user's file; retire `preaggregation_coverage.ts` and the IR classifier; `#@ persist` view leg (P14); join-to-rollup leg (A7); pair-table serving (P5) | S2a, S8–S11, S9a, S9b, S15, S16, S16a |
-| 5. Consistency and simplification | Consistency's own design pass first (it can run beside phase 3), then: run manifest published whole, per-query manifest pinning, upstream-pinned fingerprints, per-warehouse as-of reads, as-of in D1 and T1; the control plane's promote and cleanup, all on the v1 plan's B1 records (#1563). Then a simplification pass over the core: remove what the router and rewriter replaced, merge duplicate paths, and leave it easy to understand and maintain. The core is vetted (R4, the hammer suite, the #7098 fixture) before phase 6 starts. The pass also gives Publisher one reader of the Malloy IR: the governance, gate, classification, extraction and retrieval code that walks model and source definitions directly moves onto `governance/ir` and the source map (materialization moves in phase 3). Duplicated interpretation of the same IR has already produced disagreements, and the IR is not a stable public API, so one reader limits the blast radius of a Malloy upgrade (Appendix: direct readers of the Malloy IR). Design and audit: Phase 5 design, below | S22–S24 |
-| 6. Cost estimation and the agent loop | T2 table stats; T4 (row counts first, then column widths and dry runs), T5 adapters, T6 compare, T7 tools; what-if (T3) over existing v1 and proposed v2 annotations; the `estimating` skill reference and tuning guide | S18–S21 |
+| 5. Consistency and simplification | Per-query manifest pinning (C1b), single-node, with step 2g. The rest of consistency (run manifest published whole, upstream-pinned derived tables, per-warehouse as-of reads, as-of in D1 and T1, and the control plane's promote and cleanup) needs the v1 plan's B1 records and moved to the Publisher v1 plan (#1563; 2026-11-13), so phase 5 does not wait for it. Then a simplification pass over the core: remove what the router and rewriter replaced, merge duplicate paths, and leave it easy to understand and maintain. The core is vetted (R4, the hammer suite, the #7098 fixture) before phase 6 starts. The pass also gives Publisher one reader of the Malloy IR: the governance, gate, classification, extraction and retrieval code that walks model and source definitions directly moves onto `governance/ir` and the source map (materialization moves in phase 3). Duplicated interpretation of the same IR has already produced disagreements, and the IR is not a stable public API, so one reader limits the blast radius of a Malloy upgrade (Appendix: direct readers of the Malloy IR). Design and audit: Phase 5 design, below | None (S22–S24 moved to the Publisher v1 plan with the consistency work, 2026-11-13) |
+| 6. Cost estimation and the agent loop | T2 table stats; T4 (row counts first, then column widths and dry runs), T5 adapters, T6 compare, T7's MCP tools (their `/api/v1` REST routes moved to the Publisher v1 plan, 2026-11-13); what-if (T3) over existing v1 and proposed v2 annotations; the `estimating` skill reference and tuning guide | S18–S21 |
 
 ```mermaid
 flowchart TB
@@ -276,7 +276,7 @@ flowchart TB
     P1["1. Router, path report, annotations<br/>R1, R2, D1 to D5"]
     P3["3. #(materialize)<br/>P1 to P13, R3"]
     P4["4. Rollups, views, inline join_many<br/>A1 to A7, P5, P14"]
-    P5["5. Consistency and simplification<br/>C1 to C4; design pass beside phase 3"]
+    P5["5. Consistency and simplification<br/>C1b; no wait on v1"]
   end
   subgraph Measurement and cost
     P2["2. v1 defects and telemetry base<br/>A3 defects, T1"]
@@ -297,10 +297,10 @@ The core lane is the critical path, phases 0, 1, 3, 4 and then 5; phase 2 fits b
 
 1. **Build routing once.** The hand-off puts the path report on v1 first (item 1) and new routing later (item 6), which builds routing twice. Phase 1 builds the variant router on v1's annotations, and D1 comes from it; phase 4 adds legs to the same router.
 2. **What-if waits for phase 6.** Over proposed v2 annotations it needs the build-source generator (phase 3) for a proposed `#(materialize)`'s columns, and it waits for phase 6 anyway, over existing v1 annotations and proposed v2 ones alike: it is the estimate half of the agent loop, and until then the dry-run preview (`POST …/packages?dryRun=true`) gives an author the build plan and a serve verdict for every materialized source and named view. Row-count estimates need no generator, but they wait for phase 6: their consumer is the same loop, and until the T5 adapters land the only method is an exact count that scans everything the build would read. Table stats (T2) wait for phase 6 too: their consumers are `compare` and the agent tools. Phase 2 keeps their inputs, the path report on the workload log and a `storage=` build's row count, so the history is there when phase 6 reads it.
-3. **Wrong-data issues move early.** #6644 (a same-named source reading the wrong table), #5967 (reuse reporting fresh) and the @env. fix each ship now as a standalone PR, outside the phases. #5967 stays a control-plane fix, and C2 still depends on it.
+3. **Wrong-data issues move early.** #6644 (a same-named source reading the wrong table), #5967 (reuse reporting fresh) and the @env. fix each ship now as a standalone PR, outside the phases. #5967 stays a control-plane fix, and C2 (now in the Publisher v1 plan) still depends on it.
 4. **D3 goes with the in-memory copy** in phase 3, since the flag is carried by the files phase 3 generates; the `#@ preaggregate` warning ships in phase 4, once its replacement works (Phase 1 design, 2026-11-11). `#@ -persist` gets no warning: it stays supported (question 5, decided 2026-11-12).
 
-**Dependencies.** Phases 3 and 4 need phase 1's router and annotation reader. Phase 4 needs phase 3's source map and rewriter. Phase 5's design pass can run beside phase 3; its build waits for phase 4, since generations must cover rollups. It also waits for the v1 plan's B1, which supplies the generation records. The control plane's promote instruction (for `name=` and generations) is a Credible change. Phase 6 needs phase 2's log, phase 3's generator, and a core that phase 5 has vetted and simplified: estimates and the agent loop optimize the core, so they wait until it is settled.
+**Dependencies.** Phases 3 and 4 need phase 1's router and annotation reader. Phase 4 needs phase 3's source map and rewriter. Phase 5 waits for phase 4 and the cutover (6g), since its simplification pass starts once the serve shape is gone; C1b rides with step 2g. It does not wait for the v1 plan: the consistency work that needs B1's generation records, and the control plane's promote instruction for generations (a Credible change), moved to the Publisher v1 plan (2026-11-13). Phase 6 needs phase 2's log, phase 3's generator, and a core that phase 5 has vetted and simplified: estimates and the agent loop optimize the core, so they wait until it is settled. It does not wait for the v1 plan: T7's tools ship on MCP, and their `/api/v1` REST routes moved to the Publisher v1 plan (2026-11-13).
 
 **Phase 3 in six pull requests (decided 2026-11-11).** The clean-ups the phases 0–2 review recommends ride in the pull request that needs them rather than landing separately.
 
@@ -594,52 +594,25 @@ Flaky tests seen: the pair-table nest whose legs tie (fixed in #1697 by ordering
 
 **Telemetry, today.** `materialization_metrics.ts` (705 lines) defines 29 instruments, and `model_serve_shape.ts` one more (`publisher_storage_bindings_withheld_total`). Builds are well covered (runs, duration, per-source outcome, incremental steps, plan compute, bind, drops, schedules, chained builds, failures). Routing has `publisher_query_variant_routing_total{variant, outcome, reason}`, with the router's three internal reasons rather than the public `SkipReason`, and `publisher_storage_serve_routing_total`, plus two serve-shape counters; all three serve-shape instruments retire with 6g. Spans: `withSpan` around `runBuild`, `instructed_build` and `publisher.query.execute`. Logs: `run/` makes 111 logger calls (75 warn, 21 info, 8 debug, 7 error), `plan/` 16, `serve/` 7, and the router, `probe_compiler.ts` and `governance/ir/` none. Missing: routing latency; served-copy compile time and decline-cache behavior; the age of what is served; why a source is declined at bind on the served copy (only `colocated_bind_dropped`); and the outcome of a routed gate re-proof.
 
-#### 2. Consistency design (C1 to C4)
+#### 2. Consistency: one manifest per query (C1b)
 
-**The problem on main.** A run commits one manifest per package (`ManifestCommitter`), but serving folds history per source (`newestServingEntries`), schedules fire per source, and `Model.setServeBindings` swaps a model's bindings in place. So two tables a query reads can come from different runs. A rollup builds from raw rows independently of its base (known limitation 3), so a rollup and its base can be different snapshots. All of this builds on the v1 plan's Track B1 records (#1563: `materialization_runs`, `manifest_entries`, `serving_bindings`, `physical_tables` with `base__g<N>`, claim and commit transactions, the reclaimer), not on a manifest of Publisher's own.
+**The problem on main.** A run commits one manifest per package (`ManifestCommitter`), but serving folds history per source (`newestServingEntries`), schedules fire per source, and `Model.setServeBindings` swaps a model's bindings in place. So two tables a query reads can come from different runs. A rollup builds from raw rows independently of its base (known limitation 3), so a rollup and its base can be different snapshots. C1b, below, pins one manifest per query; making the manifest a whole generation is the Publisher v1 plan's (next paragraph).
 
 **Terms.** A *generation* is one committed run of a slot: its `manifest_entries` and the `serving_bindings` its commit writes. *Current* is the generation a loaded version serves. On OSS that is the last commit; on Credible it is the one the control plane promoted.
 
-**C1a. Publish the run manifest whole.** A partial run (`sourceNames`, one schedule's sources, a retry) still has to produce a whole generation.
+**C1b. Pin one manifest per query.** Each `Model` holds an immutable `BindingSnapshot { generationId, bindings, virtualMap, asOf }`, replaced by one reference swap when bindings change, never edited in place. `runQueryResults` reads the snapshot once, before `routeCandidates`. Every leg (view, rollup, served copy) and the path report take that one snapshot, so a rebind mid-query cannot split it. After 6g the served copy and the rollup leg read tables only through the per-query `virtualMap` (the live compile takes no build manifest), so pinning needs no recompile. Freshness (`run/freshness.ts`) becomes a check on the snapshot (skip reason `STALE`) rather than a per-entry drop that thins a generation. C1b needs no B1: it ships single-node, with step 2g.
 
-- *Option A (decided 2026-11-13): carry forward.* The commit writes a complete binding set: rebuilt sources point at new entries, and untouched sources get entries that reference the same `physical_tables` rows as before, with no copy. A partial run also expands to the *dependents* of what it rebuilds (rollups, extension tables, pair tables, persisted views over a rebuilt source), read off the plan's chain edges. Those are rebuilt in the same run, or the run fails before commit. It keeps B1's commit transaction as written and adds one join.
-- *Option B: per-source generations*, with consistency only inside each dependency closure. That means fewer rebuilds, but a query across two unrelated stored sources still mixes runs, and the router would have to check closures per query.
+**Moved to the Publisher v1 plan (2026-11-13).** The rest of consistency needs v1's Track B1 records (`manifest_entries`, `serving_bindings`, `physical_tables` with generational names, the claim and commit transactions, the reclaimer), which wait on v1's step 3. So it is scheduled with the [Publisher v1 plan](https://github.com/malloydata/publisher/pull/1563) (`docs/publisher-v1.md`, Track B1, ["Requested by materialization v2"](https://github.com/malloydata/publisher/blob/207bae4ddadbcc03c1c29b7c5a4904d5c2bf7671/docs/publisher-v1.md#requested-by-materialization-v2-consistency-on-the-commit-protocol)), with its decided options and the C3 probe's results intact, and phase 5 completes without it:
 
-**C1b. Pin one manifest per query.** Each `Model` holds an immutable `BindingSnapshot { generationId, bindings, virtualMap, asOf }`, replaced by one reference swap when bindings change, never edited in place. `runQueryResults` reads the snapshot once, before `routeCandidates`. Every leg (view, rollup, served copy) and the path report take that one snapshot, so a rebind mid-query cannot split it. After 6g the served copy and the rollup leg read tables only through the per-query `virtualMap` (the live compile takes no build manifest), so pinning needs no recompile. Freshness (`run/freshness.ts`) becomes a check on the snapshot (skip reason `STALE`) rather than a per-entry drop that thins a generation.
-
-**C1c. Keep superseded tables while a query may read them.**
-
-- *Option A (decided 2026-11-13): a time-based grace.* B1's grace period, set to twice the longest query timeout with a one-hour floor, and configurable (decided 2026-11-13), plus an in-process count of pinned snapshots. The OSS reclaimer skips a table any live snapshot references.
-- *Option B: a cross-worker reference count* that workers report to the control plane. It is exact, but it adds a heartbeat protocol. Hold it until a measured miss under option A.
-
-**C2. Pin derived tables to their upstream.**
-
-- *Option A: fold the upstream's build id into the content address* (the requirement's wording). Every upstream rebuild then re-addresses every derived table: new table names, reuse misses, and incremental ledger and anchor churn (the #6145 class).
-- *Option B (decided 2026-11-13): keep the address definition-only, and pin through the entry.* Add `upstream_entry_ids` to `manifest_entries`. Fold the upstream build ids into the reuse fingerprint (skip-if-unchanged) but not into the table's address. Bind refuses a derived entry whose upstream entry is not in the same generation, so it is rebuilt by the next run's dependent expansion (C1a) and answers live until then. Reference manifests carry the storage upstream's destination (#6734). It needs the control plane's #5967 fix first, as the plan already says.
-
-**C2 lifts known limitation 3 (rollups over the stored base).** Once generations are whole and pinned, a `#(preaggregate)` rollup's build source reads its base's staging table in the same run: the rollup becomes a chained build that Malloy's planner orders, just as an extension table builds over its parent's build source (#1661). It applies when the rollup and its base share a tier, both colocated or one `storage=` destination. Across tiers the rollup keeps building from raw rows, pinned with C3's as-of. A rollup then equals its base's snapshot and scans the base table, not the warehouse. The interim `preaggregate-over-stored-base` refusal (#6293) and the raw-chain rollup text in `rollup_compile.ts` retire. Proof: an R4 suite that builds base and rollup at two warehouse states and asserts the rollup equals the rollup computed from the stored base at every read, never the warehouse's newer rows.
-
-**C3. Read each warehouse as of one instant.** A run picks one instant `T` (the run's claim time). Each build reads its root tables as of `T` where the warehouse supports it, so every table in a generation reflects one moment per warehouse.
-
-| Warehouse | As-of form | Method recorded |
-| --- | --- | --- |
-| BigQuery | `FOR SYSTEM_TIME AS OF TIMESTAMP '…'` | `time_travel` |
-| Snowflake | `AT(TIMESTAMP => '…'::timestamp_tz)` | `time_travel` |
-| Databricks | `TIMESTAMP AS OF '…'` | `time_travel` |
-| Trino (Iceberg), DuckLake | `FOR TIMESTAMP AS OF …` / `AT (TIMESTAMP => …)` | `time_travel` |
-| Postgres, MySQL, SQL Server, DuckDB, MotherDuck | none | `build_window` (start and end of the build) |
-
-- *Option A: rewrite table references in the generated build SQL.* It works for any root, but it is a SQL rewriter, which the plan's text-only rule rules out.
-- *Option B (decided 2026-11-13): re-root in Malloy text.* In the build copy (the #1644 mechanism), re-root each `conn.table('t')` root on `conn.sql("SELECT * FROM t <as-of>")`, dialect-gated and behind its own switch, off by default (opt-in, decided 2026-11-13). A `conn.sql()` root records `build_window`. **Probe answered (2026-11-13): the as-of clause enters the content address.** Built through the build copy on DuckLake, for a `#(materialize)` source and a `#@ persist` one, every as-of literal gave a distinct `sourceEntityId`: `AT (VERSION => 1)`, `AT (VERSION => 2)` and two `AT (TIMESTAMP => …)` instants ten milliseconds apart each addressed a different table. In every case the compiler's `BuildID` equalled `sourceEntityId`, and both equalled `makeDigest(digest, address SQL)`, with the as-of clause in that SQL. The re-root moves the address on its own, too: an as-of-free `conn.sql("SELECT * FROM t")` root addressed differently from `conn.table('t')`. So C3 computes the address from the author's untouched `conn.table` text, never from the re-rooted build copy (`plan/addressing.ts` already computes the address apart from the compiler), or every run re-addresses every table. The compiler then files the built table under the re-rooted copy's `BuildID`, which differs from that address, so the manifest handed to the compiler carries the entry under both keys, as `manifestForCompiler` already does for a partitioned source. A retention window shorter than the run (BigQuery's 7 days, a Snowflake retention setting) fails the build with a deterministic failure class.
-
-**C4. Record as-of on every table.** Write `manifest_entries.data_as_of` (already in B1's schema) with a new `as_of_method` and the window bounds. The path report (A52, `QueryPath`) gains `generationId` and, per table served, `asOf: { method, at | from, to }`. The access record (T1) gains `asOfSpread`, the largest gap between the as-of values of the tables one answer read. All fields are additive. `method` is a new wire enum, so it ships in the same pull request as the spec sync (the generated Java clients have no unknown-enum default).
-
-**Control-plane promote and cleanup, on B1.**
-
-- *Promote.* For an orchestrated version, commit stops making a generation current. The control plane makes it current with `PATCH …/versions/{v}` `{ generationId }`, beside B1's `manifestLocation` import, in one transaction that replaces that version's `serving_bindings`. `name=` views repoint after promote (B1 step 4). On OSS auto-runs, commit promotes, as it does today.
-- *Cleanup.* A `physical_tables` row becomes `reclaimable` only when no `serving_bindings` row in any version references it, no pinned snapshot does (C1c), and the grace has passed. The reclaimer owns `name=` views beside the tables.
-- *Credible-side changes,* owned by the Credible control plane (scheduled by the plan's owner; decided 2026-11-13): the #5967 fix (reuse reporting fresh), which C2 needs; #5706 (a shared refresh advances every binder), which becomes "binders advance only at promote"; orchestrated runs that emit whole generations, or rely on carry-forward; the promote call and its retry semantics; a spec sync for `generationId`, `asOf` and C4's `method` enum; #5705 (lineage after a `name=` change) and #7153 (a build verdict per version) read generations; #5704, #6308 and #5683 are to be re-read against this design when its tracker issues are written.
-- *Order.* C1b (snapshot pinning) needs no B1 and ships first, single-node. C1a, C1c and C2 land with B1. C3 needs the address computed from the author's text and the second manifest key (the probe's answer, under C3). C4 lands with C1a.
+- C1a: the run manifest published whole, by carry-forward and dependent expansion.
+- C1c: superseded tables kept for a time-based grace (decision 8).
+- C2: derived tables pinned to their upstream through the manifest entry (decision 6). It lifts known limitation 3, rollups over the stored base.
+- C3: each warehouse read as of one instant, re-rooted in Malloy text and opt-in (decision 7), with the probe's answer that the as-of clause enters the content address.
+- C4: as-of recorded on every table, in the path report and on the access record, with the `method` wire enum and its spec sync.
+- The control plane's promote (`PATCH …/versions/{v}` `{ generationId }`) and cleanup on B1, and the Credible-side changes (decision 13): #5967, #5706's rework, the promote call and its retries, the spec sync, and re-reading #5705, #7153, #5704, #6308 and #5683.
+- The generation telemetry (section 5): `publisher_materialization_generation_commit_total`, `publisher_query_as_of_spread_seconds`, the `materialization.generation.committed` and `materialization.generation.promoted` events, `asOfMethod` on `materialization.run.started`, the `retention_exceeded` failure class and the `upstream_other_generation` bind reason.
+- Their scenarios, S22 to S24 (none is covered by C1b alone: S22 needs C1a's whole-manifest publish).
+- Their tests (section 4): a partial run's carry-forward and dependent expansion, bind refusing a derived entry pinned to another generation, rollup-over-stored-base snapshot equality in R4, and an exceeded retention window.
 
 #### 3. Prioritized refactor plan (steps 2 to 5)
 
@@ -680,8 +653,7 @@ The rules for every pass: no external behavior change; one commit per pass, and 
 **Add.**
 
 - Unit tests for the leg decisions that only R4 reaches today. Step 2g extracts the pure parts of `rollup_variants.ts` (coverage, grain, join leg choice), `view_variants.ts` (exact-call recognition) and `declaring_file_variant.ts` (which file a variant redeclares in).
-- Failure modes: a re-root that fails for one source (the retry without it); a bind with a missing or mistyped table; a snapshot swapped mid-query (C1b); a commit lost (`name_view_lifecycle.spec.ts` already stubs this); a retention window exceeded (C3); a gate set that differs on the routed compile (known limitation 31).
-- Consistency: a partial run's carry-forward and dependent expansion; bind refusing a derived entry pinned to another generation; rollup-over-stored-base snapshot equality in R4.
+- Failure modes: a re-root that fails for one source (the retry without it); a bind with a missing or mistyped table; a snapshot swapped mid-query (C1b); a commit lost (`name_view_lifecycle.spec.ts` already stubs this); a gate set that differs on the routed compile (known limitation 31).
 
 **Remove or merge.**
 
@@ -711,25 +683,25 @@ The rules for every pass: no external behavior change; one commit per pass, and 
 
 #### 5. Telemetry plan
 
-**Questions it must answer.** Is materialization paying (hit rate by leg)? Why do queries go live (by reason)? Are builds healthy (outcome, failure class, duration, bytes read)? How old is what is served, and how wide is the as-of spread? What does routing cost (latency, served-copy compiles, decline-cache hits)? Did a routed answer fail its gate re-proof?
+**Questions it must answer.** Is materialization paying (hit rate by leg)? Why do queries go live (by reason)? Are builds healthy (outcome, failure class, duration, bytes read)? How old is what is served? What does routing cost (latency, served-copy compiles, decline-cache hits)? Did a routed answer fail its gate re-proof?
 
 **Boundaries and signals.** Labels are closed enums only; no source names, packages, table paths or query text in labels (cardinality, and tenant names on a shared worker).
 
 | Boundary | Metric (type) | Log (level) |
 | --- | --- | --- |
 | Build start, finish, fail (`runBuild`, per source) | `publisher_materialization_build_total{kind, tier, outcome, failure_class}` (counter), from today's `sources_total` and `storage_build_failures_total`; `…_build_duration_ms{kind, tier}` (histogram); `…_build_read_bytes{tier}` (histogram, from `build_read_cost.ts`) | `materialization.build.finished` info; `.failed` warn for a deterministic warehouse failure, error for a Publisher fault; fields: `runId`, `generationId`, `sourceId` (hashed), `kind`, `tier`, `durationMs`, `rows`, `bytesRead`, `failureClass`, `code` |
-| Commit and promote (`ManifestCommitter`) | `…_generation_commit_total{outcome}` (counter); `…_generation_age_seconds` (observable gauge, oldest current generation per process) | `materialization.generation.committed` info: `generationId`, entry counts, `asOfMethod` |
+| Commit (`ManifestCommitter`) | `…_generation_age_seconds` (observable gauge, oldest current generation per process) | None; the commit counter and the commit and promote events moved with C1a to the Publisher v1 plan |
 | Bind (served copy at load, colocated and `storage=` bindings) | `publisher_served_copy_bind_total{outcome, reason}` (counter, reasons from the refusal codes), replacing `colocated_bind_dropped`; `publisher_served_copy_compile_duration_ms{phase}` (histogram) | One info summary per model load; warn once per declined source with its code |
 | Route decision (`query_router.route`) | `publisher_query_route_total{leg, outcome, reason}` with the public `SkipReason` (counter, renamed from `query_variant_routing_total`); `publisher_query_route_duration_ms{leg}` (histogram); `publisher_served_copy_decline_cache_total{outcome}` (counter) | None per query: the path report and the access record carry the decision; debug only |
 | Fallback to live after a chosen variant failed (`run_failed`) | the route counter with `reason="RUN_FAILED"` | warn, once per query-text hash per process |
 | Govern deny on a routed answer | `publisher_routed_gate_reproof_total{outcome, reason}` (counter; `gate_set_differs`, `no_gate_found`) beside today's `authorize_*` counters | None: the access record has it |
-| Freshness | the route counter with `reason="STALE"`; `…_as_of_spread_seconds` (histogram) | None |
+| Freshness | the route counter with `reason="STALE"` | None |
 
 A span per build (exists), plus `publisher.query.route` around routing, nested in `publisher.query.execute`.
 
 **Never logged or labelled:** row values, given values (given names are fine), gate text or expressions, query text (a hash only), generated SQL at info or above (it carries bound given literals), connection credentials or warehouse paths outside the run's own entry.
 
-**Not duplicated.** The access record and the path report are the per-query record, and metrics only count what they say. The B1 run and entry rows are the per-build record, and build logs are events that point at them by `runId`. When step 4 lands, the serve-shape instruments are gone (6g), and `manifest_bind_total` and `colocated_bind_dropped_total` fold into `served_copy_bind_total`.
+**Not duplicated.** The access record and the path report are the per-query record, and metrics only count what they say. The run records are the per-build record, and build logs are events that point at them by `runId`. When step 4 lands, the serve-shape instruments are gone (6g), and `manifest_bind_total` and `colocated_bind_dropped_total` fold into `served_copy_bind_total`.
 
 **Step 4 specification (written 2026-11-13).** This is the contract step 4 implements, one commit; where it is more precise than the table above, it governs. Every instrument is registered through `telemetry.ts` (`lazyCounter`, `lazyHistogram`, an observable gauge for the one gauge), every label is a TypeScript string union with the values below and nothing else, and a spec enumerates each union so that adding a value is a reviewed change. No instrument carries a `package`, environment, source, model, table, destination, connection or query label (decision 12; these name tenants on a shared worker). A label is never filled from a runtime string (an error message, a name); a code path without a value of its own maps to the nearest listed one, never to free text.
 
@@ -742,37 +714,34 @@ A span per build (exists), plus `publisher.query.route` around routing, nested i
 | `tier` | `colocated`, `storage` | 2 |
 | `method` | `full`, `delta` | 2 |
 | `build_outcome` (label name `outcome`) | `built`, `reused`, `refused`, `failed`, `cancelled` | 5 |
-| `failure_class` | `none` (not failed), `deterministic`, `transient`, `unclassified` (today's `BuildRetryable` false, true and undefined), `billed_read_lost` (today's `storage_build_failures_total{reason="billed_read_not_captured"}`), `retention_exceeded` (C3: the as-of instant is older than the warehouse keeps) | 6 |
+| `failure_class` | `none` (not failed), `deterministic`, `transient`, `unclassified` (today's `BuildRetryable` false, true and undefined), `billed_read_lost` (today's `storage_build_failures_total{reason="billed_read_not_captured"}`) | 5 |
 | `leg` | `view`, `rollup`, `served` (the served copy), `storage` (the serve shape and composite, until 6g deletes them), `live` | 5 |
 | `route_outcome` (label name `outcome`) | `used`, `skipped`, `fallback` (a chosen leg whose run failed, answered live) | 3 |
 | `reason` on the route counter | `NONE` when used, else the public `SkipReason`: `NOT_BUILT`, `WARNED`, `MISSING_FIELD`, `CONTRACT`, `GRAIN_TOO_COARSE`, `TIME_ZONE`, `CROSS_CONNECTION`, `COUNT_SEMANTICS`, `STALE`, `RUN_FAILED` | 11 |
 | `bind_scope` (label name `scope`) | `manifest` (one manifest bind: REST, auto-load or rebind), `source` (one source entry deciding whether it serves) | 2 |
 | `bind_outcome` (label name `outcome`) | scope `manifest`: `success`, `failure`, `timeout`; scope `source`: `bound`, `declined` | 5 |
-| `reason` on the bind counter | `none`; `build_plan_unavailable`, `refused` (today's `colocated_bind_dropped` reasons); the served copy's `ServedCopyProblem` reasons (`compile_failed`, `cross_connection_unbuilt`, `column_types`, `no_declaration`, `range_not_found`, `definition_not_parsed`, `pair_join_not_found`, `pair_not_compiled`, `fields_not_carried`, `read_terms_not_kept`, `cross_connection_join`, `inline_join_kept`, `reroot_not_compiled`, `classification_not_kept`); `missing_table`, `upstream_other_generation` (C2) | 19 |
+| `reason` on the bind counter | `none`; `build_plan_unavailable`, `refused` (today's `colocated_bind_dropped` reasons); the served copy's `ServedCopyProblem` reasons (`compile_failed`, `cross_connection_unbuilt`, `column_types`, `no_declaration`, `range_not_found`, `definition_not_parsed`, `pair_join_not_found`, `pair_not_compiled`, `fields_not_carried`, `read_terms_not_kept`, `cross_connection_join`, `inline_join_kept`, `reroot_not_compiled`, `classification_not_kept`); `missing_table` | 18 |
 | `phase` | `reroot`, `compile`, `guard`, `retry`, `total` | 5 |
 | `cache_outcome` (label name `outcome`) | `hit`, `miss`, `evicted` | 3 |
 | `reproof_outcome` (label name `outcome`) | `proved`, `denied`, `error` | 3 |
 | `reproof_reason` (label name `reason`) | `none`, `gate_set_differs`, `no_gate_found`, `reproof_error` | 4 |
-| `commit_outcome` (label name `outcome`) | `committed`, `failed`, `superseded` | 3 |
 | `shadow_outcome` (label name `outcome`) | `match`, `mismatch`, `error` | 3 |
 
 *Metrics, new or changed.* Durations are histograms in milliseconds with explicit bucket boundaries, so series do not depend on the exporter's defaults; ages are in seconds; bytes in `By`.
 
 | Name | Type | Unit | Labels | Series bound | Emitted at |
 | --- | --- | --- | --- | --- | --- |
-| `publisher_materialization_build_total` | counter | 1 | `kind`, `tier`, `outcome`, `failure_class` | 5 × 2 × (4 + 5) = 90 (`failure_class` is `none` unless `outcome` is `failed`, and never `none` when it is) | one per source build, at its finish or failure (`runBuild`, per source) |
+| `publisher_materialization_build_total` | counter | 1 | `kind`, `tier`, `outcome`, `failure_class` | 5 × 2 × (4 + 4) = 80 (`failure_class` is `none` unless `outcome` is `failed`, and never `none` when it is) | one per source build, at its finish or failure (`runBuild`, per source) |
 | `publisher_materialization_build_duration_ms` | histogram, buckets 100, 500, 1k, 5k, 15k, 60k, 300k, 900k, 3.6M | ms | `kind`, `tier`, `method` | 20 | same point, for builds that ran (`built` or `failed`) |
 | `publisher_materialization_build_read_bytes` | histogram, buckets 1e6 to 1e13 by decades | By | `tier` | 2 | same point, when `build_read_cost.ts` read the warehouse's own count (BigQuery, Snowflake); absent otherwise, never zero |
-| `publisher_materialization_generation_commit_total` | counter | 1 | `outcome` (`commit_outcome`) | 3 | `ManifestCommitter`, once per commit attempt (lands with C1a) |
 | `publisher_materialization_generation_age_seconds` | observable gauge | s | none | 1 | read on collection: now minus the commit time of the oldest generation any loaded version serves in this process |
-| `publisher_served_copy_bind_total` | counter | 1 | `scope`, `outcome`, `reason` | 3 (manifest, `reason="none"`) + 1 bound + 18 declined = 22 | `manifest`: at the end of each manifest bind; `source`: once per source entry per model load or rebind |
+| `publisher_served_copy_bind_total` | counter | 1 | `scope`, `outcome`, `reason` | 3 (manifest, `reason="none"`) + 1 bound + 17 declined = 21 | `manifest`: at the end of each manifest bind; `source`: once per source entry per model load or rebind |
 | `publisher_served_copy_compile_duration_ms` | histogram, buckets 10, 25, 50, 100, 250, 500, 1k, 2.5k, 5k, 10k, 30k | ms | `phase` | 5 | `ServedCopyServe.compile`, once per phase per model load, and `total` once |
 | `publisher_query_route_total` | counter | 1 | `leg`, `outcome`, `reason` | used 5 + skipped 4 × 9 + fallback 4 = 45 (`live` is only ever `used`; `RUN_FAILED` only with `fallback`) | once per candidate the router considered, when the query is answered; a candidate that does not apply (today's `not_applicable`) is not counted |
 | `publisher_query_route_duration_ms` | histogram, buckets 1, 2, 5, 10, 25, 50, 100, 250, 500, 1k, 2.5k | ms | `leg` (the leg that answered) | 5 | `query_router.route`, from the start of routing to the chosen runnable, before execution |
 | `publisher_served_copy_decline_cache_total` | counter | 1 | `outcome` (`cache_outcome`) | 3 | each decline-cache lookup and eviction |
 | `publisher_routed_gate_reproof_total` | counter | 1 | `leg`, `outcome` (`reproof_outcome`), `reason` (`reproof_reason`) | 4 × (1 + 2 + 1) = 16 (`reason` is `none` only with `proved`; `reproof_error` only with `error`) | `govern()` on a routed variant, once per routed query; a `denied` or `error` answer goes live, and the route counter does not count it as `fallback`, which means a failed run |
-| `publisher_query_served_data_age_seconds` | histogram, buckets 60, 300, 900, 3.6k, 14.4k, 43.2k, 86.4k, 259.2k, 604.8k, 2.592M | s | `leg` (not `live`) | 4 | at the answer: now minus the as-of (C4) or, before C4, the build time, of the oldest table the answer read |
-| `publisher_query_as_of_spread_seconds` | histogram, same buckets | s | none | 1 | at the answer, when it read two or more tables: the access record's `asOfSpread` (lands with C4) |
+| `publisher_query_served_data_age_seconds` | histogram, buckets 60, 300, 900, 3.6k, 14.4k, 43.2k, 86.4k, 259.2k, 604.8k, 2.592M | s | `leg` (not `live`) | 4 | at the answer: now minus the build time of the oldest table the answer read (its as-of once C4, in the Publisher v1 plan, records one) |
 | `publisher_query_route_shadow_total` | counter | 1 | `leg`, `outcome` (`shadow_outcome`) | 12 | only if the cutover adds a shadow comparison (served answer computed beside live and compared); otherwise not registered |
 
 *Renamed, folded or dropped (the four routing and bind instruments; decision 4 frees them).*
@@ -788,16 +757,14 @@ Also folded: `publisher_materialization_sources_total{outcome, mode}` and `publi
 
 *Unchanged.* `publisher_materialization_runs_total`, `…_run_duration_ms`, `…_incremental_step_total` (its `reason` is the closed `IncrementalStepReasonCode`, 14 values), `…_build_plan_compute_duration_ms`, `…_build_plan_compute_failed_total`, `…_auto_load_total`, `…_connection_digest_skipped_total`, `…_manifest_bind_degraded_total`, `…_duplicate_target_skipped_total`, `…_shared_address_instructions_total`, `…_table_collision_total`, `…_drop_tables_total`, `…_scheduled_fires_total`, `…_eligibility_refused_total`, `…_stale_upstream_entry_total`, `publisher_storage_build_attribution_skipped_total`, `publisher_storage_column_type_mismatch_total`, `publisher_storage_chained_build_total`, `publisher_annotation_findings_total`, and the `publisher_authorize_*` counters (defined elsewhere, and not among the 30 counted next). Of today's 30 instruments (29 in `materialization_metrics.ts`, one in `model_serve_shape.ts`), 20 stay (one losing a label), 7 fold into the new names, and 3 retire with 6g, beside the new ones above.
 
-*Structured log events.* Each is one logger call with the event name as its message and the fields as its object, so a log pipeline can key on the name. `runId`, `generationId` and `sourceEntityId` (already a digest) are the join keys to B1's rows; `queryHash` is the hash the access record carries.
+*Structured log events.* Each is one logger call with the event name as its message and the fields as its object, so a log pipeline can key on the name. `runId`, `generationId` and `sourceEntityId` (already a digest) are the join keys to the run records; `queryHash` is the hash the access record carries.
 
 | Event | Level | Fields | Emitted at |
 | --- | --- | --- | --- |
-| `materialization.run.started` | info | `runId`, `mode`, `trigger` (`schedule`, `api`, `auto`, `orchestrator`), `sourceCount`, `asOfMethod` (C3) | `runBuild`, after the claim |
+| `materialization.run.started` | info | `runId`, `mode`, `trigger` (`schedule`, `api`, `auto`, `orchestrator`), `sourceCount` | `runBuild`, after the claim |
 | `materialization.run.finished` | info (warn if `partial`, error if `failed`) | `runId`, `generationId`, `outcome`, `durationMs`, `built`, `reused`, `refused`, `failed` | `runBuild`, after commit or failure |
 | `materialization.build.finished` | info | `runId`, `sourceEntityId`, `kind`, `tier`, `method`, `durationMs`, `rows`, `bytesRead` (when known), `physicalTable` (the Publisher-made name only) | per source, on success |
-| `materialization.build.failed` | warn for `deterministic`, `transient`, `billed_read_lost` and `retention_exceeded`; error for `unclassified` | the finished fields, plus `failureClass`, `code` (the refusal or error code), `destination` (the configured name) | per source, on failure |
-| `materialization.generation.committed` | info | `runId`, `generationId`, `entries`, `carriedForward` (C1a), `asOfMethod` | `ManifestCommitter` |
-| `materialization.generation.promoted` | info | `generationId`, `version` | the promote call (orchestrated) or commit (auto) |
+| `materialization.build.failed` | warn for `deterministic`, `transient` and `billed_read_lost`; error for `unclassified` | the finished fields, plus `failureClass`, `code` (the refusal or error code), `destination` (the configured name) | per source, on failure |
 | `served_copy.bind.summary` | info | `modelHash`, `bound`, `declined`, `compileMs` | once per model load |
 | `served_copy.bind.declined` | warn | `modelHash`, `sourceEntityId`, `reason` (the bind vocabulary) | once per declined source per load |
 | `query.route.fallback` | warn | `queryHash`, `leg`, `reason` (`RUN_FAILED`), `errorClass` | once per `queryHash` per process (an LRU of hashes) |
@@ -829,7 +796,7 @@ Measured over the 98 files in scope: 16,981 comment lines of 62,943 (27%).
 3. The cutover, 6a to 6g. Step 2 starts only after 6g has deleted the serve shape, the composite and the live manifest, so it never simplifies code about to be deleted.
 4. C1b (snapshot pinning), with step 2g, since both reshape `runQueryResults`.
 5. Steps 2a to 2h, then 3, 4 and 5.
-6. C1a, C1c, C2 and C4 when B1 lands; then C3, whose probe has answered (under C3). Rollups over the stored base (known limitation 3) come with C2.
+6. _Moved to the Publisher v1 plan (2026-11-13):_ C1a, C1c, C2, C3 and C4, with rollups over the stored base (known limitation 3). Nothing in phases 5 or 6 waits for them.
 7. Phase 6 starts after the core is vetted on the simplified code (R4, the conformance fixture, the hammer suite).
 
 **Malloy-core primitives that would delete code** (owners named in Known limitations):
@@ -847,19 +814,19 @@ Measured over the 98 files in scope: 16,981 comment lines of 62,943 (27%).
 
 **Decided 2026-11-13** (the questions this design raised):
 
-1. Simplify first: steps 2 to 5 run after 6g and before the consistency build, which waits for B1 anyway; C1b (snapshot pinning) rides with step 2g.
+1. Simplify first: steps 2 to 5 run after 6g; C1b (snapshot pinning) rides with step 2g. The consistency build that waited for B1 moved to the Publisher v1 plan.
 2. Step 2 ships as 2a to 2h, one commit each.
 3. `isNameViewComment` and `isServedCopyAlias` are deleted. Credible's current main references neither, nor any Publisher table mark (the `malloy-publisher:` comments, `_o<id>`, `__p` hashes).
 4. The routing and bind metrics may be renamed or folded freely: Credible's monitoring reads only `controlplane_materialization_*` and other control-plane metrics.
 5. `malloy-code-server` is gone, so `query_text.ts` shares the lexer core (step 2d).
-6. C2 pins the upstream through the manifest entry (`upstream_entry_ids`); addresses stay definition-only.
-7. C3's as-of reads are opt-in per deployment; `build_window` is the recorded guarantee where a warehouse has no time travel.
-8. C1c keeps superseded tables for a time-based grace: twice the longest query timeout, with a one-hour floor, configurable. A cross-worker reference count waits for a measured miss.
+6. _Moved to the Publisher v1 plan:_ C2's upstream pinning.
+7. _Moved to the Publisher v1 plan:_ C3's opt-in as-of reads.
+8. _Moved to the Publisher v1 plan:_ C1c's time-based grace.
 9. `PUBLISHER_MATERIALIZE` is removed one release after its default turns on.
 10. Step 2e needs behavior-identical characterization tests plus a short security review note in its pull request, not question 14's review.
 11. The trimmed hammer suite runs nightly in CI, and the duplicated scenario numbers (70, 76, 77, 119) are renumbered.
 12. No `package` label on any metric.
-13. The Credible-side work (#5967, #5706's rework, the promote call and its retries, the spec sync for `generationId`, `asOf` and C4's `method` enum) is owned by the Credible control plane, scheduled by the plan's owner.
+13. _Moved to the Publisher v1 plan:_ the Credible-side consistency work and who owns it.
 
 ## Telemetry and cost estimation
 
@@ -881,7 +848,7 @@ T1–T7 reuse what Publisher already writes per query and per build; the new wor
 
 Fan-out estimates cost one extra count per inlined join_many path: the pair count. The adapters' history sources need grants many deployments won't have (`JOBS` across a project, `ACCOUNT_USAGE`, `pg_stat_statements`); without them Publisher falls back to the elapsed time and bytes it measures itself and says so in the method.
 
-**Agent tools (T7).** `workload`, `table_stats`, `explain`, `what_if` and `compare` go on Publisher's MCP endpoint and REST, in OSS. Their REST routes are /api/v1 routes in the materialization cluster (A12); v0 gets none. Credible serves the same tools over its own store.
+**Agent tools (T7).** `workload`, `table_stats`, `explain`, `what_if` and `compare` go on Publisher's MCP endpoint, in OSS, and need nothing from v1. Their REST routes, `/api/v1` routes in the materialization cluster (A12), moved to the Publisher v1 plan (2026-11-13, ["Requested by materialization v2" under its step 4](https://github.com/malloydata/publisher/blob/fe85de9794e6e9d51d92c834d0708b36bdeeed88/docs/publisher-v1.md#requested-by-materialization-v2-the-path-report-and-the-agent-tools-routes)); v0 gets none. Credible serves the same tools over its own store.
 
 **Skills.** The `malloy-materialization` skill gets an `estimating` reference and an updated tuning guide:
 
@@ -894,7 +861,7 @@ Open from Nov 1: an optional package budget in `publisher.json` (maximum fan-out
 
 ## Risks
 
-The two that most shape the schedule are the text rewriter's coverage across imports and the cost of inlined join_manys; generations are the most expensive but have their own design pass.
+The two that most shape the schedule are the text rewriter's coverage across imports and the cost of inlined join_manys; generations, the most expensive, moved to the Publisher v1 plan.
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
@@ -904,7 +871,7 @@ The two that most shape the schedule are the text rewriter's coverage across imp
 | Rolling-window bound picked wrongly (P2) | Short answers until the next build | The widest-set rule (Rolling windows): a lower bound builds with the build's own `now`, an upper bound is left out of the build and re-applied at read (option A); only single comparisons and one `and` of them accepted; harness reads at three points in the serving window with a pinned clock. Untested: a non-DuckDB origin whose session isn't UTC |
 | Caller-dependent values stored by mistake | Wrong answers | Public probes: givens, current-time SQL scan, two-time-zone compile. Anything flagged stays live. |
 | Storage tier changes values: types, collation, raw SQL | Wrong answers on `storage=` only | Type comparison after build (#6642), Postgres collation check, raw-SQL compile error, as decided Nov 1 |
-| Generations against today's per-source refresh (C1–C3) | A large change to build and serve; the hosted half needs control-plane work | Own design pass; the single-node manifest pinning ships first; promote and cleanup follow in Credible. Warehouses without as-of reads fall back to the build-window bound and say so. |
+| Two tables one answer reads can come from different runs until generations land (C1a to C3 moved to the Publisher v1 plan) | A rollup and its base, or two stored sources, can be different snapshots (known limitation 3) | C1b pins one manifest per query in phase 5; generations, as-of reads and the control plane's promote and cleanup are scheduled with the Publisher v1 plan's B1 |
 | Estimates mislead the agent (T4) | A table kept that doesn't pay, or one reverted that does | Method and error band on every estimate; `compare` records each miss for calibration; the agent keeps a change only when the measured sign matches |
 | Warehouse history needs grants (T5) | Telemetry thinner on some deployments | Fall back to Publisher's own elapsed and bytes, labelled in the method |
 | Per-query latency from compiling several variants | Slower first query of a shape | Rule out variants by field names from the first compile; cache decisions by query text, givens supplied and generation |
@@ -966,7 +933,7 @@ Each comes with the answer this plan assumes; none blocks phases 0 to 2. Questio
 4. **The pair-table tax (P5).** Should the router skip an inlined join_many's pair table for queries that touch no inlined field and read the parent's own table instead? *Decided 2026-11-12:* yes. A query that reads no child field skips the pair table (`COUNT_SEMANTICS`) for the router's next candidate: the parent's own stored table if there is one (a rollup, or a colocated table on its chain), or live. No second stored table is built for it.
 5. **`#@ -persist`.** v1's opt-out on a reader of a persisted source. *Decided 2026-11-12, superseding the 2026-11-10 decision:* `#@ -persist` stays. It is Malloy core's persistence semantics, not a Publisher extension (Malloy's own documentation teaches it, in `documentation/experiments/persistence.malloynb`), and a customer package uses it deliberately. So Publisher keeps honouring it, under `#@ persist` and `#(materialize)` alike: it is not deprecated, not ignored at the v1 cutover and not refused at 1.0.0. A reader that opts out, and any source built on it, recomputes live, and the served copy keeps declining it with `WARNED` and the code `persist-opt-out`. P11 ("a materialized source serves every use") holds except where a reader opts out with `#@ -persist`. The `deprecated-persist-opt-out` warning #1649 added, and its `persist_opt_out` usage count, are removed. *Superseded (2026-11-10):* `#@ -persist` was to be deprecated, warned about with a rewrite, ignored from the v1 cutover, refused at 1.0.0 and removed in 1.1. *`#@ preaggregate` warning held (decided 2026-11-12):* #1649 counts its usage but shows no warning until `#(preaggregate)` is read; phase 4's pull request 1 (#1663) turned it on, so the warning arrived with its replacement. `#@ preaggregate` stays deprecated under the Publisher v1 plan's rule (#1563): it warns through 0.x, is refused at 1.0.0, and loses its reader in 1.1. The minor that ships v2's annotations ships the v1-to-v2 migration recipe.
 6. **Where the workload log lives in OSS (T1).** Publisher writes the access record and forgets it today. *Assumed:* an opt-in store in the v1 plan's catalog (#1563), as derived tables that its Track B3 later splits out, which `workload` and `compare` read; logs only when it is off, with those tools answering that no store is configured.
-7. **D1 field names.** The requirements spell them `served_by` and `not_considered`; Publisher's API is camelCase (`servedFrom`). *Decided 2026-11-08**:* camelCase (`servedBy`, `notConsidered`) and the rest of the fields (considered, joins, warnings) in camelCase, matching the API; reason values in snake_case, matching servedFrom's live_fallback. The skip reasons are not_built, warned, missing_field, contract, grain_too_coarse, time_zone, cross_connection, count_semantics and stale, which adds the last four to the requirements' D1 enum. *Revised 2026-11-12:* the reasons shipped in SCREAMING_CASE (`NOT_BUILT`, `WARNED`, `MISSING_FIELD`, `CONTRACT`, …) in `api-doc.yaml`'s `SkipReason` and in the v1 spec, with a tenth, `RUN_FAILED`. They are kept, since changing them now breaks the API; the snake_case spelling above is superseded. The fields go into /api/v1's QueryResultMetadata (#1563), so they are fixed before v1 ships: after 1.0 the API changes only additively.
+7. **D1 field names.** The requirements spell them `served_by` and `not_considered`; Publisher's API is camelCase (`servedFrom`). *Decided 2026-11-08**:* camelCase (`servedBy`, `notConsidered`) and the rest of the fields (considered, joins, warnings) in camelCase, matching the API; reason values in snake_case, matching servedFrom's live_fallback. The skip reasons are not_built, warned, missing_field, contract, grain_too_coarse, time_zone, cross_connection, count_semantics and stale, which adds the last four to the requirements' D1 enum. *Revised 2026-11-12:* the reasons shipped in SCREAMING_CASE (`NOT_BUILT`, `WARNED`, `MISSING_FIELD`, `CONTRACT`, …) in `api-doc.yaml`'s `SkipReason` and in the v1 spec, with a tenth, `RUN_FAILED`. They are kept, since changing them now breaks the API; the snake_case spelling above is superseded. Putting them into `/api/v1`'s QueryResultMetadata moved to the Publisher v1 plan (2026-11-13); they are fixed there before v1 ships, since after 1.0 the API changes only additively.
 8. **The package budget.** Carried from Nov 1: should `publisher.json` accept a maximum fan-out ratio and rows per table, enforced as a publish warning? *Assumed:* yes, in phase 6.
 9. **Reading the chain through `governance/ir/` (Consolidation).** Sharing one chain with gate inheritance means materialization reads `sourceRegistry` and `structRef` through the governance IR module, read-only; admitGivenPositions (formerly classifyDynamicTerms) already reads a persist source's _sourceDef the same way. *Decided 2026-11-08**:* acceptable under the Nov 1 rule, which forbids editing or grafting compiler internals; the alternative is a second, text-only chain that could disagree with the gate walk about what is up the chain.
 10. **SQL Server and S12a.** S12a uses a read-only SQL Server connection as the example of one that can't hold a table, while #7541 and #7547 make SQL Server materializable. *Assumed:* the publish warning reads each connection's capability, so it follows #7541 when that lands, and S12a switches to a connection type that truly can't hold a table.
@@ -985,7 +952,7 @@ The current implementation's significant limitations, in one place (as of 2026-1
 |---|---|---|---|---|
 | 1 | *Resolved (#1686, behind `materialize.gatedSources`):* a gated entry point reads a colocated `#(preaggregate)` rollup when every gate reads grain dimensions: the run target is redeclared over the rollup in its declaring file with its gates (the author's `sourceID`), pre-proven at route time (`proveGates`: same `sourceID`, `sameGateSet`, gate fields in the grain) and grafted and re-proven by `govern()`; otherwise `CONTRACT`. `storage=` rollups over gated bases wait for question 14's review (`rollupsServeGatedBases`); gates through a join_one, `private` gate fields (row 20), and the A7 join leg under a gated parent stay live | — | — | — |
 | 2 | *Resolved (#1675):* The `#(carries)` ceiling check compiles against the cross-connection build view, so a clean query through a left-out join is refused | Those sources never answer through that join | **Resolved by #1675:** a served-copy answer is checked on the served copy's compile, and on live too when live compiles | — |
-| 3 | Rollups build from raw rows, not over the stored or re-rooted base (A3 as written) | A rollup and its base table can be different snapshots; each rollup build scans the base | Phase 5's consistency work (a run manifest published whole), then build rollups over the stored base (Phase 5 design, C2) | — |
+| 3 | Rollups build from raw rows, not over the stored or re-rooted base (A3 as written) | A rollup and its base table can be different snapshots; each rollup build scans the base | The consistency work moved to the Publisher v1 plan: a run manifest published whole (C1a), then rollups built over the stored base (C2) | Publisher v1 plan (B1): its "Requested by materialization v2" section |
 | 4 | Own-versus-inherited annotations are decided by annotation-object identity (`declared_notes.ts`) | If identity were lost (a JSON round trip), stray builds (safe, wasted) | A declaration graph with own and inherited annotations kept apart | Malloy core |
 | 5 | *Resolved by #1684 (P9) and #1688:* a `#(materialize)` dimension that reads a given, the current time or the query time zone is left out of the build and computed at read by the served copy, wherever the served copy keeps its definition: the source's own declaration (#1684), or a base it extends or renames in its own file, whose trailing `extend` blocks the re-root now keeps (#1688, the `keptBlocks` mechanism of extension tables generalized; the inherited given term, row 32, rides the same mechanism). What is left is narrower and fails closed: a given-reading dimension declared where the served copy cannot keep it (another file, a parenthesised head, a base whose fields the source renames, redefines or drops) refuses the source, and a zone-dependent one declared there is stored as built (row 7) | Those sources, and those queries, answer live | Keep a base's blocks across files (the served copy would have to import or copy the base's file) | — |
 | 6 | *Resolved (decided 2026-11-12, option A, #1687):* an upper-bound rolling window (`ts < now - N`) is left out of the build and re-applied at read, so the table holds every row at build time (question 2) | — | — | — |
@@ -1036,14 +1003,14 @@ The build-and-serve design survives intact; the join layout, the current-time ru
 | `#@ persist` on a view | Not covered | Routed by exact call; access-filter fields must be grouped | New router leg (P14) |
 | Child measure at the parent's key | Not covered | A rollup a reference join reads one-to-one (A7) | New router leg inside joins |
 | Cost | An `estimate` call and skills | Workload log, table stats, what-if, estimation, adapters, compare, MCP tools (T1–T7) | Phases 2 and 6 |
-| Consistency | Out of scope | Generations, upstream-pinned derived tables, as-of reads (C1–C4) | Phase 5, after its own design pass |
+| Consistency | Out of scope | Generations, upstream-pinned derived tables, as-of reads (C1–C4) | C1b in phase 5; the rest in the Publisher v1 plan's B1 (moved 2026-11-13) |
 | `#@ -persist` | Dropped | Not mentioned | Kept as Malloy core's opt-out; honoured under `#(materialize)` (question 5) |
 
 Kept as decided on Nov 1, now in the spec's own text: storing the source's own private and internal fields (P3), serving every use of the definition (P11), the `include { public: }` site for inherited measures (A1), the fan-out grain rule (A6), `not_considered` for siblings and sources below (D1), the `name=` view (P13), and R4's float tolerance with the storage-tier type, collation and raw-SQL checks.
 
 ### Requirement mapping
 
-All 41 requirements land in Publisher, with C1, C3, T1 and T2 shared with the control plane as Ownership describes. Phase numbers refer to the phased plan.
+All 41 requirements land in Publisher, with C1, C3, T1 and T2 shared with the control plane as Ownership describes. Phase numbers refer to the phased plan; "v1 plan" marks a requirement scheduled with the Publisher v1 plan's B1 (moved 2026-11-13).
 
 | Req | How Publisher meets it | Phase |
 | --- | --- | --- |
@@ -1072,22 +1039,22 @@ All 41 requirements land in Publisher, with C1, C3, T1 and T2 shared with the co
 | R2 skip, never bend | One variant per candidate; reasons from compile errors and catalog state; anything uncertain refuses. | 1 |
 | R3 contracts at read | The domain's text is never rewritten, so `where:`, `#(access_filter)`, `#(authorize)` and the public list apply to whichever variant answers. Lifts today's storage-tier refusal of gated sources. Needs a security review first on the managed tier, since with P3 it puts more sensitive columns there; see question 14. | 3 |
 | R4 same result | Differential harness grown from #7098; float tolerance; stored types checked against declared types (#6642). The #1650 fixture also tolerates, on every stored read, a number's integer or decimal subtype and the served copy's drill metadata (`#(malloy)` drill_expression), both result metadata, not values (recorded 2026-11-12). | 0 onward |
-| D1 path report | Router output plus the query's shape from the result schema; `not_considered` from the source map at load. The path report goes into /api/v1 (api-doc.v1.yaml, #1563) before the v1 plan's step 4; v1 carries servedBy, and servedFrom stays on the frozen v0 until 1.0.0. | 1 |
+| D1 path report | Router output plus the query's shape from the result schema; `not_considered` from the source map at load. It serves on v0 today: `servedFrom`, with the path report on v0's query result. Putting it into `/api/v1` with `servedBy` (api-doc.v1.yaml, before the v1 plan's step 4) moved to the Publisher v1 plan (2026-11-13); `servedFrom` stays on the frozen v0 until 1.0.0. | 1 (v0), v1 plan (`/api/v1`) |
 | D2 never silent | Three-tier outcomes; serve verdict at publish (#6277); preview before publishing (#7090); a reason on every live fallback (#6446). | 1 |
 | D3 no file flag | Publisher reads annotations itself; the flag lives in generated files. | 3 |
 | D4 spellings | Annotation reader. | 1 |
 | D5 route ownership | Scan of every bracketed route for near-misses to the owned ones; warnings reach publish and the editor; a misspelled gate refuses the load (#1605). | 1 |
-| C1 one generation per query | A run's manifest is published whole; each query pins one manifest. | 5 |
-| C2 derived tables pinned to upstream | Derived fingerprints include the upstream build id; needs the control plane's #5967 fix first. | 5 |
-| C3 as-of reads | Per-warehouse as-of in the build SQL, falling back to the build window. | 5 |
-| C4 as-of on every table | Recorded in the manifest; shown in D1; spread logged in T1. | 5 |
+| C1 one generation per query | A run's manifest is published whole (C1a, v1 plan); each query pins one manifest (C1b). | 5 (C1b), v1 plan (C1a) |
+| C2 derived tables pinned to upstream | Derived fingerprints include the upstream build id; needs the control plane's #5967 fix first. | v1 plan |
+| C3 as-of reads | Per-warehouse as-of in the build SQL, falling back to the build window. | v1 plan |
+| C4 as-of on every table | Recorded in the manifest; shown in D1; spread logged in T1. | v1 plan |
 | T1 workload log | Shape, path report and cost added to the access record; an opt-in local store in OSS, Credible's store at scale. | 2 |
 | T2 table statistics | From the manifest, build records and path reports. | 6 (its inputs land in 2) |
 | T3 what-if | The router over a proposed catalog. | 6 |
 | T4 cost estimation | Count queries, column widths, dry runs (Telemetry and cost estimation). | 6 |
 | T5 warehouse adapters | BigQuery, Snowflake, Postgres, DuckDB. | 6 |
 | T6 before/after | Workload log split at the build time. | 6 |
-| T7 agent tools | `workload`, `table_stats`, `explain`, `what_if`, `compare` on MCP and REST. | 6 |
+| T7 agent tools | `workload`, `table_stats`, `explain`, `what_if`, `compare` on MCP; their `/api/v1` REST routes in the v1 plan. | 6 (MCP), v1 plan (REST) |
 
 ### Open tracker coverage (#6647)
 
@@ -1127,7 +1094,7 @@ The plan accounts for all 60 open issues under [ms2data/service#6647](https://gi
 | #6638 | P2 | Bound partition cardinality | `partition=` carries over unchanged; v1 work | — |
 | #7090 | P2 | Preview what a package builds and serves | D2 preview | 1 |
 | #7092 | P2 | `search_malloy_docs` says `storage=` and `#@ preaggregate` don't exist | The docs index learns the v2 spellings | 5 |
-| #6734 | P2 | Reference manifests omit a storage upstream's destination | C2: derived tables pinned to their upstream | 5 |
+| #6734 | P2 | Reference manifests omit a storage upstream's destination | C2: derived tables pinned to their upstream | v1 plan |
 | #7078 | P2 | A source the eligibility gate refuses fails the built source that shares its address | For `storage=`, a refused source fails alone and serves live while the table it shares is built (fixed in phase 2). Colocated refuses the whole table, matching colocated serving, which substitutes a table for every source on its address; per-source refusal there arrives with phase 3's serving, which re-roots each source by name | 2, 3 |
 | #6645 | P2 | The next Publisher bump must carry malloy-tag ≥ 0.0.434 | Verify on the next bump | — |
 | #5557 | P2 | KR1 serve-path measured proof | T6 `compare` produces the measurement | 6 |
@@ -1138,7 +1105,7 @@ The plan accounts for all 60 open issues under [ms2data/service#6647](https://gi
 | #5595 | P3 | Supported DuckLake catalog-version range | A product decision, outside v2 | — |
 | #5691 | P3 | Reconcile the query-metadata and DuckLake config substrate | `queryMetadata` carries over unchanged | — |
 
-**Control-plane only.** Seven feed the consistency design pass in phase 5: #5967 (P0, reuse reporting fresh), #5706 (a shared refresh advances every binder), #5704, #6308, #5683, #5705 (lineage after a `name=` change), and #7153 (a build verdict per version, the control plane's half of D2). The rest are outside v2: #6985, #7088, #5763, #6075, #5748, #6307, #6649, #5904, #6093, #5658, #6092, and two that share content with phase 6: #6987 (the `credible-materialization` skill) and #7091 (runs and build plans on the Credible MCP, the managed counterpart of T7).
+**Control-plane only.** Seven feed the consistency work, now scheduled with the Publisher v1 plan's B1 (moved 2026-11-13): #5967 (P0, reuse reporting fresh), #5706 (a shared refresh advances every binder), #5704, #6308, #5683, #5705 (lineage after a `name=` change), and #7153 (a build verdict per version, the control plane's half of D2). The rest are outside v2: #6985, #7088, #5763, #6075, #5748, #6307, #6649, #5904, #6093, #5658, #6092, and two that share content with phase 6: #6987 (the `credible-materialization` skill) and #7091 (runs and build plans on the Credible MCP, the managed counterpart of T7).
 
 ### Review coverage (the Nov 5 design review)
 
