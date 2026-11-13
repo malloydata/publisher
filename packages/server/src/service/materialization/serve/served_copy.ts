@@ -737,6 +737,9 @@ function inlinedJoinStatements(
    return `\n  internal rename:\n${renames}\n  dimension:\n${records}`;
 }
 
+/** The access modifiers a statement can open with. */
+const ACCESS_WORDS = new Set(["public", "private", "internal"]);
+
 /**
  * A run of `extend { … }` blocks with the join_one named `join` taken out:
  * its definition, with the annotation lines written on it, or its whole
@@ -759,6 +762,10 @@ export function dropJoinDefinition(
       if (!cut || cut.left.name !== join) continue;
       if (!cut.left.keyword.startsWith("join_")) continue;
       if (cut.left.keyword !== "join_one") return undefined;
+      // An access modifier written on the statement would be left on what
+      // follows it (or the record would drop the join's access): refused.
+      const before = tokens.filter((x) => x.end <= cut.start).pop();
+      if (before && ACCESS_WORDS.has(before.text)) return undefined;
       return text.slice(0, cut.start) + text.slice(cut.end);
    }
    return text;

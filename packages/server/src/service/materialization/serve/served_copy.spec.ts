@@ -738,6 +738,14 @@ describe("an inlined join_one, answered from its stored columns", () => {
             "carriers",
          ),
       ).toBeUndefined();
+      // A hidden join keeps its access: the record would be public, and the
+      // modifier would be left on the next statement.
+      expect(
+         dropJoinDefinition(
+            "extend {\n  internal join_one: carriers with carrier\n  measure: n is count()\n}",
+            "carriers",
+         ),
+      ).toBeUndefined();
    });
 });
 

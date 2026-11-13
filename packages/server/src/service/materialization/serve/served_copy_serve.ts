@@ -1559,7 +1559,6 @@ export function storedColumnNotes(
    ) {
       return notes;
    }
-   // malloy-text: each class through annotationValue
    const classes = classified.classifications.map(annotationValue).join(", ");
    return [...notes, `#(classification) [${classes}]`];
 }
@@ -1680,9 +1679,16 @@ function inlinedJoinsOf(
             as?: unknown;
             join?: unknown;
             fields?: unknown;
+            accessModifier?: unknown;
          }[]
       )
-         .filter((f) => f.join === "one")
+         // A join the author hides stays as written: the record that would
+         // replace it is a public dimension.
+         .filter(
+            (f) =>
+               f.join === "one" &&
+               (f.accessModifier == null || f.accessModifier === "public"),
+         )
          .map((f) => [String(f.as ?? f.name), f] as const),
    );
    const out: InlinedJoin[] = [];
