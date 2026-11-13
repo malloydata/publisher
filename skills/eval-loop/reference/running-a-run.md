@@ -181,10 +181,18 @@ The scripts import each other by path (`ledger`, `mcp_payload`,
 path). Run them **in place** from the skills checkout; a copy patched elsewhere
 chases `ModuleNotFoundError` three times.
 
-Two failure modes worth pre-empting, because both produce a clean-looking run:
+Three failure modes worth pre-empting, because each produces a clean-looking run:
 
 - **Pre-approve the tools.** A headless answerer that has to ask permission for
   `get_context` stalls until the timeout and lands as a harness error.
 - **Check the served revision is the one you edited.** Publisher serves a
   snapshot copy, so a model fix can be absent from the run that is supposed to
   measure it. Query the changed measure once before spending an arm on it.
+- **Read the smoke's attempts, not its summary.** A `--no-judge` smoke prints
+  no pass rate, so it never prints the INCOMPLETE line either, and a
+  contaminated attempt looks like a clean one. Check `contaminated` and
+  `contamination_reasons` on each `attempt` in its `events.jsonl` before the
+  arm. `host tool available to the answerer: <tool>` on every attempt means the
+  CLI ships a built-in the harness does not block yet; add it to
+  `ALWAYS_BLOCKED` in `agent_harness.py` and smoke again. Measured 2026-10-27: a
+  new built-in flagged all three smoke attempts and would have voided the arm.
