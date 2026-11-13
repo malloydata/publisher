@@ -257,6 +257,10 @@ export function snapshotBound(malloyType: string, now: Date): WatermarkBound {
  * "Materializing on Postgres".
  *
  * `SELECT *` because the DML projects by name (see {@link deltaStatements}).
+ *
+ * `end` undefined leaves the range open above: a pair table's delta (see
+ * {@link pairDeltaStatements}), which replaces whole parents by key and so
+ * needs no upper bound to agree with its delete.
  */
 export function deltaSelect(params: {
    dialect: string;
@@ -264,13 +268,15 @@ export function deltaSelect(params: {
    sourceSQL: string;
    watermarkName: string;
    start: WatermarkBound;
-   end: WatermarkBound;
+   end: WatermarkBound | undefined;
 }): string {
    const watermark = quoteIdentifier(params.watermarkName, params.dialect);
    return (
       `SELECT * FROM (${params.sourceSQL}) AS __d ` +
-      `WHERE ${watermark} >= ${renderSqlBound(params.start, params.dialect)} ` +
-      `AND ${watermark} < ${renderSqlBound(params.end, params.dialect)}`
+      `WHERE ${watermark} >= ${renderSqlBound(params.start, params.dialect)}` +
+      (params.end
+         ? ` AND ${watermark} < ${renderSqlBound(params.end, params.dialect)}`
+         : "")
    );
 }
 
@@ -751,7 +757,10 @@ export function isPairGuardFailure(err: unknown): boolean {
  * The delta holds whole parents: its watermark is one value per parent (the
  * greatest of the parent's and its children's watermark fields), so a range
  * over it selects all of a parent's rows or none, and the flag the build's
- * window writes over them is the full build's. A row-by-row MERGE cannot
+ * window writes over them is the full build's. The range is open above (see
+ * planIncrementalStep): a parent whose watermark is past the clock, held there
+ * by one child stamped in the future, is read again on every refresh rather
+ * than never. A row-by-row MERGE cannot
  * apply it: one key matches many rows, and a child that left its parent would
  * stay. So the delta is staged once (one read of the source, so the delete
  * and the insert see one snapshot), then, in one transaction, every stored
@@ -1154,11 +1163,15 @@ export interface DeltaTarget {
     */
    logicalTablePath: string;
    /**
-    * The rows-yielding SELECT for one bounded range, executable on the TARGET.
-    * Async because producing it can issue the source read (a stored table's rows
-    * arrive through a query passthrough).
+    * The rows-yielding SELECT for one bounded range, executable on the TARGET
+    * (`end` undefined: open above, see {@link deltaSelect}). Async because
+    * producing it can issue the source read (a stored table's rows arrive
+    * through a query passthrough).
     */
-   deltaRows(start: WatermarkBound, end: WatermarkBound): Promise<string>;
+   deltaRows(
+      start: WatermarkBound,
+      end: WatermarkBound | undefined,
+   ): Promise<string>;
    /**
     * The SOURCE's watermark frontier, for a number or string watermark (see
     * resolveDeltaEnd).
@@ -1348,7 +1361,15 @@ export async function planIncrementalStep(inputs: {
    const statements = deltaStatements({
       dialect,
       quotedTablePath: target.quotedTablePath,
-      deltaSQL: await target.deltaRows(start, end.bound),
+      // A pair table's range is open above. Its watermark is a parent's
+      // greatest field over all its rows, so one child stamped past the clock
+      // would hold the parent above every bounded range until the clock
+      // caught up, and the parent's own changes with it; replacing a parent
+      // whole is idempotent, so reading it again on each refresh is safe.
+      deltaSQL: await target.deltaRows(
+         start,
+         lineage.pair ? undefined : end.bound,
+      ),
       columns: inputs.columns,
       mergeKeys: lineage.mergeKeys,
       scopeColumns: lineage.scopeColumns,
