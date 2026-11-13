@@ -1201,3 +1201,64 @@ for (const [label, flights] of Object.entries(parentKeySeeds)) {
       });
    });
 }
+
+// The key check counts the rows the build stores, not the rows the source's
+// own `where:` keeps at read. An upper-bound rolling window (#1687) is left
+// out of the build and re-applied at read, so a key held twice across the
+// cut-off is one row live and two in the table: the flag can land on the row
+// the window drops, and the parent goes missing from parent measures. The
+// row past the cut-off comes first, so DuckDB's unordered row_number flags it.
+describe("R4: a one-hop pair table whose key repeats only past an upper-bound window is not built", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `source: segs is duckdb.table('segs') extend { primary_key: seg_id }
+
+#(materialize) storage="lake" inline=["segs"]
+source: flights is duckdb.table('flights') extend {
+  primary_key: id
+  where: ts < now - 30 days
+  join_many: segs on segs.flight_id = id
+  measure:
+    flight_count is count()
+    total_distance is distance.sum()
+    seg_n is segs.count()
+}
+`,
+         },
+         seedSql: [
+            `CREATE TABLE flights AS SELECT * FROM (VALUES
+      (3, 'UA', 40.0, TIMESTAMP '2999-01-01'), (1, 'AA', 100.0, TIMESTAMP '2020-01-01'),
+      (2, 'AA', 250.0, TIMESTAMP '2020-01-02'), (3, 'UA', 30.0, TIMESTAMP '2020-01-03'),
+      (8, 'DL', 410.0, TIMESTAMP '2020-01-04')
+    ) AS t(id, carrier, distance, ts)`,
+            ...gatedSeed.filter((sql) => /TABLE segs /.test(sql)),
+         ],
+         materialize: true,
+         checkKeys: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("answers live, equal to live: a parent measure beside the join", async () => {
+      const malloy =
+         "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, seg_n }";
+      const run = await fixture.run({ name: malloy, malloy, expectLive: true });
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+      expect(run.servedVia).toBeUndefined();
+   });
+
+   it("refuses the build, naming the key", () => {
+      expect(fixture.checkFailures.flights).toMatch(
+         /keys one row flag on 'id' of 'flights' itself/,
+      );
+   });
+});

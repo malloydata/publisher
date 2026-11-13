@@ -1296,6 +1296,80 @@ source: orders_one is ${orders} extend {
    );
 
    it(
+      "checks a pair table's key over the rows its build stores: a given's term and an upper bound left out of the build are left out of the check",
+      async () => {
+         const model = (
+            orders: string,
+            where: string,
+         ) => `##! experimental { givens }
+given:
+  ORG_ID :: number${where.includes("DEFAULT") ? " is 1" : ""}
+source: raw is duckdb.sql("""
+  select * from (values ${orders}) as t(id, org_id, amount, t)
+""")
+source: lines is duckdb.sql("""
+  select * from (values (1, 1, 2.0), (2, 2, 3.0)) as t(line_id, order_id, qty)
+""") extend { primary_key: line_id }
+#(materialize) name="orders_t" storage="lake" inline=["lines"]
+source: orders is raw extend {
+  primary_key: id
+  where: ${where.replace(" DEFAULT", "")}
+  join_many: lines on lines.order_id = id
+}
+`;
+         const planOf = async (text: string) => {
+            const pkg = await packages.create(text);
+            const c = await compilePackageBuildPlan(pkg);
+            const plan = generatedPlans(c).find(
+               (p) => p.sourceName === "orders",
+            );
+            return { plan, duckdb: await pkg.getMalloyConnection("duckdb") };
+         };
+         const old = "timestamp '2020-01-01'";
+         const late = "timestamp '2999-01-01'";
+         // A given with no default: the check over the author's source could
+         // not compile, which failed the whole companion. Over the build copy
+         // it compiles, and passes on a key unique across every tenant.
+         const clean = await planOf(
+            model(
+               `(1, 1, 1.0, ${old}), (2, 2, 2.0, ${old})`,
+               "org_id = $ORG_ID",
+            ),
+         );
+         expect(clean.plan?.uniquenessChecks?.map((x) => x.pairLevel)).toEqual([
+            0,
+         ]);
+         await assertInlinedJoinsUnique(clean.plan, clean.duckdb);
+         // A key unique within the default tenant but held by two tenants:
+         // the table stores both rows, so the build is refused.
+         const tenants = await planOf(
+            model(
+               `(1, 1, 1.0, ${old}), (1, 2, 2.0, ${old})`,
+               "org_id = $ORG_ID DEFAULT",
+            ),
+         );
+         await expect(
+            assertInlinedJoinsUnique(tenants.plan, tenants.duckdb),
+         ).rejects.toThrow(/keys one row flag on 'id' of 'orders' itself/);
+         // A key held twice across an upper-bound window's cut-off: one row
+         // live, two in the table.
+         const window = await planOf(
+            model(
+               `(1, 1, 1.0, ${old}), (1, 1, 2.0, ${late})`,
+               "t < now - 30 days",
+            ),
+         );
+         expect(window.plan?.readTimeTerms?.map((t) => t.kind)).toEqual([
+            "current_time",
+         ]);
+         await expect(
+            assertInlinedJoinsUnique(window.plan, window.duckdb),
+         ).rejects.toThrow(/keys one row flag on 'id' of 'orders' itself/);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
       "stores a many-to-many pair once per pair, and flags each parent once",
       async () => {
          const pkg = await packages.create(`${BASE}

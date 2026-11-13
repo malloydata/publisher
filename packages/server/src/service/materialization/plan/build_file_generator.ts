@@ -2903,6 +2903,30 @@ function emitUniquenessCheck(check: InlineUniquenessCheck): string {
 }`;
 }
 
+/**
+ * The import of one uniqueness check's source. A joined source's check reads
+ * it from the file that declares it. A pair table's own key check (level 0)
+ * reads the source from the file its build reads it from, its build copy when
+ * it has one: the copy leaves out the terms the build leaves out (a given's,
+ * a rolling window's upper bound), so the check counts the rows the table
+ * stores. Over the author's source it would count only the rows those terms
+ * keep, and pass while the table holds a key twice.
+ */
+function checkImport(
+   check: InlineUniquenessCheck,
+   plan: MaterializePlan,
+   importPath: string,
+   importPathForFile: ((url: string) => string | undefined) | undefined,
+   buildCopyPaths: ReadonlyMap<string, string>,
+): string {
+   const joined = splitSourceID(check.joinedSourceID);
+   const own = check.pairLevel === 0 && check.joinedSourceID === plan.sourceID;
+   const path = own
+      ? (buildCopyPaths.get(plan.sourceID) ?? importPath)
+      : ((joined && importPathForFile?.(joined.url)) ?? importPath);
+   return `import { ${identifier(checkAlias(check))} is ${identifier(joined?.name ?? check.join)} } from ${stringLiteral(path)}`;
+}
+
 /** The alias a generated file imports a uniqueness check's joined source under. */
 function checkAlias(check: InlineUniquenessCheck): string {
    return `${check.queryName}__source`;
@@ -3510,11 +3534,15 @@ export function generateBuildFile(
    const copyOf = (plan: MaterializePlan) => buildCopyPaths.get(plan.sourceID);
    const imports = plans.map((plan) => {
       const own = `import { ${identifier(importAlias(plan))} is ${identifier(plan.sourceName)} } from ${stringLiteral(copyOf(plan) ?? importPath)}`;
-      const checks = (plan.uniquenessChecks ?? []).map((check) => {
-         const joined = splitSourceID(check.joinedSourceID);
-         const path = (joined && importPathForFile?.(joined.url)) ?? importPath;
-         return `import { ${identifier(checkAlias(check))} is ${identifier(joined?.name ?? check.join)} } from ${stringLiteral(path)}`;
-      });
+      const checks = (plan.uniquenessChecks ?? []).map((check) =>
+         checkImport(
+            check,
+            plan,
+            importPath,
+            importPathForFile,
+            buildCopyPaths,
+         ),
+      );
       return [own, ...checks].join("\n");
    });
    const givensByPath = new Map<string, Set<string>>();
@@ -3615,12 +3643,18 @@ export function generateBuildFiles(
       );
    }
    const checks = plans.flatMap((plan) => plan.uniquenessChecks ?? []);
-   for (const check of checks) {
-      const joined = splitSourceID(check.joinedSourceID);
-      const path = (joined && importPathForFile?.(joined.url)) ?? importPath;
-      imports.push(
-         `import { ${identifier(checkAlias(check))} is ${identifier(joined?.name ?? check.join)} } from ${stringLiteral(path)}`,
-      );
+   for (const plan of plans) {
+      for (const check of plan.uniquenessChecks ?? []) {
+         imports.push(
+            checkImport(
+               check,
+               plan,
+               importPath,
+               importPathForFile,
+               buildCopyPaths,
+            ),
+         );
+      }
    }
    const queries = checks.map(emitUniquenessCheck).join("\n\n");
    return {
