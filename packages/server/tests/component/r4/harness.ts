@@ -1168,6 +1168,12 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
 /** Relative tolerance for floats, as R4 states it. */
 const FLOAT_TOLERANCE = 1e-9;
 
+/**
+ * A value in the form two runs are compared in. A nested result (a `nest:`)
+ * is put in a canonical row order, as the top level is in `rowDifference`: a
+ * nest whose aggregate ties leaves the order of the tied rows to the engine,
+ * so the same answer could come back in two orders and read as a difference.
+ */
 function normalizeValue(value: unknown): unknown {
    if (typeof value === "bigint") return Number(value);
    if (value instanceof Date) return value.toISOString();
@@ -1179,22 +1185,74 @@ function normalizeValue(value: unknown): unknown {
       // DuckDB returns some integer aggregates as strings over raw SQL.
       return Number(value);
    }
+   if (Array.isArray(value)) {
+      const items = value.map(normalizeValue);
+      if (items.every(isRecord)) {
+         return items
+            .map((item) => ({ item, key: canonicalJson(item) }))
+            .sort((p, q) => p.key.localeCompare(q.key))
+            .map(({ item }) => item);
+      }
+      return items;
+   }
+   if (isRecord(value)) {
+      return Object.fromEntries(
+         Object.entries(value).map(([k, v]) => [k, normalizeValue(v)]),
+      );
+   }
    return value;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+   return (
+      typeof value === "object" &&
+      value !== null &&
+      !Array.isArray(value) &&
+      !(value instanceof Date)
+   );
+}
+
+/** JSON with object keys sorted, so key order never decides a row's place. */
+function canonicalJson(value: unknown): string {
+   return JSON.stringify(value, (_key, v: unknown) =>
+      isRecord(v)
+         ? Object.fromEntries(
+              Object.keys(v)
+                 .sort()
+                 .map((k) => [k, v[k]]),
+           )
+         : v,
+   );
+}
+
+/** Equal within the float tolerance, through nested rows as well. */
 function valuesEqual(a: unknown, b: unknown): boolean {
-   const x = normalizeValue(a);
-   const y = normalizeValue(b);
+   return normalizedEqual(normalizeValue(a), normalizeValue(b));
+}
+
+function normalizedEqual(x: unknown, y: unknown): boolean {
    if (typeof x === "number" && typeof y === "number") {
       if (x === y) return true;
       const scale = Math.max(Math.abs(x), Math.abs(y), 1);
       return Math.abs(x - y) <= FLOAT_TOLERANCE * scale;
    }
-   return JSON.stringify(x) === JSON.stringify(y);
+   if (Array.isArray(x) && Array.isArray(y)) {
+      return (
+         x.length === y.length && x.every((v, i) => normalizedEqual(v, y[i]))
+      );
+   }
+   if (isRecord(x) && isRecord(y)) {
+      const keys = Object.keys(x).sort();
+      return (
+         JSON.stringify(keys) === JSON.stringify(Object.keys(y).sort()) &&
+         keys.every((k) => normalizedEqual(x[k], y[k]))
+      );
+   }
+   return canonicalJson(x) === canonicalJson(y);
 }
 
 function sortKey(row: Row, columns: string[]): string {
-   return JSON.stringify(columns.map((c) => normalizeValue(row[c])));
+   return canonicalJson(columns.map((c) => normalizeValue(row[c])));
 }
 
 /**
