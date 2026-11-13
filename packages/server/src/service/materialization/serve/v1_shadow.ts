@@ -60,11 +60,13 @@ function asRows(rows: unknown): Record<string, unknown>[] {
    return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
 }
 
+/**
+ * A value in a form that compares exactly: a bigint and a date as text, an
+ * object's keys sorted. A string stays a string, so `"007"` and `"7"` differ.
+ */
 function normalize(value: unknown): unknown {
-   if (typeof value === "bigint") return Number(value);
+   if (typeof value === "bigint") return `${value}n`;
    if (value instanceof Date) return value.toISOString();
-   if (typeof value === "string" && /^-?\d+$/.test(value) && value.length < 16)
-      return Number(value);
    if (Array.isArray(value)) return value.map(normalize);
    if (value !== null && typeof value === "object") {
       return Object.fromEntries(
@@ -76,15 +78,42 @@ function normalize(value: unknown): unknown {
    return value;
 }
 
+/**
+ * Equal values. Numbers compare exactly, except two that are both non-integer
+ * numbers, which may differ in the last bits (two plans sum floats in another
+ * order) and are equal within a relative tolerance; an integer, or a bigint,
+ * never is. A bigint equals a number only when the number is that integer
+ * exactly.
+ */
 function valuesEqual(a: unknown, b: unknown): boolean {
-   const x = normalize(a);
-   const y = normalize(b);
-   if (typeof x === "number" && typeof y === "number") {
-      if (x === y) return true;
-      const scale = Math.max(Math.abs(x), Math.abs(y), 1);
-      return Math.abs(x - y) <= FLOAT_TOLERANCE * scale;
+   if (typeof a === "bigint" || typeof b === "bigint") {
+      const exact = (v: unknown) =>
+         typeof v === "bigint"
+            ? v.toString()
+            : typeof v === "number" && Number.isSafeInteger(v)
+              ? String(v)
+              : undefined;
+      const x = exact(a);
+      return x !== undefined && x === exact(b);
    }
-   return JSON.stringify(x) === JSON.stringify(y);
+   if (typeof a === "number" && typeof b === "number") {
+      if (a === b) return true;
+      if (Number.isInteger(a) || Number.isInteger(b)) return false;
+      const scale = Math.max(Math.abs(a), Math.abs(b), 1);
+      return Math.abs(a - b) <= FLOAT_TOLERANCE * scale;
+   }
+   return JSON.stringify(normalize(a)) === JSON.stringify(normalize(b));
+}
+
+/**
+ * A row value's sort key: numbers and bigints as one kind (an integer as its
+ * exact text), so the same row sorts alike on both sides.
+ */
+function sortable(value: unknown): unknown {
+   if (typeof value === "bigint") return value.toString();
+   if (typeof value === "number" && Number.isInteger(value))
+      return String(value);
+   return normalize(value);
 }
 
 /** Where two row sets differ (ignoring order), or undefined when they match. */
@@ -101,7 +130,7 @@ export function shadowRowDifference(
       return `row counts differ: ${a.length} against ${b.length}`;
    }
    const key = (r: Record<string, unknown>) =>
-      JSON.stringify(columns.map((c) => normalize(r[c])));
+      JSON.stringify(columns.map((c) => sortable(r[c])));
    const x = [...a].sort((p, q) => key(p).localeCompare(key(q)));
    const y = [...b].sort((p, q) => key(p).localeCompare(key(q)));
    for (let i = 0; i < x.length; i++) {
