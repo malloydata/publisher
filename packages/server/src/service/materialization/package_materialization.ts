@@ -72,6 +72,7 @@ import {
    type ServedCopyProblem,
 } from "./serve/served_copy_serve";
 import { deriveColocatedServeBindings } from "./serve/colocated_bindings";
+import { namesServedCopyAlias } from "./serve/served_copy_config";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import {
    computeServeVerdicts,
@@ -2207,12 +2208,14 @@ function withoutChangedConnections(
 /**
  * The compiler's own reasons in a compile error, as `: <reason>; <reason>.`:
  * each diagnostic's message without its file and source excerpt, so a package
- * warning names why without the server's paths. `.` when there are none.
+ * warning names why without the server's paths. A reason that names a
+ * served-copy alias (a join refused across connections) is left out: the
+ * alias stays in the server log. `.` when there are none.
  */
 function compilerReasons(detail: string | undefined): string {
-   const reasons = [...(detail ?? "").matchAll(/^line \d+: (.+)$/gm)].map((m) =>
-      m[1].trim(),
-   );
+   const reasons = [...(detail ?? "").matchAll(/^line \d+: (.+)$/gm)]
+      .map((m) => m[1].trim())
+      .filter((reason) => !namesServedCopyAlias(reason));
    return reasons.length > 0 ? `: ${reasons.join("; ")}.` : ".";
 }
 
@@ -2237,6 +2240,11 @@ function servedCopyProblemMessage(
          return "This source inlines a join_many that is not declared on its own in its own trailing `extend` (a source it is built from declares it, or its `join_many:` statement declares other joins too), so its pair table cannot be read with the join as a record and the served copy leaves it as written.";
       case "pair_not_compiled":
          return "This source's pair table (an inlined join_many) could not be read as the source with its join as a record (its text reads a measure or view of the joined source through the join, which the record does not carry), so the served copy leaves it as written.";
+      case "reroot_not_compiled":
+         return (
+            "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message)." +
+            " The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it."
+         );
       case "read_terms_not_kept":
          return "This source filters by a given in a place its stored table cannot keep, or is filtered and reached here only through a join, so the served copy leaves it as written rather than answer every caller alike.";
       case "fields_not_carried":

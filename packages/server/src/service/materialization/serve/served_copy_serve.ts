@@ -99,6 +99,12 @@ import {
    storedMalloyType,
 } from "./served_copy";
 import { servedCopyConfig, servedCopyAlias } from "./served_copy_config";
+import {
+   failingReroots,
+   rerootKey,
+   type TraceMode,
+} from "./served_copy_containment";
+import { logger } from "../../../logger";
 import { lexAll, offsetOf } from "../malloy_lexer";
 import { confirmedAncestors, keptAncestorChain } from "../kept_ancestors";
 import { classificationFindingsBySource } from "../../classification_findings";
@@ -245,6 +251,7 @@ export interface ServedCopyProblem {
       | "read_terms_not_kept"
       | "cross_connection_join"
       | "inline_join_kept"
+      | "reroot_not_compiled"
       | "classification_not_kept";
    /**
     * For `cross_connection_join`: the join the served copy leaves out, because
@@ -1361,11 +1368,14 @@ export class ServedCopyServe {
       // cause).
       let inlinedKept: ServedCopyProblem[] = [];
       let pairsDropped: ServedCopyProblem[] = [];
-      // At most one pass per candidate: each pass either compiles with every
-      // remaining source whole, or drops the sources it lost fields on; and
-      // one more each that keeps inlined joins as written and drops the pair
-      // tables.
-      for (let pass = 0; pass <= candidates.length + 2; pass++) {
+      // At most three passes per candidate: each pass either compiles with
+      // every remaining source whole, or takes one step down a source's
+      // ladder (its inlined joins kept as written, its kept blocks dropped,
+      // the source dropped: see `contain`), or drops the sources it lost
+      // fields on; and one more each that keeps every inlined join as written
+      // and drops the pair tables.
+      const maxPasses = 3 * candidates.length + 3;
+      for (let pass = 0; pass <= maxPasses; pass++) {
          const copy = buildServedCopy(
             candidates.map((c) => c.reroot),
             (u) => lift.fileText(u),
@@ -1448,20 +1458,105 @@ export class ServedCopyServe {
             if (!candidates.some((c) => c.reroot.inlinedJoins)) return false;
             const detail =
                error instanceof Error ? error.message : String(error);
-            inlinedKept = candidates.flatMap((c) =>
-               (c.reroot.inlinedJoins ?? []).map((j) => ({
-                  sourceName: c.reroot.sourceName,
-                  reason: "inline_join_kept" as const,
-                  join: j.join,
-                  detail,
-               })),
+            // Added to, not replaced: a join containment already kept as
+            // written for its own source (see `contain`) stays reported.
+            const reported = new Set(
+               inlinedKept.map((p) => `${p.sourceName}\u0000${p.join}`),
             );
+            inlinedKept = [
+               ...inlinedKept,
+               ...candidates.flatMap((c) =>
+                  (c.reroot.inlinedJoins ?? [])
+                     .filter(
+                        (j) =>
+                           !reported.has(
+                              `${c.reroot.sourceName}\u0000${j.join}`,
+                           ),
+                     )
+                     .map((j) => ({
+                        sourceName: c.reroot.sourceName,
+                        reason: "inline_join_kept" as const,
+                        join: j.join,
+                        detail,
+                     })),
+               ),
+            ];
             candidates = candidates.map((c) => {
                if (!c.reroot.inlinedJoins) return c;
                const { inlinedJoins: _kept, ...reroot } = c.reroot;
                return { ...c, reroot };
             });
             return true;
+         };
+         // Containment (served_copy_containment.ts): a failure traced to one
+         // re-root's own text costs that source alone. Its ladder: a source
+         // that inlines join_ones keeps them as written first (the record is
+         // the one text the copy writes over a join's place, as
+         // keepInlinedJoins below, but for this source only); an extension
+         // table falls back to its own blocks (or to as written); any other
+         // source is dropped and answers live, with a coded warning. Each
+         // step is one pass; the rest of the model compiles again.
+         const contain = (
+            error: unknown,
+            files: ReadonlyMap<string, string>,
+            mode: TraceMode,
+         ): boolean => {
+            const failing = new Map(
+               failingReroots(error, files, copy.spans, mode).map((f) => [
+                  rerootKey(f.url, f.sourceName),
+                  f,
+               ]),
+            );
+            if (failing.size === 0) return false;
+            const detail =
+               error instanceof Error ? error.message : String(error);
+            let changed = false;
+            candidates = candidates.flatMap((c) => {
+               const f = failing.get(
+                  rerootKey(c.reroot.url, c.reroot.sourceName),
+               );
+               if (!f) return [c];
+               changed = true;
+               logger.warn(
+                  "A re-root does not compile in the served copy; that source alone steps back",
+                  {
+                     modelPath: this.host.modelPath(),
+                     sourceName: c.reroot.sourceName,
+                     problem: f.message,
+                  },
+               );
+               if (c.reroot.inlinedJoins?.length) {
+                  inlinedKept.push(
+                     ...c.reroot.inlinedJoins.map((j) => ({
+                        sourceName: c.reroot.sourceName,
+                        reason: "inline_join_kept" as const,
+                        join: j.join,
+                        detail,
+                     })),
+                  );
+                  const { inlinedJoins: _kept, ...reroot } = c.reroot;
+                  const next = { ...c, reroot };
+                  if (withoutKept.has(c)) {
+                     withoutKept.set(next, withoutKept.get(c));
+                     withoutKept.delete(c);
+                  }
+                  return [next];
+               }
+               problems.push({
+                  sourceName: c.reroot.sourceName,
+                  reason: c.reroot.pair
+                     ? "pair_not_compiled"
+                     : "reroot_not_compiled",
+                  detail,
+               });
+               if (withoutKept.has(c)) {
+                  const fallback = withoutKept.get(c);
+                  withoutKept.delete(c);
+                  return fallback ? [fallback] : [];
+               }
+               return [];
+            });
+            return changed;
          };
          try {
             ({
@@ -1470,6 +1565,7 @@ export class ServedCopyServe {
                runtime: servedRuntime,
             } = await load(overlay));
          } catch (err) {
+            if (contain(err, copy.files, "precise")) continue;
             // A reference join the re-root moved across connections (question
             // 11): leave it out, with what reads it, so every other query
             // still reads the table.
@@ -1522,6 +1618,7 @@ export class ServedCopyServe {
                   withoutKept.clear();
                   continue;
                }
+               if (contain(err, copy.files, "last_resort")) continue;
                problems.push({
                   reason: classifyServedCopyFailure(err),
                   detail,
@@ -1543,10 +1640,12 @@ export class ServedCopyServe {
                   runtime: servedRuntime,
                } = await load(files));
             } catch (again) {
+               if (contain(again, kept.overlay, "precise")) continue;
                if (keepInlinedJoins(again)) continue;
                const detail =
                   again instanceof Error ? again.message : String(again);
                if (withoutPairs(detail)) continue;
+               if (contain(again, kept.overlay, "last_resort")) continue;
                problems.push({ reason: "compile_failed", detail });
                return {
                   key,
@@ -1559,7 +1658,12 @@ export class ServedCopyServe {
             }
             leftOut = kept.leftOut;
          }
-         problems.push(...inlinedKept);
+         // Only a join of a source still re-rooted was kept for it.
+         problems.push(
+            ...inlinedKept.filter((p) =>
+               candidates.some((c) => c.reroot.sourceName === p.sourceName),
+            ),
+         );
          inlinedKept = [];
          problems.push(...pairsDropped);
          pairsDropped = [];
@@ -1627,6 +1731,13 @@ export class ServedCopyServe {
          // joined source's filters against its declaring file's live compile,
          // whose text the re-root changed, so it would refuse every caller
          // (403) where live answers. Left as written, what reads it is live.
+         // The same for a rolling window the re-root leaves to the kept text
+         // (one over a hidden dimension computed at read): it must be in the
+         // served source's compiled filters as the author wrote it.
+         const keptAsWritten = (c: (typeof candidates)[number]) =>
+            (copy.spans.get(c.reroot.url) ?? []).find(
+               (s) => s.sourceName === c.reroot.sourceName,
+            )?.termsKeptAsWritten ?? [];
          const unscoped = candidates.filter(
             (c) =>
                !lost.includes(c) &&
@@ -1634,6 +1745,10 @@ export class ServedCopyServe {
                   c.reroot.authorDef,
                   servedDefOf(servedMap, c.reroot.sourceID),
                ) ||
+                  !keepsTermsAsWritten(
+                     servedDefOf(servedMap, c.reroot.sourceID),
+                     keptAsWritten(c),
+                  ) ||
                   (!hasOwnNode(servedMap, c.reroot.sourceID) &&
                      appliesFilters(c.reroot.authorDef))),
          );
@@ -2214,6 +2329,27 @@ export function keepsGivenTerms(author: unknown, served: unknown): boolean {
    } catch {
       return false;
    }
+}
+
+/**
+ * Whether the served source's compiled filters hold each of `codes` (the
+ * author's text of a `where:` term), whitespace aside. True for none;
+ * unreadable filters fail closed.
+ */
+export function keepsTermsAsWritten(
+   served: unknown,
+   codes: readonly string[],
+): boolean {
+   if (codes.length === 0) return true;
+   const filters = (served as { filterList?: unknown } | undefined)?.filterList;
+   if (!Array.isArray(filters)) return false;
+   const norm = (code: string) => code.replace(/\s+/g, " ").trim();
+   const held = new Set(
+      (filters as { code?: unknown }[])
+         .map((f) => (typeof f?.code === "string" ? norm(f.code) : ""))
+         .filter((c) => c !== ""),
+   );
+   return codes.every((c) => norm(c) !== "" && held.has(norm(c)));
 }
 
 /**
