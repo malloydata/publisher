@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — In development: a joined source's rollup answers a query that also aggregates through a join_one, once its key is checked unique
+
+Materialization v2 known limitation 29 lifted, behind `PUBLISHER_MATERIALIZE` (off by default).
+
+Join-to-rollup used to answer live any query through a `join_one` that also aggregated the querying source's own rows (`flight_count` beside `crew.crew_size`), because a `join_one` the data does not keep unique repeats parent rows live. Now a `#(preaggregate)` rollup whose one grain dimension is a `join_one`'s key gets a uniqueness check on every auto-run build, over the rows the build read: when no key value repeats, those queries are served from the rollup; when one repeats, they stay live and the build logs that the declared `join_one` is broken. A query that reads another `join_one` whose key a build found repeated is answered live too, closing a case where served and live could differ (15.5 live against 10.5 served). With no check on record, as for a table a control plane's manifest binds, behaviour is as before. The check is recorded beside the inline uniqueness check in `metadata.inlineUniquenessChecks.rollupKeys`, describes only the table its run wrote, is carried while that table stands, and is restored on restart. Rollups no `join_one` reads are not checked. No API field changes. See [docs/preaggregation.md](docs/preaggregation.md).
+
 ## [Unreleased] — In development: the inline uniqueness check skips an unchanged table, and `#(carries)` reads the served copy
 
 Two materialization v2 limitations lifted, both behind `PUBLISHER_MATERIALIZE` (off by default).
