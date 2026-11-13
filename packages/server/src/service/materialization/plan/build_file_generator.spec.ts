@@ -18,10 +18,12 @@ import { rollingWindowsOf } from "./rolling_window";
 import {
    buildCopyText,
    buildSourceName,
+   COLOCATED_NOT_SERVED,
    generateBuildFile,
    generateBuildFiles,
    materializeRefusalFinding,
    planModelMaterialize,
+   storedChainText,
    type MaterializePlan,
 } from "./build_file_generator";
 
@@ -214,6 +216,108 @@ import { ext__mat } from 'm.malloy.1.materialize-level.malloy'
       );
    });
 
+   it("lifts a chained extension's own access modifiers over its parent's re-root, and drops a stored hidden parent dimension with its label (P3 with P10)", () => {
+      const text = `source: orders is duckdb.table('ev')
+
+source: stored is orders extend {
+  internal dimension: big is amt > 10
+  private dimension: secret is amt * 2
+  measure: total is amt.sum()
+}
+
+source: ext is stored extend {
+  private dimension: mine is amt + 1
+}
+`;
+      const lines = text.split("\n");
+      const at = (name: string, endLine: number) => {
+         const line = lines.findIndex((l) =>
+            l.startsWith(`source: ${name} is`),
+         );
+         return {
+            url: "file:///pkg/m.malloy",
+            range: {
+               start: { line, character: 8 },
+               end: { line: endLine, character: 1 },
+            },
+         };
+      };
+      const parent = plan({
+         sourceName: "stored",
+         sourceID: "stored@file:///pkg/m.malloy",
+         buildSourceName: buildSourceName("stored"),
+         columns: [
+            { dimension: "amt", column: "amt", computed: false },
+            {
+               dimension: "big",
+               column: "big",
+               computed: true,
+               access: "internal",
+            },
+            {
+               dimension: "secret",
+               column: "secret",
+               computed: true,
+               access: "private",
+            },
+         ],
+         declaration: at("stored", 6),
+      });
+      const ext = plan({
+         sourceName: "ext",
+         sourceID: "ext@file:///pkg/m.malloy",
+         buildSourceName: buildSourceName("ext"),
+         columns: [
+            { dimension: "amt", column: "amt", computed: false },
+            {
+               dimension: "mine",
+               column: "mine",
+               computed: true,
+               access: "private",
+            },
+         ],
+         declaration: at("ext", 10),
+         buildsOver: {
+            sourceID: parent.sourceID,
+            sourceName: "stored",
+            declaration: at("stored", 6),
+            path: [at("ext", 10)],
+         },
+      });
+      const copy = buildCopyText(
+         text,
+         ext,
+         { parent, importFrom: "m.malloy.0.materialize-level.malloy" },
+         { liftAccess: true },
+      );
+      // The parent's stored hidden dimensions are gone, labels and all (a
+      // label left behind would hide the next statement); the extension's
+      // own label is lifted and its inherited internal fields lifted by the
+      // wrap.
+      expect(copy).toEqual({
+         copy: `##! experimental.access_modifiers
+import { stored__mat } from 'm.malloy.0.materialize-level.malloy'
+source: orders is duckdb.table('ev')
+
+source: stored is stored__mat extend {
+  measure: total is amt.sum()
+}
+
+source: ext is stored extend {
+  dimension: mine is amt + 1
+} include { public: * }
+`,
+      });
+      // The storage= build text carries the same lift, and its flag.
+      const chain = storedChainText(text, ext, parent, { liftAccess: true });
+      expect(chain?.flags).toEqual(["##! experimental.access_modifiers"]);
+      expect(chain?.declarations).toContain(
+         "dimension: mine is amt + 1\n} include { public: * }",
+      );
+      expect(chain?.declarations).not.toContain("private");
+      expect(chain?.declarations).not.toContain("internal");
+   });
+
    it("carries the declaration's persist keys, quoted, in a fixed order", () => {
       const text = generateBuildFile(
          [
@@ -318,7 +422,7 @@ source: nested is orders_raw -> {
   ) as t(id, ts)
 """)
 
-#(materialize) name="recent_events" refresh="incremental" watermark="ts"
+#(materialize) name="recent_events" refresh="incremental" watermark="ts" storage="lake"
 source: recent is events_raw extend {
   where: ts >= now - 30 days
 }
@@ -367,14 +471,14 @@ source: recent is events_raw extend {
    );
 
    it(
-      "plans orders__mat: public dimensions stored under their own names, measures, views, joins and private fields left out",
+      "plans orders__mat: dimensions stored under their own names, a private one with its modifier (P3), measures, views and joins left out",
       async () => {
          const c = await compiled(`${BASE}
 source: regions is duckdb.sql("select 'east' as region, 'East' as label") extend {
   primary_key: region
 }
 
-#(materialize) name="orders_all"
+#(materialize) name="orders_all" storage="lake"
 source: orders is orders_raw extend {
   primary_key: id
   dimension: big is amount > 10
@@ -392,6 +496,12 @@ source: orders is orders_raw extend {
             { dimension: "amount", column: "amount", computed: false },
             { dimension: "order_date", column: "order_date", computed: false },
             { dimension: "big", column: "big", computed: true },
+            {
+               dimension: "secret",
+               column: "secret",
+               computed: true,
+               access: "private",
+            },
          ]);
          const [sourceID, source] = Object.entries(c.sources).find(
             ([, s]) => s.name === "orders",
@@ -405,9 +515,9 @@ source: orders is orders_raw extend {
                c.targets?.[sourceID],
             ),
          ).toEqual(expect.any(String));
-         expect(addressSQL(source, c.targets?.[sourceID])).not.toContain(
-            "secret",
-         );
+         // Built from a copy with the source's own `private` lifted, so the
+         // build selects it (P3).
+         expect(addressSQL(source, c.targets?.[sourceID])).toContain("secret");
       },
       { timeout: 30000 },
    );
@@ -416,7 +526,7 @@ source: orders is orders_raw extend {
       "builds exactly what the source computes",
       async () => {
          const pkg = await packages.create(`${BASE}
-#(materialize) name="orders_all"
+#(materialize) name="orders_all" storage="lake"
 source: orders is orders_raw extend { dimension: big is amount > 10 }
 `);
          const c = await compilePackageBuildPlan(pkg);
@@ -467,19 +577,19 @@ source: orders is orders_raw
       "builds a materialized extension from its parent's build source, after it (P10)",
       async () => {
          const pkg = await packages.create(`${BASE}
-#(materialize) name="orders_all"
+#(materialize) name="orders_all" storage="lake"
 source: orders is orders_raw extend {
   dimension: big is amount > 10
   measure: total is amount.sum()
 }
 
-#(materialize) name="orders_east"
+#(materialize) name="orders_east" storage="lake"
 source: orders_ext is orders extend {
   where: region = 'east'
   dimension: east_big is big and region = 'east'
 }
 
-#(materialize) name="orders_east_big"
+#(materialize) name="orders_east_big" storage="lake"
 source: orders_ext2 is orders_ext extend { where: east_big }
 `);
          const c = await compilePackageBuildPlan(pkg);
@@ -530,21 +640,21 @@ source: orders_ext2 is orders_ext extend { where: east_big }
    );
 
    it(
-      "builds an extension on another tier than its parent, an incremental one, and one in another file, over the raw chain",
+      "builds an extension in another destination than its parent, an incremental one, and one in another file, over the raw chain",
       async () => {
          const c = await compiled({
             "m.malloy": `${BASE}
-#(materialize) name="orders_all"
+#(materialize) name="orders_all" storage="lake"
 source: orders is orders_raw
 
-#(materialize) storage="lake"
+#(materialize) storage="other"
 source: stored_ext is orders extend { dimension: east is region = 'east' }
 
-#(materialize) name="orders_inc" refresh="incremental" watermark="order_date"
+#(materialize) name="orders_inc" refresh="incremental" watermark="order_date" storage="lake"
 source: inc_ext is orders extend { dimension: west is region = 'west' }
 `,
             "other.malloy": `import "m.malloy"
-#(materialize) name="other_ext"
+#(materialize) name="other_ext" storage="lake"
 source: other_ext is orders extend { dimension: n is 1 }
 `,
          });
@@ -639,10 +749,10 @@ source: joined is orders_raw extend {
   join_one: regions on region = regions.code
 }
 
-#(materialize) name="orders_all"
+#(materialize) name="orders_all" storage="lake"
 source: orders is joined
 
-#(materialize) name="orders_ext" inline=["regions"]
+#(materialize) name="orders_ext" inline=["regions"] storage="lake"
 source: orders_ext is orders extend {
   dimension: label is regions.label
 }
@@ -662,7 +772,7 @@ source: orders_ext is orders extend {
       async () => {
          const c = await compiled({
             "base.malloy": `${BASE}
-#(materialize) name="orders_all"
+#(materialize) name="orders_all" storage="lake"
 source: orders is orders_raw
 `,
             "index.malloy": `import { o is orders } from "base.malloy"
@@ -682,7 +792,7 @@ source: o2 is o
       async () => {
          const c = await compiled({
             "sub/m.malloy": `${BASE}
-#(materialize) name="orders_all"
+#(materialize) name="orders_all" storage="lake"
 source: orders is orders_raw
 `,
          });
@@ -711,7 +821,7 @@ source: lines is duckdb.sql("""
       "keeps a dimension through a reference join out of the table, and a join_many's fan-out out of the build",
       async () => {
          const c = await compiled(`${JOINED}
-#(materialize) name="orders_all"
+#(materialize) name="orders_all" storage="lake"
 source: orders is orders_raw extend {
   join_one: regions with region
   join_many: lines on lines.order_id = id
@@ -738,7 +848,7 @@ source: orders is orders_raw extend {
       "inlines a join_one: stores what reads through it and the joined source's dimensions, with a uniqueness check",
       async () => {
          const c = await compiled(`${JOINED}
-#(materialize) name="orders_all" inline=["regions"]
+#(materialize) name="orders_all" inline=["regions"] storage="lake"
 source: orders is orders_raw extend {
   join_one: regions with region
   dimension: region_label is regions.label
@@ -780,7 +890,7 @@ source: orders is orders_raw extend {
 source: regions is duckdb.sql("""
   select * from (values ('east', 'East'), ('east', 'Also east'), ('west', 'West')) as t(code, label)
 """) extend { primary_key: code }
-#(materialize) name="orders_all" inline=["regions"]
+#(materialize) name="orders_all" inline=["regions"] storage="lake"
 source: orders is orders_raw extend {
   join_one: regions with region
 }
@@ -820,7 +930,7 @@ source: lines is duckdb.sql("""
       "inlines a join_many as a pair table: parent and child columns, and a parent-row flag written at build",
       async () => {
          const pkg = await packages.create(`${PAIRED}
-#(materialize) name="orders_all" inline=["lines"]
+#(materialize) name="orders_all" storage="lake" inline=["lines"]
 source: orders is orders_raw extend {
   primary_key: id
   join_many: lines on lines.order_id = id
@@ -891,7 +1001,7 @@ source: orders is orders_raw extend {
 source: notes is duckdb.sql("""
   select * from (values (1, 'east'), (2, 'east'), (3, 'north')) as t(note_id, region)
 """) extend { primary_key: note_id }
-#(materialize) name="orders_all" inline=["notes"]
+#(materialize) name="orders_all" storage="lake" inline=["notes"]
 source: orders is orders_raw extend {
   primary_key: id
   join_many: notes on notes.region = region
@@ -933,7 +1043,7 @@ source: orders is orders_raw extend {
    for (const [name, declaration, why] of [
       [
          "a join_many to a source with no primary key",
-         `#(materialize) name="orders_all" inline=["raw_lines"]
+         `#(materialize) name="orders_all" storage="lake" inline=["raw_lines"]
 source: orders is orders_raw extend {
   primary_key: id
   join_many: raw_lines is lines_raw on raw_lines.order_id = id
@@ -945,7 +1055,7 @@ source: orders is orders_raw extend {
          `source: lines_joined is lines extend {
   join_one: o is orders_raw on o.id = order_id
 }
-#(materialize) name="orders_all" inline=["lj"]
+#(materialize) name="orders_all" storage="lake" inline=["lj"]
 source: orders is orders_raw extend {
   primary_key: id
   join_many: lj is lines_joined on lj.order_id = id
@@ -954,7 +1064,7 @@ source: orders is orders_raw extend {
       ],
       [
          "two join_manys",
-         `#(materialize) name="orders_all" inline=["lines", "l2"]
+         `#(materialize) name="orders_all" storage="lake" inline=["lines", "l2"]
 source: orders is orders_raw extend {
   primary_key: id
   join_many: lines on lines.order_id = id
@@ -964,7 +1074,7 @@ source: orders is orders_raw extend {
       ],
       [
          "a join_many on an incremental source",
-         `#(materialize) name="orders_all" inline=["lines"] refresh="incremental" watermark="order_date"
+         `#(materialize) name="orders_all" storage="lake" inline=["lines"] refresh="incremental" watermark="order_date"
 source: orders is orders_raw extend {
   primary_key: id
   join_many: lines on lines.order_id = id
@@ -973,7 +1083,7 @@ source: orders is orders_raw extend {
       ],
       [
          "a join_many whose flag clashes with a dimension",
-         `#(materialize) name="orders_all" inline=["lines"]
+         `#(materialize) name="orders_all" storage="lake" inline=["lines"]
 source: orders is orders_raw extend {
   primary_key: id
   join_many: lines on lines.order_id = id
@@ -983,7 +1093,7 @@ source: orders is orders_raw extend {
       ],
       [
          "a join_cross",
-         `#(materialize) name="orders_all" inline=["lc"]
+         `#(materialize) name="orders_all" storage="lake" inline=["lc"]
 source: orders is orders_raw extend {
   primary_key: id
   join_cross: lc is lines on lc.order_id = id
@@ -1035,7 +1145,7 @@ ${declaration}
          `refuses inline= naming ${name}, and plans nothing for it`,
          async () => {
             const pkg = await packages.create(`${JOINED}
-#(materialize) name="orders_all" inline=${inline}
+#(materialize) name="orders_all" inline=${inline} storage="lake"
 source: orders is orders_raw extend {
   join_one: regions with region
   join_one: r2 is duckdb.sql("""select 'east' as code""") on r2.code = region
@@ -1068,7 +1178,7 @@ source: orders is orders_raw extend {
       "refuses an inlined column that clashes with one of the source's own, as a package warning",
       async () => {
          const c = await compiled(`${JOINED}
-#(materialize) name="orders_all" inline=["regions"]
+#(materialize) name="orders_all" inline=["regions"] storage="lake"
 source: orders is orders_raw extend {
   join_one: regions with region
   dimension: regions__label is upper(region)
@@ -1089,7 +1199,7 @@ source: orders is orders_raw extend {
       async () => {
          const files = `##! experimental.persistence
 ${BASE}
-#(materialize) name="orders_all"
+#(materialize) name="orders_all" storage="lake"
 source: orders is orders_raw
 
 #@ persist name="by_region"
@@ -1133,6 +1243,31 @@ source: orders is orders_raw
    );
 
    it(
+      "builds no colocated extension table: a colocated chain is refused on both sides, and a storage= extension of a colocated parent builds over the raw chain (P10 with #1666)",
+      async () => {
+         const c = await compiled(`${BASE}
+#(materialize) name="orders_all"
+source: orders is orders_raw extend { dimension: big is amount > 10 }
+
+#(materialize) name="orders_east"
+source: orders_ext is orders extend { where: region = 'east' }
+
+#(materialize) storage="lake"
+source: stored_ext is orders extend { dimension: east is region = 'east' }
+`);
+         expect(
+            generatedPlans(c).map((p) => [p.sourceName, p.buildsOver]),
+         ).toEqual([["stored_ext", undefined]]);
+         const refused = (c.annotationFindings ?? [])
+            .filter((f) => f.code === "materialize-not-built")
+            .map((f) => f.subject)
+            .sort();
+         expect(refused).toEqual(["orders", "orders_ext"]);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
       "reports a refused declaration as a package warning, and builds the rest",
       async () => {
          const c = await compiled(`${BASE}
@@ -1142,7 +1277,7 @@ source: unnamed is orders_raw
 #(materialize) nmae="typo" storage="lake"
 source: misspelt is orders_raw
 
-#(materialize) name="orders_all"
+#(materialize) name="orders_all" storage="lake"
 source: orders is orders_raw
 `);
          expect(generatedPlans(c).map((p) => p.sourceName)).toEqual(["orders"]);
@@ -1161,7 +1296,9 @@ source: orders is orders_raw
          // to the source's name.
          expect(findings[0].message).toContain("`nmae=`");
          expect(findings[0].message).toContain("did you mean `name=`?");
-         expect(findings[1].message).toContain("needs name=");
+         expect(findings[1].message).toContain(
+            "colocated #(materialize) is not served yet",
+         );
       },
       { timeout: 30000 },
    );
@@ -1170,12 +1307,13 @@ source: orders is orders_raw
       "carries freshness onto the generated source, where the plan reads it",
       async () => {
          const c = await compiled(`${BASE}
-#(materialize) name="orders_all" freshness.window="24h" freshness.fallback="serve_stale"
+#(materialize) name="orders_all" freshness.window="24h" freshness.fallback="serve_stale" storage="lake"
 source: orders is orders_raw
 `);
          const [p] = generatedPlans(c);
          expect(p.persist).toEqual({
             name: "orders_all",
+            storage: "lake",
             "freshness.window": "24h",
             "freshness.fallback": "serve_stale",
          });
@@ -1196,7 +1334,7 @@ ${BASE}
 #@ persist name="by_region"
 source: by_region is orders_raw -> { group_by: region }
 
-#(materialize) name="orders_all"
+#(materialize) name="orders_all" storage="lake"
 source: orders is orders_raw extend { dimension: big is amount > 10 }
 `);
          const [p] = generatedPlans(c);
@@ -1238,7 +1376,7 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
          const c = await compiled(`##! experimental.persistence
 ${BASE}
 #@ persist name="by_hand"
-#(materialize) name="orders_all"
+#(materialize) name="orders_all" storage="lake"
 source: orders is orders_raw -> { select: * }
 `);
          expect(generatedPlans(c)).toEqual([]);
@@ -1260,7 +1398,7 @@ source: orders is orders_raw -> { select: * }
       { timeout: 30000 },
    );
 
-   it("refuses a colocated source with no name=, since its default could be the table it reads", () => {
+   it("refuses a colocated source, named or not, since the served copy does not serve it yet", () => {
       const notes = (text: string) => ({
          notes: [
             {
@@ -1287,11 +1425,26 @@ source: orders is orders_raw -> { select: * }
             annotations: notes('#(materialize) name="orders_all"\n'),
             fields: [field],
          },
+         stored: {
+            sourceID: "stored@file:///pkg/m.malloy",
+            annotations: notes('#(materialize) storage="lake"\n'),
+            fields: [field],
+         },
       });
-      expect(plans.map((p) => p.persist.name)).toEqual(["orders_all"]);
-      expect(refused).toHaveLength(1);
-      expect(refused[0].sourceName).toBe("orders");
-      expect(refused[0].reason).toContain("needs name=");
+      expect(plans.map((p) => p.persist)).toEqual([
+         { name: "stored", storage: "lake" },
+      ]);
+      expect(refused.map((r) => [r.sourceName, r.reason])).toEqual([
+         ["named", COLOCATED_NOT_SERVED],
+         ["orders", COLOCATED_NOT_SERVED],
+      ]);
+      expect(materializeRefusalFinding(refused[0], "m.malloy")).toMatchObject({
+         code: "materialize-not-built",
+         tier: "unservable",
+         message: expect.stringContaining(
+            "colocated #(materialize) is not served yet; use storage= or #@ persist",
+         ),
+      });
    });
 
    it("reads planModelMaterialize's refusals for a source with nothing to store", () => {
@@ -1327,7 +1480,7 @@ source: orders is orders_raw -> { select: * }
          {
             sourceName: "empty",
             sourceID: "empty@file:///pkg/m.malloy",
-            reason: "the source has no public dimension to store",
+            reason: "the source has no dimension to store",
          },
       ]);
    });
@@ -1377,14 +1530,14 @@ source: orders is orders_raw -> { select: * }
       "plans only a source that declares #(materialize) itself, not an extension that inherits it",
       async () => {
          const c = await compiled(`${BASE}
-#(materialize) name="orders_all"
+#(materialize) name="orders_all" storage="lake"
 source: orders is orders_raw extend { dimension: big is amount > 10 }
 
 source: east_orders is orders extend { where: region = 'east' }
 
 source: renamed_orders is orders
 
-#(materialize) name="west_all"
+#(materialize) name="west_all" storage="lake"
 source: west_orders is orders extend { where: region = 'west' }
 `);
          // Malloy copies orders' note onto east_orders and renamed_orders by
@@ -1414,7 +1567,7 @@ source: west_orders is orders extend { where: region = 'west' }
       async () => {
          const c = await compiled({
             "a.malloy": `${BASE}
-#(materialize) name="orders_all"
+#(materialize) name="orders_all" storage="lake"
 source: orders is orders_raw extend { dimension: big is amount > 10 }
 `,
             "m.malloy": `import 'a.malloy'
@@ -1422,7 +1575,7 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
 source: east_orders is orders extend { where: region = 'east' }
 source: renamed_orders is orders
 
-#(materialize) name="west_all"
+#(materialize) name="west_all" storage="lake"
 
 // A comment and blank lines between the annotation and its statement.
 
@@ -1449,7 +1602,7 @@ source:
          expect(
             (c.annotationFindings ?? [])
                .filter((f) => f.code === "materialize-not-built")
-               .map((f) => f.message.match(/`(\w+)`/)?.[1] ?? f.message)
+               .map((f) => f.subject)
                .sort(),
          ).toEqual(["first_copy", "second_copy"]);
       },

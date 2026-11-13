@@ -5852,11 +5852,6 @@ components:
                   naming it). `deprecated-filter-annotation`: a source declaring
                   deprecated `#(filter)` annotations (one per declaring source,
                   `model` naming its file and `subject` the source).
-                  `deprecated-persist-opt-out`: a source declaring v1's
-                  `#@ -persist`, which materialization v2 deprecates (one per
-                  declaring source, `model` its file and `subject` the source;
-                  `warn`; only while `PUBLISHER_MATERIALIZE` is on; see
-                  docs/materialization-migration.md).
                   `deprecated-preaggregate-annotation`: a measure declaring
                   `#@ preaggregate`, whose v2 spelling is `#(preaggregate)` (one
                   per measure, `model` its file, `subject` the source and the

@@ -418,6 +418,7 @@ export class SourceBuilder {
             contentSourceEntityId,
             planFacts,
             lift,
+            ...(swapDependents?.replacesView ? { replacesNameView: true } : {}),
          });
       }
 

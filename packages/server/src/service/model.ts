@@ -720,8 +720,8 @@ export class Model {
    }
 
    /**
-    * The deprecated v1 `#@ -persist` and `#@ preaggregate` annotations THIS
-    * file declares, each once, at the source or measure it is written on.
+    * The deprecated v1 `#@ preaggregate` annotations THIS file declares, each
+    * once, at the measure it is written on.
     */
    public declaredDeprecatedPersistAnnotations(): DeprecatedPersistAnnotation[] {
       if (!this.modelDef) return [];

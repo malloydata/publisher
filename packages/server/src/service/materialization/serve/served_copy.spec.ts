@@ -4,6 +4,8 @@
 import { describe, expect, it } from "bun:test";
 import {
    buildServedCopy,
+   hiddenInclude,
+   SERVED_COPY_ACCESS_FLAG,
    declarationSpans,
    declaredBaseName,
    dropDimensions,
@@ -706,6 +708,63 @@ describe("a stored timeframe truncation (decision 3)", () => {
    });
 });
 
+describe("hidden stored columns (P3)", () => {
+   const text = `source: orders is base include { private: org_id; public: * } extend {
+  private dimension: secret is amount * 2
+  measure: total is secret.sum()
+}
+`;
+   const columns: Reroot["columns"] = [
+      { name: "amount", type: "DOUBLE" },
+      { name: "org_id", type: "VARCHAR", access: "private" },
+      { name: "region_code", type: "VARCHAR", access: "internal" },
+      { name: "secret", type: "DOUBLE", access: "private" },
+   ];
+
+   it("writes the author's modifiers again on the stored table, before the author's extend", () => {
+      const copy = buildServedCopy(
+         [
+            reroot(text, "orders", {
+               columns,
+               storedDimensions: ["region_code", "secret"],
+            }),
+         ],
+         () => text,
+      );
+      const out = copy.files.get("file:///m.malloy") as string;
+      expect(out.startsWith(SERVED_COPY_ACCESS_FLAG)).toBe(true);
+      expect(out).toContain(
+         "orders is __publisher_storage_t_0.virtual('h1')::orders__served include { public: *; private: org_id; internal: region_code } extend {",
+      );
+      // `secret` is defined in the source's own extend: that definition is
+      // kept as written, modifier and all, and its column left out of the
+      // type, so the stored column never stands in for it publicly.
+      expect(out).toContain("  private dimension: secret is amount * 2");
+      expect(out).not.toMatch(/secret::/);
+      expect(out).toContain("org_id::string");
+      expect(out).toContain("region_code::string");
+   });
+
+   it("writes nothing, and the plain flag, when no stored column is hidden", () => {
+      expect(hiddenInclude([{ name: "a", type: "DOUBLE" }])).toBe("");
+      const copy = buildServedCopy(
+         [reroot(text, "orders", { storedDimensions: [] })],
+         () => text,
+      );
+      const out = copy.files.get("file:///m.malloy") as string;
+      expect(out.startsWith(SERVED_COPY_FLAG)).toBe(true);
+      expect(out).not.toContain("include { public: *");
+   });
+
+   it("quotes a hidden name that needs it", () => {
+      expect(
+         hiddenInclude([
+            { name: "source", type: "VARCHAR", access: "internal" },
+         ]),
+      ).toBe(" include { public: *; internal: `source` }");
+   });
+});
+
 describe("an inlined join_one, answered from its stored columns", () => {
    const inlinedJoins = [
       {
@@ -919,5 +978,59 @@ describe("rerootDeclaration (pair tables, P5)", () => {
     #(doc) "Flights"
     flight_count is flight_count__pair { where: __parent_row__pair }
 }`);
+   });
+});
+
+describe("a statement's access label stays on its own statement (P3 with P10)", () => {
+   it("drops a labelled dimension statement whole, label included", () => {
+      expect(
+         dropDimensions(
+            "extend {\n  internal dimension: big is amt > 10\n  private dimension: secret is amt * 2\n  measure: total is amt.sum()\n}",
+            new Set(["big", "secret"]),
+         )?.text,
+      ).toBe("extend {\n  measure: total is amt.sum()\n}");
+   });
+
+   it("never takes the next statement's label with a dropped one", () => {
+      const out = dropDimensions(
+         "extend {\n  dimension: big is amt > 10\n  internal dimension: secret is amt * 2\n}",
+         new Set(["big"]),
+      );
+      expect(out?.text).toBe(
+         "extend {\n  internal dimension: secret is amt * 2\n}",
+      );
+   });
+
+   it("reads a rename followed by a labelled statement, and undoes it", () => {
+      expect(
+         inverseRenameBlocks(
+            "extend {\n  rename: amount is amt\n  private dimension: secret is amount * 2\n}",
+            new Set(["amount"]),
+         ),
+      ).toBe(" extend { rename: amt is amount }");
+   });
+
+   it("still refuses an access-labelled rename (it would rename a hidden column)", () => {
+      expect(
+         inverseRenameBlocks(
+            "extend {\n  internal rename: amount is amt\n}",
+            new Set(["amount"]),
+         ),
+      ).toBeUndefined();
+   });
+
+   it("refuses dropping any definition of an access-labelled join_one statement", () => {
+      expect(
+         dropJoinDefinition(
+            "extend {\n  internal join_one: a with x, b with y\n  measure: n is count()\n}",
+            "a",
+         ),
+      ).toBeUndefined();
+      expect(
+         dropJoinDefinition(
+            "extend {\n  internal join_one: a with x, b with y\n  measure: n is count()\n}",
+            "b",
+         ),
+      ).toBeUndefined();
    });
 });
