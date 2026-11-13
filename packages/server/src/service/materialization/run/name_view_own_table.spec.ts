@@ -37,6 +37,7 @@ import {
    type NameViewRecord,
    type OwnNameTable,
 } from "./name_view";
+import { ownedTableComment } from "./table_ownership";
 import {
    nameViewComment,
    nameViewReplaceTableDdl,
@@ -327,6 +328,35 @@ describe("in a plain-DuckDB storage= destination", () => {
       await expect(preflightNameView(intent, context)).rejects.toThrow(
          "held by a table Publisher did not create",
       );
+   });
+
+   it("never a table another package has marked as its own since", async () => {
+      // This package's records say it wrote `summary`; another package's
+      // build has claimed the name since (table_ownership.ts).
+      await onLake((run) =>
+         run(`COMMENT ON TABLE summary IS '${ownedTableComment("env/other")}'`),
+      );
+      await expect(
+         preflightNameView(intent, { ...context, ownTableAt: () => OWN }),
+      ).rejects.toThrow("a table package 'env/other' built");
+      const records = await publishNameViews(
+         [intent],
+         context,
+         new Map([[nameViewKey(intent), OWN]]),
+      );
+      expect(records.map((r) => r.outcome)).toEqual(["name_taken"]);
+      expect(await relations()).toEqual(["TABLE:summary", "TABLE:summary_g1"]);
+      expect(await answer()).toBe(1);
+      // Its own mark is still its own.
+      await onLake((run) =>
+         run(`COMMENT ON TABLE summary IS '${ownedTableComment(OWNER)}'`),
+      );
+      expect(
+         await preflightNameView(intent, { ...context, ownTableAt: () => OWN }),
+      ).toEqual({
+         slot: { state: "own_table", table: OWN },
+         dialect: "duckdb",
+      });
    });
 
    it("preflight: never for a view, whatever the records say", async () => {
