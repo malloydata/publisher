@@ -874,6 +874,78 @@ export async function ownViewAtTable(
 }
 
 /**
+ * Before a colocated build whose table is called `name=` (a self-instructed,
+ * unversioned build of a `#(materialize)` source with no `storage=`): what
+ * holds the name in the source's own warehouse, which also holds the
+ * author's tables. The build swaps its table onto the name, dropping
+ * whatever table is there, so it goes ahead only onto an empty name, a table
+ * this package's own committed run wrote there ({@link ownNameTableIn}), or
+ * this package's own view (returned, which the table then replaces, as
+ * {@link ownViewAtTable}). Anything else (a table no run of this package
+ * wrote, such as the very table the source reads, or a view this package did
+ * not mark) throws {@link NameViewTakenError}, so the source fails before
+ * anything is written. Undefined, and the build goes ahead, when the name
+ * cannot be probed (an unsupported dialect, an unreachable connection, a
+ * failed probe), as {@link preflightNameView} does.
+ */
+export async function preflightColocatedTableAtName(
+   intent: NameViewIntent,
+   context: NameViewContext,
+): Promise<{ target: string; dialect: string } | undefined> {
+   let probed:
+      | { own?: { target: string; dialect: string }; holder?: string }
+      | undefined;
+   try {
+      probed = await atNameViewSite(intent, context, async (site) => {
+         if (!nameViewDialectSupported(site.dialect)) return undefined;
+         const raw = await probeNameView(site, intent.viewName);
+         if (raw.state === "empty") return {};
+         // A table: rebuilt only when this package's own run wrote it, and
+         // no other package has marked it as its own since.
+         if (raw.state === "taken" && raw.kind !== "VIEW") {
+            if (
+               raw.tableOwner !== undefined &&
+               raw.tableOwner !== intent.owner
+            ) {
+               return { holder: `a table package '${raw.tableOwner}' built` };
+            }
+            return (await context.ownTableAt?.(intent))
+               ? {}
+               : {
+                    holder: `a ${raw.kind.toLowerCase()} no run of this package wrote`,
+                 };
+         }
+         const slot = ownedSlot(raw, intent.owner);
+         if (slot.state === "ours") {
+            return { own: { target: slot.target, dialect: site.dialect } };
+         }
+         return {
+            holder:
+               slot.state === "taken"
+                  ? slot.holder
+                  : "an object Publisher did not create",
+         };
+      });
+   } catch (err) {
+      logger.warn("Could not check a name= table's name before the build", {
+         sourceName: intent.sourceName,
+         viewName: intent.viewName,
+         error: errMessage(err),
+      });
+      return undefined;
+   }
+   if (probed?.holder) {
+      throw new NameViewTakenError(
+         `'${intent.sourceName}' is not built: its name= '${intent.viewName}' is ` +
+            `held by ${probed.holder}, and a build into the source's own ` +
+            `warehouse never replaces one. Drop or rename that object, or give ` +
+            `#(materialize) another name=.`,
+      );
+   }
+   return probed?.own;
+}
+
+/**
  * How a build replaces this package's own view at its table's name with the
  * table (orchestrated, then self-instructed again). The view is dropped
  * only in the step that puts the table in its place:

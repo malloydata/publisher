@@ -754,4 +754,28 @@ export function assertTierEligible(
       plan?.sourceGateOutcomes?.[source.sourceID],
       annotationFields,
    );
+   // A colocated `#(materialize)` table is read only through the served copy
+   // (never Malloy's manifest), which answers a gated entry point only while
+   // it keeps the gates (`materialize.gatedSources`), as for `storage=`. A
+   // gated one is built only then, so a table is never built that cannot be
+   // served (phase 3 pull request 6).
+   if (
+      plan?.materializePlans?.[source.sourceID] &&
+      referencesAuthorize(source) &&
+      !gateEnforcedAtRead(source.sourceID, plan)
+   ) {
+      recordEligibilityRefused("authorize");
+      throw new MaterializationEligibilityError({
+         reason: "authorize",
+         message:
+            `Source '${source.name}' cannot be materialized (colocated ` +
+            `'#(materialize)'): it is protected by an #(authorize) or ` +
+            `#(access_filter) gate, and its table is read only through the ` +
+            `served copy, which answers a gated entry point only with ` +
+            `PUBLISHER_MATERIALIZE_GATED_SOURCES on and only for the entry ` +
+            `point's own row-level gate. The source serves live. Turn that ` +
+            `setting on, or use '#@ persist', whose colocated table keeps the ` +
+            `gate through Malloy's build manifest.`,
+      });
+   }
 }
