@@ -210,6 +210,7 @@ describe("storageRefreshFor re-seeds a table only a rebuild can retype", () => {
          ]),
       };
       const warn = spyOn(logger, "warn");
+      const info = spyOn(logger, "info");
       const { session: s, issued } = session();
       try {
          const result = await storageRefreshFor({
@@ -230,15 +231,23 @@ describe("storageRefreshFor re-seeds a table only a rebuild can retype", () => {
             ([message]) =>
                message === "Rebuilding an incremental source in full",
          );
+         const recast = (info.mock.calls as unknown[][]).find(
+            ([message]) =>
+               message === "Re-seeding to store declared column types",
+         );
          return {
             result,
             issued,
             seed: seed?.[1] as
                | { reasonCode?: string; reason?: string }
                | undefined,
+            recast: recast?.[1] as
+               | { columns?: { column: string; storedType: string }[] }
+               | undefined,
          };
       } finally {
          warn.mockRestore();
+         info.mockRestore();
       }
    }
 
@@ -252,25 +261,35 @@ describe("storageRefreshFor re-seeds a table only a rebuild can retype", () => {
    });
 
    it("re-seeds a table an older build typed, saying why", async () => {
-      const { result, seed } = await refresh(
+      const { result, seed, recast } = await refresh(
          "TIMESTAMP '2024-06-05 00:00:00' AS order_date, 1 AS flag, false AS is_open",
       );
       // undefined: the caller rebuilds with a CTAS, which casts.
       expect(result).toBeUndefined();
       expect(seed?.reasonCode).toBe("forced");
-      expect(seed?.reason).toContain("`order_date` as TIMESTAMP");
-      expect(seed?.reason).toContain("`flag` as INTEGER");
-      expect(seed?.reason).toContain("a delta cannot change a column's type");
+      // The seed's log carries the code alone; the columns a rebuild retypes
+      // are on the re-seed's own log.
+      expect(seed).not.toHaveProperty("reason");
+      expect(recast?.columns).toEqual(
+         expect.arrayContaining([
+            expect.objectContaining({
+               column: "order_date",
+               storedType: "TIMESTAMP",
+            }),
+            expect.objectContaining({ column: "flag", storedType: "INTEGER" }),
+         ]),
+      );
    });
 
-   it("keeps the reason of a re-seed the caller forced", async () => {
+   it("does not report a retype for a re-seed the caller forced", async () => {
       for (const opts of [{ reseed: true }, { forceRefresh: true }]) {
-         const { result, seed } = await refresh(
+         const { result, seed, recast } = await refresh(
             "TIMESTAMP '2024-06-05 00:00:00' AS order_date, 1 AS flag, false AS is_open",
             opts,
          );
          expect(result).toBeUndefined();
-         expect(seed?.reason ?? "").not.toContain("a delta cannot change");
+         expect(seed?.reasonCode).toBe("forced");
+         expect(recast).toBeUndefined();
       }
    });
 

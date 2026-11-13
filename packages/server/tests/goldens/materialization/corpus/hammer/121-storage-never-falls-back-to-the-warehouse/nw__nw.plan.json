@@ -53,6 +53,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "colocated_daily@<hammer>/nw/nw.malloy": {

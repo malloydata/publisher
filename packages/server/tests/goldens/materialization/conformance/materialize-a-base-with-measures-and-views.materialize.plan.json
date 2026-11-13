@@ -147,6 +147,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "orders_m@<pkg>/m.malloy": {

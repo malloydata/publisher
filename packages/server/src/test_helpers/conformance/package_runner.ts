@@ -124,6 +124,8 @@ export interface LoadedFixture {
    built: { name: string; tier: "storage" | "colocated" }[];
    /** Problems building a planned source, by name. */
    buildErrors: Record<string, string>;
+   /** The `storage=` manifest entries the build bound, by sourceEntityId. */
+   stored: Record<string, Record<string, unknown>>;
    /**
     * Bind the built tables again under the settings installed now, and settle
     * every model's served copy: the bindings a switch read at bind (the v1
@@ -166,6 +168,8 @@ export async function loadFixture(
    pkg: Package;
    /** The temporary directory the environment and the lake live in. */
    root: string;
+   /** The storage destination the `storage=` tables are built in. */
+   lake: DuckDBConnection;
 }> {
    const root = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-conform-"));
    const envPath = path.join(root, "env");
@@ -255,6 +259,7 @@ export async function loadFixture(
       dispose,
       pkg,
       root,
+      lake,
       async bind(options: BindOptions = {}) {
          const { built, buildErrors, colocated, stored } = await buildAll(
             pkg,
@@ -273,6 +278,7 @@ export async function loadFixture(
             pkg,
             built,
             buildErrors,
+            stored,
             async rebind() {
                // Empty first, so the package derives every binding afresh.
                pkg.bindColocatedServeManifest({});

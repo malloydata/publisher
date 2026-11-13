@@ -418,6 +418,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "orders_wide@<pkg>/m.malloy": {

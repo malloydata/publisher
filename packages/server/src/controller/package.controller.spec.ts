@@ -1894,7 +1894,33 @@ describe("PackageController.getPackageBuildPlan", () => {
       expect(await controller.getPackageBuildPlan("env", "pkg")).toEqual({
          graphs: [],
          sources: {},
+         refusedSources: {},
+         // A plan with nothing in it is complete: nothing was left out.
+         omittedSources: [],
+         omittedFiles: [],
       });
+   });
+
+   it("hands out the plan's omittedSources as the package derived them", async () => {
+      const plan = {
+         graphs: [],
+         sources: {},
+         refusedSources: {},
+         omittedSources: [
+            {
+               sourceID:
+                  "orders__rollup__category__1@file:///p/m.malloy.preaggregate.malloy",
+               reason: "rollup_companion_failed",
+            },
+         ],
+      };
+      const controller = controllerServing({
+         getBuildPlan: () => plan,
+         isBuildPlanUnavailable: () => false,
+      });
+      expect(
+         (await controller.getPackageBuildPlan("env", "pkg")).omittedSources,
+      ).toEqual(plan.omittedSources);
    });
 
    it("is a 409 BUILD_PLAN_UNAVAILABLE when the plan could not be derived at load", async () => {

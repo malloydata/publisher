@@ -39,6 +39,29 @@ Step 2 of the configuration design. Every setting now has one name of each kind,
 - **A boolean flag takes no value.** `--allow-proxy-connections false` turns proxy connections on, as it did before; startup now warns that the `false` is ignored and names `--no-allow-proxy-connections`.
 - A secret has no flag, and is never logged or echoed in an error. `packageVersioning`, `packageInlineFields` and `modelPage` have no flag either: the design gives the two transition settings and the model page none.
 
+## [Unreleased] — The build plan says when it is incomplete: `omittedSources`
+
+A build plan (`GET …/packages/{pkg}/build-plan`, the dry run, and the deprecated `Package.buildPlan`) now carries `omittedSources`, a list of `{ sourceID, reason }`: each source the plan would have held but left out because planning it failed, where before such a source vanished from the plan with only a log line. Failures it reports: a generated companion (the `#@ preaggregate` composite, the `#(preaggregate)` rollup companion, `#(materialize)`, persisted views, the v1 cutover's build copy) that did not compile, a `#@` annotation none of whose lines parse, and a source whose plan entry could not be projected. A companion whose planner failed before it could name its sources is listed in a second field, `omittedFiles` (`{ file, reason }`): retire nothing declared in that file. `reason` is an open string, a code such as `rollup_companion_failed`, never the failure's message. Both empty means every source the package plans is in `sources` or `refusedSources`, so a host can retire a table whose source is absent from both; otherwise keep the tables the entries name. A plan whose only sources were lost this way is now returned rather than read as no plan. A plan from an older Publisher has neither field; read that as completeness unknown. See [docs/materialization.md](docs/materialization.md#retiring-tables-the-plan-no-longer-lists). No enum is added.
+
+Under the v1 cutover, two ways a model file without `##! experimental.persistence` lost its `#@ persist` sources are fixed: a `#@` line naming `persist` after another key (`#@ name=t persist`) is planned, as Malloy plans it in a flagged file, and a file that joins sources across connections is planned from its build view rather than from the file on disk, which never compiled.
+
+## [Unreleased] — Materialization logs no longer carry watermark values or driver messages
+
+A materialization log line no longer carries a value from the data or a driver's error message, which
+can quote the build's SQL or a row value. The detail is still on the run's record. Log pipelines that
+read these fields should switch to the codes:
+
+- "Rebuilding an incremental source in full" and "Skipping an incremental source's refresh" drop
+  `reason` (it could name a watermark boundary) and keep `reasonCode`. "Applied an incremental delta"
+  drops `rangeStart` and `rangeEnd`. The boundary reached is on the manifest entry's `ledger`.
+- "Could not read a covered_through boundary after a full rebuild" carries `errorCode`, not `error`.
+- "Chained storage build could not reuse the parent table" carries `code` (a driver's code,
+  Publisher's error kind or the error's class), not `reason`; the cast fallback and the two rollback
+  warnings carry `errorCode` or `causeCode`.
+- "Materialization run failed" and "Materialization run cancelled", logged for a run failure that
+  `materialization.run.finished` did not already report, carry `code` and, for a failure, the
+  stack's frames without its message line.
+
 ## [Unreleased] — (BREAKING) Materialization build metrics: one build counter, and structured run and build events
 
 Three materialization metrics are replaced, and one loses a label. Dashboards or alerts on the old

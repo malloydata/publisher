@@ -72,6 +72,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "by_name@<hammer>/pjw/pjw.malloy": {
