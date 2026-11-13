@@ -3,7 +3,7 @@
     "buildErrors": {},
     "built": [
       {
-        "name": "orders__preagg__region__c697d298",
+        "name": "orders__rollup__region__409e9efb",
         "tier": "colocated"
       }
     ],
@@ -71,7 +71,7 @@
           {
             "kind": "rollup",
             "outcome": "used",
-            "tableId": "c7034313cf1cf3de0f065239fc65bad7f748a4cfc3c779bc5b3a1c355ad335ee"
+            "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
           }
         ],
         "notConsidered": [],
@@ -88,7 +88,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "c7034313cf1cf3de0f065239fc65bad7f748a4cfc3c779bc5b3a1c355ad335ee"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
         },
         "warnings": []
       },
@@ -145,7 +145,7 @@
           {
             "kind": "rollup",
             "outcome": "used",
-            "tableId": "c7034313cf1cf3de0f065239fc65bad7f748a4cfc3c779bc5b3a1c355ad335ee"
+            "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
           }
         ],
         "notConsidered": [],
@@ -162,7 +162,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "c7034313cf1cf3de0f065239fc65bad7f748a4cfc3c779bc5b3a1c355ad335ee"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
         },
         "warnings": []
       },
@@ -213,10 +213,11 @@
       "path": {
         "considered": [
           {
+            "detail": "the query reads `status`, which the rollup's grain does not keep",
             "kind": "rollup",
             "outcome": "skipped",
             "reason": "GRAIN_TOO_COARSE",
-            "tableId": "c7034313cf1cf3de0f065239fc65bad7f748a4cfc3c779bc5b3a1c355ad335ee"
+            "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
           }
         ],
         "notConsidered": [],
@@ -289,7 +290,7 @@
           {
             "kind": "rollup",
             "outcome": "used",
-            "tableId": "c7034313cf1cf3de0f065239fc65bad7f748a4cfc3c779bc5b3a1c355ad335ee"
+            "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
           }
         ],
         "notConsidered": [],
@@ -306,7 +307,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "c7034313cf1cf3de0f065239fc65bad7f748a4cfc3c779bc5b3a1c355ad335ee"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
         },
         "warnings": []
       },
@@ -363,7 +364,7 @@
           {
             "kind": "rollup",
             "outcome": "used",
-            "tableId": "c7034313cf1cf3de0f065239fc65bad7f748a4cfc3c779bc5b3a1c355ad335ee"
+            "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
           }
         ],
         "notConsidered": [],
@@ -380,7 +381,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "c7034313cf1cf3de0f065239fc65bad7f748a4cfc3c779bc5b3a1c355ad335ee"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
         },
         "warnings": []
       },
@@ -431,10 +432,11 @@
       "path": {
         "considered": [
           {
+            "detail": "the query reads `status`, which the rollup's grain does not keep",
             "kind": "rollup",
             "outcome": "skipped",
             "reason": "GRAIN_TOO_COARSE",
-            "tableId": "c7034313cf1cf3de0f065239fc65bad7f748a4cfc3c779bc5b3a1c355ad335ee"
+            "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
           }
         ],
         "notConsidered": [],

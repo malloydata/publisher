@@ -74,7 +74,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -143,7 +144,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -213,7 +215,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -282,7 +285,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -351,7 +355,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -421,7 +426,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973",
+          "via": "served_copy"
         },
         "warnings": []
       },

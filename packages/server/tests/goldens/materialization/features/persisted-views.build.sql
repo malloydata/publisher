@@ -74,6 +74,29 @@ WHERE base."n">1
 
 -- generated files
 
+-- ==== <pkg>/m.malloy
+##! experimental.persistence
+import "raw.malloy"
+
+source: orders is orders_raw extend {
+  measure:
+    n is count()
+    total is amount.sum()
+  #@ persist storage="lake"
+  view: by_region is { group_by: region; aggregate: n, total }
+  #@ persist name="orders_by_status"
+  view: by_status is { group_by: status; aggregate: n }
+  #@ persist storage="lake"
+  view: two_stage is { group_by: region; aggregate: n } -> { select: region, n; where: n > 1 }
+  #@ persist storage="lake"
+  view: recent is { where: created_at > now - 30 days; group_by: region; aggregate: n }
+  view: plain is { group_by: status; aggregate: total }
+}
+
+source: north_orders is orders extend {
+  where: region = 'north'
+}
+
 -- ==== <pkg>/m.malloy.persist-view.malloy
 ##! experimental.persistence
 import { orders__pv_base is orders } from "m.malloy"

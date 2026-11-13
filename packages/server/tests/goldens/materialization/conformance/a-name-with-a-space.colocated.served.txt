@@ -1,0 +1,14 @@
+// conformance: a name with a space [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: spaced__served is {
+   status::string,
+   `line total`::number
+}
+
+import "raw.malloy"
+
+#@ persist name="spaced"
+source: spaced is duckdb.virtual('5af4cda2cb1755ea8666a6d3d3846c41477f2dbc3de37ef4b5618385021eb460')::spaced__served

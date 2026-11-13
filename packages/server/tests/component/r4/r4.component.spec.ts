@@ -36,9 +36,9 @@ for (const mode of ["serve_shape", "served_copy", "cutover"] as const) {
             env: {
                PERSIST_STORAGE_MODE: "on",
                ...(servedCopy ? { PUBLISHER_MATERIALIZE: "true" } : {}),
-               ...(mode === "cutover"
-                  ? { PUBLISHER_V1_SERVED_COPY: "on" }
-                  : {}),
+               // The first two modes pin the paths before the cutover, which
+               // is on by default: `off` until those paths retire.
+               PUBLISHER_V1_SERVED_COPY: mode === "cutover" ? "on" : "off",
             },
          }).restore;
       });

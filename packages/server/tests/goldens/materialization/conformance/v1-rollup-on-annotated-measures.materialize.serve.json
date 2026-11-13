@@ -56,7 +56,13 @@
       "equalToLive": true,
       "malloy": "run: orders -> { group_by: region; aggregate: total, n }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -70,13 +76,14 @@
           "sourceName": "orders"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "rollup",
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
         },
         "warnings": []
       },
       "query": "covered by the rollup",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "rollup",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -123,7 +130,13 @@
       "equalToLive": true,
       "malloy": "run: orders -> { group_by: region; aggregate: avg_ is total / n }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -137,13 +150,14 @@
           "sourceName": "orders"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "rollup",
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
         },
         "warnings": []
       },
       "query": "a measure expression over the rollup",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "rollup",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -186,7 +200,15 @@
       "equalToLive": true,
       "malloy": "run: orders -> { group_by: status; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "detail": "the query reads `status`, which the rollup's grain does not keep",
+            "kind": "rollup",
+            "outcome": "skipped",
+            "reason": "GRAIN_TOO_COARSE",
+            "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],

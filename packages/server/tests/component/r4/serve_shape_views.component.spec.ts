@@ -18,8 +18,9 @@ import {
 
 let restoreSettings: () => void;
 beforeAll(() => {
+   // The serve shape answers only with the v1 cutover off.
    restoreSettings = installSettings({
-      env: { PERSIST_STORAGE_MODE: "on" },
+      env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_V1_SERVED_COPY: "off" },
    }).restore;
 });
 afterAll(async () => {

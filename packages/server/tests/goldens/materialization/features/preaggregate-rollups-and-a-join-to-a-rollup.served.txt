@@ -11,6 +11,7 @@ source: orders__rollup__region__409e9efb__served is orders__rollup__region__409e
     total is total__partial.sum()
 }
 source: orders is orders__rollup__region__409e9efb__served include { internal: total__partial public: * }
+export { orders, lines }
 
 // ==== <pkg>/m.malloy (text 2 of 3)
 ##! experimental { access_modifiers persistence virtual_source }
@@ -31,6 +32,7 @@ source: orders__rollup__m_region__7877d8b1__served is __served_copy_alias_of_lak
     n is n__partial.sum()
 }
 source: orders is orders__rollup__m_region__7877d8b1__served include { internal: n__partial public: * }
+export { orders, lines }
 
 // ==== <pkg>/m.malloy (text 3 of 3)
 ##! experimental { access_modifiers persistence virtual_source }
@@ -45,6 +47,7 @@ source: orders__rollup__region__409e9efb__served is orders__rollup__region__409e
 source: orders is orders__rollup__region__409e9efb__served include { internal: total__partial public: * } extend {
   view: by_region is { group_by: region; aggregate: total }
 }
+export { orders, lines }
 
 // ==== <pkg>/m.malloy.preaggregate.malloy
 ##! experimental.persistence

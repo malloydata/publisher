@@ -249,16 +249,14 @@
       ],
       "malloy": "run: gated_mat -> { group_by: status; aggregate: n, total }",
       "path": {
-        "considered": [],
-        "notConsidered": [
+        "considered": [
           {
-            "built": true,
             "kind": "materialized",
-            "relationship": "sibling",
-            "sourceName": "locked_mat",
+            "outcome": "used",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
           }
         ],
+        "notConsidered": [],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -271,13 +269,15 @@
           "sourceName": "gated_mat"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a row filter over a materialized source",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -329,16 +329,14 @@
       ],
       "malloy": "run: locked_mat -> { group_by: region; aggregate: n }",
       "path": {
-        "considered": [],
-        "notConsidered": [
+        "considered": [
           {
-            "built": true,
             "kind": "materialized",
-            "relationship": "sibling",
-            "sourceName": "gated_mat",
+            "outcome": "used",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
           }
         ],
+        "notConsidered": [],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -350,13 +348,15 @@
           "sourceName": "locked_mat"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a lock over a materialized source",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -410,21 +410,8 @@
       ],
       "malloy": "run: by_column -> { group_by: status; aggregate: total }",
       "path": {
-        "considered": [
-          {
-            "kind": "rollup",
-            "outcome": "used",
-            "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
-          }
-        ],
+        "considered": [],
         "notConsidered": [
-          {
-            "built": true,
-            "kind": "rollup",
-            "relationship": "sibling",
-            "sourceName": "by_lock",
-            "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
-          },
           {
             "built": true,
             "kind": "materialized",
@@ -444,13 +431,12 @@
           "sourceName": "by_column"
         },
         "servedBy": {
-          "kind": "rollup",
-          "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "a row filter over a rollup",
-      "servedBy": "rollup",
+      "servedBy": "live",
       "servedFrom": null,
       "switch": "on"
     },
@@ -503,21 +489,8 @@
       ],
       "malloy": "run: by_lock -> { group_by: status; aggregate: total }",
       "path": {
-        "considered": [
-          {
-            "kind": "rollup",
-            "outcome": "used",
-            "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
-          }
-        ],
+        "considered": [],
         "notConsidered": [
-          {
-            "built": true,
-            "kind": "rollup",
-            "relationship": "sibling",
-            "sourceName": "by_column",
-            "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
-          },
           {
             "built": true,
             "kind": "materialized",
@@ -537,13 +510,12 @@
           "sourceName": "by_lock"
         },
         "servedBy": {
-          "kind": "rollup",
-          "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "a lock admitting over a rollup",
-      "servedBy": "rollup",
+      "servedBy": "live",
       "servedFrom": null,
       "switch": "on"
     },
@@ -621,22 +593,7 @@
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
           }
         ],
-        "notConsidered": [
-          {
-            "built": true,
-            "kind": "rollup",
-            "relationship": "sibling",
-            "sourceName": "by_column",
-            "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
-          },
-          {
-            "built": true,
-            "kind": "rollup",
-            "relationship": "sibling",
-            "sourceName": "by_lock",
-            "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
-          }
-        ],
+        "notConsidered": [],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -716,22 +673,7 @@
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
           }
         ],
-        "notConsidered": [
-          {
-            "built": true,
-            "kind": "rollup",
-            "relationship": "sibling",
-            "sourceName": "by_column",
-            "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
-          },
-          {
-            "built": true,
-            "kind": "rollup",
-            "relationship": "sibling",
-            "sourceName": "by_lock",
-            "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
-          }
-        ],
+        "notConsidered": [],
         "query": {
           "filteredBy": [],
           "groupedBy": [

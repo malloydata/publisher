@@ -61,8 +61,7 @@
         "considered": [
           {
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "outcome": "used",
             "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
           }
         ],
@@ -78,13 +77,15 @@
           "sourceName": "summary"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "summary in a.malloy",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -130,8 +131,7 @@
         "considered": [
           {
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "outcome": "used",
             "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
           }
         ],
@@ -147,13 +147,15 @@
           "sourceName": "summary"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "summary in b.malloy",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -224,7 +226,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
+          "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -301,7 +304,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
+          "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7",
+          "via": "served_copy"
         },
         "warnings": []
       },

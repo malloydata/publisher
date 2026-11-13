@@ -53,7 +53,13 @@
       "equalToLive": true,
       "malloy": "run: from_view -> { group_by: status; aggregate: n2 is n.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "9ed55dbb1432fac7ffd6246709050d36f20372cdc3def07717591f4f42623980"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -66,13 +72,15 @@
           "sourceName": "from_view"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "9ed55dbb1432fac7ffd6246709050d36f20372cdc3def07717591f4f42623980",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the view's output",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -115,7 +123,13 @@
       "equalToLive": true,
       "malloy": "run: from_view_rollup -> { group_by: status; aggregate: t is total2.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "9ed55dbb1432fac7ffd6246709050d36f20372cdc3def07717591f4f42623980"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -128,13 +142,15 @@
           "sourceName": "from_view_rollup"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "9ed55dbb1432fac7ffd6246709050d36f20372cdc3def07717591f4f42623980",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a query-shaped reader",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -177,7 +193,13 @@
       "equalToLive": true,
       "malloy": "run: top_regions",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "9ed55dbb1432fac7ffd6246709050d36f20372cdc3def07717591f4f42623980"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -190,13 +212,15 @@
           "sourceName": "from_view"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "9ed55dbb1432fac7ffd6246709050d36f20372cdc3def07717591f4f42623980",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a named query",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {

@@ -64,7 +64,13 @@
       "equalToLive": true,
       "malloy": "run: recent -> { group_by: region; aggregate: n }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "06f65db1905c6c613f21f6fa5ce13753ab3247676cb1dea31390e0370d60d5c2"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -92,13 +98,15 @@
           "sourceName": "recent"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "06f65db1905c6c613f21f6fa5ce13753ab3247676cb1dea31390e0370d60d5c2",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "lower",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -141,7 +149,13 @@
       "equalToLive": true,
       "malloy": "run: older -> { group_by: region; aggregate: n }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -156,13 +170,6 @@
             "relationship": "sibling",
             "sourceName": "recent",
             "tableId": "06f65db1905c6c613f21f6fa5ce13753ab3247676cb1dea31390e0370d60d5c2"
-          },
-          {
-            "built": true,
-            "kind": "materialized",
-            "relationship": "sibling",
-            "sourceName": "older_inherited",
-            "tableId": "a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e"
           }
         ],
         "query": {
@@ -176,13 +183,15 @@
           "sourceName": "older"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "upper",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -225,7 +234,13 @@
       "equalToLive": true,
       "malloy": "run: between -> { group_by: region; aggregate: n }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "5e2703da57e062e1d9937960233fffd5f765019c6495e5879eeca4f87d84e11d"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -253,13 +268,15 @@
           "sourceName": "between"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "5e2703da57e062e1d9937960233fffd5f765019c6495e5879eeca4f87d84e11d",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "two-sided",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -302,7 +319,13 @@
       "equalToLive": true,
       "malloy": "run: older_inherited -> { group_by: region; aggregate: n }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -310,13 +333,6 @@
             "relationship": "sibling",
             "sourceName": "between",
             "tableId": "5e2703da57e062e1d9937960233fffd5f765019c6495e5879eeca4f87d84e11d"
-          },
-          {
-            "built": true,
-            "kind": "materialized",
-            "relationship": "sibling",
-            "sourceName": "older",
-            "tableId": "a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e"
           },
           {
             "built": true,
@@ -337,13 +353,15 @@
           "sourceName": "older_inherited"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "inherited upper",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -394,7 +412,13 @@
       "equalToLive": true,
       "malloy": "run: older -> { where: created_at < now - 60 days; group_by: region; aggregate: n }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -409,13 +433,6 @@
             "relationship": "sibling",
             "sourceName": "recent",
             "tableId": "06f65db1905c6c613f21f6fa5ce13753ab3247676cb1dea31390e0370d60d5c2"
-          },
-          {
-            "built": true,
-            "kind": "materialized",
-            "relationship": "sibling",
-            "sourceName": "older_inherited",
-            "tableId": "a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e"
           }
         ],
         "query": {
@@ -431,13 +448,15 @@
           "sourceName": "older"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "upper, narrowed by the query",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {

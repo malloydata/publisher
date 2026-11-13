@@ -161,8 +161,13 @@ describe("the access record's copy of the path report", () => {
          pkg,
          "run: daily -> { group_by: region; aggregate: t is total.sum() }",
       );
+      // The served copy answers a v1 colocated table (the v1 cutover).
       expect(audit.path).toEqual({
-         servedBy: { kind: "materialized", tableId: entityIdOf(pkg, "daily") },
+         servedBy: {
+            kind: "materialized",
+            tableId: entityIdOf(pkg, "daily"),
+            via: "served_copy",
+         },
          considered: [
             {
                tableId: entityIdOf(pkg, "daily"),
@@ -224,6 +229,7 @@ describe("the path report over colocated #@ persist", () => {
          kind: "materialized",
          tableId: entityIdOf(pkg, "daily"),
          dataAsOf: "2026-11-01T00:00:00.000Z",
+         via: "served_copy",
       });
       expect(report.considered).toEqual([
          {
@@ -446,7 +452,8 @@ describe("the path report over a colocated rollup", () => {
             kind: "rollup",
             outcome: "skipped",
             reason: "COUNT_SEMANTICS",
-            detail: expect.stringContaining("count"),
+            // The rollup leg's reason: the count reads the rollup's rows.
+            detail: expect.stringContaining("aggregates the rollup's rows"),
          },
       ]);
    });
@@ -458,13 +465,14 @@ describe("the path report over a colocated rollup", () => {
          "run: orders -> { group_by: amount; aggregate: total }",
       );
       expect(report.servedBy).toEqual({ kind: "live" });
-      // The companion compiles, and Malloy's composite answers from the base.
+      // The rollup leg names the field its grain does not keep.
       expect(report.considered).toEqual([
          {
             tableId: rollupId,
             kind: "rollup",
             outcome: "skipped",
             reason: "GRAIN_TOO_COARSE",
+            detail: expect.stringContaining("`amount`"),
          },
       ]);
    });

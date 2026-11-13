@@ -2,6 +2,48 @@
 -- Addresses are computed with a fixed connection digest (golden-digest:<connection>),
 -- so they move exactly when the SQL or the folded layout moves.
 
+-- ==== source orders__rollup__category__389984bb
+-- sourceID: orders__rollup__category__389984bb@<hammer>/pa/pa.malloy.preaggregate.malloy
+-- connection: orders_pg
+-- sourceEntityId: 04803cb53503036fdb1f5e6b1b64ca6941a7f419563f2b6f31e222f7825a5bdc
+-- compiler key: 04803cb53503036fdb1f5e6b1b64ca6941a7f419563f2b6f31e222f7825a5bdc (the sourceEntityId)
+-- build SQL:
+WITH __stage0 AS (
+  SELECT 
+     base."order_id" as "order_id",
+     base."category" as "category",
+     base."region" as "region",
+     base."amount" as "amount"
+  FROM public.pa_orders as base
+)
+SELECT 
+   base."category" as "category",
+   COALESCE(SUM(base."amount"),0) as "total__partial"
+FROM __stage0 as base
+GROUP BY 1
+ORDER BY 2 desc NULLS LAST
+
+-- ==== source orders__rollup__region__85a0fa84
+-- sourceID: orders__rollup__region__85a0fa84@<hammer>/pa/pa.malloy.preaggregate.malloy
+-- connection: orders_pg
+-- sourceEntityId: 4f696de650cac5319e7ccbb2bf531fd7ba3c436d45ac7cea6a9ff42c8dce83f3
+-- compiler key: 4f696de650cac5319e7ccbb2bf531fd7ba3c436d45ac7cea6a9ff42c8dce83f3 (the sourceEntityId)
+-- build SQL:
+WITH __stage0 AS (
+  SELECT 
+     base."order_id" as "order_id",
+     base."category" as "category",
+     base."region" as "region",
+     base."amount" as "amount"
+  FROM public.pa_orders as base
+)
+SELECT 
+   base."region" as "region",
+   COALESCE(SUM(base."amount"),0) as "regional__partial"
+FROM __stage0 as base
+GROUP BY 1
+ORDER BY 2 desc NULLS LAST
+
 -- ==== source orders
 -- sourceID: orders@<hammer>/pa/pa.malloy
 -- connection: orders_pg
@@ -15,90 +57,41 @@ SELECT
    base."amount" as "amount"
 FROM public.pa_orders as base
 
--- ==== source orders__preagg__category__edb2cd3b
--- sourceID: orders__preagg__category__edb2cd3b@<hammer>/pa/pa.malloy.preagg.malloy
--- connection: orders_pg
--- reads: orders@<hammer>/pa/pa.malloy
--- sourceEntityId: ced321f35ab4aed5db8b1c990a557726ac86a367ebc76878590f7b87634ff7b4
--- compiler key: ced321f35ab4aed5db8b1c990a557726ac86a367ebc76878590f7b87634ff7b4 (the sourceEntityId)
--- build SQL:
-WITH __stage0 AS (
-  SELECT 
-     base."order_id" as "order_id",
-     base."category" as "category",
-     base."region" as "region",
-     base."amount" as "amount"
-  FROM public.pa_orders as base
-)
-SELECT 
-   base."category" as "category",
-   (COALESCE(SUM(base."amount"),0)) as "total__partial"
-FROM __stage0 as base
-GROUP BY 1
-ORDER BY 2 desc NULLS LAST
--- build SQL with every other planned source built:
-SELECT 
-   base."category" as "category",
-   (COALESCE(SUM(base."amount"),0)) as "total__partial"
-FROM built.orders as base
-GROUP BY 1
-ORDER BY 2 desc NULLS LAST
-
--- ==== source orders__preagg__region__c697d298
--- sourceID: orders__preagg__region__c697d298@<hammer>/pa/pa.malloy.preagg.malloy
--- connection: orders_pg
--- reads: orders@<hammer>/pa/pa.malloy
--- sourceEntityId: 4170edc90f093b5c545e588043f0a3034c5577f13fb2d32f3a7722058d39985b
--- compiler key: 4170edc90f093b5c545e588043f0a3034c5577f13fb2d32f3a7722058d39985b (the sourceEntityId)
--- build SQL:
-WITH __stage0 AS (
-  SELECT 
-     base."order_id" as "order_id",
-     base."category" as "category",
-     base."region" as "region",
-     base."amount" as "amount"
-  FROM public.pa_orders as base
-)
-SELECT 
-   base."region" as "region",
-   (COALESCE(SUM(base."amount"),0)) as "regional__partial"
-FROM __stage0 as base
-GROUP BY 1
-ORDER BY 2 desc NULLS LAST
--- build SQL with every other planned source built:
-SELECT 
-   base."region" as "region",
-   (COALESCE(SUM(base."amount"),0)) as "regional__partial"
-FROM built.orders as base
-GROUP BY 1
-ORDER BY 2 desc NULLS LAST
-
 -- generated files
 
--- ==== <hammer>/pa/pa.malloy.preagg.malloy
+-- ==== <hammer>/pa/pa.malloy
 ##! experimental { persistence composite_sources }
-import { orders__preagg_base is orders } from "pa.malloy"
 
-#@ persist name="analytics.orders__preagg__category__edb2cd3b"
-source: orders__preagg__category__edb2cd3b is orders__preagg_base -> {
+source: pa_orders is orders_pg.table('public.pa_orders')
+
+                                         
+source: orders is pa_orders -> {
+  select: order_id, category, region, amount
+} extend {
+  measure:
+    #@ preaggregate grain="region" namespace="rollups"
+    regional is amount.sum()
+  measure:
+    #@ preaggregate grain="category"
+    total is amount.sum()
+}
+
+-- ==== <hammer>/pa/pa.malloy.preaggregate.malloy
+##! experimental.persistence
+import { orders__rollup_base is orders } from "pa.malloy"
+
+#@ persist name="analytics.orders__rollup__category__389984bb"
+source: orders__rollup__category__389984bb is orders__rollup_base -> {
   group_by:
     category
   aggregate:
-    total__partial is total
-} extend {
-  measure:
-    total is total__partial.sum()
+    total__partial is amount.sum()
 }
 
-#@ persist name="rollups.orders__preagg__region__c697d298"
-source: orders__preagg__region__c697d298 is orders__preagg_base -> {
+#@ persist name="rollups.orders__rollup__region__85a0fa84"
+source: orders__rollup__region__85a0fa84 is orders__rollup_base -> {
   group_by:
     region
   aggregate:
-    regional__partial is regional
-} extend {
-  measure:
-    regional is regional__partial.sum()
+    regional__partial is amount.sum()
 }
-
-source: orders is compose(orders__preagg__category__edb2cd3b, orders__preagg__region__c697d298, orders__preagg_base)

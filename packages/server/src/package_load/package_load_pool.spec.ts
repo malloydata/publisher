@@ -641,7 +641,15 @@ source: by_category_table is orders -> by_category
    }
 
    it("does the main thread's work within the budget", async () => {
-      const outcome = await loadWith();
+      // The v1 composite companion is compiled only with the v1 cutover off
+      // (it retires with that path).
+      const off = installSettings({ env: { PUBLISHER_V1_SERVED_COPY: "off" } });
+      let outcome: Awaited<ReturnType<typeof loadWith>>;
+      try {
+         outcome = await loadWith();
+      } finally {
+         off.restore();
+      }
       expect(outcome.buildPlan?.ok).toBe(true);
       expect(outcome.models[0].renderTagResults?.length).toBe(1);
       // The render-tag check reads the schema, not the SQL.
@@ -904,8 +912,13 @@ source: orders is duckdb.table('limit_t') extend {
 }
 `,
       );
+      // The v1 `#@ preaggregate` composite companion, which serves only with
+      // the v1 cutover off (it retires with that path).
       const cacheOff = installSettings({
-         env: { PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "0" },
+         env: {
+            PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "0",
+            PUBLISHER_V1_SERVED_COPY: "off",
+         },
       });
       let limitFetches = 0;
       const { duckdb, load, tearDown } = await setUp(
@@ -946,8 +959,13 @@ source: orders is duckdb.table('shared_t') extend {
       // With the worker's schema cache off, every compile fetches the table:
       // the model's, the companion's, and a second companion's if the plan
       // compiled its own.
+      // The v1 `#@ preaggregate` composite companion, which serves only with
+      // the v1 cutover off (it retires with that path).
       const cacheOff = installSettings({
-         env: { PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "0" },
+         env: {
+            PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "0",
+            PUBLISHER_V1_SERVED_COPY: "off",
+         },
       });
       const { duckdb, tableFetches, load, tearDown } = await setUp(() =>
          Promise.resolve(),

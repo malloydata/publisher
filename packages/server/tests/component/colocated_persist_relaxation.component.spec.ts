@@ -233,7 +233,12 @@ source: derived is locked extend {} -> { select: org_id, amount }
             "run: derived -> { select: org_id, amount }",
             { ORG: 1 },
          );
-         expect(org1).toEqual([{ org_id: 1, amount: 1000 }]);
+         // Under the v1 cutover the served copy reads colocated tables, and
+         // it grafts only a gate it can keep: this gate is declared on a
+         // source the derivation's re-root replaces, so the served copy
+         // declines (fails closed) and the query answers live, filtered by
+         // the gate. Never the table's rows unfiltered.
+         expect(org1).toEqual([{ org_id: 1, amount: 10 }]);
       },
       { timeout: 60000 },
    );
@@ -379,7 +384,12 @@ source: rollup is base_orders -> { select: org_id, amount }
             "run: rollup -> { select: org_id, amount }",
             { ORG: 1 },
          );
-         expect(org1).toEqual([{ org_id: 1, amount: 1000 }]);
+         // Under the v1 cutover the served copy reads colocated tables, and
+         // it grafts only a gate it can keep: this gate is declared on a
+         // source the derivation's re-root replaces, so the served copy
+         // declines (fails closed) and the query answers live, filtered by
+         // the gate. Never the table's rows unfiltered.
+         expect(org1).toEqual([{ org_id: 1, amount: 10 }]);
       },
       { timeout: 60000 },
    );
@@ -442,7 +452,13 @@ source: comp is combo -> { select: org_id, amount }
             "run: comp -> { select: org_id, amount; order_by: org_id }",
             { GROUPS: [7] },
          );
-         expect(rows).toEqual([{ org_id: 7, amount: 1000 }]);
+         // Under the v1 cutover the served copy reads colocated tables, and
+         // it grafts only a gate it can keep: this gate is declared on a
+         // source the derivation's re-root replaces, so the served copy
+         // declines (fails closed) and the query answers live, filtered by
+         // the gate. Never the table's rows unfiltered.
+         // The composite resolves to the gated member_a (1, not 51).
+         expect(rows).toEqual([{ org_id: 7, amount: 1 }]);
       },
       { timeout: 60000 },
    );

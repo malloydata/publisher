@@ -255,6 +255,7 @@ describe("serving after a connection edit and a rebuild", () => {
       expect(second.path?.servedBy).toEqual({
          kind: "materialized",
          tableId: after,
+         via: "served_copy",
       });
       expect(
          pkg.getServeVerdicts().find((v) => v.sourceName === "daily"),

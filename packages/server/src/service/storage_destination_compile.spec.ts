@@ -52,7 +52,7 @@ import {
 } from "./connection";
 import { Environment } from "./environment";
 import { Model } from "./model";
-import { StorageServeShape } from "./materialization/serve/model_serve_shape";
+import { ServedCopyServe } from "./materialization/serve/served_copy_serve";
 import { Package } from "./package";
 import {
    writeTempPackage,
@@ -286,7 +286,7 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       ).rejects.toThrow();
    });
 
-   it("compiles the serve shape against the destinations, not the package's own connections", async () => {
+   it("compiles the served copy against the destinations, not the package's own connections", async () => {
       // What the Environment EXPOSES being disjoint is not the same claim as the
       // serve path being wired to the right one of the two. Without this, handing
       // `getEnvironmentMalloyConfig()` to the serve path — the whole bug — passes
@@ -304,9 +304,9 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
 
       // Observed at the Model's public seams, so nothing reaches a private: the
       // provider the load hands `setServeDestinationConfig`, and the
-      // `StorageServeShape` collaborator a routed query compiles through.
+      // `ServedCopyServe` collaborator a routed query compiles through.
       const configured = spyOn(Model.prototype, "setServeDestinationConfig");
-      const shapes = spyOn(StorageServeShape.prototype, "loadServeShapeQuery");
+      const shapes = spyOn(ServedCopyServe.prototype, "loadQuery");
       let restoreMode: (() => void) | undefined;
       const providerOf = (target: Model) => {
          const call = configured.mock.contexts.lastIndexOf(target);
@@ -317,6 +317,8 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
          // attaches the serve config.
          const pkg = await environment.getPackage(parsePackageName("pkg"));
          const model = pkg.getModel("plain.malloy")!;
+         // The package's own files and connections, as its bind sets them.
+         model.setServedCopyContext(packageDir, pkg.getMalloyConfig());
          model.setServeBindings([
             {
                sourceName: "nums",
@@ -353,7 +355,7 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
             environment.getStorageDestinationMalloyConfig(),
          );
 
-         // Behaviourally, a routed query's shape does reach for the destination:
+         // Behaviourally, a routed query's served copy does reach for the destination:
          // it gets as far as needing that connection's dialect, which it can only
          // ask for after the name has resolved. The catalog is unreachable, so
          // the query itself falls back to live and still answers.
@@ -365,24 +367,27 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
          });
          expect(answered.compactResult).toEqual([{ a: 1 }]);
          expect(shapes).toHaveBeenCalledTimes(1);
-         await expect(shapes.mock.results[0].value).rejects.toThrow(
-            `Cannot determine dialect for connection '${DESTINATION_NAME}'`,
+         await expect(shapes.mock.results[0].value).rejects.toThrow();
+         // The served copy reads a destination under its own alias, never a
+         // name a tenant could author.
+         expect(JSON.stringify(model.servedCopyProblems())).toContain(
+            "Cannot determine dialect for connection '__publisher_storage_",
          );
 
-         // A memoized serve shape holds the connections of the generation it
+         // A compiled served copy holds the connections of the generation it
          // compiled against. Replacing the destination list retires those, so
-         // the memo has to be dropped — its key is the BINDING set, which a
+         // the compile has to be dropped — its key is the BINDING set, which a
          // destination change does not touch, so nothing else would invalidate
          // it and every routed query for this package would fail over to live
          // until the package reloaded.
-         const shape = shapes.mock.contexts[0] as StorageServeShape;
-         expect(shape.serveShapeCache).toBeDefined();
+         const copy = shapes.mock.contexts[0] as ServedCopyServe;
+         expect(copy.problems().length).toBeGreaterThan(0);
          environment.setStorageDestinations([
             ducklakeDestination(DESTINATION_NAME),
             ducklakeDestination(SHARED_NAME),
             ducklakeDestination("added_later"),
          ]);
-         expect(shape.serveShapeCache).toBeUndefined();
+         expect(copy.problems()).toEqual([]);
 
          // A reload rebuilds every model, so it has to re-apply the wiring — or
          // serve routing would quietly stop at the first reload.

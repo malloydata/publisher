@@ -1,0 +1,15 @@
+// conformance: query-shaped: two stages [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: two_stage__served is {
+   region::string,
+   customers::number,
+   t2::number
+}
+
+import "raw.malloy"
+
+#@ persist name="two_stage"
+source: two_stage is duckdb.virtual('921510abab0f740ae898b326a5a3b03a271691c3a156ffd02ece7916f74c78f0')::two_stage__served

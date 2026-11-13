@@ -130,6 +130,7 @@ async function buildModel(src: string = MODEL_SRC): Promise<Model> {
    const serveConfig = new MalloyConfig({ connections: {} });
    serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
    model.setServeDestinationConfig(() => serveConfig);
+   model.setServedCopyContext(dir, connMap);
    return model;
 }
 
@@ -261,6 +262,7 @@ async function buildGatedModel(): Promise<Model> {
    const serveConfig = new MalloyConfig({ connections: {} });
    serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
    model.setServeDestinationConfig(() => serveConfig);
+   model.setServedCopyContext(dir, connMap);
    model.setServeBindings([ORDERS_BINDING, REGIONS_BINDING]);
    return model;
 }

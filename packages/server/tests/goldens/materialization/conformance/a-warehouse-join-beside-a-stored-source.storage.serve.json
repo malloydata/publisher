@@ -73,7 +73,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280"
+          "tableId": "820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280",
+          "via": "served_copy"
         },
         "warnings": []
       },

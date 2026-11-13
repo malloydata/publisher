@@ -1,0 +1,41 @@
+// feature: v1 preaggregate: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { access_modifiers composite_sources persistence virtual_source }
+
+import { orders__rollup__m_region__75e7c0f9__built is orders__rollup__m_region__75e7c0f9 } from "m.malloy.preaggregate.malloy"
+source: orders__rollup__m_region__75e7c0f9__served is orders__rollup__m_region__75e7c0f9__built extend {
+  measure:
+    #@ preaggregate grain="region,m"
+    total is total__partial.sum()
+}
+source: orders is orders__rollup__m_region__75e7c0f9__served include { internal: total__partial public: * }
+
+// ==== <pkg>/m.malloy.preaggregate.malloy
+##! experimental.persistence
+import { orders__rollup_base is orders } from "m.malloy.rollup-author.malloy"
+
+#@ persist
+source: orders__rollup__m_region__75e7c0f9 is orders__rollup_base -> {
+  group_by:
+    m
+    region
+  aggregate:
+    total__partial is amount.sum()
+}
+
+// ==== <pkg>/m.malloy.rollup-author.malloy
+##! experimental { persistence composite_sources }
+import "raw.malloy"
+
+source: orders is orders_raw extend {
+  dimension: m is created_at.month
+  #@ preaggregate grain="region,m"
+  measure: total is amount.sum()
+  measure: n is count()
+}
+
+// ==== <pkg>/m.malloy.rollup.malloy
+##! experimental { access_modifiers composite_sources persistence virtual_source }
+import { orders_raw, customers_raw, lines_raw } from "raw.malloy"
+import { orders } from "m.malloy"

@@ -238,10 +238,12 @@ for (const tier of TIERS)
                QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
             );
          const served = await runQuery();
+         // Live: neither switch routes to the served copy.
          const off = installSettings({
             env: {
                PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
                PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_V1_SERVED_COPY: "off",
             },
          });
          let live: Awaited<ReturnType<typeof runQuery>>;

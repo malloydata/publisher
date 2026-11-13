@@ -198,7 +198,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "2375b815017e854f15706b749efb4d263a5bc0f59e2a56b56a5e4b2ccedd16da"
+          "tableId": "2375b815017e854f15706b749efb4d263a5bc0f59e2a56b56a5e4b2ccedd16da",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -391,7 +392,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "2375b815017e854f15706b749efb4d263a5bc0f59e2a56b56a5e4b2ccedd16da"
+          "tableId": "2375b815017e854f15706b749efb4d263a5bc0f59e2a56b56a5e4b2ccedd16da",
+          "via": "served_copy"
         },
         "warnings": []
       },

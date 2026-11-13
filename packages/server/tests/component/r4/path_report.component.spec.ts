@@ -53,7 +53,12 @@ source: daily is orders -> {
          "run: daily -> { group_by: region; aggregate: t is total.sum() }",
       );
       expect(servedFrom).toBe("storage");
-      expect(path?.servedBy).toEqual({ kind: "materialized", tableId: daily });
+      // The served copy answers a v1 `storage=` table (the v1 cutover).
+      expect(path?.servedBy).toEqual({
+         kind: "materialized",
+         tableId: daily,
+         via: "served_copy",
+      });
       expect(path?.considered).toEqual([
          { tableId: daily, kind: "materialized", outcome: "used" },
       ]);

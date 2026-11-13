@@ -11,6 +11,7 @@ import {
    getEmbeddingConfig,
    getMaxConcurrentQueries,
    getMaxQueryRows,
+   getMaterializeGatedSources,
    getMaxResponseBytes,
    getMemoryGovernorConfig,
    getPersistCollisionEnforce,
@@ -31,7 +32,7 @@ import {
    DEFAULT_QUERY_TIMEOUT_MS,
    PUBLISHER_CONFIG_NAME,
 } from "./constants";
-import { withSettings } from "./test_helpers/settings_env";
+import { installSettings, withSettings } from "./test_helpers/settings_env";
 
 describe("Config Environment Variable Substitution", () => {
    const testServerRoot = path.join(process.cwd(), "test-temp-config");
@@ -1683,4 +1684,37 @@ describe("EMBEDDING_MIN_SIMILARITY", () => {
    it("names the variable and the range it takes in the error", () => {
       expect(() => config("2")).toThrow(invalid("2"));
    });
+});
+
+describe("getMaterializeGatedSources", () => {
+   const cases: [Record<string, string>, boolean][] = [
+      // A gated v1 table needs the gated switch alone under the cutover.
+      [{ PUBLISHER_MATERIALIZE_GATED_SOURCES: "true" }, true],
+      [
+         {
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+            PUBLISHER_V1_SERVED_COPY: "off",
+         },
+         false,
+      ],
+      [
+         {
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+            PUBLISHER_V1_SERVED_COPY: "off",
+            PUBLISHER_MATERIALIZE: "true",
+         },
+         true,
+      ],
+      [{}, false],
+   ];
+   for (const [env, expected] of cases) {
+      it(`is ${expected} with ${JSON.stringify(env)}`, () => {
+         const { restore } = installSettings({ env });
+         try {
+            expect(getMaterializeGatedSources()).toBe(expected);
+         } finally {
+            restore();
+         }
+      });
+   }
 });

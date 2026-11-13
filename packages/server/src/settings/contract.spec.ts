@@ -1625,11 +1625,11 @@ export const CONTRACT: Record<string, Case[]> = {
       },
    ],
    "materialize.v1ServedCopy": [
-      { name: "unset", expect: value("off") },
+      { name: "unset", expect: value("on") },
       {
          name: "PUBLISHER_V1_SERVED_COPY",
-         env: { PUBLISHER_V1_SERVED_COPY: "on" },
-         expect: value("on"),
+         env: { PUBLISHER_V1_SERVED_COPY: "off" },
+         expect: value("off"),
       },
       {
          name: "any case",
@@ -1639,7 +1639,7 @@ export const CONTRACT: Record<string, Case[]> = {
       {
          name: "blank",
          env: { PUBLISHER_V1_SERVED_COPY: "" },
-         expect: value("off"),
+         expect: value("on"),
       },
       {
          name: "an unknown mode",

@@ -55,7 +55,13 @@
       "equalToLive": true,
       "malloy": "run: cust_b -> { group_by: segment; aggregate: n is count() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "f234b5b635601c6ab30e41520cbfb0ca5dea189f42b4cf1a6e29af2245250b6a"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -66,13 +72,15 @@
           "sourceName": "cust_b"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "f234b5b635601c6ab30e41520cbfb0ca5dea189f42b4cf1a6e29af2245250b6a",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the persisted source alone",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {

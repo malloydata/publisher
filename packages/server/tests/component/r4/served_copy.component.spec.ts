@@ -242,8 +242,9 @@ describe("R4: with the served copy off, today's serve shape answers", () => {
    let restore: () => void;
    let fixture: R4Fixture;
    beforeAll(async () => {
+      // Today's serve shape answers only with the v1 cutover off.
       restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_V1_SERVED_COPY: "off" },
       }).restore;
       fixture = await buildScenario({ files: { "m.malloy": model }, seedSql });
    });

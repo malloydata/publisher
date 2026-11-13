@@ -58,7 +58,13 @@
       "equalToLive": true,
       "malloy": "run: annotated -> { group_by: region, order_month; aggregate: grand }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "f1dee6fcac5854ef5cbc18ffe4c360fd800e9d68696ddab1c2c15deef9e85584"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -72,13 +78,15 @@
           "sourceName": "annotated"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "f1dee6fcac5854ef5cbc18ffe4c360fd800e9d68696ddab1c2c15deef9e85584",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an annotated output field and an annotated measure",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -121,7 +129,13 @@
       "equalToLive": true,
       "malloy": "run: annotated -> { group_by: order_month; aggregate: t is total.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "f1dee6fcac5854ef5cbc18ffe4c360fd800e9d68696ddab1c2c15deef9e85584"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -134,13 +148,15 @@
           "sourceName": "annotated"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "f1dee6fcac5854ef5cbc18ffe4c360fd800e9d68696ddab1c2c15deef9e85584",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored measure column re-aggregated",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {

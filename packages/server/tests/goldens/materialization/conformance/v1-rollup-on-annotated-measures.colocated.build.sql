@@ -2,16 +2,16 @@
 -- Addresses are computed with a fixed connection digest (golden-digest:<connection>),
 -- so they move exactly when the SQL or the folded layout moves.
 
--- ==== source orders__preagg__region__c697d298
--- sourceID: orders__preagg__region__c697d298@<pkg>/m.malloy.preagg.malloy
+-- ==== source orders__rollup__region__409e9efb
+-- sourceID: orders__rollup__region__409e9efb@<pkg>/m.malloy.preaggregate.malloy
 -- connection: duckdb
--- sourceEntityId: c7034313cf1cf3de0f065239fc65bad7f748a4cfc3c779bc5b3a1c355ad335ee
--- compiler key: c7034313cf1cf3de0f065239fc65bad7f748a4cfc3c779bc5b3a1c355ad335ee (the sourceEntityId)
+-- sourceEntityId: f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18
+-- compiler key: f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18 (the sourceEntityId)
 -- build SQL:
 SELECT 
    base."region" as "region",
-   (COUNT(1)) as "n__partial",
-   (COALESCE(SUM(base."amount"),0)) as "total__partial"
+   COUNT(1) as "n__partial",
+   COALESCE(SUM(base."amount"),0) as "total__partial"
 FROM (
   SELECT CAST(id AS BIGINT) AS id, CAST(customer_id AS BIGINT) AS customer_id,
          region, status,
@@ -26,24 +26,15 @@ ORDER BY 2 desc NULLS LAST
 
 -- generated files
 
--- ==== <pkg>/m.malloy.preagg.malloy
-##! experimental { persistence composite_sources }
-import { orders__preagg_base is orders } from "m.malloy"
+-- ==== <pkg>/m.malloy.preaggregate.malloy
+##! experimental.persistence
+import { orders__rollup_base is orders } from "m.malloy"
 
 #@ persist
-source: orders__preagg__region__c697d298 is orders__preagg_base -> {
+source: orders__rollup__region__409e9efb is orders__rollup_base -> {
   group_by:
     region
   aggregate:
-    n__partial is n
-    total__partial is total
-} extend {
-  measure:
-    #(doc) "Orders"
-    n is n__partial.sum()
-    # currency
-    #(doc) "Revenue"
-    total is total__partial.sum()
+    n__partial is count()
+    total__partial is amount.sum()
 }
-
-source: orders is compose(orders__preagg__region__c697d298, orders__preagg_base)

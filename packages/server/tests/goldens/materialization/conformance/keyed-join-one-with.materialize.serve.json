@@ -69,7 +69,13 @@
       "equalToLive": true,
       "malloy": "run: order_facts -> { group_by: c.segment, region; aggregate: t is amount.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -83,13 +89,15 @@
           "sourceName": "order_facts"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a persisted source joining it with `with`",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {

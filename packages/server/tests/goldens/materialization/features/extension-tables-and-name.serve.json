@@ -83,7 +83,13 @@
       "equalToLive": true,
       "malloy": "run: stored -> { group_by: is_big; aggregate: n, total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -133,13 +139,15 @@
           "sourceName": "stored"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the parent",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -182,7 +190,13 @@
       "equalToLive": true,
       "malloy": "run: east -> { group_by: status; aggregate: n }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -224,13 +238,15 @@
           "sourceName": "east"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an extension with a fixed where:",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -272,7 +288,13 @@
       "equalToLive": true,
       "malloy": "run: east_big -> { aggregate: n, total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -306,13 +328,15 @@
           "sourceName": "east_big"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "two deep",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -360,7 +384,13 @@
       ],
       "malloy": "run: by_given -> { group_by: status; aggregate: n }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -402,13 +432,15 @@
           "sourceName": "by_given"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a given-reading extension",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -451,7 +483,13 @@
       "equalToLive": true,
       "malloy": "run: renamed -> { group_by: region; aggregate: id_total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -493,13 +531,15 @@
           "sourceName": "renamed"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a rename",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -542,7 +582,13 @@
       "equalToLive": true,
       "malloy": "run: colocated_ext -> { group_by: region; aggregate: n }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -591,12 +637,14 @@
           "sourceName": "colocated_ext"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a colocated extension",
-      "servedBy": "live",
+      "servedBy": "materialized",
       "servedFrom": null,
       "switch": "off"
     },
