@@ -352,6 +352,73 @@ Order: 1, then 3, 4, 5 and 6, with 2 beside 3. If 2 or 3 is too large to review,
 
 Order: 1 first; 2, 3 and 4 in parallel after it, since they are separate legs of the same router. Rollups listed once per importing model file (review bug 8) are de-duplicated in pull request 1, which replaces the rollup synthesis that causes the duplication (decided 2026-11-12).
 
+### Design: gated queries on rollups (row 1)
+
+*Proposed 2026-11-12.* Lifts row 1 of "Known limitations, to revisit" (#1670): a query whose entry point carries a row-level gate or lock skips every rollup (`CONTRACT`), so governed models get no rollup speedup. The goal is R3 for rollups: route, then govern, as #1642 does for the served copy. The operating model is unchanged (AGENTS.md): a gate holds only behind the authenticating gateway that sets the givens.
+
+**Why rollups are vetoed today.** The router's veto is per candidate (#1642): `rowLevelGateVeto` returns `entry_point`, only a candidate that `keepsContracts` goes past it, and `govern()` then grafts and re-proves the gate on that candidate's own `GraftScope` (model, materializer, runtime, cache scope), denying (`no_graft_scope`, `no_gate_found`) when it cannot. The rollup leg (#1663) sets no `keepsContracts` and returns no scope, and could not keep a gate if it did: its query model redeclares the base as a new source, `source: orders is <table> extend { … }`, with a new `sourceID` and none of the author's gate notes. The persisted-view leg (#1659) already solved this shape: it redeclares the source in an overlay of its own declaring file, so the `sourceID` is the author's, writes the source's entry-point gates on it as note lines (`gateLines`), and hands `govern()` the variant's scope.
+
+**1. Which gates a rollup can prove.** A rollup row is one group of the grain, so a gate is exact on it only when the base rows it admits fill whole groups.
+
+| Gate | On a rollup | Why |
+| --- | --- | --- |
+| `#(authorize)` lock (givens only, by grammar; `false`, `true`) | Provable at any grain | Decided about the caller before compile; reads no row |
+| `#(access_filter)` whose fields are all grain dimensions (a column, a computed dimension, a truncation) | Provable | Each base row lands in one group carrying the field's value, so filtering groups equals filtering rows; every stored measure (`sum`, `count`, `min`, `max`, A2) merges over any subset of groups |
+| Lock and filter together; an inherited gate; `#(authorize) true` re-opening a locked base beside a filter | Provable, as their parts | The gate set is the governor's (`collectEntryPointGates`), inherited and composite gates included |
+| Filter field not in the grain | Not built (A4, question 3); live | Rows of different gate values share a group |
+| Filter through a join (`account.org_id = $ORG_ID`) | Not built; live | A4 counts a join as unkeepable. A join_one whose foreign key is in the grain would be exact if the variant kept the join; deferred (question 4 below) |
+| Filter over a measure, or anything not a row-level dimension | Never | Not a row filter; A4 refuses it |
+| Filter over a `private` field | Never, until row 20 lifts | The gate itself cannot compile today |
+| A caller join into a gated source | Live, unchanged | The veto returns `caller_join`; no routed shape goes past it |
+
+**2. Mechanism.** Read side, each step failing closed:
+
+- *Keep the author's `sourceID`.* The rollup variant redeclares the base in an overlay of its declaring file, over the rollup's table, with the base's gates written by `gateLines`, as `view_variants.ts` does; the shared part (the author copy, name imports, gate lines) becomes one helper both legs call. The compile returns a `GraftScope` with its own runtime and a cache scope per rollup and compile (`rollup:<sourceID>:<generation>`), so two variants naming `orders` never share a grafted materializer.
+- *Pre-prove at route time, re-prove in `govern()`.* `RollupVariantServe.attempt` skips a rollup (`CONTRACT`) unless the gate set written on the variant equals the live entry point's (route and expression, `collectEntryPointGates` on each) and every field those gates read is a grain column of the variant. `govern()` then grafts the gate on the variant's scope, and the bind guard (`filter_binding_guard.ts`) proves it binds to the variant source's own field. A failure there denies (403), as on the served copy; the pre-proof makes it unreachable short of a bug, so an unprovable rollup is skipped, and a denial is a defect signal rather than a routing outcome.
+- *Let it through.* The rollup candidate sets `keepsContracts` behind the served copy's switch, `materialize.gatedSources`, and its `RoutedExtra` carries the scope. The live retry after a failed rollup read grafts on the author's scope (#1642's rule).
+- *Harden the re-proof, for every leg.* `govern()`'s `no_gate_found` check passes when any gate is enforced on the routed compile. Tighten it to the pre-proof's equality, so a variant that kept the lock but lost the filter is denied. This hardens the served copy and the view leg too.
+
+Coverage is unchanged: `checkCoverage` and `queryLevelFacts` read the caller's compiled query before the graft, and the grafted `where:` reads only grain columns, so it cannot uncover a covered query. A grafted `in` filter does not fix a fan-out grain dimension to one value (A6), but a gate field reached through a join is never built, so the case does not arise.
+
+**3. Build side.**
+
+- *Row 21's predicate flips.* Today a rollup over a gated base whose grain keeps the gate's fields is built in the warehouse, or refused by the storage tier check (`referencesAuthorize`) where that sees the gate, and either way never read. Proposed: one predicate, `rollupGateEnforcedAtRead`, beside `gateEnforcedAtRead` and asked by the build plan, the host-instructed build and the serve bind alike. True when the switch is on, the rollup is a `#(preaggregate)` one (never v1 `#@ preaggregate`, whose serve shape keeps no gates), and every gate is provable by table 1. With the switch off, a rollup over a filter-gated base is not planned at all (row 21's wasted cost), with the existing `preaggregate-access-filter` warning code.
+- *A4 reads the governor's gate set.* `gateFieldNames` in `rollup_plan.ts` scans identifiers in the source's gate annotations. It should read `collectEntryPointGates`, so the build and the proof walk the same gates (inherited, composite) and can never disagree about whether a rollup covers them.
+- *What is stored.* The grain dimensions and the measures' partials, nothing else. One change: a gate's field is commonly `internal` (row 20's advice), and today a hidden grain dimension refuses the rollup (`preaggregate-hidden-field`). Allow a hidden grain dimension only when a gate reads it, stored and redeclared on the variant with the author's access modifier; every other hidden field stays refused. No other hidden field and no row-level column is stored, so a rollup holds strictly less than #1666's `#(materialize)` table over the same base.
+
+**4. Access record and path report.** No new API values. A rollup that answers past a gate reports `servedBy.kind: rollup` and carries `pastEntryPointGate` on the answer record; the access record's grafts and enforced gates are those of the live path. A rollup the query cannot use because of its gate reports `CONTRACT` (which carries no `code`); one the build left out for its gate reports `WARNED` with the open-string code `preaggregate-access-filter`. With the switch on, the serve verdict for a rollup reached only through gated entry points reads `serves`, as #1642 did for stored tables. A `CONTRACT` skip's detail never names the gate's field or text.
+
+**5. Security analysis.**
+
+- *Cross-caller leakage.* One rollup table holds every tenant's groups, read only through a compile whose graft binds that caller's givens. The variant's compile cache (per rollup) holds no given value; givens bind per request in the graft, as on the served copy. Each answer equals live over the caller's admitted rows because the gate field is a grain column (table 1).
+- *A caller's own `extend` or join.* A caller join into the gated source keeps every routed shape away (the veto). A caller `extend` that drops or renames the gate's field fails the bind guard and is denied, as live is (authorize.md: a derivation that drops the gate's column fails closed). A caller aggregate over the rollup's rows (`count()`, an internal partial) skips the rollup with `COUNT_SEMANTICS` before any graft. A caller can read an `internal` gate field through `extend`, within the rows the gate admits; that is Malloy's behaviour on live too (row 20).
+- *Hidden fields (#1666).* Rollups store no `private` field, and with the change above only the `internal` fields a gate reads.
+- *Managed tier (question 14).* A `storage=` rollup over a gated base puts tenant-keyed aggregates (the gate field and per-tenant partials) in the destination. That is less than the `#(materialize)` table the review already covers, behind the same switch and read path, so this design proposes it join the same review, listed explicitly. A colocated rollup stays in the author's warehouse, which makes it the first real case of question 14's "lift colocated first" (open question 1).
+
+**6. Tests.** A two-caller adversarial R4 suite per gate kind (a column, a computed dimension, a truncation, an `internal` gate field, an inherited gate on an extension's own rollup, a lock alone at a grain with no gate field, lock and filter, a locked base re-opened by `true` beside a filter), on `storage=` and colocated: callers with different givens, interleaved and repeated; each answer equals live, is served by the rollup and holds only that caller's groups; the origin table emptied to prove the rollup is read; a caller with no givens denied. Negative cases answer live with the right reason: a gate field outside the grain, a gate through a join, a caller join, a caller `count()`; a caller `except:` or `rename:` of the gate field is denied, as live is. Mutation checks, each broken in turn with at least one test failing: `gateLines` dropped; one of two gates dropped (the equality hardening); the variant compiled outside its declaring file (a new `sourceID`); a scope without a runtime; the graft on the author's scope; `keepsContracts` on with the switch off; A4 removed (a rollup built without the gate field must skip, never leak); the pre-proof removed (`govern()` must deny, never answer).
+
+**7. Pull requests.**
+
+| # | Pull request | Depends on |
+| --- | --- | --- |
+| 1 | The declaring-file overlay helper from `view_variants.ts`, shared; the rollup variant moves onto it and keeps the author's `sourceID`. Still vetoed, so no behaviour change | — |
+| 2 | Gate-set equality in `govern()`'s routed re-proof, for the served copy and the view leg | — |
+| 3 | The rollup leg keeps contracts behind `materialize.gatedSources`: its scope, the pre-proof, the verdict and path report, the adversarial and mutation suite | 1, 2 |
+| 4 | Build side: `rollupGateEnforcedAtRead` for build, bind and host build; A4 on `collectEntryPointGates`; the `internal` gate field in the grain; row 21's skip with the switch off | 3 |
+| 5 | Docs: `preaggregation.md`, `authorize.md`'s colocated section, rows 1 and 21 of the limitations table | 4 |
+
+Turning the switch on for `storage=` still waits for question 14's review. Gates through a join_one, and `private` gate fields (row 20), are later work.
+
+**8. Open questions for the owner.**
+
+1. May colocated rollups over gated bases serve before the managed-tier review (under the existing switch or one of their own), since nothing leaves the author's warehouse?
+2. Is question 14's review this same review with rollups listed, or a second one?
+3. Accept an `internal` gate field as a grain dimension (stored, redeclared `internal`), the one exception to `preaggregate-hidden-field`?
+4. Gates through a join_one whose foreign key is in the grain: keep the join on the variant so the gate grafts through it, or leave them live until a user needs it?
+5. Should the gate-set equality hardening (PR 2) land now on its own, since it tightens the served copy and view legs already shipped?
+6. With the switch off, stop planning rollups over gated bases (row 21) on colocated too, at the cost of answering live after the switch is turned on until the next build?
+7. Lock-only bases: a rollup holds exactly what every admitted caller sees live, so may a lock-only rollup serve with the switch off?
+
 ## Telemetry and cost estimation
 
 T1–T7 reuse what Publisher already writes per query and per build; the new work is the store, the warehouse adapters, and estimates honest about their error. The Nov 1 plan's `estimate` call becomes the estimate half of `what_if`.
@@ -475,7 +542,7 @@ The current implementation's significant limitations, in one place (as of 2026-1
 | # | Limitation | Consequence | Lifts it | Owner outside Publisher |
 |---|---|---|---|---|
 | 1 | Gated entry points skip every rollup (`CONTRACT`) | Governed models get no rollup speedup; answered live | Prove the gate on the rollup variant, as #1642 does for the served copy (R3 for rollups) | — |
-| 2 | The `#(carries)` ceiling check compiles against the cross-connection build view, so a clean query through a left-out join is refused | Those sources never answer through that join | Run the ceiling check against the served copy (#1643 follow-up) | — |
+| 2 | The `#(carries)` ceiling check compiles against the cross-connection build view, so a clean query through a left-out join is refused | Those sources never answer through that join | **Resolved by #1675:** a served-copy answer is checked on the served copy's compile, and on live too when live compiles | — |
 | 3 | Rollups build from raw rows, not over the stored or re-rooted base (A3 as written) | A rollup and its base table can be different snapshots; each rollup build scans the base | Phase 5's consistency work (a run manifest published whole), then build rollups over the stored base | — |
 | 4 | Own-versus-inherited annotations are decided by annotation-object identity (`declared_notes.ts`) | If identity were lost (a JSON round trip), stray builds (safe, wasted) | A declaration graph with own and inherited annotations kept apart | Malloy core |
 | 5 | A dimension that reads a given refuses its whole source; an inherited given term refuses the source (#1644) | Those sources answer live | P9's probes: leave just that dimension out of the build | — |
@@ -491,7 +558,7 @@ The current implementation's significant limitations, in one place (as of 2026-1
 | 24 | `inline=` naming an `internal` or `private` join is refused for that source (`materialize-not-built`) (#1666) | That source answers live; before the fix, the generated build file failed to compile and every `#(materialize)` source in the model went unbuilt | Keep the join's access on the served record when inlining (inline join_one, #1665 line of work) | — |
 | 12 | `storage=` number columns read back as plain `number` (integer and decimal subtypes lost) | Answers equal live; result metadata differs | Typed `type:` declarations that keep the subtype | Malloy core |
 | 13 | The rolling-window delete is not recorded in the incremental ledger | The ledger omits row removals | A ledger column and wire field (spec sync) | Credible control plane |
-| 14 | The inline uniqueness check runs on every build | Extra warehouse cost per build | Skip it when the joined source is unchanged | — |
+| 14 | The inline uniqueness check runs on every build | Extra warehouse cost per build | **Resolved by #1675 for auto-runs over a `#@ persist` joined table:** skipped while the run records prove the table unchanged since a pass. A joined warehouse or incremental table, and every control-plane build, still check on every build | — |
 | 15 | Colliding v1 sources still build, though neither is served from the shared table (#1652) | Wasted warehouse cost | Refuse them in the plan (needs a new `RefusedSource.reason`, a closed enum) or by default with `PERSIST_COLLISION_ENFORCE` at publish | Credible control plane (enum) |
 | 16 | The served copy adds a compile per model; declined queries are remembered by text, up to 1,000 | Cold-start cost and memory | Incremental compilation and a stable compiled-query object | Malloy core |
 | 17 | Rewriting is text-based: the served copy, build copies, `#@`-line blanking, the cross-connection build view | Fragile across Malloy upgrades; helpers such as the URL-reading closure exist in several copies (`materialize_compile.ts`, `persisted_view_compile.ts`, `view_variants.ts`, the rollup files) | Phase 5 simplification; a lossless syntax tree and printer | Malloy core |

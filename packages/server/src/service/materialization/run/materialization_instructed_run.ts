@@ -44,6 +44,7 @@ import {
    type ChainedPlanFacts,
 } from "./materialization_run_support";
 import type { NameViewIntent, NameViewRecord, OwnNameTable } from "./name_view";
+import type { UniquenessLedger } from "./inline_uniqueness";
 
 /** The eligibility gate a source was cleared by. */
 export type EligibilityTier = "storage" | "colocated";
@@ -119,6 +120,11 @@ export interface InstructedRun {
    writtenTargets: Map<string, { sourceEntityId: string; sourceName: string }>;
    /** The `name=` views the sources this run built call for (name_view.ts). */
    nameViewIntents?: NameViewIntent[];
+   /**
+    * Auto-run's inline uniqueness passes: the run before's, and this run's
+    * own (inline_uniqueness.ts). Absent: every check runs as compiled.
+    */
+   uniqueness?: UniquenessLedger;
    /**
     * By view key: the `name=` views whose name preflight found held by a
     * table this package's own run wrote, which the view replaces.
