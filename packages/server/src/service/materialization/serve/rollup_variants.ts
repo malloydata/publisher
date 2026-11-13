@@ -1056,12 +1056,14 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
          queryModelURL: ctx.queryModelURL,
          flags: flagLine(modelDef),
          declare: async ({
-            gates,
+            gates: authorGates,
             sourceName,
             copyName,
             declaringURL,
             addFile,
          }) => {
+            // malloy-text: the source's own gate expressions, as the author wrote them, one per line (see gateLines)
+            const gates = authorGates;
             // What the run target adds over the rollup's fields: an
             // extension's dimensions over the grain, and the views the
             // query reads, as the author wrote them.
@@ -1085,7 +1087,7 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
                const timeframes = timeframeRestatements(
                   grainColumns(plan, modelDef),
                );
-               // malloy-text: the served copy's type emitter; rollupStatements re-emits the grammar's parse through malloy_text; the gates are the author's notes, single lines
+               // malloy-text: the served copy's type emitter; rollupStatements re-emits the grammar's parse through malloy_text
                return `${typeDeclaration({ typeName, columns })}
 source: ${identifier(servedName)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)} extend {${timeframes}${rollupStatements(plan)}
 }
@@ -1109,7 +1111,6 @@ ${gates}${over}`;
             if (!text) return { error: "no companion" };
             addFile(companion, text);
             const built = `${plan.rollupSourceName}__built`;
-            // malloy-text: names through identifier; the gates are the author's notes, single lines
             return `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(relativeImport(declaringURL, companion.href) ?? "")}
 source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan)}
 }

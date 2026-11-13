@@ -501,12 +501,14 @@ export class PersistedViewServe {
          queryModelURL: pathToFileURL(`${modelFile}.view.malloy`),
          flags: VARIANT_FLAGS,
          declare: ({
-            gates,
+            gates: authorGates,
             sourceName: source,
             copyName,
             declaringURL,
             addFile,
          }) => {
+            // malloy-text: the source's own gate expressions, as the author wrote them, one per line (see gateLines)
+            const gates = authorGates;
             if (table.binding) {
                const typeName = `${plan.buildSourceName}__type`;
                const stored = `${plan.buildSourceName}__stored`;
@@ -533,7 +535,6 @@ ${viewBody}
             const companion = persistedViewCompanionHref(declaringURL.href);
             addFile(new URL(companion), text);
             const built = `${plan.buildSourceName}__built`;
-            // malloy-text: the author's gate notes (single lines), names through identifier
             return `import { ${identifier(built)} is ${identifier(plan.buildSourceName)} } from ${doubleQuotedString(path.basename(fileURLToPath(companion)))}
 ${gates}source: ${identifier(source)} is ${identifier(built)} extend {
 ${viewBody}
