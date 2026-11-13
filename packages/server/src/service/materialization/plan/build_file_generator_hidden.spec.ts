@@ -199,6 +199,9 @@ source: orders is raw include { public: *; except: region } extend {
          expect(plans[0].leftOut).toEqual([
             { dimension: "order_month", reads: ["time_zone"] },
          ]);
+         expect(
+            plans[0].columns.find((c) => c.dimension === "order_day")?.zoneFree,
+         ).toBeUndefined();
       },
       { timeout: 30000 },
    );
