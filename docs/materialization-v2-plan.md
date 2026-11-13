@@ -731,6 +731,84 @@ A span per build (exists), plus `publisher.query.route` around routing, nested i
 
 **Not duplicated.** The access record and the path report are the per-query record, and metrics only count what they say. The B1 run and entry rows are the per-build record, and build logs are events that point at them by `runId`. When step 4 lands, the serve-shape instruments are gone (6g), and `manifest_bind_total` and `colocated_bind_dropped_total` fold into `served_copy_bind_total`.
 
+**Step 4 specification (written 2026-11-13).** This is the contract step 4 implements, one commit; where it is more precise than the table above, it governs. Every instrument is registered through `telemetry.ts` (`lazyCounter`, `lazyHistogram`, an observable gauge for the one gauge), every label is a TypeScript string union with the values below and nothing else, and a spec enumerates each union so that adding a value is a reviewed change. No instrument carries a `package`, environment, source, model, table, destination, connection or query label (decision 12; these name tenants on a shared worker). A label is never filled from a runtime string (an error message, a name); a code path without a value of its own maps to the nearest listed one, never to free text.
+
+*Label vocabularies.*
+
+| Label | Values | Count |
+| --- | --- | --- |
+| `mode` | `auto`, `orchestrated` | 2 |
+| `kind` (what a build makes) | `materialize` (`#(materialize)`), `persist` (`#@ persist`), `rollup` (`#(preaggregate)`), `view` (a persisted view), `pair` (a pair table) | 5 |
+| `tier` | `colocated`, `storage` | 2 |
+| `method` | `full`, `delta` | 2 |
+| `build_outcome` (label name `outcome`) | `built`, `reused`, `refused`, `failed`, `cancelled` | 5 |
+| `failure_class` | `none` (not failed), `deterministic`, `transient`, `unclassified` (today's `BuildRetryable` true, false and undefined), `billed_read_lost` (today's `storage_build_failures_total{reason="billed_read_not_captured"}`), `retention_exceeded` (C3: the as-of instant is older than the warehouse keeps) | 6 |
+| `leg` | `view`, `rollup`, `served` (the served copy), `storage` (the serve shape and composite, until 6g deletes them), `live` | 5 |
+| `route_outcome` (label name `outcome`) | `used`, `skipped`, `fallback` (a chosen leg whose run failed, answered live) | 3 |
+| `reason` on the route counter | `NONE` when used, else the public `SkipReason`: `NOT_BUILT`, `WARNED`, `MISSING_FIELD`, `CONTRACT`, `GRAIN_TOO_COARSE`, `TIME_ZONE`, `CROSS_CONNECTION`, `COUNT_SEMANTICS`, `STALE`, `RUN_FAILED` | 11 |
+| `bind_scope` (label name `scope`) | `manifest` (one manifest bind: REST, auto-load or rebind), `source` (one source entry deciding whether it serves) | 2 |
+| `bind_outcome` (label name `outcome`) | scope `manifest`: `success`, `failure`, `timeout`; scope `source`: `bound`, `declined` | 5 |
+| `reason` on the bind counter | `none`; `build_plan_unavailable`, `refused` (today's `colocated_bind_dropped` reasons); the served copy's `ServedCopyProblem` reasons (`compile_failed`, `cross_connection_unbuilt`, `column_types`, `no_declaration`, `range_not_found`, `definition_not_parsed`, `pair_join_not_found`, `pair_not_compiled`, `fields_not_carried`, `read_terms_not_kept`, `cross_connection_join`, `inline_join_kept`, `reroot_not_compiled`, `classification_not_kept`); `missing_table`, `upstream_other_generation` (C2) | 19 |
+| `phase` | `reroot`, `compile`, `guard`, `retry`, `total` | 5 |
+| `cache_outcome` (label name `outcome`) | `hit`, `miss`, `evicted` | 3 |
+| `reproof_outcome` (label name `outcome`) | `proved`, `denied`, `error` | 3 |
+| `reproof_reason` (label name `reason`) | `none`, `gate_set_differs`, `no_gate_found`, `reproof_error` | 4 |
+| `commit_outcome` (label name `outcome`) | `committed`, `failed`, `superseded` | 3 |
+| `shadow_outcome` (label name `outcome`) | `match`, `mismatch`, `error` | 3 |
+
+*Metrics, new or changed.* Durations are histograms in milliseconds with explicit bucket boundaries, so series do not depend on the exporter's defaults; ages are in seconds; bytes in `By`.
+
+| Name | Type | Unit | Labels | Series bound | Emitted at |
+| --- | --- | --- | --- | --- | --- |
+| `publisher_materialization_build_total` | counter | 1 | `kind`, `tier`, `outcome`, `failure_class` | 5 × 2 × (4 + 6) = 100 (`failure_class` is `none` unless `outcome` is `failed`) | one per source build, at its finish or failure (`runBuild`, per source) |
+| `publisher_materialization_build_duration_ms` | histogram, buckets 100, 500, 1k, 5k, 15k, 60k, 300k, 900k, 3.6M | ms | `kind`, `tier`, `method` | 20 | same point, for builds that ran (`built` or `failed`) |
+| `publisher_materialization_build_read_bytes` | histogram, buckets 1e6 to 1e13 by decades | By | `tier` | 2 | same point, when `build_read_cost.ts` read the warehouse's own count (BigQuery, Snowflake); absent otherwise, never zero |
+| `publisher_materialization_generation_commit_total` | counter | 1 | `outcome` (`commit_outcome`) | 3 | `ManifestCommitter`, once per commit attempt (lands with C1a) |
+| `publisher_materialization_generation_age_seconds` | observable gauge | s | none | 1 | read on collection: now minus the commit time of the oldest generation any loaded version serves in this process |
+| `publisher_served_copy_bind_total` | counter | 1 | `scope`, `outcome`, `reason` | 3 (manifest, `reason="none"`) + 1 bound + 18 declined = 22 | `manifest`: at the end of each manifest bind; `source`: once per source entry per model load or rebind |
+| `publisher_served_copy_compile_duration_ms` | histogram, buckets 10, 25, 50, 100, 250, 500, 1k, 2.5k, 5k, 10k, 30k | ms | `phase` | 5 | `ServedCopyServe.compile`, once per phase per model load, and `total` once |
+| `publisher_query_route_total` | counter | 1 | `leg`, `outcome`, `reason` | used 5 + skipped 4 × 9 + fallback 4 = 45 (`live` is only ever `used`; `RUN_FAILED` only with `fallback`) | once per candidate the router considered, when the query is answered; a candidate that does not apply (today's `not_applicable`) is not counted |
+| `publisher_query_route_duration_ms` | histogram, buckets 1, 2, 5, 10, 25, 50, 100, 250, 500, 1k, 2.5k | ms | `leg` (the leg that answered) | 5 | `query_router.route`, from the start of routing to the chosen runnable, before execution |
+| `publisher_served_copy_decline_cache_total` | counter | 1 | `outcome` (`cache_outcome`) | 3 | each decline-cache lookup and eviction |
+| `publisher_routed_gate_reproof_total` | counter | 1 | `leg`, `outcome` (`reproof_outcome`), `reason` (`reproof_reason`) | 4 × (1 + 2 + 1) = 16 (`reason` is `none` only with `proved`; `reproof_error` only with `error`) | `govern()` on a routed variant, once per routed query; a `denied` or `error` answer goes live, and the route counter does not count it as `fallback`, which means a failed run |
+| `publisher_query_served_data_age_seconds` | histogram, buckets 60, 300, 900, 3.6k, 14.4k, 43.2k, 86.4k, 259.2k, 604.8k, 2.592M | s | `leg` (not `live`) | 4 | at the answer: now minus the as-of (C4) or, before C4, the build time, of the oldest table the answer read |
+| `publisher_query_as_of_spread_seconds` | histogram, same buckets | s | none | 1 | at the answer, when it read two or more tables: the access record's `asOfSpread` (lands with C4) |
+| `publisher_query_route_shadow_total` | counter | 1 | `leg`, `outcome` (`shadow_outcome`) | 12 | only if the cutover adds a shadow comparison (served answer computed beside live and compared); otherwise not registered |
+
+*Renamed, folded or dropped (the four routing and bind instruments; decision 4 frees them).*
+
+| Today | Step 4 | Mapping |
+| --- | --- | --- |
+| `publisher_query_variant_routing_total{variant, outcome, reason}` | `publisher_query_route_total{leg, outcome, reason}` | `variant` becomes `leg`, adding `live`. `reason` takes the public `SkipReason` the path report shows, through the same `VARIANT_SKIP_CODES` table (so 2h's single vocabulary is the metric's too): `row_level_gate` becomes `CONTRACT`, `does_not_answer` becomes the explained code's `SkipReason` (`MISSING_FIELD` when unexplained), `not_applicable` is no longer counted, and `run_failed` becomes `outcome="fallback", reason="RUN_FAILED"`. `none` becomes `NONE` |
+| `publisher_storage_serve_routing_total{outcome}` | dropped with 6g | Until then its outcomes are the route counter's `leg="storage"`: `storage` is `used`, `live_fallback` is `skipped` with the explained reason, `runtime_live_fallback` is `fallback`/`RUN_FAILED`, `blocked_by_row_level_gate` is `skipped`/`CONTRACT` |
+| `publisher_materialization_manifest_bind_total{outcome}` | `publisher_served_copy_bind_total{scope="manifest", outcome, reason="none"}` | Outcomes unchanged: `success`, `failure`, `timeout` |
+| `publisher_materialization_colocated_bind_dropped_total{reason}` | `publisher_served_copy_bind_total{scope="source", outcome="declined", reason}` | `build_plan_unavailable` and `refused` keep their names; the served copy's declines, which today only a package warning reports, join them |
+
+Also folded: `publisher_materialization_sources_total{outcome, mode}` and `publisher_storage_build_failures_total{destination, reason}` into `publisher_materialization_build_total` (the run's `mode` stays on `runs_total`; `destination` moves to the log); `publisher_materialization_source_build_duration_ms{engine}` into `publisher_materialization_build_duration_ms` (`engine` splits into `tier` and `method`: `in_warehouse` is colocated/full, `storage` is storage/full, `delta` is colocated/delta, `delta_storage` is storage/delta); and `publisher_storage_bindings_withheld_total` (stale storage bindings) into the route counter's `reason="STALE"`, which C1b's snapshot check emits once the serve shape is gone. `publisher_storage_tables_retained_total` drops its `destination` label for the same reason as above. Retired with 6g and not replaced: `publisher_storage_serve_shape_tier_drop_total` and `publisher_storage_serve_shape_type_fallback_total`.
+
+*Unchanged.* `publisher_materialization_runs_total`, `…_run_duration_ms`, `…_incremental_step_total` (its `reason` is the closed `IncrementalStepReasonCode`, 15 values), `…_build_plan_compute_duration_ms`, `…_build_plan_compute_failed_total`, `…_auto_load_total`, `…_connection_digest_skipped_total`, `…_manifest_bind_degraded_total`, `…_duplicate_target_skipped_total`, `…_shared_address_instructions_total`, `…_table_collision_total`, `…_drop_tables_total`, `…_scheduled_fires_total`, `…_eligibility_refused_total`, `…_stale_upstream_entry_total`, `publisher_storage_build_attribution_skipped_total`, `publisher_storage_column_type_mismatch_total`, `publisher_storage_chained_build_total`, `publisher_annotation_findings_total`, and the `publisher_authorize_*` counters. Of today's 30 instruments (29 in `materialization_metrics.ts`, one in `model_serve_shape.ts`), 20 stay (one losing a label), 7 fold into the new names, and 3 retire with 6g, beside the new ones above.
+
+*Structured log events.* Each is one logger call with the event name as its message and the fields as its object, so a log pipeline can key on the name. `runId`, `generationId` and `sourceEntityId` (already a digest) are the join keys to B1's rows; `queryHash` is the hash the access record carries.
+
+| Event | Level | Fields | Emitted at |
+| --- | --- | --- | --- |
+| `materialization.run.started` | info | `runId`, `mode`, `trigger` (`schedule`, `api`, `auto`, `orchestrator`), `sourceCount`, `asOfMethod` (C3) | `runBuild`, after the claim |
+| `materialization.run.finished` | info (warn if `partial`, error if `failed`) | `runId`, `generationId`, `outcome`, `durationMs`, `built`, `reused`, `refused`, `failed` | `runBuild`, after commit or failure |
+| `materialization.build.finished` | info | `runId`, `sourceEntityId`, `kind`, `tier`, `method`, `durationMs`, `rows`, `bytesRead` (when known), `physicalTable` (the Publisher-made name only) | per source, on success |
+| `materialization.build.failed` | warn for `deterministic`, `transient`, `billed_read_lost` and `retention_exceeded`; error for `unclassified` | the finished fields, plus `failureClass`, `code` (the refusal or error code), `destination` (the configured name) | per source, on failure |
+| `materialization.generation.committed` | info | `runId`, `generationId`, `entries`, `carriedForward` (C1a), `asOfMethod` | `ManifestCommitter` |
+| `materialization.generation.promoted` | info | `generationId`, `version` | the promote call (orchestrated) or commit (auto) |
+| `served_copy.bind.summary` | info | `modelHash`, `bound`, `declined`, `compileMs` | once per model load |
+| `served_copy.bind.declined` | warn | `modelHash`, `sourceEntityId`, `reason` (the bind vocabulary) | once per declined source per load |
+| `query.route.fallback` | warn | `queryHash`, `leg`, `reason` (`RUN_FAILED`), `errorClass` | once per `queryHash` per process (an LRU of hashes) |
+| `query.route.decided` | debug | `queryHash`, `chosen`, and per candidate `leg` and `reason` | every routed query |
+| `query.gate_reproof.failed` | warn | `queryHash`, `leg`, `outcome`, `reason` | a re-proof that is `denied` or `error`, once per `queryHash` per process; the answer goes live, and the access record has the rest |
+| `query.route.shadow_mismatch` | warn | `queryHash`, `leg`, `rowCountServed`, `rowCountLive` | only with the shadow comparison, once per `queryHash` per process |
+
+Spans: `publisher.materialization.build` and `publisher.materialization.build_source` stay; `publisher.query.route` is added around routing, nested in `publisher.query.execute`, with the attributes `publisher.route.leg` and `publisher.route.candidates`.
+
+*Never logged, labelled or put on a span, at any level:* row values (including a sample in an error); given values (given names are fine); gate text, `#(authorize)` and access-filter expressions, or anything that renders them; SQL or Malloy carrying literals, whether generated build SQL, a served copy's text, or a caller's query (log `queryHash`, never the text; a driver error that quotes SQL is reduced to its error class and code); storage aliases (the attach aliases Publisher gives a destination) and destination locations (data paths, catalog connection strings, bucket URIs); connection credentials and anything that holds them.
+
 #### 6. Comment and code tightening rules (step 5)
 
 Measured over the 98 files in scope: 16,981 comment lines of 62,943 (27%).
