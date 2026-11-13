@@ -27,9 +27,9 @@ replay beside them for speed:
    published. It is the record of how that version scored, and the stored
    baseline a targeted run is compared against (`--baseline record`). Batch
    several targeted fixes into one full run rather than running the set after
-   each. `eval.py routine` is the full run with everything around it: check,
-   verify, run, diagnose, package, query replay and history, stopping at the
-   first step that fails. `reference/team-workflow.md` is the day-to-day
+   each. `eval.py routine --kind quality` is the full run with everything
+   around it: check, verify, run, diagnose, package and history, stopping at
+   the first step that fails. `--kind speed` is the same for a query replay. `reference/team-workflow.md` is the day-to-day
    version of this section.
 
 **Query replay** (`eval.py query-replay --from <run>`,

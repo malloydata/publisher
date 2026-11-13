@@ -14,7 +14,8 @@
   python3 eval.py diagnose --set <set-dir> --label baseline-01
   python3 eval.py package  --set <set-dir> --label baseline-01
   python3 eval.py history  --set <set-dir>         # every run as one servable page
-  python3 eval.py routine  --set <set-dir>         # check, verify, run, diagnose, package, replay, history
+  python3 eval.py routine --kind quality --set <set-dir>   # check, verify, run, diagnose, package, history, share
+  python3 eval.py routine --kind speed   --set <set-dir>   # check, time the stored queries, diagnose, package, history, share
   python3 eval.py push     --set <set-dir> --label baseline-01   # share a run ([store])
   python3 eval.py pull     --set <set-dir>         # every shared run missing here
   python3 eval.py runs     --set <set-dir>         # every run of the set, by kind and version
@@ -138,11 +139,14 @@ def record_baseline(args: list[str], kind: str) -> list[str]:
 
 def run_then_share(verb: str, args: list[str], main) -> int:
     """Run an answer run or a query replay, then share it if it is a record."""
-    share = "--share" in args
-    args = [x for x in args if x != "--share"]
+    share, hold = "--share" in args, "--no-share" in args
+    args = [x for x in args if x not in ("--share", "--no-share")]
     code = main(args)
     label, out = flag_value(args, "--label"), flag_value(args, "--out")
-    if code == 0 and (label or out):
+    # `--no-share` is the routine's: it shares the run itself, after the
+    # diagnosis is written into it. A shared run never changes, so sharing
+    # here left the store's copy without one.
+    if code == 0 and (label or out) and not hold:
         import run_store
         cfg = config.load(pathlib.Path(flag_value(args, "--set")))
         run_store.after_run(cfg, pathlib.Path(out) if out else cfg.workdir() / "runs" / label,

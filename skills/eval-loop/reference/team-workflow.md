@@ -67,15 +67,35 @@ Before the agent runs at all, a retrieval problem can be fixed cheaper:
 
 ```bash
 $E publish --set <set>                # the accepted edits, served and built
-$E routine --set <set>                # check, verify, run, diagnose, package, replay, history
+$E routine --kind quality --set <set> # check, verify, run, diagnose, package, history, share
+$E routine --kind speed --set <set>   # time the stored queries, diagnose, package, history, share
 ```
 
 `publish` puts the model on disk in front of the answerer: it publishes the
 package (with `versioning = true`, as the version its publisher.json names),
-confirms it loaded, and builds anything it persists. `routine` then runs the
-whole set and records it. Run it on a schedule, or after each publish. It is
-one command so that whatever runs it, a person, CI or an agent, needs nothing
-else.
+confirms it loaded, and builds anything it persists.
+
+There are two routines, and each reports one number. `--kind quality` answers
+and scores the whole set: its number is the pass rate. `--kind speed` times
+the stored queries again and compares them with the last record replay: its
+number is their total time. Neither needs the other on the same night, and a
+speed routine spends no model tokens. Run them on a schedule, or after each
+publish. Each is one command so that whatever runs it, a person, CI or an
+agent, needs nothing else: `--serve` starts the servers and stops the ones it
+started.
+
+A routine shares its run last, after the diagnosis is written into it, and
+writes what happened to `<workdir>/routines/<label>.json`: the kind, the
+number, each step with its exit code and seconds, whether the run was shared,
+and the reason it ended. Its exit status says whether the number can be used:
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Done. The number is recorded. |
+| 1 | A step failed. Nothing after it ran. |
+| 3 | Could not start: the set's config, or no run to take queries from. |
+| 4 | Done, and a person should look: a stored answer's rows changed, or a query errored. The number is recorded. |
+| 5 | The run did not finish, so there is no number. |
 
 `eval.py versions` shows how each version scored and how fast its queries
 ran. `eval.py history` builds the same as a page.

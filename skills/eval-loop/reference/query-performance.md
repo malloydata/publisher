@@ -29,8 +29,10 @@ run, so it costs server time only. Per query it records:
 replay's queries. Use that for every later replay, so two replays time the same
 work even after the answer run has been superseded: fresh answers word their
 queries differently, and a replay of a new run's queries compared only 5 of 18
-with the record it followed. `eval.py routine` replays the last record
-replay's queries for this reason, and `--baseline record` names that replay.
+with the record it followed. `eval.py routine --kind speed` replays the last
+record replay's queries for this reason, and `--baseline record` names that
+replay. A replay in which every query errored is marked `aborted`: it timed
+nothing, so it is never the record and is not shared.
 
 `--target-version 1.1.0` pins a published version on every request. REST can pin
 a version, unlike the MCP tools, so nothing has to be promoted to `latest`.

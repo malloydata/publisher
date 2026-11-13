@@ -176,7 +176,8 @@ on the golden, so a reader sees a person stood behind it rather than a query.
 
 ```bash
 eval.py run --set <set> --label smoke --only <qid>[,<qid>...] --max-turns 40   # a case or two first
-eval.py routine --set <set> --label baseline-01   # run, diagnose, package, replay, history
+eval.py routine --kind quality --set <set> --label baseline-01   # run, diagnose, package, history
+eval.py routine --kind speed --set <set> --label baseline-01-perf   # time its passing queries
 ```
 
 That first full run is the set's first record. From here, `team-workflow.md`

@@ -391,13 +391,16 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
               flush=True)
 
     summary = summarize(rows, a.budget_ms)
+    # A replay in which no query ran timed nothing. Marked complete, it became
+    # the record the next replay compared with, and every query read as fixed.
+    status = "aborted" if summary["errors"] == summary["queries"] else "complete"
     if a.baseline:
         base_rows = ledger.read_jsonl(a.baseline / "results.jsonl")
         summary["compare"] = {"baseline": a.baseline.name,
                               **compare(base_rows, rows, a.band, a.min_delta_ms)}
     pins: dict[str, Any] = {
         "runId": a.out.name, "label": a.label, "target": "local", "answererModel": None,
-        "phase": PHASE, "started": started, "status": "complete",
+        "phase": PHASE, "started": started, "status": status,
         "packageVersion": version, "fromRun": a.from_run.name,
         "setName": cfg.set_meta.get("name") or cfg.set_name,
         "datasetVersion": cfg.set_meta.get("datasetVersion"),
@@ -433,6 +436,10 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
     if "compare" in s:
         print("\n".join(fmt_compare(s["compare"], a.baseline.name, a.label)))
     print(f"\nrun directory: {a.out}")
+    if status == "aborted":
+        print("! every query errored, so nothing was timed. The run is marked aborted: it is "
+              "not a record and is not shared. Fix the first error above and replay again.")
+        return 1
     return 1 if s.get("compare", {}).get("blocked") else 0
 
 

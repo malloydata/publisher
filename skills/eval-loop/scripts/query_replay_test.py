@@ -162,6 +162,7 @@ class Compare(unittest.TestCase):
 class StubPublisher(http.server.BaseHTTPRequestHandler):
     bodies: list = []
     rows = [{"category": "a", "n": 1}]
+    fail = False
 
     def log_message(self, *a):
         pass
@@ -169,6 +170,11 @@ class StubPublisher(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         StubPublisher.bodies.append(body)
+        if StubPublisher.fail:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(b'{"message": "down"}')
+            return
         result = {"schema": {"fields": [{"name": k} for k in self.rows[0]]},
                   "data": {"array_value": [{"kind": "record_cell", "record_value": [
                       {"number_value": v} if isinstance(v, (int, float)) else {"string_value": v}
@@ -274,6 +280,17 @@ class Replay(unittest.TestCase):
             StubPublisher.rows = old
         self.assertEqual(code, 1)
         self.assertIn("rows changed  q1", out)
+
+    def test_a_replay_in_which_every_query_errored_is_aborted_and_never_the_record(self):
+        StubPublisher.fail = True
+        try:
+            code, out, d = self.replay("perf-dead")
+        finally:
+            StubPublisher.fail = False
+        self.assertEqual(code, 1)
+        self.assertIn("every query errored", out)
+        self.assertEqual(json.loads((d / "run.json").read_text())["status"], "aborted")
+        self.assertIsNone(ri.record(ri.set_runs(qr.config.load(self.set)), "perf"))
 
     def test_a_slice_limits_the_queries(self):
         code, _, d = self.replay("perf-s", "--tag", "join")
