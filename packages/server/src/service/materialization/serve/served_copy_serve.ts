@@ -299,6 +299,12 @@ export interface ServedCopyHost {
     * source is refused (`column_types`), as before the cutover.
     */
    perColumnTypes?(): boolean;
+   /**
+    * Build the compiled copy's QueryModel once, so every query compiled
+    * against it reuses it rather than building its own (the host's
+    * `ensureSharedQueryModel`). Absent: each query builds its own.
+    */
+   ensureSharedQueryModel?(materializer: ModelMaterializer): Promise<void>;
 }
 
 interface Compiled {
@@ -747,6 +753,7 @@ export class ServedCopyServe {
          }
       };
       const virtualMap = buildVirtualMap(compiled.aliased);
+      await this.host.ensureSharedQueryModel?.(compiled.materializer);
       const runnable = compiled.materializer.loadRestrictedQuery(queryString);
       // The prepared query, read once, when a check below needs it. No check
       // mutates it.

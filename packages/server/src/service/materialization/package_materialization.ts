@@ -1035,18 +1035,36 @@ export class PackageMaterialization {
             ? this.storageServeBindings
             : [...this.storageServeBindings, ...colocated];
       for (const model of this.owner.models().values()) {
-         // Optional: a model a spec stands in for need not implement them.
-         model.setServedCopyContext?.(
-            this.owner.packagePath(),
-            this.owner.malloyConfig(),
-            this.materializePlans,
-            (sourceID) => this.declarationOf(sourceID),
-         );
+         this.setServedCopyContextOn(model);
          model.setServeBindings(bindings);
          // Compiled at bind so a served copy that does not compile is a
          // package warning before any query; never throws.
          void model.prepareServedCopy?.();
       }
+   }
+
+   /**
+    * Hand every loaded model the package directory, connections and plans its
+    * served copy, rollup and persisted-view legs compile with, before any
+    * binding exists. A colocated rollup is read through the build manifest,
+    * which a bind sets without pushing bindings, so its leg needs this from
+    * load (a package whose only tables are colocated rollups otherwise never
+    * routes to them).
+    */
+   pushServedCopyContextToModels(): void {
+      for (const model of this.owner.models().values()) {
+         this.setServedCopyContextOn(model);
+      }
+   }
+
+   private setServedCopyContextOn(model: Model): void {
+      // Optional: a model a spec stands in for need not implement it.
+      model.setServedCopyContext?.(
+         this.owner.packagePath(),
+         this.owner.malloyConfig(),
+         this.materializePlans,
+         (sourceID) => this.declarationOf(sourceID),
+      );
    }
 
    /**

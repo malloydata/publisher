@@ -2853,6 +2853,8 @@ export class Model {
    private newServedCopy(cutover = false): ServedCopyServe {
       return new ServedCopyServe({
          perColumnTypes: () => cutover || getV1ServedCopyMode() === "on",
+         ensureSharedQueryModel: (materializer) =>
+            this.ensureSharedQueryModel(materializer),
          modelPath: () => this.modelPath,
          modelDef: () => this.modelDef,
          // Storage tables only while the storage tier serves; colocated tables

@@ -1434,6 +1434,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          buildPlanMs = await pkg.materialization.applyLoadBuildPlan(
             outcome.buildPlan,
          );
+         // Before any bind, so a colocated rollup bound later is routed.
+         pkg.materialization.pushServedCopyContextToModels();
 
          await applyLoadGates(pkg);
          const entitiesStarted = performance.now();

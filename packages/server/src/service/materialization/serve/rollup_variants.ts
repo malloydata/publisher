@@ -169,6 +169,7 @@ import { sameGateSet } from "../../governance/query_governor";
 import { fieldNotes, noteSource } from "../field_notes";
 import { timeframeRestatements, typeDeclaration } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
+import { getMaterializeEnabled } from "../../../config";
 import {
    boundTablePath,
    buildVirtualMap,
@@ -399,6 +400,9 @@ export class RollupVariantServe {
             const { plans } = planSourceRollups(map, node, {
                packageRelativeSourceID: (id) =>
                   packageRelativeSourceID(packagePath, id),
+               // Routed under the v1 cutover too: v2's route only with its
+               // switch.
+               readsV2: getMaterializeEnabled(),
             });
             if (plans.length > 0) byBase.set(node.sourceID, plans);
          }
@@ -456,7 +460,10 @@ export class RollupVariantServe {
       const localName =
          typeof prepared.structRef === "string"
             ? prepared.structRef
-            : undefined;
+            : importedSourceName(
+                 prepared.structRef,
+                 prepared.modelDef ?? (modelDef as never),
+              );
       const struct = resolveStructRefSource<{ sourceID?: unknown }>(
          prepared.structRef,
          prepared.modelDef ?? (modelDef as never),
@@ -2505,4 +2512,36 @@ export function checkCoverage(
       }
    };
    visit(levels, new Set());
+}
+
+/**
+ * The name a model gives the source `structRef` holds inline, when it is that
+ * named source unchanged: Malloy inlines a source a model imports without
+ * exporting it (#6646), so the query's struct is an object, not a name. It is
+ * the named source only when the model's entry of the struct's `as` has the
+ * same `sourceID`, fields and filters; an inline extension (`orders extend {
+ * … } -> …`) changes one of them and stays unnamed.
+ */
+export function importedSourceName(
+   structRef: unknown,
+   modelDef: { contents?: Record<string, unknown> } | undefined,
+): string | undefined {
+   if (structRef === null || typeof structRef !== "object") return undefined;
+   const struct = structRef as {
+      as?: unknown;
+      sourceID?: unknown;
+      fields?: unknown;
+      filterList?: unknown;
+   };
+   if (typeof struct.as !== "string" || typeof struct.sourceID !== "string") {
+      return undefined;
+   }
+   const named = modelDef?.contents?.[struct.as] as typeof struct | undefined;
+   if (!named || named.sourceID !== struct.sourceID) return undefined;
+   const same = (a: unknown, b: unknown) =>
+      JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+   return same(named.fields, struct.fields) &&
+      same(named.filterList, struct.filterList)
+      ? struct.as
+      : undefined;
 }
