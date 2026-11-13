@@ -219,7 +219,8 @@ describe("joinRollupLegs", () => {
       const legs = joinRollupLegs(
          [join(), other],
          new Map([[CHILD, [plan()]]]),
-         new Set(), "id",
+         new Set(),
+         "id",
       );
       expect(legs[0]?.refusal?.code).toBe("rollup_count_semantics");
    });
@@ -231,12 +232,14 @@ describe("unmatchedRowProblem", () => {
    const many = joinRollupLegs(
       [join()],
       new Map([[CHILD, [plan()]]]),
-      new Set(), "id",
+      new Set(),
+      "id",
    )[0]!.leg;
    const one = joinRollupLegs(
       [join({ relationship: "one" })],
       new Map([[CHILD, [plan()]]]),
-      new Set(), "id",
+      new Set(),
+      "id",
    )[0]!.leg;
 
    it("before malloydata/malloy#3208: a join_many count and a non-column operand are declined", () => {
@@ -268,7 +271,8 @@ describe("unmatchedRowProblem", () => {
       const [{ leg }] = joinRollupLegs(
          [join()],
          new Map([[CHILD, [p]]]),
-         new Set(), "id",
+         new Set(),
+         "id",
       ) as [{ leg: Parameters<typeof unmatchedRowProblem>[0] }];
       const read = new Set(["seg_miles"]);
       const seen: (readonly string[])[] = [];
@@ -313,7 +317,8 @@ describe("checkJoinCoverage (row 27)", () => {
       fanOutDimensions: ["line_kind"],
    });
    const legOf = (p: RollupVariantPlan) =>
-      joinRollupLegs([join()], new Map([[CHILD, [p]]]), new Set(), "id")[0]!.leg;
+      joinRollupLegs([join()], new Map([[CHILD, [p]]]), new Set(), "id")[0]!
+         .leg;
    const none = () => "none" as const;
    const miles = { name: "seg_miles", ref: ["segments", "seg_miles"] };
    const kind = { name: "line_kind", ref: ["segments", "line_kind"] };
