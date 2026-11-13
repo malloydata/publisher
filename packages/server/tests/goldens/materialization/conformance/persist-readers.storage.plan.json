@@ -1,0 +1,124 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "summary@<pkg>/m.malloy": [],
+          "summary_kept@<pkg>/m.malloy": []
+        },
+        "order": [
+          "summary@<pkg>/m.malloy",
+          "summary_kept@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "summary@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "summary_kept@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "summary@<pkg>/m.malloy": "m.malloy",
+      "summary_kept@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "summary@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "summary_kept@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "summary@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "summary",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "summary",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "2375b815017e854f15706b749efb4d263a5bc0f59e2a56b56a5e4b2ccedd16da",
+        "sourceID": "summary@<pkg>/m.malloy",
+        "sql": "sha256:e18deb2df9b91f16"
+      },
+      "summary_kept@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "summary",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "summary_kept",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "2375b815017e854f15706b749efb4d263a5bc0f59e2a56b56a5e4b2ccedd16da",
+        "sourceID": "summary_kept@<pkg>/m.malloy",
+        "sql": "sha256:e18deb2df9b91f16"
+      }
+    }
+  }
+}

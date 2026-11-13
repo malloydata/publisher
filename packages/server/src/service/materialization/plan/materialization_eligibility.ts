@@ -14,12 +14,13 @@ import {
 } from "./persist_source_fields";
 import {
    buildSubstitutesAGiven,
-   classifyDynamicTerms,
+   admitGivenPositions,
    readTimeDynamicTerms,
    type DynamicTerm,
 } from "./persist_dynamic_terms";
 import { routeReadsEnv } from "../../motly";
 import { resolvePartitionColumns } from "./persist_partition";
+import { rollupGateEnforcedAtRead } from "./rollup_plan";
 
 /**
  * What an eligible source carries into the build and the serve shape. Returned
@@ -45,7 +46,7 @@ interface PersistDynamicPlan {
  *     tenant's slice served to every tenant. An extend-block `where:` term is
  *     left out of the build and re-applied per caller, so it is stripped and
  *     returned; any other position is refused (fail closed). See
- *     {@link classifyDynamicTerms}. The stripped terms are a promise: the
+ *     {@link admitGivenPositions}. The stripped terms are a promise: the
  *     serve shape must declare their givens and re-emit their text, or the
  *     query must not route.
  *  3. **No `#(authorize)` / `#(access_filter)` gate.** Both are evaluated per
@@ -116,7 +117,7 @@ export function assertMaterializationEligible(
       });
    }
 
-   const classified = classifyDynamicTerms(persistSource);
+   const classified = admitGivenPositions(persistSource);
    if (!classified.ok) {
       recordEligibilityRefused(classified.reason);
       throw new MaterializationEligibilityError({
@@ -266,6 +267,14 @@ export function assertColocatedPersistNotAuthorizeGated(
    origin: "persist" | "preaggregate" = "persist",
    gateOutcome?: PersistSourceGateOutcome,
    annotationFields: Record<string, string> = {},
+   options: {
+      /**
+       * From {@link gateEnforcedAtRead}, for a `#(preaggregate)` rollup whose
+       * base gate is grafted and proven on its variant at read (R3): skip
+       * only the gate refusal.
+       */
+      gateEnforcedAtRead?: boolean;
+   } = {},
 ): void {
    if (
       !annotationFields.storage &&
@@ -367,6 +376,7 @@ export function assertColocatedPersistNotAuthorizeGated(
    );
 
    if (!referencesAuthorize(persistSource)) return;
+   if (origin === "preaggregate" && options.gateEnforcedAtRead) return;
 
    if (
       origin === "persist" &&
@@ -655,6 +665,8 @@ function walkForAuthorizeNotes(
  * - its gate is the entry point's own and classifies `row_level` against the
  *   author's model (`sourceGateOutcomes`), the bar the colocated tier sets.
  *
+ * A rollup is asked {@link rollupGateEnforcedAtRead} instead (rows 1 and 21).
+ *
  * The build, the serve bind and the host-instructed build all ask this one
  * question, so a table is never built that cannot be served, nor served
  * because it was built.
@@ -662,9 +674,16 @@ function walkForAuthorizeNotes(
 export function gateEnforcedAtRead(
    sourceID: string,
    plan:
-      | Pick<TierGateInputs, "materializePlans" | "sourceGateOutcomes">
+      | Pick<
+           TierGateInputs,
+           "materializePlans" | "sourceGateOutcomes" | "preaggregatePlans"
+        >
       | undefined,
 ): boolean {
+   // A rollup asks its own question: a `#(preaggregate)` rollup's base gates
+   // are grafted and proven on its variant (R3 for rollups), a v1 one's never.
+   const rollup = plan?.preaggregatePlans?.[sourceID];
+   if (rollup !== undefined) return rollupGateEnforcedAtRead(rollup);
    if (!getMaterializeGatedSources()) return false;
    if (!plan?.materializePlans?.[sourceID]) return false;
    const outcome = plan.sourceGateOutcomes?.[sourceID];
@@ -747,11 +766,37 @@ export function assertTierEligible(
       });
       return;
    }
+   const rollup = plan?.preaggregatePlans?.[source.sourceID];
    assertColocatedPersistNotAuthorizeGated(
       source,
       source.name,
-      plan?.preaggregatePlans?.[source.sourceID] ? "preaggregate" : "persist",
+      rollup ? "preaggregate" : "persist",
       plan?.sourceGateOutcomes?.[source.sourceID],
       annotationFields,
+      { gateEnforcedAtRead: !!rollup && rollupGateEnforcedAtRead(rollup) },
    );
+   // A colocated `#(materialize)` table is read only through the served copy
+   // (never Malloy's manifest), which answers a gated entry point only while
+   // it keeps the gates (`materialize.gatedSources`), as for `storage=`. A
+   // gated one is built only then, so a table is never built that cannot be
+   // served (phase 3 pull request 6).
+   if (
+      plan?.materializePlans?.[source.sourceID] &&
+      referencesAuthorize(source) &&
+      !gateEnforcedAtRead(source.sourceID, plan)
+   ) {
+      recordEligibilityRefused("authorize");
+      throw new MaterializationEligibilityError({
+         reason: "authorize",
+         message:
+            `Source '${source.name}' cannot be materialized (colocated ` +
+            `'#(materialize)'): it is protected by an #(authorize) or ` +
+            `#(access_filter) gate, and its table is read only through the ` +
+            `served copy, which answers a gated entry point only with ` +
+            `PUBLISHER_MATERIALIZE_GATED_SOURCES on and only for the entry ` +
+            `point's own row-level gate. The source serves live. Turn that ` +
+            `setting on, or use '#@ persist', whose colocated table keeps the ` +
+            `gate through Malloy's build manifest.`,
+      });
+   }
 }

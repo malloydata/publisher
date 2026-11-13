@@ -30,6 +30,7 @@
  *   reaches the CTAS that casts.
  */
 
+import { getDialect } from "@malloydata/malloy";
 import { quoteIdentifier } from "../quoting";
 import { fromSubselect } from "./subselect";
 import { duckdbTypeToMalloyType } from "./serve/materialization_serve_transform";
@@ -308,6 +309,13 @@ export interface ReadCast {
    column: string;
    /** The DuckDB type it is read as. */
    castTo: string;
+   /**
+    * Read as that SQL type itself (`::"HUGEINT"`), which Malloy types from
+    * the dialect (a `bigint` number), rather than as the Malloy type it maps
+    * to (`::number`, which would round it). For a big-integer column
+    * ({@link bigIntegerReads}).
+    */
+   native?: true;
 }
 
 const INTEGER_TYPES =
@@ -404,4 +412,343 @@ export function serveTypePlan(
       }
    }
    return { casts, unservable };
+}
+
+/** A stored column's name and type, in DuckDB's spelling (`DESCRIBE`'s). */
+export interface StoredColumn {
+   name: string;
+   type: string;
+}
+
+/**
+ * The stored columns a build source's compiled output declares, each in the
+ * DuckDB spelling a serve binding's schema carries (`VARCHAR`, `BIGINT`,
+ * `STRUCT(a VARCHAR)[]`), which the served copy reads back as Malloy types.
+ *
+ * For a colocated `#(materialize)` table (no `storage=`), whose build writes
+ * into the source's own warehouse and captures no schema: its columns are the
+ * build source's output, a table at one content address holds exactly that
+ * build's columns, and Malloy reads each back as the basic type it built
+ * (decided for the colocated served copy, phase 3 pull request 6).
+ *
+ * A field whose type has no faithful spelling here (`timestamptz`, `json`, a
+ * `sql native` type, a nested type off DuckDB) is left out, so the served copy
+ * finds the column missing and the source serves live: never declared as a
+ * type its table does not hold.
+ */
+export function storedColumnsOfOutput(
+   fields: readonly unknown[] | undefined,
+   options: {
+      nested: boolean;
+      /**
+       * Store a `bigint` (Malloy's numberType for a 64-bit integer read back
+       * from a table) as BIGINT rather than DOUBLE: for a schema read off a
+       * table, under the v1 cutover. Off, as before (a `#(materialize)`
+       * plan's compiled output).
+       */
+      bigint?: boolean;
+      /**
+       * Store a `timestamptz` as TIMESTAMP WITH TIME ZONE rather than leaving
+       * the column out: for a v1 table's schema under the v1 cutover, whose
+       * every column the served copy must declare. Off, as before.
+       */
+      timestamptz?: boolean;
+   },
+): StoredColumn[] {
+   const out: StoredColumn[] = [];
+   for (const f of fields ?? []) {
+      const name =
+         (f as { as?: unknown; name?: unknown })?.as ??
+         (f as { name?: unknown })?.name;
+      if (typeof name !== "string") continue;
+      const type = storedTypeOfField(
+         f,
+         options.nested,
+         0,
+         options.bigint,
+         options.timestamptz,
+      );
+      if (type !== undefined) out.push({ name, type });
+   }
+   return out;
+}
+
+/** One output field's type in DuckDB's spelling, or undefined (see above). */
+function storedTypeOfField(
+   field: unknown,
+   nested: boolean,
+   depth: number,
+   bigint = false,
+   timestamptz = false,
+): string | undefined {
+   if (depth > 16 || field === null || typeof field !== "object") {
+      return undefined;
+   }
+   const f = field as {
+      type?: unknown;
+      numberType?: unknown;
+      elementTypeDef?: unknown;
+      fields?: unknown[];
+   };
+   switch (f.type) {
+      case "string":
+         return "VARCHAR";
+      case "number":
+         // A schema read back from a table says `bigint` for a 64-bit integer.
+         return f.numberType === "integer" ||
+            (bigint && f.numberType === "bigint")
+            ? "BIGINT"
+            : "DOUBLE";
+      case "boolean":
+         return "BOOLEAN";
+      case "date":
+         return "DATE";
+      case "timestamp":
+         return "TIMESTAMP";
+      case "timestamptz":
+         return timestamptz ? "TIMESTAMP WITH TIME ZONE" : undefined;
+      case "record":
+         return nested
+            ? structOf(f.fields, depth, bigint, timestamptz)
+            : undefined;
+      case "array": {
+         if (!nested) return undefined;
+         const element = f.elementTypeDef as { type?: unknown } | undefined;
+         // An array of records (a repeated record) lists its fields on the
+         // array; an array of a scalar names the scalar's type.
+         const inner =
+            element?.type === "record_element"
+               ? structOf(f.fields, depth, bigint, timestamptz)
+               : storedTypeOfField(
+                    element,
+                    nested,
+                    depth + 1,
+                    bigint,
+                    timestamptz,
+                 );
+         return inner === undefined ? undefined : `${inner}[]`;
+      }
+      default:
+         return undefined;
+   }
+}
+
+function structOf(
+   fields: unknown[] | undefined,
+   depth: number,
+   bigint = false,
+   timestamptz = false,
+): string | undefined {
+   const parts: string[] = [];
+   for (const f of fields ?? []) {
+      const name =
+         (f as { as?: unknown; name?: unknown })?.as ??
+         (f as { name?: unknown })?.name;
+      if (typeof name !== "string") return undefined;
+      const type = storedTypeOfField(f, true, depth + 1, bigint, timestamptz);
+      if (type === undefined) return undefined;
+      parts.push(`"${name.replace(/"/g, '""')}" ${type}`);
+   }
+   return parts.length === 0 ? undefined : `STRUCT(${parts.join(", ")})`;
+}
+
+/**
+ * Whether live answers a source's 64-bit integers with every digit: false for
+ * a dialect Malloy says returns its results through JSON
+ * (`supportsBigIntPrecision`), where live reads 9007199254740993 as
+ * 9007199254740992 and a stored read must round it the same way (Postgres:
+ * measured by the R4 big-integer spec). DuckDB inherits `false` from its
+ * Postgres base, yet its driver keeps every digit (measured too), so it is
+ * read as true. An unknown dialect counts as exact: a stored read then keeps
+ * every digit too, or leaves the column live.
+ */
+export function liveKeepsBigIntegers(dialect: unknown): boolean {
+   if (typeof dialect !== "string" || dialect === "duckdb") return true;
+   try {
+      return (
+         (getDialect(dialect) as { supportsBigIntPrecision?: boolean })
+            .supportsBigIntPrecision !== false
+      );
+   } catch {
+      return true;
+   }
+}
+
+/**
+ * How a stored read gives one big-integer column the value live gives: read
+ * through `castTo`, a native SQL type of the stored table's dialect that Malloy
+ * types as a `bigint` number, so the result keeps every digit; or, with no
+ * cast that can be exact, left out (`castTo` undefined), so only a query
+ * reading it is answered live.
+ */
+export interface BigIntegerRead {
+   /** The stored column, as the schema spells it. */
+   column: string;
+   /** The native type it is read as (`HUGEINT` in DuckDB), or none: left out. */
+   castTo?: string;
+}
+
+/** DuckDB integer types (and a DECIMAL with no scale) HUGEINT holds exactly. */
+const HUGEINT_EXACT =
+   /^(TINYINT|SMALLINT|INTEGER|INT|INT1|INT2|INT4|INT8|BIGINT|HUGEINT|INT128|UTINYINT|USMALLINT|UINTEGER|UBIGINT|SHORT|LONG|SIGNED|(DECIMAL|NUMERIC)\(\s*\d+\s*,\s*0\s*\))$/;
+
+/**
+ * The stored columns live answers with more digits than a plain `number`
+ * keeps (known limitation 12), and how a stored read keeps them: each a
+ * column whose author field Malloy types as a `bigint` number (DuckDB
+ * BIGINT, HUGEINT and UBIGINT; BigQuery INT64; Snowflake NUMBER(p,0); a sum
+ * or max over one), on a source whose live answer keeps every digit
+ * ({@link liveKeepsBigIntegers}). A served `type:` can declare such a column
+ * only as a `number`, which Malloy reads through a JavaScript number, so
+ * 9007199254740993 would come back as 9007199254740992.
+ *
+ * Decided from Malloy's own type for the field, the type live answers with,
+ * never from the stored values: `count()` and a sum of 32-bit integers are
+ * `integer`, and a DECIMAL is `float`, all read through a number live too, so
+ * they are not touched. Served must equal live, never exceed it: a
+ * `storage=` table of a source whose live answer rounds (Postgres) is not
+ * touched, since its plain `number` rounds the same way; a colocated table is
+ * read through the warehouse's own bigint type, on live's own data path,
+ * which rounds where live rounds and gives the field live's `bigint` subtype.
+ *
+ * - A `storage=` table (`colocated` false) is in DuckDB and its schema is
+ *   what DESCRIBE reported: an integer column, or a DECIMAL with no scale, is
+ *   read as HUGEINT (UHUGEINT as itself), which holds every value exactly;
+ *   one stored as a float has lost digits already and is left out.
+ * - A colocated table is in the source's own warehouse, and its column can
+ *   be wider than any type Malloy names for a `bigint` number (Postgres
+ *   stores a sum of BIGINTs as `numeric`, SQL Server's `decimal(38,0)` is
+ *   typed `bigint`, DuckDB's UHUGEINT holds values past HUGEINT). It is read
+ *   through a cast to exactly the type its build captured from the
+ *   warehouse's catalog (`nativeTypeOf`, `ManifestEntry.nativeSchema`), when
+ *   Malloy types that type as a `bigint` number, so nothing is narrowed and
+ *   the value keeps live's representation. A column of any other type (a
+ *   `numeric`, which Malloy reads as a float), or one whose type its build
+ *   did not capture, is left out.
+ */
+export function bigIntegerReads(
+   schema: readonly { name: string; type: string }[],
+   fields: readonly unknown[] | undefined,
+   options: BigIntegerReadOptions,
+): BigIntegerRead[] {
+   // A colocated table is read on the same connection live runs on, so a
+   // cast to the warehouse's own bigint type takes live's own data path and
+   // rounds exactly where live rounds. A `storage=` table is read in DuckDB,
+   // which keeps every digit: cast there only when live does too.
+   if (!options.colocated && !liveKeepsBigIntegers(options.dialect)) return [];
+   const byName = new Map<string, unknown>();
+   const declared: DeclaredColumn[] = [];
+   for (const f of fields ?? []) {
+      const { name, as, type } = (f ?? {}) as {
+         name?: unknown;
+         as?: unknown;
+         type?: unknown;
+      };
+      const key = typeof as === "string" ? as : name;
+      if (typeof key !== "string" || typeof type !== "string") continue;
+      byName.set(key, f);
+      declared.push({ name: key, type });
+   }
+   const out: BigIntegerRead[] = [];
+   for (const column of schema) {
+      const d = declaredFor(column.name, declared);
+      const read = d && bigIntegerReadOf(byName.get(d.name), column, options);
+      if (read) out.push(read);
+   }
+   return out;
+}
+
+/**
+ * {@link bigIntegerReads} for one stored column and the field it holds (a
+ * joined source's field, read through a record), or undefined when it needs
+ * nothing.
+ */
+export function bigIntegerReadOf(
+   field: unknown,
+   column: { name: string; type: string },
+   options: BigIntegerReadOptions,
+): BigIntegerRead | undefined {
+   if (!options.colocated && !liveKeepsBigIntegers(options.dialect)) {
+      return undefined;
+   }
+   if (!isBigIntegerField(field)) return undefined;
+   const castTo = options.colocated
+      ? exactWarehouseCast(options.dialect, options.nativeTypeOf?.(column.name))
+      : duckdbBigIntegerCast(column.type);
+   return { column: column.name, ...(castTo ? { castTo } : {}) };
+}
+
+/** Where a stored table is, and what is known of its columns' types. */
+export interface BigIntegerReadOptions {
+   /** The author's source's dialect: the one live answers on. */
+   dialect: unknown;
+   /** A colocated table, in the source's own warehouse (else `storage=`). */
+   colocated?: boolean;
+   /**
+    * For a colocated table: a stored column's type as the warehouse's catalog
+    * names it, as its build captured it, or undefined when it did not.
+    */
+   nativeTypeOf?: (column: string) => string | undefined;
+}
+
+/**
+ * A colocated column's captured warehouse type, as the cast that reads it
+ * exactly, when Malloy types that type as a `bigint` number (`bigint`,
+ * `NUMBER(38,0)`, `decimal(38,0)`, `UHUGEINT`); undefined for any other type
+ * (`numeric`, read as a float), a type the dialect's CAST does not take by
+ * that name (MySQL's `bigint`), or none captured: no cast keeps both the
+ * value and live's representation, so the column is left out.
+ */
+function exactWarehouseCast(
+   dialect: unknown,
+   nativeType: string | undefined,
+): string | undefined {
+   if (typeof dialect !== "string" || !nativeType?.trim()) return undefined;
+   // MySQL's CAST names no integer type (`CAST(x AS bigint)` is a syntax
+   // error; its SIGNED and UNSIGNED are not numbers to Malloy), so only a
+   // DECIMAL is a type the column can be read through.
+   if (dialect === "mysql" && !/^decimal\b/i.test(nativeType.trim())) {
+      return undefined;
+   }
+   try {
+      return isBigIntegerField(
+         getDialect(dialect).sqlTypeToMalloyType(nativeType),
+      )
+         ? nativeType.trim()
+         : undefined;
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * A lookup of a stored column's captured warehouse type, by name, exactly and
+ * then by a unique case fold (a warehouse may fold the names its catalog
+ * reports).
+ */
+export function nativeTypeLookup(
+   nativeSchema: readonly { name: string; type: string }[] | undefined,
+): (column: string) => string | undefined {
+   const columns = nativeSchema ?? [];
+   return (column) => {
+      const exact = columns.find((c) => c.name === column);
+      if (exact) return exact.type;
+      const folded = columns.filter(
+         (c) => c.name.toLowerCase() === column.toLowerCase(),
+      );
+      return folded.length === 1 ? folded[0].type : undefined;
+   };
+}
+
+/** Whether a compiled field is a number Malloy types with the `bigint` subtype. */
+export function isBigIntegerField(field: unknown): boolean {
+   const f = (field ?? {}) as { type?: unknown; numberType?: unknown };
+   return f.type === "number" && f.numberType === "bigint";
+}
+
+/** The DuckDB type a stored column is read as to keep every digit, or none. */
+function duckdbBigIntegerCast(storedType: string): string | undefined {
+   const base = storedType.trim().toUpperCase();
+   if (base === "UHUGEINT") return "UHUGEINT";
+   return HUGEINT_EXACT.test(base) ? "HUGEINT" : undefined;
 }

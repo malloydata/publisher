@@ -1,0 +1,91 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders@<hammer>/tsp/tsp.malloy": []
+        },
+        "order": [
+          "orders@<hammer>/tsp/tsp.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "orders@<hammer>/tsp/tsp.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders@<hammer>/tsp/tsp.malloy": "tsp.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders@<hammer>/tsp/tsp.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders@<hammer>/tsp/tsp.malloy": {
+        "annotationFields": {
+          "name": "tsp_orders",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "org_id",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "tsp.malloy",
+        "name": "orders",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "b70997a611486d9e251b1e3bf78bf04e973b4429213e5933e3a99c2cd7c2ab56",
+        "sourceID": "orders@<hammer>/tsp/tsp.malloy",
+        "sql": "sha256:f3b1330a0aa4163e",
+        "strippedTerms": [
+          {
+            "code": "org_id = $ORG_ID",
+            "givens": [
+              "ORG_ID"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

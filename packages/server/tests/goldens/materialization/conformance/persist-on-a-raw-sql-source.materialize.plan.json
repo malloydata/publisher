@@ -1,0 +1,111 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "raw_direct@<pkg>/m.malloy": []
+        },
+        "order": [
+          "raw_direct@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "raw_direct@<pkg>/m.malloy": {
+        "buildSourceName": "raw_direct__mat",
+        "columns": [
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "raw_direct",
+          "storage": "lake"
+        },
+        "sourceID": "raw_direct@<pkg>/m.malloy",
+        "sourceName": "raw_direct",
+        "storedColumns": [
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "raw_direct@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "raw_direct@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "raw_direct@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "raw_direct@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "raw_direct",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "raw_direct",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "d315aa74c60e26bdae2de1c53ed1a5dbd279d607ad66f56d81a4684721304742",
+        "sourceID": "raw_direct@<pkg>/m.malloy",
+        "sql": "sha256:87f04cb270dd0a15"
+      }
+    }
+  }
+}

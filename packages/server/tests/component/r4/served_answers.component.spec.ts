@@ -166,7 +166,7 @@ const SUMMARY_QUERY =
    "run: summary -> { group_by: region; aggregate: t is total.sum() }";
 
 describe("the path report names exactly the tables the SQL read", () => {
-   it("a colocated #(materialize) source, after a build, reports live and reads the warehouse", async () => {
+   it("a colocated #(materialize) source is built, served by the served copy from its own warehouse, and reported", async () => {
       const { fixture, live } = await loadBuilt(
          {
             "m.malloy": `import "raw.malloy"
@@ -181,15 +181,17 @@ source: summary is orders_raw -> {
          { q: { model: "m.malloy", query: SUMMARY_QUERY } },
       );
       try {
+         // Built into the source's own warehouse, and read there by the
+         // served copy (phase 3 pull request 6).
          expect(fixture.built).toEqual([
             { name: "summary", tier: "colocated" },
          ]);
+         expect(codes(fixture, "materialize-not-built")).toEqual([]);
+         expect(fixture.verdicts).toEqual(["summary:serves"]);
          const ran = await run(fixture, "m.malloy", SUMMARY_QUERY);
          expect(rowDifference(live.q, ran.rows)).toBeUndefined();
-         // Malloy never substitutes a #(materialize) source (it carries no
-         // #@ persist), so the warehouse answered and the report says so.
-         expect(reads(ran.sql, "summary_tbl")).toBe(false);
-         expect(ran.servedBy).toBe("live");
+         expect(reads(ran.sql, "summary_tbl")).toBe(true);
+         expect(ran.servedBy).toBe("materialized");
          expectReportMatchesSQL(fixture, ran);
       } finally {
          await fixture.dispose();
@@ -628,10 +630,13 @@ source: colocated is orders_raw -> {
       );
       try {
          // Before: "summary:live:shadowed" although the served copy answers it.
+         // A colocated one is served by the served copy too, from its own
+         // warehouse (phase 3 pull request 6).
          expect(fixture.verdicts.sort()).toEqual([
-            "colocated:live:served_copy",
+            "colocated:serves",
             "summary:serves",
          ]);
+         expect(codes(fixture, "materialize-not-built")).toEqual([]);
          const ran = await run(fixture, "m.malloy", SUMMARY_QUERY);
          expect(ran.servedBy).toBe("materialized");
          const colocated = await run(
@@ -639,7 +644,9 @@ source: colocated is orders_raw -> {
             "m.malloy",
             "run: colocated -> { group_by: region; aggregate: t is total.sum() }",
          );
-         expect(colocated.servedBy).toBe("live");
+         expect(colocated.servedBy).toBe("materialized");
+         expect(reads(colocated.sql, "colocated_tbl")).toBe(true);
+         expectReportMatchesSQL(fixture, colocated);
       } finally {
          await fixture.dispose();
       }

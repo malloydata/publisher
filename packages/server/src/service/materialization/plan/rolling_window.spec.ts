@@ -24,9 +24,17 @@ import {
 import {
    classifyWhereTerms,
    currentTimeFields,
+   givenReadingFilterTerms,
+   givenTerms,
    readRollingWindow,
 } from "./persist_dynamic_terms";
-import { rollingWindowTerms, windowDeleteBefore } from "./rolling_window";
+import {
+   buildQueryWindows,
+   deletingWindowsOf,
+   leftOutWindowTerms,
+   rollingWindowTerms,
+   windowDeleteBefore,
+} from "./rolling_window";
 
 const URL_ = "file:///rw/m.malloy";
 let duckdb: DuckDBConnection;
@@ -49,6 +57,11 @@ source: given_beside_now is events extend {
 }
 #(materialize) storage="lake"
 source: upper_w is events extend { where: ts < now - 30 days }
+source: two_sided is events extend { where: ts >= now - 60 days and ts < now - 30 days }
+source: two_sided_paren is events extend { where: (ts >= now - 60 days) and (ts < now - 30 days) }
+source: two_sided_range is events extend { where: ts ? now - 60 days to now - 30 days }
+source: upper_unstored is events extend { dimension: t2 is ts::date::timestamp
+  where: t2 < now - 30 days }
 source: two_terms is events extend { where: ts >= now - 30 days and amount > 1 }
 source: shifted is events extend { where: ts >= now.day - 1 day }
 source: on_date is events extend { where: d >= now::date - 3 days }
@@ -137,6 +150,25 @@ describe("classifyWhereTerms, the one where: term classifier", () => {
       });
    });
 
+   it("hands v1 persistence every term that reads a given, now or not", () => {
+      // v1's stripped terms are every given-reading `where:` term, whatever
+      // else it reads; the one classifier is their only reader.
+      expect(givenTerms(classifyWhereTerms(def("given_beside_now")))).toEqual([
+         { code: "amount = $ORG", givens: ["ORG"], columns: ["amount"] },
+      ]);
+      expect(givenTerms(classifyWhereTerms(def("given_and_now")))).toEqual([
+         {
+            code: "ts >= now - 30 days and amount = $ORG",
+            givens: ["ORG"],
+            columns: ["ts", "amount"],
+         },
+      ]);
+      expect(givenTerms(classifyWhereTerms(def("inherited")))).toEqual([]);
+      expect(givenReadingFilterTerms(def("given_and_now"))).toEqual([
+         { code: "ts >= now - 30 days and amount = $ORG", givens: ["ORG"] },
+      ]);
+   });
+
    it("reads a current-time term through a dimension, with no window", () => {
       expect(classifyWhereTerms(def("via_age"))).toEqual([
          { code: "age_h > 720", dependsOn: { kind: "current_time" } },
@@ -182,10 +214,73 @@ describe("rollingWindowTerms, over compiled sources", () => {
       ]);
    });
 
-   it("refuses an upper bound (question 2)", () => {
-      expect(classify("upper_w")).toMatchObject({
+   it("accepts an upper bound, to be left out of the build (question 2, option A)", () => {
+      const out = classify("upper_w");
+      expect(out.ok).toBe(true);
+      if (!out.ok) return;
+      expect(out.terms).toHaveLength(1);
+      const [term] = out.terms;
+      expect(term.window).toEqual({
+         field: "ts",
+         op: "<",
+         offset: { sign: -1, amount: 30, unit: "day" },
+      });
+      // Where it reads `ts`, by which the build copy finds its text.
+      expect(term.leftOut?.map((u) => u.url)).toEqual([URL_]);
+      expect(leftOutWindowTerms(out.terms)).toEqual([
+         { code: "ts < now - 30 days", at: term.leftOut ?? [] },
+      ]);
+      // Nothing to build in the query, and nothing to delete below.
+      expect(buildQueryWindows(out.terms)).toEqual([]);
+      expect(deletingWindowsOf(out.terms)).toEqual([]);
+   });
+
+   it("builds a lower bound alone as written: nothing left out", () => {
+      const out = classify("lower_w");
+      expect(out.ok && out.terms[0].leftOut).toBeUndefined();
+      expect(out.ok && leftOutWindowTerms(out.terms)).toEqual([]);
+      expect(out.ok && deletingWindowsOf(out.terms)).toHaveLength(1);
+   });
+
+   it("reads a two-sided window as one left-out term whose lower bound the build query writes", () => {
+      for (const name of ["two_sided", "two_sided_paren", "two_sided_range"]) {
+         const out = classify(name);
+         expect(out.ok).toBe(true);
+         if (!out.ok) return;
+         expect(out.terms.map((t) => [t.window.op, t.window.offset])).toEqual([
+            [">=", { sign: -1, amount: 60, unit: "day" }],
+            ["<", { sign: -1, amount: 30, unit: "day" }],
+         ]);
+         // One term to take out of the build copy, not two.
+         expect(leftOutWindowTerms(out.terms)).toHaveLength(1);
+         expect(buildQueryWindows(out.terms)).toEqual([
+            {
+               field: "ts",
+               op: ">=",
+               offset: { sign: -1, amount: 60, unit: "day" },
+            },
+         ]);
+         // The lower bound still deletes on an incremental refresh.
+         expect(deletingWindowsOf(out.terms).map((w) => w.op)).toEqual([">="]);
+      }
+   });
+
+   it("refuses an upper bound on a field that is not a stored timestamp column", () => {
+      expect(classify("upper_unstored")).toMatchObject({
          ok: false,
-         reason: "current_time_upper_bound",
+         reason: "current_time_field",
+      });
+   });
+
+   it("refuses an upper bound whose place the compiler did not record", () => {
+      const [term] = classifyWhereTerms(def("upper_w"));
+      const unplaced = {
+         ...term,
+         dependsOn: { ...term.dependsOn, at: [] },
+      } as typeof term;
+      expect(rollingWindowTerms([unplaced], stored)).toMatchObject({
+         ok: false,
+         reason: "current_time_unplaced",
       });
    });
 
@@ -269,21 +364,25 @@ describe("dimensions that depend on the current time", () => {
 });
 
 describe("planModelMaterialize with a rolling window", () => {
-   it("records the window on the plan, and refuses an upper bound", () => {
+   it("records the window on the plan, an upper bound marked left out", () => {
       const { plans, refused } = planModelMaterialize(contents);
       // `inherited` declares its own #(materialize) and carries its base's
       // window; `unannotated_ext` declares none, so it is not planned.
       expect(
          plans.map((p) => [
             p.sourceName,
-            p.readTimeTerms?.map((t) => [t.kind, t.code]),
+            p.readTimeTerms?.map((t) => [
+               t.kind,
+               t.code,
+               "leftOut" in t && t.leftOut !== undefined,
+            ]),
          ]),
       ).toEqual([
-         ["inherited", [["current_time", "ts >= now - 30 days"]]],
-         ["lower_w", [["current_time", "ts >= now - 30 days"]]],
+         ["inherited", [["current_time", "ts >= now - 30 days", false]]],
+         ["lower_w", [["current_time", "ts >= now - 30 days", false]]],
+         ["upper_w", [["current_time", "ts < now - 30 days", true]]],
       ]);
-      expect(refused.map((r) => r.sourceName)).toEqual(["upper_w"]);
-      expect(refused[0].reason).toContain("OLDER than a moving cut-off");
+      expect(refused).toEqual([]);
    });
 });
 

@@ -1,0 +1,151 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "daily@<pkg>/m.malloy": []
+        },
+        "order": [
+          "daily@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "daily@<pkg>/m.malloy": {
+        "buildSourceName": "daily__mat",
+        "columns": [
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "total",
+            "computed": false,
+            "dimension": "total"
+          },
+          {
+            "column": "n",
+            "computed": false,
+            "dimension": "n"
+          },
+          {
+            "column": "big",
+            "computed": true,
+            "dimension": "big",
+            "zoneFree": true
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "daily",
+          "storage": "lake"
+        },
+        "sourceID": "daily@<pkg>/m.malloy",
+        "sourceName": "daily",
+        "storedColumns": [
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "total",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "n",
+            "type": "BIGINT"
+          },
+          {
+            "name": "big",
+            "type": "BOOLEAN"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          },
+          {
+            "name": "big",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "9bb02ad5a6d9a5376a2b6505820469260321bc0737501bc008f516da04b133b3",
+        "sourceID": "daily@<pkg>/m.malloy",
+        "sql": "sha256:f8cfa730b6c190d7"
+      }
+    }
+  }
+}

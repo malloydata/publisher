@@ -16,9 +16,17 @@ import {
 } from "../../../materialization_metrics";
 import type { ManifestEntry } from "../types";
 import { quoteManifestTablePath } from "../../quoting";
-import { annotationValue, identifier, stringLiteral } from "../../malloy_text";
+import {
+   annotationValue,
+   doubleQuotedString,
+   identifier,
+   stringLiteral,
+} from "../../malloy_text";
 import { storageTablePath } from "../run/storage_table_path";
 import { pipelineReferences, structRefSourceId } from "../plan/source_map";
+import { documentFlagLines } from "../declaration_text";
+
+export { documentFlagLines };
 
 /**
  * A dimension or measure from the author's source, re-declared on the serve
@@ -134,13 +142,34 @@ export interface ServeBinding {
     */
    sourceIDs?: string[];
    /**
+    * What the run that wrote or carried this stored table found of its
+    * source's declared primary key, by sourceID: true when no value repeats
+    * and none is NULL. The join-to-rollup leg in a destination (#1704) reads
+    * a join_many keyed on that key only when true. Internal: absent on every
+    * binding a host's manifest makes, and dropped when a run is about to
+    * rewrite the table.
+    */
+   primaryKeys?: Record<string, boolean>;
+   /**
     * `persist` for a modeler-annotated source, `preaggregate` for a synthesized
     * rollup; absent means `persist`. A rollup must not take the ordinary
     * author-model lookups (see {@link rollupServeBindings}).
     */
    origin?: "persist" | "preaggregate";
-   /** The storage destination the physical table lives in. */
+   /**
+    * The storage destination the physical table lives in; for a
+    * {@link colocated} table, the source's own connection.
+    */
    destinationName: string;
+   /**
+    * A colocated `#(materialize)` table (colocated_bindings.ts): built into
+    * the source's own warehouse, on the connection {@link destinationName}
+    * names, which the served copy reads it through (never a server-only
+    * alias); its {@link tablePath} is already canonical for that
+    * connection's dialect, and its {@link schema} is the build's compiled
+    * output. Only the served copy reads one. Absent on a `storage=` binding.
+    */
+   colocated?: true;
    /** The virtualMap handle for this source (its build-posture identity). */
    virtualHandle: string;
    /** Logical (unquoted) physical table path; quoted for DuckDB at bind time. */
@@ -148,14 +177,23 @@ export interface ServeBinding {
    /** Authoritative DuckDB columns captured post-build (raw DuckDB types). */
    schema: { name: string; type: string }[];
    /**
+    * A colocated table's columns with their warehouse types as its build
+    * captured them (`ManifestEntry.nativeSchema`): a big-integer column is
+    * cast to exactly its type, and one with none is answered live (known
+    * limitation 12). Absent for a `storage=` table, whose `schema` is native.
+    */
+   nativeSchema?: { name: string; type: string }[];
+   /**
     * Columns read through a cast to their declared type, set by the serve
     * shape for a table an older build typed (ms2data/service#6642). The shape
     * then declares the stored table as `<name>__stored` and the source as a
     * query over it selecting every column, these cast (`::date`), so
     * everything built on them still compiles. `schema` keeps the STORED
-    * types. Absent reads the table as stored.
+    * types. Absent reads the table as stored. A `native` cast reads a
+    * big-integer column as its SQL type (`::"HUGEINT"`) so it keeps every
+    * digit (known limitation 12).
     */
-   readCasts?: { column: string; castTo: string }[];
+   readCasts?: { column: string; castTo: string; native?: true }[];
    /**
     * The author source's refinements, re-emitted as an `extend {}` on the
     * virtual base. Attached at serve time from the compiled model. Analytic
@@ -289,6 +327,23 @@ export function groupAliasesByName(
  * that id is the host's opaque value, which need not match the publisher's own
  * content addresses the grouping is computed from.
  */
+/**
+ * The primary key checks a local run recorded on a stored entry (its own
+ * source's, by sourceID): internal, set only by the committing run or a
+ * restore from the store, never by a host's manifest (`splitManifestEntries`).
+ */
+function primaryKeysOf(
+   entry: ManifestEntry,
+): Record<string, boolean> | undefined {
+   const keys = (entry as { keyUniqueness?: { parentKeys?: unknown } })
+      .keyUniqueness?.parentKeys;
+   if (!keys || typeof keys !== "object") return undefined;
+   const out = Object.fromEntries(
+      Object.entries(keys).filter(([, v]) => typeof v === "boolean"),
+   ) as Record<string, boolean>;
+   return Object.keys(out).length > 0 ? out : undefined;
+}
+
 export function deriveServeBindings(
    entries: Record<string, ManifestEntry>,
    aliasesBySourceName: Record<string, string[]>,
@@ -349,6 +404,9 @@ export function deriveServeBindings(
             freshAsOf: entry.dataAsOf,
             freshnessWindowSeconds: entry.freshnessWindowSeconds,
             freshnessFallback: entry.freshnessFallback,
+            ...(primaryKeysOf(entry)
+               ? { primaryKeys: primaryKeysOf(entry) }
+               : {}),
          });
       }
    }
@@ -495,7 +553,7 @@ function serveShapeFragment(binding: ServeBinding): string {
       .join(",\n");
    const virtual = `${identifier(binding.destinationName)}.virtual(${stringLiteral(binding.virtualHandle)})::${shapeTypeName}`;
    const casts = new Map(
-      (binding.readCasts ?? []).map((c) => [c.column, c.castTo]),
+      (binding.readCasts ?? []).map((c) => [c.column, c] as const),
    );
    let prelude = "";
    let source: string;
@@ -509,8 +567,13 @@ function serveShapeFragment(binding: ServeBinding): string {
       const select = binding.schema
          .map((c) => {
             const name = identifier(c.name);
-            const to = casts.get(c.name);
-            return to ? `${name} is ${name}::${duckdbTypeToMalloy(to)}` : name;
+            const cast = casts.get(c.name);
+            if (!cast) return name;
+            // A big-integer column is read as its native SQL type, which
+            // Malloy types as a `bigint` number and so keeps every digit.
+            return cast.native
+               ? `${name} is ${name}::${doubleQuotedString(cast.castTo)}`
+               : `${name} is ${name}::${duckdbTypeToMalloy(cast.castTo)}`;
          })
          .join(", ");
       source = `source: ${sourceName} is ${stored} -> { select: ${select} }`;
@@ -1225,16 +1288,6 @@ export function documentFlagsForLifts(
       .filter((line, i, all) => all.indexOf(line) === i);
 }
 
-/** The `##!` lines of an author file, in order, trimmed. */
-export function documentFlagLines(text: string): string[] {
-   // Block comments first, so a `##!` quoted inside one is not a flag.
-   return text
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith("##!"));
-}
-
 /**
  * The compiled-model facts a lift reads: `contents` by source name, a sourceID
  * index, and readers for a declaration's verbatim text or a whole file. Shared
@@ -1645,6 +1698,31 @@ export function extractViews(
 }
 
 /**
+ * A binding's table path as the SQL reads it: a storage table's quoted for
+ * DuckDB (the destination), a colocated table's as bound, already canonical
+ * for its own connection's dialect.
+ */
+export function boundTablePath(b: ServeBinding): string {
+   return b.colocated
+      ? b.tablePath
+      : quoteManifestTablePath(b.tablePath, "duckdb");
+}
+
+/**
+ * Whether `sql` reads the table at `tablePath` (as {@link boundTablePath}
+ * spells it): the path right after a `FROM` or `JOIN`, and not followed by
+ * more of a name. A bare substring test is not enough: a colocated table's
+ * path is often one quoted name (`"orders"`), which a result column of the
+ * same name (`AS "orders"`) also spells.
+ */
+export function sqlReadsTable(sql: string, tablePath: string): boolean {
+   const path = tablePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   return new RegExp(`\\b(?:FROM|JOIN)\\s+${path}(?![\\w$".\x60])`, "i").test(
+      sql,
+   );
+}
+
+/**
  * Assemble the per-call `virtualMap` (`destinationName -> handle -> table
  * path`). Core pastes each path verbatim, so it must be quoted canonical
  * DuckDB SQL. {@link quoteManifestTablePath} is the same quoting authority the
@@ -1660,7 +1738,7 @@ export function buildVirtualMap(
          inner = new Map<string, string>();
          map.set(b.destinationName, inner);
       }
-      inner.set(b.virtualHandle, quoteManifestTablePath(b.tablePath, "duckdb"));
+      inner.set(b.virtualHandle, boundTablePath(b));
    }
    return map;
 }

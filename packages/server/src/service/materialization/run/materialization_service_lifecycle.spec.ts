@@ -22,6 +22,7 @@ import {
    setPackage,
 } from "../../../test_helpers/materialization_service_harness";
 import { logger } from "../../../logger";
+import { reportSourceBuilt } from "./run_telemetry";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
 import { startMetricsHarness } from "../../../test_helpers/metrics_harness";
 
@@ -504,6 +505,7 @@ describe("runBuild (branch behavior)", () => {
                | undefined;
             strictUpstreams?: boolean | undefined;
             warehouseReach?: "recompute" | "refuse";
+            trigger?: "ON_DEMAND" | "SCHEDULER";
          },
          signal: AbortSignal,
       ) => Promise<void>;
@@ -630,7 +632,9 @@ describe("runBuild (branch behavior)", () => {
       );
       const args = svc.executeInstructedBuild.firstCall.args;
       expect(args[5]).toBe(true);
-      expect(args[args.length - 1]).toBe("refuse");
+      expect(args[12]).toBe("refuse");
+      // A host's build relies on no earlier uniqueness check.
+      expect(args[13]).toBeUndefined();
    });
 
    it("auto-run: derives instructions and auto-loads the manifest", async () => {
@@ -699,6 +703,168 @@ describe("runBuild (branch behavior)", () => {
       ]);
    });
 
+   it("counts auto-run's refusals and carried sources once each, between run.started and run.finished", async () => {
+      const harness = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+      const info = sinon.stub(logger, "info");
+      try {
+         const svc = stubEngine();
+         (
+            svc as unknown as { deriveSelfInstructions: sinon.SinonStub }
+         ).deriveSelfInstructions = sinon.stub().returns({
+            instructions: [makeInstruction()],
+            carried: {
+               "carried-1": {
+                  sourceEntityId: "carried-1",
+                  physicalTableName: "carried_t",
+                  connectionName: "duckdb",
+                  storageDestinationName: "lake",
+               },
+            },
+            refused: {
+               gated: {
+                  name: "gated",
+                  sourceID: "gated",
+                  tier: "storage",
+                  reason: "given",
+                  message: "Source 'gated' cannot be materialized",
+               },
+            },
+         });
+
+         await svc.runBuild(
+            "mat-1",
+            "my-env",
+            "pkg",
+            {
+               sourceNames: undefined,
+               forceRefresh: true,
+               buildInstructions: undefined,
+               trigger: "SCHEDULER",
+            },
+            new AbortController().signal,
+         );
+
+         expect(
+            await harness.collectAttributes(
+               "publisher_materialization_build_total",
+            ),
+         ).toEqual([
+            {
+               kind: "persist",
+               tier: "storage",
+               outcome: "refused",
+               failure_class: "none",
+            },
+            {
+               kind: "persist",
+               tier: "storage",
+               outcome: "reused",
+               failure_class: "none",
+            },
+         ]);
+         expect(
+            await harness.collectCounter(
+               "publisher_materialization_build_total",
+            ),
+         ).toBe(2);
+         const events = info.getCalls().map((c) => c.args as unknown[]);
+         expect(events[0][0]).toBe("materialization.run.started");
+         expect(events[0][1]).toMatchObject({
+            runId: "mat-1",
+            mode: "auto",
+            trigger: "schedule",
+            sourceCount: 1,
+         });
+         const finished = events.find(
+            (e) => e[0] === "materialization.run.finished",
+         );
+         // The build loop is stubbed, so only the run's own counts appear.
+         expect(finished?.[1]).toMatchObject({
+            runId: "mat-1",
+            outcome: "success",
+            reused: 1,
+            refused: 1,
+         });
+      } finally {
+         info.restore();
+         resetMaterializationTelemetryForTesting();
+         await harness.shutdown();
+      }
+   });
+
+   it("counts a source the run rebuilt once, as built, when the host also supplied it by reference", async () => {
+      const harness = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+      try {
+         const svc = stubEngine();
+         // The build loop (stubbed) builds the instructed address and counts
+         // it; the host's reference names the same address.
+         svc.executeInstructedBuild.callsFake(async () => {
+            reportSourceBuilt(
+               {
+                  kind: "persist",
+                  tier: "colocated",
+                  sourceEntityId: "build-orders",
+                  sourceName: "orders",
+               },
+               {},
+            );
+            return {
+               entries: {
+                  "build-orders": {
+                     sourceEntityId: "build-orders",
+                     physicalTableName: '"orders_v2"',
+                     connectionName: "duckdb",
+                  },
+               },
+               failures: {},
+               sourcesRefused: 0,
+            };
+         });
+
+         await svc.runBuild(
+            "mat-1",
+            "my-env",
+            "pkg",
+            {
+               sourceNames: undefined,
+               forceRefresh: false,
+               buildInstructions: [makeInstruction()],
+               referenceManifest: [
+                  {
+                     sourceEntityId: "build-orders",
+                     physicalTableName: '"orders_v1"',
+                     connectionName: "duckdb",
+                  },
+               ],
+            },
+            new AbortController().signal,
+         );
+
+         expect(
+            await harness.collectAttributes(
+               "publisher_materialization_build_total",
+            ),
+         ).toEqual([
+            {
+               kind: "persist",
+               tier: "colocated",
+               outcome: "built",
+               failure_class: "none",
+            },
+         ]);
+         expect(
+            await harness.collectCounter(
+               "publisher_materialization_build_total",
+            ),
+         ).toBe(1);
+      } finally {
+         resetMaterializationTelemetryForTesting();
+         await harness.shutdown();
+      }
+   });
+
    it("counts an orchestrated refusal in the metadata, and lists it only in failures", async () => {
       const svc = stubEngine();
       svc.executeInstructedBuild.resolves({
@@ -740,7 +906,7 @@ describe("runBuild (branch behavior)", () => {
       );
    });
 
-   it("lists an orchestrated refusal beside a built table in refusedSources, and meters it as refused only", async () => {
+   it("lists an orchestrated refusal beside a built table in refusedSources, and meters the run a success", async () => {
       // ms2data/service#7078, storage=: a refused source on an address an
       // eligible sibling built is not in `failures` (the table stands), so the
       // run's free-form metadata is the only place it is named.
@@ -788,14 +954,23 @@ describe("runBuild (branch behavior)", () => {
             sourcesRefused: 1,
             refusedSources: { gated: refused },
          });
-         const count = (outcome: string) =>
-            harness.collectCounter("publisher_materialization_sources_total", {
-               outcome,
-               mode: "orchestrated",
-            });
-         expect(await count("refused")).toBe(1);
-         expect(await count("failed")).toBe(0);
-         expect(await count("built")).toBe(1);
+         // The run is a success, not partial: the refusal is not a loss.
+         expect(
+            await harness.collectCounter(
+               "publisher_materialization_runs_total",
+               {
+                  mode: "orchestrated",
+                  outcome: "success",
+               },
+            ),
+         ).toBe(1);
+         // Each instructed source is counted once, by the build loop (stubbed
+         // here); the run adds nothing for them on top.
+         expect(
+            await harness.collectCounter(
+               "publisher_materialization_build_total",
+            ),
+         ).toBe(0);
       } finally {
          resetMaterializationTelemetryForTesting();
          await harness.shutdown();
@@ -952,20 +1127,22 @@ describe("runInBackground (terminal recording)", () => {
       const errorStub = sinon.stub(logger, "error");
       try {
          background().runInBackground("bg-4", async () => {
-            throw new Error("boom");
+            throw Object.assign(new Error("boom"), { code: "XX000" });
          });
          await flush();
 
          expect(errorStub.calledOnce).toBe(true);
          const [message, meta] = errorStub.firstCall.args as unknown as [
             string,
-            { materializationId: string; error: string; stack?: string },
+            { materializationId: string; code: string; stack?: string },
          ];
          expect(message).toBe("Materialization run failed");
          expect(meta.materializationId).toBe("bg-4");
-         expect(meta.error).toBe("boom");
-         // The stack is the half that locates the throw; a message alone cannot.
-         expect(meta.stack).toContain("Error: boom");
+         expect(meta.code).toBe("XX000");
+         // The stack's frames locate the throw; its message line, which can
+         // quote SQL, is left off (it is on the run's record).
+         expect(meta.stack).toContain("at ");
+         expect(meta.stack).not.toContain("boom");
       } finally {
          errorStub.restore();
       }
@@ -986,19 +1163,20 @@ describe("runInBackground (terminal recording)", () => {
          expect(infoStub.calledOnce).toBe(true);
          const [message, meta] = infoStub.firstCall.args as unknown as [
             string,
-            { materializationId: string; error: string },
+            { materializationId: string; code: string },
          ];
          expect(message).toBe("Materialization run cancelled");
          // An abort that races a genuine failure records "Cancelled", so this is
-         // the only place the real error is reported.
-         expect(meta.error).toBe("boom");
+         // the only place the real error's code is reported.
+         expect(meta.code).toBe("Error");
+         expect(JSON.stringify(meta)).not.toContain("boom");
       } finally {
          errorStub.restore();
          infoStub.restore();
       }
    });
 
-   it("redacts a DSN from the run-level message it logs and records", async () => {
+   it("keeps a DSN out of the run-level log and redacts it from the record", async () => {
       // A whole-run throw has no connection to redact against, but a connect
       // failure while resolving the package's connections echoes the DSN.
       const errorStub = sinon.stub(logger, "error");
@@ -1010,12 +1188,10 @@ describe("runInBackground (terminal recording)", () => {
          });
          await flush();
 
-         const [, meta] = errorStub.firstCall.args as unknown as [
-            string,
-            { error: string },
-         ];
-         expect(meta.error).not.toContain("hunter2");
-         expect(meta.error).toContain("connect failed");
+         // The log carries no message at all, only the code.
+         expect(JSON.stringify(errorStub.firstCall.args)).not.toContain(
+            "hunter2",
+         );
 
          const recorded = ctx.repository.updateMaterialization.firstCall
             .args[1] as { error?: string };

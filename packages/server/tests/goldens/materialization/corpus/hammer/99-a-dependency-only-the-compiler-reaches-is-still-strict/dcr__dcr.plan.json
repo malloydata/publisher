@@ -1,0 +1,163 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "counts@<hammer>/dcr/dcr.malloy": [],
+          "daily@<hammer>/dcr/dcr.malloy": [
+            "counts@<hammer>/dcr/dcr.malloy"
+          ],
+          "rollup@<hammer>/dcr/dcr.malloy": [
+            "daily@<hammer>/dcr/dcr.malloy"
+          ]
+        },
+        "order": [
+          "counts@<hammer>/dcr/dcr.malloy",
+          "daily@<hammer>/dcr/dcr.malloy",
+          "rollup@<hammer>/dcr/dcr.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "counts@<hammer>/dcr/dcr.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "daily@<hammer>/dcr/dcr.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollup@<hammer>/dcr/dcr.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "counts@<hammer>/dcr/dcr.malloy": "dcr.malloy",
+      "daily@<hammer>/dcr/dcr.malloy": "dcr.malloy",
+      "rollup@<hammer>/dcr/dcr.malloy": "dcr.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "counts@<hammer>/dcr/dcr.malloy"
+            },
+            {
+              "dependsOn": [
+                "counts@<hammer>/dcr/dcr.malloy"
+              ],
+              "sourceID": "daily@<hammer>/dcr/dcr.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/dcr/dcr.malloy"
+              ],
+              "sourceID": "rollup@<hammer>/dcr/dcr.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "counts@<hammer>/dcr/dcr.malloy": {
+        "annotationFields": {
+          "name": "dcr_counts"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "order_count",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "dcr.malloy",
+        "name": "counts",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "9649ac4da618f5bf43b41ba01ae55ea8b1bc4b58c0b17c888f1f64ad1e93bb30",
+        "sourceID": "counts@<hammer>/dcr/dcr.malloy",
+        "sql": "sha256:583d5080a9f06233"
+      },
+      "daily@<hammer>/dcr/dcr.malloy": {
+        "annotationFields": {
+          "name": "dcr_daily"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "dcr.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "4670d7babf11d94680862c23003c6f6982bdf24affcc6e0a1c8e38be88a7d40a",
+        "sourceID": "daily@<hammer>/dcr/dcr.malloy",
+        "sql": "sha256:a542db75f3078817"
+      },
+      "rollup@<hammer>/dcr/dcr.malloy": {
+        "annotationFields": {
+          "name": "dcr_rollup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "grand_total",
+            "type": "number"
+          },
+          {
+            "name": "orders",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "dcr.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "771259a69a58edf222ac391568d923c3f246f971d46d37de2f72cda4b9e9b402",
+        "sourceID": "rollup@<hammer>/dcr/dcr.malloy",
+        "sql": "sha256:81d2f81e87de578b"
+      }
+    }
+  }
+}

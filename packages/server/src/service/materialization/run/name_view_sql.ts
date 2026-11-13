@@ -1,7 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { quoteIdentifier, quoteTablePath } from "../../quoting";
+import {
+   quoteIdentifier,
+   quoteRenameTarget,
+   quoteTablePath,
+} from "../../quoting";
 
 /**
  * The SQL of the `name=` view (materialization v2, phase 3): a view at the
@@ -132,6 +136,35 @@ export function parseNameViewComment(
 /** Whether a relation's comment is a Publisher `name=` view's mark. */
 export function isNameViewComment(comment: unknown): boolean {
    return parseNameViewComment(comment) !== undefined;
+}
+
+/**
+ * The prefix of the ownership mark on a table an auto-run built at the
+ * author's `name=` (table_ownership.ts).
+ */
+export const OWNED_TABLE_MARK = "malloy-publisher:table";
+
+/**
+ * The owner a table's ownership mark names (`<environment>/<package>`), or
+ * undefined when the comment is not one: exactly the prefix, then `owner=`
+ * once. Accepts BigQuery's double-quoted TABLE_OPTIONS spelling.
+ */
+export function parseOwnedTableComment(comment: unknown): string | undefined {
+   if (typeof comment !== "string") return undefined;
+   let text = comment.trim();
+   if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) {
+      text = text.slice(1, -1);
+   }
+   const fields = text.split(" ");
+   if (fields.length !== 2 || fields[0] !== OWNED_TABLE_MARK) return undefined;
+   if (!fields[1].startsWith("owner=")) return undefined;
+   const encoded = fields[1].slice("owner=".length);
+   if (encoded === "") return undefined;
+   try {
+      return decodeURIComponent(encoded);
+   } catch {
+      return undefined;
+   }
 }
 
 /** A SQL string literal for `dialect`. */
@@ -281,7 +314,11 @@ export function nameViewProbeSql(segments: string[], dialect: string): string {
 export type NameViewSlot =
    | { state: "empty" }
    | { state: "ours"; target: string; owner: string }
-   | { state: "taken"; kind: string };
+   /**
+    * `tableOwner`: the package a table's ownership mark names
+    * ({@link parseOwnedTableComment}), when it carries one.
+    */
+   | { state: "taken"; kind: string; tableOwner?: string };
 
 /** Read {@link nameViewProbeSql}'s rows. */
 export function nameViewSlotOf(rows: Record<string, unknown>[]): NameViewSlot {
@@ -289,7 +326,14 @@ export function nameViewSlotOf(rows: Record<string, unknown>[]): NameViewSlot {
    let found: NameViewMark | undefined;
    for (const row of rows) {
       const kind = String(field(row, "kind") ?? "").toUpperCase();
-      if (kind !== "VIEW") return { state: "taken", kind: kind || "TABLE" };
+      if (kind !== "VIEW") {
+         const tableOwner = parseOwnedTableComment(field(row, "comment"));
+         return {
+            state: "taken",
+            kind: kind || "TABLE",
+            ...(tableOwner !== undefined ? { tableOwner } : {}),
+         };
+      }
       const mark = parseNameViewComment(field(row, "comment"));
       if (!mark) return { state: "taken", kind: "VIEW" };
       found ??= mark;
@@ -406,6 +450,152 @@ export function nameViewReplaceDdl(
       default:
          throw unsupportedDialect(dialect);
    }
+}
+
+/**
+ * Dialects whose DDL is transactional and reached in one call, so a table
+ * can be renamed aside and a view made in its place as one change (as the
+ * colocated swap does, colocated_build_strategy.ts).
+ */
+const TRANSACTIONAL_REPLACE_DIALECTS: ReadonlySet<string> = new Set([
+   "duckdb",
+   "postgres",
+]);
+
+/** Whether a table at a name can be replaced by a view as one transaction. */
+export function nameViewReplaceIsTransactional(dialect: string): boolean {
+   return TRANSACTIONAL_REPLACE_DIALECTS.has(dialect);
+}
+
+/**
+ * How to put a marked view in place of a TABLE at the same name: a table
+ * this package's own committed run wrote there (a self-instructed build
+ * names its table `name=` itself), which a build that names its table by
+ * generation now replaces with the view reading that generation.
+ *
+ * On every dialect the old table is kept, renamed to `aside`, until the run
+ * that replaced it commits: only then is it dropped (`dropAside`). A run
+ * that does not commit drops the view and renames the table back
+ * (`restore`), so the name reads what the last committed run left there.
+ *
+ * - `transactional` (DuckDB, Postgres): `replace` renames the table aside,
+ *   makes the view and comments it, as one transaction in one call, and
+ *   `restore` drops the view and renames the table back the same way;
+ *   `rollback` (when given) closes a transaction a failed call left open. A
+ *   reader sees the old table or the view, never neither. On Postgres a
+ *   view a reader built over the old table refuses the replacement (it
+ *   would follow the table to its aside name and keep reading it): the
+ *   table stays as it was.
+ * - otherwise: `moveAside` renames the table to `aside`; `create` makes the
+ *   view as {@link nameViewReplaceDdl} would; `restore` renames the table
+ *   back once the view is dropped. Between the rename and the view a reader
+ *   finds nothing at the name (a not-found, never a partial table).
+ */
+export type NameViewTableReplaceDdl =
+   | {
+        transactional: true;
+        replace: string;
+        restore: string;
+        rollback?: string;
+        dropAside: string;
+     }
+   | {
+        transactional: false;
+        moveAside: string;
+        create: NameViewDdl;
+        restore: string;
+        dropAside: string;
+     };
+
+/**
+ * `ALTER TABLE … RENAME` (`sp_rename` on SQL Server) of the table `from`
+ * names to the last segment of `to`, within its own schema.
+ */
+export function renameTableSql(
+   from: string[],
+   to: string[],
+   dialect: string,
+): string {
+   if (dialect === "sqlserver") {
+      // sp_rename takes the current name as a (bracket-quoted) path and the
+      // new one bare: brackets there would become part of the name.
+      return `EXEC sp_rename ${sqlString(quotedPath(from, dialect), dialect)}, ${sqlString(to[to.length - 1], dialect)}`;
+   }
+   return `ALTER TABLE ${quotedPath(from, dialect)} RENAME TO ${quoteRenameTarget(to.join("."), dialect)}`;
+}
+
+/**
+ * Postgres: fail when any view or rule reads the table `segments` names. A
+ * renamed table keeps its dependents, so a reader's view would follow it to
+ * its aside name, keep reading the old rows, and refuse its drop.
+ */
+function postgresNoDependentsGuard(segments: string[]): string {
+   const table = sqlString(quotedPath(segments, "postgres"), "postgres");
+   return (
+      `DO $guard$ BEGIN IF EXISTS (SELECT 1 FROM pg_catalog.pg_depend d ` +
+      `JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid ` +
+      `WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass ` +
+      `AND d.refclassid = 'pg_catalog.pg_class'::regclass ` +
+      `AND d.refobjid = ${table}::regclass AND r.ev_class <> d.refobjid) ` +
+      `THEN RAISE EXCEPTION 'a view or rule depends on table %', ${table}; ` +
+      `END IF; END $guard$`
+   );
+}
+
+/**
+ * The DDL that replaces the table `segments` names with a view reading
+ * `targetSql`, carrying `mark`, keeping the old table at `asideSegments`
+ * until the replacing run commits.
+ */
+export function nameViewReplaceTableDdl(
+   segments: string[],
+   asideSegments: string[],
+   targetSql: string,
+   mark: NameViewMark,
+   dialect: string,
+): NameViewTableReplaceDdl {
+   if (!nameViewDialectSupported(dialect)) throw unsupportedDialect(dialect);
+   if (dialect === "sqlserver") assertSqlServerShape(segments);
+   const view = quotedPath(segments, dialect);
+   const aside = quotedPath(asideSegments, dialect);
+   const moveAside = renameTableSql(segments, asideSegments, dialect);
+   const moveBack = renameTableSql(asideSegments, segments, dialect);
+   const dropAside = `DROP TABLE IF EXISTS ${aside}`;
+   if (nameViewReplaceIsTransactional(dialect)) {
+      const replace = [
+         ...(dialect === "postgres"
+            ? [postgresNoDependentsGuard(segments)]
+            : []),
+         moveAside,
+         `CREATE VIEW ${view} AS SELECT * FROM ${targetSql}`,
+         `COMMENT ON VIEW ${view} IS ${sqlString(nameViewComment(mark), dialect)}`,
+      ];
+      const restore = [`DROP VIEW IF EXISTS ${view}`, moveBack];
+      // DuckDB autocommits each statement of a string: bracketed. Postgres
+      // runs a multi-statement string as one implicit transaction (an
+      // explicit BEGIN would leave an aborted one open on failure).
+      const oneCall = (statements: string[]) =>
+         (dialect === "duckdb"
+            ? ["BEGIN TRANSACTION", ...statements, "COMMIT"]
+            : statements
+         )
+            .map((s) => `${s};`)
+            .join("\n");
+      return {
+         transactional: true,
+         replace: oneCall(replace),
+         restore: oneCall(restore),
+         ...(dialect === "duckdb" ? { rollback: "ROLLBACK" } : {}),
+         dropAside,
+      };
+   }
+   return {
+      transactional: false,
+      moveAside,
+      create: nameViewReplaceDdl(segments, targetSql, mark, dialect),
+      restore: moveBack,
+      dropAside,
+   };
 }
 
 /** `DROP VIEW IF EXISTS` for the view `segments` names. Never drops a table. */

@@ -47,9 +47,22 @@ package can come from its own file rather than from `build.yml`.** Know which jo
 - `python-sdk.yml` has no PR trigger and no version check: the Python SDK releases in lockstep
   with sdk/app/server, so `prepare` sets its version and there is nothing for a PR to bump.
 
+`hammer-nightly.yml` runs the hammer scenario suite (`hammer/README.md`) against a real server,
+a throwaway Postgres in the runner's Docker and a local DuckLake, nightly and on
+`workflow_dispatch`. It is not a pull-request check and nothing depends on it. Two legs, one with
+`PUBLISHER_MATERIALIZE=true` and one with `false`, each upload their logs as an artifact.
+
 Two workflows hold real warehouse credentials, and both should be treated as such when edited:
 `connection-integration-tests.yml` (the full connection matrix) and `k6-tests.yml`, which passes
 `BQ_PRESTO_TRINO_KEY` and runs on pushes as well as on demand.
+
+Every workflow a pull request triggers shares one `concurrency:` rule: runs for a PR are grouped by
+its number and a new push cancels the one in flight, while every other event (push to `main`,
+`workflow_run`, schedule, dispatch) is grouped by its own run id, so it is never cancelled or
+replaced and every merged commit is tested. `push:` triggers are `main` only, so a PR branch runs
+once, through `pull_request`. Path filters are not used on `build.yml` or `app-playwright.yml`:
+their jobs are required status checks on `main`, and a filtered-out workflow leaves a required check
+pending forever. A docs-only skip needs an always-run gate job first.
 
 ## Publishing
 

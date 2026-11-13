@@ -1,0 +1,1211 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "customers_blocks@<pkg>/m.malloy": [],
+          "customers_path@<pkg>/m.malloy": [],
+          "orders_pair@<pkg>/m.malloy": []
+        },
+        "order": [
+          "customers_blocks@<pkg>/m.malloy",
+          "customers_path@<pkg>/m.malloy",
+          "orders_pair@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "customers_blocks@<pkg>/m.malloy": {
+        "buildSourceName": "customers_blocks__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "name",
+            "computed": false,
+            "dimension": "name"
+          },
+          {
+            "column": "segment",
+            "computed": false,
+            "dimension": "segment"
+          },
+          {
+            "column": "home_region",
+            "computed": false,
+            "dimension": "home_region"
+          },
+          {
+            "column": "signup_date",
+            "computed": false,
+            "dimension": "signup_date"
+          },
+          {
+            "column": "orders__id",
+            "computed": true,
+            "dimension": "id",
+            "join": "orders"
+          },
+          {
+            "column": "orders__customer_id",
+            "computed": true,
+            "dimension": "customer_id",
+            "join": "orders"
+          },
+          {
+            "column": "orders__region",
+            "computed": true,
+            "dimension": "region",
+            "join": "orders"
+          },
+          {
+            "column": "orders__status",
+            "computed": true,
+            "dimension": "status",
+            "join": "orders"
+          },
+          {
+            "column": "orders__amount",
+            "computed": true,
+            "dimension": "amount",
+            "join": "orders"
+          },
+          {
+            "column": "orders__discount",
+            "computed": true,
+            "dimension": "discount",
+            "join": "orders"
+          },
+          {
+            "column": "orders__order_date",
+            "computed": true,
+            "dimension": "order_date",
+            "join": "orders"
+          },
+          {
+            "column": "orders__created_at",
+            "computed": true,
+            "dimension": "created_at",
+            "join": "orders"
+          },
+          {
+            "column": "orders__order",
+            "computed": true,
+            "dimension": "order",
+            "join": "orders"
+          },
+          {
+            "column": "orders__lines__line_id",
+            "computed": true,
+            "dimension": "line_id",
+            "join": "orders",
+            "path": [
+              "orders",
+              "lines"
+            ]
+          },
+          {
+            "column": "orders__lines__order_id",
+            "computed": true,
+            "dimension": "order_id",
+            "join": "orders",
+            "path": [
+              "orders",
+              "lines"
+            ]
+          },
+          {
+            "column": "orders__lines__sku",
+            "computed": true,
+            "dimension": "sku",
+            "join": "orders",
+            "path": [
+              "orders",
+              "lines"
+            ]
+          },
+          {
+            "column": "orders__lines__qty",
+            "computed": true,
+            "dimension": "qty",
+            "join": "orders",
+            "path": [
+              "orders",
+              "lines"
+            ]
+          },
+          {
+            "column": "big_orders__id",
+            "computed": true,
+            "dimension": "id",
+            "join": "big_orders"
+          },
+          {
+            "column": "big_orders__customer_id",
+            "computed": true,
+            "dimension": "customer_id",
+            "join": "big_orders"
+          },
+          {
+            "column": "big_orders__region",
+            "computed": true,
+            "dimension": "region",
+            "join": "big_orders"
+          },
+          {
+            "column": "big_orders__status",
+            "computed": true,
+            "dimension": "status",
+            "join": "big_orders"
+          },
+          {
+            "column": "big_orders__amount",
+            "computed": true,
+            "dimension": "amount",
+            "join": "big_orders"
+          },
+          {
+            "column": "big_orders__discount",
+            "computed": true,
+            "dimension": "discount",
+            "join": "big_orders"
+          },
+          {
+            "column": "big_orders__order_date",
+            "computed": true,
+            "dimension": "order_date",
+            "join": "big_orders"
+          },
+          {
+            "column": "big_orders__created_at",
+            "computed": true,
+            "dimension": "created_at",
+            "join": "big_orders"
+          },
+          {
+            "column": "big_orders__order",
+            "computed": true,
+            "dimension": "order",
+            "join": "big_orders"
+          }
+        ],
+        "inline": [
+          "orders.lines",
+          "big_orders"
+        ],
+        "nameDefaulted": true,
+        "pair": {
+          "childKey": "id",
+          "childSourceID": "orders_with_lines@<pkg>/m.malloy",
+          "hops": [
+            {
+              "join": "lines",
+              "key": "line_id",
+              "rowColumn": "__child_row",
+              "sourceID": "lines@<pkg>/m.malloy"
+            }
+          ],
+          "join": "orders",
+          "oneParentLevels": [
+            1
+          ],
+          "parentKey": "id",
+          "parentRowColumn": "__parent_row"
+        },
+        "pairBlocks": {
+          "blocks": [
+            {
+              "childKey": "id",
+              "childSourceID": "orders_with_lines@<pkg>/m.malloy",
+              "hops": [
+                {
+                  "join": "lines",
+                  "key": "line_id",
+                  "rowColumn": "__child_row",
+                  "sourceID": "lines@<pkg>/m.malloy"
+                }
+              ],
+              "join": "orders",
+              "oneParentLevels": [
+                1
+              ],
+              "parentKey": "id",
+              "parentRowColumn": "__parent_row"
+            },
+            {
+              "childKey": "id",
+              "childSourceID": "orders_raw@<pkg>/raw.malloy",
+              "join": "big_orders",
+              "parentKey": "id",
+              "parentRowColumn": "__parent_row"
+            }
+          ],
+          "columnTypes": {
+            "big_orders__amount": "number",
+            "big_orders__created_at": "timestamp",
+            "big_orders__customer_id": "number",
+            "big_orders__discount": "number",
+            "big_orders__id": "number",
+            "big_orders__order": "number",
+            "big_orders__order_date": "date",
+            "big_orders__region": "string",
+            "big_orders__status": "string",
+            "orders__amount": "number",
+            "orders__created_at": "timestamp",
+            "orders__customer_id": "number",
+            "orders__discount": "number",
+            "orders__id": "number",
+            "orders__lines__line_id": "number",
+            "orders__lines__order_id": "number",
+            "orders__lines__qty": "number",
+            "orders__lines__sku": "string",
+            "orders__order": "number",
+            "orders__order_date": "date",
+            "orders__region": "string",
+            "orders__status": "string"
+          },
+          "connection": "duckdb",
+          "laneColumn": "__pair_lane",
+          "levels": 2
+        },
+        "persist": {
+          "name": "customers_blocks",
+          "storage": "lake"
+        },
+        "sourceID": "customers_blocks@<pkg>/m.malloy",
+        "sourceName": "customers_blocks",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "name",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "segment",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "home_region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "signup_date",
+            "type": "DATE"
+          },
+          {
+            "name": "orders__id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "orders__customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "orders__region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "orders__status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "orders__amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "orders__discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "orders__order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "orders__created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "orders__order",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "orders__lines__line_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "orders__lines__order_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "orders__lines__sku",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "orders__lines__qty",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "big_orders__id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "big_orders__customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "big_orders__region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "big_orders__status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "big_orders__amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "big_orders__discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "big_orders__order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "big_orders__created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "big_orders__order",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "__pair_lane",
+            "type": "BIGINT"
+          },
+          {
+            "name": "__parent_row",
+            "type": "BOOLEAN"
+          },
+          {
+            "name": "__child_row",
+            "type": "BOOLEAN"
+          }
+        ],
+        "uniquenessChecks": [
+          {
+            "connectionName": "duckdb",
+            "join": "",
+            "joinedSourceID": "customers_blocks@<pkg>/m.malloy",
+            "keyColumn": "id",
+            "pairLevel": 0,
+            "queryName": "customers_blocks__mat__pair_key",
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"id\",\n     COUNT(1) as \"matches\"\n  FROM (\n    SELECT CAST(id AS BIGINT) AS id, name, segment, home_region,\n           CAST(signup_date AS DATE) AS signup_date\n    FROM read_csv('data/customers.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"id\" as \"id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"id\" IS NULL\nLIMIT 1\n"
+          },
+          {
+            "connectionName": "duckdb",
+            "join": "orders",
+            "joinedSourceID": "orders_with_lines@<pkg>/m.malloy",
+            "keyColumn": "id",
+            "pairLevel": 1,
+            "queryName": "customers_blocks__mat__pair_key__orders",
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"id\",\n     COUNT(1) as \"matches\"\n  FROM (\n    SELECT CAST(id AS BIGINT) AS id, CAST(customer_id AS BIGINT) AS customer_id,\n           region, status,\n           CAST(amount AS DOUBLE) AS amount, CAST(discount AS DOUBLE) AS discount,\n           CAST(order_date AS DATE) AS order_date,\n           CAST(created_at AS TIMESTAMP) AS created_at,\n           CAST(\"order\" AS BIGINT) AS \"order\"\n    FROM read_csv('data/orders.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"id\" as \"id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"id\" IS NULL\nLIMIT 1\n"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "customers_path@<pkg>/m.malloy": {
+        "buildSourceName": "customers_path__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "name",
+            "computed": false,
+            "dimension": "name"
+          },
+          {
+            "column": "segment",
+            "computed": false,
+            "dimension": "segment"
+          },
+          {
+            "column": "home_region",
+            "computed": false,
+            "dimension": "home_region"
+          },
+          {
+            "column": "signup_date",
+            "computed": false,
+            "dimension": "signup_date"
+          },
+          {
+            "column": "orders__id",
+            "computed": true,
+            "dimension": "id",
+            "join": "orders"
+          },
+          {
+            "column": "orders__customer_id",
+            "computed": true,
+            "dimension": "customer_id",
+            "join": "orders"
+          },
+          {
+            "column": "orders__region",
+            "computed": true,
+            "dimension": "region",
+            "join": "orders"
+          },
+          {
+            "column": "orders__status",
+            "computed": true,
+            "dimension": "status",
+            "join": "orders"
+          },
+          {
+            "column": "orders__amount",
+            "computed": true,
+            "dimension": "amount",
+            "join": "orders"
+          },
+          {
+            "column": "orders__discount",
+            "computed": true,
+            "dimension": "discount",
+            "join": "orders"
+          },
+          {
+            "column": "orders__order_date",
+            "computed": true,
+            "dimension": "order_date",
+            "join": "orders"
+          },
+          {
+            "column": "orders__created_at",
+            "computed": true,
+            "dimension": "created_at",
+            "join": "orders"
+          },
+          {
+            "column": "orders__order",
+            "computed": true,
+            "dimension": "order",
+            "join": "orders"
+          },
+          {
+            "column": "orders__lines__line_id",
+            "computed": true,
+            "dimension": "line_id",
+            "join": "orders",
+            "path": [
+              "orders",
+              "lines"
+            ]
+          },
+          {
+            "column": "orders__lines__order_id",
+            "computed": true,
+            "dimension": "order_id",
+            "join": "orders",
+            "path": [
+              "orders",
+              "lines"
+            ]
+          },
+          {
+            "column": "orders__lines__sku",
+            "computed": true,
+            "dimension": "sku",
+            "join": "orders",
+            "path": [
+              "orders",
+              "lines"
+            ]
+          },
+          {
+            "column": "orders__lines__qty",
+            "computed": true,
+            "dimension": "qty",
+            "join": "orders",
+            "path": [
+              "orders",
+              "lines"
+            ]
+          }
+        ],
+        "inline": [
+          "orders",
+          "orders.lines"
+        ],
+        "nameDefaulted": true,
+        "pair": {
+          "childKey": "id",
+          "childSourceID": "orders_with_lines@<pkg>/m.malloy",
+          "hops": [
+            {
+              "join": "lines",
+              "key": "line_id",
+              "rowColumn": "__child_row",
+              "sourceID": "lines@<pkg>/m.malloy"
+            }
+          ],
+          "join": "orders",
+          "oneParentLevels": [
+            1
+          ],
+          "parentKey": "id",
+          "parentRowColumn": "__parent_row"
+        },
+        "persist": {
+          "name": "customers_path",
+          "storage": "lake"
+        },
+        "sourceID": "customers_path@<pkg>/m.malloy",
+        "sourceName": "customers_path",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "name",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "segment",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "home_region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "signup_date",
+            "type": "DATE"
+          },
+          {
+            "name": "orders__id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "orders__customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "orders__region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "orders__status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "orders__amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "orders__discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "orders__order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "orders__created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "orders__order",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "orders__lines__line_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "orders__lines__order_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "orders__lines__sku",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "orders__lines__qty",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "__parent_row",
+            "type": "BOOLEAN"
+          },
+          {
+            "name": "__child_row",
+            "type": "BOOLEAN"
+          }
+        ],
+        "uniquenessChecks": [
+          {
+            "connectionName": "duckdb",
+            "join": "",
+            "joinedSourceID": "customers_path@<pkg>/m.malloy",
+            "keyColumn": "id",
+            "pairLevel": 0,
+            "queryName": "customers_path__mat__pair_key",
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"id\",\n     COUNT(1) as \"matches\"\n  FROM (\n    SELECT CAST(id AS BIGINT) AS id, name, segment, home_region,\n           CAST(signup_date AS DATE) AS signup_date\n    FROM read_csv('data/customers.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"id\" as \"id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"id\" IS NULL\nLIMIT 1\n"
+          },
+          {
+            "connectionName": "duckdb",
+            "join": "orders",
+            "joinedSourceID": "orders_with_lines@<pkg>/m.malloy",
+            "keyColumn": "id",
+            "pairLevel": 1,
+            "queryName": "customers_path__mat__pair_key__orders",
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"id\",\n     COUNT(1) as \"matches\"\n  FROM (\n    SELECT CAST(id AS BIGINT) AS id, CAST(customer_id AS BIGINT) AS customer_id,\n           region, status,\n           CAST(amount AS DOUBLE) AS amount, CAST(discount AS DOUBLE) AS discount,\n           CAST(order_date AS DATE) AS order_date,\n           CAST(created_at AS TIMESTAMP) AS created_at,\n           CAST(\"order\" AS BIGINT) AS \"order\"\n    FROM read_csv('data/orders.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"id\" as \"id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"id\" IS NULL\nLIMIT 1\n"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "orders_pair@<pkg>/m.malloy": {
+        "buildSourceName": "orders_pair__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          },
+          {
+            "column": "lines__line_id",
+            "computed": true,
+            "dimension": "line_id",
+            "join": "lines"
+          },
+          {
+            "column": "lines__order_id",
+            "computed": true,
+            "dimension": "order_id",
+            "join": "lines"
+          },
+          {
+            "column": "lines__sku",
+            "computed": true,
+            "dimension": "sku",
+            "join": "lines"
+          },
+          {
+            "column": "lines__qty",
+            "computed": true,
+            "dimension": "qty",
+            "join": "lines"
+          }
+        ],
+        "inline": [
+          "lines"
+        ],
+        "nameDefaulted": true,
+        "pair": {
+          "childKey": "line_id",
+          "childSourceID": "lines@<pkg>/m.malloy",
+          "join": "lines",
+          "parentKey": "id",
+          "parentRowColumn": "__parent_row"
+        },
+        "persist": {
+          "name": "orders_pair",
+          "storage": "lake"
+        },
+        "sourceID": "orders_pair@<pkg>/m.malloy",
+        "sourceName": "orders_pair",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "lines__line_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "lines__order_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "lines__sku",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "lines__qty",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "__parent_row",
+            "type": "BOOLEAN"
+          }
+        ],
+        "uniquenessChecks": [
+          {
+            "connectionName": "duckdb",
+            "join": "",
+            "joinedSourceID": "orders_pair@<pkg>/m.malloy",
+            "keyColumn": "id",
+            "pairLevel": 0,
+            "queryName": "orders_pair__mat__pair_key",
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"id\",\n     COUNT(1) as \"matches\"\n  FROM (\n    SELECT CAST(id AS BIGINT) AS id, CAST(customer_id AS BIGINT) AS customer_id,\n           region, status,\n           CAST(amount AS DOUBLE) AS amount, CAST(discount AS DOUBLE) AS discount,\n           CAST(order_date AS DATE) AS order_date,\n           CAST(created_at AS TIMESTAMP) AS created_at,\n           CAST(\"order\" AS BIGINT) AS \"order\"\n    FROM read_csv('data/orders.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"id\" as \"id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"id\" IS NULL\nLIMIT 1\n"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "customers_blocks@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "customers_path@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "orders_pair@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "customers_blocks@<pkg>/m.malloy": "m.malloy",
+      "customers_path@<pkg>/m.malloy": "m.malloy",
+      "orders_pair@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "customers_blocks@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "customers_path@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "orders_pair@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "customers_blocks@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "customers_blocks",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "segment",
+            "type": "string"
+          },
+          {
+            "name": "home_region",
+            "type": "string"
+          },
+          {
+            "name": "signup_date",
+            "type": "date"
+          },
+          {
+            "name": "orders__id",
+            "type": "number"
+          },
+          {
+            "name": "orders__customer_id",
+            "type": "number"
+          },
+          {
+            "name": "orders__region",
+            "type": "string"
+          },
+          {
+            "name": "orders__status",
+            "type": "string"
+          },
+          {
+            "name": "orders__amount",
+            "type": "number"
+          },
+          {
+            "name": "orders__discount",
+            "type": "number"
+          },
+          {
+            "name": "orders__order_date",
+            "type": "date"
+          },
+          {
+            "name": "orders__created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "orders__order",
+            "type": "number"
+          },
+          {
+            "name": "orders__lines__line_id",
+            "type": "number"
+          },
+          {
+            "name": "orders__lines__order_id",
+            "type": "number"
+          },
+          {
+            "name": "orders__lines__sku",
+            "type": "string"
+          },
+          {
+            "name": "orders__lines__qty",
+            "type": "number"
+          },
+          {
+            "name": "big_orders__id",
+            "type": "number"
+          },
+          {
+            "name": "big_orders__customer_id",
+            "type": "number"
+          },
+          {
+            "name": "big_orders__region",
+            "type": "string"
+          },
+          {
+            "name": "big_orders__status",
+            "type": "string"
+          },
+          {
+            "name": "big_orders__amount",
+            "type": "number"
+          },
+          {
+            "name": "big_orders__discount",
+            "type": "number"
+          },
+          {
+            "name": "big_orders__order_date",
+            "type": "date"
+          },
+          {
+            "name": "big_orders__created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "big_orders__order",
+            "type": "number"
+          },
+          {
+            "name": "__pair_lane",
+            "type": "number"
+          },
+          {
+            "name": "__parent_row",
+            "type": "boolean"
+          },
+          {
+            "name": "__child_row",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "customers_blocks",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9",
+        "sourceID": "customers_blocks@<pkg>/m.malloy",
+        "sql": "sha256:77194cca33e97657"
+      },
+      "customers_path@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "customers_path",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "segment",
+            "type": "string"
+          },
+          {
+            "name": "home_region",
+            "type": "string"
+          },
+          {
+            "name": "signup_date",
+            "type": "date"
+          },
+          {
+            "name": "orders__id",
+            "type": "number"
+          },
+          {
+            "name": "orders__customer_id",
+            "type": "number"
+          },
+          {
+            "name": "orders__region",
+            "type": "string"
+          },
+          {
+            "name": "orders__status",
+            "type": "string"
+          },
+          {
+            "name": "orders__amount",
+            "type": "number"
+          },
+          {
+            "name": "orders__discount",
+            "type": "number"
+          },
+          {
+            "name": "orders__order_date",
+            "type": "date"
+          },
+          {
+            "name": "orders__created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "orders__order",
+            "type": "number"
+          },
+          {
+            "name": "orders__lines__line_id",
+            "type": "number"
+          },
+          {
+            "name": "orders__lines__order_id",
+            "type": "number"
+          },
+          {
+            "name": "orders__lines__sku",
+            "type": "string"
+          },
+          {
+            "name": "orders__lines__qty",
+            "type": "number"
+          },
+          {
+            "name": "__parent_row",
+            "type": "boolean"
+          },
+          {
+            "name": "__child_row",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "customers_path",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373",
+        "sourceID": "customers_path@<pkg>/m.malloy",
+        "sql": "sha256:32c60278d94dc1d3"
+      },
+      "orders_pair@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "orders_pair",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          },
+          {
+            "name": "lines__line_id",
+            "type": "number"
+          },
+          {
+            "name": "lines__order_id",
+            "type": "number"
+          },
+          {
+            "name": "lines__sku",
+            "type": "string"
+          },
+          {
+            "name": "lines__qty",
+            "type": "number"
+          },
+          {
+            "name": "__parent_row",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "orders_pair",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016",
+        "sourceID": "orders_pair@<pkg>/m.malloy",
+        "sql": "sha256:f4c9790ca25fa912"
+      }
+    }
+  }
+}

@@ -1,0 +1,487 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders@<hammer>/mzx/mzx.malloy": [],
+          "us_big@<hammer>/mzx/mzx.malloy": [
+            "us_orders@<hammer>/mzx/mzx.malloy"
+          ],
+          "us_orders@<hammer>/mzx/mzx.malloy": [
+            "orders@<hammer>/mzx/mzx.malloy"
+          ]
+        },
+        "order": [
+          "orders@<hammer>/mzx/mzx.malloy",
+          "us_orders@<hammer>/mzx/mzx.malloy",
+          "us_big@<hammer>/mzx/mzx.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "orders@<hammer>/mzx/mzx.malloy": {
+        "buildSourceName": "orders__mat",
+        "columns": [
+          {
+            "column": "order_id",
+            "computed": false,
+            "dimension": "order_id"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "order_month",
+            "computed": true,
+            "dimension": "order_month",
+            "zoneFree": true
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "orders",
+          "storage": "lake"
+        },
+        "sourceID": "orders@<hammer>/mzx/mzx.malloy",
+        "sourceName": "orders",
+        "storedColumns": [
+          {
+            "name": "order_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_month",
+            "type": "DATE"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "us_big@<hammer>/mzx/mzx.malloy": {
+        "buildSourceName": "us_big__mat",
+        "buildsOver": {
+          "declaration": {
+            "range": {
+              "end": {
+                "character": 1,
+                "line": 12
+              },
+              "start": {
+                "character": 8,
+                "line": 9
+              }
+            },
+            "url": "<hammer>/mzx/mzx.malloy"
+          },
+          "overStored": {
+            "declarations": "source: us_orders is us_orders__mat extend {\n  where: region = 'US'\n}\nsource: us_big is us_orders extend {\n  where: big\n}",
+            "flags": [],
+            "parentBuildSourceName": "us_orders__mat"
+          },
+          "path": [
+            {
+              "range": {
+                "end": {
+                  "character": 1,
+                  "line": 17
+                },
+                "start": {
+                  "character": 8,
+                  "line": 15
+                }
+              },
+              "url": "<hammer>/mzx/mzx.malloy"
+            }
+          ],
+          "sourceID": "us_orders@<hammer>/mzx/mzx.malloy",
+          "sourceName": "us_orders"
+        },
+        "columns": [
+          {
+            "column": "order_id",
+            "computed": false,
+            "dimension": "order_id"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "order_month",
+            "computed": true,
+            "dimension": "order_month",
+            "zoneFree": true
+          },
+          {
+            "column": "big",
+            "computed": true,
+            "dimension": "big",
+            "zoneFree": true
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "us_big",
+          "storage": "lake"
+        },
+        "sourceID": "us_big@<hammer>/mzx/mzx.malloy",
+        "sourceName": "us_big",
+        "storedColumns": [
+          {
+            "name": "order_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_month",
+            "type": "DATE"
+          },
+          {
+            "name": "big",
+            "type": "BOOLEAN"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "us_orders@<hammer>/mzx/mzx.malloy": {
+        "buildSourceName": "us_orders__mat",
+        "buildsOver": {
+          "declaration": {
+            "range": {
+              "end": {
+                "character": 1,
+                "line": 6
+              },
+              "start": {
+                "character": 8,
+                "line": 3
+              }
+            },
+            "url": "<hammer>/mzx/mzx.malloy"
+          },
+          "overStored": {
+            "declarations": "source: orders is orders__mat extend {\n  measure: total is amount.sum()\n}\nsource: us_orders is orders extend {\n  where: region = 'US'\n  dimension: big is amount > 100\n}",
+            "flags": [],
+            "parentBuildSourceName": "orders__mat"
+          },
+          "path": [
+            {
+              "range": {
+                "end": {
+                  "character": 1,
+                  "line": 12
+                },
+                "start": {
+                  "character": 8,
+                  "line": 9
+                }
+              },
+              "url": "<hammer>/mzx/mzx.malloy"
+            }
+          ],
+          "sourceID": "orders@<hammer>/mzx/mzx.malloy",
+          "sourceName": "orders"
+        },
+        "columns": [
+          {
+            "column": "order_id",
+            "computed": false,
+            "dimension": "order_id"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "order_month",
+            "computed": true,
+            "dimension": "order_month",
+            "zoneFree": true
+          },
+          {
+            "column": "big",
+            "computed": true,
+            "dimension": "big",
+            "zoneFree": true
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "us_orders",
+          "storage": "lake"
+        },
+        "sourceID": "us_orders@<hammer>/mzx/mzx.malloy",
+        "sourceName": "us_orders",
+        "storedColumns": [
+          {
+            "name": "order_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_month",
+            "type": "DATE"
+          },
+          {
+            "name": "big",
+            "type": "BOOLEAN"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "orders@<hammer>/mzx/mzx.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "us_big@<hammer>/mzx/mzx.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "us_orders@<hammer>/mzx/mzx.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders@<hammer>/mzx/mzx.malloy": "mzx.malloy",
+      "us_big@<hammer>/mzx/mzx.malloy": "mzx.malloy",
+      "us_orders@<hammer>/mzx/mzx.malloy": "mzx.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders@<hammer>/mzx/mzx.malloy"
+            },
+            {
+              "dependsOn": [
+                "orders@<hammer>/mzx/mzx.malloy"
+              ],
+              "sourceID": "us_orders@<hammer>/mzx/mzx.malloy"
+            },
+            {
+              "dependsOn": [
+                "us_orders@<hammer>/mzx/mzx.malloy"
+              ],
+              "sourceID": "us_big@<hammer>/mzx/mzx.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders@<hammer>/mzx/mzx.malloy": {
+        "annotationFields": {
+          "name": "orders",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "order_month",
+            "type": "date"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "mzx.malloy",
+        "name": "orders",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "d347e975ea5cb13142022738114dfa7bbd2cc74c58c3c6cb7ed0b32d7e126aa6",
+        "sourceID": "orders@<hammer>/mzx/mzx.malloy",
+        "sql": "sha256:f48901c14c57ab44"
+      },
+      "us_big@<hammer>/mzx/mzx.malloy": {
+        "annotationFields": {
+          "name": "us_big",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "order_month",
+            "type": "date"
+          },
+          {
+            "name": "big",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "mzx.malloy",
+        "name": "us_big",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "d3b92b1b9e027f20758f5316e9428dde4ffa99cfd32c57bdfd9b2eaf84e00fa2",
+        "sourceID": "us_big@<hammer>/mzx/mzx.malloy",
+        "sql": "sha256:eba47227a452a75d"
+      },
+      "us_orders@<hammer>/mzx/mzx.malloy": {
+        "annotationFields": {
+          "name": "us_orders",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "order_month",
+            "type": "date"
+          },
+          {
+            "name": "big",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "mzx.malloy",
+        "name": "us_orders",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "6b2fdcff71afff25ee88e5bdd43ece2d2ca744fb5ae4d7d9cacff61d19a73116",
+        "sourceID": "us_orders@<hammer>/mzx/mzx.malloy",
+        "sql": "sha256:a648cc5000136b47"
+      }
+    }
+  }
+}

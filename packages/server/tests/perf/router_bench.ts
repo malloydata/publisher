@@ -12,11 +12,18 @@
  * table holds the same rows as its source, so served minus live is roughly
  * the routing overhead, not a smaller table.
  *
- *   bun run perf:router [--rows 200000] [--iterations 30] [--sources 1]
+ *   bun run perf:router [--rows 200000] [--iterations 30] [--sources 1] [--rollup]
  *
  * (`--name=value` works too.) `--sources N` declares N persisted sources over
  * the fact table, all bound. The serve shape is compiled package-wide, over
  * every binding, so its cost grows with N; queries read the first.
+ *
+ * `--rollup` also declares a `#(preaggregate)` rollup on the first source,
+ * with `materialize.enabled` on, so the router tries the rollup leg first:
+ * `cheap` is answered from the rollup, `grouped` and `miss` are declined by
+ * its shape check, and `declined` compiles against it and is declined by its
+ * coverage check. Compare each row with a run without the flag for the leg's
+ * cost when present.
  *
  * Three fixtures over the same model, one per path, so measuring one path
  * never disturbs another's state: live (no bindings), warm (bindings set once,
@@ -69,20 +76,26 @@ const ROWS = arg("rows", 200_000);
 const ITERATIONS = arg("iterations", 30);
 const SOURCES = arg("sources", 1);
 const WARMUP = 5;
+const ROLLUP = process.argv.includes("--rollup");
 
-const persisted = (name: string, where: string) => `
+const rollupOn = (first: boolean) =>
+   ROLLUP && first
+      ? `#(preaggregate) grain=["region_code"] storage="lake"\n  `
+      : "";
+const persisted = (name: string, where: string, first = false) => `
 #@ persist name="${name}_rows" storage="lake"
 source: ${name} is duckdb.table('fact') -> { select: *${where} } extend {
   primary_key: id
   join_one: regions with region_code
   dimension: big is amount > 500
-  measure: n is count(), total is amount.sum()
+  ${rollupOn(first)}measure: n is count()
+  ${rollupOn(first)}measure: total is amount.sum()
 }
 `;
 // Each extra source filters differently, so each has its own table.
 const model =
    "##! experimental.persistence\nsource: regions is duckdb.table('regions') extend { primary_key: code }\n" +
-   persisted("facts", "") +
+   persisted("facts", "", true) +
    Array.from({ length: SOURCES - 1 }, (_, i) =>
       persisted(`facts_${i + 2}`, `; where: id % ${i + 2} = 0`),
    ).join("");
@@ -94,6 +107,10 @@ const QUERIES = {
    // carry it, so the storage variant fails to compile and the query runs
    // live, reporting no tier (a clean compile miss, not a runtime fallback).
    miss: "run: facts -> { group_by: regions.region_name; aggregate: n }",
+   // In the grain and stored, but `count()` written in the query counts the
+   // rollup's rows: with `--rollup`, compiled against it and then declined.
+   declined:
+      "run: facts -> { group_by: region_code; aggregate: n, c is count() }",
 };
 
 type Path = "live" | "warm" | "cold";
@@ -110,6 +127,7 @@ function stats(ms: number[]) {
 function scenario(): Promise<R4Fixture> {
    return buildScenario({
       files: { "m.malloy": model },
+      ...(ROLLUP ? { preaggregate: true } : {}),
       seedSql: [
          `CREATE TABLE regions AS SELECT * FROM (VALUES
             ('e', 'East'), ('w', 'West'), ('n', 'North'), ('s', 'South')
@@ -124,15 +142,25 @@ function scenario(): Promise<R4Fixture> {
 }
 
 /** Whether a query on `path` reported the tier it must. */
-function served(name: string, path: Path, servedFrom: string | null): boolean {
+function served(
+   name: string,
+   path: Path,
+   servedFrom: string | null,
+   servedBy: string | undefined,
+): boolean {
    if (path === "live") return servedFrom !== "storage";
+   // With `--rollup`, only `cheap` is the rollup's to answer.
+   if (ROLLUP && (servedBy === "rollup") !== (name === "cheap")) return false;
    // A miss must be a clean compile miss, not a storage run that fell back.
    return name === "miss" ? servedFrom === null : servedFrom === "storage";
 }
 
 async function main() {
    const restore = installSettings({
-      env: { PERSIST_STORAGE_MODE: "on" },
+      env: {
+         PERSIST_STORAGE_MODE: "on",
+         ...(ROLLUP ? { PUBLISHER_MATERIALIZE: "true" } : {}),
+      },
    }).restore;
    const level = logger.level;
    try {
@@ -165,11 +193,13 @@ async function main() {
                const path = PATHS[(i + k) % PATHS.length] as Path;
                prepare(path);
                const start = performance.now();
-               const { servedFrom } = await fixtures[path].runAsIs(q);
+               const { servedFrom, path: report } =
+                  await fixtures[path].runAsIs(q);
                ms[path].push(performance.now() - start);
-               if (!served(name, path, servedFrom)) {
+               const by = report?.servedBy?.kind;
+               if (!served(name, path, servedFrom, by)) {
                   throw new Error(
-                     `${name} on the ${path} path reported servedFrom ${servedFrom}`,
+                     `${name} on the ${path} path reported servedFrom ${servedFrom}, served by ${by}`,
                   );
                }
             }
@@ -180,12 +210,12 @@ async function main() {
          const over = (x: number) =>
             `${x - live.median >= 0 ? "+" : ""}${(x - live.median).toFixed(2)}`;
          rows.push(
-            `| ${SOURCES} | ${name} | ${name === "miss" ? "miss, then live" : "storage"} | ${live.median.toFixed(2)} · ${live.p95.toFixed(2)} | ${warm.median.toFixed(2)} · ${warm.p95.toFixed(2)} (${over(warm.median)}) | ${cold.median.toFixed(2)} · ${cold.p95.toFixed(2)} (${over(cold.median)}) |`,
+            `| ${SOURCES} | ${name} | ${name === "miss" ? "miss, then live" : ROLLUP && name === "cheap" ? "rollup (storage)" : "storage"} | ${live.median.toFixed(2)} · ${live.p95.toFixed(2)} | ${warm.median.toFixed(2)} · ${warm.p95.toFixed(2)} (${over(warm.median)}) | ${cold.median.toFixed(2)} · ${cold.p95.toFixed(2)} (${over(cold.median)}) |`,
          );
       }
       logger.level = level;
       console.log(
-         `\nRouter baseline: ${SOURCES} persisted source${SOURCES === 1 ? "" : "s"} bound, ${ROWS.toLocaleString()} fact rows, ${ITERATIONS} iterations after ${WARMUP} warm-up, paths interleaved, ms (median · p95; served minus live median in parentheses)\n`,
+         `\nRouter baseline${ROLLUP ? ", with a #(preaggregate) rollup" : ""}: ${SOURCES} persisted source${SOURCES === 1 ? "" : "s"} bound, ${ROWS.toLocaleString()} fact rows, ${ITERATIONS} iterations after ${WARMUP} warm-up, paths interleaved, ms (median · p95; served minus live median in parentheses)\n`,
       );
       console.log(
          "| sources | query | path | live | served, warm | served, cold |",

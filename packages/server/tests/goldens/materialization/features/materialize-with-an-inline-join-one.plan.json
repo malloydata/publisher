@@ -1,0 +1,598 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "orders_wide@<pkg>/m.malloy": [],
+          "orders_wide_local@<pkg>/m.malloy": []
+        },
+        "order": [
+          "orders_wide@<pkg>/m.malloy",
+          "orders_wide_local@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "orders_wide@<pkg>/m.malloy": {
+        "buildSourceName": "orders_wide__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          },
+          {
+            "column": "customer_region",
+            "computed": true,
+            "dimension": "customer_region",
+            "zoneFree": true
+          },
+          {
+            "column": "customers__id",
+            "computed": true,
+            "dimension": "id",
+            "join": "customers"
+          },
+          {
+            "column": "customers__name",
+            "computed": true,
+            "dimension": "name",
+            "join": "customers"
+          },
+          {
+            "column": "customers__segment",
+            "computed": true,
+            "dimension": "segment",
+            "join": "customers"
+          },
+          {
+            "column": "customers__home_region",
+            "computed": true,
+            "dimension": "home_region",
+            "join": "customers"
+          },
+          {
+            "column": "customers__signup_date",
+            "computed": true,
+            "dimension": "signup_date",
+            "join": "customers"
+          },
+          {
+            "column": "customers__loud_name",
+            "computed": true,
+            "dimension": "loud_name",
+            "join": "customers"
+          }
+        ],
+        "inline": [
+          "customers"
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "orders_wide",
+          "storage": "lake"
+        },
+        "sourceID": "orders_wide@<pkg>/m.malloy",
+        "sourceName": "orders_wide",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "customers__id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customers__name",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "customers__segment",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "customers__home_region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "customers__signup_date",
+            "type": "DATE"
+          },
+          {
+            "name": "customers__loud_name",
+            "type": "VARCHAR"
+          }
+        ],
+        "uniquenessChecks": [
+          {
+            "connectionName": "duckdb",
+            "join": "customers",
+            "joinedSourceID": "customers@<pkg>/m.malloy",
+            "keyColumn": "id",
+            "queryName": "orders_wide__mat__unique__customers",
+            "sql": "SELECT \n   base.\"id\" as \"id\",\n   COUNT(1) as \"matches\"\nFROM (\n  SELECT CAST(id AS BIGINT) AS id, name, segment, home_region,\n         CAST(signup_date AS DATE) AS signup_date\n  FROM read_csv('data/customers.csv', header=true, all_varchar=true)\n) as base\nWHERE base.\"id\" IS NOT NULL\nGROUP BY 1\nHAVING (COUNT(1))>1\nORDER BY 2 desc NULLS LAST\nLIMIT 1\n"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "orders_wide_local@<pkg>/m.malloy": {
+        "buildSourceName": "orders_wide_local__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          },
+          {
+            "column": "customer_region",
+            "computed": true,
+            "dimension": "customer_region",
+            "zoneFree": true
+          },
+          {
+            "column": "customer_segment",
+            "computed": true,
+            "dimension": "customer_segment",
+            "zoneFree": true
+          },
+          {
+            "column": "customers__id",
+            "computed": true,
+            "dimension": "id",
+            "join": "customers"
+          },
+          {
+            "column": "customers__name",
+            "computed": true,
+            "dimension": "name",
+            "join": "customers"
+          },
+          {
+            "column": "customers__segment",
+            "computed": true,
+            "dimension": "segment",
+            "join": "customers"
+          },
+          {
+            "column": "customers__home_region",
+            "computed": true,
+            "dimension": "home_region",
+            "join": "customers"
+          },
+          {
+            "column": "customers__signup_date",
+            "computed": true,
+            "dimension": "signup_date",
+            "join": "customers"
+          },
+          {
+            "column": "customers__loud_name",
+            "computed": true,
+            "dimension": "loud_name",
+            "join": "customers"
+          }
+        ],
+        "inline": [
+          "customers"
+        ],
+        "persist": {
+          "name": "orders_wide_local"
+        },
+        "sourceID": "orders_wide_local@<pkg>/m.malloy",
+        "sourceName": "orders_wide_local",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "customer_segment",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "customers__id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customers__name",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "customers__segment",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "customers__home_region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "customers__signup_date",
+            "type": "DATE"
+          },
+          {
+            "name": "customers__loud_name",
+            "type": "VARCHAR"
+          }
+        ],
+        "uniquenessChecks": [
+          {
+            "connectionName": "duckdb",
+            "join": "customers",
+            "joinedSourceID": "customers@<pkg>/m.malloy",
+            "keyColumn": "id",
+            "queryName": "orders_wide_local__mat__unique__customers",
+            "sql": "SELECT \n   base.\"id\" as \"id\",\n   COUNT(1) as \"matches\"\nFROM (\n  SELECT CAST(id AS BIGINT) AS id, name, segment, home_region,\n         CAST(signup_date AS DATE) AS signup_date\n  FROM read_csv('data/customers.csv', header=true, all_varchar=true)\n) as base\nWHERE base.\"id\" IS NOT NULL\nGROUP BY 1\nHAVING (COUNT(1))>1\nORDER BY 2 desc NULLS LAST\nLIMIT 1\n"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "orders_wide@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "orders_wide_local@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders_wide@<pkg>/m.malloy": "m.malloy",
+      "orders_wide_local@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders_wide@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "orders_wide_local@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders_wide@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "orders_wide",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          },
+          {
+            "name": "customer_region",
+            "type": "string"
+          },
+          {
+            "name": "customers__id",
+            "type": "number"
+          },
+          {
+            "name": "customers__name",
+            "type": "string"
+          },
+          {
+            "name": "customers__segment",
+            "type": "string"
+          },
+          {
+            "name": "customers__home_region",
+            "type": "string"
+          },
+          {
+            "name": "customers__signup_date",
+            "type": "date"
+          },
+          {
+            "name": "customers__loud_name",
+            "type": "string"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "orders_wide",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+        "sourceID": "orders_wide@<pkg>/m.malloy",
+        "sql": "sha256:e6290a7b698beb47"
+      },
+      "orders_wide_local@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "orders_wide_local"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          },
+          {
+            "name": "customer_region",
+            "type": "string"
+          },
+          {
+            "name": "customer_segment",
+            "type": "string"
+          },
+          {
+            "name": "customers__id",
+            "type": "number"
+          },
+          {
+            "name": "customers__name",
+            "type": "string"
+          },
+          {
+            "name": "customers__segment",
+            "type": "string"
+          },
+          {
+            "name": "customers__home_region",
+            "type": "string"
+          },
+          {
+            "name": "customers__signup_date",
+            "type": "date"
+          },
+          {
+            "name": "customers__loud_name",
+            "type": "string"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "orders_wide_local",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223",
+        "sourceID": "orders_wide_local@<pkg>/m.malloy",
+        "sql": "sha256:e6b90348fac9b5c0"
+      }
+    }
+  }
+}

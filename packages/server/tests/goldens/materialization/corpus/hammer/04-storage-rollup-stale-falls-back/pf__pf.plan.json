@@ -1,0 +1,104 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders__preagg__category__edb2cd3b@<hammer>/pf/pf.malloy.preagg.malloy": []
+        },
+        "order": [
+          "orders__preagg__category__edb2cd3b@<hammer>/pf/pf.malloy.preagg.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {
+      "orders__preagg__category__edb2cd3b@<hammer>/pf/pf.malloy.preagg.malloy": {
+        "baseSourceID": "orders@<hammer>/pf/pf.malloy",
+        "baseSourceName": "orders",
+        "grainDimensions": [
+          "category"
+        ],
+        "measures": [
+          {
+            "name": "total",
+            "notes": [],
+            "partialName": "total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupSourceName": "orders__preagg__category__edb2cd3b",
+        "storage": "lake"
+      }
+    },
+    "sourceGateOutcomes": {
+      "orders__preagg__category__edb2cd3b@<hammer>/pf/pf.malloy.preagg.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders__preagg__category__edb2cd3b@<hammer>/pf/pf.malloy.preagg.malloy": "pf.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders__preagg__category__edb2cd3b@<hammer>/pf/pf.malloy.preagg.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders__preagg__category__edb2cd3b@<hammer>/pf/pf.malloy.preagg.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "category",
+            "type": "string"
+          },
+          {
+            "name": "total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pf.malloy",
+        "name": "orders__preagg__category__edb2cd3b",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "orders",
+          "grainDimensions": [
+            "category"
+          ],
+          "measures": [
+            "total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "6e89839a2cf70ca3309e37e296a87709386edacc747051c84f4026b4527fb913",
+        "sourceID": "orders__preagg__category__edb2cd3b@<hammer>/pf/pf.malloy.preagg.malloy",
+        "sql": "sha256:124d81cb7ada3f8a"
+      }
+    }
+  }
+}

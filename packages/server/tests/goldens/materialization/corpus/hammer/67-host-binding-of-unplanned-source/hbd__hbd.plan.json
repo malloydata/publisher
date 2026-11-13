@@ -1,0 +1,93 @@
+{
+  "droppedPersistSources": [
+    {
+      "modelPath": "hbd.malloy",
+      "name": "scoped"
+    }
+  ],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "all_rows@<hammer>/hbd/hbd.malloy": []
+        },
+        "order": [
+          "all_rows@<hammer>/hbd/hbd.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [
+      {
+        "modelPath": "hbd.malloy",
+        "name": "scoped"
+      }
+    ],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "all_rows@<hammer>/hbd/hbd.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "all_rows@<hammer>/hbd/hbd.malloy": "hbd.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "all_rows@<hammer>/hbd/hbd.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "all_rows@<hammer>/hbd/hbd.malloy": {
+        "annotationFields": {
+          "name": "hbd_all",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "hbd.malloy",
+        "name": "all_rows",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "e4602c5b0af31c1f245edd939382d839251e6668e80a37b4896b696d05eb0451",
+        "sourceID": "all_rows@<hammer>/hbd/hbd.malloy",
+        "sql": "sha256:cbd79ea4eef8f0f9"
+      }
+    }
+  }
+}

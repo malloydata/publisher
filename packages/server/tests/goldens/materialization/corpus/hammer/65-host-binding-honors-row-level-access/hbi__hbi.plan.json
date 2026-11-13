@@ -1,0 +1,99 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "all_rollup@<hammer>/hbi/hbi.malloy": [],
+          "scoped_rollup@<hammer>/hbi/hbi.malloy": []
+        },
+        "order": [
+          "all_rollup@<hammer>/hbi/hbi.malloy",
+          "scoped_rollup@<hammer>/hbi/hbi.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "all_rollup@<hammer>/hbi/hbi.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "scoped_rollup@<hammer>/hbi/hbi.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "all_rollup@<hammer>/hbi/hbi.malloy": "hbi.malloy",
+      "scoped_rollup@<hammer>/hbi/hbi.malloy": "hbi.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "all_rollup@<hammer>/hbi/hbi.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "scoped_rollup@<hammer>/hbi/hbi.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {
+      "scoped_rollup@<hammer>/hbi/hbi.malloy": {
+        "message": "Source 'scoped_rollup' cannot be materialized into a storage destination: a given is read while the persisted relation is BUILT, so its value is substituted at build time — from the declaration's default, the only value available then — and every caller is served that one slice. Move the given out of the persisted query and into the source's extend block (`where: …`), where it is left out of the build and applied per caller when the artifact is read.",
+        "modelPath": "hbi.malloy",
+        "name": "scoped_rollup",
+        "reason": "given_in_persisted_query",
+        "sourceID": "scoped_rollup@<hammer>/hbi/hbi.malloy",
+        "tier": "storage"
+      }
+    },
+    "sources": {
+      "all_rollup@<hammer>/hbi/hbi.malloy": {
+        "annotationFields": {
+          "name": "hbi_all",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "t",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "hbi.malloy",
+        "name": "all_rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "50e08c877886851d137cfa81f0c95d5dd2735057201536a5d54273b0847ec264",
+        "sourceID": "all_rollup@<hammer>/hbi/hbi.malloy",
+        "sql": "sha256:6bf09c95724f3fad"
+      }
+    }
+  }
+}

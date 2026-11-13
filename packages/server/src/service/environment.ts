@@ -2086,6 +2086,7 @@ export class Environment {
          const { tableNameManifest, storageEntries } = splitManifestEntries(
             rawEntries,
             `local store (package ${packageName})`,
+            true,
          );
          if (Object.keys(tableNameManifest).length > 0) {
             pkg.bindColocatedServeManifest(tableNameManifest);

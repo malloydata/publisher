@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
+import { getV1ServedCopyMode } from "../../../config";
 import { logger } from "../../../logger";
-import { recordSourceBuildDuration } from "../../../materialization_metrics";
+import { errorCodeOf } from "./error_code";
 import { errMessage } from "../../../utils";
 import { quoteRenameTarget, quoteTablePath } from "../../quoting";
+import { storedColumnsOfOutput } from "../stored_column_types";
+import { capturedNativeSchema } from "./colocated_native_types";
 import { ManifestEntry } from "../types";
 import type { BuildStrategy, ColocatedBuildRequest } from "./build_strategy";
 import {
@@ -108,10 +111,35 @@ export class ColocatedCtasStrategy
       manifest.update(sourceEntityId, { tableName: quotedPhysical });
 
       const durationMs = Math.round(performance.now() - startTime);
-      recordSourceBuildDuration(durationMs, "in_warehouse");
-      logger.info(`Built materialized source ${persistSource.name}`, {
+      // Debug: the run's `materialization.build.finished` is the build's event.
+      logger.debug(`Built materialized source ${persistSource.name}`, {
          physicalTableName,
          durationMs,
+      });
+
+      // The v1 cutover binds a colocated `#@ persist` table on the served
+      // copy with the columns its build wrote, captured here as a `storage=`
+      // build captures them (G1). Off, nothing is read, as before.
+      const schema =
+         getV1ServedCopyMode() === "off"
+            ? undefined
+            : await capturedColocatedSchema({
+                 connection,
+                 physicalTableName,
+                 dialect,
+                 sourceName: persistSource.name,
+              });
+
+      // Each column's type as the warehouse names it, so the served copy
+      // reads a big-integer column through a cast to exactly that type and
+      // never narrows one (known limitation 12). Captured on every build: a
+      // `#(materialize)` table records no other schema.
+      const nativeSchema = await capturedNativeSchema({
+         run: (sql, options) =>
+            connection.runSQL(sql, { ...runOptions, ...options }),
+         physicalTableName,
+         dialect,
+         sourceName: persistSource.name,
       });
 
       // The table now holds a full snapshot; its boundary turns the NEXT
@@ -141,8 +169,63 @@ export class ColocatedCtasStrategy
          buildDurationMs: durationMs,
          // The recurring warehouse cost of keeping this source materialized.
          queryCostBytes: buildCostBytes ?? null,
+         ...(schema?.length ? { schema } : {}),
+         ...(nativeSchema?.length ? { nativeSchema } : {}),
          ...request.upstreamReuse,
       };
+   }
+}
+
+/**
+ * The columns of a colocated table just built, read back from its warehouse
+ * through the connection's own schema reader and spelled as a `storage=`
+ * entry's are (DuckDB's names; `storedColumnsOfOutput`). Undefined when the
+ * read fails or yields nothing: the build stands, and the served copy derives
+ * the columns from the compiled source instead (colocated_bindings.ts).
+ */
+export async function capturedColocatedSchema(args: {
+   connection: Pick<MalloyConnection, "fetchSchemaForTables">;
+   physicalTableName: string;
+   dialect: string;
+   sourceName: string;
+}): Promise<{ name: string; type: string }[] | undefined> {
+   const key = args.physicalTableName;
+   // Read as the build CREATEd it: quoted for the dialect, so a name a
+   // case-folding warehouse (Snowflake) keeps in its case is found.
+   const tablePath = quoteTablePath(key, args.dialect);
+   try {
+      const read = await args.connection.fetchSchemaForTables(
+         { [key]: tablePath },
+         { refreshTimestamp: Date.now() },
+      );
+      const fields = read.schemas[key]?.fields;
+      if (!fields?.length) {
+         logger.warn(
+            "Could not read a colocated table's columns after its build; the served copy derives them",
+            {
+               sourceName: args.sourceName,
+               physicalTableName: key,
+               error: read.errors[key],
+            },
+         );
+         return undefined;
+      }
+      const columns = storedColumnsOfOutput(fields, {
+         nested: args.dialect === "duckdb",
+         bigint: true,
+         timestamptz: true,
+      });
+      return columns.length > 0 ? columns : undefined;
+   } catch (err) {
+      logger.warn(
+         "Could not read a colocated table's columns after its build; the served copy derives them",
+         {
+            sourceName: args.sourceName,
+            physicalTableName: key,
+            error: errMessage(err),
+         },
+      );
+      return undefined;
    }
 }
 
@@ -203,10 +286,12 @@ interface SwapArgs {
    backupTableName: string;
    connectionName: string;
    /**
-    * A `name=` view that depends on the served table: the transactional swap
-    * runs each of its attempts' statements before its DROP and after its
-    * RENAME, trying the next attempt when one fails. Only Postgres asks for
-    * them; a non-transactional swap never gets any.
+    * A `name=` view the swap must carry: the transactional swap runs each of
+    * its attempts' statements before its DROP and after its RENAME, trying
+    * the next attempt when one fails (a view over the served table, which
+    * only Postgres asks for; or this package's own view AT the name, which
+    * the new table replaces). A non-transactional swap runs only its
+    * `aside` statements: `before` first, `restore` when the swap fails.
     */
    swapDependents?: ColocatedBuildRequest["swapDependents"];
 }
@@ -223,8 +308,39 @@ interface SwapArgs {
 export async function swapIntoPlace(args: SwapArgs): Promise<void> {
    if (TRANSACTIONAL_SWAP_DIALECTS.has(args.dialect)) {
       await swapInTransaction(args);
-   } else {
+      return;
+   }
+   const aside = args.swapDependents?.aside;
+   if (!aside) {
       await swapByRenamingAside(args);
+      return;
+   }
+   const run = (sql: string) => args.connection.runSQL(sql, args.runOptions);
+   try {
+      for (const sql of aside.before) await run(sql);
+   } catch (err) {
+      await dropStagingAfterFailure(args);
+      throw err;
+   }
+   try {
+      await swapByRenamingAside(args);
+   } catch (err) {
+      // The swap left the name as it found it (empty): put back what
+      // `before` removed.
+      try {
+         for (const sql of aside.restore) await run(sql);
+      } catch (restoreErr) {
+         logger.error(
+            "Failed to put back a name= view after a failed materialized table swap",
+            {
+               physicalTableName: args.physicalTableName,
+               connectionName: args.connectionName,
+               error: errMessage(err),
+               restoreError: errMessage(restoreErr),
+            },
+         );
+      }
+      throw err;
    }
 }
 
@@ -286,7 +402,9 @@ async function swapInTransaction({
                   physicalTableName,
                   connectionName,
                   error: errMessage(rollbackErr),
-                  cause: errMessage(err),
+                  // The swap's error can quote its SQL; it reaches the run's
+                  // record.
+                  causeCode: errorCodeOf(err),
                });
             }
          }

@@ -1,0 +1,225 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "accounts@<hammer>/pvj/pvj.malloy": [],
+          "grants@<hammer>/pvj/pvj.malloy": [],
+          "opps@<hammer>/pvj/pvj.malloy": [
+            "grants@<hammer>/pvj/pvj.malloy"
+          ]
+        },
+        "order": [
+          "accounts@<hammer>/pvj/pvj.malloy",
+          "grants@<hammer>/pvj/pvj.malloy",
+          "opps@<hammer>/pvj/pvj.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "accounts@<hammer>/pvj/pvj.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "grants@<hammer>/pvj/pvj.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "opps@<hammer>/pvj/pvj.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "accounts@<hammer>/pvj/pvj.malloy": "pvj.malloy",
+      "grants@<hammer>/pvj/pvj.malloy": "pvj.malloy",
+      "opps@<hammer>/pvj/pvj.malloy": "pvj.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "accounts@<hammer>/pvj/pvj.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "grants@<hammer>/pvj/pvj.malloy"
+            },
+            {
+              "dependsOn": [
+                "grants@<hammer>/pvj/pvj.malloy"
+              ],
+              "sourceID": "opps@<hammer>/pvj/pvj.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "accounts@<hammer>/pvj/pvj.malloy": {
+        "annotationFields": {
+          "name": "pvj_accounts",
+          "partition": "org_id",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "account_id",
+            "type": "number"
+          },
+          {
+            "name": "org_id",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pvj.malloy",
+        "name": "accounts",
+        "origin": "persist",
+        "partition": [
+          "org_id"
+        ],
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "89ec4999e1b9f6bef8953b82cd7ce82839af2d05c76fa9bc812241d7c5bee240",
+        "sourceID": "accounts@<hammer>/pvj/pvj.malloy",
+        "sql": "sha256:1670163abb4659cd",
+        "strippedTerms": [
+          {
+            "code": "org_id = $ORG_ID",
+            "givens": [
+              "ORG_ID"
+            ]
+          }
+        ]
+      },
+      "grants@<hammer>/pvj/pvj.malloy": {
+        "annotationFields": {
+          "name": "pvj_grants",
+          "partition": "org_id",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "opp_id",
+            "type": "number"
+          },
+          {
+            "name": "org_id",
+            "type": "number"
+          },
+          {
+            "name": "user_id",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pvj.malloy",
+        "name": "grants",
+        "origin": "persist",
+        "partition": [
+          "org_id"
+        ],
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "aebecd89bf95d910909071b0ff7d0040391621b03eb2c155f1d90b07f74bf391",
+        "sourceID": "grants@<hammer>/pvj/pvj.malloy",
+        "sql": "sha256:4bbc91d4efa3c362",
+        "strippedTerms": [
+          {
+            "code": "org_id = $ORG_ID and user_id = $USER_ID",
+            "givens": [
+              "ORG_ID",
+              "USER_ID"
+            ]
+          }
+        ]
+      },
+      "opps@<hammer>/pvj/pvj.malloy": {
+        "annotationFields": {
+          "name": "pvj_opps",
+          "partition": "org_id",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "opp_id",
+            "type": "number"
+          },
+          {
+            "name": "org_id",
+            "type": "number"
+          },
+          {
+            "name": "restricted",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "joinedTerms": [
+          {
+            "alias": "g",
+            "source": "grants",
+            "terms": [
+              {
+                "code": "org_id = $ORG_ID and user_id = $USER_ID",
+                "givens": [
+                  "ORG_ID",
+                  "USER_ID"
+                ]
+              }
+            ]
+          }
+        ],
+        "modelPath": "pvj.malloy",
+        "name": "opps",
+        "origin": "persist",
+        "partition": [
+          "org_id"
+        ],
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "fafe57aed7ddd235121cdf2ddc5e108819ac41011415b6cbbd417a75a318825d",
+        "sourceID": "opps@<hammer>/pvj/pvj.malloy",
+        "sql": "sha256:bebccedbe55000c0",
+        "strippedTerms": [
+          {
+            "code": "org_id = $ORG_ID",
+            "givens": [
+              "ORG_ID"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

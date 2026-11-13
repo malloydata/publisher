@@ -4,10 +4,13 @@
 import { decodeDottedTablePath } from "@malloydata/malloy";
 
 import { logger } from "../../../logger";
+import { errorCodeOf } from "./error_code";
+import type { IncrementalStepReason } from "../../../materialization_metrics";
 import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface";
 import type { IncrementalStrategy } from "../types";
 import { errMessage } from "../../../utils";
 import { quoteIdentifier } from "../../quoting";
+import type { PairDelta } from "../plan/incremental_declaration";
 import { windowDeleteBefore, type RollingWindow } from "../plan/rolling_window";
 
 /**
@@ -257,6 +260,10 @@ export function snapshotBound(malloyType: string, now: Date): WatermarkBound {
  * "Materializing on Postgres".
  *
  * `SELECT *` because the DML projects by name (see {@link deltaStatements}).
+ *
+ * `end` undefined leaves the range open above: a pair table's delta (see
+ * {@link pairDeltaStatements}), which replaces whole parents by key and so
+ * needs no upper bound to agree with its delete.
  */
 export function deltaSelect(params: {
    dialect: string;
@@ -264,13 +271,15 @@ export function deltaSelect(params: {
    sourceSQL: string;
    watermarkName: string;
    start: WatermarkBound;
-   end: WatermarkBound;
+   end: WatermarkBound | undefined;
 }): string {
    const watermark = quoteIdentifier(params.watermarkName, params.dialect);
    return (
       `SELECT * FROM (${params.sourceSQL}) AS __d ` +
-      `WHERE ${watermark} >= ${renderSqlBound(params.start, params.dialect)} ` +
-      `AND ${watermark} < ${renderSqlBound(params.end, params.dialect)}`
+      `WHERE ${watermark} >= ${renderSqlBound(params.start, params.dialect)}` +
+      (params.end
+         ? ` AND ${watermark} < ${renderSqlBound(params.end, params.dialect)}`
+         : "")
    );
 }
 
@@ -288,7 +297,11 @@ export function deltaSelect(params: {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** How a probe or DML statement reaches the warehouse. */
-export type SqlRunner = (sql: string) => Promise<{ rows: unknown[] }>;
+export type SqlRunner = (
+   sql: string,
+   /** A row limit past the connection's default (as few as ten rows). */
+   options?: { rowLimit?: number },
+) => Promise<{ rows: unknown[] }>;
 
 /**
  * Per-dialect table-path decoding. The physical name arrives as SQL (bare or
@@ -513,7 +526,7 @@ export async function probeMaxWatermark(
    innerSelect: string,
    watermarkName: string,
    malloyType: string,
-): Promise<{ bound?: WatermarkBound; error?: string }> {
+): Promise<{ bound?: WatermarkBound; error?: string; errorCode?: string }> {
    const column = quoteIdentifier(watermarkName, dialect);
    const sql = probeSelect(
       dialect,
@@ -526,7 +539,9 @@ export async function probeMaxWatermark(
       if (raw === null || raw === undefined) return {};
       return { bound: canonicalBoundValue(malloyType, raw) };
    } catch (err) {
-      return { error: errMessage(err) };
+      // The message can quote the value read (a watermark the parser
+      // refused), so only the code may be logged.
+      return { error: errMessage(err), errorCode: errorCodeOf(err) };
    }
 }
 
@@ -642,7 +657,18 @@ export function deltaStatements(params: {
     * this refresh on needs (rolling_window.ts).
     */
    windowDeletes?: readonly { column: string; before: WatermarkBound }[];
+   /**
+    * A pair table's parent key and parent-row flag: the delta replaces whole
+    * parents by the key instead of merging rows ({@link pairDeltaStatements}).
+    */
+   pair?: PairDelta & { stagingTable: string };
 }): string[] {
+   if (params.pair) {
+      return pairDeltaStatements({
+         ...params,
+         pair: params.pair,
+      });
+   }
    const {
       dialect,
       quotedTablePath,
@@ -721,6 +747,106 @@ export function deltaStatements(params: {
    if (dialect === "snowflake") return [snowflakeScriptingBlock(body)];
    const transaction = transactionKeywords(dialect);
    return [transaction.begin, ...body, transaction.commit];
+}
+
+/** The text a pair delta's check fails with; {@link isPairGuardFailure} reads it. */
+export const PAIR_GUARD_MESSAGE =
+   "pair table parent-row check: a parent does not have exactly one parent-row flag";
+
+/** Whether an error is a pair delta's check failing (and the delta rolled back). */
+export function isPairGuardFailure(err: unknown): boolean {
+   return errMessage(err).includes(PAIR_GUARD_MESSAGE);
+}
+
+/**
+ * A pair table's delta (an inlined join_many, `#(materialize)`): replace every
+ * row of each parent the delta holds, by the parent key, so the parent-row
+ * flag stays exactly one row per parent.
+ *
+ * The delta holds whole parents: its watermark is one value per parent (the
+ * greatest of the parent's and its children's watermark fields), so a range
+ * over it selects all of a parent's rows or none, and the flag the build's
+ * window writes over them is the full build's. The range is open above (see
+ * planIncrementalStep): a parent whose watermark is past the clock, held there
+ * by one child stamped in the future, is read again on every refresh rather
+ * than never. A row-by-row MERGE cannot
+ * apply it: one key matches many rows, and a child that left its parent would
+ * stay. So the delta is staged once (one read of the source, so the delete
+ * and the insert see one snapshot), then, in one transaction, every stored
+ * row of each staged parent is deleted (NULL-safe, as a full build partitions
+ * the NULL key as one parent), the staged rows are inserted, the rolling
+ * windows' deletes run, and a check fails the transaction unless every parent
+ * left in the table has exactly one flagged row. A failed check rolls back
+ * and the source is rebuilt in full (see applyIncrementalStep).
+ *
+ * DuckDB only: the target of every `storage=` table, and a colocated pair
+ * table's own warehouse when that is DuckDB (a colocated one elsewhere has no
+ * pair lineage, see incrementalLineage, and is rebuilt in full). Its `error()`
+ * raises the check; the staging table is a session temporary created before
+ * the transaction, so the transaction writes one database. Another target
+ * dialect has no lineage (see incrementalLineage), so it is never reached.
+ */
+export function pairDeltaStatements(params: {
+   dialect: string;
+   quotedTablePath: string;
+   deltaSQL: string;
+   columns: string[];
+   pair: PairDelta & { stagingTable: string };
+   windowDeletes?: readonly { column: string; before: WatermarkBound }[];
+}): string[] {
+   const { dialect, quotedTablePath, pair } = params;
+   if (dialect !== "duckdb") {
+      throw new Error(
+         `a pair table's delta is applied in DuckDB only, not ${dialect}`,
+      );
+   }
+   const q = (name: string) => quoteIdentifier(name, dialect);
+   const staged = q(pair.stagingTable);
+   const key = q(pair.parentKey);
+   const columnList = params.columns.map(q).join(", ");
+   const transaction = transactionKeywords(dialect);
+   return [
+      `CREATE OR REPLACE TEMP TABLE ${staged} AS ${params.deltaSQL}`,
+      transaction.begin,
+      `DELETE FROM ${quotedTablePath} AS __t WHERE EXISTS (` +
+         `SELECT 1 FROM ${staged} AS __s WHERE ` +
+         `(__t.${key} = __s.${key} OR (__t.${key} IS NULL AND __s.${key} IS NULL)))`,
+      `INSERT INTO ${quotedTablePath} (${columnList}) ` +
+         `SELECT ${columnList} FROM ${staged}`,
+      ...(params.windowDeletes ?? []).map(
+         (d) =>
+            `DELETE FROM ${quotedTablePath} WHERE ${q(d.column)} < ` +
+            renderSqlBound(d.before, dialect),
+      ),
+      // The uniqueness check over the whole table, two columns read: a parent
+      // with no flag or two would be counted wrongly by every parent measure.
+      // A path's level flags are checked the same way, each over the keys
+      // down to its level.
+      ...(
+         pair.checks ?? [{ flag: pair.parentRow, keys: [pair.parentKey] }]
+      ).map(({ flag, keys, lane }) => {
+         const within =
+            lane !== undefined && pair.laneColumn !== undefined
+               ? ` WHERE ${q(pair.laneColumn)} = ${Number(lane)}`
+               : "";
+         return (
+            `SELECT error('${PAIR_GUARD_MESSAGE}') FROM (` +
+            `SELECT ${keys.map(q).join(", ")} FROM ${quotedTablePath}${within} ` +
+            `GROUP BY ${keys.map(q).join(", ")} ` +
+            `HAVING count(*) FILTER (WHERE ${q(flag)}) <> 1) AS __g LIMIT 1`
+         );
+      }),
+      // A table of several blocks: every parent keeps its rows in each.
+      ...(pair.laneColumn !== undefined && pair.lanes !== undefined
+         ? [
+              `SELECT error('${PAIR_GUARD_MESSAGE}') FROM (` +
+                 `SELECT ${key} FROM ${quotedTablePath} GROUP BY ${key} ` +
+                 `HAVING count(DISTINCT ${q(pair.laneColumn)}) <> ${Number(pair.lanes)}) AS __g LIMIT 1`,
+           ]
+         : []),
+      transaction.commit,
+      `DROP TABLE IF EXISTS ${staged}`,
+   ];
 }
 
 /**
@@ -850,6 +976,15 @@ export interface IncrementalLineage {
     * to one already changes {@link sourceEntityId}.
     */
    rollingWindow?: readonly RollingWindow[];
+   /**
+    * A pair table's parent key and parent-row flag column
+    * ({@link pairDeltaStatements}): a delta replaces every row of each parent
+    * it holds, by the key, and checks that each parent keeps exactly one
+    * flagged row. Recorded on the ledger as a merge on the key (`mergeKeys`
+    * is `[parentKey]`); not compared on its own, since the pair's build SQL
+    * is in {@link sourceEntityId}.
+    */
+   pair?: PairDelta;
 }
 
 /**
@@ -974,22 +1109,7 @@ export function ledgerLineageMismatch(
  * `reason` label — the free-text `reason` names specifics (columns, versions,
  * boundary values) that a metric label cannot carry.
  */
-export type IncrementalStepReasonCode =
-   // Seeds.
-   | "forced"
-   | "no_boundary"
-   | "lineage_changed"
-   | "table_renamed"
-   | "merge_unsupported"
-   | "table_unreadable"
-   | "table_emptied"
-   | "shape_mismatch"
-   | "ledger_unreadable"
-   | "plan_error"
-   | "chained_storage"
-   // Skips.
-   | "frontier_unreadable"
-   | "not_advanced";
+export type IncrementalStepReasonCode = IncrementalStepReason;
 
 /** What one source's refresh should do. */
 export type IncrementalStep =
@@ -1058,11 +1178,15 @@ export interface DeltaTarget {
     */
    logicalTablePath: string;
    /**
-    * The rows-yielding SELECT for one bounded range, executable on the TARGET.
-    * Async because producing it can issue the source read (a stored table's rows
-    * arrive through a query passthrough).
+    * The rows-yielding SELECT for one bounded range, executable on the TARGET
+    * (`end` undefined: open above, see {@link deltaSelect}). Async because
+    * producing it can issue the source read (a stored table's rows arrive
+    * through a query passthrough).
     */
-   deltaRows(start: WatermarkBound, end: WatermarkBound): Promise<string>;
+   deltaRows(
+      start: WatermarkBound,
+      end: WatermarkBound | undefined,
+   ): Promise<string>;
    /**
     * The SOURCE's watermark frontier, for a number or string watermark (see
     * resolveDeltaEnd).
@@ -1252,7 +1376,15 @@ export async function planIncrementalStep(inputs: {
    const statements = deltaStatements({
       dialect,
       quotedTablePath: target.quotedTablePath,
-      deltaSQL: await target.deltaRows(start, end.bound),
+      // A pair table's range is open above. Its watermark is a parent's
+      // greatest field over all its rows, so one child stamped past the clock
+      // would hold the parent above every bounded range until the clock
+      // caught up, and the parent's own changes with it; replacing a parent
+      // whole is idempotent, so reading it again on each refresh is safe.
+      deltaSQL: await target.deltaRows(
+         start,
+         lineage.pair ? undefined : end.bound,
+      ),
       columns: inputs.columns,
       mergeKeys: lineage.mergeKeys,
       scopeColumns: lineage.scopeColumns,
@@ -1266,6 +1398,14 @@ export async function planIncrementalStep(inputs: {
             windowDeleteBefore(window, inputs.now),
          ),
       })),
+      ...(lineage.pair
+         ? {
+              pair: {
+                 ...lineage.pair,
+                 stagingTable: pairStagingTable(lineage.physicalTableName),
+              },
+           }
+         : {}),
    });
    return {
       mode: "delta",
@@ -1274,6 +1414,14 @@ export async function planIncrementalStep(inputs: {
       coveredThrough: end.bound,
       statements,
    };
+}
+
+/**
+ * The session temporary a pair delta is staged in, one per table, so two pair
+ * tables refreshed on one session never share one.
+ */
+export function pairStagingTable(physicalTableName: string): string {
+   return `__pair_delta_${physicalTableName.replace(/[^A-Za-z0-9_]/g, "_")}`;
 }
 
 /**
@@ -1292,7 +1440,7 @@ export async function seedCoveredThrough(
    lineage: IncrementalLineage,
    quotedTablePath: string,
    now: Date,
-): Promise<{ bound?: WatermarkBound; error?: string }> {
+): Promise<{ bound?: WatermarkBound; error?: string; errorCode?: string }> {
    const frontier = await probeMaxWatermark(
       runner,
       dialect,

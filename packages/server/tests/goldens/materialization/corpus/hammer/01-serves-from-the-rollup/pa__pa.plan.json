@@ -1,0 +1,241 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders@<hammer>/pa/pa.malloy": [],
+          "orders__preagg__category__edb2cd3b@<hammer>/pa/pa.malloy.preagg.malloy": [
+            "orders@<hammer>/pa/pa.malloy"
+          ],
+          "orders__preagg__region__c697d298@<hammer>/pa/pa.malloy.preagg.malloy": [
+            "orders@<hammer>/pa/pa.malloy"
+          ]
+        },
+        "order": [
+          "orders@<hammer>/pa/pa.malloy",
+          "orders__preagg__category__edb2cd3b@<hammer>/pa/pa.malloy.preagg.malloy",
+          "orders__preagg__region__c697d298@<hammer>/pa/pa.malloy.preagg.malloy"
+        ]
+      },
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders@<hammer>/pa/pa.malloy": []
+        },
+        "order": [
+          "orders@<hammer>/pa/pa.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {
+      "orders__preagg__category__edb2cd3b@<hammer>/pa/pa.malloy.preagg.malloy": {
+        "baseSourceID": "orders@<hammer>/pa/pa.malloy",
+        "baseSourceName": "orders",
+        "grainDimensions": [
+          "category"
+        ],
+        "measures": [
+          {
+            "name": "total",
+            "notes": [],
+            "partialName": "total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "namespace": "analytics",
+        "rollupSourceName": "orders__preagg__category__edb2cd3b"
+      },
+      "orders__preagg__region__c697d298@<hammer>/pa/pa.malloy.preagg.malloy": {
+        "baseSourceID": "orders@<hammer>/pa/pa.malloy",
+        "baseSourceName": "orders",
+        "grainDimensions": [
+          "region"
+        ],
+        "measures": [
+          {
+            "name": "regional",
+            "notes": [],
+            "partialName": "regional__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "namespace": "rollups",
+        "rollupSourceName": "orders__preagg__region__c697d298"
+      }
+    },
+    "sourceGateOutcomes": {
+      "orders@<hammer>/pa/pa.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "orders__preagg__category__edb2cd3b@<hammer>/pa/pa.malloy.preagg.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "orders__preagg__region__c697d298@<hammer>/pa/pa.malloy.preagg.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders@<hammer>/pa/pa.malloy": "pa.malloy",
+      "orders__preagg__category__edb2cd3b@<hammer>/pa/pa.malloy.preagg.malloy": "pa.malloy",
+      "orders__preagg__region__c697d298@<hammer>/pa/pa.malloy.preagg.malloy": "pa.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders@<hammer>/pa/pa.malloy"
+            },
+            {
+              "dependsOn": [
+                "orders@<hammer>/pa/pa.malloy"
+              ],
+              "sourceID": "orders__preagg__category__edb2cd3b@<hammer>/pa/pa.malloy.preagg.malloy"
+            },
+            {
+              "dependsOn": [
+                "orders@<hammer>/pa/pa.malloy"
+              ],
+              "sourceID": "orders__preagg__region__c697d298@<hammer>/pa/pa.malloy.preagg.malloy"
+            }
+          ]
+        ]
+      },
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders@<hammer>/pa/pa.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders@<hammer>/pa/pa.malloy": {
+        "annotationFields": {
+          "name": "analytics.pa_orders_tbl"
+        },
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "category",
+            "type": "string"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pa.malloy",
+        "name": "orders",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "92d61a9306e44a690f5cf72f43d6fc00acf3c3f2d0c9298a70d7cdd211b05067",
+        "sourceID": "orders@<hammer>/pa/pa.malloy",
+        "sql": "sha256:26896c2cf062695f"
+      },
+      "orders__preagg__category__edb2cd3b@<hammer>/pa/pa.malloy.preagg.malloy": {
+        "annotationFields": {
+          "name": "analytics.orders__preagg__category__edb2cd3b"
+        },
+        "columns": [
+          {
+            "name": "category",
+            "type": "string"
+          },
+          {
+            "name": "total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pa.malloy",
+        "name": "orders__preagg__category__edb2cd3b",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "orders",
+          "grainDimensions": [
+            "category"
+          ],
+          "measures": [
+            "total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "ced321f35ab4aed5db8b1c990a557726ac86a367ebc76878590f7b87634ff7b4",
+        "sourceID": "orders__preagg__category__edb2cd3b@<hammer>/pa/pa.malloy.preagg.malloy",
+        "sql": "sha256:5ac094851b98c0e2"
+      },
+      "orders__preagg__region__c697d298@<hammer>/pa/pa.malloy.preagg.malloy": {
+        "annotationFields": {
+          "name": "rollups.orders__preagg__region__c697d298"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "regional__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pa.malloy",
+        "name": "orders__preagg__region__c697d298",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "orders",
+          "grainDimensions": [
+            "region"
+          ],
+          "measures": [
+            "regional"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "4170edc90f093b5c545e588043f0a3034c5577f13fb2d32f3a7722058d39985b",
+        "sourceID": "orders__preagg__region__c697d298@<hammer>/pa/pa.malloy.preagg.malloy",
+        "sql": "sha256:021edcc56cff1b14"
+      }
+    }
+  }
+}

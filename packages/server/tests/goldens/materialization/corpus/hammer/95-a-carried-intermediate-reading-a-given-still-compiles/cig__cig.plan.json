@@ -1,0 +1,122 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/cig/cig.malloy": [],
+          "rollup@<hammer>/cig/cig.malloy": [
+            "daily@<hammer>/cig/cig.malloy"
+          ]
+        },
+        "order": [
+          "daily@<hammer>/cig/cig.malloy",
+          "rollup@<hammer>/cig/cig.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/cig/cig.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollup@<hammer>/cig/cig.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/cig/cig.malloy": "cig.malloy",
+      "rollup@<hammer>/cig/cig.malloy": "cig.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/cig/cig.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/cig/cig.malloy"
+              ],
+              "sourceID": "rollup@<hammer>/cig/cig.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/cig/cig.malloy": {
+        "annotationFields": {
+          "name": "cig_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cig.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "e27cb5498cfa910170634ba0b5bbc714d81aedb8abb90539cae65d24835f62b0",
+        "sourceID": "daily@<hammer>/cig/cig.malloy",
+        "sql": "sha256:64aea73eedac28ea"
+      },
+      "rollup@<hammer>/cig/cig.malloy": {
+        "annotationFields": {
+          "name": "cig_rollup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "grand_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cig.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "31679b00e56acf24b4de3827230b7b7847a807b8f7a444f69684202a4af92fc3",
+        "sourceID": "rollup@<hammer>/cig/cig.malloy",
+        "sql": "sha256:ff9a4cf8850dadf6"
+      }
+    }
+  }
+}

@@ -28,9 +28,11 @@ import { recordQueryVariantRouting } from "../materialization_metrics";
 /** The kinds of candidate the router knows, in their usual catalog order. */
 /**
  * `served` is the served copy on `virtual` (materialization v2), tried before
- * `storage` (today's serve shape) when `materialize.enabled` is on.
+ * `storage` (today's serve shape) when `materialize.enabled` is on. `view` is
+ * a persisted view's table (`#@ persist` on a view, phase 4), tried first: it
+ * answers only an exact call of its view (R1).
  */
-export type VariantKind = "served" | "storage" | "rollup";
+export type VariantKind = "view" | "served" | "storage" | "rollup";
 
 /**
  * Why a candidate did not answer. Internal for now; the path report maps
@@ -80,6 +82,15 @@ export interface Variant<Extra = unknown> {
     * one is tried. Any other veto skips it too.
     */
    keepsContracts?: boolean;
+   /**
+    * With {@link keepsContracts}, narrows it per answer: called with an
+    * answer the attempt produced past an `entry_point` veto, and `false`
+    * skips that answer (`row_level_gate`) as if the candidate did not keep
+    * the contracts. For a candidate that keeps them only for some of the
+    * tables it may read (the served copy's colocated tables under the v1
+    * cutover). Absent: every answer keeps them.
+    */
+   keepsContractsFor?(extra: Extra): boolean;
 }
 
 /** A candidate's own account of why it did not answer (see {@link Variant.explain}). */
@@ -123,7 +134,8 @@ export type RouteDecision<Extra> =
         /**
          * Set when this candidate answered past an `entry_point` veto (it
          * {@link Variant.keepsContracts}): the query's entry point is gated, so
-         * governing the answer must find and enforce that gate on it.
+         * governing the answer must enforce exactly the live entry point's
+         * gates on it.
          */
         pastEntryPointGate?: true;
      }
@@ -197,6 +209,18 @@ async function decideRoute<Extra>(
       }
       try {
          const answer = await variant.attempt();
+         if (
+            veto === "entry_point" &&
+            variant.keepsContractsFor &&
+            !variant.keepsContractsFor(answer.extra)
+         ) {
+            considered.push({
+               kind: variant.kind,
+               outcome: "skipped",
+               reason: "row_level_gate",
+            });
+            continue;
+         }
          considered.push({ kind: variant.kind, outcome: "used" });
          return {
             served: "variant",

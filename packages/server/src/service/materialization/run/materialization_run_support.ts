@@ -1,6 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import {
+   generatedNameOwner,
+   type MaterializePlan,
+} from "../plan/build_file_generator";
 import type { PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import { MaterializationEligibilityError } from "../../../errors";
@@ -110,6 +114,12 @@ export interface ChainedPlanFacts {
     * means `recompute`, and a non-strict build ignores it.
     */
    warehouseReach?: WarehouseReach;
+   /**
+    * The plan's `#(materialize)` plans by sourceID. A `storage=` extension
+    * table among them (one with `buildsOver.overStored`, P10) builds over its
+    * parent's stored table from its own chain, not by lifting author text.
+    */
+   materializePlans?: Readonly<Record<string, MaterializePlan>>;
 }
 
 /** See {@link ChainedPlanFacts.warehouseReach}. */
@@ -295,6 +305,24 @@ export function strictMissSourceId(
            )?.[1]
          : undefined;
    return { sourceID };
+}
+
+/**
+ * The name a reason gives a source: a name only a `#(materialize)` source's
+ * generated files declare (`<src>__mat`, in a file the package never shows)
+ * by the author's source it stands for ({@link generatedNameOwner}), any
+ * other as it is.
+ */
+export function presentedSourceName(
+   name: string,
+   planFacts: Pick<ChainedPlanFacts, "materializePlans">,
+): string {
+   return (
+      generatedNameOwner(
+         name,
+         Object.values(planFacts.materializePlans ?? {}),
+      ) ?? name
+   );
 }
 
 /**
@@ -937,7 +965,7 @@ export function reportRetainedStorageTables(
    packageName: string,
 ): void {
    for (const entry of retained) {
-      recordStorageTableRetained(entry.storageDestinationName ?? "unknown");
+      recordStorageTableRetained();
       logger.warn(
          "A failed run left a table in a storage destination and did not reclaim " +
             "it: the source is refreshed incrementally, so this name may be the " +

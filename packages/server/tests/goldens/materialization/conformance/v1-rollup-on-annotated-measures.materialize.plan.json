@@ -1,0 +1,173 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "orders__rollup__region__d4f76546@<pkg>/m.malloy.preaggregate.malloy": []
+        },
+        "order": [
+          "orders__rollup__region__d4f76546@<pkg>/m.malloy.preaggregate.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {
+      "orders__rollup__region__d4f76546@<pkg>/m.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "orders",
+        "baseGated": false,
+        "baseSourceID": "orders@<pkg>/m.malloy",
+        "baseSourceName": "orders",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "region"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "n",
+            "partialName": "n__partial",
+            "reaggregate": "sum"
+          },
+          {
+            "name": "total",
+            "partialName": "total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "n__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "n",
+            "partials": [
+              {
+                "column": "n__partial",
+                "leaf": {
+                  "aggregate": "count",
+                  "expr": {
+                    "args": [],
+                    "kind": "call",
+                    "name": "count"
+                  },
+                  "joinPath": [],
+                  "reads": []
+                }
+              }
+            ]
+          },
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "total__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "total",
+            "partials": [
+              {
+                "column": "total__partial",
+                "leaf": {
+                  "aggregate": "sum",
+                  "expr": {
+                    "args": [],
+                    "fn": "sum",
+                    "kind": "method",
+                    "path": [
+                      "amount"
+                    ]
+                  },
+                  "joinPath": [],
+                  "reads": [
+                    [
+                      "amount"
+                    ]
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "orders__rollup__region__d4f76546",
+        "storage": "lake",
+        "variant": true
+      }
+    },
+    "sourceGateOutcomes": {
+      "orders__rollup__region__d4f76546@<pkg>/m.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders__rollup__region__d4f76546@<pkg>/m.malloy.preaggregate.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders__rollup__region__d4f76546@<pkg>/m.malloy.preaggregate.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders__rollup__region__d4f76546@<pkg>/m.malloy.preaggregate.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "n__partial",
+            "type": "number"
+          },
+          {
+            "name": "total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "orders__rollup__region__d4f76546",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "orders",
+          "grainDimensions": [
+            "region"
+          ],
+          "measures": [
+            "n",
+            "total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+        "sourceID": "orders__rollup__region__d4f76546@<pkg>/m.malloy.preaggregate.malloy",
+        "sql": "sha256:9be17faeb4b810a5"
+      }
+    }
+  }
+}

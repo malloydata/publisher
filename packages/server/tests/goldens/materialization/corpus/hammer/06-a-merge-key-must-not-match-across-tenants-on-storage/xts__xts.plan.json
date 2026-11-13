@@ -1,0 +1,98 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "order_rows@<hammer>/xts/xts.malloy": []
+        },
+        "order": [
+          "order_rows@<hammer>/xts/xts.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "order_rows@<hammer>/xts/xts.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "order_rows@<hammer>/xts/xts.malloy": "xts.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "order_rows@<hammer>/xts/xts.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "order_rows@<hammer>/xts/xts.malloy": {
+        "annotationFields": {
+          "merge_key": "order_id",
+          "name": "xts_rows",
+          "refresh": "incremental",
+          "storage": "lake",
+          "watermark": "batch"
+        },
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "org_id",
+            "type": "number"
+          },
+          {
+            "name": "batch",
+            "type": "number"
+          },
+          {
+            "name": "amount_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "xts.malloy",
+        "name": "order_rows",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": "incremental",
+        "sourceEntityId": "b1a2b61da96c25a55ffbd095304b951ce78f7a5bddcd02cff0286545b0465ff4",
+        "sourceID": "order_rows@<hammer>/xts/xts.malloy",
+        "sql": "sha256:ef68cfbec61ab301",
+        "strippedTerms": [
+          {
+            "code": "org_id = $ORG_ID",
+            "givens": [
+              "ORG_ID"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

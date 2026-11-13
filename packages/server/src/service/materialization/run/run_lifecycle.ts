@@ -21,6 +21,8 @@ import {
 import { errMessage } from "../../../utils";
 import { MaterializationStatus } from "../types";
 import { VALID_TRANSITIONS } from "./materialization_run_support";
+import { errorCodeOf } from "./error_code";
+import { runFailureReported } from "./run_telemetry";
 
 /**
  * A run's state machine and its life in this process: every status change goes
@@ -134,20 +136,27 @@ export class RunLifecycle {
             const message = redactPgSecrets(errMessage(err));
             const cancelled = abortController.signal.aborted;
             const next = cancelled ? "CANCELLED" : "FAILED";
-            // A background throw answers no request, so log it (with the stack)
-            // or it is invisible in the server's output.
-            if (cancelled) {
+            // A background throw answers no request, so log it (with the
+            // stack's frames) or it is invisible in the server's output,
+            // unless the run's own `materialization.run.finished` reported it
+            // already. Its code, never its message: a whole-run failure joins
+            // its sources' driver errors, which can quote SQL or a value. The
+            // message is on the run's record either way.
+            const code = errorCodeOf(err);
+            if (runFailureReported(err)) {
+               // Logged once already, by the run.
+            } else if (cancelled) {
                // An abort racing a genuine failure records "Cancelled"; this log
-               // is then the only place the real error appears.
+               // is then the only place the real error's code appears.
                logger.info("Materialization run cancelled", {
                   materializationId: id,
-                  error: message,
+                  code,
                });
             } else {
                logger.error("Materialization run failed", {
                   materializationId: id,
-                  error: message,
-                  stack: err instanceof Error ? err.stack : undefined,
+                  code,
+                  stack: stackFrames(err),
                });
             }
             try {
@@ -186,7 +195,7 @@ export class RunLifecycle {
             } catch (transitionErr) {
                logger.error("Failed to record materialization failure", {
                   materializationId: id,
-                  originalError: message,
+                  code: errorCodeOf(err),
                   transitionError: errMessage(transitionErr),
                });
             }
@@ -196,4 +205,34 @@ export class RunLifecycle {
             onSettled?.();
          });
    }
+}
+
+/**
+ * An error's stack frames without the message it opens with: where a failure
+ * was thrown, for a log that may not carry what it said. The message is cut
+ * off by its own text, since a line of it (a quoted row value) can look like
+ * a frame. A stack whose header is not the message, because the message
+ * changed after the stack was read, gives no frames.
+ */
+export function stackFrames(err: unknown): string | undefined {
+   if (!(err instanceof Error) || typeof err.stack !== "string") {
+      return undefined;
+   }
+   const { stack, message } = err;
+   // With no message, the header is the error's name alone.
+   const at = message === "" ? 0 : stack.indexOf(message);
+   const end = message === "" ? stack.indexOf("\n") : at + message.length;
+   if (
+      at < 0 ||
+      end < 0 ||
+      stack.slice(0, at).includes("\n") ||
+      (end < stack.length && stack[end] !== "\n")
+   ) {
+      return undefined;
+   }
+   const frames = stack
+      .slice(end)
+      .split("\n")
+      .filter((line) => /^\s+at /.test(line));
+   return frames.length > 0 ? frames.join("\n") : undefined;
 }

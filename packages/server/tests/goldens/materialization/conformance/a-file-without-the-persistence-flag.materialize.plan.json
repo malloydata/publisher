@@ -1,0 +1,124 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "daily_nf@<pkg>/m.malloy": []
+        },
+        "order": [
+          "daily_nf@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "daily_nf@<pkg>/m.malloy": {
+        "buildSourceName": "daily_nf__mat",
+        "columns": [
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "total",
+            "computed": false,
+            "dimension": "total"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "daily_nf",
+          "storage": "lake"
+        },
+        "sourceID": "daily_nf@<pkg>/m.malloy",
+        "sourceName": "daily_nf",
+        "storedColumns": [
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "total",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily_nf@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily_nf@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily_nf@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily_nf@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "daily_nf",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "daily_nf",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "e3515d44e6a5a2414323ff7eac03f531a4226ef892dce76fea0ee087c30a2a88",
+        "sourceID": "daily_nf@<pkg>/m.malloy",
+        "sql": "sha256:72fb63651d6237ab"
+      }
+    }
+  }
+}

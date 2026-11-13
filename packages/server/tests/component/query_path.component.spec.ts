@@ -15,6 +15,10 @@ import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 import type { Package } from "../../src/service/package";
+import type { V1ServedCopyMode } from "../../src/config";
+import { __setPackageLoadPoolForTests } from "../../src/package_load/package_load_pool";
+import type { Model } from "../../src/service/model";
+import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
 
 const MODEL = `##! experimental.persistence
@@ -469,3 +473,277 @@ describe("the path report over a colocated rollup", () => {
       ]);
    });
 });
+
+// A host's manifest bind (Environment.bindManifest) goes through
+// `reloadAllModels`, which leaves the whole unfiltered manifest on each
+// model's Runtime. Malloy reads a run handed no `buildManifest` as "use the
+// Runtime's", so a run that passes none substitutes a table its freshness
+// window should have dropped. `bindColocatedServeManifest` stores nothing on
+// the Runtime, which is why the STALE test above cannot see this.
+describe("a table past its freshness window, bound by a host's reload", () => {
+   let restore: () => void = () => {};
+
+   afterEach(async () => {
+      restore();
+      restore = () => {};
+      await __setPackageLoadPoolForTests(null);
+   });
+
+   async function underMode(mode: V1ServedCopyMode): Promise<void> {
+      restore = installSettings({
+         env: {
+            PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_V1_SERVED_COPY: mode,
+         },
+      }).restore;
+      // A worker reads its settings at spawn, and the plan is made there.
+      await __setPackageLoadPoolForTests(null);
+   }
+
+   /**
+    * Create each table from `sql` (a sentinel unless it is the plan's own)
+    * and bind them all as a host does, through `reloadAllModels`.
+    */
+   async function bindThroughReload(
+      pkg: Package,
+      tables: {
+         entityId: string;
+         table: string;
+         sql: string;
+         extra?: Record<string, unknown>;
+      }[],
+   ): Promise<void> {
+      const connection = (await pkg.getMalloyConnection(
+         "duckdb",
+      )) as DuckDBConnection;
+      const entries: Record<string, Record<string, unknown>> = {};
+      for (const t of tables) {
+         await connection.runSQL(
+            `CREATE OR REPLACE TABLE ${t.table} AS ${t.sql}`,
+         );
+         entries[t.entityId] = {
+            tableName: t.table,
+            connectionName: "duckdb",
+            ...t.extra,
+         };
+      }
+      await pkg.reloadAllModels(entries as never);
+   }
+
+   const STALE = (fallback: "live" | "fail") => ({
+      dataAsOf: "2020-01-01T00:00:00.000Z",
+      freshnessWindowSeconds: 60,
+      freshnessFallback: fallback,
+   });
+
+   async function run(pkg: Package, query: string) {
+      const model = pkg.getModel("model.malloy");
+      if (!model) throw new Error("model.malloy did not load");
+      return model.runQuery(
+         unrecordedAudit(),
+         { query },
+         QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+      );
+   }
+
+   /** The answer the shadow computes for `on`, as its comparison runs it. */
+   async function shadowsOnAnswer(pkg: Package, query: string) {
+      const model = pkg.getModel("model.malloy") as unknown as {
+         runQueryResults: (...args: unknown[]) => ReturnType<Model["runQuery"]>;
+      };
+      return model.runQueryResults(
+         unrecordedAudit(),
+         { query },
+         QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+         { v1Mode: "on", shadowRun: true },
+      );
+   }
+
+   const DAILY_QUERY =
+      "run: daily -> { group_by: region; aggregate: t is total.sum(); order_by: region }";
+   const DAILY_LIVE = [
+      { region: "east", t: 107.5 },
+      { region: "west", t: 3.5 },
+   ];
+   // Same columns as daily's table, values no live answer can produce.
+   const DAILY_SENTINEL = `SELECT * FROM (VALUES
+      (DATE '2026-01-01', 'east', 999.0, 9),
+      (DATE '2026-01-02', 'west', 1.0, 1)
+   ) AS t(order_date, region, total, order_count)`;
+
+   /** Every assertion a stale table's query owes, in every mode. */
+   async function expectAnsweredLive(
+      pkg: Package,
+      mode: V1ServedCopyMode,
+      query: string,
+      live: unknown[],
+      staleId: string,
+      staleTable: string,
+   ): Promise<void> {
+      const answers = [await run(pkg, query)];
+      if (mode === "shadow") answers.push(await shadowsOnAnswer(pkg, query));
+      for (const res of answers) {
+         expect(res.compactResult).toEqual(live as never);
+         expect(res.result.sql).not.toContain(staleTable);
+         expect(res.path?.servedBy).toEqual({ kind: "live" });
+         expect(res.path?.considered).toContainEqual({
+            tableId: staleId,
+            kind: "materialized",
+            outcome: "skipped",
+            reason: "STALE",
+         });
+      }
+   }
+
+   for (const mode of ["off", "shadow", "on"] as const) {
+      for (const fallback of ["live", "fail"] as const) {
+         it(`answers live, not from the table [${mode}, fallback ${fallback}]`, async () => {
+            await underMode(mode);
+            const pkg = await loadPackage();
+            // Live first, before any table exists.
+            expect((await run(pkg, DAILY_QUERY)).compactResult).toEqual(
+               DAILY_LIVE as never,
+            );
+            const dailyId = entityIdOf(pkg, "daily");
+            await bindThroughReload(pkg, [
+               {
+                  entityId: dailyId,
+                  table: "built_daily_sentinel",
+                  sql: DAILY_SENTINEL,
+                  extra: STALE(fallback),
+               },
+            ]);
+            // `fail` degrades to live today (freshness.ts), with the switch
+            // off as on: the same answer either way.
+            await expectAnsweredLive(
+               pkg,
+               mode,
+               DAILY_QUERY,
+               DAILY_LIVE,
+               dailyId,
+               "built_daily_sentinel",
+            );
+         }, 60_000);
+      }
+
+      it(`still answers from a table within its window [${mode}]`, async () => {
+         await underMode(mode);
+         const pkg = await loadPackage();
+         const dailyId = entityIdOf(pkg, "daily");
+         await bindThroughReload(pkg, [
+            {
+               entityId: dailyId,
+               table: "built_daily_sentinel",
+               sql: DAILY_SENTINEL,
+               extra: {
+                  dataAsOf: new Date().toISOString(),
+                  freshnessWindowSeconds: 3600,
+                  freshnessFallback: "live",
+               },
+            },
+         ]);
+         const res = await run(pkg, DAILY_QUERY);
+         expect(res.compactResult).toEqual([
+            { region: "east", t: 999 },
+            { region: "west", t: 1 },
+         ] as never);
+         expect(res.path?.servedBy).toMatchObject({
+            kind: "materialized",
+            tableId: dailyId,
+         });
+      }, 60_000);
+
+      // A strip that leaves nothing must still hand Malloy a manifest: the
+      // rollup's entry is the only fresh one, and stripping it for the
+      // author's model left none, which read as "use the Runtime's".
+      it(`answers live when the only fresh table is a rollup [${mode}]`, async () => {
+         await underMode(mode);
+         const pkg = await loadPackage(STRIP_ROLLUP_MODEL);
+         const [rollupId] = [...pkg.getPreaggregateEntityIds()];
+         const rollup = Object.values(pkg.getBuildPlan()?.sources ?? {}).find(
+            (s) => s.sourceEntityId === rollupId,
+         );
+         if (!rollup) throw new Error("no rollup in the plan");
+         const dailyId = entityIdOf(pkg, "daily");
+         await bindThroughReload(pkg, [
+            { entityId: rollupId, table: "built_rollup", sql: rollup.sql },
+            {
+               entityId: dailyId,
+               table: "built_daily_sentinel",
+               sql: DAILY_SENTINEL,
+               extra: STALE("live"),
+            },
+         ]);
+         await expectAnsweredLive(
+            pkg,
+            mode,
+            DAILY_QUERY,
+            DAILY_LIVE,
+            dailyId,
+            "built_daily_sentinel",
+         );
+      }, 60_000);
+
+      it(`answers live when the only fresh table is a persisted view's [${mode}]`, async () => {
+         await underMode(mode);
+         const pkg = await loadPackage(STRIP_VIEW_MODEL);
+         // A persisted view is planned as its synthesized build source.
+         const viewId = entityIdOf(pkg, "orders__by_region__view");
+         const view = Object.values(pkg.getBuildPlan()?.sources ?? {}).find(
+            (s) => s.sourceEntityId === viewId,
+         )!;
+         const dailyId = entityIdOf(pkg, "daily");
+         await bindThroughReload(pkg, [
+            { entityId: viewId, table: "built_view", sql: view.sql },
+            {
+               entityId: dailyId,
+               table: "built_daily_sentinel",
+               sql: DAILY_SENTINEL,
+               extra: STALE("live"),
+            },
+         ]);
+         await expectAnsweredLive(
+            pkg,
+            mode,
+            DAILY_QUERY,
+            DAILY_LIVE,
+            dailyId,
+            "built_daily_sentinel",
+         );
+      }, 60_000);
+   }
+});
+
+const ORDERS_SQL = `duckdb.sql("""
+  SELECT * FROM (VALUES
+    (1, DATE '2026-01-01', 'east', 100.5),
+    (2, DATE '2026-01-02', 'west', 3.5),
+    (3, DATE '2026-01-02', 'east', 7.0)
+  ) AS t(id, order_date, region, amount)
+""")`;
+
+const DAILY_SOURCE = `#@ persist name="daily"
+source: daily is orders -> {
+  group_by: order_date, region
+  aggregate: total is amount.sum(), order_count is count()
+}
+`;
+
+const STRIP_ROLLUP_MODEL = `##! experimental { persistence composite_sources }
+source: orders is ${ORDERS_SQL} extend {
+  primary_key: id
+  #@ preaggregate grain="region"
+  measure: amount_total is amount.sum()
+}
+
+${DAILY_SOURCE}`;
+
+const STRIP_VIEW_MODEL = `##! experimental.persistence
+source: orders is ${ORDERS_SQL} extend {
+  primary_key: id
+  #@ persist
+  view: by_region is { group_by: region; aggregate: n is count() }
+}
+
+${DAILY_SOURCE}`;
