@@ -39,6 +39,7 @@ import {
    removeGoldens,
    slug,
    unclaimedGoldens,
+   unownedEntries,
    UPDATING,
 } from "./golden_files";
 import { type CaseGoldens, type GoldenCase, runCase } from "./package_case";
@@ -51,6 +52,8 @@ const SUFFIXES: (keyof CaseGoldens)[] = [
    "served.txt",
 ];
 const AREAS = ["conformance", "features", "fixtures"];
+/** The area corpus.goldens.component.spec.ts owns. */
+const CORPUS_AREA = "corpus";
 
 /**
  * Every file under `dir`, by path relative to it with `/` separators, with LF
@@ -180,5 +183,9 @@ describe("materialization goldens: housekeeping", () => {
          return;
       }
       expect(stale).toEqual([]);
+   });
+
+   it("keeps every golden under an area a spec owns", () => {
+      expect(unownedEntries([...AREAS, CORPUS_AREA])).toEqual([]);
    });
 });

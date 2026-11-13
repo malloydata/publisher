@@ -225,6 +225,19 @@ export function unclaimedGoldens(
    return out.sort();
 }
 
+/**
+ * The entries directly under {@link GOLDENS_ROOT} that are not one of the
+ * `areas` a spec owns: a golden there, or under a renamed area, would be
+ * claimed by no spec and checked by no housekeeping test.
+ */
+export function unownedEntries(areas: readonly string[]): string[] {
+   if (!fs.existsSync(GOLDENS_ROOT)) return [];
+   return fs
+      .readdirSync(GOLDENS_ROOT)
+      .filter((entry) => !areas.includes(entry))
+      .sort();
+}
+
 /** Remove the goldens {@link unclaimedGoldens} found (an update run only). */
 export function removeGoldens(relatives: readonly string[]): void {
    for (const rel of relatives) {
