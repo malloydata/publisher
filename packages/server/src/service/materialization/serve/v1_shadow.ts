@@ -138,11 +138,12 @@ function normalize(value: unknown): unknown {
 }
 
 /**
- * Equal values. Numbers compare exactly, except two that are both non-integer
- * numbers, which may differ in the last bits (two plans sum floats in another
- * order) and are equal within a relative tolerance; an integer, or a bigint,
- * never is. A bigint equals a number only when the number is that integer
- * exactly.
+ * Equal values. Numbers compare exactly, except when either is a non-integer
+ * number: two plans may sum floats in another order, which can differ in the
+ * last bits and even land one side on an integer (`1` against
+ * `0.9999999999999999`), so they are equal within a relative tolerance. Two
+ * integers, or a bigint, never are. A bigint equals a number only when the
+ * number is that integer exactly.
  */
 function valuesEqual(a: unknown, b: unknown): boolean {
    if (typeof a === "bigint" || typeof b === "bigint") {
@@ -157,7 +158,7 @@ function valuesEqual(a: unknown, b: unknown): boolean {
    }
    if (typeof a === "number" && typeof b === "number") {
       if (a === b) return true;
-      if (Number.isInteger(a) || Number.isInteger(b)) return false;
+      if (Number.isInteger(a) && Number.isInteger(b)) return false;
       const scale = Math.max(Math.abs(a), Math.abs(b), 1);
       return Math.abs(a - b) <= FLOAT_TOLERANCE * scale;
    }
@@ -166,12 +167,17 @@ function valuesEqual(a: unknown, b: unknown): boolean {
 
 /**
  * A row value's sort key: numbers and bigints as one kind (an integer as its
- * exact text), so the same row sorts alike on both sides.
+ * exact text, any other number to 12 significant digits, so float noise in the
+ * last bits does not reorder rows {@link valuesEqual} calls equal), so the same
+ * row sorts alike on both sides.
  */
 function sortable(value: unknown): unknown {
    if (typeof value === "bigint") return value.toString();
-   if (typeof value === "number" && Number.isInteger(value))
-      return String(value);
+   if (typeof value === "number") {
+      return Number.isInteger(value)
+         ? String(value)
+         : String(Number(value.toPrecision(12)));
+   }
    return normalize(value);
 }
 
@@ -200,8 +206,14 @@ export function shadowRowDifference(
    return undefined;
 }
 
-/** A type with every number's `subtype` set aside, nested fields included. */
+/**
+ * A type with every number's `subtype` set aside, nested fields included, and
+ * a nested field's annotations without the reference ids minted per compile.
+ */
 function withoutSubtype(type: unknown, depth = 0): unknown {
+   if (typeof type === "string") {
+      return type.replace(/reference_id = "[^"]*"/g, "");
+   }
    if (depth > 32 || type === null || typeof type !== "object") return type;
    if (Array.isArray(type))
       return type.map((t) => withoutSubtype(t, depth + 1));
