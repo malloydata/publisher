@@ -1636,6 +1636,190 @@ source: orders is orders_raw extend {
       { timeout: 30000 },
    );
 
+   const PICKED = `${DATED}
+source: picks is duckdb.sql("""
+  select * from (values (10, 1, date '2026-01-07'), (11, 3, date '2026-01-08')) as t(pick_id, line_id, picked_on)
+""") extend { primary_key: pick_id }
+source: lines_picked is lines extend {
+  join_many: picks on picks.line_id = line_id
+}
+`;
+   const pathSource = (keys: string) => `${PICKED}
+#(materialize) name="orders_all" storage="lake" inline=["lp.picks"] refresh="incremental" ${keys}
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lp is lines_picked on lp.order_id = id
+}
+`;
+
+   it(
+      "plans an incremental pair table of a path: a field at every level, each level's flag checked after the delta",
+      async () => {
+         const c = await compiled(
+            pathSource(
+               'watermark=["order_date", "lp.loaded_on", "lp.picks.picked_on"]',
+            ),
+         );
+         const [plan] = generatedPlans(c);
+         expect(plan.pairFullRefresh).toBeUndefined();
+         expect(plan.pair?.watermark).toEqual({
+            column: "__pair_watermark",
+            parts: ["order_date", "lp__loaded_on", "lp__picks__picked_on"],
+         });
+         expect(plan.persist).toMatchObject({
+            refresh: "incremental",
+            watermark: "__pair_watermark",
+            merge_key: "id",
+         });
+         const declaration = collectIncrementalDeclarations(
+            c.sources,
+            c.materializePlans,
+         )[plan.sourceID];
+         // Every generated window is partitioned within a parent.
+         expect(declaration.calculateFields).toEqual([]);
+         expect(declaration.pair).toEqual({
+            parentKey: "id",
+            parentRow: "__parent_row",
+            checks: [
+               { flag: "__parent_row", keys: ["id"] },
+               { flag: "__child_row", keys: ["id", "lp__line_id"] },
+            ],
+         });
+         expect(
+            incrementalPolicyRejections([
+               { sourceName: "orders", dialect: "postgres", declaration },
+            ]),
+         ).toEqual([]);
+         expect(
+            incrementalLineage({
+               declaration,
+               dialect: "postgres",
+               targetDialect: "duckdb",
+               physicalTableName: "orders_all",
+               connectionName: "duckdb",
+               sourceEntityId: "sid",
+            }),
+         ).toMatchObject({ pair: declaration.pair });
+      },
+      { timeout: 30000 },
+   );
+
+   for (const [name, keys, why] of [
+      [
+         "names no field of the middle level, where a new line with no pick would not move it",
+         'watermark=["order_date", "lp.picks.picked_on"]',
+         /names no field of `lp`, so a row added there/,
+      ],
+      [
+         "names no field of the leaf",
+         'watermark=["order_date", "lp.loaded_on"]',
+         /names no field of `lp.picks`/,
+      ],
+      [
+         "names only the source's own field",
+         'watermark="order_date"',
+         /names only the source's own fields/,
+      ],
+   ] as const) {
+      it(
+         `rebuilds a path's pair table in full, with a coded warning, when its watermark ${name}`,
+         async () => {
+            const c = await compiled(pathSource(keys));
+            const [plan] = generatedPlans(c);
+            expect(plan.pair?.watermark).toBeUndefined();
+            expect(plan.pairFullRefresh).toMatch(why);
+            for (const key of ["refresh", "watermark", "merge_key"]) {
+               expect(plan.persist[key]).toBeUndefined();
+            }
+         },
+         { timeout: 30000 },
+      );
+   }
+
+   it(
+      "plans an incremental table of several blocks: one watermark per parent across every block, each block's flags checked",
+      async () => {
+         const pkg = await packages.create(`${PICKED}
+source: pays is duckdb.sql("""
+  select * from (values (50, 1, date '2026-01-04'), (51, 3, date '2026-01-09')) as t(pay_id, order_id, paid_on)
+""") extend { primary_key: pay_id }
+#(materialize) name="orders_all" storage="lake" inline=["lp.picks", "pays"] refresh="incremental" watermark=["order_date", "lp.loaded_on", "lp.picks.picked_on", "pays.paid_on"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lp is lines_picked on lp.order_id = id
+  join_many: pays on pays.order_id = id
+}
+`);
+         const c = await compilePackageBuildPlan(pkg);
+         const [plan] = generatedPlans(c);
+         expect(plan.pairFullRefresh).toBeUndefined();
+         expect(plan.pairBlocks?.watermark).toEqual({
+            column: "__pair_watermark",
+            parts: [
+               "order_date",
+               "lp__loaded_on",
+               "lp__picks__picked_on",
+               "pays__paid_on",
+            ],
+         });
+         expect(plan.persist).toMatchObject({
+            refresh: "incremental",
+            watermark: "__pair_watermark",
+            merge_key: "id",
+         });
+         const declaration = collectIncrementalDeclarations(
+            c.sources,
+            c.materializePlans,
+         )[plan.sourceID];
+         expect(declaration.calculateFields).toEqual([]);
+         expect(declaration.pair).toEqual({
+            parentKey: "id",
+            parentRow: "__parent_row",
+            laneColumn: "__pair_lane",
+            lanes: 2,
+            checks: [
+               { flag: "__parent_row", keys: ["id"], lane: 0 },
+               { flag: "__child_row", keys: ["id", "lp__line_id"], lane: 0 },
+               { flag: "__parent_row", keys: ["id"], lane: 1 },
+               // Past the payments block's leaf: every key it has.
+               { flag: "__child_row", keys: ["id", "pays__pay_id"], lane: 1 },
+            ],
+         });
+         expect(
+            incrementalPolicyRejections([
+               { sourceName: "orders", dialect: "postgres", declaration },
+            ]),
+         ).toEqual([]);
+         // Built: each parent carries one watermark across both blocks, the
+         // greatest over all of its rows.
+         const [sourceID, source] = Object.entries(c.sources).find(
+            ([, s]) => s.name === "orders",
+         )!;
+         const sql = buildSQLOf(source, { entries: {} }, c.targets?.[sourceID]);
+         const duckdb = await pkg.getMalloyConnection("duckdb");
+         const rows = (
+            await duckdb.runSQL(
+               `SELECT id, count(DISTINCT __pair_watermark) AS w, max(__pair_watermark) AS wm,
+                       count(DISTINCT __pair_lane) AS lanes
+                  FROM (${sql}) t GROUP BY id ORDER BY id`,
+            )
+         ).rows.map((r) => [
+            Number(r.id),
+            Number(r.w),
+            new Date(String(r.wm)).toISOString().slice(0, 10),
+            Number(r.lanes),
+         ]);
+         expect(rows).toEqual([
+            // Order 1: its line 1's pick; order 2: its line 3's pick; order
+            // 3, with no line: its payment.
+            [1, 1, "2026-01-07", 2],
+            [2, 1, "2026-01-08", 2],
+            [3, 1, "2026-01-09", 2],
+         ]);
+      },
+      { timeout: 30000 },
+   );
+
    it(
       "leaves the window gate in force on a pair table that is not incremental",
       async () => {
@@ -1716,19 +1900,6 @@ source: orders is orders_raw extend {
 
    for (const [name, declaration, why] of [
       [
-         "a path of join_manys",
-         `source: picks is duckdb.sql("""select 1 as pick_id, 1 as line_id""") extend { primary_key: pick_id }
-source: lines_picked is lines extend {
-  join_many: picks on picks.line_id = line_id
-}
-#(materialize) name="orders_all" storage="lake" inline=["lp.picks"] refresh="incremental" watermark="order_date"
-source: orders is orders_raw extend {
-  primary_key: id
-  join_many: lp is lines_picked on lp.order_id = id
-}`,
-         /a path of join_manys/,
-      ],
-      [
          "two join_manys",
          `#(materialize) name="orders_all" storage="lake" inline=["lines", "l2"] refresh="incremental" watermark="order_date"
 source: orders is orders_raw extend {
@@ -1736,7 +1907,7 @@ source: orders is orders_raw extend {
   join_many: lines on lines.order_id = id
   join_many: l2 is lines on l2.order_id = id
 }`,
-         /more than one inlined join_many/,
+         /names only the source's own fields/,
       ],
    ] as const) {
       it(

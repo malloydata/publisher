@@ -608,3 +608,528 @@ describe("R4: an incremental pair table's edges: a watermark ahead of the clock,
       await expectEqualsRebuild("flights");
    });
 });
+
+// A path of two join_manys: flights → segments → stops. Each level's row
+// flag partitions on the keys down to it, so replacing whole parents keeps
+// every flag exact; the delta's check reads each level's flag over its keys.
+// Flights 1–6; flight 3 childless; segment 13 has no stop.
+const pathSeedSql = [
+   `CREATE TABLE flights AS SELECT id, carrier, distance::DOUBLE AS distance, updated_at FROM (VALUES
+      (1, 'AA', 100.0, TIMESTAMP '2026-10-01 00:00:00'),
+      (2, 'UA', 200.0, TIMESTAMP '2026-10-02 00:00:00'),
+      (3, 'DL', 300.0, TIMESTAMP '2026-10-03 00:00:00'),
+      (4, 'AA', 400.0, TIMESTAMP '2026-10-04 00:00:00'),
+      (5, 'UA', 500.0, TIMESTAMP '2026-10-05 00:00:00'),
+      (6, 'DL', 600.0, TIMESTAMP '2026-10-06 00:00:00')
+    ) AS t(id, carrier, distance, updated_at)`,
+   `CREATE TABLE segments AS SELECT seg_id, flight_id, miles::DOUBLE AS miles, loaded_at FROM (VALUES
+      (11, 1, 10.0, TIMESTAMP '2026-10-01 01:00:00'),
+      (12, 1, 20.0, TIMESTAMP '2026-10-01 02:00:00'),
+      (13, 2, 30.0, TIMESTAMP '2026-10-02 01:00:00'),
+      (14, 4, 40.0, TIMESTAMP '2026-10-04 01:00:00'),
+      (15, 5, 50.0, TIMESTAMP '2026-10-05 01:00:00'),
+      (16, 6, 60.0, TIMESTAMP '2026-10-06 01:00:00')
+    ) AS t(seg_id, flight_id, miles, loaded_at)`,
+   `CREATE TABLE stops AS SELECT stop_id, seg_id, mins::DOUBLE AS mins, loaded_at FROM (VALUES
+      (101, 11, 1.0, TIMESTAMP '2026-10-01 03:00:00'),
+      (102, 11, 2.0, TIMESTAMP '2026-10-01 04:00:00'),
+      (103, 12, 3.0, TIMESTAMP '2026-10-01 05:00:00'),
+      (104, 14, 4.0, TIMESTAMP '2026-10-04 02:00:00'),
+      (105, 15, 5.0, TIMESTAMP '2026-10-05 02:00:00'),
+      (106, 16, 6.0, TIMESTAMP '2026-10-06 02:00:00')
+    ) AS t(stop_id, seg_id, mins, loaded_at)`,
+];
+
+const pathModel = `source: stops is duckdb.table('stops') extend { primary_key: stop_id }
+source: segments is duckdb.table('segments') extend {
+  primary_key: seg_id
+  join_many: stops on stops.seg_id = seg_id
+}
+
+#(materialize) storage="lake" inline=["segments.stops"] refresh="incremental" watermark=["updated_at", "segments.loaded_at", "segments.stops.loaded_at"]
+source: flights is duckdb.table('flights') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  measure:
+    flight_count is count()
+    total_distance is distance.sum()
+    seg_n is segments.count()
+    seg_total is segments.miles.sum()
+    stop_n is segments.stops.count()
+    stop_total is segments.stops.mins.sum()
+}
+`;
+
+const PATH_FLAGS = [
+   { flag: "__parent_row", keys: ["id"] },
+   { flag: "__child_row", keys: ["id", "segments__seg_id"] },
+];
+
+describe("R4: an incremental pair table of a path of join_manys refreshes in place, replacing whole parents", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   let covered: WatermarkBound;
+   const runner = (sql: string) =>
+      fixture.duckdb.runSQL(sql, { rowLimit: 100_000 }) as Promise<{
+         rows: unknown[];
+      }>;
+   const rows = async (sql: string) => (await runner(sql)).rows as Row[];
+   const table = () => `${DESTINATION}.${fixture.physicalTables.flights}`;
+   const lineage = (): IncrementalLineage => ({
+      physicalTableName: table(),
+      connectionName: "duckdb",
+      sourceEntityId: fixture.tableIds.flights,
+      watermarkName: "__pair_watermark",
+      watermarkType: "timestamp",
+      mergeKeys: ["id"],
+      scopeColumns: [],
+      strategy: "merge",
+      pair: {
+         parentKey: "id",
+         parentRow: "__parent_row",
+         checks: PATH_FLAGS,
+      },
+   });
+
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": pathModel },
+         seedSql: pathSeedSql,
+         materialize: true,
+         clock: B,
+      });
+      covered = canonicalBoundValue("timestamp", at(B));
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   async function refresh(
+      now: string,
+      mutate?: (statements: string[]) => string[],
+   ) {
+      fixture.setClock(now);
+      const l = lineage();
+      const target = warehouseDeltaTarget({
+         dialect: "duckdb",
+         runner,
+         quotedTablePath: table(),
+         lineage: l,
+         sourceSQL: fixture.builtSQL.flights,
+      });
+      const columns = (await rows(`DESCRIBE ${table()}`)).map((r) =>
+         String(r.column_name),
+      );
+      const step = await planIncrementalStep({
+         target,
+         lineage: l,
+         ledgerEntry: {
+            sourceEntityId: l.sourceEntityId,
+            coveredThroughValue: covered.value,
+            coveredThroughType: covered.malloyType,
+            watermarkDimension: l.watermarkName,
+            mergeKeyDimensions: l.mergeKeys,
+            derivedStrategy: l.strategy,
+            physicalTableName: l.physicalTableName,
+            connectionName: l.connectionName,
+            storageDestinationName: undefined,
+         },
+         forceRefresh: false,
+         now: at(now),
+         columns,
+      });
+      expect(step.mode).toBe("delta");
+      const advanced: WatermarkBound[] = [];
+      const applied = await applyIncrementalStep({
+         context: contextAt(at(now), advanced),
+         lineage: l,
+         step:
+            step.mode === "delta" && mutate
+               ? { ...step, statements: mutate(step.statements) }
+               : step,
+         target,
+         sourceName: "flights",
+      });
+      if (advanced.length > 0) covered = advanced[0];
+      return applied;
+   }
+
+   /** Every row but the flags as a rebuild's, and each flag once per its keys. */
+   async function expectEqualsRebuild() {
+      const rebuilt = `${DESTINATION}.rebuilt_path_flights`;
+      await runner(
+         `CREATE OR REPLACE TABLE ${rebuilt} AS ${fixture.builtSQL.flights}`,
+      );
+      const flags = PATH_FLAGS.map((f) => f.flag).join(", ");
+      const side = (t: string) => `SELECT * EXCLUDE (${flags}) FROM ${t}`;
+      for (const [a, b] of [
+         [table(), rebuilt],
+         [rebuilt, table()],
+      ]) {
+         const extra = await rows(
+            `SELECT * FROM (${side(a)} EXCEPT ALL ${side(b)}) ORDER BY ALL`,
+         );
+         expect({ in: a, extra }).toEqual({ in: a, extra: [] });
+      }
+      for (const { flag, keys } of PATH_FLAGS) {
+         const wrong = await rows(
+            `SELECT ${keys.join(", ")} FROM ${table()} GROUP BY ${keys.join(", ")}
+              HAVING count(*) FILTER (WHERE ${flag}) <> 1`,
+         );
+         expect({ flag, wrong }).toEqual({ flag, wrong: [] });
+      }
+   }
+
+   const served = [
+      "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, stop_n, stop_total }",
+      "run: flights -> { group_by: carrier; aggregate: flight_count, seg_n, seg_total }",
+      "run: flights -> { group_by: id; aggregate: seg_total, stop_n, stop_total }",
+      "run: flights -> { group_by: segments.seg_id; aggregate: stop_n, stop_total }",
+   ];
+   async function expectServedEqualsLive(now: string) {
+      fixture.setClock(now);
+      for (const malloy of served) {
+         const run = await fixture.run({ name: malloy, malloy });
+         expect({ malloy, via: run.servedVia }).toEqual({
+            malloy,
+            via: "served_copy",
+         });
+         expect({ malloy, diff: rowDifference(run.live, run.served) }).toEqual({
+            malloy,
+            diff: undefined,
+         });
+      }
+   }
+
+   it("builds in full at b: equal to a rebuild, serving live's answers", async () => {
+      await expectEqualsRebuild();
+      await expectServedEqualsLive(B);
+   });
+
+   it("refreshes in place after rows arrive, leave and change at every level", async () => {
+      const t = (h: number) =>
+         `TIMESTAMP '2026-11-10 ${String(h).padStart(2, "0")}:00:00'`;
+      for (const sql of [
+         // A stop added to a stored segment of a stored flight.
+         `INSERT INTO stops VALUES (107, 13, 7.0, ${t(1)})`,
+         // A segment with no stop added to a stored flight.
+         `INSERT INTO segments VALUES (17, 4, 70.0, ${t(2)})`,
+         // A childless flight gains a segment and a stop under it.
+         `INSERT INTO segments VALUES (18, 3, 80.0, ${t(3)})`,
+         `INSERT INTO stops VALUES (108, 18, 8.0, ${t(3)})`,
+         // A stop restated in place.
+         `UPDATE stops SET mins = 99.0, loaded_at = ${t(4)} WHERE stop_id = 105`,
+         // A segment loses its stops and is restamped.
+         `DELETE FROM stops WHERE seg_id = 11`,
+         `UPDATE segments SET loaded_at = ${t(5)} WHERE seg_id = 11`,
+         // A flight restated, and a new flight with no segment.
+         `UPDATE flights SET carrier = 'ZZ', updated_at = ${t(6)} WHERE id = 6`,
+         `INSERT INTO flights VALUES (7, 'AA', 700.0, ${t(7)})`,
+      ]) {
+         await runner(sql);
+      }
+      const outcome = await refresh(R1);
+      expect(outcome).toEqual(
+         expect.objectContaining({ applied: true, refresh: "delta" }),
+      );
+      await expectEqualsRebuild();
+      await expectServedEqualsLive(R1);
+   });
+
+   it("mutation: without the delete, the checks roll the delta back", async () => {
+      await runner(
+         `INSERT INTO stops VALUES (109, 16, 9.0, TIMESTAMP '2026-11-11 01:00:00')`,
+      );
+      const before = await rows(`SELECT * FROM ${table()} ORDER BY ALL`);
+      const outcome = await refresh("2026-11-11 12:00:00", (s) =>
+         s.filter((x) => !x.startsWith("DELETE FROM")),
+      );
+      expect(outcome).toEqual({ applied: false });
+      expect(await rows(`SELECT * FROM ${table()} ORDER BY ALL`)).toEqual(
+         before,
+      );
+   });
+
+   it("mutation: the level check alone catches a segment flagged twice", async () => {
+      // Without the delete and the parent's check, only the level check is
+      // left: it fails the delta, which rolls back.
+      const before = await rows(`SELECT * FROM ${table()} ORDER BY ALL`);
+      const outcome = await refresh("2026-11-11 12:00:00", (s) =>
+         s.filter(
+            (x) =>
+               !x.startsWith("DELETE FROM") &&
+               !(x.includes("error(") && x.includes('GROUP BY "id" ')),
+         ),
+      );
+      expect(outcome).toEqual({ applied: false });
+      expect(await rows(`SELECT * FROM ${table()} ORDER BY ALL`)).toEqual(
+         before,
+      );
+      await refresh(R2);
+      await expectEqualsRebuild();
+      await expectServedEqualsLive(R2);
+   });
+});
+
+// A table of two blocks: the path segments.stops, and crew. A parent's rows
+// in both blocks carry one watermark, the greatest over all of them, so a
+// delta replaces a parent in every block at once.
+const blockSeedSql = [
+   ...pathSeedSql,
+   `CREATE TABLE crew AS SELECT crew_id, flight_id, duty::DOUBLE AS duty, loaded_at FROM (VALUES
+      (201, 1, 5.0, TIMESTAMP '2026-10-01 06:00:00'),
+      (202, 1, 6.0, TIMESTAMP '2026-10-01 07:00:00'),
+      (203, 3, 7.0, TIMESTAMP '2026-10-03 01:00:00'),
+      (204, 5, 8.0, TIMESTAMP '2026-10-05 03:00:00')
+    ) AS t(crew_id, flight_id, duty, loaded_at)`,
+];
+
+const blockModel = `source: stops is duckdb.table('stops') extend { primary_key: stop_id }
+source: segments is duckdb.table('segments') extend {
+  primary_key: seg_id
+  join_many: stops on stops.seg_id = seg_id
+}
+source: crew is duckdb.table('crew') extend { primary_key: crew_id }
+
+#(materialize) storage="lake" inline=["segments.stops", "crew"] refresh="incremental" watermark=["updated_at", "segments.loaded_at", "segments.stops.loaded_at", "crew.loaded_at"]
+source: flights is duckdb.table('flights') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  join_many: crew on crew.flight_id = id
+  measure:
+    flight_count is count()
+    total_distance is distance.sum()
+    seg_n is segments.count()
+    seg_total is segments.miles.sum()
+    stop_n is segments.stops.count()
+    stop_total is segments.stops.mins.sum()
+    crew_n is crew.count()
+    crew_duty is crew.duty.sum()
+}
+`;
+
+const BLOCK_FLAGS = [
+   { flag: "__parent_row", keys: ["id"], lane: 0 },
+   { flag: "__child_row", keys: ["id", "segments__seg_id"], lane: 0 },
+   { flag: "__parent_row", keys: ["id"], lane: 1 },
+   { flag: "__child_row", keys: ["id", "crew__crew_id"], lane: 1 },
+];
+
+describe("R4: an incremental pair table of several blocks refreshes in place, replacing each parent in every block", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   let covered: WatermarkBound;
+   const runner = (sql: string) =>
+      fixture.duckdb.runSQL(sql, { rowLimit: 100_000 }) as Promise<{
+         rows: unknown[];
+      }>;
+   const rows = async (sql: string) => (await runner(sql)).rows as Row[];
+   const table = () => `${DESTINATION}.${fixture.physicalTables.flights}`;
+   const lineage = (): IncrementalLineage => ({
+      physicalTableName: table(),
+      connectionName: "duckdb",
+      sourceEntityId: fixture.tableIds.flights,
+      watermarkName: "__pair_watermark",
+      watermarkType: "timestamp",
+      mergeKeys: ["id"],
+      scopeColumns: [],
+      strategy: "merge",
+      pair: {
+         parentKey: "id",
+         parentRow: "__parent_row",
+         checks: BLOCK_FLAGS,
+         laneColumn: "__pair_lane",
+         lanes: 2,
+      },
+   });
+
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": blockModel },
+         seedSql: blockSeedSql,
+         materialize: true,
+         clock: B,
+      });
+      covered = canonicalBoundValue("timestamp", at(B));
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   async function refresh(
+      now: string,
+      mutate?: (statements: string[]) => string[],
+   ) {
+      fixture.setClock(now);
+      const l = lineage();
+      const target = warehouseDeltaTarget({
+         dialect: "duckdb",
+         runner,
+         quotedTablePath: table(),
+         lineage: l,
+         sourceSQL: fixture.builtSQL.flights,
+      });
+      const columns = (await rows(`DESCRIBE ${table()}`)).map((r) =>
+         String(r.column_name),
+      );
+      const step = await planIncrementalStep({
+         target,
+         lineage: l,
+         ledgerEntry: {
+            sourceEntityId: l.sourceEntityId,
+            coveredThroughValue: covered.value,
+            coveredThroughType: covered.malloyType,
+            watermarkDimension: l.watermarkName,
+            mergeKeyDimensions: l.mergeKeys,
+            derivedStrategy: l.strategy,
+            physicalTableName: l.physicalTableName,
+            connectionName: l.connectionName,
+            storageDestinationName: undefined,
+         },
+         forceRefresh: false,
+         now: at(now),
+         columns,
+      });
+      expect(step.mode).toBe("delta");
+      const advanced: WatermarkBound[] = [];
+      const applied = await applyIncrementalStep({
+         context: contextAt(at(now), advanced),
+         lineage: l,
+         step:
+            step.mode === "delta" && mutate
+               ? { ...step, statements: mutate(step.statements) }
+               : step,
+         target,
+         sourceName: "flights",
+      });
+      if (advanced.length > 0) covered = advanced[0];
+      return applied;
+   }
+
+   async function expectEqualsRebuild() {
+      const rebuilt = `${DESTINATION}.rebuilt_block_flights`;
+      await runner(
+         `CREATE OR REPLACE TABLE ${rebuilt} AS ${fixture.builtSQL.flights}`,
+      );
+      const side = (t: string) =>
+         `SELECT * EXCLUDE (__parent_row, __child_row) FROM ${t}`;
+      for (const [a, b] of [
+         [table(), rebuilt],
+         [rebuilt, table()],
+      ]) {
+         const extra = await rows(
+            `SELECT * FROM (${side(a)} EXCEPT ALL ${side(b)}) ORDER BY ALL`,
+         );
+         expect({ in: a, extra }).toEqual({ in: a, extra: [] });
+      }
+      for (const { flag, keys, lane } of BLOCK_FLAGS) {
+         const wrong = await rows(
+            `SELECT ${keys.join(", ")} FROM ${table()} WHERE __pair_lane = ${lane}
+              GROUP BY ${keys.join(", ")} HAVING count(*) FILTER (WHERE ${flag}) <> 1`,
+         );
+         expect({ flag, lane, wrong }).toEqual({ flag, lane, wrong: [] });
+      }
+   }
+
+   const served = [
+      "run: flights -> { group_by: carrier; aggregate: flight_count, stop_n, stop_total }",
+      "run: flights -> { group_by: carrier; aggregate: flight_count, seg_n, seg_total }",
+      "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, crew_n, crew_duty }",
+      "run: flights -> { group_by: id; aggregate: crew_n, crew_duty }",
+      "run: flights -> { group_by: id; aggregate: seg_total, stop_n }",
+   ];
+   async function expectServedEqualsLive(now: string) {
+      fixture.setClock(now);
+      for (const malloy of served) {
+         const run = await fixture.run({ name: malloy, malloy });
+         expect({ malloy, via: run.servedVia }).toEqual({
+            malloy,
+            via: "served_copy",
+         });
+         expect({ malloy, diff: rowDifference(run.live, run.served) }).toEqual({
+            malloy,
+            diff: undefined,
+         });
+      }
+   }
+
+   it("builds in full at b: equal to a rebuild, serving live's answers", async () => {
+      await expectEqualsRebuild();
+      await expectServedEqualsLive(B);
+   });
+
+   it("refreshes in place after rows change in each block", async () => {
+      const t = (h: number) =>
+         `TIMESTAMP '2026-11-10 ${String(h).padStart(2, "0")}:00:00'`;
+      for (const sql of [
+         // Only the crew block's rows of flight 2 change: its path rows must
+         // be written again with it.
+         `INSERT INTO crew VALUES (205, 2, 9.0, ${t(1)})`,
+         // Only the path block's rows of flight 1 change.
+         `INSERT INTO stops VALUES (107, 12, 7.0, ${t(2)})`,
+         // A crew row leaves flight 1's other block; it is restamped.
+         `DELETE FROM crew WHERE crew_id = 202`,
+         `UPDATE flights SET updated_at = ${t(3)} WHERE id = 1`,
+         // A new flight with a crew row and no segment.
+         `INSERT INTO flights VALUES (7, 'AA', 700.0, ${t(4)})`,
+         `INSERT INTO crew VALUES (206, 7, 1.5, ${t(4)})`,
+         // A segment with no stop added to the childless flight 3.
+         `INSERT INTO segments VALUES (17, 3, 70.0, ${t(5)})`,
+      ]) {
+         await runner(sql);
+      }
+      const outcome = await refresh(R1);
+      expect(outcome).toEqual(
+         expect.objectContaining({ applied: true, refresh: "delta" }),
+      );
+      await expectEqualsRebuild();
+      await expectServedEqualsLive(R1);
+   });
+
+   it("mutation: a delta holding one block's rows of a parent, the other block's dropped, rolls back", async () => {
+      await runner(
+         `INSERT INTO crew VALUES (208, 6, 3.0, TIMESTAMP '2026-11-11 00:30:00')`,
+      );
+      const before = await rows(`SELECT * FROM ${table()} ORDER BY ALL`);
+      // As a per-block watermark would stage it: flight 6's crew rows only.
+      const outcome = await refresh("2026-11-11 06:00:00", (s) =>
+         s.map((x) =>
+            x.startsWith("CREATE OR REPLACE TEMP TABLE")
+               ? x.replace(
+                    / AS (.*)$/s,
+                    " AS SELECT * FROM ($1) AS __d WHERE __pair_lane = 1",
+                 )
+               : x,
+         ),
+      );
+      expect(outcome).toEqual({ applied: false });
+      expect(await rows(`SELECT * FROM ${table()} ORDER BY ALL`)).toEqual(
+         before,
+      );
+   });
+
+   it("mutation: without the delete, the per-block checks roll the delta back", async () => {
+      await runner(
+         `INSERT INTO crew VALUES (207, 4, 2.0, TIMESTAMP '2026-11-11 01:00:00')`,
+      );
+      const before = await rows(`SELECT * FROM ${table()} ORDER BY ALL`);
+      const outcome = await refresh("2026-11-11 12:00:00", (s) =>
+         s.filter((x) => !x.startsWith("DELETE FROM")),
+      );
+      expect(outcome).toEqual({ applied: false });
+      expect(await rows(`SELECT * FROM ${table()} ORDER BY ALL`)).toEqual(
+         before,
+      );
+      await refresh(R2);
+      await expectEqualsRebuild();
+      await expectServedEqualsLive(R2);
+   });
+});
