@@ -110,6 +110,7 @@ import {
    readsRawSql,
    resolveStructRefSource,
    setsTimezone,
+   sourceFieldJoinReads,
    type QueryLevelFacts,
 } from "../../governance/ir/prepared_query";
 import type { BuildManifest } from "../types";
@@ -133,6 +134,7 @@ import {
    type AuthorImportOptions,
 } from "./author_imports";
 import {
+   checkJoinCoverage,
    joinRollupLegs,
    unmatchedRowProblem,
    type JoinRollupLeg,
@@ -672,6 +674,17 @@ export class RollupVariantServe {
             "the query's reads could not be traced",
          );
       }
+      // A6 and A2 through the join (row 27): a fan-out grain dimension, and
+      // the other grain dimensions of a join-level sum or count, grouped or
+      // fixed at every level that aggregates through the join.
+      if (levels) {
+         const loose = checkJoinCoverage(
+            leg,
+            levels,
+            sourceFieldJoinReads(q.struct, name),
+         );
+         if (loose) throw new RollupSkip(loose.code, loose.callerDetail);
+      }
       const read = new Set(
          q.usage
             .filter((p) => p[0] === name && p.length === 2)
@@ -692,9 +705,39 @@ export class RollupVariantServe {
       const childFields = new Map(
          (childDef?.fields ?? []).map((f) => [String(f.as ?? f.name), f]),
       );
-      const problem = unmatchedRowProblem(leg, read, (field) => {
-         const f = childFields.get(field);
-         return f !== undefined && f.e === undefined && f.join === undefined;
+      const isBareColumn = (
+         f: { e?: unknown; join?: unknown } | undefined,
+      ): boolean =>
+         f !== undefined && f.e === undefined && f.join === undefined;
+      const problem = unmatchedRowProblem(leg, read, (operand) => {
+         if (operand.length === 1) {
+            return isBareColumn(childFields.get(operand[0] as string));
+         }
+         // A column of the joined source's own join, keyed on one of its own
+         // columns: NULL on an unmatched parent's row, which meets no row.
+         const inner = SourceMap.of(this.host.modelDef())
+            .joinsOf(plan.baseSourceID)
+            .find((j) => j.name === operand[0]);
+         if (
+            !inner ||
+            inner.relationship === "cross" ||
+            inner.baseKey === undefined ||
+            !inner.condition ||
+            inner.condition.nested ||
+            [...inner.condition.joins].some((j) => j !== inner.name) ||
+            !isBareColumn(childFields.get(inner.baseKey))
+         ) {
+            return false;
+         }
+         const innerFields = inner.fields as {
+            name?: unknown;
+            as?: unknown;
+            e?: unknown;
+            join?: unknown;
+         }[];
+         return isBareColumn(
+            innerFields.find((f) => String(f.as ?? f.name) === operand[1]),
+         );
       });
       if (problem !== undefined) {
          throw new RollupSkip("rollup_count_semantics", problem);
