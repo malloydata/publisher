@@ -375,12 +375,35 @@ describe("unmatchedRowProblem", () => {
       );
    });
 
-   it("after malloydata/malloy#3208: nothing is declined for unmatched parents", () => {
+   it("after malloydata/malloy#3208: counts and the joined source's own operands are served", () => {
       for (const m of ["seg_miles", "seg_count", "padded", "p_miles"]) {
          expect(
             unmatchedRowProblem(many, new Set([m]), isColumn, true),
          ).toBeUndefined();
       }
+   });
+
+   it("after malloydata/malloy#3208: an operand through a join keyed on a computed value is declined", () => {
+      const p = plan();
+      p.rollupMeasures[0]!.partials = [
+         leaf("sum", {
+            kind: "method",
+            path: ["kinds_or_p", "weight"],
+            fn: "sum",
+            args: [],
+         }),
+      ] as RollupVariantPlan["rollupMeasures"][number]["partials"];
+      const [{ leg }] = joinRollupLegs(
+         [join()],
+         new Map([[CHILD, [p]]]),
+         new Set(),
+         "id",
+      ) as [{ leg: Parameters<typeof unmatchedRowProblem>[0] }];
+      const read = new Set(["seg_miles"]);
+      expect(unmatchedRowProblem(leg, read, () => true, true)).toBeUndefined();
+      expect(unmatchedRowProblem(leg, read, () => false, true)).toContain(
+         "keyed on a computed value",
+      );
    });
 });
 

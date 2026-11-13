@@ -182,7 +182,9 @@ export interface Reroot {
  * `<join>.<field>` reads the column on the same row; the join_many statement
  * is replaced by that record. Each measure over the source's own fields is
  * re-declared to aggregate only the rows the parent-row flag marks (one per
- * parent), and an aggregate through the join reads every row, as live's does.
+ * parent), and each measure through the join only the rows where the joined
+ * level has a row ({@link PairReroot.levelPresent}), as live's does
+ * (malloydata/malloy#3208).
  * The stored flag and child columns are renamed internally, so no query reads
  * them. What the record cannot carry (the joined source's measures and views,
  * its fields' annotations) is not in the served source; a query that needs it
@@ -233,6 +235,20 @@ export interface PairReroot {
     * of whose rows has one row of every level above it.
     */
    oneParentLevels?: readonly number[];
+   /**
+    * For each level of the path (level 1 first, the leaf last): an internal
+    * dimension, `field`, true where that level has a row, its primary key's
+    * stored column (`keyColumn`, the internal name it is read under) not
+    * null; undefined where the key is not stored. Malloy aggregates a joined
+    * source over its own rows only, testing its key for null
+    * (malloydata/malloy#3208), where the pair table also stores the row an
+    * outer join writes for a parent with no child; a measure re-declared at a
+    * joined level reads it too, so it skips that row as live does. Declared
+    * in the record's own block, where a hidden join's stored columns are
+    * readable. No query reads it: a query compiles against the author's
+    * source first, where no such field exists.
+    */
+   levelPresent?: readonly ({ field: string; keyColumn: string } | undefined)[];
    /**
     * For a table that stores more than one inlined path: which block this
     * served source reads, and the other blocks' records.
@@ -332,9 +348,10 @@ export interface PairMeasure {
    /** The author's access modifier; absent for a public measure. */
    access?: "internal";
    /**
-    * The level it aggregates at, when it is a level between the source and
-    * the leaf of a path of more than one hop: re-declared under that level's
-    * row flag. Absent: the source's own fields, under the parent-row flag.
+    * The level it aggregates at, when it is a level of the inlined path:
+    * re-declared under that level's presence dimension and, for a level
+    * above the leaf, its row flag. Absent: the source's own fields, under
+    * the parent-row flag.
     */
    level?: number;
 }
@@ -1030,8 +1047,19 @@ function pairRecord(record: {
    childColumns: readonly (JoinedColumn & { internalName: string })[];
    hops?: readonly PairHopColumns[];
    access?: "private" | "internal";
+   levelPresent?: PairReroot["levelPresent"];
 }): string {
    const { join, childColumns, hops, access } = record;
+   const present = (record.levelPresent ?? [])
+      .filter((p) => p !== undefined)
+      .map(
+         (p) =>
+            `    ${identifier(p.field)} is ${identifier(p.keyColumn)} is not null`,
+      );
+   const presence =
+      present.length > 0
+         ? `\n  internal dimension:\n${present.join("\n")}`
+         : "";
    const field = (c: JoinedColumn & { internalName: string }, pad: string) =>
       // malloy-text: names through identifier, a timeframe from TIMEFRAMES and a cast through doubleQuotedString
       `${pad}${identifier(c.name)} is ${identifier(c.internalName)}` +
@@ -1052,33 +1080,40 @@ function pairRecord(record: {
       return items.join(",\n");
    };
    const dimension = `${accessPrefix(access)}dimension: ${identifier(join)} is {\n${level(0, "    ")}\n  }`;
-   if (access === undefined) return dimension;
+   if (access === undefined) return `${dimension}${presence}`;
    const renames = [...childColumns, ...(hops ?? []).flatMap((h) => h.columns)]
       .map(
          (c) => `    ${identifier(c.internalName)} is ${identifier(c.column)}`,
       )
       .join("\n");
-   return `${dimension}\n  private rename:\n${renames}`;
+   return `${dimension}\n  private rename:\n${renames}${presence}`;
 }
 
 /**
  * The extend block that closes a pair table's served source: each measure
- * over one level above the leaf (the source's own fields, or a level between
- * it and the leaf of a longer path) renamed internally and declared again,
- * under its own name, annotations and access, over the rows that level's
- * flag marks. A measure that reads it by name (a ratio of two, a view) reads
- * the re-declared one. Empty when there is none.
+ * over one level (the source's own fields, or a level of the inlined path)
+ * renamed internally and declared again, under its own name, annotations and
+ * access, over that level's rows: the rows its flag marks, above the leaf,
+ * and where it has a row ({@link PairReroot.levelPresent}), below the
+ * source. A measure that reads it by name (a ratio of two, a view) reads the
+ * re-declared one. Empty when there is none.
  */
 function pairMeasures(pair: PairReroot): string {
    if (pair.parentMeasures.length === 0) return "";
-   const flagOf = (m: PairMeasure) => {
+   const leaf = 1 + (pair.hops?.length ?? 0);
+   const conditionsOf = (m: PairMeasure) => {
       const level = m.level ?? 0;
-      return identifier(
-         level === 0
-            ? pair.parentRowField
-            : ((pair.levelRows ?? [])[level - 1]?.field ?? pair.parentRowField),
-      );
+      if (level === 0) return identifier(pair.parentRowField);
+      const out: string[] = [];
+      if (level < leaf) {
+         const flag = (pair.levelRows ?? [])[level - 1]?.field;
+         if (flag !== undefined) out.push(identifier(flag));
+      }
+      const present = (pair.levelPresent ?? [])[level - 1];
+      if (present !== undefined) out.push(identifier(present.field));
+      return out.join(", ");
    };
+
    const renames = pair.parentMeasures
       .map((m) => `    ${identifier(m.internalName)} is ${identifier(m.name)}`)
       .join("\n");
@@ -1090,7 +1125,7 @@ function pairMeasures(pair: PairReroot): string {
          .map(
             (m) =>
                notes(m) +
-               `    ${identifier(m.name)} is ${identifier(m.internalName)} { where: ${flagOf(m)} }`,
+               `    ${identifier(m.name)} is ${identifier(m.internalName)} { where: ${conditionsOf(m)} }`,
          )
          .join("\n");
    const visible = pair.parentMeasures.filter((m) => m.access === undefined);

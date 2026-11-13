@@ -73,10 +73,10 @@
  * The served copy reads the table as the source itself, with no join (see
  * served_copy.ts): the join's name is a record of the `j__<field>` columns, a
  * measure over the source's own fields aggregates the rows the flag marks, and
- * an aggregate through the join reads every row, which are exactly the rows
- * live aggregates through it (malloydata/malloy#1762's count of a childless
- * parent included). One flag is enough: a second, child-row flag would mark
- * every row but a childless parent's, and live counts that row too.
+ * a measure through the join the rows where the joined source's stored key is
+ * not null, skipping a childless parent's row as live does
+ * (malloydata/malloy#3208). The key is stored, so that test needs no column
+ * of its own.
  *
  * What reads through the join_many on the source itself is not stored (a
  * dimension through it has one value per pair, not per parent): the served

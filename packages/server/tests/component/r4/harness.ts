@@ -1342,6 +1342,8 @@ function pairingKey(value: unknown): string {
  */
 function numbersEqual(x: number, y: number): boolean {
    if (x === y) return true;
+   // A ratio over an empty group (0 / 0) is NaN on both sides alike.
+   if (Number.isNaN(x) && Number.isNaN(y)) return true;
    if (Number.isSafeInteger(x) && Number.isSafeInteger(y)) return false;
    const scale = Math.max(Math.abs(x), Math.abs(y), 1);
    return Math.abs(x - y) <= FLOAT_TOLERANCE * scale;

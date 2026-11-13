@@ -423,7 +423,12 @@ for (const shape of SHAPES) {
                      on === "off" ? undefined : "served_copy",
                   );
                };
-               if (gap && !RUN_GAPS) {
+               if (gap?.kind === "live-wrong") {
+                  it.failing(
+                     `${title} [live wrong${gap.issue ? ` ${gap.issue}` : ""}: ${gap.reason}]`,
+                     test,
+                  );
+               } else if (gap && !RUN_GAPS) {
                   it.skip(
                      `${title} [gap ${gap.kind}${gap.issue ? ` ${gap.issue}` : ""}: ${gap.reason}]`,
                      test,

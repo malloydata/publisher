@@ -189,12 +189,12 @@ describe("R4: an inlined join_many, served flat from its pair table, answers equ
          "run: flights -> { group_by: carrier; aggregate: seg_total, seg_longest, seg_avg, seg_ids }",
       ],
       [
-         "child-level aggregates written in the query",
-         "run: flights -> { group_by: carrier; aggregate: m is segments.miles.sum(), n is segments.count(), a is segments.miles.avg(), d is count(segments.seg_id) }",
+         "child-level aggregates of stored columns written in the query",
+         "run: flights -> { group_by: carrier; aggregate: m is segments.miles.sum(), a is segments.miles.avg(), d is count(segments.seg_id) }",
       ],
       [
-         "live's count of a childless parent through a join_many (malloydata/malloy#1762)",
-         "run: flights -> { group_by: id; aggregate: seg_n, n is segments.count() }",
+         "a childless parent's child count through a join_many, none as live counts it (malloydata/malloy#3208)",
+         "run: flights -> { group_by: id; aggregate: seg_n }",
       ],
       [
          "parent and child measures together, and a ratio across them",
@@ -255,20 +255,20 @@ describe("R4: an inlined join_many, served flat from its pair table, answers equ
       });
    }
 
-   it("reproduces live's count of a childless parent, not the true count", async () => {
+   it("counts a childless parent's children as live does: none (malloydata/malloy#3208)", async () => {
       const run = await fixture.run({
          name: "count",
          malloy:
             "run: flights -> { where: id = 4 | 6; group_by: id; aggregate: seg_n }",
       });
       expect(run.servedVia).toBe("served_copy");
-      // Live counts childless flight 4 as one segment; so does the served copy.
+      // Childless flight 4 has no segment, live and served.
       expect(
          run.served
             .map((r) => [Number(r.id), Number(r.seg_n)])
             .sort((a, b) => a[0] - b[0]),
       ).toEqual([
-         [4, 1],
+         [4, 0],
          [6, 5],
       ]);
       expect(rowDifference(run.live, run.served)).toBeUndefined();
@@ -276,6 +276,16 @@ describe("R4: an inlined join_many, served flat from its pair table, answers equ
 
    // Each answered live, equal to live: the flat table cannot reproduce it.
    const declined = [
+      [
+         "a child count written in the query (live skips a childless parent's row, malloydata/malloy#3208)",
+         "run: flights -> { group_by: carrier; aggregate: n is segments.count() }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "a sum of a constant at the join written in the query (not null on a childless parent's row)",
+         "run: flights -> { group_by: carrier; aggregate: n is segments.sum(1) }",
+         "COUNT_SEMANTICS",
+      ],
       [
          "a parent aggregate written in the query",
          "run: flights -> { group_by: carrier; aggregate: c is count(), d is distance.sum(), seg_n }",
@@ -743,10 +753,10 @@ describe("R4: an inherited, render-tagged or inferred-class joined field", () =>
    }
 
    it("serves an inferred-class field (no note of its own), keeping its class on the stored column", async () => {
-      // Each leg's own exact aggregate: a child count on the pair table, a
+      // Each leg's own exact aggregate: a child sum on the pair table, a
       // parent measure on the join_one's record.
       for (const [source, aggregate] of [
-         ["flights", "segments.count()"],
+         ["flights", "segments.miles.sum()"],
          ["flights_one", "flight_count"],
       ]) {
          const malloy = `run: ${source} -> { group_by: segments.tripled; aggregate: n is ${aggregate} }`;
@@ -760,7 +770,7 @@ describe("R4: an inherited, render-tagged or inferred-class joined field", () =>
       const run = await fixture.run({
          name: "aggregate and filter",
          malloy:
-            "run: flights -> { where: segments.leg > 2; group_by: carrier; aggregate: m is segments.doubled.sum() }",
+            "run: flights -> { where: segments.leg > 2; group_by: carrier; aggregate: m is segments.miles.sum() }",
       });
       expect(run.servedVia).toBe("served_copy");
       expect(rowDifference(run.live, run.served)).toBeUndefined();

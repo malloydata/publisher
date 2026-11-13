@@ -104,13 +104,14 @@ const flat = `source: flights is duckdb.sql("select 1 as id, 'AA' as carrier, 3.
   primary_key: id
   dimension: segments is { seg_id is sid, miles is smiles }
   dimension:
+    present is sid is not null
     long_haul is distance > 2
     leg is segments.miles
   measure:
     flight_count is count() { where: pr }
     total is distance.sum() { where: pr }
     seg_total is segments.miles.sum()
-    seg_n is segments.count()
+    seg_n is segments.count() { where: present }
     long_legs is seg_n { where: segments.miles > 1 }
     per_flight is seg_total / flight_count
   view:
@@ -122,6 +123,7 @@ describe("pairQueryReadsChild and flatPairQueryVerdict", () => {
    const pair = {
       join: "segments",
       parentRowField: "pr",
+      levelPresentFields: ["present"],
    };
    const read = async (malloy: string) => {
       const prepared = (await runtime
@@ -158,9 +160,11 @@ describe("pairQueryReadsChild and flatPairQueryVerdict", () => {
    }
 
    const child = [
-      // Child aggregates, as measures, written in the query, by count.
+      // Child aggregates, as measures, written in the query, by count. A
+      // count written in the query carries no presence filter, so it reads a
+      // childless parent's row live skips (malloydata/malloy#3208).
       ["run: flights -> { group_by: carrier; aggregate: seg_total }", true],
-      ["run: flights -> { aggregate: n is segments.count() }", true],
+      ["run: flights -> { aggregate: n is segments.count() }", false],
       ["run: flights -> { aggregate: d is count(segments.seg_id) }", true],
       // A child field grouped by, directly or through a parent dimension.
       ["run: flights -> { group_by: segments.miles }", true],
@@ -311,7 +315,8 @@ source: flights is duckdb.sql("select 1 as id, 'AA' as carrier, 1 as sid, 2.0 as
   primary_key: id
   dimension: segments is { seg_id is sid, miles is smiles }
   join_one: hubs with carrier
-  measure: seg_n is segments.count()
+  dimension: present is sid is not null
+  measure: seg_n is segments.count() { where: present }
 }`;
    const refusal = async (malloy: string) => {
       const prepared = (await runtime
@@ -324,7 +329,11 @@ source: flights is duckdb.sql("select 1 as id, 'AA' as carrier, 1 as sid, 2.0 as
       return flatPairQueryRefusal(
          prepared._query,
          prepared._modelDef.contents.flights as never,
-         { join: "segments", parentRowField: "pr" },
+         {
+            join: "segments",
+            parentRowField: "pr",
+            levelPresentFields: ["present"],
+         },
       );
    };
    it("serves a join_one's own field", async () => {

@@ -155,9 +155,9 @@
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "c019c7be54311372c88ed3d5f8d23862315601216661d8c298213fbb89e492be",
+        "sourceEntityId": "e67ca5a08bd3f520d38ae4e4351577558617247ac1d326f0a2f5ba5ba0a0d634",
         "sourceID": "rollup@<hammer>/sjs/sjs.malloy",
-        "sql": "sha256:7963872e84b5fda8"
+        "sql": "sha256:647696f3da4d17bf"
       }
     }
   }
