@@ -47,7 +47,13 @@ import {
    inverseRenameBlocks,
    rewriteDimensions,
 } from "../declaration_text";
-import { isName, lexAll, offsetOf, statementStarts } from "../malloy_lexer";
+import {
+   isName,
+   lexAll,
+   offsetOf,
+   statementHead,
+   statementStarts,
+} from "../malloy_lexer";
 import { definitionCutAt } from "../plan/cross_connection_joins";
 
 export {
@@ -78,7 +84,8 @@ export interface Reroot {
    /** The `type:` the virtual source is declared as; unique in the file. */
    typeName: string;
    /**
-    * The stored table's public columns, under the author's spelling, each with
+    * The stored table's columns, under the author's spelling (a hidden one
+    * with its access modifier, P3), each with
     * the annotation lines its field carries (`#(doc) "…"`, `#(classification)
     * …`), written on the field in the `type:` so they read back on it.
     */
@@ -225,6 +232,13 @@ export interface ServedColumn {
    /** The annotation lines its field carries, written on it again. */
    notes?: readonly string[];
    /**
+    * The access modifier the author's source gives the field, when it is not
+    * public (P3). The re-root writes it again on the stored table,
+    * `include { public: *; private: org_id }`, so a caller cannot select the
+    * column, and the source's own `extend` reads it as it read the field.
+    */
+   access?: "private" | "internal";
+   /**
     * The timeframe the author's field truncates to (`order_date.month`). A
     * `type:` field cannot carry one, so the stored column is renamed
     * internally and the field redefined as that column truncated again, which
@@ -330,6 +344,13 @@ export interface ServedCopy {
 export const SERVED_COPY_FLAG = "##! experimental { virtual_source }";
 
 /**
+ * The flag for a served copy that writes access modifiers again on a stored
+ * table (P3): `include { … }` needs `access_modifiers` too.
+ */
+export const SERVED_COPY_ACCESS_FLAG =
+   "##! experimental { virtual_source access_modifiers }";
+
+/**
  * Produce the served copy of every file that declares a source in `reroots`.
  * `fileText` reads a file by URL (the author's bytes, as the compile read
  * them). A file whose text is unavailable refuses all its re-roots.
@@ -391,8 +412,10 @@ export function buildServedCopy(
             });
             continue;
          }
-         const replaced = rerootDeclaration(declaration, r);
-         if (replaced === undefined && r.pair && spans) {
+         const effective = keepHiddenDefinitions(declaration, r);
+         const replaced =
+            effective && rerootDeclaration(declaration, effective);
+         if (effective && replaced === undefined && r.pair && spans) {
             // The pair's join is not in the source's own `extend` text (a base
             // the re-root replaces declares it, or it shares its statement),
             // so it cannot be replaced by its record.
@@ -403,7 +426,7 @@ export function buildServedCopy(
             });
             continue;
          }
-         if (replaced === undefined) {
+         if (!effective || replaced === undefined) {
             refused.push({
                sourceName: r.sourceName,
                url,
@@ -412,12 +435,84 @@ export function buildServedCopy(
             continue;
          }
          out = out.slice(0, start) + replaced + out.slice(end);
-         applied.push(r);
+         applied.push(effective);
       }
       if (applied.length === 0) continue;
       files.set(url, withTypes(out, applied));
    }
    return { files, refused };
+}
+
+/**
+ * The re-root with each hidden stored dimension the kept text defines (the
+ * declaration's own trailing `extend`, and for an extension table the kept
+ * blocks of its ancestors, P10) left to that definition (P3): its column is left
+ * out of the `type:` and its definition is kept as written, access modifier
+ * and all, and computed at read from the stored columns it reads. Dropping
+ * it instead would leave the stored column in its place, public. A hidden
+ * column the kept text does not define (one an `include` in a replaced base
+ * hides, or one it inherits from outside the kept blocks) stays a stored
+ * column, and the
+ * re-root writes its modifier again ({@link hiddenInclude}). Undefined when
+ * the declaration does not lex.
+ */
+function keepHiddenDefinitions(
+   declaration: string,
+   r: Reroot,
+): Reroot | undefined {
+   const hidden = new Set(
+      r.columns.filter((c) => c.access !== undefined).map((c) => c.name),
+   );
+   if (hidden.size === 0) return r;
+   const spans = declarationSpans(declaration);
+   if (!spans) return undefined;
+   const own =
+      spans.extendStart === undefined
+         ? ""
+         : declaration.slice(spans.extendStart);
+   // Every block the re-root keeps: an extension table's ancestors' (P10),
+   // then its own. A hidden dimension an ancestor's kept block defines is
+   // kept as that block wrote it, as one the source's own block defines is.
+   const extend = [r.keptBlocks?.trim() ?? "", own].filter(Boolean).join(" ");
+   const defined = rewriteDimensions(extend, hidden, new Map());
+   if (!defined) return undefined;
+   if (defined.dropped.size === 0) return r;
+   return {
+      ...r,
+      columns: r.columns.filter((c) => !defined.dropped.has(c.name)),
+      ...(r.storedDimensions
+         ? {
+              storedDimensions: r.storedDimensions.filter(
+                 (n) => !defined.dropped.has(n),
+              ),
+           }
+         : {}),
+   };
+}
+
+/**
+ * The `include { … }` that writes the author's access modifiers again on the
+ * stored table's hidden columns (P3), or "" when it has none. Every other
+ * column stays public (`public: *`; an `include` makes what it does not list
+ * private). It sits just before the author's own `extend`, which reads a
+ * field the `include` hides as it read the field on the author's source.
+ */
+export function hiddenInclude(columns: readonly ServedColumn[]): string {
+   const byAccess = (access: "private" | "internal") =>
+      columns.filter((c) => c.access === access).map((c) => identifier(c.name));
+   const items = [
+      "public: *",
+      ...(["private", "internal"] as const).flatMap((access) => {
+         const names = byAccess(access);
+         return names.length > 0 ? [`${access}: ${names.join(", ")}`] : [];
+      }),
+   ];
+   return items.length > 1 ? ` include { ${items.join("; ")} }` : "";
+}
+
+/** Whether a re-root writes access modifiers again, so needs their flag. */
+function hasHiddenColumns(r: Pick<Reroot, "columns">): boolean {
+   return r.columns.some((c) => c.access !== undefined);
 }
 
 /**
@@ -503,7 +598,12 @@ export function rerootDeclaration(
       .map(readTimeTermText)
       .filter((t) => t !== undefined);
    const reread = terms.length ? ` extend { where: ${terms.join(", ")} }` : "";
-   return `${name} is ${virtual}${reread}${pairHead}${renames}${extend ? ` ${extend}` : ""}`;
+   // The author's access modifiers written again on the stored hidden
+   // columns (P3), on the stored table under its stored names, so before the
+   // inverse renames and every kept block (an ancestor's, P10, and the
+   // author's own), which read them as they read the author's fields.
+   const hide = hiddenInclude(r.columns ?? []);
+   return `${name} is ${virtual}${reread}${hide}${pairHead}${renames}${extend ? ` ${extend}` : ""}`;
 }
 
 /**
@@ -649,7 +749,9 @@ export function replacePairJoin(
       if (kw.text !== "join_many") continue;
       const colon = level[starts[si] + 1];
       const nextStart =
-         si + 1 < starts.length ? level[starts[si + 1]].start : Infinity;
+         si + 1 < starts.length
+            ? statementHead(level, starts[si + 1]).start
+            : Infinity;
       const blockEnd =
          closes.find((t) => t.start > kw.start)?.start ?? Infinity;
       const stmtEnd = Math.min(nextStart, blockEnd);
@@ -840,10 +942,13 @@ export function dropJoinDefinition(
       if (!cut || cut.left.name !== join) continue;
       if (!cut.left.keyword.startsWith("join_")) continue;
       if (cut.left.keyword !== "join_one") return undefined;
-      // An access modifier written on the statement would be left on what
-      // follows it (or the record would drop the join's access): refused.
-      const before = tokens.filter((x) => x.end <= cut.start).pop();
-      if (before && ACCESS_WORDS.has(before.text)) return undefined;
+      // An access modifier written on the statement (the record would drop
+      // the join's access): refused, whichever of its definitions this is.
+      const keyword = tokens.findLast(
+         (x) => x.start <= t.start && x.text === cut.left.keyword,
+      );
+      const label = keyword ? tokens[tokens.indexOf(keyword) - 1] : undefined;
+      if (label && ACCESS_WORDS.has(label.text)) return undefined;
       return text.slice(0, cut.start) + text.slice(cut.end);
    }
    return text;
@@ -1030,5 +1135,8 @@ function withTypes(text: string, applied: readonly Reroot[]): string {
       .join("\n");
    const head = lines.slice(0, i).join("\n");
    const rest = lines.slice(i).join("\n");
-   return `${head}${head ? "\n" : ""}${SERVED_COPY_FLAG}\n${types}\n\n${rest}`;
+   const flag = applied.some(hasHiddenColumns)
+      ? SERVED_COPY_ACCESS_FLAG
+      : SERVED_COPY_FLAG;
+   return `${head}${head ? "\n" : ""}${flag}\n${types}\n\n${rest}`;
 }
