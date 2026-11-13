@@ -213,6 +213,12 @@ export interface QueryPathInput {
    considered: readonly ConsideredVariant[];
    /** For a storage answer: the bindings whose tables the routed query read. */
    storageTablesRead?: readonly StorageTable[];
+   /**
+    * For a rollup answer read through a join in a storage destination (known
+    * limitation 26): the query source's stored tables it read beside the
+    * rollup's, each named as used.
+    */
+   rollupTablesRead?: readonly StorageTable[];
    /** The tables only the served copy reads (`#(materialize)`): its decision is theirs. */
    servedCopyTables?: ReadonlySet<string>;
    /** For a storage answer: `served_copy` when the served copy on `virtual` answered. */
@@ -460,6 +466,27 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
             }
          } else {
             skip(t, skipReasonOf(rollupDecision), rollupDecision.callerDetail);
+         }
+      }
+   }
+
+   // A join leg answered in a storage destination reads the query source's
+   // stored table there as well as the rollup's: named as used beside it,
+   // while the rollup stays the table that answered.
+   if (rollupAnswered) {
+      for (const b of input.rollupTablesRead ?? []) {
+         const t = stateOfBinding(input, b, freshStorage);
+         if (
+            t.tableId &&
+            !considered.some(
+               (c) => c.tableId === t.tableId && c.outcome === "used",
+            )
+         ) {
+            considered.push({
+               tableId: t.tableId,
+               kind: t.kind,
+               outcome: "used",
+            });
          }
       }
    }
