@@ -1310,7 +1310,9 @@ export class Model {
     * without `##! experimental.persistence`, which a model declaring only
     * rollups need not carry, so a rollup entry there would 400 every query
     * (guard 3 of the plan's D3 list, kept past 6g for these two readers).
-    * Undefined when nothing survives.
+    * Undefined when nothing survives, which `prepareAndRun` hands Malloy as
+    * EMPTY_BUILD_MANIFEST, never as undefined (that would substitute from the
+    * Runtime's unfiltered manifest, #1721).
     */
    private withoutPreaggregateEntries(
       manifest: BuildManifest | undefined,

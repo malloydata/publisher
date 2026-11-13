@@ -88,7 +88,7 @@ import type {
 import * as path from "path";
 import { logger } from "../../../logger";
 import { fileURLToPath, pathToFileURL } from "url";
-import { Annotations } from "@malloydata/malloy";
+import { Annotations, EMPTY_BUILD_MANIFEST } from "@malloydata/malloy";
 import {
    createModelRuntime,
    type ModelConnectionInput,
@@ -954,7 +954,7 @@ export class RollupVariantServe {
       try {
          result = await runnable.getPreparedResult({
             ...(q.args.givens ? { givens: q.args.givens as never } : {}),
-            buildManifest: q.args.buildManifest,
+            buildManifest: q.args.buildManifest ?? EMPTY_BUILD_MANIFEST,
          } as never);
       } catch {
          throw new RollupSkip(
@@ -1093,6 +1093,8 @@ export class RollupVariantServe {
             await runnable.getPreparedResult({
                virtualMap,
                ...(q.args.givens ? { givens: q.args.givens as never } : {}),
+               // Explicit: an undefined manifest reads the Runtime's.
+               buildManifest: EMPTY_BUILD_MANIFEST,
             } as never)
          ).sql;
       } catch {
@@ -1253,7 +1255,11 @@ export class RollupVariantServe {
          result = await runnable.getPreparedResult({
             ...(table.virtualMap ? { virtualMap: table.virtualMap } : {}),
             ...(args.givens ? { givens: args.givens as never } : {}),
-            ...(table.virtualMap ? {} : { buildManifest: args.buildManifest }),
+            // Explicit even beside a virtualMap: an undefined manifest reads
+            // the Runtime's, unfiltered by freshness.
+            buildManifest: table.virtualMap
+               ? EMPTY_BUILD_MANIFEST
+               : (args.buildManifest ?? EMPTY_BUILD_MANIFEST),
          } as never);
       } catch {
          throw new RollupSkip(

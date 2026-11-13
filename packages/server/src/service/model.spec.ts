@@ -877,8 +877,10 @@ describe("service/model", () => {
             ).rejects.toThrow(MalloyError);
 
             expect(preparedResultStub.calledOnce).toBe(true);
+            // Never an undefined manifest: Malloy would read the Runtime's.
             expect(preparedResultStub.firstCall.args[0]).toEqual({
                givens: givensArg,
+               buildManifest: EMPTY_BUILD_MANIFEST,
             });
             expect(runStub.firstCall.args[0]).toMatchObject({
                givens: givensArg,
@@ -1058,6 +1060,7 @@ describe("service/model", () => {
 
             expect(preparedResultStub.firstCall.args[0]).toEqual({
                givens: {},
+               buildManifest: EMPTY_BUILD_MANIFEST,
             });
             expect(runStub.firstCall.args[0]).toMatchObject({ givens: {} });
 
@@ -1108,6 +1111,7 @@ describe("service/model", () => {
 
             expect(preparedResultStub.firstCall.args[0]).toEqual({
                givens: groupsArg,
+               buildManifest: EMPTY_BUILD_MANIFEST,
             });
             expect(runStub.firstCall.args[0]).toMatchObject({
                givens: groupsArg,
