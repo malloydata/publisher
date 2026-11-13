@@ -408,7 +408,12 @@ export function escapeSQL(value: string): string {
 }
 
 function handleAlreadyAttachedError(error: unknown, dbName: string): void {
-   if (error instanceof Error && error.message.includes("already exists")) {
+   if (
+      error instanceof Error &&
+      error.message.includes("already exists") &&
+      // A DuckLake catalog create that lost a race attached nothing.
+      !isDuckLakeInitRace(error)
+   ) {
       logger.info(`Database ${dbName} is already attached, skipping`);
    } else {
       throw error;
@@ -1074,6 +1079,57 @@ async function preflightDuckLakeCatalogFormat(
    return "present";
 }
 
+/** How many times an attach that lost a catalog-create race is tried in all. */
+export const DUCKLAKE_INIT_RACE_ATTEMPTS = 3;
+
+/**
+ * Whether `error` is a DuckLake attach that lost a race to create the same
+ * catalog. DuckLake creates its metadata tables with a plain CREATE TABLE, so
+ * when two sessions (two builds, on one server or two) attach a catalog that
+ * does not exist yet, both create it and Postgres refuses the slower one: a
+ * duplicate key on `pg_type`, or the relation already existing.
+ */
+export function isDuckLakeInitRace(error: unknown): boolean {
+   const message = errMessage(error);
+   return (
+      message.includes("Failed to initialize DuckLake") &&
+      (message.includes("already exists") ||
+         message.includes("duplicate key value"))
+   );
+}
+
+/**
+ * Run a DuckLake ATTACH, trying again when it lost a race to create the
+ * catalog. Postgres reports the duplicate only once the other create has
+ * committed, so the catalog exists by then and the next attach opens it as any
+ * attach of an existing catalog does. Any other failure, and the last try's,
+ * is thrown.
+ */
+async function runDuckLakeAttach(
+   connection: DuckDBConnection,
+   dbName: string,
+   attachCommand: string,
+): Promise<void> {
+   for (let attempt = 1; ; attempt++) {
+      try {
+         await connection.runSQL(attachCommand);
+         return;
+      } catch (error) {
+         if (
+            !isDuckLakeInitRace(error) ||
+            attempt >= DUCKLAKE_INIT_RACE_ATTEMPTS
+         ) {
+            throw error;
+         }
+         logger.info(
+            "Another session created the DuckLake catalog first; attaching it again",
+            { dbName, attempt },
+         );
+         await new Promise((resolve) => setTimeout(resolve, 25 * attempt));
+      }
+   }
+}
+
 /**
  * Attach a DuckLake catalog. `readOnly: true` is the live user-facing path;
  * `readOnly: false` is the build variant, used only on a transient build
@@ -1224,7 +1280,7 @@ async function attachDuckLakeWithMode(
       `Attaching DuckLake database using command: ${redactPgSecrets(attachCommand)}`,
    );
    try {
-      await connection.runSQL(attachCommand);
+      await runDuckLakeAttach(connection, dbName, attachCommand);
       logger.info(
          `Successfully attached DuckLake database in ${mode} mode: ${dbName}`,
       );
@@ -1233,10 +1289,16 @@ async function attachDuckLakeWithMode(
          await applyDuckLakeTargetFileSize(connection, dbName);
       }
    } catch (error) {
+      // Skipped only when the alias really is attached. A catalog create that
+      // lost a race also says "already exists", and skipping that one left
+      // nothing attached: the build's next statement failed with "Schema with
+      // name <alias> does not exist".
       if (
          error instanceof Error &&
          (error.message.includes("already exists") ||
-            error.message.includes("already attached"))
+            error.message.includes("already attached")) &&
+         !isDuckLakeInitRace(error) &&
+         (await isDatabaseAttached(connection, dbName))
       ) {
          logger.info(
             `DuckLake database ${dbName} is already attached, skipping`,
