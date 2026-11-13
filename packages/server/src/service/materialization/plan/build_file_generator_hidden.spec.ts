@@ -184,13 +184,20 @@ source: orders is raw include { public: *; except: region } extend {
   internal dimension: order_month is ts.month
 }
 `);
+         // P9: `order_month` depends on the query time zone and the source's
+         // own declaration writes it, so it is left out and computed at read
+         // (the probe reads an internal field through an extension). The
+         // probe cannot select a private field, so `order_day` stays unknown
+         // and is stored as built; its table declines `timezone:` queries.
          expect(stored(plans[0])).toEqual([
             "id",
             "org_id",
             "amount",
             "ts",
             "order_day:private",
-            "order_month:internal",
+         ]);
+         expect(plans[0].leftOut).toEqual([
+            { dimension: "order_month", reads: ["time_zone"] },
          ]);
       },
       { timeout: 30000 },
