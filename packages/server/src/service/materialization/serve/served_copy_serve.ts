@@ -303,9 +303,13 @@ interface Compiled {
    /** Bindings actually re-rooted, with their destination under its alias. */
    rerooted: ServeBinding[];
    /**
-    * Tables that store a computed dimension (`#(materialize)`), by table
-    * path. The build evaluated it in the default timezone, so a query that
-    * sets its own `timezone:` would read values live computes differently.
+    * Tables that store a computed dimension (`#(materialize)`) whose value
+    * may depend on the time zone, by table path: one of the source's own the
+    * probe compiler did not clear (P9), or an inlined join's or pair table's
+    * child column; or whose rows the probe did not clear (a `where:` with a
+    * timestamp literal). The build evaluated it in the default timezone, so a
+    * query that sets its own `timezone:` would read values live computes
+    * differently.
     */
    computedTables?: ReadonlySet<string>;
    /**
@@ -365,7 +369,17 @@ interface Compiled {
  * the served copy's compile of it against this definition, which is the
  * declaring model's when this model reaches the source only through a join.
  */
-type AuthorReroot = Reroot & { sourceID: string; authorDef: unknown };
+type AuthorReroot = Reroot & {
+   sourceID: string;
+   authorDef: unknown;
+   /**
+    * For a `#(materialize)` re-root: its table holds something the build
+    * evaluated in the default zone that the probe compiler did not clear of
+    * the query time zone (P9): a stored computed dimension, or its rows (a
+    * `where:` term or base relation whose SQL moves with the zone).
+    */
+   storesZonedDimension?: true;
+};
 
 /** How many declined queries one compiled copy remembers before starting over. */
 const DECLINED_LIMIT = 1000;
@@ -793,7 +807,7 @@ export class ServedCopyServe {
       if ((computed || windowed) && setsTimezone((await prepared()).query)) {
          decline(
             computed
-               ? "the query sets a timezone over a stored computed dimension"
+               ? "the query sets a timezone over a table built in the default zone (a stored computed dimension or a row filter that depends on it)"
                : "the query sets a timezone, which moves a rolling window's cut-off past what its table stores",
             "time_zone",
          );
@@ -1063,6 +1077,13 @@ export class ServedCopyServe {
                     .filter((c) => c.computed && c.join === undefined)
                     .map((c) => c.dimension),
               }
+            : {}),
+         ...(plan &&
+         (!plan.zoneFreeRows ||
+            plan.columns.some(
+               (c) => c.computed && c.join === undefined && !c.zoneFree,
+            ))
+            ? { storesZonedDimension: true }
             : {}),
          ...(plan?.readTimeTerms?.length
             ? { readTimeTerms: plan.readTimeTerms }
@@ -1564,12 +1585,16 @@ export class ServedCopyServe {
             generation,
             lane,
             // An inlined join's columns are the joined source's fields as the
-            // build computed them, in its time zone.
+            // build computed them, in its time zone. A stored computed
+            // dimension of the source's own is too, unless the probe compiler
+            // found it the same in every zone (P9): one that is not was left
+            // out of the build when the source declares it, and is computed
+            // at read in the query's zone.
             computedTables: new Set(
                candidates
                   .filter(
                      (c) =>
-                        (c.reroot.storedDimensions ?? []).length > 0 ||
+                        c.reroot.storesZonedDimension === true ||
                         (c.reroot.inlinedJoins ?? []).length > 0 ||
                         (c.reroot.pair?.childStoredDimensions ?? []).length > 0,
                   )

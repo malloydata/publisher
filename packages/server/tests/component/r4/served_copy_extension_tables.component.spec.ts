@@ -51,6 +51,10 @@ given: REGION :: string is 'east'
 
 source: orders is duckdb.table('ev') extend {
   dimension: is_big is amt > 10
+  // Truncated in the query's time zone and declared on a base, so every
+  // table stores it as the build computed it (P9 leaves out only what a
+  // source's own declaration writes): a timezone: query declines each.
+  dimension: d_hour is d::timestamp.hour
 }
 
 #(materialize) ${storage}name="stored_t"
