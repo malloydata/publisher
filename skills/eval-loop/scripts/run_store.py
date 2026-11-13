@@ -74,7 +74,13 @@ def folder(cfg: config.Config) -> pathlib.Path:
 
 
 def shell(template: str, **values: str) -> str:
-    cmd = template.format(**{k: shlex.quote(v) for k, v in values.items()})
+    try:
+        cmd = template.format(**{k: shlex.quote(v) for k, v in values.items()})
+    except (KeyError, IndexError, ValueError) as e:
+        # `awk '{print $2}'` reads as a placeholder named `print $2`.
+        raise SystemExit(f"Invalid [store] command {template!r}: expected only "
+                         f"{', '.join('{' + k + '}' for k in values)} in braces, got {e!r}. "
+                         f"Fix: double a literal brace, as in awk '{{{{print $2}}}}'") from None
     p = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if p.returncode != 0:
         raise SystemExit(f"store command failed ({p.returncode}): {cmd}\n{p.stderr.strip()[:800]}")
@@ -107,6 +113,16 @@ def push(cfg: config.Config, run: pathlib.Path) -> str:
     shutil.copytree(run, tmp, dirs_exist_ok=True, ignore=shutil.ignore_patterns("export"))
     tmp.rename(dest)          # whole or not at all: a reader never sees half a run
     return f"pushed {run.name} to {dest}"
+
+
+def can_list(cfg: config.Config) -> bool:
+    """Can the store say what it holds? A command store needs a `list` command."""
+    return kind(cfg) == "folder" or bool(kind(cfg) == "command" and cfg.get("store", "list"))
+
+
+NO_LIST = ("[store] in {hint} has no list command, so the store cannot say what it "
+           "holds and nothing is pulled from it. Fix: add list = \"<a command that prints "
+           "one run id per line>\", or pull one run by name with --label")
 
 
 def listed(cfg: config.Config) -> list[str]:
@@ -144,6 +160,12 @@ def pull(cfg: config.Config, run_id: str) -> str:
 def sync(cfg: config.Config, quiet: bool = False) -> list[str]:
     """Pull every run the store holds that the workdir does not. Returns their ids."""
     if kind(cfg) is None:
+        return []
+    if not can_list(cfg):
+        # Said every time, on stderr. Returning nothing in silence made
+        # `--baseline record` compare against local runs while reading as if it
+        # had checked the team's.
+        print("  note: " + NO_LIST.format(hint=cfg.file_hint), file=sys.stderr)
         return []
     have = {p.name for p in (cfg.workdir() / "runs").iterdir()} if (cfg.workdir() / "runs").is_dir() else set()
     new = [r for r in listed(cfg) if r not in have]
@@ -200,6 +222,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.run:
         print(pull(cfg, a.run.name))
     else:
+        if kind(cfg) is not None and not can_list(cfg):
+            raise SystemExit(NO_LIST.format(hint=cfg.file_hint))
         new = sync(cfg)
         print(f"{len(new)} run(s) pulled; {len(listed(cfg))} in the store")
     return 0

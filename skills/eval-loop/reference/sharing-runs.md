@@ -34,8 +34,13 @@ or, for anything a folder cannot reach, three commands the shell runs, with
 [store]
 push = "aws s3 sync {run} s3://team-evals/{set}/runs/{run_id}"
 pull = "aws s3 sync s3://team-evals/{set}/runs/{run_id} {dest}"
-list = "aws s3 ls s3://team-evals/{set}/runs/ | awk '{print $2}' | tr -d /"
+list = "aws s3 ls s3://team-evals/{set}/runs/ | awk '{{print $2}}' | tr -d /"
 ```
+
+A brace that is part of the command, like awk's, is doubled, because single
+braces mark the four placeholders. `list` prints one run id per line. Without
+it the store cannot say what it holds: `pull` with no `--label`, `runs --store`
+and `--baseline record` say so and use only the runs already here.
 
 ```bash
 eval.py push --set <set> --label tip-01     # share one run

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for export_run.py: the five tables, their fixed columns, and the refusals."""
+"""Tests for export_run.py: the six tables, their fixed columns, and the refusals."""
 import csv
 import json
 import pathlib
@@ -48,7 +48,7 @@ class Export(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def test_five_tables_with_fixed_columns_and_a_manifest(self):
+    def test_six_tables_with_fixed_columns_and_a_manifest(self):
         out = self.root / "out"
         m = ex.export(self.run, self.set, out)
         self.assertEqual(sorted(m["tables"]), sorted(ex.TABLES))

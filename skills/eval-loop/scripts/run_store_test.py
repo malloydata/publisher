@@ -80,6 +80,32 @@ class Store(unittest.TestCase):
     def test_no_store_means_nothing_to_sync(self):
         self.assertEqual(run_store.sync(self.cfg("")), [])
 
+    def test_a_command_store_with_no_list_says_so_instead_of_holding_nothing(self):
+        import contextlib
+        import io
+        cfg = self.cfg('[store]\npush = "true"\npull = "true"\n')
+        self.assertFalse(run_store.can_list(cfg))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(run_store.sync(cfg), [])
+        self.assertIn("no list command", err.getvalue())
+        with self.assertRaises(SystemExit) as e:
+            run_store.main(["pull", "--set", str(self.set)])
+        self.assertIn("no list command", str(e.exception))
+
+    def test_a_single_brace_in_a_command_is_named_with_the_fix(self):
+        cfg = self.cfg("[store]\npush = \"true\"\nlist = \"ls | awk '{print $2}'\"\n")
+        with self.assertRaises(SystemExit) as e:
+            run_store.listed(cfg)
+        self.assertIn("double a literal brace", str(e.exception))
+
+    def test_the_documented_list_command_fills_in(self):
+        doc = (pathlib.Path(__file__).resolve().parent.parent / "reference"
+               / "sharing-runs.md").read_text()
+        line = next(x for x in doc.splitlines() if x.startswith("list = "))
+        template = line[len('list = "'):-1]
+        self.assertIn("awk '{print $2}'", template.format(set="s"))
+
 
 if __name__ == "__main__":
     unittest.main()

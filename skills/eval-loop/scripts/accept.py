@@ -7,19 +7,22 @@
 It checks what reference/acceptance-check.md states as rules and a script can
 decide, over the cases the candidate runs answered:
 
-  twice        at least two candidate runs, each with fresh answerers
+  twice        at least two different candidate runs (the same run named twice,
+               or the baseline named as a candidate, is refused)
   no regression  no case passing in the baseline fails in any candidate run
   targets fixed  every target case passes in every candidate run (default
                targets: the cases the baseline did not pass)
   both splits  the candidates answered holdout cases as well as dev, when the
                set has holdout
-  one change   the runs differ from the baseline only in the model
+  one change   the runs differ from the baseline only in the model: same judge,
+               judge prompt, answerer, turn cap and effort
   rows held    a query replay of the edit changed no stored answer (--replay)
 
 It decides nothing a rule cannot: a judge's verdict is taken as given, a
 suspect golden still halts the check (read `doubtedGoldens` in run.json), and
 whether a fix clears the flip-count bar for its size (measurement.md) is yours.
-Exit 0 when every rule holds, 1 when one does not, 3 when it could not check.
+Exit 0 when every rule holds, 1 when one does not, 3 when it could not check
+(a run that is not there, the same run named twice).
 The result is written to <workdir>/acceptances/, with a checkpoint commit
 message that names the runs.
 """
@@ -43,6 +46,19 @@ from flip_table import (COMPARABLE, MODEL_PINS, SET_PINS, config as run_config, 
 from ledger import read_jsonl  # noqa: E402
 
 
+class CannotCheck(Exception):
+    """The check could not be made at all. Exit 3, never 1: a 1 says a rule failed."""
+
+
+# Settings that change what an answer run measures and are not the model. They
+# sit beside flip_table's COMPARABLE rather than in it: a noise band quoted
+# across two turn caps is still a band, but an edit accepted across them is
+# two changes. `packageSkillsSha` is deliberately absent: a package skill is
+# part of the model's repository and an edit may be to it. A pin one side never
+# recorded is not counted as moved, so a record made before the pin compares.
+RUN_SETTINGS = ("maxTurns", "judgePromptSha", "effort")
+
+
 def resolve(cfg: config.Config, name: str, kind: str = "run") -> pathlib.Path:
     """A run by label or path; `record` is the main line's newest full run."""
     if name == "record":
@@ -50,15 +66,30 @@ def resolve(cfg: config.Config, name: str, kind: str = "run") -> pathlib.Path:
         run_store.sync(cfg)
         r = run_index.record(run_index.set_runs(cfg), kind)
         if r is None:
-            raise SystemExit(f"no record run: no complete, full main-line {kind} in "
-                             f"{cfg.workdir() / 'runs'}. Fix: run the whole set once, "
-                             f"or pull the team's (eval.py pull)")
+            raise CannotCheck(f"no record run: no complete, full main-line {kind} in "
+                              f"{cfg.workdir() / 'runs'}. Fix: run the whole set once, "
+                              f"or pull the team's (eval.py pull)")
         return pathlib.Path(r["path"])
     p = pathlib.Path(name)
     p = p if p.is_dir() else cfg.workdir() / "runs" / name
     if not (p / "run.json").exists():
-        raise SystemExit(f"no run at {p}")
+        raise CannotCheck(f"no run at {p}")
     return p
+
+
+def distinct(baseline: pathlib.Path, candidates: list[pathlib.Path]) -> None:
+    """Refuse one run counted twice. "Twice" is two measurements, not two names."""
+    seen: dict[pathlib.Path, str] = {}
+    for c in candidates:
+        r = c.resolve()
+        if r == baseline.resolve():
+            raise CannotCheck(f"{c.name} is the baseline, so it cannot also be a candidate. "
+                              f"Fix: name the runs made after the edit")
+        if r in seen:
+            raise CannotCheck(f"{c.name} is named twice. The rule is two runs, each with "
+                              f"its own answers. Fix: run the edit a second time under "
+                              f"another --label and name both")
+        seen[r] = c.name
 
 
 def check(cfg: config.Config, baseline: pathlib.Path, candidates: list[pathlib.Path],
@@ -100,7 +131,10 @@ def check(cfg: config.Config, baseline: pathlib.Path, candidates: list[pathlib.P
     base_pins = run_config(baseline)
     other = sorted({k for c in candidates for k in COMPARABLE
                     if k not in MODEL_PINS + SET_PINS
-                    and run_config(c).get(k) != base_pins.get(k)})
+                    and run_config(c).get(k) != base_pins.get(k)}
+                   | {k for c in candidates for k in RUN_SETTINGS
+                      if None not in (run_config(c).get(k), base_pins.get(k))
+                      and run_config(c).get(k) != base_pins.get(k)})
     rules["one change"] = {"ok": not other,
                            "detail": "only the model moved" if not other else
                            f"also moved: {', '.join(other)}"}
@@ -142,9 +176,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--what", default="<the edit>", help="one line for the commit message")
     a = ap.parse_args(argv)
     cfg = config.load(a.set_dir)
-    baseline = resolve(cfg, a.baseline)
-    candidates = [resolve(cfg, r) for r in a.run]
-    replay = resolve(cfg, a.replay, "perf") if a.replay else None
+    try:
+        baseline = resolve(cfg, a.baseline)
+        candidates = [resolve(cfg, r) for r in a.run]
+        replay = resolve(cfg, a.replay, "perf") if a.replay else None
+        distinct(baseline, candidates)
+    except CannotCheck as e:
+        print(f"could not check: {e}", file=sys.stderr)
+        return 3
     targets = a.targets.split(",") if a.targets else None
     r = check(cfg, baseline, candidates, targets, replay)
     print(f"acceptance: {', '.join(r['candidates'])} against {r['baseline']}")

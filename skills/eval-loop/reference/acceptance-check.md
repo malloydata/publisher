@@ -41,6 +41,12 @@ query replay's rows when given `--replay`), against `--baseline record` by
 default, and prints the checkpoint message. The rest stay yours: the judge's
 doubts about a key, and whether the flips clear the bar for their size.
 
+"Nothing but the model changed" covers the judge, its prompt, the answerer, the
+turn cap and the effort: a run at `--max-turns 40` against a record made at 30
+is two changes. The two runs must be two runs: the same label named twice, or
+the baseline named as a candidate, is refused. It exits 0 when every rule
+holds, 1 when one does not, and 3 when it could not check at all.
+
 - **Per-case, not aggregate.** No previously-passing case may regress: diff the
   new run's verdicts against the baseline, case by case (`jq` over the two
   `events.jsonl` files). `regressions` on the acceptance check event must be

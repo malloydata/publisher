@@ -222,6 +222,9 @@ def dispatch(argv: list[str]) -> int:
     if verb == "runs" and "--store" in rest:
         import run_store
         cfg = config.load(pathlib.Path(flag_value(rest, "--set")))
+        if run_store.kind(cfg) and not run_store.can_list(cfg):
+            print(run_store.NO_LIST.format(hint=cfg.file_hint), file=sys.stderr)
+            return 1
         held = run_store.listed(cfg)
         print("\n".join(held) if held else f"the store holds no runs of {cfg.set_name}"
               if run_store.kind(cfg) else f"no [store] in {cfg.file_hint}")

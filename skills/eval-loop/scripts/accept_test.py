@@ -88,5 +88,65 @@ class Rules(unittest.TestCase):
         self.assertFalse(r["accepted"])
 
 
+class OneRunIsNotTwo(unittest.TestCase):
+    """The refusals `main` makes before any rule is checked, and their exit code."""
+
+    def setUp(self):
+        Rules.setUp(self)
+
+    def tearDown(self):
+        Rules.tearDown(self)
+
+    def main(self, *argv):
+        return accept.main(["--set", str(self.set), "--baseline", "base", *argv])
+
+    def test_the_same_run_named_twice_cannot_be_checked(self):
+        run(self.runs / "a", {"fix": "match", "keep": "match", "held": "match"})
+        self.assertEqual(self.main("--run", "a", "--run", "a"), 3)
+
+    def test_the_baseline_is_not_a_candidate(self):
+        run(self.runs / "a", {"fix": "match", "keep": "match", "held": "match"})
+        self.assertEqual(self.main("--run", "a", "--run", "base"), 3)
+
+    def test_a_missing_run_exits_3_not_1(self):
+        self.assertEqual(self.main("--run", "nope", "--run", "nope2"), 3)
+
+    def test_two_runs_that_hold_exit_0(self):
+        good = {"fix": "match", "keep": "match", "held": "match"}
+        run(self.runs / "a", good), run(self.runs / "b", good)
+        self.assertEqual(self.main("--run", "a", "--run", "b"), 0)
+
+
+class RunSettings(unittest.TestCase):
+    def setUp(self):
+        Rules.setUp(self)
+        shutil.rmtree(self.base)
+        self.good = {"fix": "match", "keep": "match", "held": "match"}
+        self.base = run(self.runs / "base", {"fix": "no_match", "keep": "match", "held": "match"},
+                        maxTurns=30, judgePromptSha="p1")
+
+    def tearDown(self):
+        Rules.tearDown(self)
+
+    def other(self, **pins):
+        r = accept.check(self.cfg, self.base, [run(self.runs / "a", self.good, **pins),
+                                               run(self.runs / "b", self.good, **pins)], None, None)
+        return r["rules"]["one change"]
+
+    def test_a_different_turn_cap_is_a_second_change(self):
+        rule = self.other(maxTurns=40, judgePromptSha="p1")
+        self.assertFalse(rule["ok"])
+        self.assertIn("maxTurns", rule["detail"])
+
+    def test_a_different_judge_prompt_is_a_second_change(self):
+        self.assertIn("judgePromptSha", self.other(maxTurns=30, judgePromptSha="p2")["detail"])
+
+    def test_a_setting_one_side_never_recorded_is_not_counted(self):
+        self.assertTrue(self.other(judgePromptSha="p1")["ok"])
+
+    def test_a_package_skill_edit_is_the_model_not_a_second_change(self):
+        self.assertTrue(self.other(maxTurns=30, judgePromptSha="p1", packageSkillsSha="new")["ok"])
+
+
 if __name__ == "__main__":
     unittest.main()
