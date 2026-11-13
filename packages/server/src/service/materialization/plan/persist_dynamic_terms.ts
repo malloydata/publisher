@@ -643,10 +643,11 @@ function dynamicTerm(entry: object): DynamicTerm {
 // ---------------------------------------------------------------------------
 
 /**
- * A current-time term in the one shape a stored table can re-apply at read: a
- * single comparison of a one-segment field with `now`, optionally offset by a
- * whole number of one unit, read with the field on the left. The direction is
- * the comparison: `>=`/`>` keep rows newer than the cut-off (a lower bound).
+ * A current-time comparison in the one shape a stored table can re-apply at
+ * read: a one-segment field compared with `now`, optionally offset by a whole
+ * number of one unit, read with the field on the left. The direction is the
+ * comparison: `>=`/`>` keep rows newer than the cut-off (a lower bound),
+ * `<`/`<=` rows older than it (an upper bound).
  */
 export interface RollingWindow {
    /** The field the term compares (a stored column, when it is stored). */
@@ -673,9 +674,12 @@ export type WhereTermDependency =
      }
    /**
     * The current time, directly or through a field or join that reads it.
-    * `window` is set only when the term is a {@link RollingWindow}.
+    * `windows` is set only when the term is a {@link RollingWindow}, or an
+    * `and` of them (a two-sided window), one per comparison in the order
+    * written; `at` is then where the term reads each field, as for a given
+    * term, so a build that leaves it out can find it.
     */
-   | { kind: "current_time"; window?: RollingWindow }
+   | { kind: "current_time"; windows?: RollingWindow[]; at?: TermUse[] }
    /**
     * Both a given and the current time. `term` is the whole term as v1
     * persistence reads it (see {@link givenTerms}).
@@ -734,11 +738,11 @@ export function classifyWhereTerms(def: {
       } else if (readsTime) {
          // A window over a per-read field reads no stored column; the
          // caller's stored-column check refuses it.
-         const window = readRollingWindow(entry);
+         const windows = readRollingWindows(entry);
          out.push({
             code,
-            dependsOn: window
-               ? { kind: "current_time", window }
+            dependsOn: windows
+               ? { kind: "current_time", windows, at: termLocations(entry).at }
                : { kind: "current_time" },
          });
       } else {
@@ -841,6 +845,37 @@ export function readRollingWindow(entry: unknown): RollingWindow | undefined {
       return { field: rightField, op: MIRROR[op], ...leftNow };
    }
    return undefined;
+}
+
+/**
+ * One filter entry as its {@link RollingWindow}s: one for a single comparison,
+ * one per conjunct for an `and` whose every conjunct is one (a two-sided
+ * window, `ts >= now - 60 days and ts < now - 30 days`, parenthesised or
+ * not, or Malloy's range `ts ? now - 60 days to now - 30 days`, which compiles
+ * to the same `and`), or undefined for any other shape.
+ */
+export function readRollingWindows(
+   entry: unknown,
+): RollingWindow[] | undefined {
+   const e = (entry as { e?: NowExpr } | null)?.e;
+   const out: RollingWindow[] = [];
+   const walk = (node: NowExpr | undefined, depth: number): boolean => {
+      if (!node || depth > MAX_WALK_DEPTH) return false;
+      if (node.node === "()") {
+         return walk((node as { e?: NowExpr }).e, depth + 1);
+      }
+      if (node.node === "and") {
+         return (
+            walk(node.kids?.left as NowExpr | undefined, depth + 1) &&
+            walk(node.kids?.right as NowExpr | undefined, depth + 1)
+         );
+      }
+      const window = readRollingWindow({ e: node });
+      if (!window) return false;
+      out.push(window);
+      return true;
+   };
+   return walk(e, 0) ? out : undefined;
 }
 
 /** The dotted field paths an expression reads. */

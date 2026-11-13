@@ -184,11 +184,11 @@ source: orders is raw include { public: *; except: region } extend {
   internal dimension: order_month is ts.month
 }
 `);
-         // P9: `order_month` depends on the query time zone and the source's
-         // own declaration writes it, so it is left out and computed at read
-         // (the probe reads an internal field through an extension). The
-         // probe cannot select a private field, so `order_day` stays unknown
-         // and is stored as built; its table declines `timezone:` queries.
+         // `order_month` depends on the query's time zone and its definition
+         // is the source's own, so it is left out and computed at read (P9,
+         // #1684). The probe cannot select the private `order_day`, so it is
+         // stored as built, in the default zone, and is not zone-free: a
+         // `timezone:` query over the table is answered live.
          expect(stored(plans[0])).toEqual([
             "id",
             "org_id",

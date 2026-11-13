@@ -85,7 +85,6 @@ import {
 } from "./materialization_serve_transform";
 import {
    buildServedCopy,
-   declarationSpans,
    declaredBaseName,
    fieldNotes,
    type InlinedJoin,
@@ -101,6 +100,7 @@ import {
 } from "./served_copy";
 import { servedCopyConfig, servedCopyAlias } from "./served_copy_config";
 import { lexAll, offsetOf } from "../malloy_lexer";
+import { confirmedAncestors, keptAncestorChain } from "../kept_ancestors";
 import { classificationFindingsBySource } from "../../classification_findings";
 import {
    readSourceClassifications,
@@ -1118,62 +1118,42 @@ export class ServedCopyServe {
    }
 
    /**
-    * For an extension table (P10), a `#(materialize)` source with a
-    * materialized ancestor: the trailing `extend` runs of its ancestors in its
-    * own file, root first, read from their declarations. Its table holds every
-    * one of their rows and stored columns, so its re-root keeps their blocks
-    * ahead of its own and loses no measure, join or view any of them declares.
-    * The walk goes up while each step is an `extend` or a rename whose
-    * declaration names the next source as its base, and stops at the root, a
-    * query-shaped source (whose own run it keeps), another file, or a
-    * declaration it cannot read. Undefined when the source is no extension
-    * table, or no materialized ancestor is on that walk: a source with none
-    * keeps only its own blocks (decision 2).
+    * The trailing `extend` runs of a `#(materialize)` source's ancestors in
+    * its own file, root first ({@link keptAncestorChain}, confirmed against
+    * the file's text), which its re-root keeps ahead of its own blocks. Kept
+    * for an extension table (P10), whose table holds every one of their rows
+    * and stored columns, so it loses no measure, join or view any of them
+    * declares; and for a source whose plan needs its bases' blocks
+    * (`keptBases`): a given-reading `where:` or a caller-dependent dimension a
+    * base declares, which the build left out and only the base's block
+    * re-applies at read. Undefined when the source is neither, or no such
+    * ancestor is on the walk: a source with none keeps only its own blocks
+    * (decision 2).
     */
    private keptBlocksFor(
       reroot: Reroot & { sourceID: string },
       map: SourceMap,
       fileText: (url: string) => string | undefined,
    ): string | undefined {
-      if (!this.materializePlans[reroot.sourceID]) return undefined;
+      const plan = this.materializePlans[reroot.sourceID];
+      if (!plan) return undefined;
       const text = fileText(reroot.url);
       if (text === undefined) return undefined;
-      const located = (def: unknown) => {
-         const loc = (
-            def as {
-               location?: { url?: string; range?: ServedCopyRange };
-            }
-         )?.location;
-         return loc?.url === reroot.url && loc.range ? loc.range : undefined;
-      };
-      const runs: string[] = [];
-      let materialized = false;
-      let node = map.node(reroot.sourceID);
-      for (let hops = 0; node && hops < 64; hops++) {
-         const base = node.base;
-         if (!base || base.hop === "query" || base.sourceID === undefined) {
-            break;
-         }
-         const parent = map.node(base.sourceID);
-         const range = located(node.def);
-         const parentRange = parent ? located(parent.def) : undefined;
-         if (!parent || !range || !parentRange) break;
-         // `name@<url>`: the parent's declared name in this file.
-         const declared = base.sourceID.slice(0, base.sourceID.indexOf("@"));
-         if (declaredBaseName(text, range) !== declared) break;
-         const from = offsetOf(text, parentRange.start);
-         const to = offsetOf(text, parentRange.end);
-         if (from < 0 || to < from) break;
-         const declaration = text.slice(from, to);
-         const spans = declarationSpans(declaration);
-         if (!spans) break;
-         if (spans.extendStart !== undefined) {
-            runs.unshift(declaration.slice(spans.extendStart).trimEnd());
-         }
-         materialized ||= this.materializePlans[base.sourceID] !== undefined;
-         node = parent;
-      }
-      return materialized ? runs.join(" ") : undefined;
+      const confirmed = confirmedAncestors(
+         text,
+         reroot.range,
+         keptAncestorChain(map, reroot.sourceID, reroot.url),
+      );
+      const needed =
+         (plan.keptBases?.length ?? 0) > 0 ||
+         confirmed.some((a) => this.materializePlans[a.sourceID] !== undefined);
+      if (!needed) return undefined;
+      return confirmed
+         .flatMap((a) =>
+            a.run ? [text.slice(a.run.start, a.run.end).trimEnd()] : [],
+         )
+         .reverse()
+         .join(" ");
    }
 
    private async compile(
