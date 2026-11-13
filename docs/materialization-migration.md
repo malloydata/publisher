@@ -77,7 +77,9 @@ still build and serve.
    `malloy-pub materialize --environment <env> --package <pkg> --wait`, or
    `POST …/packages/{pkg}/materializations`. Expect every migrated source to build once, even with
    `name=` unchanged ([addresses](#addresses-what-moves-once)). An incremental source starts again
-   from a full build.
+   from a full build. A source whose build cannot be generated or compiled is refused on its own
+   (`materialize-not-built`), and the rest of the package still builds; an extension whose build
+   does not compile over its parent's table builds over the chain from the warehouse instead.
 6. **Read the serve verdicts.** `GET …/packages/{pkg}/status` reports `serveVerdicts`. Each migrated
    source should read `serves`. `live` with reason `served_copy` means its table is built but no
    query will read it; the package's `served-copy-not-served` warning names why.
@@ -434,7 +436,10 @@ source: orders_lines is orders extend {
 }
 ```
 
-v1 has no equivalent of `inline=`, so there is nothing to migrate here; the limits are in
+`inline=` may name a `private` or `internal` join; the stored columns behind it stay hidden. A join
+through which a given is read (its joined source's `where:`, `on`, fields or own joins read one) is
+refused for that source (`materialize-not-built`), since its stored columns would hold one caller's
+rows; reference it instead. v1 has no equivalent of `inline=`, so there is nothing to migrate here; the limits are in
 [materialization.md](materialization.md#the-served-copy-in-development-publisher_materialize) and
 the [known limitations](#known-limitations-you-may-hit) below.
 
@@ -564,7 +569,6 @@ are in the plan's [known limitations](materialization-v2-plan.md#known-limitatio
 | `#(materialize)` over a base that declares a measure, view or join | Built, never read: `served-copy-not-served`, answered live. See [above](#a-base-with-measures-views-or-joins). | The served copy's call 2 |
 | A colocated `#(materialize)` with no `name=` | Not built: `materialize-not-built` | — |
 | An extension table whose parent is in another file | Served, but built from the warehouse rather than over the parent's table, so its build scans the warehouse | P10 (same-file only) |
-| `inline=` naming a `private` or `internal` join_many | Not built: `materialize-not-built` | Row 24 |
 | `inline=` on a path through a join_one | Not built: `materialize-not-built` | Row 9 |
 | A pair-table query that reads two blocks, or aggregates a middle level beside the leaf; an incremental refresh of a path or a multi-block table | Answered live; the table rebuilds in full (`materialize-pair-full-refresh`) | Row 9 |
 | `inline=` on a join_cross | Not built: `materialize-not-built` | — |
@@ -576,14 +580,14 @@ are in the plan's [known limitations](materialization-v2-plan.md#known-limitatio
 | A `count()` through a join_many, against a joined source's rollup | Answered live (`COUNT_SEMANTICS`) until Publisher's Malloy carries the fix | Row 25 |
 | A query through a join that fans out across a grain dimension it neither groups nor fixes, against the joined source's rollup | Answered live (`GRAIN_TOO_COARSE`), as for the rollup's own source | — |
 | A query through a join read as a join_many that is not keyed on the querying source's primary key, against the joined source's rollup | Answered live (`COUNT_SEMANTICS`) | — |
-| A query through a join_one that also aggregates the querying source's own rows, against the joined source's rollup | Answered live (`COUNT_SEMANTICS`) | Row 29 |
+| A query through a join_one that also aggregates the querying source's own rows, against the joined source's rollup, when no build of the rollup checked the join's key unique (a table a control plane's manifest binds, a check that could not run) or the check found it repeated | Answered live (`COUNT_SEMANTICS`) | Row 29 |
 | A stored number column (`storage=` or colocated `#(materialize)`) | Answers equal live; the integer or decimal subtype reads back as `number` | Row 12 |
 | An annotated field of an inlined join returned as a column | Answered live, so the result keeps the field's annotations | Row 10 |
 
-One case can differ from live, and it is the data's doing: through a `join_one` to a rollup, a query
-that reads only the joined source's measures is served, and a `join_one` the data does not keep
-unique on another join the query reads is not guarded, so when the data breaks a declared `join_one`,
-live's inflated answer and the served one differ (row 29).
+One case can differ from live, and it is the data's doing: a query through a `join_one` to a rollup
+that also reads another `join_one` whose key no build checked is served as before, so when the data
+breaks that declared `join_one`, live's inflated answer and the served one differ (row 29). A key a
+build checked and found repeated sends the query live.
 
 ## Addresses: what moves once
 
