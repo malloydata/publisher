@@ -3127,6 +3127,8 @@ export class Model {
    public async previewServedCopy(bindings: ServeBinding[]): Promise<
       | {
            rerooted: ReadonlySet<string>;
+           throughBase: ReadonlySet<string>;
+           gateDeclined: ReadonlySet<string>;
            problems: readonly ServedCopyProblem[];
         }
       | undefined
@@ -3157,6 +3159,8 @@ export class Model {
       await copy.prepare();
       return {
          rerooted: copy.rerootedSourceIDs() ?? new Set<string>(),
+         throughBase: copy.servedThroughBaseSourceIDs(),
+         gateDeclined: copy.gateDeclinedSourceIDs(),
          problems: copy.problems(),
       };
    }

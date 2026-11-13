@@ -35,6 +35,7 @@ import {
    type GraftRuntime,
    type GraftScope,
 } from "../../gate_classification";
+import { gateDeclaringSourceResolves } from "../../filter_binding_guard";
 import {
    buildRowLevelProbe,
    gateFilterText,
@@ -312,6 +313,8 @@ interface Compiled {
    materializer?: ModelMaterializer;
    /** The served copy's compiled model, read (never edited) for source chains. */
    modelDef?: unknown;
+   /** Whether any source in {@link modelDef} names a row-level gate; read once. */
+   hasRowLevelGates?: boolean;
    /** The runtime it compiled in: a row-level graft reloads through it (R3). */
    runtime?: GraftRuntime;
    /** The `sourceID`s of sources that opt out with `#@ -persist`. */
@@ -324,6 +327,17 @@ interface Compiled {
    unsafeIDs?: ReadonlySet<string>;
    /** Bindings actually re-rooted, with their destination under its alias. */
    rerooted: ServeBinding[];
+   /**
+    * Extensions of a re-rooted source left as written, which read their
+    * base's table by name: each with its chain of ancestor `sourceID`s and the
+    * base its text names (see `readsRerootedBase`).
+    */
+   throughBase?: readonly {
+      sourceID: string;
+      sourceName: string;
+      chain: readonly string[];
+      baseName?: string;
+   }[];
    /**
     * Tables that store a computed dimension (`#(materialize)`) whose value
     * may depend on the time zone, by table path: one of the source's own the
@@ -557,6 +571,89 @@ export class ServedCopyServe {
       return new Set(compiled.rerooted.flatMap((b) => b.sourceIDs ?? []));
    }
 
+   /**
+    * The author `sourceID`s the compiled copy leaves as written because they
+    * extend a source it re-rooted, and so answer from that source's table by
+    * name (an extension with no table of its own); empty before the first
+    * compile. Not one that opts out of persist, or whose served surface the
+    * load-time checks flag: those are declined at query time.
+    */
+   servedThroughBaseSourceIDs(): ReadonlySet<string> {
+      const compiled = this.compiledLanes.get(0);
+      if (!compiled?.throughBase) return new Set();
+      const ids = new Set(compiled.rerooted.flatMap((b) => b.sourceIDs ?? []));
+      const names = new Set(compiled.rerooted.map((b) => b.sourceName));
+      const declined = (id: string) =>
+         !!compiled.optOutIDs?.has(id) || !!compiled.unsafeIDs?.has(id);
+      return new Set(
+         compiled.throughBase
+            .filter(
+               (e) =>
+                  (e.chain.some((id) => ids.has(id)) ||
+                     (e.baseName !== undefined && names.has(e.baseName))) &&
+                  !declined(e.sourceID) &&
+                  !e.chain.some(declined),
+            )
+            .map((e) => e.sourceID),
+      );
+   }
+
+   /**
+    * The author `sourceID`s the compiled copy re-roots, or serves through a
+    * re-rooted base, whose row-level gate it cannot graft
+    * ({@link gateCannotGraft}): their queries are declined and answered live.
+    */
+   gateDeclinedSourceIDs(): ReadonlySet<string> {
+      const compiled = this.compiledLanes.get(0);
+      const out = new Set<string>();
+      if (!compiled || !this.mayHaveRowLevelGates(compiled)) return out;
+      for (const b of compiled.rerooted) {
+         if (this.gateCannotGraft(compiled, b.sourceName)) {
+            for (const id of b.sourceIDs ?? []) out.add(id);
+         }
+      }
+      for (const e of compiled.throughBase ?? []) {
+         if (this.gateCannotGraft(compiled, e.sourceName)) out.add(e.sourceID);
+      }
+      return out;
+   }
+
+   /** Whether the author's model names a row-level gate at all; read once. */
+   private mayHaveRowLevelGates(compiled: Compiled): boolean {
+      compiled.hasRowLevelGates ??= JSON.stringify(
+         this.host.modelDef() ?? {},
+      ).includes("access_filter");
+      return compiled.hasRowLevelGates;
+   }
+
+   /**
+    * Whether the author's source `name` carries a row-level gate whose
+    * declaring source the served copy cannot resolve: a re-root that replaced
+    * the source that declared it (a stored source over a same-file gated
+    * base). The governor grafts the gate on this compile and would deny every
+    * caller; the served copy declines instead, and live answers under the
+    * author's gate.
+    */
+   private gateCannotGraft(compiled: Compiled, name: string): boolean {
+      const authorModel = this.host.modelDef() as ModelDef | undefined;
+      const authorStruct = authorModel?.contents[name];
+      const copyStruct = (compiled.modelDef as ModelDef | undefined)?.contents[
+         name
+      ];
+      if (!authorStruct || !copyStruct) return false;
+      const gated = collectEntryPointGates(
+         authorStruct as never,
+         authorModel as never,
+      ).some((g) => g.route === "access_filter");
+      return (
+         gated &&
+         !gateDeclaringSourceResolves(
+            copyStruct as never,
+            compiled.modelDef as never,
+         )
+      );
+   }
+
    /** Why the last compile left sources unserved; empty before the first. */
    problems(): readonly ServedCopyProblem[] {
       return this.compiledLanes.get(0)?.problems ?? [];
@@ -655,6 +752,26 @@ export class ServedCopyServe {
       // mutates it.
       let preparedRead: ReturnType<typeof readPreparedQuery> | undefined;
       const prepared = () => (preparedRead ??= readPreparedQuery(runnable));
+      // A row-level gate is grafted on this compile when the answer runs, and
+      // the graft must find the source that declared it. A re-root that
+      // replaced that source (a stored source over a same-file gated base)
+      // leaves no declarer here, and the graft would deny every caller: the
+      // query is declined instead, and the next candidate (live) answers it
+      // under the author's gate.
+      if (this.mayHaveRowLevelGates(compiled)) {
+         const { structRef } = await compiling(prepared);
+         const struct = resolveStructRefSource<{ as?: string; name?: string }>(
+            structRef,
+            compiled.modelDef as never,
+         );
+         const name = struct?.as ?? struct?.name;
+         if (name !== undefined && this.gateCannotGraft(compiled, name)) {
+            decline(
+               "a row-level gate on the queried source was declared on a source the served copy re-roots, so it cannot be grafted here",
+               "not_served",
+            );
+         }
+      }
       // `#@ -persist` means recompute rather than read the pre-built table. In
       // the served copy every name reads its re-rooted base, so a query whose
       // source is an opted-out reader, or derives from one, is declined here
@@ -1455,16 +1572,27 @@ export class ServedCopyServe {
       // model does not record.
       const rerootedIDs = new Set(candidates.map((c) => c.reroot.sourceID));
       const rerootedNames = new Set(candidates.map((c) => c.reroot.sourceName));
+      const throughBase: NonNullable<Compiled["throughBase"]>[number][] = [];
       const readsRerootedBase = (c: (typeof candidates)[number]) => {
          const node = map.node(c.reroot.sourceID);
          const chain = node ? map.chainOf(node.def) : [];
-         if (chain.slice(1).some((id) => rerootedIDs.has(id))) return true;
          const text = lift.fileText(c.reroot.url);
          const base =
             text === undefined
                ? undefined
                : declaredBaseName(text, c.reroot.range);
-         return base !== undefined && rerootedNames.has(base);
+         const reads =
+            chain.slice(1).some((id) => rerootedIDs.has(id)) ||
+            (base !== undefined && rerootedNames.has(base));
+         if (reads) {
+            throughBase.push({
+               sourceID: c.reroot.sourceID,
+               sourceName: c.reroot.sourceName,
+               chain: chain.slice(1),
+               ...(base !== undefined ? { baseName: base } : {}),
+            });
+         }
+         return reads;
       };
       // An extension table that does not compile over its kept blocks falls
       // back to what it was before P10: left as written when it reads a
@@ -1989,6 +2117,7 @@ export class ServedCopyServe {
             optOutIDs,
             unsafeIDs,
             rerooted,
+            ...(throughBase.length > 0 ? { throughBase } : {}),
             aliased,
             problems,
             pairs: candidates.flatMap((c) =>

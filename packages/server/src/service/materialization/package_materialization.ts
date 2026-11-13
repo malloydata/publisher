@@ -1833,8 +1833,16 @@ export class PackageMaterialization {
             connectionName: source.connectionName,
          };
       }
+      // A v1 `storage=` table stores the persisted query's own output (before
+      // an extend block's `rename:` or `except:`, nests included), as the
+      // bind will read it; a `#(materialize)` plan's columns are its own.
       const bindings = [
-         ...this.previewServeBindings(),
+         ...this.previewServeBindings().map((b) => {
+            const sourceID = b.sourceIDs?.[0];
+            if (!sourceID || this.materializePlans?.[sourceID]) return b;
+            const schema = v1StoredColumnsOf(this.declarationOf(sourceID));
+            return schema?.length ? { ...b, schema } : b;
+         }),
          ...deriveColocatedServeBindings({
             entries,
             planSources: sources,
@@ -1847,10 +1855,14 @@ export class PackageMaterialization {
          }),
       ];
       const rerooted = new Set<string>();
+      const throughBase = new Set<string>();
+      const gateDeclined = new Set<string>();
       const problems = new Map<string, string>();
       for (const model of this.owner.models().values()) {
          const preview = await model.previewServedCopy?.(bindings);
          for (const id of preview?.rerooted ?? []) rerooted.add(id);
+         for (const id of preview?.throughBase ?? []) throughBase.add(id);
+         for (const id of preview?.gateDeclined ?? []) gateDeclined.add(id);
          for (const p of preview?.problems ?? []) {
             if (p.sourceID && !problems.has(p.sourceID)) {
                problems.set(p.sourceID, p.reason);
@@ -1861,8 +1873,26 @@ export class PackageMaterialization {
          if (v.origin === "preaggregate") {
             return { ...v, cutoverPath: "rollup" };
          }
+         // A row-level gate declared on a base the re-root replaces cannot
+         // be grafted on the served copy: its queries are answered live.
+         if (gateDeclined.has(v.sourceID)) {
+            return {
+               ...v,
+               cutoverPath: "live",
+               cutoverReason: "inherited_gate",
+            };
+         }
          if (rerooted.has(v.sourceID)) {
             return { ...v, cutoverPath: "served_copy" };
+         }
+         // An extension of a re-rooted source, left as written: it reads
+         // that source's table by name.
+         if (throughBase.has(v.sourceID) && !problems.has(v.sourceID)) {
+            return {
+               ...v,
+               cutoverPath: "served_copy",
+               cutoverReason: "through_base",
+            };
          }
          return {
             ...v,
