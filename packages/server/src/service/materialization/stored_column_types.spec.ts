@@ -481,21 +481,23 @@ source: plain is ev -> { select: id, label is concat('x', id::string) }
 });
 
 describe("storedColumnsOfOutput: a bigint read back from a table", () => {
-   it("is a BIGINT, as an integer is, not a DOUBLE", () => {
+   it("is a BIGINT when asked (a schema read off a table), and a DOUBLE as before otherwise", () => {
       // Malloy reads a 64-bit integer column back as numberType `bigint`
       // (a captured colocated schema, the v1 cutover); a compiled output's
-      // integer says `integer`. Both are stored as BIGINT. Before the cutover
-      // this also reads a #(materialize) source's compiled output, where a
-      // `bigint` was declared DOUBLE.
+      // integer says `integer`. A #(materialize) plan's compiled output keeps
+      // its mapping (`bigint` as DOUBLE).
+      const fields = [
+         { name: "a", type: "number", numberType: "bigint" },
+         { name: "b", type: "number", numberType: "integer" },
+         { name: "c", type: "number", numberType: "float" },
+      ];
+      expect(storedColumnsOfOutput(fields, { nested: true })).toEqual([
+         { name: "a", type: "DOUBLE" },
+         { name: "b", type: "BIGINT" },
+         { name: "c", type: "DOUBLE" },
+      ]);
       expect(
-         storedColumnsOfOutput(
-            [
-               { name: "a", type: "number", numberType: "bigint" },
-               { name: "b", type: "number", numberType: "integer" },
-               { name: "c", type: "number", numberType: "float" },
-            ],
-            { nested: true },
-         ),
+         storedColumnsOfOutput(fields, { nested: true, bigint: true }),
       ).toEqual([
          { name: "a", type: "BIGINT" },
          { name: "b", type: "BIGINT" },

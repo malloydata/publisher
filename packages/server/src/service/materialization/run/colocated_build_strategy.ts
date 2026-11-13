@@ -198,6 +198,7 @@ export async function capturedColocatedSchema(args: {
       }
       const columns = storedColumnsOfOutput(fields, {
          nested: args.dialect === "duckdb",
+         bigint: true,
       });
       return columns.length > 0 ? columns : undefined;
    } catch (err) {

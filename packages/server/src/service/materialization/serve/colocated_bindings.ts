@@ -194,5 +194,8 @@ export function v1StoredColumnsOf(def: unknown): StoredColumn[] | undefined {
          const { as: _as, ...rest } = f as Record<string, unknown>;
          return rest;
       });
-   return storedColumnsOfOutput(outputs, { nested: d?.dialect === "duckdb" });
+   return storedColumnsOfOutput(outputs, {
+      nested: d?.dialect === "duckdb",
+      bigint: true,
+   });
 }
