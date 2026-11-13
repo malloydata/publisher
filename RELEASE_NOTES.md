@@ -95,6 +95,10 @@ docs/materialization.md, "Stored column types follow the model, not the warehous
 
 A wrong answer is fixed, with the default settings as well as under the v1 cutover. After a host binds a build manifest, a query on a `#@ persist` source whose colocated table was past its freshness window (`freshness.fallback` `live` or `fail`) could still read that table, while the path report said `servedBy: live`. With the default `PUBLISHER_V1_SERVED_COPY=off` this happened when the stale table's only fresh neighbours were `#@ preaggregate` rollups or persisted views; under `on` it happened to every such table, and `shadow` compared against that answer. Such a query is now answered live, as its fallback says.
 
+## [Unreleased] — A `.malloynb` cell over a model without the persistence flag runs beside a bound table
+
+A legacy `.malloynb` notebook cell failed with "A non-empty `buildManifest` was supplied, but the model is missing `##! experimental.persistence`" whenever its package had a colocated `#@ persist` table bound and the cell's model did not import a model that carries the flag. A cell now gets the bound tables only when its own model carries the flag, as a query on a model already did.
+
 ## [Unreleased] — In development: join-to-rollup checks the querying source's primary key, and declines a count beside a re-pointed join
 
 Behind `PUBLISHER_MATERIALIZE` (off by default). Two wrong answers from a joined source's `#(preaggregate)` rollup read through a join are fixed; each now answers live (`COUNT_SEMANTICS`) and equals live.

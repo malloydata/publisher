@@ -683,6 +683,16 @@ describe("a table past its freshness window, bound by a host's reload", () => {
             dailyId,
             "built_daily_sentinel",
          );
+         // Not over-corrected: the fresh rollup still answers its own query.
+         const rolled = await run(
+            pkg,
+            "run: orders -> { group_by: region; aggregate: amount_total }",
+         );
+         expect(rolled.path?.servedBy).toMatchObject({
+            kind: "rollup",
+            tableId: rollupId,
+         });
+         expect(rolled.result.sql).toContain("built_rollup");
       }, 60_000);
 
       it(`answers live when the only fresh table is a persisted view's [${mode}]`, async () => {
@@ -711,6 +721,55 @@ describe("a table past its freshness window, bound by a host's reload", () => {
             dailyId,
             "built_daily_sentinel",
          );
+         // Not over-corrected: the fresh view still answers a call of it.
+         const called = await run(pkg, "run: orders -> by_region");
+         expect(called.path?.servedBy).toMatchObject({
+            kind: "view",
+            tableId: viewId,
+         });
+         expect(called.result.sql).toContain("built_view");
+      }, 60_000);
+   }
+
+   // A notebook runs each cell against the cell's own model, which carries
+   // `##! experimental.persistence` only through what it imports. Malloy
+   // refuses a non-empty manifest on a model without the flag, so a table
+   // bound for another model must not reach such a cell.
+   for (const mode of ["off", "on"] as const) {
+      it(`runs a notebook cell whose model has no persistence flag, beside a bound table [${mode}]`, async () => {
+         await underMode(mode);
+         const pkg = await loadPackage(MODEL, {
+            "flagless.malloy": `source: plain is duckdb.sql("SELECT 1 AS x")`,
+            "persisting.malloynb": `>>>malloy\nimport "model.malloy"\n${DAILY_QUERY}\n`,
+            "flagless.malloynb": `>>>malloy\nimport "flagless.malloy"\nrun: plain -> { aggregate: c is count() }\n`,
+         });
+         const dailyId = entityIdOf(pkg, "daily");
+         await bindThroughReload(pkg, [
+            {
+               entityId: dailyId,
+               table: "built_daily_sentinel",
+               sql: DAILY_SENTINEL,
+               extra: {
+                  dataAsOf: new Date().toISOString(),
+                  freshnessWindowSeconds: 3600,
+                  freshnessFallback: "live",
+               },
+            },
+         ]);
+         const flagless = pkg.getModel("flagless.malloynb");
+         const persisting = pkg.getModel("persisting.malloynb");
+         if (!flagless || !persisting)
+            throw new Error("notebooks did not load");
+         // Before the fix: "A non-empty `buildManifest` was supplied, but the
+         // model is missing `##! experimental.persistence`".
+         const plain = await flagless.executeNotebookCell(unrecordedAudit(), 0);
+         expect(plain.result).toContain('"number_value":1');
+         // A cell that imports the persisting model still reads its table.
+         const read = await persisting.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+         );
+         expect(read.result).toContain("built_daily_sentinel");
       }, 60_000);
    }
 });
