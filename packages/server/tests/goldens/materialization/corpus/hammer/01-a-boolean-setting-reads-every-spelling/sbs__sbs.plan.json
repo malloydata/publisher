@@ -53,6 +53,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "alpha@<hammer>/sbs/sbs.malloy": {

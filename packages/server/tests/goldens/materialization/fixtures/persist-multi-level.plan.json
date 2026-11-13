@@ -55,6 +55,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "orders_base@<pkg>/multi_level.malloy": {

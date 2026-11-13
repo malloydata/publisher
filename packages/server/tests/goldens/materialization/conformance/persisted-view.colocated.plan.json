@@ -40,6 +40,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "ov__by_region__view@<pkg>/m.malloy.persist-view.malloy": {
