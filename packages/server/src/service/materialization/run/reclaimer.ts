@@ -30,6 +30,7 @@ import {
    tableKeyOf,
 } from "./materialization_run_support";
 import {
+   atNameViewSite,
    heldByOwnNameView,
    nameViewsIn,
    nameViewSuccessors,
@@ -37,6 +38,7 @@ import {
    type NameViewRecord,
 } from "./name_view";
 import { nameViewOwner } from "./name_view_sql";
+import { ownedElsewhere } from "./table_ownership";
 import type { RunLifecycle } from "./run_lifecycle";
 
 /**
@@ -450,11 +452,12 @@ export class Reclaimer {
       // holds its name: a later build replaced the table with the view
       // (name_view.ts), so the table is gone and its entry is retired, not
       // owed. Probed only after a failed drop.
+      const owner = nameViewOwner(environmentName, packageName);
       const replacedByOwnView = (entry: ManifestEntry) =>
          heldByOwnNameView(
             {
                viewName: entry.physicalTableName,
-               owner: nameViewOwner(environmentName, packageName),
+               owner,
                connectionName: entry.connectionName ?? "",
                ...(entry.storageDestinationName
                   ? { storageDestinationName: entry.storageDestinationName }
@@ -481,6 +484,32 @@ export class Reclaimer {
                   materializationId: m.id,
                   physicalTableName,
                   destination: destForKey,
+               },
+            );
+            continue;
+         }
+
+         // A table another package has marked as its own since this run
+         // built it (it holds that package's `name=` now) is no longer this
+         // package's to drop. Retired, not owed (table_ownership.ts).
+         const markedBy = await atNameViewSite(
+            {
+               connectionName,
+               ...(entry.storageDestinationName
+                  ? { storageDestinationName: entry.storageDestinationName }
+                  : {}),
+            },
+            viewContext,
+            (site) => ownedElsewhere(site, physicalTableName, owner),
+         ).catch(() => undefined);
+         if (markedBy !== undefined) {
+            logger.warn(
+               "Skipping drop: another package has built and marked this table since",
+               {
+                  materializationId: m.id,
+                  physicalTableName,
+                  destination: destForKey,
+                  markedBy,
                },
             );
             continue;

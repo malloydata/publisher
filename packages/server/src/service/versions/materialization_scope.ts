@@ -255,6 +255,35 @@ export function versionTableSuffix(owner: VersionTableOwner): string {
    return `__v${base}_${shortHash(owned)}`;
 }
 
+/** Whose an auto-run's shared tables are: one package of one environment. */
+export interface PackageTableOwner {
+   environmentName: string;
+   packageName: string;
+}
+
+/**
+ * The suffix that makes an auto-run's self-assigned table name this package's
+ * own, for an unversioned package or the shared tables of a `scope: package`
+ * one: `__p<8 hex>`, a hash of the environment and the package.
+ *
+ * Tables live on connections and storage destinations that packages, and
+ * environments, can share. Named after the source alone, two packages that
+ * each persist a source called `orders` on one schema would build one table,
+ * each overwriting the other's rows and serving whichever wrote last. An
+ * explicit `name=` is not suffixed (the author chose it, and an outside reader
+ * may rely on it); its table is checked for ownership before every build
+ * instead (table_ownership.ts). A `scope: version` table takes
+ * {@link versionTableSuffix}, which hashes the environment and package too.
+ *
+ * The hash keeps tables apart within one server. Two servers whose
+ * environments and packages have the same names must not share a schema.
+ */
+export function packageTableSuffix(owner: PackageTableOwner): string {
+   return `__p${shortHash(
+      JSON.stringify(["package", owner.environmentName, owner.packageName]),
+   )}`;
+}
+
 /**
  * A self-assigned name made one version's own: `base` with `suffix` on its
  * table segment (the part after the last dot), kept within

@@ -225,6 +225,42 @@ export class TableClaims {
          storageDestinationName?: string;
       }[],
    ): Promise<void> {
+      await this.markTablesGone(environmentId, packageName, id, tables);
+   }
+
+   /**
+    * When an auto-run finds a table its package's records name held by
+    * another package, or cannot tell who holds it (table_ownership.ts): mark,
+    * on every run of the package but `id`, the entries naming that table
+    * there superseded (SUPERSEDED_TABLES_KEY), so the package serves the
+    * source live rather than another package's rows, and never reuses the
+    * entry. Matched exactly, as {@link markReplacedByView}. Best-effort: a
+    * mark that fails is logged.
+    */
+   async markHeldElsewhere(
+      environmentId: string,
+      packageName: string,
+      id: string,
+      table: {
+         physicalTableName: string;
+         connectionName: string;
+         storageDestinationName?: string;
+      },
+   ): Promise<void> {
+      await this.markTablesGone(environmentId, packageName, id, [table]);
+   }
+
+   /** Mark every other run's entries for `tables`, exactly, superseded. */
+   private async markTablesGone(
+      environmentId: string,
+      packageName: string,
+      id: string,
+      tables: {
+         physicalTableName: string;
+         connectionName: string;
+         storageDestinationName?: string;
+      }[],
+   ): Promise<void> {
       if (tables.length === 0) return;
       await this.lockFor(environmentId, packageName).runExclusive(async () => {
          for (const m of await this.repository().listMaterializations(
@@ -257,7 +293,7 @@ export class TableClaims {
                });
             } catch (err) {
                logger.warn(
-                  "Could not retire a run's entry for a table a name= view replaced",
+                  "Could not retire a run's entry for a table it no longer holds",
                   { materializationId: m.id, error: errMessage(err) },
                );
             }
