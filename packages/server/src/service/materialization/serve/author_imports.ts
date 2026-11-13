@@ -36,6 +36,12 @@ export interface AuthorImportOptions {
    /** Names the variant declares itself, never imported. */
    skip?: ReadonlySet<string>;
    /**
+    * Names imported under another local name (`flights` as
+    * `flights__parent`), so the variant can declare the name itself over
+    * the author's definition.
+    */
+   alias?: ReadonlyMap<string, string>;
+   /**
     * Names declared in `from` (an overlay key) other than `keep` are imported
     * from `to` instead: a name a file imports is not exported again, so when
     * the variant overlays the declaring file, only `keep` stays there.
@@ -60,7 +66,7 @@ export function authorNameImports(
    };
    const exported = new Set(model.exports ?? []);
    const byFile = new Map<string, string[]>();
-   const { skip, redirect } = options;
+   const { skip, redirect, alias } = options;
    const add = (url: string, item: string, declaredName: string) => {
       const target =
          redirect &&
@@ -72,8 +78,15 @@ export function authorNameImports(
    };
    for (const [name, entry] of Object.entries(model.contents ?? {})) {
       if (skip?.has(name)) continue;
+      const local = alias?.get(name) ?? name;
       if (exported.has(name)) {
-         add(modelURL, identifier(name), name);
+         add(
+            modelURL,
+            local === name
+               ? identifier(name)
+               : `${identifier(local)} is ${identifier(name)}`,
+            name,
+         );
          continue;
       }
       const e = entry as {
@@ -91,9 +104,9 @@ export function authorNameImports(
       if (!url) continue;
       add(
          url,
-         declaredName === name
-            ? identifier(name)
-            : `${identifier(name)} is ${identifier(declaredName)}`,
+         declaredName === local
+            ? identifier(local)
+            : `${identifier(local)} is ${identifier(declaredName)}`,
          declaredName,
       );
    }
