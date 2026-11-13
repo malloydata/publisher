@@ -178,6 +178,13 @@ const PERSISTED_VIEW_OFF: Gap = {
       "a #@ persist view is planned and served only with PUBLISHER_MATERIALIZE on (phase 4's view leg)",
 };
 
+/** Guard 1: a v1 `#@ persist` in a file without the flag is not planned before the cutover. */
+const UNFLAGGED_BEFORE_CUTOVER: Gap = {
+   kind: "live",
+   reason:
+      "a model file without ##! experimental.persistence plans no #@ persist source before the cutover (guard 1); the cutover's build copy carries the flag (D3)",
+};
+
 export const SHAPES: Shape[] = [
    {
       name: "baseline",
@@ -1584,6 +1591,34 @@ source: orders_m is orders_base extend {
             name: "a base measure in a nest",
             malloy:
                "run: orders_m -> { group_by: status; nest: by_zone is { group_by: zone; aggregate: n; order_by: zone } }",
+         },
+      ],
+   },
+   {
+      name: "a file without the persistence flag",
+      about: "A v1 #@ persist in a model file with no ##! experimental.persistence: Malloy plans it only with the flag, so before the cutover it is never planned (guard 1); the cutover plans it from a build copy that carries the flag (D3)",
+      files: {
+         "m.malloy": `import "raw.malloy"
+
+@PERSIST(daily_nf)
+source: daily_nf is orders_raw -> {
+  group_by: region, order_date
+  aggregate: total is amount.sum()
+} extend {
+  measure: grand is total.sum()
+}
+`,
+      },
+      gaps: {
+         "storage/off": UNFLAGGED_BEFORE_CUTOVER,
+         "storage/on": UNFLAGGED_BEFORE_CUTOVER,
+         "colocated/off": UNFLAGGED_BEFORE_CUTOVER,
+         "colocated/on": UNFLAGGED_BEFORE_CUTOVER,
+      },
+      queries: [
+         {
+            name: "a stored measure by region",
+            malloy: "run: daily_nf -> { group_by: region; aggregate: grand }",
          },
       ],
    },

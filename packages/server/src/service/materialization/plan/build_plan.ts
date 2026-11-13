@@ -62,6 +62,7 @@ import { persistedViewRefusalFinding } from "./persisted_view";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
 import { deletingWindowsOf } from "./rolling_window";
 import { tryCompileRollupCompanion } from "./rollup_compile";
+import { compileV1BuildCompanion } from "./v1_build_companion";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
 import { rollupRefusalFinding } from "./rollup_plan";
 import { getMaterializeEnabled, getV1ServedCopyMode } from "../../../config";
@@ -1009,9 +1010,12 @@ export async function collectModelBuildPlan(
    }
 
    // getBuildTargets() THROWS on a model without `##! experimental.persistence`,
-   // which would abort the whole package's plan. Such a model cannot carry a
-   // persist source anyway, so skip it, mirroring Malloy's own guard.
-   // Presence only, decided as Malloy decides it.
+   // which would abort the whole package's plan. Before the v1 cutover such a
+   // model plans no persist source, mirroring Malloy's own guard (guard 1).
+   // Under it, its build copy carries the flag instead (D3), so the author's
+   // file need not. Presence only, decided as Malloy decides it.
+   let planModel = malloyModel;
+   let planRuntime = runtime;
    if (
       !routeHasKey(
          malloyModel.modelAnnotations,
@@ -1020,10 +1024,15 @@ export async function collectModelBuildPlan(
          "persistence",
       )
    ) {
-      return;
+      const companion = v1Cutover
+         ? await compileV1BuildCompanion({ packagePath, modelPath, getRuntime })
+         : undefined;
+      if (!companion) return;
+      planModel = companion.model;
+      planRuntime = companion.runtime;
    }
 
-   const targets = await runtime.getBuildTargets(malloyModel);
+   const targets = await planRuntime.getBuildTargets(planModel);
    const parseErrors = targets.tagParseLog.filter((msg) => {
       logger.warn("Persist annotation issue", {
          modelPath,
