@@ -1326,10 +1326,11 @@ function pairingKey(value: unknown): string {
 /**
  * Integers (counts, sums of integers) must match exactly; other numbers
  * within the relative float tolerance, floored at 1 so two values near zero
- * are compared absolutely.
+ * are compared absolutely. NaN matches NaN: DuckDB divides 0.0 by 0 as NaN,
+ * which a ratio over a childless parent's sum and count is.
  */
 function numbersEqual(x: number, y: number): boolean {
-   if (x === y) return true;
+   if (x === y || (Number.isNaN(x) && Number.isNaN(y))) return true;
    if (Number.isSafeInteger(x) && Number.isSafeInteger(y)) return false;
    const scale = Math.max(Math.abs(x), Math.abs(y), 1);
    return Math.abs(x - y) <= FLOAT_TOLERANCE * scale;

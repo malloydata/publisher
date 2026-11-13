@@ -622,44 +622,6 @@ export function queryFieldUsagePaths(
    return unreadable ? undefined : out;
 }
 
-/**
- * Every aggregate the compiler records it needs a unique key for, anywhere in
- * a prepared query (nests included), as the join path it is taken at: a
- * `count()` (`isCount`), or a `sum` or `avg`, written in the query or read
- * through a measure by name (`expandedFieldUsage` follows measures into their
- * definitions). `min` and `max` need no key and are not recorded. The empty
- * path is the source's own grain. Undefined when an entry is not readable, so
- * a caller fails closed.
- */
-export function uniqueKeyAggregatePaths(
-   view: PreparedQueryView,
-): { path: string[]; isCount: boolean }[] | undefined {
-   const out: { path: string[]; isCount: boolean }[] = [];
-   let unreadable = false;
-   eachQueryNode(view.pipeline, (n) => {
-      const usage = n.expandedFieldUsage;
-      if (!Array.isArray(usage)) return;
-      for (const u of usage as {
-         path?: unknown;
-         uniqueKeyRequirement?: { isCount?: unknown };
-      }[]) {
-         if (!u || u.uniqueKeyRequirement === undefined) continue;
-         if (
-            !Array.isArray(u.path) ||
-            u.path.some((p) => typeof p !== "string")
-         ) {
-            unreadable = true;
-            continue;
-         }
-         out.push({
-            path: u.path as string[],
-            isCount: u.uniqueKeyRequirement?.isCount === true,
-         });
-      }
-   });
-   return unreadable ? undefined : out;
-}
-
 /** An aggregate node: `x.sum()`, `count()`, or an aggregate function call. */
 function isAggregateNode(n: IrExprLike): boolean {
    return (

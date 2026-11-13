@@ -844,6 +844,8 @@ The materialization history (`list` + `get` above) records per-run timings and h
 
 `#@ persist` stores a source you wrote. [Pre-aggregation](preaggregation.md) stores a rollup Publisher derives for you: annotate a measure with a grain, and covered queries read a small pre-grouped table instead of the base, with no change to the queries themselves. Rollups appear in the same build plan (as `origin: "preaggregate"`) and build through the same manifest and scheduler described above.
 
+With `PUBLISHER_MATERIALIZE` on, a `#(preaggregate)` rollup also answers a query on another source that reads its measures through a join (join-to-rollup; [Pre-aggregation](preaggregation.md) has the rules). A parent with no joined rows counts as no rows and sums nothing, live and from the rollup (Malloy 0.0.438, [malloydata/malloy#3208](https://github.com/malloydata/malloy/pull/3208)), so counts and sums through a `join_many` are served; a `min` or `max` of a value that is not NULL on such a parent's row, and an aggregate at a join keyed on a computed dimension, are still answered live (`COUNT_SEMANTICS`).
+
 **A rollup over a caller-scoped source is refused** (`preaggregate_over_dynamic_source`).
 A persisted source may be scoped by a given because the term is left out of the build and
 put back when the rows are read; a rollup has no such read. It is stored pre-grouped and

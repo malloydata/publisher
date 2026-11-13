@@ -19,7 +19,6 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { malloyCountsChildlessParentsAsZero } from "../../../src/service/materialization/serve/join_rollup";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
@@ -280,28 +279,11 @@ for (const [kind, model, materialize] of [
          });
       }
 
-      const skipsUnmatched = malloyCountsChildlessParentsAsZero();
-      const count =
-         "run: flights -> { group_by: carrier; aggregate: segments.seg_count }";
-      it.if(!skipsUnmatched)(
-         "answers a count through a join_many without the rollup until malloydata/malloy#3208 (COUNT_SEMANTICS)",
-         async () => {
-            expectNotFromRollup(
-               await fixture.run({ name: "count", malloy: count }),
-            );
-            expect(await rollupReasons(fixture, count)).toContain(
-               "COUNT_SEMANTICS",
-            );
-         },
-      );
-      it.if(skipsUnmatched)(
-         "serves a count through a join_many once malloydata/malloy#3208 is pinned",
-         async () => {
-            expectServedFromRollup(
-               await fixture.run({ name: "count", malloy: count }),
-            );
-         },
-      );
+      it("serves a count through a join_many", async () => {
+         const malloy =
+            "run: flights -> { group_by: carrier; aggregate: segments.seg_count }";
+         expectServedFromRollup(await fixture.run({ name: "count", malloy }));
+      });
 
       it("refuses an internal field to the caller, as live does", async () => {
          fixture.setBindings(fixture.bindings);
