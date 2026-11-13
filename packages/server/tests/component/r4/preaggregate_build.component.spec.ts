@@ -34,7 +34,10 @@ const seedSql = [
     ) AS t(order_id, kind, qty)`,
 ];
 
-const MODEL = `source: carriers is duckdb.table('carriers_raw') extend { primary_key: code }
+const MODEL = `##! experimental.givens
+given: REGION :: string is 'east'
+
+source: carriers is duckdb.table('carriers_raw') extend { primary_key: code }
 source: lines is duckdb.table('lines_raw')
 
 source: orders is duckdb.table('orders_raw') extend {
@@ -52,6 +55,8 @@ source: orders is duckdb.table('orders_raw') extend {
   measure: east_total is amount.sum() { where: region = 'east' }
   #(preaggregate) grain=["carrier"]
   measure: fleet is carriers.fleet.sum()
+  #(preaggregate) grain=["carrier"]
+  measure: top_fleet is carriers.fleet.max()
   #(preaggregate) grain=["category", "line_kind"]
   measure: line_total is amount.sum()
 }
@@ -60,6 +65,12 @@ source: recent is duckdb.table('orders_raw') extend {
   where: order_time > now - 40 days
   #(preaggregate) grain=["category"]
   measure: recent_total is amount.sum()
+}
+
+#(access_filter) region = $REGION
+source: gated is duckdb.table('orders_raw') extend {
+  #(preaggregate) grain=["category", "region"]
+  measure: gated_total is amount.sum()
 }
 `;
 
@@ -118,6 +129,12 @@ describe("R4: #(preaggregate) rollups build the partials their measures merge fr
             `SELECT carrier, SUM(fleet__partial) AS fleet FROM ${table("orders", ["carrier"])} GROUP BY 1`,
       ],
       [
+         "a join-level max keyed in the grain (row 23)",
+         "run: orders -> { group_by: carrier; aggregate: top_fleet }",
+         () =>
+            `SELECT carrier, MAX(top_fleet__partial) AS top_fleet FROM ${table("orders", ["carrier"])} GROUP BY 1`,
+      ],
+      [
          "a sum at a fan-out grain, grouped by it",
          "run: orders -> { group_by: category, line_kind; aggregate: line_total }",
          () =>
@@ -130,6 +147,17 @@ describe("R4: #(preaggregate) rollups build the partials their measures merge fr
          expect(rowDifference(run.live, run.truth ?? [])).toBeUndefined();
       });
    }
+
+   it("builds nothing over a gated source, whose rollups no query reads yet (row 21)", () => {
+      // The grain keeps the gate's field, so A4 alone would build it; while a
+      // gated entry point skips every rollup, the table would cost a build
+      // for nothing.
+      expect(
+         Object.keys(fixture.rollupTables).filter((n) =>
+            n.startsWith("gated__rollup__"),
+         ),
+      ).toEqual([]);
+   });
 
    it("builds nothing for a source whose rows read the current time (S25b)", () => {
       expect(
