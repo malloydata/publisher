@@ -1047,9 +1047,28 @@ export class ServedCopyServe {
          // one holds what Malloy built, hidden columns too (G2): each is
          // kept with its access modifier, written again on the stored table
          // (P3), so a measure over it compiles and the column stays hidden.
-         const narrowed = binding.colocated
-            ? storedColumnsWithAccess(binding.schema, def.fields)
+         // The cutover's per-column handling (G5, review F3); before it, the
+         // v1 path is what it was.
+         const perColumn = this.host.perColumnTypes?.() === true;
+         // Under it, a colocated table's columns are every column it holds,
+         // with no access modifier: the author's own text after the query
+         // (kept whole, `keepsIncludes`) renames, drops and re-hides them.
+         const named = binding.colocated
+            ? perColumn
+               ? storedColumnsWithAccess(binding.schema, def.fields).map(
+                    ({ name, type }) => ({ name, type }),
+                 )
+               : storedColumnsWithAccess(binding.schema, def.fields)
             : narrowSchemaToPublic(binding.schema, def.fields);
+         // A stored column no field of the source names is one its own
+         // `extend` block drops (`except:`, `accept:`) or an `include`
+         // re-hides under another name: it stays on the stored table so the
+         // author's text compiles and removes it again (review F3). Should
+         // the text not remove it, the access check below finds a public
+         // field the author's source lacks and leaves the source as written.
+         const narrowed = perColumn
+            ? [...named, ...unnamedStoredColumns(binding.schema, def.fields)]
+            : named;
          const mismatches = storedColumnTypeMismatches(
             narrowed,
             declaredColumnsOf(def.fields),
@@ -1059,7 +1078,7 @@ export class ServedCopyServe {
          // reading it answers live (G5, the serve shape's handling, plan
          // call 4); before the cutover, the whole source is refused.
          const typePlan =
-            mismatches.length > 0 && this.host.perColumnTypes?.()
+            mismatches.length > 0 && perColumn
                ? serveTypePlan(mismatches, {
                     queryTimezone: queryTimezoneOf(def),
                  })
@@ -1152,6 +1171,9 @@ export class ServedCopyServe {
             : {}),
          ...(inlinedJoins.length > 0 ? { inlinedJoins } : {}),
          ...(columnsLeftOut.length > 0 ? { columnsLeftOut } : {}),
+         ...(!plan && this.host.perColumnTypes?.() === true
+            ? { keepsIncludes: true as const }
+            : {}),
          sourceID: node.sourceID,
          authorDef: node.def,
       } as AuthorReroot;
@@ -2549,4 +2571,25 @@ function declaresBlocks(def: unknown): boolean {
          (typeof x.expressionType === "string" && x.expressionType !== "scalar")
       );
    });
+}
+
+/**
+ * The stored columns no field of the source names, exactly or by a unique
+ * case-fold (see {@link storedColumnsWithAccess}): what the source's own text
+ * drops or renames away after the build.
+ */
+export function unnamedStoredColumns(
+   schema: readonly { name: string; type: string }[],
+   fields: readonly unknown[] | undefined,
+): { name: string; type: string }[] {
+   const names = new Set<string>();
+   for (const f of fields ?? []) {
+      const x = f as { name?: unknown; as?: unknown };
+      for (const n of [x.name, x.as]) {
+         if (typeof n === "string") names.add(n.toLowerCase());
+      }
+   }
+   return schema
+      .filter((c) => !names.has(c.name.toLowerCase()))
+      .map((c) => ({ name: c.name, type: c.type }));
 }

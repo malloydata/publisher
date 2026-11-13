@@ -185,6 +185,13 @@ const UNFLAGGED_BEFORE_CUTOVER: Gap = {
       "a model file without ##! experimental.persistence plans no #@ persist source before the cutover (guard 1); the cutover's build copy carries the flag (D3)",
 };
 
+/** Today's serve shape compiles a model's sources together, so one that cannot be shaped takes the others live. */
+const SERVE_SHAPE_FAILS_BESIDE: Gap = {
+   kind: "live",
+   reason:
+      "today's serve shape does not compile this model (the re-hidden source's measure reads a column its storage= table does not hold), so every source in it answers live; the cutover's served copy contains that failure and serves the source beside it",
+};
+
 export const SHAPES: Shape[] = [
    {
       name: "baseline",
@@ -1619,6 +1626,52 @@ source: daily_nf is orders_raw -> {
          {
             name: "a stored measure by region",
             malloy: "run: daily_nf -> { group_by: region; aggregate: grand }",
+         },
+      ],
+   },
+   {
+      name: "an extend block that drops and re-hides stored columns",
+      about: "A persisted query whose extend block drops a stored column with except:, and one that renames a stored column and re-hides it with include (review F3: the stored table holds both, and the author's own text removes and re-hides them again)",
+      files: {
+         "m.malloy": `##! experimental { persistence access_modifiers }
+import "raw.malloy"
+
+@PERSIST(dropped)
+source: dropped is orders_raw -> {
+  select: id, region, status, amount
+} extend {
+  except: status
+  measure: total is amount.sum()
+}
+
+@PERSIST(rehidden)
+source: rehidden is customers_raw -> {
+  select: id, segment, home_region
+} extend {
+  rename: region_raw is home_region
+} include { internal: region_raw; public: * } extend {
+  measure: n is count()
+  measure: west_n is count() { where: region_raw = 'west' }
+}
+`,
+      },
+      variants: ["storage", "colocated"],
+      queries: [
+         {
+            name: "a measure beside the excepted column",
+            malloy: "run: dropped -> { group_by: region; aggregate: total }",
+            gaps: {
+               "storage/off": SERVE_SHAPE_FAILS_BESIDE,
+               "storage/on": SERVE_SHAPE_FAILS_BESIDE,
+            },
+         },
+         {
+            name: "a measure over the re-hidden column",
+            malloy:
+               "run: rehidden -> { group_by: segment; aggregate: n, west_n }",
+            // A storage= table holds public columns only, so a measure over
+            // the hidden column is answered live there.
+            expect: { storage: "live" },
          },
       ],
    },

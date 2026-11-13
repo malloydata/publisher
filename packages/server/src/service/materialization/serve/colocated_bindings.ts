@@ -149,9 +149,11 @@ function v1ColumnsOf(
  * The columns a v1 colocated `#@ persist` build wrote, derived from the
  * source's compiled definition (the v1 cutover's G1, for a table built before
  * its build captured a schema). A v1 build source is query-shaped, so its
- * stored columns are the query's output fields: the fields with no
- * expression, minus views; two corrections make the compiled field list read
- * as the table:
+ * stored columns are the query's output fields. They are read from the
+ * persisted query's output struct when the compiled source records it (what
+ * the `extend` block drops with `except:` or `accept:` is still a column);
+ * otherwise from the source's fields with no expression, minus views, with
+ * two corrections that make the compiled field list read as the table:
  *
  * - a stored column is the field's name before any `rename:` (`as`), since
  *   the rename is applied in the source's `extend` block, after the build;
@@ -164,9 +166,20 @@ function v1ColumnsOf(
  * the served copy finds it missing and that source serves live.
  */
 export function v1StoredColumnsOf(def: unknown): StoredColumn[] | undefined {
-   const d = def as { fields?: unknown[]; dialect?: unknown } | undefined;
-   if (!Array.isArray(d?.fields)) return undefined;
-   const outputs = d.fields
+   const d = def as
+      | {
+           fields?: unknown[];
+           dialect?: unknown;
+           query?: { pipeline?: { outputStruct?: { fields?: unknown[] } }[] };
+        }
+      | undefined;
+   // The persisted query's own output, when the compiled source records it:
+   // exactly the build's columns, before the `extend` block renames, drops
+   // (`except:`, `accept:`) or re-hides any (review F3).
+   const output = d?.query?.pipeline?.at(-1)?.outputStruct?.fields;
+   const fields = Array.isArray(output) ? output : d?.fields;
+   if (!Array.isArray(fields)) return undefined;
+   const outputs = fields
       .filter((f) => {
          const x = f as Record<string, unknown>;
          return (
@@ -181,5 +194,5 @@ export function v1StoredColumnsOf(def: unknown): StoredColumn[] | undefined {
          const { as: _as, ...rest } = f as Record<string, unknown>;
          return rest;
       });
-   return storedColumnsOfOutput(outputs, { nested: d.dialect === "duckdb" });
+   return storedColumnsOfOutput(outputs, { nested: d?.dialect === "duckdb" });
 }

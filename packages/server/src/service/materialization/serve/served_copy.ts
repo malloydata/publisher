@@ -140,6 +140,14 @@ export interface Reroot {
     */
    keptBlocks?: string;
    /**
+    * A v1 query-shaped source's re-root under the cutover (review F3): the
+    * run it keeps is everything after its query, `include { … }` blocks
+    * included, so the author's own `rename:`, `except:` and access
+    * modifiers apply to the stored columns as they applied to the query's
+    * output; the re-root writes no access modifier of its own.
+    */
+   keepsIncludes?: true;
+   /**
     * For a `#(materialize)` source that inlines a join_many: its stored table
     * is a pair table (P5), read as the source itself with no join
     * ({@link PairReroot}).
@@ -728,9 +736,12 @@ export function rerootDeclaration(
       | "pair"
       | "inlinedJoins"
       | "computedAtRead"
+      | "keepsIncludes"
    > & { columns?: Reroot["columns"] },
 ): string | undefined {
-   const spans = declarationSpans(declaration);
+   const spans = declarationSpans(declaration, {
+      throughIncludes: r.keepsIncludes === true,
+   });
    if (!spans) return undefined;
    const virtual =
       `${identifier(r.connectionAlias)}.virtual(${stringLiteral(r.virtualHandle)})` +
