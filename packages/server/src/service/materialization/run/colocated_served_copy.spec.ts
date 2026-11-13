@@ -367,14 +367,27 @@ for (const tier of TIERS)
          "refreshes an incremental colocated source and an incremental rolling window with a delta, each still equal to live",
          async () => {
             await publish("1.0.0");
-            expect((await build()).status).toBe("MANIFEST_FILE_READY");
-            // New rows above the watermark the first build covered through
-            // (its own clock), and below the second's: the delta's range.
-            await new Promise((resolve) => setTimeout(resolve, 1100));
+            const first = await build();
+            expect(first.status).toBe("MANIFEST_FILE_READY");
+            // New rows just above the boundary the first build covered
+            // through (on the build's own clock, which need not be the
+            // database's): the next delta's range starts there.
+            const covered = (
+               Object.values(
+                  (first.manifest as { entries?: Record<string, unknown> })
+                     ?.entries ?? {},
+               ) as {
+                  sourceName?: string;
+                  ledger?: { coveredThrough?: string };
+               }[]
+            ).find((e) => e.sourceName === "ev_inc")?.ledger?.coveredThrough;
+            expect(covered).toBeDefined();
+            const at = `TIMESTAMP '${covered!.replace("T", " ")}' + INTERVAL '1 second'`;
             await sql(`INSERT INTO ${table("ev")} VALUES
-            (5, 'east', 7.0, LOCALTIMESTAMP(0)),
-            (6, 'west', 3.0, LOCALTIMESTAMP(0))`);
-            await new Promise((resolve) => setTimeout(resolve, 1100));
+            (5, 'east', 7.0, ${at}),
+            (6, 'west', 3.0, ${at})`);
+            // The second build's clock passes them.
+            await new Promise((resolve) => setTimeout(resolve, 2100));
             const second = await build();
             expect(second.status).toBe("MANIFEST_FILE_READY");
             const entries = Object.values(

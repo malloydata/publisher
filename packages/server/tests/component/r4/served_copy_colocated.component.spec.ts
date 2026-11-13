@@ -51,6 +51,7 @@ source: flights is ${t("flights")} extend {
   dimension:
     long_haul is distance > 500
     dep_month is dep.month
+    booked_month is booked.month
   measure:
     total_distance is distance.sum()
     flight_count is count()
@@ -79,6 +80,20 @@ source: org_flights is ${t("flights")} extend {
   measure: total_distance is distance.sum()
 }
 
+#(materialize) name="r4c_carriers"
+source: carriers_m is ${t("carriers")} extend {
+  primary_key: code
+  dimension: loud is upper(nickname)
+}
+
+// Not materialized: it reaches carriers_m only through its join (#6643),
+// beside a join to a warehouse table nothing stores (#6983).
+source: legs is ${t("flights")} extend {
+  join_one: carriers_m with carrier
+  join_one: segs_first is ${t("segs")} on segs_first.flight_id = id
+  measure: n is count()
+}
+
 #(access_filter) org in $GROUPS
 #(materialize) name="r4c_gated"
 source: gated is base extend {
@@ -91,13 +106,13 @@ source: gated is base extend {
 function seed(schema: string): string[] {
    return [
       `CREATE TABLE ${schema}flights AS SELECT * FROM (VALUES
-         (1, 'AA', 'acme', 100.0, TIMESTAMP '2026-01-03 10:00:00'),
-         (2, 'AA', 'globex', 900.0, TIMESTAMP '2026-01-20 23:30:00'),
-         (3, 'UA', 'acme', 650.0, TIMESTAMP '2026-02-01 00:00:00'),
-         (4, 'DL', 'initech', 50.0, TIMESTAMP '2026-02-14 12:00:00'),
-         (5, 'UA', 'globex', 300.0, TIMESTAMP '2026-03-31 23:59:59'),
-         (6, 'XX', 'acme', 720.0, TIMESTAMP '2026-03-01 06:00:00')
-       ) AS t(id, carrier, org, distance, dep)`,
+         (1, 'AA', 'acme', 100.0, TIMESTAMP '2026-01-03 10:00:00', DATE '2025-12-30'),
+         (2, 'AA', 'globex', 900.0, TIMESTAMP '2026-01-20 23:30:00', DATE '2026-01-02'),
+         (3, 'UA', 'acme', 650.0, TIMESTAMP '2026-02-01 00:00:00', DATE '2026-01-31'),
+         (4, 'DL', 'initech', 50.0, TIMESTAMP '2026-02-14 12:00:00', DATE '2026-02-01'),
+         (5, 'UA', 'globex', 300.0, TIMESTAMP '2026-03-31 23:59:59', DATE '2026-03-15'),
+         (6, 'XX', 'acme', 720.0, TIMESTAMP '2026-03-01 06:00:00', DATE '2026-02-28')
+       ) AS t(id, carrier, org, distance, dep, booked)`,
       `CREATE TABLE ${schema}carriers AS SELECT * FROM (VALUES
          ('AA', 'American'), ('UA', 'United'), ('DL', 'Delta')
        ) AS t(code, nickname)`,
@@ -122,6 +137,11 @@ const QUERIES: {
          "run: flights -> { group_by: long_haul, dep_month; aggregate: total_distance, flight_count }",
    },
    {
+      name: "a stored date truncation, grouped, filtered and re-truncated",
+      malloy:
+         "run: flights -> { where: booked_month >= @2026-01; group_by: booked_month, y is booked_month.year; aggregate: flight_count }",
+   },
+   {
       name: "a re-truncated stored timeframe, filtered by a literal",
       malloy:
          "run: flights -> { where: dep_month = @2026-02; group_by: q is dep_month.quarter; aggregate: flight_count }",
@@ -135,6 +155,11 @@ const QUERIES: {
       name: "child measures from the pair table",
       malloy:
          "run: flight_segs -> { group_by: carrier; aggregate: seg_n, seg_miles }",
+   },
+   {
+      name: "a materialized source reached only through a join, beside a warehouse join",
+      malloy:
+         "run: legs -> { group_by: carriers_m.loud; aggregate: n, m is segs_first.miles.sum() }",
    },
    {
       name: "a parent-only query, answered live past the pair table",
@@ -154,6 +179,15 @@ const QUERIES: {
       givens: { GROUPS },
    })),
 ];
+
+/** Fields with a number's integer or decimal subtype left out. */
+function withoutNumberSubtype(fields: { name: string; type: unknown }[]) {
+   return JSON.parse(
+      JSON.stringify(fields, (key, value) =>
+         key === "subtype" ? undefined : value,
+      ),
+   );
+}
 
 const tiers: {
    label: string;
@@ -236,9 +270,14 @@ for (const tier of tiers) {
                ])
                .sort(),
          ).toEqual(
-            ["flight_segs", "flights", "gated", "hidden", "org_flights"].map(
-               (name) => [name, true, connection, true],
-            ),
+            [
+               "carriers_m",
+               "flight_segs",
+               "flights",
+               "gated",
+               "hidden",
+               "org_flights",
+            ].map((name) => [name, true, connection, true]),
          );
       });
 
@@ -254,6 +293,12 @@ for (const tier of tiers) {
                ...(query.givens ? { givens: query.givens as never } : {}),
             });
             expect(rowDifference(run.live, run.served)).toBeUndefined();
+            // The result's fields too, a timeframe's included, but for a
+            // number's subtype, which no stored column carries (known
+            // limitations, row 12).
+            expect(withoutNumberSubtype(run.servedFields)).toEqual(
+               withoutNumberSubtype(run.liveFields),
+            );
             if (query.live) {
                expect(run.servedVia).toBeUndefined();
                return;
