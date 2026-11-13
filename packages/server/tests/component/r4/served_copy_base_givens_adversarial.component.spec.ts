@@ -62,6 +62,16 @@ source: far_base is duckdb.sql("select * from ev") extend {
 }
 `;
 
+// A same-named base in a third file, over the same table with a narrower term:
+// imported under another name and renamed here, its term is in another file.
+const thirdFile = `##! experimental { givens access_modifiers }
+import "other.malloy"
+
+source: base is duckdb.table('ev') extend {
+  where: org = $ORG and tier = 'gold'
+}
+`;
+
 // The given is declared once, in other.malloy, which this file imports.
 const modelOver = (
    ev: string,
@@ -69,6 +79,7 @@ const modelOver = (
    labels: string,
 ) => `##! experimental { givens access_modifiers }
 import "other.malloy"
+import { obase is base } from "third.malloy"
 
 source: ev is ${ev}
 source: tiers is ${tiers}
@@ -188,6 +199,20 @@ source: mid_r is mid
 #(materialize) storage="lake"
 source: rename_where is mid_r extend { measure: total is amt.sum() }
 
+// A chain of bare renames, a rename of an extension that adds no term, and
+// a rename of a same-named base declared in another file.
+source: b5 is b2
+source: b6 is b5
+#(materialize) storage="lake"
+source: bare_chain is b6 extend { measure: total is amt.sum() }
+source: mid2 is base extend { dimension: q is 1 }
+source: mid2_r is mid2
+#(materialize) storage="lake"
+source: rename_ext is mid2_r extend { measure: total is amt.sum() }
+source: ob2 is obase
+#(materialize) storage="lake"
+source: other_base is ob2 extend { measure: total is amt.sum() }
+
 // A rolling window of the source's own over the scoped base.
 #(materialize) storage="lake"
 source: rolling is base extend {
@@ -257,6 +282,8 @@ async function asEachCaller(
 // an extension, and the walk infers it, through a rename (`b2 is base`) and
 // past an extension's own `where:` or join, as it reads the SQL source's.
 const BUILT = [
+   "bare_chain",
+   "rename_ext",
    "hidden",
    "mixed",
    "own_join",
@@ -295,7 +322,11 @@ for (const [shape, ev, tiers, labels, expectedBuilt] of [
             env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
          }).restore;
          fixture = await buildScenario({
-            files: { "m.malloy": model, "other.malloy": otherFile },
+            files: {
+               "m.malloy": model,
+               "other.malloy": otherFile,
+               "third.malloy": thirdFile,
+            },
             seedSql,
             materialize: true,
             clock: B,
@@ -422,6 +453,21 @@ for (const [shape, ev, tiers, labels, expectedBuilt] of [
          [
             "rename_where",
             "run: rename_where -> { group_by: org, tier, mine; aggregate: total }",
+            true,
+         ],
+         [
+            "bare_chain",
+            "run: bare_chain -> { group_by: org, mine, tag; aggregate: total, mine_total }",
+            true,
+         ],
+         [
+            "rename_ext",
+            "run: rename_ext -> { group_by: org, q, mine; aggregate: total }",
+            true,
+         ],
+         [
+            "other_base",
+            "run: other_base -> { group_by: org, tier; aggregate: total }",
             true,
          ],
          [

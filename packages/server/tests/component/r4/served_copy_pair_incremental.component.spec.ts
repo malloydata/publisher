@@ -1066,6 +1066,22 @@ describe("R4: an incremental pair table of several blocks refreshes in place, re
       await expectServedEqualsLive(B);
    });
 
+   it("exposes neither watermark column on the served source", async () => {
+      fixture.setBindings(fixture.bindings);
+      expect(
+         (await rows(`DESCRIBE ${table()}`)).map((r) => r.column_name),
+      ).toEqual(
+         expect.arrayContaining(["__pair_watermark", "__pair_watermark_block"]),
+      );
+      for (const column of ["__pair_watermark", "__pair_watermark_block"]) {
+         await expect(
+            fixture.runAsIs(
+               `run: flights -> { group_by: ${column}; aggregate: flight_count }`,
+            ),
+         ).rejects.toThrow(new RegExp(column));
+      }
+   });
+
    it("refreshes in place after rows change in each block", async () => {
       const t = (h: number) =>
          `TIMESTAMP '2026-11-10 ${String(h).padStart(2, "0")}:00:00'`;
