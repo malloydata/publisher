@@ -40,17 +40,21 @@ const seedSql = [
 ];
 
 /** One chain of extension tables, `storage` on each declaration. */
+// In a file of its own: truncated in the query's time zone and declared on a
+// base in another file, so every table stores it as the build computed it
+// (the served copy keeps only the blocks of bases in the source's own file):
+// a timezone: query declines each.
+const ordersModel = `source: orders is duckdb.table('ev') extend {
+  dimension: is_big is amt > 10
+  dimension: d_hour is d::timestamp.hour
+}
+`;
+
 function chainModel(storage: string): string {
    return `##! experimental.givens
 given: REGION :: string is 'east'
 
-source: orders is duckdb.table('ev') extend {
-  dimension: is_big is amt > 10
-  // Truncated in the query's time zone and declared on a base, so every
-  // table stores it as the build computed it (P9 leaves out only what a
-  // source's own declaration writes): a timezone: query declines each.
-  dimension: d_hour is d::timestamp.hour
-}
+import "orders.malloy"
 
 #(materialize) ${storage}name="stored_t"
 source: stored is orders extend {
@@ -165,7 +169,10 @@ describe("R4: extension tables answer equal to live", () => {
          env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       }).restore;
       storage = await buildScenario({
-         files: { "m.malloy": chainModel('storage="lake" ') },
+         files: {
+            "m.malloy": chainModel('storage="lake" '),
+            "orders.malloy": ordersModel,
+         },
          seedSql,
          materialize: true,
       });

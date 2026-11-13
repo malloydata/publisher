@@ -87,10 +87,10 @@
  * Not yet (each is a later pull request's, and is refused or left out here
  * rather than built wrong):
  * - `inline=` on a join_cross is refused.
- * - A dimension that reads a given and is declared on a source this one is
- *   built from (not on its own declaration) refuses the source: the re-root
- *   replaces that declaration, so the served copy could not compute it at
- *   read (P9, below).
+ * - A given-reading `where:` or dimension written where the served copy
+ *   cannot keep it (a source in another file, a parenthesised head, a base
+ *   whose fields this source renames, redefines or drops) refuses the
+ *   source (Bases' blocks, below).
  * - The build reads the author's file as written, not a copy with its
  *   `#@ persist` lines removed, so a source that also carries its own
  *   `#@ persist` is refused rather than stored twice.
@@ -104,15 +104,33 @@
  * running it; the IR walks ({@link givenReadingFields}, `currentTimeFields`)
  * answer too, and either marking a dimension leaves it out. A given or the
  * current time leaves it out wherever it is declared (a given-reading one
- * declared on a base refuses the source, since the served copy would lose its
- * definition and an author should hear why); the time zone leaves out only a
- * dimension the source's own declaration writes, since one declared on a base
- * would be lost from the served copy: that one is stored as the build computes
- * it, in the default zone, and a query that sets a `timezone:` over its table
- * is answered live. A stored computed dimension the probe cleared of the time
- * zone is marked `zoneFree`, so a `timezone:` query over a table that stores
- * only such dimensions is not declined for it. Each left-out dimension is
- * listed on the plan (`leftOut`).
+ * declared where the served copy cannot keep its definition refuses the
+ * source, and an author should hear why); the time zone leaves out only a
+ * dimension whose definition the served copy keeps (the source's own, or a
+ * kept base's): any other is stored as the build computes it, in the default
+ * zone, and a query that sets a `timezone:` over its table is answered live.
+ * A stored computed dimension the probe cleared of the time zone is marked
+ * `zoneFree`, so a `timezone:` query over a table that stores only such
+ * dimensions is not declined for it. Each left-out dimension is listed on
+ * the plan (`leftOut`).
+ *
+ * Bases' blocks. The served copy replaces the source's declaration base with
+ * its table, so what a base declares is gone unless the re-root keeps that
+ * base's trailing `extend` blocks (kept_ancestors.ts: bases this source
+ * extends or renames, up the chain in its own file, as each declaration
+ * names the next as its whole base). A given-reading `where:` the source
+ * inherits from such a base is left out of the build (the build copy writes
+ * `true` in the base's text) and a caller-dependent dimension such a base
+ * declares is left out of the `select:`; the plan lists the bases whose
+ * blocks the served copy must keep (`keptBases`), and the served copy keeps
+ * them, so the term is re-applied and the dimension computed at read, per
+ * caller. Only when the source inherits the base's fields unchanged (no
+ * `rename:`, redefinition, `except:` or access change), so the kept block
+ * reads the columns it read on the base; and for a term, only when no join
+ * of the source reads that base, since the copy takes the term out of every
+ * reader of the base in it. #1637's leak was a re-root that dropped a
+ * given-reading `where:`; the served copy's given-term check still refuses
+ * any re-root whose compiled filters lost one (`keepsGivenTerms`).
  *
  * A current-time `where:` term is a rolling window (rolling_window.ts): a lower
  * bound builds as written, since the build's own `now` is the widest-set
@@ -194,6 +212,11 @@ import {
    type TextEdit,
 } from "../declaration_text";
 import { offsetOf } from "../malloy_lexer";
+import {
+   confirmedAncestors,
+   keptAncestorChain,
+   type KeptAncestor,
+} from "../kept_ancestors";
 import { callerIndependent, type FieldDependence } from "../../probe_compiler";
 import {
    classifyWhereTerms,
@@ -410,6 +433,12 @@ export type CallerInput = "given" | "current_time" | "time_zone";
 export interface LeftOutDimension {
    dimension: string;
    reads: CallerInput[];
+   /**
+    * For one a base on the plan's `keptBases` declares: where (the field's
+    * compiled location), so the build copy confirms it is in that base's
+    * trailing `extend` run, the text the served copy keeps.
+    */
+   at?: TermUse;
 }
 
 /** A given a read-time term reads, and the file that declares it. */
@@ -455,10 +484,21 @@ export interface MaterializePlan {
    /** The joins the declaration inlines (`inline=[…]`). */
    inline?: string[];
    /**
-    * The source's own computed dimensions left out of the build because each
-    * depends on the caller (P9), in field order. Absent when none is.
+    * The computed dimensions left out of the build because each depends on
+    * the caller (P9), in field order: the source's own, and ones a base on
+    * {@link keptBases} declares. Absent when none is.
     */
    leftOut?: LeftOutDimension[];
+   /**
+    * The ancestors whose trailing `extend` blocks the served copy must keep
+    * ahead of the source's own (kept_ancestors.ts), nearest first, up to the
+    * farthest one needed: one writes a given-reading `where:` the source
+    * inherits, or declares a dimension left out because it depends on the
+    * caller. The build leaves those out, and only that base's block,
+    * written again over the stored table, re-applies them at read. Absent
+    * when the source needs no base's block.
+    */
+   keptBases?: KeptAncestor[];
    /** One uniqueness check per inlined join_one (P8). */
    uniquenessChecks?: InlineUniquenessCheck[];
    /** For an inlined join_many: the pair table's layout (P5). */
@@ -867,19 +907,132 @@ export function materializeColumns(
 }
 
 /**
- * Which of a materialized source's own computed dimensions depend on the
- * caller (P9), from the probe compiler's answers (`probed`, by dimension;
- * absent when no probe ran) and the IR walks, and which stored ones the probe
- * cleared of the time zone. A dimension that reads a given and is declared on
- * a base, not on the source's own declaration, is a refusal: the served copy
- * re-roots the declaration and would lose it. So is an inlined join through
- * which a given is read: its stored columns would hold one caller's values.
+ * The ancestors a materialized source's re-root can keep the blocks of
+ * ({@link keptAncestorChain}), nearest first, each with whether the source
+ * inherits its fields unchanged ({@link inheritsUnchanged}). A term or
+ * dimension a base declares is re-applied at read in that base's block, in
+ * the base's own names, so it is left out of the build only when the source
+ * renames, redefines, drops or re-hides none of them.
+ */
+export interface PlanBases {
+   chain: KeptAncestor[];
+   unchanged: boolean[];
+}
+
+/** {@link PlanBases} for `def`, from the source map. */
+export function planBases(def: SourceDefLike, map: SourceMap): PlanBases {
+   const declaration = declarationOf(def);
+   if (typeof def.sourceID !== "string" || !declaration) {
+      return { chain: [], unchanged: [] };
+   }
+   const chain = keptAncestorChain(map, def.sourceID, declaration.url);
+   return {
+      chain,
+      unchanged: chain.map((a) =>
+         inheritsUnchanged(def, map.node(a.sourceID)?.def as SourceDefLike),
+      ),
+   };
+}
+
+/**
+ * Whether `def` has every field `ancestor` has, each exactly as the ancestor
+ * compiled it (no `rename:`, redefinition, `except:` or access change on the
+ * way down), so a base's block written over the stored table reads the same
+ * columns it read on the base. Unreadable fields fail closed.
+ */
+function inheritsUnchanged(
+   def: SourceDefLike,
+   ancestor: SourceDefLike | undefined,
+): boolean {
+   if (!ancestor || !Array.isArray(ancestor.fields)) return false;
+   const nameOf = (f: FieldLike) => (typeof f.as === "string" ? f.as : f.name);
+   const own = new Map<unknown, unknown>();
+   for (const raw of def.fields ?? []) own.set(nameOf(raw as FieldLike), raw);
+   try {
+      return ancestor.fields.every((raw) => {
+         const mine = own.get(nameOf(raw as FieldLike));
+         return (
+            mine !== undefined &&
+            (mine === raw || JSON.stringify(mine) === JSON.stringify(raw))
+         );
+      });
+   } catch {
+      return false;
+   }
+}
+
+/**
+ * Where a compiled thing at `uses` is declared: `"own"` within the source's
+ * own declaration, the index of the ancestor on `bases.chain` whose
+ * declaration holds every use, or undefined (another file, a base off the
+ * kept walk, or no location).
+ */
+function declaredAt(
+   uses: readonly TermUse[],
+   own: TermUse | undefined,
+   bases: PlanBases,
+): "own" | number | undefined {
+   if (uses.length === 0) return undefined;
+   const within = (url: string, range: MalloyRange) =>
+      uses.every((use) => use.url === url && rangeWithin(use.range, range));
+   if (own && within(own.url, own.range)) return "own";
+   if (!own) return undefined;
+   const index = bases.chain.findIndex((a) => within(own.url, a.range));
+   return index < 0 ? undefined : index;
+}
+
+/**
+ * Whether a join of `def` (its condition, its joined source's filters or
+ * fields, at any depth) holds IR compiled from the text at `uses`. A build
+ * copy that takes an inherited term out of its base takes it out of every
+ * reader of that base in the copy, so a join that reads the base would read
+ * every caller's rows in the build. Fails closed on a walk too deep to finish.
+ */
+function joinsRead(def: SourceDefLike, uses: readonly TermUse[]): boolean {
+   const hit = (node: unknown, depth: number): boolean => {
+      if (depth > 400) return true;
+      if (node === null || typeof node !== "object") return false;
+      if (Array.isArray(node)) return node.some((n) => hit(n, depth + 1));
+      const record = node as { url?: unknown; range?: MalloyRange };
+      if (
+         typeof record.url === "string" &&
+         record.range !== undefined &&
+         uses.some(
+            (u) =>
+               u.url === record.url &&
+               JSON.stringify(u.range) === JSON.stringify(record.range),
+         )
+      ) {
+         return true;
+      }
+      return Object.values(node).some((v) => hit(v, depth + 1));
+   };
+   return (def.fields ?? []).some(
+      (raw) => (raw as FieldLike).join !== undefined && hit(raw, 0),
+   );
+}
+
+/**
+ * Which of a materialized source's computed dimensions depend on the caller
+ * (P9), from the probe compiler's answers (`probed`, by dimension; absent
+ * when no probe ran) and the IR walks, and which stored ones the probe
+ * cleared of the time zone. A caller-dependent dimension is left out when
+ * the served copy keeps its definition: one the source's own declaration
+ * writes, or one a base on the kept walk declares ({@link PlanBases}), whose
+ * block the re-root keeps (`keptBase`, the farthest such base's index, or
+ * -1). A given-reading one declared anywhere else is a refusal: the served
+ * copy could not compute it at read. So is an inlined join through which a
+ * given is read: its stored columns would hold one caller's values. A
+ * zone-dependent one declared elsewhere is stored as built.
  */
 export function callerDependentDimensions(
    def: SourceDefLike,
    probed: ReadonlyMap<string, FieldDependence> | undefined,
    inline: readonly string[] = [],
-): { leftOut: LeftOutDimension[]; zoneFree: Set<string> } | { reason: string } {
+   bases: PlanBases = { chain: [], unchanged: [] },
+):
+   | { leftOut: LeftOutDimension[]; zoneFree: Set<string>; keptBase: number }
+   | { reason: string } {
    const givenIR = givenReadingFields(def.fields);
    for (const j of inline) {
       if (
@@ -896,19 +1049,27 @@ export function callerDependentDimensions(
    }
    const timeIR = currentTimeFields(def.fields);
    const declaration = declarationOf(def);
-   const ownDeclaration = (field: FieldLike): boolean => {
+   // Where the served copy keeps the field's definition: its own declaration,
+   // or a kept base's block (the base's fields unchanged on the way down).
+   const kept = (field: FieldLike): "own" | number | undefined => {
       const at = (
          field as { location?: { url?: unknown; range?: MalloyRange } }
       ).location;
-      return (
-         declaration !== undefined &&
-         at?.url === declaration.url &&
-         at.range !== undefined &&
-         rangeWithin(at.range, declaration.range)
+      if (typeof at?.url !== "string" || at.range === undefined) {
+         return undefined;
+      }
+      const where = declaredAt(
+         [{ url: at.url, range: at.range }],
+         declaration,
+         bases,
       );
+      return typeof where === "number" && !bases.unchanged[where]
+         ? undefined
+         : where;
    };
    const leftOut: LeftOutDimension[] = [];
    const zoneFree = new Set<string>();
+   let keptBase = -1;
    for (const raw of def.fields ?? []) {
       const field = raw as FieldLike;
       const dimension = storableDimension(field);
@@ -922,27 +1083,38 @@ export function callerDependentDimensions(
          reads.push("current_time");
       }
       if (probe?.timeZone === true) reads.push("time_zone");
-      if (reads.includes("given") && !ownDeclaration(field)) {
+      const where = reads.length > 0 ? kept(field) : undefined;
+      if (reads.includes("given") && where === undefined) {
          return {
             reason:
                `the dimension ${quotedName(dimension)} reads a given and is ` +
-               "declared on a source this one is built from; the served copy " +
-               "re-roots only this declaration, so it could not compute the " +
-               "dimension at read. Declare it on this source, or materialize " +
-               "the source that declares it",
+               "declared where the served copy cannot keep its definition " +
+               "(a source in another file, a parenthesised head, or a base " +
+               "whose fields this source renames, redefines or drops), so " +
+               "it could not compute the dimension at read. Declare it on " +
+               "this source or on a source it extends in this file, or " +
+               "materialize the source that declares it",
          };
       }
       const perRead =
          reads.includes("given") ||
          reads.includes("current_time") ||
-         (reads.includes("time_zone") && ownDeclaration(field));
+         (reads.includes("time_zone") && where !== undefined);
       if (perRead) {
-         leftOut.push({ dimension, reads });
+         const at = (field as { location?: TermUse }).location;
+         leftOut.push({
+            dimension,
+            reads,
+            ...(typeof where === "number" && at
+               ? { at: { url: at.url, range: at.range } }
+               : {}),
+         });
+         if (typeof where === "number") keptBase = Math.max(keptBase, where);
       } else if (reads.length === 0 && callerIndependent(probe)) {
          zoneFree.add(dimension);
       }
    }
-   return { leftOut, zoneFree };
+   return { leftOut, zoneFree, keptBase };
 }
 
 /** A dimension's Malloy type on a compiled source, or "" when unknown. */
@@ -1180,12 +1352,15 @@ export function readTimeTermsOf(
    classified: readonly ClassifiedWhereTerm[],
    columns: readonly MaterializeColumn[],
    givens: Record<string, unknown> = {},
+   bases: PlanBases = { chain: [], unchanged: [] },
 ):
    | {
         ok: true;
         terms: GivenReadTerm[];
         declaration?: TermUse;
         givenDeclarations?: MaterializeGivenDeclaration[];
+        /** The farthest base on `bases.chain` an inherited term is written on, or -1. */
+        keptBase: number;
      }
    | { ok: false; reason: string } {
    const located = classified.flatMap(({ dependsOn }) =>
@@ -1199,8 +1374,9 @@ export function readTimeTermsOf(
            ]
          : [],
    );
-   if (located.length === 0) return { ok: true, terms: [] };
+   if (located.length === 0) return { ok: true, terms: [], keptBase: -1 };
    const declaration = declarationOf(def);
+   let keptBase = -1;
    const stored = new Set(columns.map((c) => c.column));
    const terms: GivenReadTerm[] = [];
    const givenDeclarations = new Map<string, string>();
@@ -1213,25 +1389,30 @@ export function readTimeTermsOf(
             reason: `${shown} reads a given that could not be read back, so it cannot be left out of the build`,
          };
       }
+      // Its own declaration's, or one a base on the kept walk writes, whose
+      // block the served copy keeps over the stored table (an inherited
+      // term): the build copy takes it out of that base, so no join of this
+      // source may read the base, and the base's fields must reach this
+      // source unchanged, so the kept block reads the same columns.
+      const where = declaredAt(term.at, declaration, bases);
       if (
-         !declaration ||
-         term.at.length === 0 ||
-         !term.at.every(
-            (use) =>
-               use.url === declaration.url &&
-               rangeWithin(use.range, declaration.range),
-         )
+         where === undefined ||
+         (typeof where === "number" &&
+            (!bases.unchanged[where] || joinsRead(def, term.at)))
       ) {
          return {
             ok: false,
             reason:
-               `${shown} reads a given and is written on a source this one ` +
-               `is built from, not on this source's own declaration; the ` +
-               `served copy re-roots only this declaration, so it could not ` +
-               `re-apply the term at read. Move the \`where:\` onto this ` +
-               `source, or materialize the source that writes it`,
+               `${shown} reads a given and is written where the served copy ` +
+               `cannot re-apply it at read: on a source in another file or ` +
+               `off this source's chain of extensions, in a parenthesised ` +
+               `head, on a base whose fields this source renames, redefines ` +
+               `or drops, or on a base a join of this source also reads. ` +
+               `Move the \`where:\` onto this source or a source it extends ` +
+               `in this file, or materialize the source that writes it`,
          };
       }
+      if (typeof where === "number") keptBase = Math.max(keptBase, where);
       if (
          term.columns.length === 0 ||
          !term.columns.every((column) => stored.has(column))
@@ -1275,6 +1456,7 @@ export function readTimeTermsOf(
       ok: true,
       terms,
       declaration,
+      keptBase,
       givenDeclarations: [...givenDeclarations]
          .map(([name, url]) => ({ name, url }))
          .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
@@ -1463,10 +1645,12 @@ export function planModelMaterialize(
       }
       // A dimension that depends on the caller is left out and computed at
       // read (P9).
+      const bases = planBases(def, map);
       const dependence = callerDependentDimensions(
          def,
          probed?.get(def.sourceID),
          inline,
+         bases,
       );
       if ("reason" in dependence) {
          refused.push({
@@ -1522,7 +1706,7 @@ export function planModelMaterialize(
          });
          continue;
       }
-      const readTime = readTimeTermsOf(def, classified, columns, givens);
+      const readTime = readTimeTermsOf(def, classified, columns, givens, bases);
       if (!readTime.ok) {
          refused.push({
             sourceName: name,
@@ -1531,6 +1715,10 @@ export function planModelMaterialize(
          });
          continue;
       }
+      // The bases whose blocks the served copy must keep, up to the farthest.
+      const keptBase = Math.max(dependence.keptBase, readTime.keptBase);
+      const keptBases =
+         keptBase >= 0 ? bases.chain.slice(0, keptBase + 1) : undefined;
       const carried = carriedPersistKeys(declaration);
       if ("reason" in carried) {
          refused.push({
@@ -1615,9 +1803,10 @@ export function planModelMaterialize(
                  declaration: readTime.declaration,
                  givenDeclarations: readTime.givenDeclarations,
               }
-            : columns.some((c) => c.access)
+            : columns.some((c) => c.access) || keptBases
               ? withDeclaration(declarationOf(def))
               : {}),
+         ...(keptBases ? { keptBases } : {}),
          ...(inline.length > 0 ? { inline } : {}),
          ...(dependence.leftOut.length > 0
             ? { leftOut: dependence.leftOut }
@@ -1649,8 +1838,10 @@ const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key", "partition"];
  * colocated pair never chains), carry no incremental
  * key, and the parent no given-reading `where:` (its build source's own
  * `extend` re-applies that term, which would scope the extension's build to
- * one caller). A plan that does not qualify builds over the raw chain, as
- * before: the same rows.
+ * one caller); nor may the plan store a dimension the parent left out that a
+ * base above the parent declares (its definition is in no block of the
+ * parent's re-root). A plan that does not qualify builds over the raw chain,
+ * as before: the same rows.
  */
 function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
    const byID = new Map(plans.map((p) => [p.sourceID, p]));
@@ -1688,6 +1879,20 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
          Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));
       if (incremental(plan) || incremental(parent)) continue;
       if (givenReadTerms(parent).length > 0) continue;
+      // A dimension the parent left out that a base above it declares is in
+      // no block of the parent's re-root on its build source, so a plan that
+      // stores it (one whose own walk could not keep that base) builds over
+      // the raw chain.
+      const aboveParent = new Set(
+         (parent.leftOut ?? []).filter((d) => d.at).map((d) => d.dimension),
+      );
+      if (
+         plan.columns.some(
+            (c) => c.join === undefined && aboveParent.has(c.dimension),
+         )
+      ) {
+         continue;
+      }
       plan.buildsOver = {
          sourceID: parent.sourceID,
          sourceName: parent.sourceName,
@@ -1896,9 +2101,7 @@ function copyEdits(
    const edits: TextEdit[] = [];
    const given = givenReadTerms(plan);
    if (given.length > 0) {
-      const found = plan.declaration
-         ? termSpans(text, plan.declaration, given)
-         : { reason: NOT_FOUND };
+      const found = termSpans(text, plan, given);
       if ("reason" in found) return found;
       for (const span of found.spans) edits.push({ ...span, insert: "true" });
    }
@@ -2155,13 +2358,17 @@ const NOT_FOUND =
  */
 function termSpans(
    text: string,
-   declaration: TermUse,
+   plan: MaterializePlan,
    terms: readonly GivenReadTerm[],
 ): { spans: { start: number; end: number }[] } | { reason: string } {
+   const declaration = plan.declaration;
+   if (!declaration) return { reason: NOT_FOUND };
    const from = offsetOf(text, declaration.range.start);
    const to = offsetOf(text, declaration.range.end);
    if (from < 0 || to < from) return { reason: NOT_FOUND };
    const extendStart = declarationSpans(text.slice(from, to))?.extendStart;
+   const bases = keptBasesInText(text, plan);
+   if ("reason" in bases) return bases;
    const spans: { start: number; end: number }[] = [];
    for (const term of terms) {
       const uses = term.at.map((use) => ({
@@ -2171,10 +2378,32 @@ function termSpans(
       if (uses.some((u) => u.start < 0 || u.end < u.start)) {
          return { reason: NOT_FOUND };
       }
+      // Where the term is written: the source's own declaration, or the base
+      // whose declaration holds it (an inherited term), with the run of
+      // `extend` blocks the served copy keeps of it.
+      const base = bases.confirmed.find(
+         (a) =>
+            uses.every(
+               (u) =>
+                  u.start >= offsetOf(text, a.range.start) &&
+                  u.end <= offsetOf(text, a.range.end),
+            ) && !uses.every((u) => u.start >= from && u.end <= to),
+      );
+      const region = base
+         ? {
+              from: offsetOf(text, base.range.start),
+              to: offsetOf(text, base.range.end),
+              run: base.run?.start,
+           }
+         : {
+              from,
+              to,
+              run: extendStart === undefined ? undefined : from + extendStart,
+           };
       const matches: number[] = [];
       for (
-         let at = text.indexOf(term.code, from);
-         at >= 0 && at + term.code.length <= to;
+         let at = text.indexOf(term.code, region.from);
+         at >= 0 && at + term.code.length <= region.to;
          at = text.indexOf(term.code, at + 1)
       ) {
          const end = at + term.code.length;
@@ -2185,19 +2414,61 @@ function termSpans(
       if (spans.some((s) => s.start < span.end && span.start < s.end)) {
          return { reason: NOT_FOUND };
       }
-      if (extendStart === undefined || span.start < from + extendStart) {
+      if (region.run === undefined || span.start < region.run) {
          return {
             reason:
-               `\`where: ${term.code}\` reads a given and is not in this ` +
-               "source's trailing `extend { … }`, the only part of its " +
-               "declaration the served copy keeps, so it could not be " +
-               "re-applied at read. Write it in a trailing `extend` on this " +
-               "source",
+               `\`where: ${term.code}\` reads a given and is not in the ` +
+               `trailing \`extend { … }\` of ${base ? "the base that writes it" : "this source"}, ` +
+               "the only part of a declaration the served copy keeps, so it " +
+               "could not be re-applied at read. Write it in a trailing " +
+               "`extend`",
          };
       }
       spans.push(span);
    }
    return { spans };
+}
+
+/**
+ * The plan's `keptBases` as the file's text confirms them
+ * ({@link confirmedAncestors}), or why the served copy would not keep one of
+ * their blocks: the text does not name each as the next one's whole base, or
+ * a dimension left out on a base is not in that base's trailing `extend` run.
+ * A plan with no `keptBases` confirms trivially.
+ */
+export function keptBasesInText(
+   text: string,
+   plan: Pick<MaterializePlan, "declaration" | "keptBases" | "leftOut">,
+): { confirmed: ReturnType<typeof confirmedAncestors> } | { reason: string } {
+   const chain = plan.keptBases ?? [];
+   if (chain.length === 0) return { confirmed: [] };
+   const notKept =
+      "a `where:` reading a given or a dimension depending on the caller is " +
+      "written on a source this one is built from, and that source is not " +
+      "named as the whole base of the declaration below it " +
+      "(`<name> is <base> extend { … }`), so the served copy could not keep " +
+      "its block";
+   if (!plan.declaration) return { reason: notKept };
+   const confirmed = confirmedAncestors(text, plan.declaration.range, chain);
+   if (confirmed.length < chain.length) return { reason: notKept };
+   for (const d of plan.leftOut ?? []) {
+      if (!d.at) continue;
+      const start = offsetOf(text, d.at.range.start);
+      const end = offsetOf(text, d.at.range.end);
+      const inRun = confirmed.some(
+         (a) => a.run && start >= a.run.start && end <= a.run.end,
+      );
+      if (start < 0 || end < start || !inRun) {
+         return {
+            reason:
+               `the dimension ${quotedName(d.dimension)} depends on the ` +
+               "caller and is declared on a source this one is built from, " +
+               "outside its trailing `extend { … }`, the only part of it the " +
+               "served copy keeps, so it could not be computed at read",
+         };
+      }
+   }
+   return { confirmed };
 }
 
 /**

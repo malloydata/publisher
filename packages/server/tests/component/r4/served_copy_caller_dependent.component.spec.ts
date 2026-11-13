@@ -13,8 +13,10 @@
  *  - the current time: read at two pinned clocks, each equal to live;
  *  - the query time zone: a `timezone:` query over a table that stores only
  *    zone-free computed dimensions is served, equal to live and different
- *    from the same query without the zone; over a table that stores a
- *    zone-dependent one (declared on a base, so stored as built) it is
+ *    from the same query without the zone, a zone-dependent dimension
+ *    declared on a base in the same file included (the served copy keeps
+ *    that base's block); over a table that stores a zone-dependent one
+ *    (declared on a base in another file, so stored as built) it is
  *    answered live.
  *
  * The harness builds each generated source with its SQL as compiled and does
@@ -45,8 +47,15 @@ const seedSql = [
     ) AS t(id, org, amt, ts)`,
 ];
 
+const farModel = `source: far_base is duckdb.table('ev') extend {
+  dimension: far_hour is hour(ts)
+}
+`;
+
 const model = `##! experimental { givens access_modifiers }
 given: ORG :: string is 'acme'
+
+import "far.malloy"
 
 source: ev is duckdb.table('ev')
 
@@ -90,6 +99,11 @@ source: zonal_ext is zonal extend {
 }
 
 #(materialize) storage="lake"
+source: far is far_base extend {
+  measure: total is amt.sum()
+}
+
+#(materialize) storage="lake"
 source: headed is (ev extend { dimension: mine is org = $ORG }) extend {
   measure: total is amt.sum()
 }
@@ -105,7 +119,7 @@ describe("R4: a caller-dependent dimension is computed at read, never stored (P9
          env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       }).restore;
       fixture = await buildScenario({
-         files: { "m.malloy": model },
+         files: { "m.malloy": model, "far.malloy": farModel },
          seedSql,
          materialize: true,
          clock: B,
@@ -144,9 +158,8 @@ describe("R4: a caller-dependent dimension is computed at read, never stored (P9
          (t) => `SELECT * FROM ${t("orders")} LIMIT 1`,
       );
       const stored = Object.keys(row).sort();
-      expect(stored).toEqual(
-         ["amt", "base_hour", "big", "id", "org", "ts"].sort(),
-      );
+      // base_hour too: declared on a base whose block the served copy keeps.
+      expect(stored).toEqual(["amt", "big", "id", "org", "ts"].sort());
       const [localRow] = await fixture.storedSQL(
          (t) => `SELECT * FROM ${t("local")} LIMIT 1`,
       );
@@ -243,11 +256,11 @@ describe("R4: a caller-dependent dimension is computed at read, never stored (P9
          expect(fixture.buildReads.zonal_ext).toContain("zonal");
       });
 
-      it("stores the inherited zone-dependent dimension as built, and leaves its own out", async () => {
+      it("leaves out the inherited zone-dependent dimension, and its own", async () => {
          const [row] = await fixture.storedSQL(
             (t) => `SELECT * FROM ${t("zonal_ext")} LIMIT 1`,
          );
-         expect(Object.keys(row)).toContain("hr");
+         expect(Object.keys(row)).not.toContain("hr");
          expect(Object.keys(row)).not.toContain("hr_next");
          const [parent] = await fixture.storedSQL(
             (t) => `SELECT * FROM ${t("zonal")} LIMIT 1`,
@@ -266,14 +279,14 @@ describe("R4: a caller-dependent dimension is computed at read, never stored (P9
          expect(rowDifference(run.live, run.served)).toBeUndefined();
       });
 
-      it("answers a timezone: query live, since its table stores the hour as built", async () => {
+      it("serves a timezone: query, computing the inherited hour at read in the kept block", async () => {
          const run = await fixture.run({
             name: "zonal_ext zoned",
             malloy:
                "run: zonal_ext -> { timezone: 'America/Los_Angeles'; group_by: hr, hr_next; aggregate: total; order_by: hr }",
             givens: CALLERS[0],
          });
-         expect(run.servedVia).toBeUndefined();
+         expect(run.servedVia).toBe("served_copy");
          expect(rowDifference(run.live, run.served)).toBeUndefined();
          // The parent stores no zone-dependent dimension: served in the zone.
          const parent = await fixture.run({
@@ -320,19 +333,38 @@ describe("R4: a caller-dependent dimension is computed at read, never stored (P9
          );
       });
 
-      it("answers live over a table that stores a zone-dependent dimension declared on a base", async () => {
-         fixture.setBindings(fixture.bindings);
+      it("serves a timezone: query over a zone-dependent dimension declared on a base in the same file", async () => {
          const run = await fixture.run({
             name: "orders zoned",
             malloy:
                "run: orders -> { timezone: 'America/Los_Angeles'; group_by: base_hour; aggregate: total; order_by: base_hour }",
             givens: CALLERS[0],
          });
+         expect(run.servedVia).toBe("served_copy");
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         const utc = await fixture.run({
+            name: "orders unzoned",
+            malloy:
+               "run: orders -> { group_by: base_hour; aggregate: total; order_by: base_hour }",
+            givens: CALLERS[0],
+         });
+         expect(utc.servedVia).toBe("served_copy");
+         expect(run.live).not.toEqual(utc.live);
+      });
+
+      it("answers live over a table that stores a zone-dependent dimension declared on a base in another file", async () => {
+         fixture.setBindings(fixture.bindings);
+         const run = await fixture.run({
+            name: "far zoned",
+            malloy:
+               "run: far -> { timezone: 'America/Los_Angeles'; group_by: far_hour; aggregate: total; order_by: far_hour }",
+            givens: CALLERS[0],
+         });
          expect(run.servedVia).toBeUndefined();
          expect(rowDifference(run.live, run.served)).toBeUndefined();
          fixture.setBindings(fixture.bindings);
          const asIs = await fixture.runAsIs(
-            "run: orders -> { timezone: 'America/Los_Angeles'; group_by: hr; aggregate: total }",
+            "run: far -> { timezone: 'America/Los_Angeles'; group_by: far_hour; aggregate: total }",
             CALLERS[0],
          );
          expect(
