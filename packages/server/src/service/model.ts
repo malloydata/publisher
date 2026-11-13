@@ -3098,6 +3098,50 @@ export class Model {
     * virtual source declares its columns. Empty when no destination is
     * configured, since then nothing serves from storage either way.
     */
+   /**
+    * The v1 cutover's preview (dry run): the sources this model's served copy
+    * would re-root over `bindings` (declared from the plan's output columns,
+    * so no table is read), and why it leaves the others as written. Compiled
+    * in a served copy of its own, with the cutover's per-column types, and
+    * discarded. Undefined when this model has no served copy to compile.
+    */
+   public async previewServedCopy(bindings: ServeBinding[]): Promise<
+      | {
+           rerooted: ReadonlySet<string>;
+           problems: readonly ServedCopyProblem[];
+        }
+      | undefined
+   > {
+      if (
+         this.modelType !== "model" ||
+         this.isNotebook() ||
+         !this.modelDef ||
+         !this.servedCopyContext ||
+         bindings.length === 0
+      ) {
+         return undefined;
+      }
+      const destinations = this.storageServe.serveDestinationConfig;
+      const copy = new ServedCopyServe({
+         modelPath: () => this.modelPath,
+         modelDef: () => this.modelDef,
+         perColumnTypes: () => true,
+         // Compile-only, as the view preview: a destination's catalog need
+         // not exist before the first build.
+         serveDestinationConfig: () =>
+            destinations && getPersistStorageMode() === "on"
+               ? () => compileOnlyDestinationConfig(destinations())
+               : undefined,
+      });
+      copy.setContext(...this.servedCopyContext);
+      copy.setBindings(bindings);
+      await copy.prepare();
+      return {
+         rerooted: copy.rerootedSourceIDs() ?? new Set<string>(),
+         problems: copy.problems(),
+      };
+   }
+
    public async previewStorageViews(
       bindings: ServeBinding[],
    ): Promise<Map<string, ViewServeVerdict[]>> {

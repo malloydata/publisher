@@ -1736,7 +1736,79 @@ export class PackageMaterialization {
             }
          }
       }
-      return this.serveVerdicts(views);
+      const verdicts = this.serveVerdicts(views);
+      if (getV1ServedCopyMode() === "off") return verdicts;
+      try {
+         return await this.withCutoverPaths(verdicts);
+      } catch (error) {
+         logger.warn("Could not preview the v1 cutover's serve paths", {
+            packageName: this.owner.packageName(),
+            error: errMessage(error),
+         });
+         return verdicts;
+      }
+   }
+
+   /**
+    * The v1 cutover's serve path on each verdict (6e, plan question 15): the
+    * served copy compiled over bindings declared from the plan's output
+    * columns, `storage=` ones as {@link previewServeBindings} declares them
+    * and colocated ones as the cutover binds them, names the sources it
+    * re-roots; a rollup is the rollup leg's. Nothing is built or read.
+    */
+   private async withCutoverPaths(
+      verdicts: ServeVerdict[],
+   ): Promise<ServeVerdict[]> {
+      const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
+      const sources = plan?.sources ?? {};
+      const eligible = this.colocatedSourceEligibility?.eligibleEntityIds;
+      const viewBuilds = this.persistedViewBuildIDs();
+      const entries: FreshnessManifest = {};
+      for (const source of Object.values(sources)) {
+         if (source.annotationFields?.storage?.trim()) continue;
+         entries[source.sourceEntityId] = {
+            tableName: `preview_${source.sourceEntityId}`,
+            connectionName: source.connectionName,
+         };
+      }
+      const bindings = [
+         ...this.previewServeBindings(),
+         ...deriveColocatedServeBindings({
+            entries,
+            planSources: sources,
+            materializePlans: this.materializePlans,
+            eligible: (sourceID) =>
+               !!eligible?.has(sources[sourceID]?.sourceEntityId ?? ""),
+            v1Schema: (sourceID) =>
+               v1StoredColumnsOf(this.declarationOf(sourceID)),
+            notV1: (sourceID) => viewBuilds.has(sourceID),
+         }),
+      ];
+      const rerooted = new Set<string>();
+      const problems = new Map<string, string>();
+      for (const model of this.owner.models().values()) {
+         const preview = await model.previewServedCopy?.(bindings);
+         for (const id of preview?.rerooted ?? []) rerooted.add(id);
+         for (const p of preview?.problems ?? []) {
+            if (p.sourceName && !problems.has(p.sourceName)) {
+               problems.set(p.sourceName, p.reason);
+            }
+         }
+      }
+      return verdicts.map((v) => {
+         if (v.origin === "preaggregate") {
+            return { ...v, cutoverPath: "rollup" };
+         }
+         if (rerooted.has(v.sourceID)) {
+            return { ...v, cutoverPath: "served_copy" };
+         }
+         return {
+            ...v,
+            cutoverPath: "live",
+            cutoverReason:
+               problems.get(v.sourceName) ?? v.reason ?? "not_rerooted",
+         };
+      });
    }
 
    /**
