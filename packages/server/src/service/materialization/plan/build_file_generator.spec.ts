@@ -495,7 +495,14 @@ source: orders is orders_raw extend {
             { dimension: "region", column: "region", computed: false },
             { dimension: "amount", column: "amount", computed: false },
             { dimension: "order_date", column: "order_date", computed: false },
-            { dimension: "big", column: "big", computed: true },
+            // The probe compiler found `big` the same in every query time
+            // zone (P9); a private field cannot be probed, so it is not marked.
+            {
+               dimension: "big",
+               column: "big",
+               computed: true,
+               zoneFree: true,
+            },
             {
                dimension: "secret",
                column: "secret",

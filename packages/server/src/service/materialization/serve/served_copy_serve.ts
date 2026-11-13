@@ -266,9 +266,11 @@ interface Compiled {
    /** Bindings actually re-rooted, with their destination under its alias. */
    rerooted: ServeBinding[];
    /**
-    * Tables that store a computed dimension (`#(materialize)`), by table
-    * path. The build evaluated it in the default timezone, so a query that
-    * sets its own `timezone:` would read values live computes differently.
+    * Tables that store a computed dimension (`#(materialize)`) whose value
+    * may depend on the time zone, by table path: one of the source's own the
+    * probe compiler did not clear (P9), or an inlined join's or pair table's
+    * child column. The build evaluated it in the default timezone, so a query
+    * that sets its own `timezone:` would read values live computes differently.
     */
    computedTables?: ReadonlySet<string>;
    /**
@@ -323,7 +325,16 @@ interface Compiled {
  * the served copy's compile of it against this definition, which is the
  * declaring model's when this model reaches the source only through a join.
  */
-type AuthorReroot = Reroot & { sourceID: string; authorDef: unknown };
+type AuthorReroot = Reroot & {
+   sourceID: string;
+   authorDef: unknown;
+   /**
+    * For a `#(materialize)` re-root: it stores a computed dimension of its own
+    * that the probe compiler did not clear of the query time zone (P9), which
+    * the build evaluated in the default zone.
+    */
+   storesZonedDimension?: true;
+};
 
 /** How many declined queries one compiled copy remembers before starting over. */
 const DECLINED_LIMIT = 1000;
@@ -925,6 +936,11 @@ export class ServedCopyServe {
                     .map((c) => c.dimension),
               }
             : {}),
+         ...(plan?.columns.some(
+            (c) => c.computed && c.join === undefined && !c.zoneFree,
+         )
+            ? { storesZonedDimension: true }
+            : {}),
          ...(plan?.readTimeTerms?.length
             ? { readTimeTerms: plan.readTimeTerms }
             : {}),
@@ -1389,12 +1405,16 @@ export class ServedCopyServe {
             key,
             generation,
             // An inlined join's columns are the joined source's fields as the
-            // build computed them, in its time zone.
+            // build computed them, in its time zone. A stored computed
+            // dimension of the source's own is too, unless the probe compiler
+            // found it the same in every zone (P9): one that is not was left
+            // out of the build when the source declares it, and is computed
+            // at read in the query's zone.
             computedTables: new Set(
                candidates
                   .filter(
                      (c) =>
-                        (c.reroot.storedDimensions ?? []).length > 0 ||
+                        c.reroot.storesZonedDimension === true ||
                         (c.reroot.inlinedJoins ?? []).length > 0 ||
                         (c.reroot.pair?.childStoredDimensions ?? []).length > 0,
                   )

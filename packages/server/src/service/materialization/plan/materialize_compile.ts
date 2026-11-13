@@ -41,6 +41,11 @@ import {
    type StoredColumnType,
 } from "./build_file_generator";
 import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
+import {
+   probeFieldDependence,
+   type FieldDependence,
+   type ProbeCompiler,
+} from "../../probe_compiler";
 
 export interface GeneratedMaterialize {
    /** The sources the generator planned. Never empty. */
@@ -97,6 +102,12 @@ export async function tryCompileMaterializeCompanion(args: {
     */
    givens: Record<string, unknown>;
    getRuntime: SynthesizedRuntimeFactory;
+   /**
+    * Compiles probes against the author's model (P9): which of each planned
+    * source's computed dimensions read a given, the current time or the query
+    * time zone. Absent: the IR walks alone decide.
+    */
+   probe?: ProbeCompiler;
 }): Promise<{
    generated?: GeneratedMaterialize;
    refused: MaterializeRefusal[];
@@ -104,17 +115,31 @@ export async function tryCompileMaterializeCompanion(args: {
    const modelFile = path.resolve(args.packagePath, args.modelPath);
    const refused: MaterializeRefusal[] = [];
    try {
+      const declaredHere = (declaringURL: string) => {
+         try {
+            return path.resolve(fileURLToPath(declaringURL)) === modelFile;
+         } catch {
+            // Not a local file (a host, another scheme): planned, as before.
+            return true;
+         }
+      };
+      // P9: plan once from the IR, probe the computed dimensions that plan
+      // would store, and plan again with the answers. A probe only ever
+      // leaves a dimension out or refuses a source, so every dimension the
+      // second plan stores was probed.
+      const probed = args.probe
+         ? await probeMaterializeDimensions(
+              args.probe,
+              planModelMaterialize(args.contents, declaredHere, args.givens)
+                 .plans,
+              args.contents,
+           )
+         : undefined;
       const planned = planModelMaterialize(
          args.contents,
-         (declaringURL) => {
-            try {
-               return path.resolve(fileURLToPath(declaringURL)) === modelFile;
-            } catch {
-               // Not a local file (a host, another scheme): planned, as before.
-               return true;
-            }
-         },
+         declaredHere,
          args.givens,
+         probed,
       );
       refused.push(...planned.refused);
       // The text the author's model was compiled from, through the reader
@@ -279,6 +304,46 @@ export async function tryCompileMaterializeCompanion(args: {
       );
       return { refused };
    }
+}
+
+/**
+ * The probe compiler's answers for each plan's own computed dimensions, by
+ * `sourceID` then dimension (P9). Compiled against the author's model by the
+ * source's name there; never run.
+ */
+async function probeMaterializeDimensions(
+   compiler: ProbeCompiler,
+   plans: readonly MaterializePlan[],
+   contents: Record<string, unknown>,
+): Promise<Map<string, Map<string, FieldDependence>>> {
+   const out = new Map<string, Map<string, FieldDependence>>();
+   for (const plan of plans) {
+      const fields = plan.columns
+         .filter((c) => c.computed && c.join === undefined)
+         .map((c) => c.dimension);
+      if (fields.length === 0) continue;
+      // By sourceID (the keying rule); the probe names the source as this
+      // model does, which for a source planned here is its own name.
+      const def = Object.values(contents).find(
+         (o) =>
+            !!o &&
+            typeof o === "object" &&
+            (o as { sourceID?: unknown }).sourceID === plan.sourceID,
+      ) as { fields?: { name?: unknown; as?: unknown }[] } | undefined;
+      const reserved = new Set(
+         (def?.fields ?? []).map((f) => String(f.as ?? f.name)),
+      );
+      out.set(
+         plan.sourceID,
+         await probeFieldDependence(
+            compiler,
+            plan.sourceName,
+            fields,
+            reserved,
+         ),
+      );
+   }
+   return out;
 }
 
 /** A planned source's build copy: its file name beside the model, and text. */

@@ -4,6 +4,7 @@
 import { Annotations, type PersistSource } from "@malloydata/malloy";
 import { parseRouteTag } from "../../motly";
 import { collectGivenRefs } from "../../given";
+import { readsAGiven } from "../../probe_compiler";
 import {
    NOW_OFFSET_UNITS,
    type NowComparisonOp,
@@ -81,33 +82,6 @@ function givenNames(node: unknown): string[] {
    const names = new Set<string>();
    collectGivenRefs(node, names);
    return [...names];
-}
-
-/**
- * Whether a slice of IR reads a given, by EITHER a `{node:'given'}` reference
- * or a non-empty `givenUsage` summary, so a compiler that prunes one of the two
- * signals cannot make a given read clean.
- */
-function readsAGiven(node: unknown, seen: WeakSet<object>, depth = 0): boolean {
-   if (depth > MAX_WALK_DEPTH) {
-      throw new Error("given walk exceeded max depth");
-   }
-   if (node === null || typeof node !== "object") return false;
-   if (seen.has(node as object)) return false;
-   seen.add(node as object);
-
-   if (Array.isArray(node)) {
-      return node.some((item) => readsAGiven(item, seen, depth + 1));
-   }
-   const record = node as Record<string, unknown>;
-   if (record.node === "given" || record.node === "givenReference") return true;
-   if (record.givenRef !== undefined) return true;
-   const summary = record.refSummary as { givenUsage?: unknown[] } | undefined;
-   if (summary?.givenUsage && summary.givenUsage.length > 0) return true;
-   if (Array.isArray(record.givenUsage) && record.givenUsage.length > 0) {
-      return true;
-   }
-   return Object.values(record).some((v) => readsAGiven(v, seen, depth + 1));
 }
 
 /**
@@ -925,20 +899,65 @@ function readsTimeField(e: unknown, timeFields: ReadonlySet<string>): boolean {
  * it depends on it. Such a dimension is never stored, since its value differs
  * per read.
  */
-export function currentTimeFields(fields: unknown, depth = 0): Set<string> {
+export function currentTimeFields(fields: unknown): Set<string> {
+   return fieldsDependingOn(fields, {
+      field: (f) => readsCurrentTime(f.e),
+      join: (f) =>
+         readsCurrentTime(f.filterList) || readsCurrentTime(f.onExpression),
+   });
+}
+
+/**
+ * Every field of a source whose value reads a given, as a dotted path, by the
+ * same rule as {@link currentTimeFields}: it reads one itself (the IR walk
+ * {@link readsAGiven}, which also reads Malloy's `givenUsage` summary), or
+ * reads a field or join that does. P9's IR signal, beside the probe
+ * compiler's: such a dimension is never stored, since its value differs per
+ * caller. Fails closed: a field the walk cannot finish is listed.
+ */
+export function givenReadingFields(fields: unknown): Set<string> {
+   const reads = (node: unknown): boolean => {
+      try {
+         return readsAGiven(node);
+      } catch {
+         return true;
+      }
+   };
+   return fieldsDependingOn(fields, {
+      field: (f) => reads(f),
+      join: (f) => reads(f.filterList) || reads(f.onExpression),
+   });
+}
+
+interface FieldLikeForDependence {
+   name?: unknown;
+   as?: unknown;
+   e?: unknown;
+   join?: unknown;
+   fields?: unknown;
+   filterList?: unknown;
+   onExpression?: unknown;
+}
+
+/**
+ * The fields of a source that depend on something, transitively: a field that
+ * `reads.field` marks, a join `reads.join` marks (every path through it), the
+ * same inside each joined source, and any field or join `on` that reads one
+ * of those.
+ */
+function fieldsDependingOn(
+   fields: unknown,
+   reads: {
+      field: (f: FieldLikeForDependence) => boolean;
+      join: (f: FieldLikeForDependence) => boolean;
+   },
+   depth = 0,
+): Set<string> {
    const out = new Set<string>();
    if (!Array.isArray(fields) || depth > MAX_WALK_DEPTH) return out;
    const deps = new Map<string, Set<string>>();
    for (const raw of fields) {
-      const f = raw as {
-         name?: unknown;
-         as?: unknown;
-         e?: unknown;
-         join?: unknown;
-         fields?: unknown;
-         filterList?: unknown;
-         onExpression?: unknown;
-      };
+      const f = raw as FieldLikeForDependence;
       const name =
          typeof f.as === "string"
             ? f.as
@@ -948,20 +967,17 @@ export function currentTimeFields(fields: unknown, depth = 0): Set<string> {
       if (name === undefined) continue;
       const refs = new Set<string>();
       if (f.join !== undefined) {
-         if (
-            readsCurrentTime(f.filterList) ||
-            readsCurrentTime(f.onExpression)
-         ) {
+         if (reads.join(f)) {
             out.add(name);
             continue;
          }
-         for (const inner of currentTimeFields(f.fields, depth + 1)) {
+         for (const inner of fieldsDependingOn(f.fields, reads, depth + 1)) {
             out.add(`${name}.${inner}`);
          }
-         // An `on` that reads one of this source's per-read dimensions.
+         // An `on` that reads one of this source's dependent dimensions.
          fieldPaths(f.onExpression, refs);
       } else {
-         if (readsCurrentTime(f.e)) out.add(name);
+         if (reads.field(f)) out.add(name);
          fieldPaths(f.e, refs);
       }
       deps.set(name, refs);

@@ -80,6 +80,7 @@ import {
    resolveStructRef,
    sqlTargetRef,
    structRefName,
+   queryGivenUsageIds,
 } from "./ir/prepared_query";
 import {
    mintGovernedRunnable,
@@ -909,12 +910,12 @@ export class QueryGovernor {
       } catch {
          return names;
       }
-      const usage = prepared._query?.givenUsage;
+      const usage = queryGivenUsageIds(prepared);
       if (!usage) {
          for (const name of candidates) names.add(name);
          return names;
       }
-      const usedIds = new Set(usage.map((g) => g.id));
+      const usedIds = new Set(usage);
       const namedIds = new Set<string>();
       const modelDef = prepared._modelDef ?? this.modelDef;
       // Separate visited sets: a struct seen outside a source argument must
