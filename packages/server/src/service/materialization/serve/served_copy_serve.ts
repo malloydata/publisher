@@ -83,10 +83,10 @@ import {
    type DerivedSourceDef,
    type ServeBinding,
 } from "./materialization_serve_transform";
+import { fieldNotes } from "../field_notes";
 import {
    buildServedCopy,
    declaredBaseName,
-   fieldNotes,
    type InlinedJoin,
    type JoinedColumn,
    type PairBlockReroot,
@@ -1998,8 +1998,22 @@ function pairRerootOf(
       }
       return out;
    };
+   // A join the author hides keeps its modifier on its record (known
+   // limitation 24), read off the author's compiled source.
+   const joinAccess = (join: string) => {
+      const def = (
+         sourceFields as {
+            name?: unknown;
+            as?: unknown;
+            join?: unknown;
+            accessModifier?: unknown;
+         }[]
+      ).find((f) => f.join !== undefined && String(f.as ?? f.name) === join);
+      return def ? hiddenAccess(def) : undefined;
+   };
    const recordOf = (p: MaterializePair, own: boolean) => {
       const names = [p.join];
+      const access = joinAccess(p.join);
       const childColumns = levelColumns(names, p.childSourceID, own);
       const hops: PairHopColumns[] = [];
       for (const hop of p.hops ?? []) {
@@ -2013,6 +2027,7 @@ function pairRerootOf(
          join: p.join,
          childColumns,
          ...(hops.length > 0 ? { hops } : {}),
+         ...(access ? { access } : {}),
       };
    };
    const own = recordOf(block, true);
@@ -2087,6 +2102,7 @@ function pairRerootOf(
       ...(own.hops ? { hops: own.hops } : {}),
       ...(levelRows.length > 0 ? { levelRows } : {}),
       ...(blockReroot ? { block: blockReroot } : {}),
+      ...(own.access ? { access: own.access } : {}),
    };
 }
 

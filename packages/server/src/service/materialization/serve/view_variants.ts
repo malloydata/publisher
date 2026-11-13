@@ -81,6 +81,7 @@ import { SourceMap } from "../plan/source_map";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
 import type { ServeBinding } from "./materialization_serve_transform";
 import type { MaterializedTableCatalog } from "./query_path";
+import { fieldNotes } from "../field_notes";
 import {
    TIMEFRAMES,
    timeframeRestatements,
@@ -512,11 +513,26 @@ export class PersistedViewServe {
             if (table.binding) {
                const typeName = `${plan.buildSourceName}__type`;
                const stored = `${plan.buildSourceName}__stored`;
-               const columns = table.binding.schema.map((c) => ({
-                  name: c.name,
-                  type: c.type,
-               }));
-               // malloy-text: the served copy's timeframe emitter, names through identifier
+               // A stored column carries the notes live's output column does
+               // (its field's, and the view's own on it): a `type:` field
+               // keeps its annotations, so the result column reads them as
+               // live's does. A timeframe column's go on its redefined field
+               // (timeframeRestatements) instead.
+               const columnNotes = new Map(
+                  shape.columns.map((c) => [
+                     c.name,
+                     c.timeframe ? [] : c.notes,
+                  ]),
+               );
+               const columns = table.binding.schema.map((c) => {
+                  const notes = columnNotes.get(c.name);
+                  return {
+                     name: c.name,
+                     type: c.type,
+                     ...(notes && notes.length > 0 ? { notes } : {}),
+                  };
+               });
+               // malloy-text: the served copy's timeframe emitter, the author's notes, names through identifier
                const timeframes = timeframeRestatements(shape.columns);
                // malloy-text: the type emitter, the author's gate and view notes (single lines), and names through identifier
                return `${typeDeclaration({ typeName, columns })}
@@ -565,8 +581,11 @@ function isFresh(b: ServeBinding, now: Date): boolean {
 
 /** What the variant reproduces of the view's result. */
 interface ViewShape {
-   /** Output columns, in order, with a timeframe where the field has one. */
-   columns: { name: string; timeframe?: string }[];
+   /**
+    * Output columns, in order, with a timeframe where the field has one and
+    * the annotation lines live's result column carries.
+    */
+   columns: { name: string; timeframe?: string; notes: string[] }[];
    orderBy: { name: string; desc: boolean }[];
    notes: string[];
 }
@@ -605,6 +624,7 @@ async function viewShape(
             ...(typeof f.timeframe === "string" && TIMEFRAMES.has(f.timeframe)
                ? { timeframe: f.timeframe }
                : {}),
+            notes: fieldNotes(raw),
          },
       ];
    });
