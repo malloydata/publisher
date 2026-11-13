@@ -31,10 +31,10 @@ Publisher has two spellings. **v1** is `#@ persist` on a source and `#@ preaggre
 
 | The server | A table in a storage destination | A table in the source's own warehouse | A rollup on a measure |
 |---|---|---|---|
-| `PUBLISHER_MATERIALIZE` on, `PERSIST_STORAGE_MODE=on` | `#(materialize) storage="lake"` | `#@ persist name="..."` (colocated v2 is not built yet) | `#(preaggregate) grain=["a", "b"]` |
+| `PUBLISHER_MATERIALIZE` on | `#(materialize) storage="lake"` (needs `PERSIST_STORAGE_MODE=on` too) | `#(materialize) name="..."` (`name=` is required here) | `#(preaggregate) grain=["a", "b"]` |
 | switch off (the default) | `#@ persist name="..." storage="lake"` | `#@ persist name="..."` | `#@ preaggregate grain="a, b"` |
 
-So for new work, write v2 where the server has the switch on and the table goes to a `storage=` destination; write v1 everywhere else. Ask whoever runs the server if you cannot tell; the startup log lists `materialize.enabled=true from PUBLISHER_MATERIALIZE` when it is on. **With the switch off, `#(materialize)` is ignored with no warning at all** (no build, no serve verdict, answered live), and `#(preaggregate)` is only an `annotation-near-miss` warning, so a v2 annotation on a v1 server looks exactly like a build that never ran.
+So for new work, write v2 where the server has the switch on, and v1 where it is off. One exception: a source with a row-level gate (`#(authorize)`, `#(access_filter)`) is built as `#(materialize)` only with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on as well; otherwise keep it on `#@ persist`. Ask whoever runs the server if you cannot tell; the startup log lists `materialize.enabled=true from PUBLISHER_MATERIALIZE` when it is on. **With the switch off, `#(materialize)` is ignored with no warning at all** (no build, no serve verdict, answered live), and `#(preaggregate)` is only an `annotation-near-miss` warning, so a v2 annotation on a v1 server looks exactly like a build that never ran.
 
 ```malloy
 // v2, switch on: no ##! experimental.persistence needed in this file
@@ -59,7 +59,7 @@ What is different about v2, briefly:
 - **`#@ persist` on a view and `#@ -persist` on a reader are the same in both.** A persisted view is built only with the switch on. `#@ preaggregate` is deprecated (a `deprecated-preaggregate-annotation` warning with the switch on; it still builds).
 - **Confirm it the v2 way.** The package's serve verdicts (`GET .../packages/{pkg}/status`, `serveVerdicts`) read `serves`; a query's path report reads `servedBy.kind: "materialized"` with `via: "served_copy"` (a rollup: `kind: "rollup"`; a persisted view: `kind: "view"`). `manifestBindingStatus` does not cover v2 tables.
 
-**Existing v1 code is not wrong**, and moving it is optional. When asked to move it, follow `docs/materialization-migration.md` in the Publisher repository: one v1 spelling at a time, a dry-run publish (`POST .../packages?dryRun=true`) to read the warnings and serve verdicts, a build (every migrated source rebuilds once, because its content address moves), then the path report and a served-versus-live comparison against an opted-out reader (`#@ -persist source: x_live is x extend {}`, declared in a model file, not in the query text). Leave colocated `#@ persist` sources on v1, since colocated `#(materialize)` is not built yet.
+**Existing v1 code is not wrong**, and moving it is optional. When asked to move it, follow `docs/materialization-migration.md` in the Publisher repository: one v1 spelling at a time, a dry-run publish (`POST .../packages?dryRun=true`) to read the warnings and serve verdicts, a build (every migrated source rebuilds once, because its content address moves), then the path report and a served-versus-live comparison against an opted-out reader (`#@ -persist source: x_live is x extend {}`, declared in a model file, not in the query text). A colocated `#(materialize)` must keep a `name=`; keeping the v1 source's `name=` is fine, since the package's own runs wrote that table.
 
 ## The recipe (get this right and it just works)
 

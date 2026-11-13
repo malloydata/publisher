@@ -138,6 +138,13 @@ export type RoutedExtra =
         /** A `#(preaggregate) storage=` rollup: its binding. */
         binding?: ServeBinding;
         /**
+         * Every stored table the answer reads, when that is more than the
+         * rollup's (a join leg answered in a storage destination reads the
+         * query source's table there too): together they decide whether a
+         * failed run may be retried live.
+         */
+        bindings?: ServeBinding[];
+        /**
          * A `#(preaggregate)` rollup's graft scope, for `govern()` (R3): the
          * variant that redeclares the run target over the rollup, gates
          * included. Absent for a v1 `#@ preaggregate` rollup, which no gated
@@ -249,9 +256,9 @@ export function routedAnswer(route: RouteDecision<RoutedExtra>): Answer {
       ...(route.extra.virtualMap
          ? {
               virtualMap: route.extra.virtualMap,
-              serveShapeBindings: route.extra.binding
-                 ? [route.extra.binding]
-                 : [],
+              serveShapeBindings:
+                 route.extra.bindings ??
+                 (route.extra.binding ? [route.extra.binding] : []),
            }
          : {}),
    });
@@ -612,6 +619,7 @@ export function routeCandidates(
                      ? { virtualMap: answer.virtualMap }
                      : {}),
                   ...(answer.binding ? { binding: answer.binding } : {}),
+                  ...(answer.bindings ? { bindings: answer.bindings } : {}),
                },
             };
          },
@@ -940,6 +948,13 @@ export async function queryPathFor(
          storageWarned: getPersistStorageMode() !== "on",
          considered: answer.considered,
          storageTablesRead: answer.storageTablesRead?.map(toTable),
+         ...(answer.tier === "rollup"
+            ? {
+                 rollupTablesRead: answer.serveShapeBindings
+                    .filter((b) => b.origin !== "preaggregate")
+                    .map(toTable),
+              }
+            : {}),
          ...(answer.via ? { via: answer.via } : {}),
          servedCopyTables: new Set(
             host.servedCopy.materializeBindings().map((b) => b.tablePath),
