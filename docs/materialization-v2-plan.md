@@ -568,7 +568,7 @@ The plan accounts for all 60 open issues under [ms2data/service#6647](https://gi
 | #6272 | P2 | No routing metric on the colocated pre-aggregation rung | The router records a metric per variant | 1 |
 | #7547 | P2 | SQL Server colocated | Independent of v2 | — |
 | #5957 | P2 | Materialization failures surface as an indexing error | Publisher half: D2's structured outcomes | 1 |
-| #7097 | P2 | A query over a colocated persisted source recomputes from source | Colocated serving goes through the same re-root. Not yet: the served copy re-roots only `storage=` tables, so a colocated `#(materialize)` is built and never read (#1652); until it is served, it is not built (approved 2026-11-12, in progress) | 3 |
+| #7097 | P2 | A query over a colocated persisted source recomputes from source | Colocated serving goes through the same re-root. Not yet: the served copy re-roots only `storage=` tables, so a colocated `#(materialize)` was built and never read (#1652); until it is served, it is not built (#1666) | 3 |
 | #7098 | P2 | Conformance fixture, standalone against Credible | The R4 harness grows from it | 0 |
 | #6738 | P2 | Known limits of chained builds and the serve-shape lift; one bad field sends every stored source live | The lift is replaced by a per-source re-root, and one variant per candidate means a bad field skips only its own source. The rewriter quotes reserved words. | 3 |
 | #6756 | P2 | Let the orchestrator refuse the warehouse recompute | Chained-build work, moved to phase 3 with the build side; in review with P13's publish warnings (#1647) | 3 |
