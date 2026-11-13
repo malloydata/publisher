@@ -15,6 +15,7 @@ import { components } from "../../api";
 import {
    getMaterializeGatedSources,
    getPersistCollisionEnforce,
+   getMaterializeEnabled,
    getPersistStorageMode,
 } from "../../config";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
@@ -1143,7 +1144,11 @@ export class PackageMaterialization {
             `declares '#@ preaggregate storage=' rollups, but is itself ` +
             `persisted with 'storage=', so the rollups are not built: a rollup ` +
             `over a stored base cannot build or serve yet, and queries read the ` +
-            `base's stored table instead.`,
+            `base's stored table instead.` +
+            (getMaterializeEnabled()
+               ? ` Write the rollup as '#(preaggregate) grain=[…] storage=…' ` +
+                 `on the measure, which builds and serves over a stored base.`
+               : ""),
       }));
    }
 
@@ -1306,13 +1311,24 @@ export class PackageMaterialization {
                   "Queries that need it are answered once both sides are built into one storage destination.",
             });
          }
-         for (const p of model.servedCopyProblems?.() ?? []) {
+         const problems = model.servedCopyProblems?.() ?? [];
+         // A join already inlined, but kept as written: its own warning says
+         // why, so the cross-connection one does not advise inlining it.
+         const keptInline = new Set(
+            problems
+               .filter((p) => p.reason === "inline_join_kept")
+               .map((p) => `${p.sourceName}\u0000${p.join}`),
+         );
+         for (const p of problems) {
             warnings.push({
                model: modelPath,
                ...(p.sourceName ? { subject: p.sourceName } : {}),
                code: SERVED_COPY_WARNING_CODE,
                severity: "warn",
-               message: servedCopyProblemMessage(p),
+               message: servedCopyProblemMessage(
+                  p,
+                  keptInline.has(`${p.sourceName}\u0000${p.join}`),
+               ),
             });
             // The coded warning the compile of record's own check raises.
             for (const message of p.coverage ?? []) {
@@ -2107,7 +2123,22 @@ function withoutChangedConnections(
  * A caller-safe sentence for why a served copy leaves a source unserved. The
  * compiler's own message stays in the logs: it can name the destination alias.
  */
-function servedCopyProblemMessage(problem: ServedCopyProblem): string {
+/**
+ * The compiler's own reasons in a compile error, as `: <reason>; <reason>.`:
+ * each diagnostic's message without its file and source excerpt, so a package
+ * warning names why without the server's paths. `.` when there are none.
+ */
+function compilerReasons(detail: string | undefined): string {
+   const reasons = [...(detail ?? "").matchAll(/^line \d+: (.+)$/gm)].map((m) =>
+      m[1].trim(),
+   );
+   return reasons.length > 0 ? `: ${reasons.join("; ")}.` : ".";
+}
+
+function servedCopyProblemMessage(
+   problem: ServedCopyProblem,
+   inlinedButKept = false,
+): string {
    const { reason, join } = problem;
    switch (reason) {
       case "compile_failed":
@@ -2133,8 +2164,22 @@ function servedCopyProblemMessage(problem: ServedCopyProblem): string {
          return (
             `This source is stored in a destination its join${join ? ` \`${join}\`` : ""} cannot reach: ` +
             "the joined source reads another connection. Queries that use the join are answered live; " +
-            "the others read the stored table. To serve them too, inline the join (inline=), " +
-            "materialize the joined source into the same destination, or keep this source colocated."
+            "the others read the stored table. To serve them too, " +
+            (inlinedButKept
+               ? "fix what keeps the inlined join from being answered from its stored columns (the warning on " +
+                 "this join says what), materialize the joined source into the same destination, or keep this " +
+                 "source colocated."
+               : "inline the join (inline=), materialize the joined source into the same destination, or keep " +
+                 "this source colocated.")
+         );
+      case "inline_join_kept":
+         return (
+            `This source inlines its join${join ? ` \`${join}\`` : ""} (inline=), but its served copy does not compile ` +
+            "with the join answered from the stored columns, so the join is kept as written and every query " +
+            "through it reads the joined source through the join" +
+            compilerReasons(problem.detail) +
+            " A definition that reads the joined source past one hop (a join of the joined source), or reads " +
+            "one of its measures or views, is the usual cause."
          );
       case "classification_not_kept":
          return (

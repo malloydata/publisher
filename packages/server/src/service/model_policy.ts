@@ -119,6 +119,8 @@ export interface FixedModelPolicy {
    materializedTables?: MaterializedTableCatalog;
    /** The per-query build manifest; omitted passes none. Read per call. */
    freshBuildManifestEntries?: () => BuildManifest["entries"] | undefined;
+   /** The rollups' `sourceEntityId`s, stripped from the author's manifest. */
+   preaggregateEntityIds?: ReadonlySet<string>;
 }
 
 function fixedPolicy(
@@ -135,7 +137,7 @@ function fixedPolicy(
       queryBoundary: () => boundary,
       siblingModelDefResolver: () => sibling,
       freshBuildManifestEntries: () => fields.freshBuildManifestEntries?.(),
-      preaggregateEntityIds: () => undefined,
+      preaggregateEntityIds: () => fields.preaggregateEntityIds,
       materializedTables: () => tables,
    });
 }
