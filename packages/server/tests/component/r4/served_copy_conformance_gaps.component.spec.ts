@@ -188,7 +188,8 @@ for (const c of CASES) {
  * source's key is NULL, and an unnested record's key is its parent's key with
  * the element's ordinal: a query-shaped parent grouped by a NULL `region`
  * has a NULL key, so live drops that group's nested rows from a sum through
- * the nest. The served copy reads the stored nest and answers the true sum.
+ * the nest (malloydata/malloy#3220). The served copy reads the stored nest
+ * and answers the true sum.
  * This pins both: once Malloy is fixed, live equals the truth again, this
  * fails, and the query goes back to the gap cases above.
  */
