@@ -55,15 +55,15 @@ describe("pairMeasureLevels", () => {
          "segments",
       );
       const of = (n: string) => [...(levels.get(n) ?? [])].sort();
-      expect(of("flight_count")).toEqual(["parent"]);
-      expect(of("total")).toEqual(["parent"]);
-      expect(of("ratio")).toEqual(["parent"]);
-      expect(of("filtered")).toEqual(["parent"]);
-      expect(of("child_sum")).toEqual(["child"]);
-      expect(of("child_n")).toEqual(["child"]);
-      expect(of("child_max")).toEqual(["child"]);
-      expect(of("by_refs")).toEqual(["child", "parent"]);
-      expect(of("mixed")).toEqual(["child", "parent"]);
+      expect(of("flight_count")).toEqual([0]);
+      expect(of("total")).toEqual([0]);
+      expect(of("ratio")).toEqual([0]);
+      expect(of("filtered")).toEqual([0]);
+      expect(of("child_sum")).toEqual([1]);
+      expect(of("child_n")).toEqual([1]);
+      expect(of("child_max")).toEqual([1]);
+      expect(of("by_refs")).toEqual([0, 1]);
+      expect(of("mixed")).toEqual([0, 1]);
       // Unreadable: absent, so never re-declared.
       for (const n of [
          "child_filtered_parent",

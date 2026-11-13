@@ -256,6 +256,38 @@ const DEFERRED_KEYS: Readonly<Record<string, string>> = {};
  */
 export const PAIR_PARENT_ROW = "__parent_row";
 
+/**
+ * The row flag of a level between the source and the leaf of a path of more
+ * than one hop: `__child_row` for the path's first join, `__child_row_2` for
+ * its second, and so on. True on one row per distinct row of that level (the
+ * keys from the source down to it), a childless row's null-extended row
+ * included; past a block's own last hop, true on every row.
+ */
+export function pairLevelRowColumn(level: number): string {
+   return level === 1 ? "__child_row" : `__child_row_${level}`;
+}
+
+/**
+ * A table that stores more than one inlined path (one block per path) marks
+ * each row with its block's number in this column.
+ */
+export const PAIR_LANE_COLUMN = "__pair_lane";
+
+/** One join past the first of an inlined path of join_manys. */
+export interface MaterializePairHop {
+   /** The join's name on the previous hop's joined source. */
+   join: string;
+   /** This hop's joined source's primary key, as that source names it. */
+   key: string;
+   /** This hop's joined source's declaration. */
+   sourceID: string;
+   /**
+    * The row flag of the level above this hop ({@link pairLevelRowColumn}):
+    * one row per distinct row down to the previous hop.
+    */
+   rowColumn: string;
+}
+
 /** How a pair table (an inlined join_many, P5) is laid out. */
 export interface MaterializePair {
    /** The inlined join_many's name on the materialized source. */
@@ -268,6 +300,30 @@ export interface MaterializePair {
    childSourceID: string;
    /** The parent-row flag's column ({@link PAIR_PARENT_ROW}). */
    parentRowColumn: string;
+   /**
+    * For a path of join_manys (`inline=["items.options"]`): the joins past the
+    * first, in order. Absent: one hop.
+    */
+   hops?: MaterializePairHop[];
+}
+
+/**
+ * A pair table that stores more than one inlined path: one block of rows per
+ * path, each block the rows of that path's own pair table, marked by
+ * {@link PAIR_LANE_COLUMN}. Every block stores every column, the other
+ * blocks' as typed nulls, and every level flag down to the deepest path.
+ */
+export interface MaterializePairBlocks {
+   /** The blocks, by block number; the first is the plan's `pair`. */
+   blocks: MaterializePair[];
+   /** The block-number column ({@link PAIR_LANE_COLUMN}). */
+   laneColumn: string;
+   /** The connection the build's SQL source runs on: the source's own. */
+   connection: string;
+   /** Each joined column's Malloy type, for the other blocks' typed nulls. */
+   columnTypes: Record<string, string>;
+   /** The number of level flags every block writes: the deepest path's depth. */
+   levels: number;
 }
 
 /**
@@ -312,6 +368,13 @@ export interface MaterializeColumn {
     * these under the join's name, in place of the join.
     */
    join?: string;
+   /**
+    * For a column of a joined source two or more joins down an inlined path
+    * of join_manys: the joins from the source to it, {@link join} first
+    * (`["items", "options"]`), with {@link dimension} its field. Absent for
+    * the path's first join's columns.
+    */
+   path?: string[];
 }
 
 /** The P8 uniqueness check for one inlined join_one, run before each build. */
@@ -416,8 +479,13 @@ export interface MaterializePlan {
    inline?: string[];
    /** One uniqueness check per inlined join_one (P8). */
    uniquenessChecks?: InlineUniquenessCheck[];
-   /** For an inlined join_many: the pair table's layout (P5). */
+   /**
+    * For an inlined join_many: the pair table's layout (P5); for a table
+    * that stores more than one inlined path, its first block's.
+    */
    pair?: MaterializePair;
+   /** For a pair table that stores more than one inlined path: its blocks. */
+   pairBlocks?: MaterializePairBlocks;
    /**
     * The table takes the source's own name because the declaration has no
     * `name=`, which the refusal of a colliding table name says (see
@@ -824,12 +892,15 @@ function columnType(def: SourceDefLike, dimension: string): string {
 
 /**
  * The columns of one inlined join's joined source: its public atomic
- * dimensions (never a hidden one) that read no join of their own (one hop), each stored as
- * `<join>__<field>`.
+ * dimensions (never a hidden one) that read no join of their own (one hop),
+ * each stored as `<join>__<field>`, or, for a join further down an inlined
+ * path of join_manys, as `<join>__<next join>__…__<field>` (`path` names the
+ * joins from the source to this one).
  */
 function inlinedJoinColumns(
    map: SourceMap,
    join: SourceJoin,
+   path: readonly string[] = [join.name],
 ): MaterializeColumn[] {
    const joined = map.joinedReadsOf(join);
    const reads = joined.fieldJoins;
@@ -853,12 +924,113 @@ function inlinedJoinColumns(
       }
       out.push({
          dimension,
-         column: `${join.name}__${dimension}`,
+         column: `${path.join("__")}__${dimension}`,
          computed: true,
-         join: join.name,
+         join: path[0],
+         ...(path.length > 1 ? { path: [...path] } : {}),
       });
    }
    return out;
+}
+
+/** The Malloy types a pair table can store as a typed null (`null::<type>`). */
+const NULLABLE_TYPES: ReadonlySet<string> = new Set([
+   "string",
+   "number",
+   "boolean",
+   "date",
+   "timestamp",
+   "timestamptz",
+]);
+
+/** A joined source's field's Malloy type, or "" when unknown. */
+function joinedFieldType(join: SourceJoin, dimension: string): string {
+   for (const raw of join.fields) {
+      const field = raw as FieldLike;
+      const name = typeof field.as === "string" ? field.as : field.name;
+      if (name === dimension && typeof field.type === "string") {
+         return field.type;
+      }
+   }
+   return "";
+}
+
+/**
+ * The joins an `inline=` entry names, from the source down (`"items"`, or a
+ * path of join_manys, `"items.options"`), or why it cannot be inlined. The
+ * first is checked as {@link inlineRefusal} checks any inlined join; each one
+ * past it must be a join_many of the joined source before it, declared as a
+ * source, on the source's connection, keyed on that joined source's own
+ * columns. A path through a join_one is refused: live aggregates a join_many
+ * past a join_one once per row of that join_many however many parents share
+ * the joined row (a symmetric aggregate on its key), which no flat row
+ * reproduces.
+ */
+function inlinedPathOf(
+   entry: string,
+   joins: readonly SourceJoin[],
+   map: SourceMap,
+   connection: unknown,
+): { path: SourceJoin[] } | { reason: string } {
+   const names = entry.split(".");
+   const quoted = quotedName(entry);
+   if (names.some((n) => n === "")) {
+      return {
+         reason: `inline= names ${quoted}, which is not a join or a path of joins`,
+      };
+   }
+   const first = inlineRefusal(names[0], joins, connection);
+   if (first) return { reason: first };
+   const path = [joins.find((j) => j.name === names[0]) as SourceJoin];
+   if (names.length === 1) return { path };
+   const throughOne =
+      `inline= names ${quoted}, a path through a join_one; only a path of ` +
+      "join_manys is stored as a pair table (live counts a row past a " +
+      "join_one once however many parents share it, which no stored row " +
+      "reproduces), so inline the join_one alone";
+   if (path[0].relationship !== "many") return { reason: throughOne };
+   for (let k = 1; k < names.length; k++) {
+      const prev = path[k - 1];
+      const next = map.joinedReadsOf(prev).joins.find((j) => j.name === names[k]);
+      if (!next) {
+         return {
+            reason: `inline= names ${quoted}, and ${quotedName(names[k])} is not a join of the source ${quotedName(prev.name)} joins`,
+         };
+      }
+      if (next.relationship !== "many") return { reason: throughOne };
+      if (
+         typeof connection === "string" &&
+         next.connection !== undefined &&
+         next.connection !== connection
+      ) {
+         return {
+            reason:
+               `inline= names ${quoted}, whose ${quotedName(names[k])} reads ` +
+               "another connection than the source, so one build query cannot read both",
+         };
+      }
+      const through = next.condition
+         ? [...next.condition.joins].filter((j) => j !== next.name)
+         : undefined;
+      if (!through || through.length > 0 || next.condition?.nested) {
+         return {
+            reason:
+               `inline= names ${quoted}, whose ${quotedName(names[k])} is keyed ` +
+               "on another join than the one before it; inline only a path " +
+               "whose every join is keyed on the joined source before it",
+         };
+      }
+      if (!next.sourceID || !splitSourceID(next.sourceID)) {
+         return {
+            reason:
+               `inline= names ${quoted}, whose ${quotedName(names[k])} joins a ` +
+               "source defined in place; declare it as a source so the served " +
+               "copy can read it from the pair table",
+         };
+      }
+      path.push(next);
+   }
+   return { path };
 }
 
 /** A name as a refusal message shows it, in backticks. */
@@ -929,19 +1101,22 @@ function inlineRefusal(
 }
 
 /**
- * Why an inlined join_many cannot be stored as a pair table, or its layout
- * (see the module comment for each rule). `columns` are the source's own
- * stored columns; `joined` the join's `j__<field>` columns.
+ * Why an inlined path of join_manys cannot be stored as a pair table, or its
+ * layout (see the module comment for each rule). `path` is the path's joins,
+ * the source's own first; `columns` are the source's own stored columns;
+ * `joined` every inlined join's columns.
  */
 function pairRefusal(
-   join: SourceJoin,
+   path: readonly SourceJoin[],
    def: SourceDefLike,
    map: SourceMap,
    columns: readonly MaterializeColumn[],
    joined: readonly MaterializeColumn[],
    persist: Readonly<Record<string, string>>,
 ): { pair: MaterializePair } | { reason: string } {
-   const name = quotedName(join.name);
+   const join = path[0];
+   const names = path.map((j) => j.name);
+   const name = quotedName(names.join("."));
    const parentKey =
       typeof def.primaryKey === "string" ? def.primaryKey : undefined;
    if (!parentKey || !columns.some((c) => c.column === parentKey)) {
@@ -952,24 +1127,47 @@ function pairRefusal(
             "dimension), to keep one row per parent",
       };
    }
-   const childKey = join.primaryKey;
+   for (let k = 0; k < path.length; k++) {
+      const key = path[k].primaryKey;
+      const prefix = names.slice(0, k + 1).join("__");
+      if (!key || !joined.some((c) => c.column === `${prefix}__${key}`)) {
+         return {
+            reason:
+               `inline= names ${name}, a join_many, and a pair table needs the ` +
+               (path.length > 1
+                  ? `primary key of ${quotedName(names[k])}'s joined source, `
+                  : "joined source's primary key, ") +
+               "declared and stored (a public dimension), to keep one row per " +
+               (k === path.length - 1 ? "child" : "row of that level"),
+         };
+      }
+      const own = map.joinedReadsOf(path[k]).joins;
+      const others = own.filter((j) => j.name !== names[k + 1]);
+      if (others.length > 0) {
+         return {
+            reason:
+               path.length === 1
+                  ? `inline= names ${name}, a join_many whose joined source has joins ` +
+                    "of its own; a pair table stores one hop, so inline only a " +
+                    "join_many to a source with no joins"
+                  : `inline= names ${name}, and ${quotedName(names[k])}'s joined ` +
+                    `source has joins off the path (${others.map((j) => quotedName(j.name)).join(", ")}); ` +
+                    "a pair table stores only the joins it names",
+         };
+      }
+   }
+   // Kept apart from the one-hop rule below, which incremental refresh will
+   // lift on its own: a path's level flags are written over the whole table
+   // too, and no increment rule keeps them unique yet.
    if (
-      !childKey ||
-      !joined.some((c) => c.join === join.name && c.dimension === childKey)
+      path.length > 1 &&
+      Object.keys(persist).some((k) => INCREMENTAL_KEYS.includes(k))
    ) {
       return {
          reason:
-            `inline= names ${name}, a join_many, and a pair table needs the ` +
-            "joined source's primary key, declared and stored (a public " +
-            "dimension), to keep one row per child",
-      };
-   }
-   if (map.joinedReadsOf(join).joins.length > 0) {
-      return {
-         reason:
-            `inline= names ${name}, a join_many whose joined source has joins ` +
-            "of its own; a pair table stores one hop, so inline only a " +
-            "join_many to a source with no joins",
+            `inline= names ${name}, a path of join_manys, on an incremental ` +
+            "source; its pair table's row flags are written over the whole " +
+            "table, so it is rebuilt in full",
       };
    }
    if (persist.refresh === "incremental") {
@@ -982,7 +1180,11 @@ function pairRefusal(
       };
    }
    const taken = new Set([...columns, ...joined].map((c) => c.column));
-   const clash = [PAIR_PARENT_ROW].find((c) => taken.has(c));
+   const flags = [
+      PAIR_PARENT_ROW,
+      ...path.slice(1).map((_, k) => pairLevelRowColumn(k + 1)),
+   ];
+   const clash = flags.find((c) => taken.has(c));
    if (clash) {
       return {
          reason:
@@ -994,9 +1196,98 @@ function pairRefusal(
       pair: {
          join: join.name,
          parentKey,
-         childKey,
+         childKey: join.primaryKey as string,
          childSourceID: join.sourceID as string,
          parentRowColumn: PAIR_PARENT_ROW,
+         ...(path.length > 1
+            ? {
+                 hops: path.slice(1).map((j, k) => ({
+                    join: j.name,
+                    key: j.primaryKey as string,
+                    sourceID: j.sourceID as string,
+                    rowColumn: pairLevelRowColumn(k + 1),
+                 })),
+              }
+            : {}),
+      },
+   };
+}
+
+/**
+ * The blocks of a pair table that stores more than one inlined path, or why
+ * it cannot: every block's columns stored on every row (the other blocks' as
+ * typed nulls, so each joined column needs a type a null can take), no block
+ * column or level flag named like a stored column, and no incremental
+ * refresh.
+ */
+function pairBlocksOf(
+   pairs: readonly MaterializePair[],
+   paths: readonly (readonly SourceJoin[])[],
+   columns: readonly MaterializeColumn[],
+   connection: unknown,
+   persist: Readonly<Record<string, string>>,
+): { blocks: MaterializePairBlocks } | { reason: string } {
+   const listed = paths.map((p) =>
+      quotedName(p.map((j) => j.name).join(".")),
+   );
+   if (typeof connection !== "string") {
+      return {
+         reason:
+            `inline= names more than one join_many (${listed.join(", ")}), and ` +
+            "the source's connection is unknown, which the pair table's build reads",
+      };
+   }
+   if (Object.keys(persist).some((k) => INCREMENTAL_KEYS.includes(k))) {
+      return {
+         reason:
+            `inline= names more than one join_many (${listed.join(", ")}) on an ` +
+            "incremental source; a pair table is rebuilt in full",
+      };
+   }
+   const columnTypes: Record<string, string> = {};
+   for (const path of paths) {
+      for (let k = 0; k < path.length; k++) {
+         const prefix = path.slice(0, k + 1).map((j) => j.name);
+         for (const c of columns) {
+            if (c.join !== prefix[0]) continue;
+            const at = c.path ?? [c.join];
+            if (at.join(".") !== prefix.join(".")) continue;
+            const type = joinedFieldType(path[k], c.dimension);
+            if (!NULLABLE_TYPES.has(type)) {
+               return {
+                  reason:
+                     `inline= names more than one join_many (${listed.join(", ")}), ` +
+                     "so each one's columns are stored as nulls on the other's " +
+                     `rows, and \`${c.column}\` has a type no null can take` +
+                     (type ? ` (${type})` : ""),
+               };
+            }
+            columnTypes[c.column] = type;
+         }
+      }
+   }
+   const levels = Math.max(...pairs.map((p) => 1 + (p.hops?.length ?? 0)));
+   const taken = new Set(columns.map((c) => c.column));
+   const clash = [
+      PAIR_LANE_COLUMN,
+      ...Array.from({ length: levels - 1 }, (_, k) =>
+         pairLevelRowColumn(k + 1),
+      ),
+   ].find((c) => taken.has(c));
+   if (clash) {
+      return {
+         reason:
+            `the pair table's \`${clash}\` column has the name of one of the ` +
+            "source's dimensions",
+      };
+   }
+   return {
+      blocks: {
+         blocks: [...pairs],
+         laneColumn: PAIR_LANE_COLUMN,
+         connection,
+         columnTypes,
+         levels,
       },
    };
 }
@@ -1275,27 +1566,35 @@ export function planModelMaterialize(
          inline = [...new Set(items as string[])];
       }
       const joins = map.joinsOf(def.sourceID);
-      const inlineProblem = inline
-         .map((j) => inlineRefusal(j, joins, def.connection))
-         .find((r) => r !== undefined);
+      // Each entry's joins from the source down: a join, or a path of
+      // join_manys (`items.options`).
+      const resolved = inline.map((entry) =>
+         inlinedPathOf(entry, joins, map, def.connection),
+      );
+      const inlineProblem = resolved.find(
+         (r): r is { reason: string } => "reason" in r,
+      );
       if (inlineProblem) {
          refused.push({
             sourceName: name,
             sourceID: def.sourceID,
-            reason: inlineProblem,
+            reason: inlineProblem.reason,
          });
          continue;
       }
+      const entries = (resolved as { path: SourceJoin[] }[]).map((r) => r.path);
       // A private or internal join cannot be read by the generated build
       // (its query selects `<join>.<field>`), and the served record would not
       // carry its access: refused here, so this source serves live and the
       // companion still compiles for every other source in the model.
-      const hiddenJoin = inline.find((j) =>
-         (def.fields ?? []).some((raw) => {
-            const f = raw as FieldLike;
-            return (f.as ?? f.name) === j && hiddenAccess(f) !== undefined;
-         }),
-      );
+      const hiddenJoin = entries
+         .map((p) => p[0].name)
+         .find((j) =>
+            (def.fields ?? []).some((raw) => {
+               const f = raw as FieldLike;
+               return (f.as ?? f.name) === j && hiddenAccess(f) !== undefined;
+            }),
+         );
       if (hiddenJoin !== undefined) {
          refused.push({
             sourceName: name,
@@ -1306,31 +1605,64 @@ export function planModelMaterialize(
          });
          continue;
       }
-      // An inlined join_many is a pair table (P5): at most one per source.
-      const fanned = inline.filter(
-         (j) => joins.find((x) => x.name === j)?.relationship === "many",
-      );
-      if (fanned.length > 1) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason:
-               `inline= names more than one join_many (${fanned.map(quotedName).join(", ")}); ` +
-               "a pair table pairs a parent with the children of one",
-         });
+      const ones = entries
+         .filter((p) => p[0].relationship !== "many")
+         .map((p) => p[0].name);
+      // An inlined join_many is a pair table (P5): one path of join_manys
+      // below each one inlined. A path that is the start of a longer one is
+      // stored by the longer one's (its level flag answers it).
+      const byFirst = new Map<string, SourceJoin[][]>();
+      for (const p of entries.filter((e) => e[0].relationship === "many")) {
+         byFirst.set(p[0].name, [...(byFirst.get(p[0].name) ?? []), p]);
+      }
+      const pathKey = (p: readonly SourceJoin[]) =>
+         p.map((j) => j.name).join(".");
+      let parted: string | undefined;
+      const paths: SourceJoin[][] = [];
+      for (const group of byFirst.values()) {
+         const longest = group.reduce((a, b) => (b.length > a.length ? b : a));
+         const apart = group.find(
+            (p) => !pathKey(longest).startsWith(pathKey(p) + ".") &&
+               pathKey(p) !== pathKey(longest),
+         );
+         if (apart) {
+            parted =
+               `inline= names two paths through ${quotedName(longest[0].name)} that ` +
+               `part (${quotedName(pathKey(apart))}, ${quotedName(pathKey(longest))}); ` +
+               "a pair table stores one path below each join it inlines";
+            break;
+         }
+         paths.push(longest);
+      }
+      if (parted) {
+         refused.push({ sourceName: name, sourceID: def.sourceID, reason: parted });
          continue;
       }
       // What reads through an inlined join_many has one value per pair, not
       // per parent, so it is computed at read through the served join.
       const columns = materializeColumns(def, {
          joinReads: map.fieldJoinsOf(def.sourceID),
-         inline: new Set(inline.filter((j) => !fanned.includes(j))),
+         inline: new Set(ones),
          hasJoins: joins.length > 0,
       });
       const ownColumns = new Set(columns.map((c) => c.column));
-      const joinedColumns = inline.flatMap((j) =>
-         inlinedJoinColumns(map, joins.find((x) => x.name === j) as SourceJoin),
-      );
+      const joinedColumns = [
+         ...ones.flatMap((j) =>
+            inlinedJoinColumns(
+               map,
+               joins.find((x) => x.name === j) as SourceJoin,
+            ),
+         ),
+         ...paths.flatMap((p) =>
+            p.flatMap((j, k) =>
+               inlinedJoinColumns(
+                  map,
+                  j,
+                  p.slice(0, k + 1).map((x) => x.name),
+               ),
+            ),
+         ),
+      ];
       const clash = joinedColumns.find((c) => ownColumns.has(c.column));
       if (clash) {
          refused.push({
@@ -1412,27 +1744,52 @@ export function planModelMaterialize(
          persist.name = tableName;
       }
       let pair: MaterializePair | undefined;
-      if (fanned.length === 1) {
-         const laid = pairRefusal(
-            joins.find((x) => x.name === fanned[0]) as SourceJoin,
-            def,
-            map,
-            columns.filter((c) => c.join === undefined),
-            joinedColumns,
-            persist,
+      let pairBlocks: MaterializePairBlocks | undefined;
+      if (paths.length > 0) {
+         const laid = paths.map((p) =>
+            pairRefusal(
+               p,
+               def,
+               map,
+               columns.filter((c) => c.join === undefined),
+               joinedColumns,
+               persist,
+            ),
          );
-         if ("reason" in laid) {
+         const problem = laid.find(
+            (l): l is { reason: string } => "reason" in l,
+         );
+         if (problem) {
             refused.push({
                sourceName: name,
                sourceID: def.sourceID,
-               reason: laid.reason,
+               reason: problem.reason,
             });
             continue;
          }
-         pair = laid.pair;
+         const pairs = (laid as { pair: MaterializePair }[]).map((l) => l.pair);
+         pair = pairs[0];
+         if (pairs.length > 1) {
+            const blocks = pairBlocksOf(
+               pairs,
+               paths,
+               columns,
+               def.connection,
+               persist,
+            );
+            if ("reason" in blocks) {
+               refused.push({
+                  sourceName: name,
+                  sourceID: def.sourceID,
+                  reason: blocks.reason,
+               });
+               continue;
+            }
+            pairBlocks = blocks.blocks;
+         }
       }
       const build = buildSourceName(name);
-      const checked = inline.filter((j) => !fanned.includes(j));
+      const checked = ones;
       const uniquenessChecks = checked.map((j): InlineUniquenessCheck => {
          const join = joins.find((x) => x.name === j) as SourceJoin;
          return {
@@ -1463,6 +1820,7 @@ export function planModelMaterialize(
          ...(inline.length > 0 ? { inline } : {}),
          ...(uniquenessChecks.length > 0 ? { uniquenessChecks } : {}),
          ...(pair ? { pair } : {}),
+         ...(pairBlocks ? { pairBlocks } : {}),
          ...(declaration.keys.includes("name") ? {} : { nameDefaulted: true }),
       });
    }
@@ -1526,6 +1884,9 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
       const incremental = (p: MaterializePlan) =>
          Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));
       if (incremental(plan) || incremental(parent)) continue;
+      // A table that stacks several inlined paths is a SQL source over the
+      // author's model: neither builds over the other's build source.
+      if (plan.pairBlocks || parent.pairBlocks) continue;
       if (givenReadTerms(parent).length > 0) continue;
       plan.buildsOver = {
          sourceID: parent.sourceID,
@@ -1574,39 +1935,77 @@ function persistLine(plan: MaterializePlan): string {
    return keys ? `#@ persist ${keys}` : "#@ persist";
 }
 
+/** One stored column as a build's select list reads it. */
+function selectItem(c: MaterializeColumn): string {
+   if (c.join === undefined) return `    ${identifier(c.dimension)}`;
+   const through = (c.path ?? [c.join]).map(identifier).join(".");
+   return `    ${identifier(c.column)} is ${through}.${identifier(c.dimension)}`;
+}
+
 /**
  * A generated build source's body: a `select:` of every stored column, or a
  * pair table's build over them ({@link pairBody}).
  */
 function buildSourceBody(plan: MaterializePlan): string {
-   const select = plan.columns
-      .map((c) =>
-         c.join === undefined
-            ? `    ${identifier(c.dimension)}`
-            : `    ${identifier(c.column)} is ${identifier(c.join)}.${identifier(c.dimension)}`,
-      )
-      .join(",\n");
+   const select = plan.columns.map(selectItem).join(",\n");
    return plan.pair ? pairBody(plan.pair, select) : `  select:\n${select}`;
 }
 
 /** One generated build source. */
 function emitBuildSource(plan: MaterializePlan): string {
-   const body = buildSourceBody(plan);
    const given = givenReadTerms(plan);
    // malloy-text: each term is the author's own given-reading where:, re-applied as written on its own declaration
    const readTime = given.length
       ? ` extend {\n${given.map((term) => `  where: ${term.code}`).join("\n")}\n}`
       : "";
+   if (plan.pairBlocks) {
+      return `${persistLine(plan)}\nsource: ${identifier(plan.buildSourceName)} is ${pairBlocksSource(plan, plan.pairBlocks)}${readTime}`;
+   }
+   const body = buildSourceBody(plan);
    const head = `source: ${identifier(plan.buildSourceName)} is ${identifier(importAlias(plan))} -> {`;
    return `${persistLine(plan)}\n${head}\n${body}\n}${readTime}`;
 }
 
 /**
+ * The stored key column of each level of a pair's path, the source's first:
+ * the source's primary key, then each joined source's key as stored
+ * (`items__item_id`, `items__options__option_id`).
+ */
+function pairKeyColumns(pair: MaterializePair): string[] {
+   const names = [pair.join];
+   const keys = [pair.parentKey, `${pair.join}__${pair.childKey}`];
+   for (const hop of pair.hops ?? []) {
+      names.push(hop.join);
+      keys.push(`${names.join("__")}__${hop.key}`);
+   }
+   return keys;
+}
+
+/**
+ * A pair table's row flags, as `calculate:` items: the parent-row flag and
+ * each level flag down to `levels` (one per level above the leaf), each true
+ * on one row per distinct keys down to its level. Past the pair's own leaf
+ * (a block of a table whose deepest path is deeper) a flag partitions on
+ * every key the pair has, which is every row.
+ */
+function pairFlags(pair: MaterializePair, levels: number): string {
+   const keys = pairKeyColumns(pair).map(identifier);
+   const flag = (column: string, level: number) =>
+      `    ${identifier(column)} is row_number() { partition_by: ${keys.slice(0, Math.min(level, keys.length - 1) + 1).join(", ")} } = 1`;
+   return [
+      flag(pair.parentRowColumn, 0),
+      ...Array.from({ length: levels - 1 }, (_, k) =>
+         flag(pairLevelRowColumn(k + 1), k + 1),
+      ),
+   ].join("\n");
+}
+
+/**
  * A pair table's build: a `group_by:` of every stored column (distinct rows,
- * since both keys are among them) that writes the parent-row flag (see the
- * module comment) by ranking each row within its parent key. The rows are
- * written in parent-key order, so a warehouse that keeps insertion order
- * (DuckDB) reads a parent's rows together.
+ * since every level's key is among them) that writes the row flags (see the
+ * module comment) by ranking each row within its keys. The rows are written
+ * in parent-key order, so a warehouse that keeps insertion order (DuckDB)
+ * reads a parent's rows together.
  */
 function pairBody(pair: MaterializePair, columns: string): string {
    const parent = identifier(pair.parentKey);
@@ -1614,8 +2013,51 @@ function pairBody(pair: MaterializePair, columns: string): string {
    return `  group_by:
 ${columns}
   calculate:
-    ${identifier(pair.parentRowColumn)} is row_number() { partition_by: ${parent} } = 1
+${pairFlags(pair, 1 + (pair.hops?.length ?? 0))}
   order_by: ${parent}`;
+}
+
+/**
+ * The build of a pair table that stores more than one inlined path: one
+ * block per path, each the query that path's own pair table would build,
+ * every block listing every column in the same order (another block's
+ * columns as typed nulls, its own block number in the block column, every
+ * level flag), and the blocks stacked with `UNION ALL`. Malloy has no union,
+ * so the stack is a SQL source on the source's own connection whose blocks
+ * are Malloy queries embedded with `%{ … }`; the queries are compiled by
+ * Malloy like any other, and the SQL around them is only the union.
+ */
+function pairBlocksSource(
+   plan: MaterializePlan,
+   blocks: MaterializePairBlocks,
+): string {
+   const inBlocks = new Set(blocks.blocks.map((p) => p.join));
+   const block = (pair: MaterializePair, lane: number) => {
+      // The source's own columns and an inlined join_one's are on every
+      // block's rows; another block's path's are nulls on this one's.
+      const own = (c: MaterializeColumn) =>
+         c.join === undefined || !inBlocks.has(c.join) || c.join === pair.join;
+      const items = plan.columns.map((c) =>
+         own(c)
+            ? selectItem(c)
+            : `    ${identifier(c.column)} is null::${blocks.columnTypes[c.column]}`,
+      );
+      items.push(`    ${identifier(blocks.laneColumn)} is ${lane}`);
+      const parent = identifier(pair.parentKey);
+      // malloy-text: names through identifier, each type one of NULLABLE_TYPES, lane a block index
+      return `%{ ${identifier(importAlias(plan))} -> {
+  group_by:
+${items.join(",\n")}
+  calculate:
+${pairFlags(pair, blocks.levels)}
+  order_by: ${parent}
+} }`;
+   };
+   const union = blocks.blocks
+      .map((pair, lane) => `SELECT * FROM (${block(pair, lane)}) AS ${PAIR_LANE_COLUMN}_${lane}`)
+      .join("\nUNION ALL\n");
+   // malloy-text: the connection is the source's own, through identifier; the SQL around the embedded queries is a fixed union
+   return `${identifier(blocks.connection)}.sql("""\n${union}\n""")`;
 }
 
 /**
