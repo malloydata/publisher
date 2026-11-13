@@ -393,9 +393,25 @@ describe("R4: the served copy is held to the load's classification checks (#6982
       expect(
          (await carried.runAsIs("run: account_usage -> by_key")).servedFrom,
       ).toBe("storage");
-      // Fully classified, the copy answers through the join. (Under
-      // #(carries) a caller's query through it is refused before routing:
-      // the per-request ceiling check reads it against the build view.)
+      // Under #(carries), a clean query through the join is served too: the
+      // per-request ceiling is read on the served copy's compile, the one
+      // that answers, not on the build view, which has no `u`.
+      const throughCarried = await carried.runAsIs(
+         "run: account_usage -> { group_by: u.events; aggregate: n }",
+      );
+      expect(throughCarried.servedFrom).toBe("storage");
+      expect(
+         rowDifference(
+            [
+               { events: 1, n: 1 },
+               { events: 5, n: 1 },
+               { events: 7, n: 1 },
+               { events: null, n: 1 },
+            ],
+            throughCarried.rows,
+         ),
+      ).toBeUndefined();
+      // Fully classified, the copy answers through the join.
       const covered = await buildScenario({
          files: { "m.malloy": classifiedModel("none", false) },
          seedSql: [],
@@ -412,6 +428,100 @@ describe("R4: the served copy is held to the load's classification checks (#6982
          "run: account_usage -> { group_by: u.events; aggregate: n }",
       );
       expect(through.servedFrom).toBe("storage");
+   });
+
+   it("refuses a query reading a class past the ceiling, served and live", async () => {
+      // `secrets` is stored beside the others and carries a class
+      // account_usage's ceiling does not; a caller's own join reaches it.
+      const withSecrets = (carries: boolean) =>
+         `${classifiedModel("none", carries)}
+#(materialize) storage="lake"
+source: secrets is crm.table('accounts') include {
+  #(classification) "none"
+  public: id
+  #(classification) "phi"
+  public: account_name
+}
+`;
+      const join =
+         "run: account_usage extend { join_one: s is secrets on s.id = id } -> ";
+      const live = `${join}{ group_by: s.account_name; aggregate: n }`;
+      const served = `${join}{ group_by: s.account_name, u.events; aggregate: n }`;
+      // Without the ceiling, the query through `u` is answered from the copy:
+      // so the refusal below is the ceiling's, read on the served copy.
+      const open = await buildScenario({
+         files: { "m.malloy": withSecrets(false) },
+         seedSql: [],
+         origins: crossOrigin,
+         materialize: true,
+      });
+      open.setBindings(open.bindings);
+      expect((await open.runAsIs(served)).servedFrom).toBe("storage");
+      const capped = await buildScenario({
+         files: { "m.malloy": withSecrets(true) },
+         seedSql: [],
+         origins: crossOrigin,
+         materialize: true,
+      });
+      capped.setBindings(capped.bindings);
+      // Through the join (the build view cannot compile it): read on the
+      // served copy, and refused.
+      await expect(capped.runAsIs(served)).rejects.toThrow(
+         /carries \[none\]; this query reads s\.account_name/,
+      );
+      // Not through it: live compiles, and the ceiling refuses it there.
+      await expect(capped.runAsIs(live)).rejects.toThrow(
+         /carries \[none\]; this query reads s\.account_name/,
+      );
+      // A clean query through the join still answers from the copy.
+      expect(
+         (
+            await capped.runAsIs(
+               `${join}{ group_by: s.id, u.events; aggregate: n }`,
+            )
+         ).servedFrom,
+      ).toBe("storage");
+   });
+
+   it("holds a query to a ceiling declared only where the build view leaves it out", async () => {
+      // `by_usage` reads the join, so the build view leaves it out, and its
+      // #(carries) with it: the only ceiling in the model is the served
+      // copy's.
+      const fixture = await buildScenario({
+         files: {
+            "m.malloy": `${classifiedModel("none", false)}
+#(materialize) storage="lake"
+source: secrets is crm.table('accounts') include {
+  #(classification) "none"
+  public: id
+  #(classification) "phi"
+  public: account_name
+}
+
+#(carries) ["none"]
+source: by_usage is account_usage -> {
+  group_by: acct is u.account_id
+  aggregate: n
+}
+`,
+         },
+         seedSql: [],
+         origins: crossOrigin,
+         materialize: true,
+      });
+      fixture.setBindings(fixture.bindings);
+      const join =
+         "run: by_usage extend { join_one: s is secrets on s.id = acct } -> ";
+      expect(
+         (
+            await fixture.runAsIs(
+               `${join}{ group_by: acct; aggregate: c is count() }`,
+            )
+         ).servedFrom,
+      ).toBe("storage");
+      await expect(
+         fixture.runAsIs(`${join}{ group_by: s.account_name }`),
+      ).rejects.toThrow(/carries \[none\]; this query reads s\.account_name/);
    });
 
    it("declines a source whose served copy publishes an unclassified field", async () => {

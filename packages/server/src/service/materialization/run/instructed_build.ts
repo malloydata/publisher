@@ -1,7 +1,15 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { assertInlinedJoinsUnique } from "./inline_uniqueness";
+import {
+   assertInlinedJoinsUnique,
+   uniquenessCheckCompiler,
+   type StoredJoin,
+   type UniquenessLedger,
+} from "./inline_uniqueness";
+import type { InlineUniquenessCheck } from "../plan/build_file_generator";
+import { buildSQLOf } from "../plan/addressing";
+import { tableIdentity } from "../../versions/materialization_scope";
 import type {
    Connection as MalloyConnection,
    PersistSource,
@@ -58,6 +66,7 @@ import {
    BuildQueryMetadata,
    chainedPlanFacts,
    isReclaimableStorageTable,
+   manifestExcludingStorage,
    physicalTargetKey,
    refusalRecord,
    reportRetainedStorageTables,
@@ -175,6 +184,10 @@ export class InstructedBuild {
       hostInstructed = false,
       // What a strict build does with the warehouse recompute (#6756).
       warehouseReach: WarehouseReach = "recompute",
+      // Auto-run only: the inline uniqueness checks' passes, read from the
+      // run before and recorded for the run after (inline_uniqueness.ts).
+      // Undefined runs every check as compiled.
+      uniqueness?: UniquenessLedger,
    ): Promise<{
       entries: Record<string, ManifestEntry>;
       failures: Record<string, SourceFailure>;
@@ -196,6 +209,8 @@ export class InstructedBuild {
        * once every source built (name_view.ts). Empty without any.
        */
       nameViews: NameViewRecord[];
+      /** The run metadata value for the uniqueness checks, when any ran. */
+      uniquenessChecks?: ReturnType<UniquenessLedger["toMetadata"]>;
    }> {
       const { builds, sources, connectionDigests, connections } = compiled;
       const index = indexInstructions(instructions);
@@ -236,6 +251,7 @@ export class InstructedBuild {
          builtSources: [],
          writtenTargets: new Map(),
          nameViewIntents: [],
+         ...(uniqueness ? { uniqueness } : {}),
       };
       assertNoTableCollisions(builds, sources, connectionDigests, index);
 
@@ -328,6 +344,9 @@ export class InstructedBuild {
          sourcesRefused: run.refusals.length,
          ...settled,
          nameViews,
+         ...(uniqueness?.toMetadata()
+            ? { uniquenessChecks: uniqueness.toMetadata() }
+            : {}),
       };
    }
 
@@ -487,9 +506,28 @@ export class InstructedBuild {
 
          // An inlined join_one must match at most one row (P8): checked on
          // the source's own connection before anything is written.
+         // Auto-run skips one whose joined table provably did not change
+         // since it last passed (inline_uniqueness.ts).
          await assertInlinedJoinsUnique(
             compiled.materializePlans?.[persistSource.sourceID],
             connection,
+            orchestrated ? undefined : run.uniqueness,
+            orchestrated || !run.uniqueness
+               ? undefined
+               : (check) =>
+                    storedJoinOf(
+                       run,
+                       persistSource,
+                       graphConnectionName,
+                       check,
+                    ),
+         );
+
+         // From here this source's table may change: no pass recorded
+         // against it holds any longer, whether or not the build succeeds.
+         run.uniqueness?.markWritten(
+            sourceEntityId,
+            writtenTableIdentity(instruction, graphConnectionName),
          );
 
          // A `name=` someone else holds fails the source before it writes.
@@ -856,4 +894,117 @@ function colocatedRefusalOn(
       run.colocatedRefusalsByAddress.set(address, refusals);
    }
    return refusals.find((refusal) => refusal.sourceID !== sourceID);
+}
+
+/**
+ * The identity a uniqueness pass names a table by: where it lives and its
+ * name as {@link tableIdentity} reads it. Two names a warehouse may read as
+ * one table get one identity, so a write to either loses the pass: the safe
+ * direction.
+ */
+function tableIdentityKey(
+   kind: "connection" | "destination",
+   where: string,
+   physicalTableName: string,
+): string {
+   return JSON.stringify([kind, where, tableIdentity(physicalTableName)]);
+}
+
+/** The table an instructed build writes, as {@link tableIdentityKey} names it. */
+function writtenTableIdentity(
+   instruction: BuildInstruction,
+   connectionName: string,
+): string {
+   return instruction.destination
+      ? tableIdentityKey(
+           "destination",
+           instruction.destination,
+           instruction.physicalTableName,
+        )
+      : tableIdentityKey(
+           "connection",
+           connectionName,
+           instruction.physicalTableName,
+        );
+}
+
+/**
+ * The joined source of `check` as the parent's build reads it, when that is a
+ * persisted table, or undefined (the check then runs as compiled, every
+ * build). Every condition is evidence, not assumption:
+ *
+ * - the joined source is itself a persist source of this plan, and not an
+ *   incremental one (whose table changes in place under one address);
+ * - the run holds a warehouse table for its address on the connection the
+ *   check runs on (a `storage=` table is never read by a warehouse build);
+ * - the parent's build SQL changes when that table is taken out of the
+ *   manifest, so the parent's build reads it;
+ * - the check, compiled over the same manifest, reads it too (its SQL differs
+ *   from the check as planned, which reads the source live).
+ *
+ * Anything that throws is doubt, and resolves to undefined.
+ */
+async function storedJoinOf(
+   run: InstructedRun,
+   parent: PersistSource,
+   connectionName: string,
+   check: InlineUniquenessCheck,
+): Promise<StoredJoin | undefined> {
+   try {
+      const compile = uniquenessCheckCompiler(check);
+      const { compiled } = run;
+      const joined = compiled.sources[check.joinedSourceID];
+      if (!compile || !joined || !check.sql) return undefined;
+      if (run.incremental?.declarations[check.joinedSourceID]) return undefined;
+      const address = computeSourceEntityId(
+         joined,
+         compiled.connectionDigests,
+         compiled.targets?.[check.joinedSourceID],
+      );
+      const entry = run.entries[address];
+      if (
+         !entry?.physicalTableName ||
+         entry.storageDestinationName ||
+         entry.connectionName !== connectionName
+      ) {
+         return undefined;
+      }
+      const reduced = manifestExcludingStorage(
+         run.manifest,
+         run.entries,
+         run.planFacts,
+      );
+      if (!(address in reduced.entries)) return undefined;
+      const withTable = { ...reduced, strict: false };
+      const withoutTable = {
+         ...withTable,
+         entries: Object.fromEntries(
+            Object.entries(reduced.entries).filter(([id]) => id !== address),
+         ),
+      };
+      const target = compiled.targets?.[parent.sourceID];
+      if (
+         buildSQLOf(parent, withTable, target) ===
+         buildSQLOf(parent, withoutTable, target)
+      ) {
+         return undefined;
+      }
+      const sql = await compile(withTable, compiled.connectionDigests);
+      if (sql === check.sql) return undefined;
+      return {
+         sql,
+         address,
+         table: tableIdentityKey(
+            "connection",
+            connectionName,
+            entry.physicalTableName,
+         ),
+      };
+   } catch (err) {
+      logger.debug(
+         "Inline uniqueness check: the joined table could not be proven; checking as compiled",
+         { sourceName: parent.name, join: check.join, error: errMessage(err) },
+      );
+      return undefined;
+   }
 }

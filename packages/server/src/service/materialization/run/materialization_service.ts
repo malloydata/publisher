@@ -10,6 +10,7 @@ import {
    PackageVersionError,
 } from "../../../errors";
 import { logger } from "../../../logger";
+import { errMessage } from "../../../utils";
 import {
    MaterializationMode,
    recordSourcesOutcome,
@@ -51,6 +52,12 @@ import {
    incrementalRunContext,
    type IncrementalRunContext,
 } from "./incremental_build";
+import {
+   INLINE_UNIQUENESS_KEY,
+   UniquenessLedger,
+   uniquenessPassesIn,
+   type UniquenessPass,
+} from "./inline_uniqueness";
 import { InstructedBuild, nameViewContext } from "./instructed_build";
 import {
    ManifestCommitter,
@@ -101,6 +108,13 @@ import { TableClaims } from "./table_claims";
  * methods below that only delegate are the seams this class's specs drive and
  * substitute; a collaborator that calls one goes back through this class.
  */
+/** A run that can write nothing more. */
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
+   "MANIFEST_FILE_READY",
+   "FAILED",
+   "CANCELLED",
+]);
+
 export class MaterializationService {
    private readonly lifecycle: RunLifecycle;
    private readonly claims: TableClaims;
@@ -820,6 +834,7 @@ export class MaterializationService {
             refusalsInFailures = instructedRefused,
             refusedBesideBuilt = {},
             nameViews = [],
+            uniquenessChecks,
          } = await this.executeInstructedBuild(
             compiled,
             environment,
@@ -849,6 +864,21 @@ export class MaterializationService {
             clearedTiers,
             orchestrated,
             opts.warehouseReach,
+            // Auto-run only: Publisher owns every write to its tables, so it
+            // can tell a joined table that has not changed since a check
+            // passed. A host's tables are its own.
+            orchestrated
+               ? undefined
+               : new UniquenessLedger(
+                    opts.forceRefresh
+                       ? undefined
+                       : await this.priorUniquenessPasses(
+                            environmentId,
+                            packageName,
+                            id,
+                         ),
+                    id,
+                 ),
          );
 
          const { sourcesBuilt, sourcesFailed, sourcesReused } = tallySources(
@@ -889,6 +919,11 @@ export class MaterializationService {
                // The `name=` views this run pointed, for the dropper and the
                // reclaimers to find (name_view.ts).
                ...(nameViews.length > 0 ? { [NAME_VIEWS_KEY]: nameViews } : {}),
+               // The inline uniqueness checks: the passes the next run may
+               // rely on, and whether each ran or was skipped.
+               ...(uniquenessChecks
+                  ? { [INLINE_UNIQUENESS_KEY]: uniquenessChecks }
+                  : {}),
                // commitManifest replaces the metadata, so the version is set again.
                ...(versionId !== undefined
                   ? {
@@ -1074,6 +1109,57 @@ export class MaterializationService {
       ...args: Parameters<ManifestCommitter["autoLoad"]>
    ): Promise<void> {
       return this.committer.autoLoad(...args);
+   }
+
+   /**
+    * The inline uniqueness passes an auto-run may rely on: those the run
+    * before it recorded, and only when that run is the one every other run of
+    * the package (any version, any status) had finished before it started.
+    * Then no Publisher run wrote a table between that run's checks and this
+    * run, so a joined table it holds unchanged is the table its check passed
+    * over. An orchestrated run before, or any doubt (a run still active, one
+    * that overlapped, an unreadable listing), relies on nothing.
+    */
+   private async priorUniquenessPasses(
+      environmentId: string,
+      packageName: string,
+      excludeId: string,
+   ): Promise<Record<string, UniquenessPass> | undefined> {
+      let runs: Materialization[];
+      try {
+         runs = (
+            (await this.repository.listMaterializations(
+               environmentId,
+               packageName,
+            )) ?? []
+         ).filter((m) => m.id !== excludeId);
+      } catch (err) {
+         logger.warn(
+            "Could not list earlier runs; every inline uniqueness check runs",
+            { packageName, error: errMessage(err) },
+         );
+         return undefined;
+      }
+      if (runs.length === 0) return undefined;
+      const at = (d: Date | string | null | undefined) =>
+         d ? new Date(d).getTime() : NaN;
+      const previous = runs.reduce((a, b) =>
+         at(b.createdAt) > at(a.createdAt) ? b : a,
+      );
+      if (
+         previous.status !== "MANIFEST_FILE_READY" ||
+         previous.metadata?.mode !== "auto"
+      ) {
+         return undefined;
+      }
+      const began = at(previous.startedAt ?? previous.createdAt);
+      for (const other of runs) {
+         if (other === previous) continue;
+         if (!TERMINAL_STATUSES.has(other.status)) return undefined;
+         const ended = at(other.completedAt ?? other.updatedAt);
+         if (!(ended <= began)) return undefined;
+      }
+      return uniquenessPassesIn(previous.metadata);
    }
 
    /** See {@link ManifestCommitter.mostRecentEntries}. */
