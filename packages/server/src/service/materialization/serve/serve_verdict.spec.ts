@@ -157,6 +157,30 @@ describe("computeServeVerdicts", () => {
       });
    });
 
+   it("does not call a gated #(preaggregate) rollup gated out when its variant keeps the gates (row 1)", () => {
+      const rollup = plan("orders_rollup_1", {
+         origin: "preaggregate",
+         preaggregate: {
+            baseSourceName: "orders",
+            grainDimensions: ["region"],
+            measures: [],
+         } as unknown as PersistSourcePlan["preaggregate"],
+      });
+      const keeping = (keeps: boolean) =>
+         computeServeVerdicts(
+            facts([rollup], {
+               gated: () => true,
+               servedCopyKeepsGates: true,
+               rollupKeepsGates: () => keeps,
+            }),
+         )[0];
+      expect(keeping(true)?.reason).not.toBe("row_level_gate");
+      expect(keeping(false)).toMatchObject({
+         verdict: "live",
+         reason: "row_level_gate",
+      });
+   });
+
    it("reads a rollup's reach and gate through its base, by name", () => {
       const asked: [string | undefined, string, string | undefined][] = [];
       const rollup = plan("orders_rollup_1", {

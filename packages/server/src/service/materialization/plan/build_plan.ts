@@ -1341,6 +1341,13 @@ export interface BuildPlanOutcome {
     * worker that predates it sends none.
     */
    materializePlans?: Record<string, MaterializePlan>;
+   /**
+    * The `#(preaggregate)` rollups over a gated base whose gates are grafted
+    * on their variant at read ({@link rollupGateEnforcedAtRead}), by their
+    * sourceID, so the serve verdict does not call them gated out. Optional:
+    * a worker that predates it sends none.
+    */
+   rollupsKeepingGates?: string[];
 }
 
 /**
@@ -1402,6 +1409,10 @@ export function deriveBuildPlanOutcome(
          ...new Set(compiled.builds.map((b) => b.connectionName)),
       ].sort(),
       materializePlans: compiled.materializePlans ?? {},
+      rollupsKeepingGates: Object.entries(compiled.preaggregatePlans ?? {})
+         .filter(([, rollup]) => rollupGateEnforcedAtRead(rollup))
+         .map(([sourceID]) => sourceID)
+         .sort(),
    };
 }
 

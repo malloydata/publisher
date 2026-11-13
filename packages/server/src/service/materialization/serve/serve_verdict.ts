@@ -143,6 +143,12 @@ export interface ServeVerdictFacts {
     */
    servedCopyKeepsGates?: boolean;
    /**
+    * A `#(preaggregate)` rollup over a gated base whose gates the router
+    * grafts on its variant at read (R3 for rollups, row 1): a gated entry
+    * point is answered from it, so it is not `row_level_gate`.
+    */
+   rollupKeepsGates?(sourceID: string): boolean;
+   /**
     * Why the bind refuses this source although the plan holds it (the
     * eligibility gate the bind applies, such as a rollup name two models
     * share), or undefined when the bind keeps it.
@@ -370,9 +376,10 @@ function verdictFor(
 
    // Colocated persist is substituted inside Malloy, gates and all; storage
    // and rollups go through the router, which skips a gated entry point,
-   // unless the served copy keeps the gates (R3), which it does for storage.
+   // unless the served copy keeps the gates (R3), which it does for storage,
+   // or a `#(preaggregate)` rollup's variant keeps them (row 1).
    if (
-      (origin === "preaggregate" ||
+      ((origin === "preaggregate" && !facts.rollupKeepsGates?.(sourceID)) ||
          (tier === "storage" && !facts.servedCopyKeepsGates)) &&
       facts.gated(readID, readName, source.modelPath)
    ) {

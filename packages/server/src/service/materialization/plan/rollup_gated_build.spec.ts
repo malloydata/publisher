@@ -114,6 +114,27 @@ for (const gated of [true, false]) {
          },
       );
 
+      it(
+         gated
+            ? "reports the gated rollup's serve verdict without a gate veto (row 1)"
+            : "plans nothing to report a verdict on",
+         () => {
+            const verdicts = (
+               pkg as unknown as {
+                  materialization: {
+                     serveVerdicts(): { sourceName: string; reason?: string }[];
+                  };
+               }
+            ).materialization
+               .serveVerdicts()
+               .filter((v) => v.sourceName.startsWith("gated__rollup__"));
+            expect(verdicts.length).toBe(gated ? 1 : 0);
+            for (const v of verdicts) {
+               expect(v.reason).not.toBe("row_level_gate");
+            }
+         },
+      );
+
       it("leaves the storage= rollup out until the managed-tier review", () => {
          expect(warned()).toContain("gated.stored_total");
       });

@@ -57,8 +57,21 @@
  *   found through the source map's base edges), the extension's dimensions
  *   over the grain alone. One that adds a `where:` (`GRAIN_TOO_COARSE`), a
  *   `timezone:` (`TIME_ZONE`), or binds a base field's name to another field
- *   (`MISSING_FIELD`) declines; one that adds a gate is the router's
- *   `CONTRACT`.
+ *   (`MISSING_FIELD`) declines.
+ *
+ * Route, then govern (R3 for rollups, known limitation 1): a base variant
+ * redeclares the run target over the rollup IN AN OVERLAY OF ITS OWN
+ * DECLARING FILE (`declaring_file_variant.ts`), so it keeps the author's
+ * `sourceID` and carries the run target's entry-point gates as note lines.
+ * With `materialize.gatedSources` on, the router lets the leg past a gated
+ * entry point; a rollup then answers only when it was built for its gate
+ * (`rollupGateEnforcedAtRead`) and the pre-proof holds (`proveGates`): the
+ * variant's run target is the author's `sourceID`, its gates equal the live
+ * entry point's (`sameGateSet`, the rule `govern()` re-proves with) and each
+ * field they read is a grain dimension. Else it is skipped `CONTRACT`, with a
+ * detail that never names the gate. `govern()` then grafts the gates on the
+ * variant's own scope; a denial there is a defect, not a routing outcome. A
+ * join leg (A7) carries no gate, so it declines past one.
  *
  * Rollups are offered coarsest first; the first that answers is used. Behind
  * `materialize.enabled`.
@@ -67,6 +80,7 @@
 import type {
    MalloyConfig,
    ModelDef,
+   SourceDef,
    ModelMaterializer,
    QueryMaterializer,
 } from "@malloydata/malloy";
@@ -96,6 +110,7 @@ import {
 import {
    definitionTextAt,
    extractRunViewCall,
+   malloyIdentifiers,
    type TextRange,
 } from "../../query_text";
 import { viewNoteTexts } from "../plan/persisted_view_compile";
@@ -123,6 +138,7 @@ import { splitSourceID } from "../plan/persisted_view";
 import {
    generateRollupBuildFile,
    planSourceRollups,
+   rollupGateEnforcedAtRead,
    type RollupVariantPlan,
 } from "../plan/rollup_plan";
 import { SourceMap } from "../plan/source_map";
@@ -137,6 +153,13 @@ import {
    type JoinRollupLeg,
 } from "./join_rollup";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
+import {
+   collectEntryPointGates,
+   type GraftRuntime,
+   type GraftScope,
+} from "../../gate_classification";
+import { enforcedGatesOf, type EnforcedGates } from "../../access_record";
+import { sameGateSet } from "../../governance/query_governor";
 import { timeframeRestatements, typeDeclaration } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import type { ServeBinding } from "./materialization_serve_transform";
@@ -189,6 +212,12 @@ export interface RollupAnswer {
    virtualMap?: VirtualMap;
    /** For a `storage=` rollup: its binding. */
    binding?: ServeBinding;
+   /**
+    * Where `govern()` grafts the run target's gates on the variant (R3): set
+    * for every base variant, and the one an answer past an entry-point gate
+    * is governed on.
+    */
+   graftScope?: GraftScope;
 }
 
 /**
@@ -205,6 +234,12 @@ class JoinNotRead extends Error {}
 
 interface CompiledVariant {
    materializer?: ModelMaterializer;
+   /** A base variant's compiled model, where `govern()` grafts (R3). */
+   modelDef?: ModelDef;
+   /** The runtime a base variant compiled in, which a graft reloads through. */
+   runtime?: GraftRuntime;
+   /** The compile's cache key and generation: its graft cache scope. */
+   cacheScope?: string;
    error?: string;
 }
 
@@ -214,6 +249,13 @@ interface RollupQuery {
    localName: string;
    /** The run target's `sourceID`. */
    sourceID: string;
+   /**
+    * The live entry point's gates (the governor's walk), when it has any:
+    * the router let the rollup leg past them (R3), so a rollup answers only
+    * when the same gates are written on its variant and each field they read
+    * is a grain column (`proveGates`).
+    */
+   gates?: EnforcedGates;
    /** The run target's compiled definition. */
    struct: object;
    shape: ReturnType<typeof queryShapeOf>;
@@ -393,6 +435,12 @@ export class RollupVariantServe {
       }
       const plans = target?.plans ?? [];
       const extension = target?.extension;
+      // The live entry point's gates, as the governor walks them: a query
+      // reaches here past them only when the router let the leg through.
+      const gates = liveEntryPointGates(
+         struct,
+         prepared.modelDef ?? (modelDef as never),
+      );
       const shape = queryShapeOf(prepared.query, struct, {
          sourceName: localName,
       });
@@ -437,6 +485,7 @@ export class RollupVariantServe {
          shape,
          views,
          rawSql: readsRawSql(prepared.query),
+         ...(gates ? { gates } : {}),
          ...(extension ? { extension } : {}),
       };
       for (const plan of ownPlans) {
@@ -452,6 +501,13 @@ export class RollupVariantServe {
       // join legs, inside the rollup step.
       const usage = legs.length > 0 ? queryFieldUsagePaths(prepared) : [];
       for (const { leg, refusal } of legs) {
+         // A join leg redeclares the author's source around the join, not
+         // over its declaring file, so it carries no gate to prove: past an
+         // entry-point gate it declines (CONTRACT).
+         if (gates) {
+            first ??= contractSkip();
+            continue;
+         }
          try {
             return await this.attemptJoin(leg, refusal, {
                localName,
@@ -767,6 +823,11 @@ export class RollupVariantServe {
       args: Parameters<RollupVariantServe["attempt"]>[0],
    ): Promise<RollupAnswer> {
       const { localName, shape } = query;
+      // Past an entry-point gate, only a rollup whose base gate is enforced
+      // at read (built for it: rows 1 and 21) is offered.
+      if (query.gates && !rollupGateEnforcedAtRead(plan)) {
+         throw contractSkip();
+      }
       // A view's `where: sql_boolean("${TABLE}.region = …")` reads a column
       // no field reference names, so no grain check sees it.
       if (query.rawSql) {
@@ -865,7 +926,12 @@ export class RollupVariantServe {
             "the query does not compile against the rollup",
          );
       }
-      checkCoverage(plan, queryLevelFacts(await readPreparedQuery(runnable)));
+      const routed = await readPreparedQuery(runnable);
+      checkCoverage(plan, queryLevelFacts(routed));
+      // Route, then govern: past an entry-point gate, the gate must be
+      // provable on this rollup before it is used, so `govern()`'s re-proof
+      // (graft, bind guard, gate-set equality) denies only on a defect.
+      if (query.gates) proveGates(plan, query, routed, variant.modelDef);
       // The compiled SQL must read the table, never recompute the rollup.
       const readsTable = result.sql.includes(
          (table.virtualMap ? table.quotedPath : colocatedTable) ?? "\u0000",
@@ -881,6 +947,16 @@ export class RollupVariantServe {
          rollupSourceName: plan.rollupSourceName,
          ...(table.virtualMap ? { virtualMap: table.virtualMap } : {}),
          ...(table.binding ? { binding: table.binding } : {}),
+         ...(variant.modelDef && variant.cacheScope
+            ? {
+                 graftScope: {
+                    modelDef: variant.modelDef,
+                    materializer: variant.materializer,
+                    cacheScope: variant.cacheScope,
+                    ...(variant.runtime ? { runtime: variant.runtime } : {}),
+                 },
+              }
+            : {}),
       };
    }
 
@@ -945,9 +1021,16 @@ export class RollupVariantServe {
       ].join("\u0000");
       let compiled = this.compiled.get(key);
       if (!compiled) {
-         compiled = this.compile(plan, use, table).catch((error) => ({
-            error: error instanceof Error ? error.message : String(error),
-         }));
+         // One graft cache scope per compiled variant: two variants naming
+         // the same source (other views, another rollup, a reload) never
+         // share a grafted materializer.
+         const cacheScope = `rollup\u0000${this.generation}\u0000${key}`;
+         compiled = this.compile(plan, use, table).then(
+            (v) => ({ ...v, cacheScope }),
+            (error) => ({
+               error: error instanceof Error ? error.message : String(error),
+            }),
+         );
          this.compiled.set(key, compiled);
       }
       return compiled;
@@ -1556,6 +1639,97 @@ function flagLine(modelDef: unknown): string {
       .sort()
       .map((f) => identifier(f))
       .join(" ")} }`;
+}
+
+/**
+ * A rollup skipped for the query's gate (`CONTRACT`). Its detail never names
+ * the gate's field or text: a caller may not learn a gate's shape from why
+ * its query was answered live.
+ */
+function contractSkip(): RollupSkip {
+   return new RollupSkip(
+      "rollup_contract",
+      "the query's source has an access rule this rollup cannot apply",
+      true,
+   );
+}
+
+/**
+ * The gates the live entry point carries (the governor's walk: own,
+ * inherited, a derivation's base), or undefined when it has none. A walk
+ * that cannot be read counts as a gate no rollup proves.
+ */
+function liveEntryPointGates(
+   struct: unknown,
+   modelDef: unknown,
+): EnforcedGates | undefined {
+   try {
+      const gates = enforcedGatesOf(
+         collectEntryPointGates(
+            struct as SourceDef,
+            modelDef as ModelDef,
+            new Set(),
+            true,
+         ),
+      );
+      return gates.authorize.length + gates.accessFilter.length > 0
+         ? gates
+         : undefined;
+   } catch {
+      return { authorize: ["false"], accessFilter: [] };
+   }
+}
+
+/**
+ * The pre-proof for a query let past an entry-point gate (R3 for rollups):
+ * throw `CONTRACT` unless the variant's run target is the author's source (its
+ * `sourceID`), the gates written on it are exactly the live entry point's
+ * (by route and expression, `sameGateSet`: one rule with `govern()`'s
+ * re-proof), and every field those gates read is one of the rollup's grain
+ * dimensions, so filtering its groups equals filtering the base's rows
+ * (table 1).
+ */
+export function proveGates(
+   plan: RollupVariantPlan,
+   query: Pick<RollupQuery, "gates" | "sourceID" | "struct">,
+   routed: Awaited<ReturnType<typeof readPreparedQuery>>,
+   variantModelDef: ModelDef | undefined,
+): void {
+   const live = query.gates;
+   if (!live) return;
+   const model = routed.modelDef ?? variantModelDef;
+   const struct = model
+      ? resolveStructRefSource<{ sourceID?: unknown }>(routed.structRef, model)
+      : undefined;
+   if (!struct || struct.sourceID !== query.sourceID) throw contractSkip();
+   let written: EnforcedGates;
+   try {
+      written = enforcedGatesOf(
+         collectEntryPointGates(
+            struct as unknown as SourceDef,
+            model as ModelDef,
+            new Set(),
+            true,
+         ),
+      );
+   } catch {
+      throw contractSkip();
+   }
+   if (!sameGateSet(live, written)) throw contractSkip();
+   const fields = new Map(
+      (
+         ((query.struct as { fields?: unknown[] }).fields ?? []) as {
+            name?: unknown;
+            as?: unknown;
+         }[]
+      ).map((f) => [String(f.as ?? f.name), f]),
+   );
+   const grain = new Set(plan.grainDimensions);
+   for (const expr of [...written.authorize, ...written.accessFilter]) {
+      for (const id of malloyIdentifiers(expr)) {
+         if (fields.has(id) && !grain.has(id)) throw contractSkip();
+      }
+   }
 }
 
 /**
