@@ -4,6 +4,7 @@
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { getV1ServedCopyMode } from "../../../config";
 import { logger } from "../../../logger";
+import { errorCodeOf } from "./error_code";
 import { recordSourceBuildDuration } from "../../../materialization_metrics";
 import { errMessage } from "../../../utils";
 import { quoteRenameTarget, quoteTablePath } from "../../quoting";
@@ -388,7 +389,9 @@ async function swapInTransaction({
                   physicalTableName,
                   connectionName,
                   error: errMessage(rollbackErr),
-                  cause: errMessage(err),
+                  // The swap's error can quote its SQL; it reaches the run's
+                  // record.
+                  causeCode: errorCodeOf(err),
                });
             }
          }

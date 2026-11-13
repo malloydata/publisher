@@ -483,7 +483,8 @@ export async function advanceLedgerAfterSeed(params: {
             {
                packageName: params.context.packageName,
                physicalTableName: params.lineage.physicalTableName,
-               error: boundary.error,
+               // The code only: the error can quote the watermark value read.
+               errorCode: boundary.errorCode,
             },
          );
       }
@@ -577,8 +578,6 @@ export async function applyIncrementalStep(params: {
       packageName: context.packageName,
       sourceName: params.sourceName,
       physicalTableName: lineage.physicalTableName,
-      rangeStart: step.start.value,
-      rangeEnd: step.end.value,
       durationMs,
    });
    return {
@@ -606,7 +605,9 @@ export function reportIncrementalStep(params: {
    const { step, sourceName, packageName, physicalTableName } = params;
    recordIncrementalStep(step.mode, step.reasonCode);
    // Warn: a seed's reason is the only signal that an incremental source is
-   // quietly being rebuilt in full every run.
+   // quietly being rebuilt in full every run. The code only: the free-text
+   // reason can quote a watermark boundary, which is a value from the data,
+   // or a driver's error. The boundary in force is on the manifest entry.
    logger.warn(
       step.mode === "seed"
          ? "Rebuilding an incremental source in full"
@@ -616,21 +617,20 @@ export function reportIncrementalStep(params: {
          sourceName,
          physicalTableName,
          reasonCode: step.reasonCode,
-         reason: step.reason,
       },
    );
 }
 
 /**
  * Count and log a delta that COMMITTED. With {@link reportIncrementalStep}, every
- * step is reported exactly once.
+ * step is reported exactly once. The range is not logged: its bounds are
+ * watermark values, from the data. The boundary reached is on the manifest
+ * entry.
  */
 function reportDeltaApplied(params: {
    sourceName: string;
    packageName: string;
    physicalTableName: string;
-   rangeStart: string;
-   rangeEnd: string;
    durationMs: number;
 }): void {
    recordIncrementalStep("delta");

@@ -9,6 +9,7 @@ import {
    WarehouseRecomputeRefusedError,
 } from "../../../errors";
 import { logger } from "../../../logger";
+import { errorCodeOf } from "./error_code";
 import {
    recordStoredColumnTypeMismatch,
    recordChainedStorageBuild,
@@ -391,7 +392,9 @@ export class StorageBuildStrategy
                   sourceName: persistSource.name,
                   destinationName,
                   strict: manifest.strict,
-                  reason: safeDetail,
+                  // The reason is on the entry (upstreamRecomputeReason); a
+                  // compile error in it can quote the build's text.
+                  code: errorCodeOf(err),
                },
             );
             // A recompute because a parent's entry is at the wrong tier reads
@@ -468,11 +471,12 @@ export class StorageBuildStrategy
                destinationName,
                alreadyBilled ? "billed_read_not_captured" : "build_failed",
             );
+            // The code only: the message can quote the build's SQL or a value.
             logger.warn("Storage materialization build failed", {
                sourceName: persistSource.name,
                destinationName,
                alreadyBilled,
-               error: safeDetail,
+               code: errorCodeOf(err),
             });
             const failure =
                `Failed to materialize source '${persistSource.name}' into ` +

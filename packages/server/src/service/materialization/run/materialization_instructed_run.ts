@@ -7,6 +7,7 @@ import {
    MaterializationEligibilityError,
 } from "../../../errors";
 import { logger } from "../../../logger";
+import { errorCodeOf } from "./error_code";
 import type { EligibilityRefusalReason } from "../../../materialization_metrics";
 import {
    recordSharedAddressInstructions,
@@ -446,12 +447,14 @@ export function recordInstructedBuildFailure(
       retryable,
    });
    // A build that lost a source does not throw, so without this log the
-   // failure is invisible in the server's own output.
+   // failure is invisible in the server's own output. The reason stays on the
+   // run's record: a driver's message can quote SQL or a value, so the log
+   // has its code.
    logger.warn("Source failed to materialize", {
       packageName: run.owner?.packageName,
       sourceName: persistSource.name,
       physicalTableName: instruction.physicalTableName,
-      reason,
+      code: errorCodeOf(buildErr),
       retryable,
    });
    run.failedReasons.push(`${persistSource.name}: ${reason}`);

@@ -8,6 +8,7 @@ import {
 } from "../../../errors";
 import { classifyRunFailure } from "./build_failure_class";
 import { logger } from "../../../logger";
+import { errorCodeOf, stackFrames } from "./error_code";
 import {
    MaterializationMode,
    recordMaterializationRun,
@@ -134,20 +135,24 @@ export class RunLifecycle {
             const message = redactPgSecrets(errMessage(err));
             const cancelled = abortController.signal.aborted;
             const next = cancelled ? "CANCELLED" : "FAILED";
-            // A background throw answers no request, so log it (with the stack)
-            // or it is invisible in the server's output.
+            // A background throw answers no request, so log it (with the
+            // stack's frames) or it is invisible in the server's output. Its
+            // code, never its message: a whole-run failure joins its sources'
+            // driver errors, which can quote SQL or a value. The message is on
+            // the run's record.
+            const code = errorCodeOf(err);
             if (cancelled) {
                // An abort racing a genuine failure records "Cancelled"; this log
-               // is then the only place the real error appears.
+               // is then the only place the real error's code appears.
                logger.info("Materialization run cancelled", {
                   materializationId: id,
-                  error: message,
+                  code,
                });
             } else {
                logger.error("Materialization run failed", {
                   materializationId: id,
-                  error: message,
-                  stack: err instanceof Error ? err.stack : undefined,
+                  code,
+                  stack: stackFrames(err),
                });
             }
             try {
@@ -186,7 +191,7 @@ export class RunLifecycle {
             } catch (transitionErr) {
                logger.error("Failed to record materialization failure", {
                   materializationId: id,
-                  originalError: message,
+                  code: errorCodeOf(err),
                   transitionError: errMessage(transitionErr),
                });
             }
