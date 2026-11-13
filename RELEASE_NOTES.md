@@ -83,6 +83,10 @@ never more precise. `count()`, 32-bit integers and decimals are unchanged.
 No API change. See docs/materialization.md, "Stored column types follow the model, not the
 warehouse".
 
+## [Unreleased] — A colocated `#@ persist` table past its freshness window is no longer read
+
+A wrong answer is fixed, with the default settings as well as under the v1 cutover. After a host binds a build manifest, a query on a `#@ persist` source whose colocated table was past its freshness window (`freshness.fallback` `live` or `fail`) could still read that table, while the path report said `servedBy: live`. With the default `PUBLISHER_V1_SERVED_COPY=off` this happened when the stale table's only fresh neighbours were `#@ preaggregate` rollups or persisted views; under `on` it happened to every such table, and `shadow` compared against that answer. Such a query is now answered live, as its fallback says.
+
 ## [Unreleased] — In development: join-to-rollup checks the querying source's primary key, and declines a count beside a re-pointed join
 
 Behind `PUBLISHER_MATERIALIZE` (off by default). Two wrong answers from a joined source's `#(preaggregate)` rollup read through a join are fixed; each now answers live (`COUNT_SEMANTICS`) and equals live.
