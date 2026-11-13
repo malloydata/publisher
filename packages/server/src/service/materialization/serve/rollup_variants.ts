@@ -49,10 +49,11 @@
  *
  * - a named view the query runs, refines, starts from or nests (row 11), as
  *   the author wrote it (read at its compiled location), so the view's own
- *   query is what compiles and is checked; one that no longer compiles to
- *   the view the author's model holds (its file edited since) or that reads
- *   raw SQL declines (`MISSING_FIELD`); a persisted view of the name is the
- *   router's earlier leg (R1);
+ *   query is what compiles and is checked, with each view its definition
+ *   builds on (`view: a is b + { … }`, at any depth); one that no longer
+ *   compiles to the view the author's model holds (its file edited since) or
+ *   that reads raw SQL declines (`MISSING_FIELD`); a persisted view of the
+ *   name is the router's earlier leg (R1);
  * - for a query on an extension or rename of the rolled-up source (row 22,
  *   found through the source map's base edges), the extension's dimensions
  *   over the grain alone. One that adds a `where:` (`GRAIN_TOO_COARSE`), a
@@ -95,6 +96,7 @@ import {
 import {
    definitionTextAt,
    extractRunViewCall,
+   malloyIdentifiers,
    type TextRange,
 } from "../../query_text";
 import { viewNoteTexts } from "../plan/persisted_view_compile";
@@ -981,9 +983,12 @@ export class RollupVariantServe {
       };
       // What the queried source adds over the rollup's fields: an
       // extension's dimensions over the grain, and the views the query reads.
-      const additions =
-         use.kind === "base" ? await variantAdditions(use, readText) : "";
-      if (typeof additions !== "string") return additions;
+      const added =
+         use.kind === "base"
+            ? await variantAdditions(use, readText)
+            : { text: "", views: [] };
+      if ("error" in added) return added;
+      const additions = added.text;
       const modelFile = path.join(packagePath, modelPath);
       const queryModelURL = pathToFileURL(`${modelFile}.rollup.malloy`);
       const overlay = new Map<string, string>();
@@ -1084,7 +1089,8 @@ ${sourceOverRollup(plan, use, servedName, additions)}`;
          const variantDef = (
             compiled as { _modelDef?: { contents?: Record<string, unknown> } }
          )._modelDef?.contents?.[localName];
-         for (const view of use.views) {
+         // Every view declared, the ones a refinement builds on included.
+         for (const view of added.views) {
             const theirs = turtleNamed(use.struct, view);
             const ours = turtleNamed(variantDef, view);
             if (
@@ -1249,16 +1255,22 @@ function extensionDimensions(
 
 /**
  * The ` extend { … }` that declares the target's extension dimensions and the
- * views the query reads on the variant (empty when there are none), or why
- * it cannot. Each view is its definition as the author wrote it, read at its
- * compiled location ({@link definitionTextAt}), so the view's own query is
- * what compiles against the rollup and what coverage reads; one that does
- * not read back as its own definition leaves the variant uncompiled.
+ * views the query reads on the variant (empty when there are none), with the
+ * views it declares, or why it cannot. Each view is its definition as the
+ * author wrote it, read at its compiled location ({@link definitionTextAt}),
+ * so the view's own query is what compiles against the rollup and what
+ * coverage reads; one that does not read back as its own definition leaves
+ * the variant uncompiled. A view defined over another (`view: a is b + { … }`,
+ * a refinement, at any depth) names it in its text, so each view of the
+ * source its definition names is declared before it: the compiled pipeline
+ * holds `b` expanded, without its name. A name that is not the base view is
+ * declared too (one view more, never one fewer), and every view declared is
+ * held to the compiled-pipeline check in {@link RollupVariantServe.compile}.
  */
 async function variantAdditions(
    target: VariantTarget,
    readText: (url: string) => Promise<string | undefined>,
-): Promise<string | { error: string }> {
+): Promise<{ text: string; views: string[] } | { error: string }> {
    const lines: string[] = [];
    for (const d of target.dimensions) {
       // malloy-text: the author's own notes on the field, single lines, `#@` left out (viewNoteTexts)
@@ -1275,10 +1287,26 @@ async function variantAdditions(
       location?: { url?: unknown; range?: TextRange };
       annotations?: Parameters<typeof viewNoteTexts>[0];
    }[];
-   for (const view of target.views) {
-      const field = fields.find(
-         (f) => f.type === "turtle" && (f.as ?? f.name) === view,
-      );
+   const turtles = new Map<string, (typeof fields)[number]>();
+   for (const f of fields) {
+      const name = f.as ?? f.name;
+      if (f.type === "turtle" && typeof name === "string") turtles.set(name, f);
+   }
+   const declared: string[] = [];
+   const done = new Set<string>();
+   const open = new Set<string>();
+   // Each view after the views its definition names, so each is declared
+   // before a view refines it.
+   const declare = async (
+      view: string,
+      depth: number,
+   ): Promise<{ error: string } | undefined> => {
+      if (done.has(view)) return undefined;
+      if (open.has(view) || depth > 64) {
+         return { error: `the definition of view \`${view}\` names itself` };
+      }
+      open.add(view);
+      const field = turtles.get(view);
       const url = field?.location?.url;
       const range = field?.location?.range;
       const text = typeof url === "string" ? await readText(url) : undefined;
@@ -1290,13 +1318,27 @@ async function variantAdditions(
       if (definition === undefined) {
          return { error: `the definition of view \`${view}\` was not read` };
       }
+      for (const name of malloyIdentifiers(definition)) {
+         if (name === view || !turtles.has(name)) continue;
+         const problem = await declare(name, depth + 1);
+         if (problem) return problem;
+      }
+      open.delete(view);
+      done.add(view);
+      declared.push(view);
       // malloy-text: the author's own notes on the view, single lines, `#@` left out (viewNoteTexts)
       const notes = viewNoteTexts(field?.annotations).map((n) => `  ${n}`);
       lines.push(...notes);
       lines.push(`  view: ${definition}`);
+      return undefined;
+   };
+   for (const view of target.views) {
+      const problem = await declare(view, 0);
+      if (problem) return problem;
    }
    // malloy-text: each line above is a name through identifier, or the author's own text marked where it is read
-   return lines.length > 0 ? ` extend {\n${lines.join("\n")}\n}` : "";
+   const text = lines.length > 0 ? ` extend {\n${lines.join("\n")}\n}` : "";
+   return { text, views: declared };
 }
 
 /** Whether a binding is inside its freshness window at `now`. */
