@@ -21,11 +21,7 @@ import {
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
-import {
-   omittedByID,
-   omittedFromFile,
-   type OmittedSource,
-} from "./omitted_sources";
+import { omittedByID, omittedFromFile, type Omission } from "./omitted_sources";
 import { registerUniquenessCheckCompiler } from "../run/inline_uniqueness";
 import {
    buildCopyDeclarationAt,
@@ -124,7 +120,7 @@ export async function tryCompileMaterializeCompanion(args: {
    generated?: GeneratedMaterialize;
    refused: MaterializeRefusal[];
    /** The sources a failure left out of the plan (see omitted_sources). */
-   omitted?: OmittedSource[];
+   omitted?: Omission[];
 }> {
    const modelFile = path.resolve(args.packagePath, args.modelPath);
    const refused: MaterializeRefusal[] = [];

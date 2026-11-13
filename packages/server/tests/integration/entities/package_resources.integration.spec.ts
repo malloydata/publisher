@@ -249,6 +249,7 @@ source: shown is ${ROWS} extend {
          sources: {},
          refusedSources: {},
          omittedSources: [],
+         omittedFiles: [],
       });
 
       const index = await get(pkgUrl("shop", "/embedding-index"));

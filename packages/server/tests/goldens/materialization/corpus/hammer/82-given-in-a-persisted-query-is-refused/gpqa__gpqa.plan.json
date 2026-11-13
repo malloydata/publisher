@@ -42,6 +42,7 @@
         ]
       }
     ],
+    "omittedFiles": [],
     "omittedSources": [],
     "refusedSources": {
       "arg_bound@<hammer>/gpqa/gpqa.malloy": {

@@ -101,9 +101,9 @@ import {
 } from "./eligibility_collect";
 import { resolveFreshness, resolveQueryMetadata } from "./plan_layers";
 import {
-   finalizeOmittedSources,
+   finalizeOmissions,
    omittedByID,
-   type OmittedSource,
+   type Omission,
    type OmittedSourceReason,
 } from "./omitted_sources";
 
@@ -235,7 +235,7 @@ export interface CompiledBuildPlan {
     * Sources planning left out because it FAILED (a companion that did not
     * compile), for the wire plan's `omittedSources`. Absent: none.
     */
-   omittedSources?: OmittedSource[];
+   omittedSources?: Omission[];
 }
 
 function wireTerm(term: DynamicTerm): WireStrippedTerm {
@@ -442,6 +442,34 @@ function declaredPersistSourceIDs(malloyModel: MalloyModel): string[] {
 }
 
 /**
+ * The sourceIDs of the sources in `malloyModel` carrying a `#@` note at `at`
+ * (a `#@` line that did not parse), read in the model's own coordinates.
+ * Fail-open: an unreadable annotation names nothing.
+ */
+function sourceIDsWithNoteAt(
+   malloyModel: MalloyModel,
+   at: { url: string; range: { start: { line: number } } },
+): string[] {
+   const ids: string[] = [];
+   try {
+      for (const def of Object.values(malloyModel._modelDef?.contents ?? {})) {
+         if (!isSourceDef(def) || !def.annotations || !def.sourceID) continue;
+         try {
+            const notes = new Annotations(def.annotations).forRoute("@");
+            if (notes.some((note) => noteCovers(note, at))) {
+               ids.push(def.sourceID);
+            }
+         } catch {
+            // An annotation that cannot be read names nothing.
+         }
+      }
+   } catch {
+      // Fail open, as detectDroppedPersistSources does.
+   }
+   return ids;
+}
+
+/**
  * Classify one persist source's entry-point `#(authorize)` gate(s) and decide
  * whether it is `attributed` — see {@link PersistSourceGateOutcome}.
  *
@@ -521,7 +549,7 @@ export interface BuildPlanParts {
    /** Findings on the `#@` annotations of this model's sources (see annotation_reader). */
    annotationFindings: PackageAnnotationFinding[];
    /** See {@link CompiledBuildPlan.omittedSources}. */
-   omittedSources: OmittedSource[];
+   omittedSources: Omission[];
 }
 
 export function emptyBuildPlanParts(): BuildPlanParts {
@@ -967,7 +995,7 @@ export async function collectModelBuildPlan(
        * The rollups a caller's failed compile of {@link synthesized} left
        * out (see `tryCompileSynthesizedPreaggregation`'s `onOmitted`).
        */
-      synthesizedOmitted?: OmittedSource[];
+      synthesizedOmitted?: Omission[];
    },
 ): Promise<void> {
    const {
@@ -1102,7 +1130,7 @@ export async function collectModelBuildPlan(
               getRuntime,
               onCompileFailed: (error) => {
                  logger.error(
-                    "The v1 build copy of a model did not compile; its #@ persist sources are left out of the build plan",
+                    "The v1 build copy of a model could not be read or did not compile; its #@ persist sources are left out of the build plan",
                     { modelPath, error: errMessage(error) },
                  );
                  parts.omittedSources.push(
@@ -1164,6 +1192,17 @@ export async function collectModelBuildPlan(
               }))
               .find((hit) => hit.note !== undefined)
          : undefined;
+      // A source none of whose `#@` lines parse is not planned at all, and
+      // the finding names a line: report the source by its sourceID, so its
+      // absence is not read as its leaving the plan.
+      if (at && !onPlanned?.note) {
+         parts.omittedSources.push(
+            ...omittedByID(
+               sourceIDsWithNoteAt(planModel, at),
+               "persist_annotation_unparseable",
+            ),
+         );
+      }
       addAnnotationFinding(
          parts,
          persistUnparseableFinding(
@@ -1251,7 +1290,7 @@ export function deriveBuildPlan(
       materializePlans?: Record<string, MaterializePlan>;
       sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
       /** See {@link CompiledBuildPlan.omittedSources}. */
-      omittedSources?: OmittedSource[];
+      omittedSources?: Omission[];
    },
 ): BuildPlan {
    const include = sourceNames ? new Set(sourceNames) : null;
@@ -1285,7 +1324,7 @@ export function deriveBuildPlan(
 
    const wireSources: Record<string, WirePersistSourcePlan> = {};
    const refusedSources: Record<string, WireRefusedSource> = {};
-   const omitted: OmittedSource[] = [...(options?.omittedSources ?? [])];
+   const omitted: Omission[] = [...(options?.omittedSources ?? [])];
    for (const [sourceID, source] of Object.entries(sources)) {
       if (include && !include.has(source.name)) continue;
       // What the catch below reports, if this source fails to project: a
@@ -1466,10 +1505,7 @@ export function deriveBuildPlan(
       graphs: wireGraphs,
       sources: wireSources,
       refusedSources,
-      omittedSources: finalizeOmittedSources(
-         omitted,
-         new Set(Object.keys(wireSources)),
-      ),
+      ...finalizeOmissions(omitted, new Set(Object.keys(wireSources))),
    };
 }
 

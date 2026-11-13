@@ -45,10 +45,25 @@ describe("the BuildPlan.omittedSources contract", () => {
       ]);
    });
 
+   it("declares omittedFiles on BuildPlan as a list of OmittedFile, with an open-string reason", () => {
+      const field = schemas.BuildPlan.properties?.omittedFiles;
+      expect(field?.type).toBe("array");
+      expect(field?.items?.$ref).toBe("#/components/schemas/OmittedFile");
+      const file = schemas.OmittedFile;
+      expect(file.required?.sort()).toEqual(["file", "reason"]);
+      expect(file.properties?.reason?.type).toBe("string");
+      expect(file.properties?.reason?.enum).toBeUndefined();
+      expect(Object.keys(file.properties ?? {}).sort()).toEqual([
+         "file",
+         "reason",
+      ]);
+   });
+
    it("round-trips a derived plan through JSON as the generated type, with only declared fields", () => {
       const plan = deriveBuildPlan([], {}, {}, undefined, undefined, null, {
          omittedSources: [
             { sourceID: "a@file:///p/m.malloy", reason: "projection_failed" },
+            { file: "file:///p/m.malloy.preaggregate.malloy", reason: "x" },
          ],
       });
       const wire = JSON.parse(
@@ -61,6 +76,15 @@ describe("the BuildPlan.omittedSources contract", () => {
       for (const entry of wire.omittedSources ?? []) {
          for (const key of Object.keys(entry)) {
             expect(declared).toContain(key);
+         }
+      }
+      expect(wire.omittedFiles).toEqual([
+         { file: "file:///p/m.malloy.preaggregate.malloy", reason: "x" },
+      ]);
+      const declaredFile = Object.keys(schemas.OmittedFile.properties ?? {});
+      for (const entry of wire.omittedFiles ?? []) {
+         for (const key of Object.keys(entry)) {
+            expect(declaredFile).toContain(key);
          }
       }
       const planFields = Object.keys(schemas.BuildPlan.properties ?? {});

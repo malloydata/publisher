@@ -230,6 +230,7 @@
         ]
       }
     ],
+    "omittedFiles": [],
     "omittedSources": [],
     "refusedSources": {
       "gated@<pkg>/m.malloy": {

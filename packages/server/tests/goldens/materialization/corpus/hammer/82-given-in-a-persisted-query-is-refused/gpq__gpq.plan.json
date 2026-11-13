@@ -42,6 +42,7 @@
         ]
       }
     ],
+    "omittedFiles": [],
     "omittedSources": [],
     "refusedSources": {
       "inside@<hammer>/gpq/gpq.malloy": {

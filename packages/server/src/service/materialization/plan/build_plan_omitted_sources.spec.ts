@@ -31,7 +31,7 @@ import {
    plannedSources,
    type BuildPlanParts,
 } from "./build_plan";
-import { finalizeOmittedSources, omittedFromFile } from "./omitted_sources";
+import { finalizeOmissions, omittedFromFile } from "./omitted_sources";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
 
@@ -57,12 +57,13 @@ function reader(overlay: ReadonlyMap<string, string>): URLReader {
  * companion (and the v1 build copy) compiles through throws, as a companion
  * whose generated text does not compile would. `"unreadable"`: the factory
  * works, but the files it reads with no overlay cannot be read, so a `#@`
- * line of the author's file cannot be set aside.
+ * line of the author's file cannot be set aside. `"overlay"`: the author's
+ * files read, and only a compile with generated text in it fails.
  */
 async function plan(
    text: string,
    env: Record<string, string>,
-   companionsFail: boolean | "unreadable",
+   companionsFail: boolean | "unreadable" | "overlay",
 ): Promise<{ parts: BuildPlanParts; dir: string }> {
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omitted-sources-"));
    fs.writeFileSync(path.join(dir, "m.malloy"), text);
@@ -97,7 +98,10 @@ async function plan(
                   importBaseURL: base,
                };
             }
-            if (companionsFail === true) {
+            if (
+               companionsFail === true ||
+               (companionsFail === "overlay" && overlay.size > 0)
+            ) {
                throw new Error(
                   "generated companion did not compile: SELECT 'secret-value'",
                );
@@ -150,6 +154,7 @@ source: p is base -> { group_by: a }
          "p",
       ]);
       expect(wire?.omittedSources).toEqual([]);
+      expect(wire?.omittedFiles).toEqual([]);
    });
 
    it("off: a synthesized #@ preaggregate companion that fails reports its rollups as preaggregate_companion_failed", async () => {
@@ -241,19 +246,22 @@ source: p is base extend { measure: n is count() } -> { group_by: a, b; aggregat
       );
       expect(planned).toHaveLength(1);
 
-      const bad = await plan(text, env, true);
-      expect(Object.keys(bad.parts.sources)).toEqual([]);
-      expect(
-         wirePlan(bad.parts)?.omittedSources?.map((o) => ({
-            ...o,
-            sourceID: o.sourceID.replace(bad.dir, "<pkg>"),
-         })),
-      ).toEqual(
-         planned.map((sourceID) => ({
-            sourceID,
-            reason: "v1_build_companion_failed",
-         })),
-      );
+      // The copy's text unreadable, or the copy not compiling.
+      for (const fails of [true, "overlay"] as const) {
+         const bad = await plan(text, env, fails);
+         expect(Object.keys(bad.parts.sources)).toEqual([]);
+         expect(
+            wirePlan(bad.parts)?.omittedSources?.map((o) => ({
+               ...o,
+               sourceID: o.sourceID.replace(bad.dir, "<pkg>"),
+            })),
+         ).toEqual(
+            planned.map((sourceID) => ({
+               sourceID,
+               reason: "v1_build_companion_failed",
+            })),
+         );
+      }
    });
 
    it("a #(materialize) companion that fails reports its sources as materialize_companion_failed", async () => {
@@ -309,6 +317,63 @@ source: plain is duckdb.sql("select 1 as a") extend {
             reason: "persisted_view_companion_failed",
          })),
       );
+   });
+});
+
+describe("BuildPlan.omittedSources: a #@ line that does not parse", () => {
+   // Malloy plans a source none of whose `#@` lines parse as no source at
+   // all, and the finding names a line, not a source: without an entry here
+   // the source would read as having left the plan.
+   const BROKEN = `source: base is duckdb.sql("select 1 as a")
+#@ persist name="unterminated
+source: p is base -> { group_by: a }
+#@ persist
+source: q is base -> { group_by: a }
+`;
+   for (const [mode, text] of [
+      ["off", `##! experimental.persistence\n${BROKEN}`],
+      ["on", BROKEN],
+   ] as const) {
+      it(`${mode}: reports the source as persist_annotation_unparseable, and only it`, async () => {
+         const { parts, dir } = await plan(
+            text,
+            { PUBLISHER_V1_SERVED_COPY: mode },
+            false,
+         );
+         const wire = wirePlan(parts);
+         expect(Object.values(wire?.sources ?? {}).map((s) => s.name)).toEqual([
+            "q",
+         ]);
+         expect(
+            wire?.omittedSources?.map((o) => ({
+               ...o,
+               sourceID: o.sourceID.replace(dir, "<pkg>"),
+            })),
+         ).toEqual([
+            {
+               sourceID: "p@file://<pkg>/m.malloy",
+               reason: "persist_annotation_unparseable",
+            },
+         ]);
+      });
+   }
+
+   it("a source another #@ line of which parses is planned, not omitted", async () => {
+      const { parts } = await plan(
+         `##! experimental.persistence
+source: base is duckdb.sql("select 1 as a")
+#@ persist
+#@ refresh="unterminated
+source: p is base -> { group_by: a }
+`,
+         { PUBLISHER_V1_SERVED_COPY: "off" },
+         false,
+      );
+      const wire = wirePlan(parts);
+      expect(Object.values(wire?.sources ?? {}).map((s) => s.name)).toEqual([
+         "p",
+      ]);
+      expect(wire?.omittedSources).toEqual([]);
    });
 });
 
@@ -396,7 +461,7 @@ describe("BuildPlan.omittedSources: projection failures", () => {
       ]);
    });
 
-   it("names a companion's every source with `*` when its planner failed before naming them", () => {
+   it("reports a companion whose planner failed before naming its sources as an omitted file, never an in-band sourceID", () => {
       expect(
          omittedFromFile(
             "file:///p/m.malloy.preaggregate.malloy",
@@ -405,10 +470,37 @@ describe("BuildPlan.omittedSources: projection failures", () => {
          ),
       ).toEqual([
          {
-            sourceID: "*@file:///p/m.malloy.preaggregate.malloy",
+            file: "file:///p/m.malloy.preaggregate.malloy",
             reason: "rollup_companion_failed",
          },
       ]);
-      expect(finalizeOmittedSources([], new Set())).toEqual([]);
+      // A source may be named `*` (Malloy plans `*@<file>`), so a file
+      // written as `*@<file>` would read as, and be dropped beside, it.
+      const star = fakeSource({ name: "*", sourceEntityId: "e-star" });
+      const wire = deriveBuildPlan(
+         [{ connectionName: "duckdb", order: ["*@f"], dependsOn: {} }],
+         { "*@f": star },
+         { duckdb: "digest" },
+         undefined,
+         undefined,
+         null,
+         {
+            omittedSources: [
+               { file: "f", reason: "materialize_companion_failed" },
+               { file: "f", reason: "projection_failed" },
+               { file: "a", reason: "rollup_companion_failed" },
+            ],
+         },
+      );
+      expect(Object.keys(wire.sources)).toEqual(["*@f"]);
+      expect(wire.omittedSources).toEqual([]);
+      expect(wire.omittedFiles).toEqual([
+         { file: "a", reason: "rollup_companion_failed" },
+         { file: "f", reason: "materialize_companion_failed" },
+      ]);
+      expect(finalizeOmissions([], new Set())).toEqual({
+         omittedSources: [],
+         omittedFiles: [],
+      });
    });
 });

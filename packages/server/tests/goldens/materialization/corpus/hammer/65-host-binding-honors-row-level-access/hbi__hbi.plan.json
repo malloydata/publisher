@@ -53,6 +53,7 @@
         ]
       }
     ],
+    "omittedFiles": [],
     "omittedSources": [],
     "refusedSources": {
       "scoped_rollup@<hammer>/hbi/hbi.malloy": {

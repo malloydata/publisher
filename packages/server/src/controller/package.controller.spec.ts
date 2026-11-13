@@ -1897,6 +1897,7 @@ describe("PackageController.getPackageBuildPlan", () => {
          refusedSources: {},
          // A plan with nothing in it is complete: nothing was left out.
          omittedSources: [],
+         omittedFiles: [],
       });
    });
 

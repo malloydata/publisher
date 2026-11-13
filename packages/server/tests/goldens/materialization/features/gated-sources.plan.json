@@ -290,6 +290,7 @@
         ]
       }
     ],
+    "omittedFiles": [],
     "omittedSources": [],
     "refusedSources": {
       "gated_mat@<pkg>/m.malloy": {

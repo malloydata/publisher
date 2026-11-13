@@ -56,7 +56,7 @@ import {
 } from "./persisted_view";
 import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
 import { SourceMap } from "./source_map";
-import { omittedFromFile, type OmittedSource } from "./omitted_sources";
+import { omittedFromFile, type Omission } from "./omitted_sources";
 
 export interface GeneratedPersistedViews {
    /** The views the companion declares. Never empty. */
@@ -234,7 +234,7 @@ export async function tryCompilePersistedViewCompanion(args: {
    generated?: GeneratedPersistedViews;
    refused: PersistedViewRefusal[];
    /** The views a failure left out of the plan (see omitted_sources). */
-   omitted?: OmittedSource[];
+   omitted?: Omission[];
 }> {
    const modelFile = path.resolve(args.packagePath, args.modelPath);
    const companionHref = persistedViewCompanionHref(

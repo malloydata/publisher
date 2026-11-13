@@ -42,6 +42,7 @@
         ]
       }
     ],
+    "omittedFiles": [],
     "omittedSources": [],
     "refusedSources": {
       "daily@<hammer>/az/az.malloy": {

@@ -97,7 +97,7 @@ import {
    type SynthesizedPreaggregation,
    type SynthesizedRuntimeFactory,
 } from "../service/materialization/plan/preaggregation_compile";
-import type { OmittedSource } from "../service/materialization/plan/omitted_sources";
+import type { Omission } from "../service/materialization/plan/omitted_sources";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
@@ -1216,7 +1216,7 @@ async function prepareForMainThread(
    // manifest is read only at query prepare. Undefined when not wanted or
    // left to the main thread; null when there is no usable rollup.
    // The rollups a failed compile left out, for the plan's `omittedSources`.
-   const companionOmitted: OmittedSource[] = [];
+   const companionOmitted: Omission[] = [];
    const companion: SynthesizedPreaggregation | null | undefined =
       (job.withPreaggregateCompanions || wantsPlan) &&
       !load.failed &&

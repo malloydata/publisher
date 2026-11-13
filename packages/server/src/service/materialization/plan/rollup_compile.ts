@@ -44,7 +44,7 @@ import {
 } from "./rollup_plan";
 import { splitSourceID } from "./persisted_view";
 import { SourceMap } from "./source_map";
-import { omittedFromFile, type OmittedSource } from "./omitted_sources";
+import { omittedFromFile, type Omission } from "./omitted_sources";
 
 export interface GeneratedRollups {
    /** The rollups the companion declares. Never empty. */
@@ -118,7 +118,7 @@ export async function tryCompileRollupCompanion(args: {
    generated?: GeneratedRollups;
    refused: RollupRefusal[];
    /** The rollups a failure left out of the plan (see omitted_sources). */
-   omitted?: OmittedSource[];
+   omitted?: Omission[];
 }> {
    const modelFile = path.resolve(args.packagePath, args.modelPath);
    const companionHref = rollupCompanionURL(

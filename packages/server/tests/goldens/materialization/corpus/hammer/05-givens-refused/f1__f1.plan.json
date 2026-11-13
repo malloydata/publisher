@@ -42,6 +42,7 @@
         ]
       }
     ],
+    "omittedFiles": [],
     "omittedSources": [],
     "refusedSources": {
       "scoped_rollup@<hammer>/f1/f1.malloy": {

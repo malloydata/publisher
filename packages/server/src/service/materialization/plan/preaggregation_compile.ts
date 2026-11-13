@@ -22,7 +22,7 @@ import type {
 import { fileURLToPath, pathToFileURL } from "url";
 import * as path from "path";
 import { logger } from "../../../logger";
-import { omittedFromFile, type OmittedSource } from "./omitted_sources";
+import { omittedFromFile, type Omission } from "./omitted_sources";
 import {
    planModelPreaggregation,
    synthesizePreaggregationModel,
@@ -140,9 +140,9 @@ export async function tryCompileSynthesizedPreaggregation(
    args: Parameters<typeof compileSynthesizedPreaggregation>[0],
    /**
     * Called on a failure with the rollups it left out of the build plan
-    * (see {@link OmittedSource}), so the plan can say it is incomplete.
+    * (see {@link Omission}), so the plan can say it is incomplete.
     */
-   onOmitted?: (omitted: OmittedSource[]) => void,
+   onOmitted?: (omitted: Omission[]) => void,
 ): Promise<SynthesizedPreaggregation | undefined> {
    try {
       return await compileSynthesizedPreaggregation(args);
@@ -165,7 +165,7 @@ function synthesizedRollupsOmitted(args: {
    packagePath: string;
    modelPath: string;
    contents: Record<string, unknown>;
-}): OmittedSource[] {
+}): Omission[] {
    const url = synthesizedModelURL(args.packagePath, args.modelPath).href;
    let names: string[] | undefined;
    try {

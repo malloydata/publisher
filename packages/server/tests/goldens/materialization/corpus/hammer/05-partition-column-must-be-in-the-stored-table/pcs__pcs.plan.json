@@ -42,6 +42,7 @@
         ]
       }
     ],
+    "omittedFiles": [],
     "omittedSources": [],
     "refusedSources": {
       "orders@<hammer>/pcs/pcs.malloy": {
