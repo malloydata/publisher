@@ -802,15 +802,35 @@ describe("fcj paging", () => {
       expect(stageNames(same)).toEqual(["page"]);
    });
 
-   it("still refuses an offset on a listing that is not a pure source listing", async () => {
+   it("pages a field listing with offset, past the cap a caller cannot raise", async () => {
       await ready();
       const { pkg } = await compileFcjFixture();
-      const { payload } = await callPayload(harness.handlerFor(pkg), {
-         search_targets: [{ target_type: "dimension" }],
-         scopes,
-         offset: 3,
-      });
-      expect(payload.error).toContain("Invalid offset");
+      const listing = (offset: number) =>
+         callPayload(harness.handlerFor(pkg), {
+            search_targets: [{ target_type: "dimension" }],
+            scopes,
+            limit: 3,
+            offset,
+         });
+      // Two sources can each hold a field of the same name, so key by both.
+      const names = (p: {
+         sources: {
+            source_info: { resource_id: { source: string } };
+            entities?: { name: string }[];
+         }[];
+      }) =>
+         p.sources.flatMap((s) =>
+            (s.entities ?? []).map(
+               (e) => `${s.source_info.resource_id.source}.${e.name}`,
+            ),
+         );
+      const { payload: first } = await listing(0);
+      expect(first.error).toBeUndefined();
+      expect(first.next_offset).toBe(3);
+      const { payload: second } = await listing(3);
+      expect(second.error).toBeUndefined();
+      expect(names(second)).toHaveLength(3);
+      expect(names(second).some((n) => names(first).includes(n))).toBe(false);
    });
 });
 
