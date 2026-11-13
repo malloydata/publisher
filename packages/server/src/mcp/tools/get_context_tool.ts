@@ -4,7 +4,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerTool } from "../register_tool";
 import type { EnvironmentCatalog } from "../../service/environment_ports";
-import { InvalidArgumentError } from "../../errors";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import {
    type AccessIdentity,
@@ -27,7 +26,6 @@ import {
    projectEntity,
    skillsFor,
    toSourceResults,
-   truncationWarning,
    unsupportedTargetWarnings,
 } from "../../retrieval/search/response";
 import type {
@@ -181,27 +179,18 @@ function runListing(
       ...matching.filter((e) => !e.recordPath),
       ...matching.filter((e) => e.recordPath),
    ];
-   // The limit caps entities; a drill-down's source row becomes the card and
-   // does not spend a slot. Only a pure browse has a stable order, so only it
-   // honours `offset`.
-   const paged = request.pureSourceListing
-      ? inScope.slice(request.offset)
-      : inScope;
-   let entityBudget = request.limit;
-   const capped = paged.filter((e) => {
-      if (sourceName && e.kind === "source") return true;
-      if (entityBudget <= 0) return false;
-      entityBudget -= 1;
-      return true;
-   });
-   /**
-    * Rows the cap spends from: the unit both sides of the truncation warning
-    * are counted in. A scoped source's own row is excluded from both counts,
-    * not subtracted from one, because it may not exist.
-    */
-   const spendable = (rows: typeof inScope) =>
-      sourceName ? rows.filter((e) => e.kind !== "source").length : rows.length;
-   const cappable = spendable(inScope);
+   // The limit and `offset` count the rows a page is cut from. A drill-down's
+   // source row becomes the card on every page, so it is not one of them.
+   // A listing is catalog order, stable for a loaded package, so every
+   // listing pages: a source browse by source, a field listing by field.
+   const isCard = (e: (typeof inScope)[number]) =>
+      Boolean(sourceName) && e.kind === "source";
+   const pageable = inScope.filter((e) => !isCard(e));
+   const page = new Set(
+      pageable.slice(request.offset, request.offset + request.limit),
+   );
+   const capped = inScope.filter((e) => isCard(e) || page.has(e));
+   const nextOffset = request.offset + page.size;
    const sources = toSourceResults(
       capped.map((e) => projectEntity(e, environmentName, packageName)),
       sourceContext,
@@ -213,8 +202,8 @@ function runListing(
    );
    // A listing is catalog order, not a ranking: it names the ordering and
    // omits a score rather than inventing one. Both counts are in cards (one
-   // per model path resolving a source), the unit the payload is made of.
-   const consumed = request.offset + sources.length;
+   // per model path resolving a source), the unit the payload is made of;
+   // next_offset is in rows, the unit `offset` reads.
    // Distinct (model path, source) pairings, so the count stays right even
    // for an entity whose own source row was filtered out.
    const cardsInScope = sourceName
@@ -226,9 +215,7 @@ function runListing(
       ranking: "prominence" as const,
       total_available: cardsInScope,
       returned: sources.length,
-      ...(request.pureSourceListing && consumed < inScope.length
-         ? { next_offset: consumed }
-         : {}),
+      ...(nextOffset < pageable.length ? { next_offset: nextOffset } : {}),
    };
    // The package loaded (a failed load throws from packageIndex), so an
    // empty listing is a curation gap, not an empty database; say so. Not when
@@ -251,9 +238,12 @@ function runListing(
       ...(ctx.packageInfo ? { package_info: ctx.packageInfo } : {}),
       ...skillsFor(ctx),
       ...warningsFor(
-         request.pureSourceListing
-            ? listingPageWarning(sources.length, inScope.length)
-            : truncationWarning(spendable(capped), cappable),
+         listingPageWarning({
+            unit: request.pureSourceListing ? "sources" : "entities",
+            offset: request.offset,
+            returned: page.size,
+            total: pageable.length,
+         }),
       ),
    });
 }
@@ -306,27 +296,6 @@ async function runContextQuery(
       { environment: environmentName, package: packageName },
       "get-context",
    );
-
-   // A ranked result is held for a while (retrieval/search/pages.ts), so `offset`
-   // resumes it. A listing other than the catalog browse has no order to
-   // resume from.
-   if (
-      resolved.offset > 0 &&
-      resolved.listingOnly &&
-      !resolved.pureSourceListing
-   ) {
-      // Refused rather than ignored: silently ignoring the offset would hand
-      // back page 1 as if it were page 2.
-      return contextError(
-         uri,
-         `${environmentName}/${packageName}`,
-         // InvalidArgumentError, not a bare Error: an unclassified throw is
-         // reported by classifyToolError as an internal fault.
-         new InvalidArgumentError(
-            "Invalid offset: paging works on a ranked search (a target with search_text) and on a pure source listing (every search_target of type `source`, none with search_text). Fix: drop `offset`, or add search_text to a target.",
-         ),
-      );
-   }
 
    const staleNote = await staleNoteFor(
       environmentStore,

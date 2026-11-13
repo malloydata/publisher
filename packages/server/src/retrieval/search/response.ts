@@ -3,7 +3,6 @@
 
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import {
-   MAX_LIMIT,
    type Entity,
    type ListingContext,
    type ResolvedRequest,
@@ -477,21 +476,18 @@ export function skillsFor(ctx: Pick<ListingContext, "pkgIndex">) {
 }
 
 /**
- * The warning for a capped result set, or undefined when nothing was cut.
- * Each cut warning below names the remedy that works for that cut.
+ * A listing page that is not the last one, or undefined on the last page.
+ * Its remedy is paging by `offset`, not raising the limit, which is capped,
+ * so a source with more fields than the cap would never be listed in full.
  */
-export const truncationWarning = (returned: number, matched: number) =>
-   matched > returned
-      ? `Returned ${returned} of ${matched} matching entities. Raise limit (max ${MAX_LIMIT}) or narrow the query to see the rest.`
-      : undefined;
-
-/**
- * A browse that stopped early. Its remedy is paging by `offset`, not raising
- * the limit, which is capped either way.
- */
-export const listingPageWarning = (returned: number, matched: number) =>
-   matched > returned
-      ? `Returned ${returned} of ${matched} sources in scope. Pass next_offset back as offset for the next page, or narrow with search_text or more targeted scopes.`
+export const listingPageWarning = (page: {
+   unit: "sources" | "entities";
+   offset: number;
+   returned: number;
+   total: number;
+}) =>
+   page.offset + page.returned < page.total
+      ? `Returned ${page.returned} of ${page.total} ${page.unit} in scope${page.offset > 0 ? `, after skipping the first ${page.offset}` : ""}. Pass next_offset back as offset, with every other argument unchanged, for the next page, or narrow with search_text or more targeted scopes.`
       : undefined;
 /**
  * A target type this server cannot search, said plainly with the remedy that
