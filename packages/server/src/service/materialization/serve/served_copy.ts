@@ -55,7 +55,6 @@ import {
    statementStarts,
 } from "../malloy_lexer";
 import {
-   accessLabel,
    dropJoinDefinition,
    inlinedJoinRenames,
    inlinedJoinStatements,
@@ -892,6 +891,18 @@ function timeframeExpression(c: Timeframed): string {
    return `${identifier(c.internalName)}.${c.timeframe}`;
 }
 
+/** A statement's access label, as Malloy text: empty for a public one. */
+function accessPrefix(access: "private" | "internal" | undefined): string {
+   switch (access) {
+      case "private":
+         return "private ";
+      case "internal":
+         return "internal ";
+      default:
+         return "";
+   }
+}
+
 /**
  * The statements that open the first extend block: with `withRenames`, the
  * internal renames ({@link labelledRenames}), and a `dimension:` for each
@@ -930,7 +941,7 @@ function timeframeStatements(
                `    ${identifier(c.name)} is ${timeframeExpression(c)}`,
          )
          .join("\n");
-      if (dims) out += `\n  ${accessLabel(access)}dimension:\n${dims}`;
+      if (dims) out += `\n  ${accessPrefix(access)}dimension:\n${dims}`;
    }
    return out;
 }
