@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Review 1713: the rollup leg's plans are memoised per model, and since 6f
+ * The rollup leg's plans are memoised per model, and since 6f
  * they depend on `PUBLISHER_MATERIALIZE` (`readsV2`: `#(preaggregate)` is read
  * only with it on) as well as on the v1 cutover (`readsV1`). A memo keyed on
  * the model alone kept the plans read under whichever switch asked first, so
@@ -16,7 +16,7 @@ import { DATA_FILES } from "./conformance/data";
 import { FEATURE_SHAPES } from "../materialization_goldens/feature_shapes";
 import { runCase } from "../materialization_goldens/package_case";
 
-describe("review 1713: the rollup leg's plans follow the switches they read", () => {
+describe("the rollup leg's plans follow the switches they read", () => {
    it("routes a gated #(preaggregate) rollup under the switch on after a query under the switch off", async () => {
       const shape = FEATURE_SHAPES.find(
          (s) => s.name === "gated sources, gated switch on",
@@ -29,7 +29,7 @@ describe("review 1713: the rollup leg's plans follow the switches they read", ()
          "a lock admitting over a rollup",
       ]);
       const goldens = await runCase({
-         stem: "review-1713/rollup-plan-memo",
+         stem: "rollup-plan-memo-switches",
          title: "rollup plan memo",
          files: { ...DATA_FILES, ...shape.files },
          entry: "m.malloy",

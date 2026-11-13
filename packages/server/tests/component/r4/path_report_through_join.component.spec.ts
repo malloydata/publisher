@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Review 1713: under the v1 cutover's default, a query on a colocated
+ * Under the v1 cutover's default, a query on a colocated
  * persisted source through its join to another persisted source is answered
  * by the served copy from both tables, and the path report must name the
  * queried source's own table. It named the first table the served copy read,
@@ -28,7 +28,7 @@ const DIMS_ALONE = "run: c_only -> { aggregate: n is count() }";
 const THROUGH_JOIN =
    "run: order_facts -> { group_by: c.segment; aggregate: t is amount.sum() }";
 
-describe("review 1713: the path report names the queried source's table through a join", () => {
+describe("the path report names the queried source's table through a join", () => {
    let restore: () => void;
    let fixture: LoadedFixture;
    let dispose: () => Promise<void>;

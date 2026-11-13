@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Review 1713: every conformance shape under the shipped default, which no
+ * Every conformance shape under the shipped default, which no
  * other spec runs. The conformance spec's `cutover` switch also sets
  * `PUBLISHER_MATERIALIZE`; the default leaves it off, and 6f found one defect
  * only that combination reaches (the cutover read `#(preaggregate)` with it
@@ -56,7 +56,7 @@ afterAll(async () => {
    await freshLoadPool();
 });
 
-describe("review 1713: the conformance shapes under the default settings", () => {
+describe("the conformance shapes under the default settings", () => {
    for (const shape of SHAPES) {
       for (const variant of shape.variants ?? ["storage", "colocated"]) {
          // `#(materialize)` is ignored with PUBLISHER_MATERIALIZE off.

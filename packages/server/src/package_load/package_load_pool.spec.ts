@@ -641,22 +641,24 @@ source: by_category_table is orders -> by_category
    }
 
    it("does the main thread's work within the budget", async () => {
-      // The v1 composite companion is compiled only with the v1 cutover off
-      // (it retires with that path).
-      const off = installSettings({ env: { PUBLISHER_V1_SERVED_COPY: "off" } });
-      let outcome: Awaited<ReturnType<typeof loadWith>>;
-      try {
-         outcome = await loadWith();
-      } finally {
-         off.restore();
-      }
+      const outcome = await loadWith();
       expect(outcome.buildPlan?.ok).toBe(true);
       expect(outcome.models[0].renderTagResults?.length).toBe(1);
       // The render-tag check reads the schema, not the SQL.
       expect(outcome.models[0].renderTagResults?.[0].result).not.toHaveProperty(
          "sql",
       );
-      expect(outcome.models[0].preaggregateCompanion?.modelDef).toBeDefined();
+      // Under the v1 cutover (the default) no composite companion is
+      // compiled; with it off, the worker compiles one within the budget.
+      expect(outcome.models[0].preaggregateCompanion?.modelDef).toBeUndefined();
+      const off = installSettings({ env: { PUBLISHER_V1_SERVED_COPY: "off" } });
+      try {
+         expect(
+            (await loadWith()).models[0].preaggregateCompanion?.modelDef,
+         ).toBeDefined();
+      } finally {
+         off.restore();
+      }
       const entities = outcome.models[0].entities;
       expect(entities?.status).toBe("planned");
       if (entities?.status !== "planned") return;

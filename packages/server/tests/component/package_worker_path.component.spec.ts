@@ -1453,7 +1453,7 @@ source: t is base -> { group_by: a }
       }
    });
 
-   it("compiles no pre-aggregation companion under the v1 cutover, in the worker or here", async () => {
+   it("hydrates the pre-aggregation companion the worker compiled, without compiling it here", async () => {
       writeManifest();
       fs.writeFileSync(
          path.join(tempDir, "orders.malloy"),
@@ -1468,20 +1468,43 @@ source: orders is duckdb.sql("""
 `,
       );
       const { Model } = await import("../../src/service/model");
-      const runtimeSpy = spyOn(Model, "getModelRuntime");
-      const { malloyConfig, duckdb } = duckdbMalloyConfig();
-      try {
-         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         const model = pkg.getModel("orders.malloy") as unknown as {
-            preaggregateServeMaterializer?: unknown;
-         };
-         // A v1 rollup is the rollup leg's: no composite is compiled in the
-         // worker, and none is compiled here in its place.
-         expect(model.preaggregateServeMaterializer).toBeUndefined();
-         expect(runtimeSpy).not.toHaveBeenCalled();
-      } finally {
-         runtimeSpy.mockRestore();
-         await duckdb.close();
+      const { installSettings } = await import(
+         "../../src/test_helpers/settings_env"
+      );
+      // Each switch position on a fresh pool, since a worker reads its
+      // settings when it starts. `off`: the v1 composite companion is
+      // compiled in the worker and hydrated here, never compiled here.
+      // `on` (the default): a v1 rollup is the rollup leg's, so none is
+      // compiled in the worker, and none here in its place.
+      for (const mode of ["off", "on"] as const) {
+         const settings = installSettings({
+            env: { PUBLISHER_V1_SERVED_COPY: mode },
+         });
+         await workers.restore();
+         const runtimeSpy = spyOn(Model, "getModelRuntime");
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const model = pkg.getModel("orders.malloy") as unknown as {
+               preaggregateServeMaterializer?: unknown;
+            };
+            if (mode === "off") {
+               expect(model.preaggregateServeMaterializer).toBeDefined();
+            } else {
+               expect(model.preaggregateServeMaterializer).toBeUndefined();
+            }
+            expect(runtimeSpy).not.toHaveBeenCalled();
+         } finally {
+            runtimeSpy.mockRestore();
+            await duckdb.close();
+            settings.restore();
+            await workers.restore();
+         }
       }
    });
 
