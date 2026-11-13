@@ -609,7 +609,7 @@ Flaky tests seen: the pair-table nest whose legs tie (fixed in #1697 by ordering
 
 **C1c. Keep superseded tables while a query may read them.**
 
-- *Option A (decided 2026-11-13): a time-based grace.* B1's grace period, set to at least twice the longest query timeout (with a 15-minute minimum), plus an in-process count of pinned snapshots. The OSS reclaimer skips a table any live snapshot references.
+- *Option A (decided 2026-11-13): a time-based grace.* B1's grace period, set to twice the longest query timeout with a one-hour floor, and configurable (decided 2026-11-13), plus an in-process count of pinned snapshots. The OSS reclaimer skips a table any live snapshot references.
 - *Option B: a cross-worker reference count* that workers report to the control plane. It is exact, but it adds a heartbeat protocol. Hold it until a measured miss under option A.
 
 **C2. Pin derived tables to their upstream.**
@@ -630,7 +630,7 @@ Flaky tests seen: the pair-table nest whose legs tie (fixed in #1697 by ordering
 | Postgres, MySQL, SQL Server, DuckDB, MotherDuck | none | `build_window` (start and end of the build) |
 
 - *Option A: rewrite table references in the generated build SQL.* It works for any root, but it is a SQL rewriter, which the plan's text-only rule rules out.
-- *Option B (decided 2026-11-13): re-root in Malloy text.* In the build copy (the #1644 mechanism), re-root each `conn.table('t')` root on `conn.sql("SELECT * FROM t <as-of>")`, dialect-gated and behind its own switch, off by default (opt-in, decided 2026-11-13). A `conn.sql()` root records `build_window`. **Probe first:** whether the as-of literal enters `BuildID`. If it does, the address must come from the as-of-free copy (`plan/addressing.ts` already computes the wire address on its own), or every run re-addresses. A retention window shorter than the run (BigQuery's 7 days, a Snowflake retention setting) fails the build with a deterministic failure class.
+- *Option B (decided 2026-11-13): re-root in Malloy text.* In the build copy (the #1644 mechanism), re-root each `conn.table('t')` root on `conn.sql("SELECT * FROM t <as-of>")`, dialect-gated and behind its own switch, off by default (opt-in, decided 2026-11-13). A `conn.sql()` root records `build_window`. **Probe first** (running as of 2026-11-13; its answer is recorded here when it reports): whether the as-of literal enters `BuildID`. If it does, the address must come from the as-of-free copy (`plan/addressing.ts` already computes the wire address on its own), or every run re-addresses. A retention window shorter than the run (BigQuery's 7 days, a Snowflake retention setting) fails the build with a deterministic failure class.
 
 **C4. Record as-of on every table.** Write `manifest_entries.data_as_of` (already in B1's schema) with a new `as_of_method` and the window bounds. The path report (A52, `QueryPath`) gains `generationId` and, per table served, `asOf: { method, at | from, to }`. The access record (T1) gains `asOfSpread`, the largest gap between the as-of values of the tables one answer read. All fields are additive. `method` is a new wire enum, so it ships in the same pull request as the spec sync (the generated Java clients have no unknown-enum default).
 
@@ -638,7 +638,7 @@ Flaky tests seen: the pair-table nest whose legs tie (fixed in #1697 by ordering
 
 - *Promote.* For an orchestrated version, commit stops making a generation current. The control plane makes it current with `PATCH …/versions/{v}` `{ generationId }`, beside B1's `manifestLocation` import, in one transaction that replaces that version's `serving_bindings`. `name=` views repoint after promote (B1 step 4). On OSS auto-runs, commit promotes, as it does today.
 - *Cleanup.* A `physical_tables` row becomes `reclaimable` only when no `serving_bindings` row in any version references it, no pinned snapshot does (C1c), and the grace has passed. The reclaimer owns `name=` views beside the tables.
-- *Credible-side changes:* the #5967 fix (reuse reporting fresh), which C2 needs; #5706 (a shared refresh advances every binder), which becomes "binders advance only at promote"; orchestrated runs that emit whole generations, or rely on carry-forward; the promote call and its retry semantics; a spec sync for `generationId`, `asOf` and the new enum values; #5705 (lineage after a `name=` change) and #7153 (a build verdict per version) read generations; #5704, #6308 and #5683 are to be re-read against this design when its tracker issues are written.
+- *Credible-side changes,* owned by the Credible control plane (scheduled by the plan's owner; decided 2026-11-13): the #5967 fix (reuse reporting fresh), which C2 needs; #5706 (a shared refresh advances every binder), which becomes "binders advance only at promote"; orchestrated runs that emit whole generations, or rely on carry-forward; the promote call and its retry semantics; a spec sync for `generationId`, `asOf` and C4's `method` enum; #5705 (lineage after a `name=` change) and #7153 (a build verdict per version) read generations; #5704, #6308 and #5683 are to be re-read against this design when its tracker issues are written.
 - *Order.* C1b (snapshot pinning) needs no B1 and ships first, single-node. C1a, C1c and C2 land with B1. C3 waits for the BuildID probe. C4 lands with C1a.
 
 #### 3. Prioritized refactor plan (steps 2 to 5)
@@ -745,7 +745,7 @@ Measured over the 98 files in scope: 16,981 comment lines of 62,943 (27%).
 
 **Order.**
 
-1. Now, on main: the characterization goldens (section 4). They freeze current behavior, so they can land before the cutover and catch it too.
+1. Now, on main: the characterization goldens (section 4). They freeze current behavior, so they can land before the cutover and catch it too. *In progress (2026-11-13):* a separate tests-only pull request, branch `kyle/mat-characterization-goldens`.
 2. The in-flight work merges: #1690, #1691, #1692, #1695, #1696, #1698, #1699, and the `kyle/mat-v1-cutover`, `kyle/mat-storage-join-rollup` and `kyle/mat-hidden-served-copy-fixes` branches.
 3. The cutover, 6a to 6g. Step 2 starts only after 6g has deleted the serve shape, the composite and the live manifest, so it never simplifies code about to be deleted.
 4. C1b (snapshot pinning), with step 2g, since both reshape `runQueryResults`.
@@ -775,11 +775,12 @@ Measured over the 98 files in scope: 16,981 comment lines of 62,943 (27%).
 5. `malloy-code-server` is gone, so `query_text.ts` shares the lexer core (step 2d).
 6. C2 pins the upstream through the manifest entry (`upstream_entry_ids`); addresses stay definition-only.
 7. C3's as-of reads are opt-in per deployment; `build_window` is the recorded guarantee where a warehouse has no time travel.
-8. C1c keeps superseded tables for a time-based grace; a cross-worker reference count waits for a measured miss.
+8. C1c keeps superseded tables for a time-based grace: twice the longest query timeout, with a one-hour floor, configurable. A cross-worker reference count waits for a measured miss.
 9. `PUBLISHER_MATERIALIZE` is removed one release after its default turns on.
 10. Step 2e needs behavior-identical characterization tests plus a short security review note in its pull request, not question 14's review.
 11. The trimmed hammer suite runs nightly in CI, and the duplicated scenario numbers (70, 76, 77, 119) are renumbered.
 12. No `package` label on any metric.
+13. The Credible-side work (#5967, #5706's rework, the promote call and its retries, the spec sync for `generationId`, `asOf` and C4's `method` enum) is owned by the Credible control plane, scheduled by the plan's owner.
 
 ## Telemetry and cost estimation
 
