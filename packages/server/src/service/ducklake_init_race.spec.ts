@@ -15,6 +15,7 @@ import { join } from "path";
 import { Client } from "pg";
 import type { components } from "../api";
 import {
+   attachDuckLakeForCreate,
    attachDuckLakeReadWrite,
    DUCKLAKE_INIT_RACE_ATTEMPTS,
    isDuckLakeInitRace,
@@ -105,6 +106,16 @@ describe("a DuckLake attach that lost a race to create the catalog", () => {
          attachDuckLakeReadWrite(s.conn, "lake", config()),
       ).rejects.toThrow("Failed to initialize DuckLake");
       expect(s.attaches()).toBe(DUCKLAKE_INIT_RACE_ATTEMPTS);
+   });
+
+   it("is not tried again when the attach is a create, which fails instead", async () => {
+      // A retry would open the other creator's catalog, with its settings, and
+      // the create would report it as its own.
+      const s = stub([RACE_LOST]);
+      await expect(
+         attachDuckLakeForCreate(s.conn, "lake", config(), { encrypted: true }),
+      ).rejects.toThrow("Failed to initialize DuckLake");
+      expect(s.attaches()).toBe(1);
    });
 
    it("is never read as an alias already attached", async () => {

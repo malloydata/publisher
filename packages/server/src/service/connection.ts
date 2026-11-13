@@ -1120,26 +1120,24 @@ async function isAliasAttached(
 }
 
 /**
- * Run a DuckLake ATTACH, trying again when it lost a race to create the
- * catalog. Postgres reports the duplicate only once the other create has
- * committed, so the catalog exists by then and the next attach opens it as any
- * attach of an existing catalog does. Any other failure, and the last try's,
- * is thrown.
+ * Run a DuckLake ATTACH, trying again, up to `attempts` tries in all, when it
+ * lost a race to create the catalog. Postgres reports the duplicate only once
+ * the other create has committed, so the catalog exists by then and the next
+ * attach opens it as any attach of an existing catalog does. Any other failure,
+ * and the last try's, is thrown.
  */
 async function runDuckLakeAttach(
    connection: DuckDBConnection,
    dbName: string,
    attachCommand: string,
+   attempts: number,
 ): Promise<void> {
    for (let attempt = 1; ; attempt++) {
       try {
          await connection.runSQL(attachCommand);
          return;
       } catch (error) {
-         if (
-            !isDuckLakeInitRace(error) ||
-            attempt >= DUCKLAKE_INIT_RACE_ATTEMPTS
-         ) {
+         if (!isDuckLakeInitRace(error) || attempt >= attempts) {
             throw error;
          }
          logger.info(
@@ -1301,7 +1299,20 @@ async function attachDuckLakeWithMode(
       `Attaching DuckLake database using command: ${redactPgSecrets(attachCommand)}`,
    );
    try {
-      await runDuckLakeAttach(connection, dbName, attachCommand);
+      // A create (the admin API's, the only caller with first-attach settings)
+      // that lost is not tried again: the retry would open the other creator's
+      // catalog, with that creator's settings and data path, and the create
+      // would report it as its own. It fails, and the caller answers that the
+      // catalog exists.
+      const creating =
+         options.encrypted !== undefined ||
+         options.dataInliningRowLimit !== undefined;
+      await runDuckLakeAttach(
+         connection,
+         dbName,
+         attachCommand,
+         creating ? 1 : DUCKLAKE_INIT_RACE_ATTEMPTS,
+      );
       logger.info(
          `Successfully attached DuckLake database in ${mode} mode: ${dbName}`,
       );
