@@ -779,11 +779,18 @@ const gatedSeed = [
       (1, 1, 'west', 5.0), (2, 1, 'east', 7.0), (3, 2, 'west', 11.0),
       (4, 3, 'east', 13.0), (5, 8, 'east', 1.0)
     ) AS t(seg_id, flight_id, region, w)`,
+   // Flight 1 has two red notes, flight 2 one red and one blue, flight 3 one
+   // blue: a gate on the notes keeps flight 1's rows twice over a join_many.
+   `CREATE TABLE notes AS SELECT * FROM (VALUES
+      (1, 1, 'red'), (2, 1, 'red'), (3, 2, 'red'), (4, 2, 'blue'), (5, 3, 'blue'),
+      (6, 8, 'red')
+    ) AS t(note_id, flight_id, color)`,
 ];
 
 const gatedModel = `##! experimental.givens
 given: R :: string
 given: C :: string
+given: K :: string
 
 source: segs is duckdb.table('segs') extend { primary_key: seg_id }
 
@@ -804,6 +811,39 @@ source: by_region is duckdb.table('flights') extend {
 source: by_carrier is duckdb.table('flights') extend {
   primary_key: id
   join_many: segs on segs.flight_id = id
+  measure:
+    flight_count is count()
+    total_distance is distance.sum()
+    seg_n is segs.count()
+    seg_w is segs.w.sum()
+}
+
+// A join_many the pair table does not inline, to a source stored in the same
+// destination, so the served copy keeps that join over the pair rows.
+#(materialize) storage="lake"
+source: notes_stored is duckdb.table('notes') extend { primary_key: note_id }
+
+#(access_filter) ns.color = $K
+#(materialize) storage="lake" inline=["segs"]
+source: by_note is duckdb.table('flights') extend {
+  primary_key: id
+  join_many: segs on segs.flight_id = id
+  join_many: ns is notes_stored on ns.flight_id = id
+  measure:
+    flight_count is count()
+    total_distance is distance.sum()
+    seg_n is segs.count()
+    seg_w is segs.w.sum()
+}
+
+// The same joins, gated on the parent: the join_many is there, the gate does
+// not read it.
+#(access_filter) carrier = $C
+#(materialize) storage="lake" inline=["segs"]
+source: by_carrier_noted is duckdb.table('flights') extend {
+  primary_key: id
+  join_many: segs on segs.flight_id = id
+  join_many: ns is notes_stored on ns.flight_id = id
   measure:
     flight_count is count()
     total_distance is distance.sum()
@@ -869,6 +909,42 @@ describe("R4: a row-level gate on a pair source", () => {
       });
       expect(run.servedVia).toBe("served_copy");
       expect(run.served.map((r) => r.carrier)).toEqual(["AA"]);
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+
+   it("leaves no problem on the served copy", async () => {
+      expect(await fixture.servedCopyProblems()).toEqual([]);
+   });
+
+   // A gate through a join_many the pair table does not inline joins every
+   // pair row to each of its parent's matching rows: child aggregates over
+   // the flat rows count a segment once per matching note, so it is live.
+   it("answers child measures live under a gate through a join_many it does not inline", async () => {
+      const malloy =
+         "run: by_note -> { group_by: carrier; aggregate: seg_n, seg_w }";
+      const run = await fixture.run({
+         name: "fan-out gate",
+         malloy,
+         givens: { K: "red" },
+         expectLive: true,
+      });
+      expect(run.live.length).toBeGreaterThan(0);
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+      expect(run.servedVia).toBeUndefined();
+      fixture.setBindings(fixture.bindings);
+      const { path } = await fixture.runAsIs(malloy, { K: "red" });
+      const skipped = path?.considered?.find((c) => c.outcome === "skipped");
+      expect(skipped?.reason).toBe("COUNT_SEMANTICS");
+      expect(skipped?.detail).toMatch(/fans out the pair table's rows/);
+   });
+
+   it("serves a source beside a join_many it does not inline, under a gate on the parent", async () => {
+      const run = await fixture.run({
+         name: "parent gate beside a join_many",
+         malloy: mixed("by_carrier_noted"),
+         givens: { C: "AA" },
+      });
+      expect(run.servedVia).toBe("served_copy");
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 });

@@ -7,6 +7,7 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    flatPairQueryRefusal,
    flatPairQueryVerdict,
+   pairConditionReads,
    pairMeasureLevels,
    pairQueryReadsChild,
 } from "./pair_flat_query";
@@ -229,4 +230,70 @@ source: long_leg_flights is flights extend { where: segments.miles > 1 }`;
          "refused",
       );
    });
+});
+
+describe("pairConditionReads", () => {
+   // A pair source inlining `segments`, beside a join_many it does not inline
+   // (`notes`), a join_one (`carriers`) and a join_one that itself joins many
+   // (`hubs.gates`).
+   const gated = `source: segments is duckdb.sql("select 1 as seg_id, 1 as flight_id, 'west' as region") extend {
+  primary_key: seg_id
+}
+source: notes is duckdb.sql("select 1 as note_id, 1 as flight_id, 'red' as color") extend {
+  primary_key: note_id
+}
+source: carriers is duckdb.sql("select 'AA' as code, 'x' as alliance") extend {
+  primary_key: code
+}
+source: hubs is duckdb.sql("select 'AA' as code") extend {
+  primary_key: code
+  join_many: gates is duckdb.sql("select 'AA' as code, 'A1' as gate") on gates.code = code
+}
+source: flights is duckdb.sql("select 1 as id, 'AA' as carrier") extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  join_many: notes on notes.flight_id = id
+  join_one: carriers with carrier
+  join_one: hubs with carrier
+  dimension: red_note is notes.color = 'red'
+}`;
+   // The condition a gate grafts, as the probe lifts it: the filter of a
+   // stage that applies it.
+   const reads = async (condition: string) => {
+      const prepared = (await runtime
+         .loadModel(gated)
+         .loadQuery(
+            `run: flights -> { where: ${condition}; group_by: carrier }`,
+         )
+         .getPreparedQuery()) as unknown as {
+         _query: { pipeline: { filterList: { e: unknown }[] }[] };
+         _modelDef: { contents: Record<string, unknown> };
+      };
+      return pairConditionReads(
+         prepared._query.pipeline[0].filterList[0].e,
+         prepared._modelDef.contents.flights as never,
+         "segments",
+      );
+   };
+
+   const cases = [
+      ["carrier = 'AA'", { child: false, fansOut: false }],
+      ["segments.region = 'west'", { child: true, fansOut: false }],
+      ["carriers.alliance = 'x'", { child: false, fansOut: false }],
+      ["notes.color = 'red'", { child: false, fansOut: true }],
+      // Through a dimension that reads the join_many.
+      ["red_note", { child: false, fansOut: true }],
+      // A join_many reached through a join_one.
+      ["hubs.gates.gate = 'A1'", { child: false, fansOut: true }],
+      // Both: the child read does not end the walk before the fan-out.
+      [
+         "segments.region = 'west' and notes.color = 'red'",
+         { child: true, fansOut: true },
+      ],
+   ] as const;
+   for (const [condition, expected] of cases) {
+      it(condition, async () => {
+         expect(await reads(condition)).toEqual(expected);
+      });
+   }
 });

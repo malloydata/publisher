@@ -359,7 +359,7 @@ export function flatPairQueryRefusal(
    pair: FlatPair,
    /**
     * A filter applied to the source outside the query reads the child (a
-    * row-level gate grafted at read, {@link pairConditionReadsChild}): parent
+    * row-level gate grafted at read, {@link pairConditionReads}): parent
     * aggregates are then refused as under a source `where:` on the child.
     */
    childScoped = false,
@@ -576,21 +576,24 @@ export function pairQueryReadsChild(
 }
 
 /**
- * Whether a compiled filter condition (a row-level gate's, lifted from its
- * probe) on `source` reads anything through the inlined join. Undefined when
- * it cannot be read; the caller then counts it as reading the child.
+ * What a compiled filter condition (a row-level gate's, lifted from its
+ * probe) on `source` reads of a pair table: whether it reads anything through
+ * the inlined join (`child`), and whether it reads through a join that fans
+ * out the pair rows (`fansOut`: a join_many or cross join other than the
+ * inlined one, at any step of a path), which joins every pair row to each of
+ * its parent's matching rows and which no aggregate over the flat rows
+ * survives. Undefined when it cannot be read; the caller then counts it as
+ * reading through such a join.
  */
-export function pairConditionReadsChild(
+export function pairConditionReads(
    condition: unknown,
    source: { fields?: unknown } | undefined,
    join: string,
-): boolean | undefined {
+): { child: boolean; fansOut: boolean } | undefined {
    try {
-      return new ChildScan(join).value(
-         condition,
-         fieldsByName(source?.fields),
-         0,
-      );
+      const scan = new ChildScan(join, true);
+      const child = scan.value(condition, fieldsByName(source?.fields), 0);
+      return { child, fansOut: scan.fansOut };
    } catch (e) {
       if (e instanceof Refusal) return undefined;
       throw e;
@@ -601,14 +604,26 @@ export function pairConditionReadsChild(
  * The walk behind {@link pairQueryReadsChild}: every node of a stage, each
  * field reference resolved by name through its definition, each nest by its
  * first stage. Later stages read the first stage's output, not the source.
+ * It also notes a read through a join that fans out the pair rows
+ * ({@link pairConditionReads}).
  */
 class ChildScan {
    /** Each definition's answer, read once however often it is named. */
    private readonly resolved = new WeakMap<object, boolean>();
    /** The joins whose condition is being read, which read their own fields. */
    private readonly joining = new Set<string>();
+   /** Whether a read went through a join that fans out the pair rows. */
+   fansOut = false;
 
-   constructor(private readonly join: string) {}
+   /**
+    * @param exhaustive Read every node even after one reads the inlined join,
+    * so a later read through a fanning-out join is still noted (a gate's
+    * condition, {@link pairConditionReads}); a query's scan stops at the first.
+    */
+   constructor(
+      private readonly join: string,
+      private readonly exhaustive = false,
+   ) {}
 
    stage(segment: unknown, fields: Map<string, Field>, depth: number): boolean {
       if (depth > MAX_DEPTH) throw new Refusal("a query nests too deep");
@@ -618,36 +633,83 @@ class ChildScan {
       const s = segment as Segment;
       const local = new Map(fields);
       for (const [n, f] of fieldsByName(s.extendSource)) local.set(n, f);
-      for (const [k, v] of Object.entries(s)) {
-         // A stage's own `extend:` is read where the stage names it; its
-         // output schema is what it produces, not what it reads.
-         if (k === "extendSource" || k === "outputStruct") continue;
-         if (this.value(v, local, depth + 1)) return true;
-      }
-      return false;
+      // A stage's own `extend:` is read where the stage names it; its output
+      // schema is what it produces, not what it reads.
+      return this.any(
+         Object.entries(s)
+            .filter(([k]) => k !== "extendSource" && k !== "outputStruct")
+            .map(([, v]) => v),
+         local,
+         depth + 1,
+      );
    }
 
    value(v: unknown, fields: Map<string, Field>, depth: number): boolean {
       if (depth > MAX_DEPTH) throw new Refusal("an expression nests too deep");
-      if (Array.isArray(v)) {
-         return v.some((x) => this.value(x, fields, depth + 1));
-      }
+      if (Array.isArray(v)) return this.any(v, fields, depth + 1);
       if (!v || typeof v !== "object") return false;
       const n = v as Node & Field & { type?: unknown };
-      if (Array.isArray(n.structPath) && n.structPath[0] === this.join) {
-         return true;
+      let reads = false;
+      if (Array.isArray(n.structPath)) {
+         if (n.structPath[0] === this.join) {
+            if (!this.exhaustive) return true;
+            reads = true;
+         } else {
+            this.noteJoins(n.structPath, fields);
+         }
       }
       if (n.node === "field" || n.type === "fieldref") {
          const p = pathOf(n);
          if (!p) throw new Refusal("a field reference that cannot be read");
-         return this.path(p, fields, depth + 1);
+         return this.path(p, fields, depth + 1) || reads;
       }
       if (n.type === "turtle" && n.pipeline !== undefined) {
          const nest = pipelineOf(n);
          if (nest.length === 0) throw new Refusal("a nest with no stage");
-         return this.stage(nest[0], fields, depth + 1);
+         return this.stage(nest[0], fields, depth + 1) || reads;
       }
-      return Object.values(v).some((x) => this.value(x, fields, depth + 1));
+      return this.any(Object.values(v), fields, depth + 1) || reads;
+   }
+
+   /** Whether any of `values` reads the inlined join. */
+   private any(
+      values: readonly unknown[],
+      fields: Map<string, Field>,
+      depth: number,
+   ): boolean {
+      let reads = false;
+      for (const x of values) {
+         if (this.value(x, fields, depth)) {
+            if (!this.exhaustive) return true;
+            reads = true;
+         }
+      }
+      return reads;
+   }
+
+   /**
+    * Note a read through a join that fans out the pair rows: any of `joins`,
+    * stepped through from the queried source, that is a join_many or a cross
+    * join other than the inlined join itself.
+    */
+   private noteJoins(
+      joins: readonly unknown[],
+      fields: Map<string, Field>,
+   ): void {
+      if (joins[0] === this.join) return;
+      let scope = fields;
+      for (const name of joins) {
+         if (typeof name !== "string") return;
+         const f = scope.get(name) as
+            | (Field & { fields?: unknown })
+            | undefined;
+         if (!f) return;
+         if (f.join === "many" || f.join === "cross") {
+            this.fansOut = true;
+            return;
+         }
+         scope = fieldsByName(f.fields);
+      }
    }
 
    private path(
@@ -659,6 +721,7 @@ class ChildScan {
       const f = fields.get(p[0]);
       if (!f) throw new Refusal(`the query reads \`${p[0]}\`, unresolved`);
       if (p.length > 1) {
+         this.noteJoins(p.slice(0, -1), fields);
          // Through another join: the joined source's own field, reached by
          // that join's condition, which may read the inlined join (its reads
          // of the join's own fields are the join's, not the parent's).

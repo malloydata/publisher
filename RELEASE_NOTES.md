@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — In development: a row-level gate through a join_many sends a pair-table query live
+
+Behind `PUBLISHER_MATERIALIZE` with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on (both off by default). A `#(access_filter)` that reads through a join_many the pair table does not inline (`inline=["segs"]` beside `join_many: notes`, gated on `notes.color = $K`) joined every stored pair row to each of its parent's matching rows once grafted on the served copy, so child aggregates such as `segs.count()` came back wrong. The pair-table check now reads each gate for a join_many or cross join it steps through, at any point of a path, and answers such a query live, reported as `COUNT_SEMANTICS`; a gate that cannot be read is treated the same way. A gate on the parent, or one through the inlined join, is served as before. No API field changes.
+
 ## [Unreleased] — In development: the inline uniqueness check skips an unchanged table, and `#(carries)` reads the served copy
 
 Two materialization v2 limitations lifted, both behind `PUBLISHER_MATERIALIZE` (off by default).
