@@ -48,6 +48,7 @@ import {
    VARIANTS,
 } from "./conformance/shapes";
 import { rowDifference } from "./harness";
+import { shadowRowDifference } from "../../../src/service/materialization/serve/v1_shadow";
 
 const RUN_GAPS = process.env.CONFORMANCE_GAPS === "run";
 const REPORT = process.env.CONFORMANCE_REPORT === "1";
@@ -382,6 +383,13 @@ for (const shape of SHAPES) {
                   expect(
                      rowDifference(l.answer.rows, s.answer.rows),
                   ).toBeUndefined();
+                  // After the cutover, by the shadow comparison's exact rule
+                  // too (strings as strings, integers and bigints exact).
+                  if (on === "cutover") {
+                     expect(
+                        shadowRowDifference(l.answer.rows, s.answer.rows),
+                     ).toBeUndefined();
+                  }
                   const needed = tolerancesNeeded(l.answer, s.answer);
                   expect(
                      fieldDifference(l.answer, s.answer, needed),

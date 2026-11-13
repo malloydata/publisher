@@ -9,6 +9,7 @@ import {
 } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it, test } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
+import { shadowRowDifference } from "../../../src/service/materialization/serve/v1_shadow";
 import {
    buildScenario,
    rowDifference,
@@ -60,6 +61,12 @@ for (const mode of ["serve_shape", "served_copy", "cutover"] as const) {
          if (query.expectLive) expect(run.servedFrom).not.toBe("storage");
          else expect(run.servedFrom).toBe("storage");
          expect(rowDifference(run.live, run.served)).toBeUndefined();
+         // After the cutover, also by the shadow comparison's exact rule (a
+         // string stays a string, an integer and a bigint exact): what the
+         // shadow release would log must be nothing.
+         if (mode === "cutover") {
+            expect(shadowRowDifference(run.live, run.served)).toBeUndefined();
+         }
          return run;
       }
 
