@@ -14,7 +14,7 @@ import {
 } from "./persist_source_fields";
 import {
    buildSubstitutesAGiven,
-   classifyDynamicTerms,
+   admitGivenPositions,
    readTimeDynamicTerms,
    type DynamicTerm,
 } from "./persist_dynamic_terms";
@@ -45,7 +45,7 @@ interface PersistDynamicPlan {
  *     tenant's slice served to every tenant. An extend-block `where:` term is
  *     left out of the build and re-applied per caller, so it is stripped and
  *     returned; any other position is refused (fail closed). See
- *     {@link classifyDynamicTerms}. The stripped terms are a promise: the
+ *     {@link admitGivenPositions}. The stripped terms are a promise: the
  *     serve shape must declare their givens and re-emit their text, or the
  *     query must not route.
  *  3. **No `#(authorize)` / `#(access_filter)` gate.** Both are evaluated per
@@ -116,7 +116,7 @@ export function assertMaterializationEligible(
       });
    }
 
-   const classified = classifyDynamicTerms(persistSource);
+   const classified = admitGivenPositions(persistSource);
    if (!classified.ok) {
       recordEligibilityRefused(classified.reason);
       throw new MaterializationEligibilityError({

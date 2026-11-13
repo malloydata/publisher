@@ -20,7 +20,7 @@ import {
    planModelMaterialize,
    type MaterializePlan,
 } from "./build_file_generator";
-import { classifyDynamicTerms } from "./persist_dynamic_terms";
+import { admitGivenPositions } from "./persist_dynamic_terms";
 
 /**
  * P2 on the `#(materialize)` build side (materialization v2, phase 3, PR 2): a
@@ -99,7 +99,7 @@ describe("P2: a given-reading where: is left out of the build", () => {
          expect(sql).toContain("'zz'");
 
          // v1's machinery reads the term as stripped: the gate admits it.
-         const classified = classifyDynamicTerms(source);
+         const classified = admitGivenPositions(source);
          expect(classified.ok).toBe(true);
          if (classified.ok) {
             expect(classified.terms.map((t) => t.code)).toEqual([
