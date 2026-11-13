@@ -306,34 +306,28 @@ describe("colocated wide types: the table under the cutover", () => {
       ["tstz", "TIMESTAMPTZ '2026-01-15 23:30:00+00'"],
       ["varchar", "'a'"],
    ]) {
-      it(
-         name,
-         async () => {
-            await freshLoadPool();
-            const restore = withSwitch("cutover");
-            const loader = await loadFixture({
-               "w.malloy": variant(cols, "id, x"),
-            });
-            try {
-               const f = await loader.bind();
-               const out = await f.run(
-                  "w.malloy",
-                  "run: wide -> { group_by: id, x }",
-               );
-               // Served from the table today (off); must stay so under the cutover.
-               expect("answer" in out && out.answer.servedBy).toBe(
-                  "materialized",
-               );
-            } finally {
-               restore();
-               await loader.dispose();
-            }
-         },
-         120_000,
-      );
+      it(`a ${name} column is still served from the table under the cutover`, async () => {
+         await freshLoadPool();
+         const restore = withSwitch("cutover");
+         const loader = await loadFixture({
+            "w.malloy": variant(cols, "id, x"),
+         });
+         try {
+            const f = await loader.bind();
+            const out = await f.run(
+               "w.malloy",
+               "run: wide -> { group_by: id, x }",
+            );
+            // Served from the table today (off); must stay so under the cutover.
+            expect("answer" in out && out.answer.servedBy).toBe("materialized");
+         } finally {
+            restore();
+            await loader.dispose();
+         }
+      }, 120_000);
    }
 
-   it("tstz with the build's captured schema", async () => {
+   it("a TIMESTAMP WITH TIME ZONE column keeps live's result type when served from the build's captured schema", async () => {
       await freshLoadPool();
       const restore = withSwitch("cutover");
       const loader = await loadFixture({
