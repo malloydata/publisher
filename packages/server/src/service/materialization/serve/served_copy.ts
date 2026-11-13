@@ -155,6 +155,11 @@ export interface PairReroot {
     */
    childColumns: readonly (JoinedColumn & { internalName: string })[];
    /**
+    * The child fields the author annotated, as {@link InlinedJoin}'s
+    * `annotatedFields`: a query that returns one as a column is answered live.
+    */
+   annotatedFields?: readonly string[];
+   /**
     * The source's measures over its own fields only, re-declared over the
     * parent rows: each renamed internally to `internalName` and declared again
     * under its name with the author's annotations and access.

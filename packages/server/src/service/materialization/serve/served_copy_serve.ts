@@ -295,6 +295,12 @@ interface Compiled {
       sourceID: string;
       tablePath: string;
       pair: FlatPair;
+      /**
+       * The joined source's fields that carry annotations, which the record
+       * cannot: a query that returns one as a column is declined
+       * (`joined_annotations`), as for an inlined join_one.
+       */
+      annotatedChildFields: ReadonlySet<string>;
    }[];
    /**
     * Whether the row-level gates on a pair source's entry point read its
@@ -487,6 +493,10 @@ export class ServedCopyServe {
       };
       const virtualMap = buildVirtualMap(compiled.aliased);
       const runnable = compiled.materializer.loadRestrictedQuery(queryString);
+      // The prepared query, read once, when a check below needs it. No check
+      // mutates it.
+      let preparedRead: ReturnType<typeof readPreparedQuery> | undefined;
+      const prepared = () => (preparedRead ??= readPreparedQuery(runnable));
       // `#@ -persist` means recompute rather than read the pre-built table. In
       // the served copy every name reads its re-rooted base, so a query whose
       // source is an opted-out reader, or derives from one, is declined here
@@ -497,9 +507,9 @@ export class ServedCopyServe {
          (compiled.optOutIDs && compiled.optOutIDs.size > 0) ||
          (compiled.unsafeIDs && compiled.unsafeIDs.size > 0)
       ) {
-         const prepared = await compiling(() => readPreparedQuery(runnable));
+         const { structRef } = await compiling(prepared);
          const struct = resolveStructRefSource<unknown>(
-            prepared.structRef,
+            structRef,
             compiled.modelDef as never,
          );
          const chain = SourceMap.of(compiled.modelDef).chainOf(struct);
@@ -539,17 +549,26 @@ export class ServedCopyServe {
       // be computed per row of the source instead of per joined row. Malloy
       // marks each such aggregate where it needs a symmetric one; live's
       // join answers those.
+      const inlined = new Set<string>();
+      // Each join the copy answers from a record of stored columns (an
+      // inlined join_one, or the inlined join_many of a pair table read
+      // flat), with its fields that carry annotations.
       const annotated = new Map<string, ReadonlySet<string>>();
       for (const b of tablesRead) {
          for (const [join, fields] of compiled.inlinedJoins?.get(b.tablePath) ??
             []) {
+            inlined.add(join);
             annotated.set(join, fields);
          }
       }
-      if (annotated.size > 0) {
-         const inlined = new Set(annotated.keys());
-         const prepared = await readPreparedQuery(runnable);
-         const grain = joinGrainAggregatePaths(prepared);
+      const pairsRead = (compiled.pairs ?? []).filter((p) =>
+         tablesRead.some((b) => b.tablePath === p.tablePath),
+      );
+      for (const p of pairsRead) {
+         annotated.set(p.pair.join, p.annotatedChildFields);
+      }
+      if (inlined.size > 0) {
+         const grain = joinGrainAggregatePaths(await prepared());
          if (
             grain.unreadable ||
             grain.paths.some((p) => p.some((name) => inlined.has(name))) ||
@@ -561,44 +580,39 @@ export class ServedCopyServe {
                JOIN_GRAIN_DETAIL,
             );
          }
-         // A record literal's field carries no annotation onto a result, so
-         // a query that returns an annotated joined field as a column (its
-         // `#(doc)`, `#(classification)`, render tags) is answered live, and
-         // every other query keeps the table.
-         if ([...annotated.values()].some((f) => f.size > 0)) {
-            const struct = resolveStructRefSource<{ fields?: unknown }>(
-               prepared.structRef,
-               compiled.modelDef as never,
+      }
+      // A record literal's field carries no annotation onto a result, so a
+      // query that returns an annotated joined field as a column (its
+      // `#(doc)`, `#(classification)`, render tags) is answered live, and
+      // every other query keeps the table: one check for both legs, before
+      // the pair table's own.
+      if ([...annotated.values()].some((f) => f.size > 0)) {
+         const { structRef, pipeline } = await prepared();
+         const struct = resolveStructRefSource<{ fields?: unknown }>(
+            structRef,
+            compiled.modelDef as never,
+         );
+         const out = annotatedJoinedOutput(pipeline, struct?.fields, annotated);
+         if (out.unreadable || out.output) {
+            decline(
+               out.output
+                  ? `the query returns ${out.output.path.join(".")}, whose annotations the served copy's record of stored columns cannot carry`
+                  : "the query's output columns cannot be read",
+               "joined_annotations",
+               JOINED_ANNOTATIONS_DETAIL,
             );
-            const out = annotatedJoinedOutput(
-               prepared.pipeline,
-               struct?.fields,
-               annotated,
-            );
-            if (out.unreadable || out.output) {
-               decline(
-                  out.output
-                     ? `the query returns ${out.output.path.join(".")}, whose annotations the served copy's record of stored columns cannot carry`
-                     : "the query's output columns cannot be read",
-                  "joined_annotations",
-                  JOINED_ANNOTATIONS_DETAIL,
-               );
-            }
          }
       }
       // A pair table (an inlined join_many) is read flat: exact only for the
       // aggregates pair_flat_query.ts proves, and only as the queried
       // source's own table, never through a join to it (its rows would fan
       // out the joining source).
-      const pairsRead = (compiled.pairs ?? []).filter((p) =>
-         tablesRead.some((b) => b.tablePath === p.tablePath),
-      );
       if (pairsRead.length > 0) {
-         const prepared = await readPreparedQuery(runnable);
+         const { structRef, query } = await prepared();
          const struct = resolveStructRefSource<{
             fields?: unknown;
             filterList?: unknown;
-         }>(prepared.structRef, compiled.modelDef as never);
+         }>(structRef, compiled.modelDef as never);
          const chain = struct
             ? SourceMap.of(compiled.modelDef).chainOf(struct as never)
             : [];
@@ -611,7 +625,7 @@ export class ServedCopyServe {
                        "the query reads a pair table other than as the source it stores (through a join to it, whose rows would fan out the joining source, or from a source built on it)",
                  }
                : flatPairQueryVerdict(
-                    prepared.query,
+                    query,
                     struct,
                     own.pair,
                     await pairGatesReadChild(compiled, struct, own.pair.join),
@@ -647,10 +661,7 @@ export class ServedCopyServe {
          compiled.computedTables?.has(b.tablePath),
       );
       const windowed = tablesRead.some((b) => this.readsRollingWindow(b));
-      if (
-         (computed || windowed) &&
-         setsTimezone((await readPreparedQuery(runnable)).query)
-      ) {
+      if ((computed || windowed) && setsTimezone((await prepared()).query)) {
          decline(
             computed
                ? "the query sets a timezone over a stored computed dimension"
@@ -886,6 +897,7 @@ export class ServedCopyServe {
             new Map(binding.schema.map((c) => [c.name, c.type])),
             map,
             [...reservedNames, ...plan.columns.map((c) => c.column)],
+            readSourceClassifications(def.fields as IrField[] | undefined),
          );
          if (!pair) {
             problems.push({ sourceName, reason: "column_types" });
@@ -1389,14 +1401,10 @@ export class ServedCopyServe {
                           pair: {
                              join: c.reroot.pair.join,
                              parentRowField: c.reroot.pair.parentRowField,
-                             annotatedChildFields: new Set(
-                                c.reroot.pair.childColumns
-                                   .filter(
-                                      (col) => (col.notes ?? []).length > 0,
-                                   )
-                                   .map((col) => col.name),
-                             ),
                           },
+                          annotatedChildFields: new Set(
+                             c.reroot.pair.annotatedFields,
+                          ),
                        },
                     ]
                   : [],
@@ -1484,6 +1492,7 @@ function pairRerootOf(
    stored: ReadonlyMap<string, string>,
    map: SourceMap,
    taken: readonly string[],
+   lineage: ReadonlyMap<string, FieldClassification>,
 ): PairReroot | undefined {
    const parentRow = stored.get(pair.parentRowColumn);
    if (!parentRow) return undefined;
@@ -1507,12 +1516,17 @@ function pairRerootOf(
    );
    const childColumns: PairReroot["childColumns"][number][] = [];
    const childStoredDimensions: string[] = [];
+   const annotatedFields: string[] = [];
    for (const c of plan.columns) {
       if (c.join !== pair.join) continue;
       const type = stored.get(c.column);
       if (type === undefined) return undefined;
       const field = childFields.get(c.dimension);
-      const notes = fieldNotes(field);
+      const { notes, annotated } = joinedColumnNotes(
+         field,
+         lineage.get(`${pair.join}.${c.dimension}`),
+      );
+      if (annotated) annotatedFields.push(c.dimension);
       childColumns.push({
          name: c.dimension,
          column: c.column,
@@ -1558,6 +1572,7 @@ function pairRerootOf(
       parentRowColumn: { name: pair.parentRowColumn, type: parentRow },
       parentRowField,
       childColumns,
+      annotatedFields,
       parentMeasures,
       childStoredDimensions,
    };
@@ -1658,6 +1673,27 @@ export function storedColumnNotes(
    }
    const classes = classified.classifications.map(annotationValue).join(", ");
    return [...notes, `#(classification) [${classes}]`];
+}
+
+/**
+ * A joined field's stored column, as both records of stored columns read it
+ * (an inlined join_one's and a pair table's child columns): `notes` go on
+ * the column in the `type:` ({@link storedColumnNotes}, an inferred class
+ * included), so the record's field, which reads it, keeps its class; and
+ * `annotated` says the author's field carries notes of its own (inherited
+ * ones included), which a result column of the record's field cannot carry,
+ * so a query returning it is answered live (`joined_annotations`). An
+ * inferred class is not a note on the result either way, so it alone does
+ * not make the field annotated.
+ */
+function joinedColumnNotes(
+   field: unknown,
+   classified: FieldClassification | undefined,
+): { notes: string[]; annotated: boolean } {
+   return {
+      notes: storedColumnNotes(field, classified),
+      annotated: fieldNotes(field).length > 0,
+   };
 }
 
 /**
@@ -1808,14 +1844,12 @@ function inlinedJoinsOf(
          const type = stored.get(c.column);
          if (type === undefined) return undefined;
          const field = joinedFields.get(c.dimension);
-         if (fieldNotes(field).length > 0) annotatedFields.push(c.dimension);
          const timeframe = field?.timeframe;
-         // The joined field's own notes go on its stored column in the
-         // `type:`, so the record's field, which reads it, keeps its class.
-         const notes = storedColumnNotes(
+         const { notes, annotated } = joinedColumnNotes(
             field,
             lineage.get(`${join}.${c.dimension}`),
          );
+         if (annotated) annotatedFields.push(c.dimension);
          columns.push({
             name: c.dimension,
             column: c.column,

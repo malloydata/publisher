@@ -91,7 +91,6 @@ describe("flatPairQueryRefusal", () => {
             {
                join: "segments",
                parentRowField: "pr",
-               annotatedChildFields: new Set(),
             },
          ),
       ).toMatch(/does not read `segments` from its pair table/);
@@ -122,7 +121,6 @@ describe("pairQueryReadsChild and flatPairQueryVerdict", () => {
    const pair = {
       join: "segments",
       parentRowField: "pr",
-      annotatedChildFields: new Set<string>(),
    };
    const read = async (malloy: string) => {
       const prepared = (await runtime
