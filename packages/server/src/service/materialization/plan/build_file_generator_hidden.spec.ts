@@ -279,3 +279,36 @@ source: orders is raw include { internal: org_id; private: id; public: * }
       );
    }
 });
+
+describe("an inlined join that is not public", () => {
+   it(
+      "refuses only that source, and the companion still builds the rest",
+      async () => {
+         settings({ PERSIST_STORAGE_MODE: "on" });
+         const { c, plans } =
+            await planOf(`##! experimental { access_modifiers }
+source: orders0 is duckdb.sql("select 1 as id, 'east' as region, 2.0 as amount")
+source: regions is duckdb.sql("select 'east' as code, 'East' as label") extend {
+  primary_key: code
+}
+
+#(materialize) storage="lake" inline=["r"]
+source: by_region is orders0 extend {
+  join_one: r is regions with region
+}
+
+#(materialize) storage="lake" inline=["r"]
+source: hidden_join is orders0 extend {
+  internal join_one: r is regions with region
+}
+`);
+         expect(plans.map((p) => p.sourceName)).toEqual(["by_region"]);
+         const finding = (c.annotationFindings ?? []).find(
+            (f) => f.subject === "hidden_join",
+         );
+         expect(finding?.code).toBe("materialize-not-built");
+         expect(finding?.message).toContain("a join that is not public");
+      },
+      { timeout: 30000 },
+   );
+});

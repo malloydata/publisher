@@ -301,3 +301,106 @@ describe("R4 P3 adversarial: a caller reads no hidden column from storage that l
       }
    });
 });
+
+/**
+ * An inlined join_one (#1665) is served from its stored `<join>__<field>`
+ * columns as a record. The joined source's hidden fields are never stored,
+ * so the record cannot carry them; and the record must keep the join's own
+ * access, or the access check refuses the source and it is answered live.
+ */
+describe("R4 P3 adversarial: an inlined join_one's hidden fields and access", () => {
+   const regionsSeed = [
+      ...seedSql,
+      `CREATE TABLE regions AS SELECT * FROM (VALUES
+         ('east', 'East', 'acme-east'), ('west', 'West', 'globex-west')
+       ) AS t(code, label, owner)`,
+   ];
+   const inlineModel = `##! experimental { access_modifiers }
+
+source: regions is duckdb.table('regions') include { internal: owner; public: * } extend {
+  primary_key: code
+}
+
+#(materialize) storage="lake" inline=["r"]
+source: by_region is duckdb.table('orders') extend {
+  join_one: r is regions with region
+  measure: total is amount.sum()
+}
+
+#(materialize) storage="lake" inline=["r"]
+source: hidden_join is duckdb.table('orders') extend {
+  internal join_one: r is regions with region
+  dimension: region_label is r.label
+  measure: total is amount.sum()
+}
+`;
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": inlineModel },
+         seedSql: regionsSeed,
+         materialize: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("never stores the joined source's internal field", async () => {
+      const described = await fixture.storedSQL(
+         (t) => `DESCRIBE SELECT * FROM ${t("by_region")}`,
+      );
+      const names = described.map((c) => String(c.column_name));
+      expect(names).toContain("r__label");
+      expect(names.some((n) => n.includes("owner"))).toBe(false);
+   });
+
+   it("answers a public joined field from storage with live's rows", async () => {
+      await expectParity(
+         fixture,
+         "run: by_region -> { group_by: r.label; aggregate: total }",
+         true,
+      );
+   });
+
+   for (const [name, malloy] of [
+      [
+         "the joined source's internal field",
+         "run: by_region -> { group_by: r.owner }",
+      ],
+      ["an internal join's field", "run: hidden_join -> { group_by: r.label }"],
+   ] as const) {
+      it(`refuses ${name}, as live does`, async () => {
+         fixture.setBindings([]);
+         const live = await failure(() => fixture.runAsIs(malloy));
+         fixture.setBindings(fixture.bindings);
+         const served = await failure(() => fixture.runAsIs(malloy));
+         expect(live).toBeDefined();
+         expect(served).toBeDefined();
+         expect(String(served)).not.toMatch(/acme-east|globex-west/);
+      });
+   }
+
+   it("refuses to build an internal inlined join, so it serves live", async () => {
+      // Refused at plan time (`materialize-not-built`): its build could not
+      // read the join, and its record would not carry the join's access.
+      const plans = (
+         fixture.servedCopy() as unknown as {
+            materializePlans: Record<string, { sourceName: string }>;
+         }
+      ).materializePlans;
+      expect(Object.values(plans).map((p) => p.sourceName)).toEqual([
+         "by_region",
+      ]);
+      fixture.setBindings(fixture.bindings);
+      const run = await fixture.runAsIs(
+         "run: hidden_join -> { group_by: region_label; aggregate: total }",
+      );
+      expect(run.servedFrom).not.toBe("storage");
+   });
+});

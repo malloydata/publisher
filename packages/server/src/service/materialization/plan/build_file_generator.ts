@@ -1213,6 +1213,26 @@ export function planModelMaterialize(
          });
          continue;
       }
+      // A private or internal join cannot be read by the generated build
+      // (its query selects `<join>.<field>`), and the served record would not
+      // carry its access: refused here, so this source serves live and the
+      // companion still compiles for every other source in the model.
+      const hiddenJoin = inline.find((j) =>
+         (def.fields ?? []).some((raw) => {
+            const f = raw as FieldLike;
+            return (f.as ?? f.name) === j && hiddenAccess(f) !== undefined;
+         }),
+      );
+      if (hiddenJoin !== undefined) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason:
+               `inline= names ${quotedName(hiddenJoin)}, a join that is not ` +
+               "public, which cannot be inlined yet",
+         });
+         continue;
+      }
       // An inlined join_many is a pair table (P5): at most one per source.
       const fanned = inline.filter(
          (j) => joins.find((x) => x.name === j)?.relationship === "many",
