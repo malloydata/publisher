@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Bun 1.4.4: a respawned package-load worker no longer leaks its memory
+
+Publisher now builds, tests and ships on Bun 1.4.4, up from 1.3.13. The Docker image's base is `oven/bun:1.4.4-slim`, and building from a clone needs Bun 1.4.4 or newer (`engines.bun` is now `>=1.4.4`). Running the published package with `npx` still needs only Node.js 20 or newer.
+
+Bun 1.3 kept most of a worker thread's memory after the worker exited: about 78 MB of committed memory per worker on Windows, and a few MB on macOS and Linux. The package-load pool replaces a worker that timed out or crashed, so a long-running server that hit timeouts or crashes grew with each replacement. On Bun 1.4.4 that memory is returned. Over 60 worker spawn-and-shutdown cycles, a Windows runner grew from 0.28 to 5.8 GB on Bun 1.3.13 and stayed between 0.09 and 0.42 GB on Bun 1.4.4. The lockfile format is unchanged.
+
+The image now declares a `HEALTHCHECK` against `/api/v0/status`: healthy while the server answers queries (`serving`, or `throttled`), with a 90-second start period, on the port in `PUBLISHER_PORT` (default 4000). `docker ps` and Compose report it; Kubernetes ignores it and keeps its own probes. If you start the server on another port by overriding the command with `--port`, set `PUBLISHER_PORT` to match or override the check.
+
 ## [0.13.1] — a field read inside a classified record or array column carries the column's classes
 
 A field read inside a record or array column, such as `group_by: purchases.ssn` where `purchases` is a classified array (`#(classification) "phi.direct_identifier" rename: purchases is items`), was read with no classes at all. The access record listed it with `classifications: []` while still claiming a complete field list, so a source with no `#(carries)` under-reported what the query read. Under `#(carries)` the same read was refused as unclassified, even where the ceiling lists the column's class.
