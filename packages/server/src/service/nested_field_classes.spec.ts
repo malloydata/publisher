@@ -152,6 +152,25 @@ describe("a field read inside a record or array column", () => {
       });
    });
 
+   it("classifies an element read inside a query on the array the same way", async () => {
+      await withModel(
+         `##! experimental { array_queries }\n${MODEL}`,
+         async ({ model }) => {
+            await run(
+               model,
+               "run: cls -> { select: pid, s is purchases -> { select: ssn } }",
+            );
+            const record = lastRecord();
+            expect(classesOf(record)).toEqual({
+               pid: ["none"],
+               purchases: ["phi.direct_identifier"],
+               "purchases.ssn": ["phi.direct_identifier"],
+            });
+            expect(record.fieldsReadComplete).toBe(true);
+         },
+      );
+   });
+
    it("leaves parts of computed records, record literals and query outputs as they were", async () => {
       const { modelDefs } = await compileModelFiles({
          "m.malloy": `

@@ -25,7 +25,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 A field read inside a record or array column, such as `group_by: purchases.ssn` where `purchases` is a classified array (`#(classification) "phi.direct_identifier" rename: purchases is items`), was read with no classes at all. The access record listed it with `classifications: []` while still claiming a complete field list, so a source with no `#(carries)` under-reported what the query read. Under `#(carries)` the same read was refused as unclassified, even where the ceiling lists the column's class.
 
-Now such a field carries the classes of the nearest record or array column around it that declares some, unless it declares its own. The access record lists `purchases.ssn` as `phi.direct_identifier`, a `#(carries)` ceiling that lists that class serves it, and one that does not refuses it naming the class. A record or array built by an expression already handed its parts its class and is unchanged.
+Now such a field carries the classes of the nearest record or array column around it that declares some, unless it declares its own. The access record lists `purchases.ssn` as `phi.direct_identifier`, a `#(carries)` ceiling that lists that class serves it, and one that does not refuses it naming the class. An element field read inside a query on the array (`purchases -> { select: ssn }`) carries the array's class the same way, and a read of the whole column still lists only the column. A record or array built by an expression already handed its parts its class and is unchanged.
 
 ## [Unreleased] — Security: a join inside a query on an array is refused where a model governs access
 
