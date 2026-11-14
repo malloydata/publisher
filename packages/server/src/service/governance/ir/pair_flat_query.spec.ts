@@ -9,11 +9,14 @@ import {
    flatPairQueryVerdict,
    pairConditionReads,
    pairMeasureLevels,
+   pairMeasurePresence,
    pairQueryReadLevel,
+   type FlatPair,
 } from "./pair_flat_query";
 
 const model = `source: segments is duckdb.sql("select 1 as seg_id, 1 as flight_id, 2.0 as miles") extend {
   primary_key: seg_id
+  dimension: doubled is miles * 2
 }
 source: carriers is duckdb.sql("select 'AA' as code") extend {
   primary_key: code
@@ -31,6 +34,12 @@ source: flights is duckdb.sql("select 1 as id, 'AA' as carrier, 3.0 as distance"
     child_sum is segments.miles.sum()
     child_n is segments.count()
     child_max is max(segments.miles)
+    child_ones is segments.sum(1)
+    child_parent_sum is segments.sum(distance)
+    child_or_zero_avg is segments.avg(segments.miles ?? 0)
+    child_n_filtered is segments.count() { where: segments.miles > 1 }
+    child_n_and_floor is segments.count() + max(segments.miles ?? 0)
+    child_doubled_sum is segments.doubled.sum()
     by_refs is child_sum / flight_count
     mixed is segments.miles.sum() / count()
     child_filtered_parent is count() { where: segments.miles > 1 }
@@ -106,11 +115,13 @@ const flat = `source: flights is duckdb.sql("select 1 as id, 'AA' as carrier, 3.
   dimension:
     long_haul is distance > 2
     leg is segments.miles
+    seg_present is segments.seg_id is not null
   measure:
     flight_count is count() { where: pr }
     total is distance.sum() { where: pr }
     seg_total is segments.miles.sum()
     seg_n is segments.count()
+    seg_n_present is segments.count() { where: seg_present }
     long_legs is seg_n { where: segments.miles > 1 }
     per_flight is seg_total / flight_count
   view:
@@ -131,6 +142,7 @@ describe("pairQueryReadLevel and flatPairQueryVerdict", () => {
    const pair = {
       join: "segments",
       parentRowField: "pr",
+      leafKeyChecked: true,
    };
    const read = async (malloy: string) => {
       const prepared = (await runtime
@@ -312,6 +324,7 @@ describe("flatPairQueryRefusal at the leaf, beside a childless parent's null row
    // Since malloydata/malloy#3208 live's count, sum and avg at a join skip
    // the row a LEFT JOIN writes for a parent with no child; the pair table
    // holds that row, null-extended.
+   let pair: Partial<FlatPair> = { leafKeyChecked: true };
    const refusal = async (malloy: string) => {
       const prepared = (await runtime
          .loadModel(flat)
@@ -323,7 +336,7 @@ describe("flatPairQueryRefusal at the leaf, beside a childless parent's null row
       return flatPairQueryRefusal(
          prepared._query,
          prepared._modelDef.contents.flights as never,
-         { join: "segments", parentRowField: "pr" },
+         { join: "segments", parentRowField: "pr", ...pair },
       );
    };
    for (const malloy of [
@@ -351,6 +364,100 @@ describe("flatPairQueryRefusal at the leaf, beside a childless parent's null row
          );
       });
    }
+
+   // Under the leaf's presence field (its key not null) the flat rows are
+   // the leaf's own rows, as live's guard reads them (known limitation 40).
+   describe("under the leaf's presence field", () => {
+      beforeAll(() => {
+         pair = { leafKeyChecked: true, levelPresentFields: ["seg_present"] };
+      });
+      afterAll(() => {
+         pair = { leafKeyChecked: true };
+      });
+      for (const malloy of [
+         "run: flights -> { group_by: carrier; aggregate: seg_n_present }",
+         "run: flights -> { aggregate: s is segments.sum(1) { where: seg_present } }",
+         "run: flights -> { aggregate: s is segments.sum(distance) { where: seg_present } }",
+         "run: flights -> { aggregate: a is segments.avg(segments.miles ?? 0) { where: seg_present } }",
+         "run: flights -> { aggregate: r is seg_n_present / flight_count }",
+         "run: flights -> { aggregate: m is max(segments.miles) { where: seg_present } }",
+      ]) {
+         it(`serves ${malloy}`, async () => {
+            expect(await refusal(malloy)).toBeUndefined();
+         });
+      }
+      it("refuses a max of a value not null on the null row under it, which live reads that row for", async () => {
+         expect(
+            await refusal(
+               "run: flights -> { aggregate: m is max(segments.miles ?? 0) { where: seg_present } }",
+            ),
+         ).toMatch(/minimum, maximum or distinct count/);
+      });
+      it("is not a presence field for a count when it is not declared one", async () => {
+         pair = { leafKeyChecked: true };
+         expect(
+            await refusal("run: flights -> { aggregate: seg_n_present }"),
+         ).toMatch(/a count through the inlined join/);
+         pair = { leafKeyChecked: true, levelPresentFields: ["seg_present"] };
+      });
+   });
+
+   // Without the leaf's key check on record, a NULL key or two equal
+   // children of one key cannot be ruled out: no count, sum or average at
+   // the leaf is exact, a stored column's sum included.
+   describe("without the leaf's key check", () => {
+      beforeAll(() => {
+         pair = { levelPresentFields: ["seg_present"] };
+      });
+      afterAll(() => {
+         pair = { leafKeyChecked: true };
+      });
+      for (const malloy of [
+         "run: flights -> { group_by: carrier; aggregate: seg_total }",
+         "run: flights -> { aggregate: a is segments.miles.avg() }",
+         "run: flights -> { aggregate: seg_n_present }",
+      ]) {
+         it(`refuses ${malloy}`, async () => {
+            expect(await refusal(malloy)).toMatch(
+               /not known unique and never null/,
+            );
+         });
+      }
+      for (const malloy of [
+         "run: flights -> { aggregate: m is max(segments.miles + 1) }",
+         "run: flights -> { aggregate: d is count(segments.seg_id) }",
+      ]) {
+         it(`serves ${malloy}`, async () => {
+            expect(await refusal(malloy)).toBeUndefined();
+         });
+      }
+   });
+});
+
+describe("pairMeasurePresence", () => {
+   it("says which measures through the join need the presence field, and which it would make wrong", async () => {
+      const def = (await runtime.loadModel(model).getModel())._modelDef;
+      const fields = (def.contents.flights as { fields: unknown[] }).fields;
+      const presence = pairMeasurePresence(fields, { join: "segments" });
+      expect(Object.fromEntries(presence)).toEqual({
+         child_sum: "unneeded",
+         child_n: "needed",
+         child_max: "unneeded",
+         child_ones: "needed",
+         child_parent_sum: "needed",
+         child_or_zero_avg: "needed",
+         child_n_filtered: "needed",
+         child_n_and_floor: "unsafe",
+         child_doubled_sum: "unneeded",
+      });
+      // A stored computed field need not be null on the null row.
+      expect(
+         pairMeasurePresence(fields, {
+            join: "segments",
+            computedFields: ["segments.doubled"],
+         }).get("child_doubled_sum"),
+      ).toBe("needed");
+   });
 });
 
 describe("flatPairQueryRefusal through a join_one's join_many", () => {
@@ -376,7 +483,7 @@ source: flights is duckdb.sql("select 1 as id, 'AA' as carrier, 1 as sid, 2.0 as
       return flatPairQueryRefusal(
          prepared._query,
          prepared._modelDef.contents.flights as never,
-         { join: "segments", parentRowField: "pr" },
+         { join: "segments", parentRowField: "pr", leafKeyChecked: true },
       );
    };
    it("serves a join_one's own field", async () => {

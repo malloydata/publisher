@@ -305,7 +305,11 @@ Both follow what a caller can reach, not what a file declares:
   fields it reads. A join names a relationship and is not classified.
 - A record or array dimension is a field. One built by an expression (`{ v is ssn }`, `[ssn]`)
   carries what the expression reads, and each of its parts carries the same. A struct column is
-  charged the union of its parts. A part that cannot be resolved fails closed.
+  charged the union of its parts, and a part of a classified record or array column
+  (`purchases.ssn`, under `#(classification) "phi.direct_identifier" rename: purchases is items`)
+  carries the classes of the nearest column around it that declares some, read directly or inside
+  a query on the array (`purchases -> { select: ssn }`). A read of the whole column lists only the
+  column. A part that cannot be resolved fails closed.
 
 ## Known gaps
 

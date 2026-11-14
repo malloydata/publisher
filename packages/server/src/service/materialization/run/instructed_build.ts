@@ -3,6 +3,7 @@
 
 import {
    assertInlinedJoinsUnique,
+   pairLeafKeyChecksOf,
    checkDigest,
    runRollupKeyCheck,
    storedKeyCheckSql,
@@ -954,6 +955,22 @@ export class InstructedBuild {
             writtenTableIdentity(instruction, graphConnectionName),
          );
       }
+      // A pair table (an inlined join_many): its leaf's key unique and never
+      // NULL, checked over the leaf source's rows on the source's own
+      // connection, which the served copy needs before it serves a count
+      // through the path (known limitation 40). Never fails the build.
+      if (!orchestrated && run.uniqueness) {
+         await checkPairLeafKeys(
+            run.uniqueness,
+            pairLeafKeyChecksOf(
+               compiled.materializePlans?.[persistSource.sourceID],
+            ),
+            connection,
+            persistSource.name,
+            sourceEntityId,
+            writtenTableIdentity(instruction, graphConnectionName),
+         );
+      }
       // A source stored in a destination, read there beside a joined
       // source's rollup through a join keyed on its primary key (#1704):
       // check that key over the rows its table holds.
@@ -1509,6 +1526,40 @@ async function checkParentKeys(
 }
 
 /**
+ * Run each leaf key check of a built pair table on the source's connection
+ * and record what it found beside the table, under the leaf source's
+ * sourceID. A check that does not run records nothing: the served copy then
+ * reads the leaf's key as unknown and keeps declining a count through the
+ * path.
+ */
+async function checkPairLeafKeys(
+   ledger: UniquenessLedger,
+   checks: readonly { sourceID: string; keyColumn: string; sql: string }[],
+   connection: MalloyConnection,
+   sourceName: string,
+   address: string,
+   table: string,
+): Promise<void> {
+   for (const check of checks) {
+      const record = await runRollupKeyCheck(check, connection, table);
+      if (!record) {
+         logger.warn(
+            "A pair table's leaf key check did not run; counts through its inlined join_many are answered live",
+            { source: sourceName, keyColumn: check.keyColumn },
+         );
+         continue;
+      }
+      if (!record.unique) {
+         logger.warn(
+            "An inlined join_many's joined source holds its primary key more than once or NULL; counts through it are answered live",
+            { source: sourceName, keyColumn: check.keyColumn },
+         );
+      }
+      ledger.recordRollupKey(address, { ...record, sourceID: check.sourceID });
+   }
+}
+
+/**
  * The check of a stored table's declared primary key, when the plan asks for
  * one (`storedKeyChecks`) and the table holds that column: one row when a
  * value repeats or is NULL. Over every row the table holds: a term the
@@ -1687,6 +1738,42 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
             table,
             checkDigest(table, parent.sql),
             parent.sourceID,
+         );
+      }
+   }
+   // A pair table's leaf key checks, while its table stands.
+   for (const [sourceID, plan] of Object.entries(
+      compiled.materializePlans ?? {},
+   )) {
+      const checks = pairLeafKeyChecksOf(plan);
+      const source = compiled.sources[sourceID];
+      if (checks.length === 0 || !source) continue;
+      const address = computeSourceEntityId(
+         source,
+         compiled.connectionDigests,
+         compiled.targets?.[sourceID],
+      );
+      const entry = run.entries[address];
+      if (!entry?.physicalTableName || run.builtAddresses.has(address)) {
+         continue;
+      }
+      const table = entry.storageDestinationName
+         ? tableIdentityKey(
+              "destination",
+              entry.storageDestinationName,
+              entry.physicalTableName,
+           )
+         : tableIdentityKey(
+              "connection",
+              source.connectionName,
+              entry.physicalTableName,
+           );
+      for (const check of checks) {
+         ledger.carryRollupKey(
+            address,
+            table,
+            checkDigest(table, check.sql),
+            check.sourceID,
          );
       }
    }

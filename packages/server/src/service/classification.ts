@@ -1037,6 +1037,8 @@ function walkSourceClassifications(
    );
 
    const visiting = new Set<string>();
+   // Parts whose only classes are those of a column around them.
+   const inheritedOnly = new Set<string>();
    const resolve = (path: string): FieldClassification | undefined => {
       const done = resolved.get(path);
       if (done) return done;
@@ -1078,6 +1080,13 @@ function walkSourceClassifications(
            });
       const inputs: ClassifiedInput[] = [];
       const seenInput = new Set<string>();
+      // A part of a record or array column (`purchases.ssn`) is a piece of
+      // that column's value, so with no class of its own it carries the
+      // classes of the nearest column around it that declares some.
+      const enclosing =
+         own.values.length === 0 && !out && !partOf && !literal
+            ? enclosingColumnClasses(entry, byPath)
+            : [];
       const unresolved: string[] = [];
       const unresolvedRead = (refPath: string): void => {
          if (!unresolved.includes(refPath)) unresolved.push(refPath);
@@ -1142,7 +1151,17 @@ function walkSourceClassifications(
          filters.push(...input.filtered);
       };
       read(reads.value);
-      for (const p of partOf ? [partOf] : parts) readInput(p, resolve(p));
+      for (const p of partOf ? [partOf] : parts) {
+         const part = resolve(p);
+         // A part that only carries the class of a column around it adds
+         // nothing to that column, so the column does not list it as read.
+         readInput(
+            p,
+            part && !partOf && inheritedOnly.has(p)
+               ? { ...part, classifications: [] }
+               : part,
+         );
+      }
       const valueInputs = inputs.length;
       read(reads.filter);
       take(filters);
@@ -1150,7 +1169,7 @@ function walkSourceClassifications(
       visiting.delete(path);
       const classesOf = (list: ClassifiedInput[]): string[] =>
          tokenSet(list.flatMap((i) => i.classifications));
-      const wouldBe = classesOf(inputs);
+      const wouldBe = tokenSet([...enclosing, ...classesOf(inputs)]);
       const result: FieldClassification = {
          declared: own.values,
          inferred: own.values.length > 0 ? [] : wouldBe,
@@ -1174,11 +1193,38 @@ function walkSourceClassifications(
          ceilings,
          ceilingUnresolved,
       };
+      if (enclosing.length > 0 && inputs.length === 0) inheritedOnly.add(path);
       resolved.set(path, result);
       return result;
    };
    for (const path of byPath.keys()) resolve(path);
    return resolved;
+}
+
+/**
+ * The classes declared on the nearest record or array column that holds
+ * `entry` as a part (directly, or through columns that declare none), or
+ * none when a join to a source, a computed value or nothing encloses it.
+ * Read off the column's own note, never its lineage: a column reads its
+ * parts, so resolving it from a part would go round in a circle.
+ */
+function enclosingColumnClasses(
+   entry: { owner: string },
+   byPath: ReadonlyMap<
+      string,
+      { field: IrField; owner: string; out?: OutputScope; record?: string }
+   >,
+): string[] {
+   for (let at = byPath.get(entry.owner); at; at = byPath.get(at.owner)) {
+      const { field } = at;
+      if (!isRecordField(field) || at.out || at.record !== undefined) break;
+      if (field.e !== undefined) break;
+      const declared = readClassification(
+         annotationTexts(field.annotations),
+      ).values;
+      if (declared.length > 0) return declared;
+   }
+   return [];
 }
 
 /** What the outputs of one `->` query read, and the lineage they read it from. */

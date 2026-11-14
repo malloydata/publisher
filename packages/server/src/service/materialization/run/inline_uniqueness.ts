@@ -496,6 +496,9 @@ export async function assertInlinedJoinsUnique(
    ) => Promise<StoredJoin | undefined>,
 ): Promise<void> {
    for (const check of plan?.uniquenessChecks ?? []) {
+      // A pair table's leaf key check never fails the build: an auto-run
+      // runs it once the table is written ({@link pairLeafKeyChecksOf}).
+      if (check.recordOnly) continue;
       // A plan from a Publisher that did not compile the check: refuse rather
       // than build unchecked.
       if (!check.sql) {
@@ -548,6 +551,29 @@ export async function assertInlinedJoinsUnique(
          });
       }
    }
+}
+
+/**
+ * A `#(materialize)` plan's pair-table leaf key checks
+ * (`InlineUniquenessCheck.recordOnly`), each as a key check a run records
+ * beside the table it wrote: the leaf source's sourceID, its key, and the
+ * compiled SQL (one row when a value repeats or is NULL). A check that was not
+ * compiled is left out, so the leaf's key stays unknown.
+ */
+export function pairLeafKeyChecksOf(
+   plan: MaterializePlan | undefined,
+): { sourceID: string; keyColumn: string; sql: string }[] {
+   return (plan?.uniquenessChecks ?? []).flatMap((check) =>
+      check.recordOnly && check.sql
+         ? [
+              {
+                 sourceID: check.joinedSourceID,
+                 keyColumn: check.keyColumn,
+                 sql: check.sql,
+              },
+           ]
+         : [],
+   );
 }
 
 /**

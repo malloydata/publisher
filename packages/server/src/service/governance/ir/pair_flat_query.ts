@@ -19,8 +19,10 @@
  *    included. Live reads that row for a `min` or `max`, and, since
  *    malloydata/malloy#3208 (Malloy 0.0.438), skips it for a `count()`,
  *    `sum` or `avg`, which test the join's key. So a sum or average at the
- *    leaf is exact only of a stored column of the leaf, null on that row,
- *    and a count at the leaf is not ({@link unmatchedRowRefusal});
+ *    leaf is exact as it stands only of a stored column of the leaf, null on
+ *    that row; a count, or a sum or average of anything else, is exact only
+ *    under the level's presence field ({@link FlatPair.levelPresentFields}),
+ *    which skips that row as live does ({@link unmatchedRowRefusal});
  *  - an aggregate at a level above the leaf is exact only under that level's
  *    flag, and only where nothing it is grouped or filtered by reads a deeper
  *    level: a flagged row is one of its level's rows, so a deeper value would
@@ -28,14 +30,19 @@
  *    one of its rows is in;
  *  - an aggregate at a level between the source and the leaf is exact when
  *    the query reads nothing deeper: live then joins down to that level and
- *    aggregates its rows plainly, which the flag marks. Once the query reads
+ *    aggregates its rows plainly, which the flag marks (a childless row's
+ *    null-extended row included, so a count there, or a sum or average of a
+ *    value not null on that row, needs the level's presence field too, as at
+ *    the leaf). Once the query reads
  *    deeper live aggregates that level symmetrically, keyed by its primary key
  *    (a childless parent then counts as no row): the flag reproduces that only
- *    for a sum or average of a stored column, where each row of the level has
- *    one parent row ({@link FlatPair.oneParentLevels}).
+ *    where each row of the level has one parent row
+ *    ({@link FlatPair.oneParentLevels}), for a sum or average of a stored
+ *    column, or under the level's presence field.
  *
  * {@link pairMeasureLevels} says which measures the served copy re-declares
- * under the flag; {@link flatPairQueryRefusal} says whether one compiled query
+ * under the flag, and {@link pairMeasurePresence} which under the level's
+ * presence field; {@link flatPairQueryRefusal} says whether one compiled query
  * is exact over the flat table, and why not. Anything it cannot read is a
  * refusal: the query is then answered live.
  *
@@ -86,6 +93,29 @@ export interface FlatPair {
     * value on a childless row's null-extended row need not be null.
     */
    computedFields?: readonly string[];
+   /**
+    * For each level of the path (level 1 first, the leaf last): the
+    * (internal) field on the served source that is true on a row where that
+    * level has a row (its primary key is not null), or undefined where the
+    * served copy declares none. Since malloydata/malloy#3208 live takes a
+    * `count()`, `sum` or `avg` at a join over the rows where the join's key
+    * is not null; under this field an aggregate of the flat rows does the
+    * same. The served copy declares it only where the build checked that
+    * level's key unique and never null (a level above the leaf on every
+    * build, the leaf where its recorded check passed), so the field is false
+    * on exactly the null-extended row of a row with nothing at that level.
+    */
+   levelPresentFields?: readonly (string | undefined)[];
+   /**
+    * Whether the leaf's key is known unique and never null on a row of the
+    * leaf (its check, recorded beside the table, passed). Without it no
+    * `count()`, `sum` or `avg` at the leaf is exact, not even of a stored
+    * column: live skips a child whose key is NULL (malloydata/malloy#3208),
+    * which the pair table holds as a row like any other, and the build's
+    * distinct rows store two equal children of one key as one row. A level
+    * above the leaf is checked on every build, which fails without it.
+    */
+   leafKeyChecked?: boolean;
 }
 
 /**
@@ -214,6 +244,8 @@ interface AggregateContext {
    flagged: number | undefined;
    /** The deepest level its other filters read (0: none below the source). */
    filterLevel: number;
+   /** The levels whose presence field filters it. */
+   present?: readonly number[];
    inAggregate: boolean;
 }
 
@@ -223,6 +255,7 @@ interface AggregateContext {
  */
 class Walker {
    private readonly flags: Map<string, number>;
+   private readonly present: Map<string, number>;
 
    constructor(
       private readonly fields: Map<string, Field>,
@@ -232,8 +265,13 @@ class Walker {
       > & {
          parentRowField?: string;
          levelRowFields?: readonly string[];
+         levelPresentFields?: readonly (string | undefined)[];
       },
    ) {
+      this.present = new Map();
+      (pair.levelPresentFields ?? []).forEach((f, i) => {
+         if (f !== undefined) this.present.set(f, i + 1);
+      });
       this.flags = new Map();
       if (pair.parentRowField !== undefined) {
          this.flags.set(pair.parentRowField, 0);
@@ -253,6 +291,11 @@ class Walker {
    /** The level of the row flag a field names, when it names one. */
    flagLevel(path: readonly string[] | undefined): number | undefined {
       return path?.length === 1 ? this.flags.get(path[0]) : undefined;
+   }
+
+   /** The level whose presence field a field names, when it names one. */
+   presentLevel(path: readonly string[] | undefined): number | undefined {
+      return path?.length === 1 ? this.present.get(path[0]) : undefined;
    }
 
    /**
@@ -411,13 +454,18 @@ class Walker {
             const kids = (n.kids ?? {}) as { e?: Node; filterList?: unknown };
             let flagged = ctx.flagged;
             let filterLevel = ctx.filterLevel;
+            let present = ctx.present ?? [];
             for (const c of Array.isArray(kids.filterList)
                ? (kids.filterList as Node[])
                : []) {
                const e = (c.e ?? {}) as Node;
-               const flag = this.flagLevel(
-                  e.node === "field" ? pathOf(e) : undefined,
-               );
+               const named = e.node === "field" ? pathOf(e) : undefined;
+               const presentAt = this.presentLevel(named);
+               if (presentAt !== undefined) {
+                  present = [...present, presentAt];
+                  continue;
+               }
+               const flag = this.flagLevel(named);
                if (flag !== undefined) {
                   if (flagged !== undefined && flagged !== flag) {
                      throw new Refusal(
@@ -436,7 +484,7 @@ class Walker {
                throw new Refusal("a filtered aggregate with no value");
             this.aggregates(
                kids.e,
-               { ...ctx, flagged, filterLevel },
+               { ...ctx, flagged, filterLevel, present },
                visit,
                depth + 1,
             );
@@ -529,6 +577,82 @@ export function pairMeasureLevels(
       out.set(name, levels);
    }
    return out;
+}
+
+/**
+ * For each measure of a source that aggregates at one level of the inlined
+ * path (as {@link pairMeasureLevels} places it, level 1 or deeper), what its
+ * level's presence field does for it on the flat rows:
+ *
+ *  - `needed`: some aggregate in it reads the null-extended row of a row with
+ *    nothing at that level, which live skips (a `count()`, or a `sum` or
+ *    `avg` of a value that is not a stored column of the level: a constant,
+ *    `??`, a computed column, a column of a level above it), and every
+ *    aggregate in it is a `count()`, `sum` or `avg`, which live takes over
+ *    the level's own rows, so re-declared under the field it is exact;
+ *  - `unneeded`: it reads no such row (a sum of a stored column, a `max`);
+ *  - `unsafe`: it needs the field, but also holds a `min`, `max` or distinct
+ *    count, which live reads that row for, so the field would make that part
+ *    wrong.
+ *
+ * A measure over the source's own fields, or over more than one level, or one
+ * {@link pairMeasureLevels} cannot read, is absent. `pair` names the inlined
+ * path and the computed fields the table stores.
+ */
+export function pairMeasurePresence(
+   sourceFields: unknown,
+   pair: Pick<FlatPair, "join" | "hops" | "computedFields">,
+): Map<string, "needed" | "unneeded" | "unsafe"> {
+   const fields = fieldsByName(sourceFields);
+   const walker = new Walker(fields, pair);
+   const out = new Map<string, "needed" | "unneeded" | "unsafe">();
+   for (const [name, levels] of pairMeasureLevels(sourceFields, pair)) {
+      if (levels.size !== 1 || [...levels][0] === 0) continue;
+      const f = fields.get(name);
+      if (!f?.e || typeof f.e !== "object") continue;
+      let needed = false;
+      let unguarded = false;
+      try {
+         walker.aggregates(
+            f.e as Node,
+            { flagged: undefined, filterLevel: 0, inAggregate: false },
+            (level, _ctx, aggregate) => {
+               const fn = (aggregate as { function?: unknown }).function;
+               if (fn !== "count" && fn !== "sum" && fn !== "avg") {
+                  unguarded = true;
+               } else if (!storedColumnOf(pair, level, aggregate)) {
+                  needed = true;
+               }
+            },
+            0,
+         );
+      } catch (e) {
+         if (e instanceof Refusal) continue;
+         throw e;
+      }
+      out.set(name, !needed ? "unneeded" : unguarded ? "unsafe" : "needed");
+   }
+   return out;
+}
+
+/**
+ * Whether an aggregate at `level` reads a stored column of that level, not a
+ * computed one: null on the null-extended row of a row with nothing at that
+ * level, where its key is null too. A `count()` reads no column.
+ */
+function storedColumnOf(
+   pair: Pick<FlatPair, "join" | "hops" | "computedFields">,
+   level: number,
+   aggregate: Node,
+): boolean {
+   const arg = (aggregate.e ?? {}) as Node;
+   const path = arg.node === "field" ? pathOf(arg) : undefined;
+   return (
+      path !== undefined &&
+      path.length === level + 1 &&
+      levelOfNames(path, pair) === level &&
+      !(pair.computedFields ?? []).includes(path.join("."))
+   );
 }
 
 /**
@@ -728,7 +852,12 @@ function checkSegment(
                      "an aggregate through the inlined join under a row flag",
                   );
                }
-               const unmatched = unmatchedRowRefusal(pair, leaf, aggregate);
+               const unmatched = unmatchedRowRefusal(
+                  pair,
+                  leaf,
+                  aggregate,
+                  ctx.present?.includes(leaf) ?? false,
+               );
                if (unmatched !== undefined) throw new Refusal(unmatched);
                return;
             }
@@ -746,14 +875,20 @@ function checkSegment(
                      : "an aggregate above the inlined path's last join, grouped or filtered by a level below it",
                );
             }
+            const present = ctx.present?.includes(level) ?? false;
             if (level > 0) {
-               const unmatched = unmatchedRowRefusal(pair, level, aggregate);
+               const unmatched = unmatchedRowRefusal(
+                  pair,
+                  level,
+                  aggregate,
+                  present,
+               );
                if (unmatched !== undefined) throw new Refusal(unmatched);
             }
             if (
                level > 0 &&
                reach > level &&
-               !besideDeeperExact(pair, level, aggregate)
+               !besideDeeperExact(pair, level, aggregate, present)
             ) {
                throw new Refusal(
                   "an aggregate above the inlined path's last join beside fields below it, which live aggregates by that join's key",
@@ -786,27 +921,44 @@ function checkSegment(
  * level's rows only, which the pair table's rows cannot say apart from the
  * null-extended one; a sum or average is exact when its argument is a stored
  * column of the level, null on that row, and not otherwise (a constant, a
- * computed column, `??`). A `min`, `max` or distinct count reads that row
- * live too (Malloy does not guard them), so it is exact as it stands.
+ * computed column, `??`). Under the level's presence field (`present`) the
+ * flat rows are that level's own rows, as live's are, so a count, sum or
+ * average there is exact whatever it reads. A `min`, `max` or distinct count
+ * reads that row live too (Malloy does not guard them), so it is exact as it
+ * stands, and under the presence field only of a stored column of the level,
+ * which is null on every row the field drops (the field is declared only
+ * where the build checked the level's key never null on a row of its own).
+ * At the leaf, a count, sum or average is exact only where the leaf's key
+ * check passed ({@link FlatPair.leafKeyChecked}).
  */
 function unmatchedRowRefusal(
    pair: FlatPair,
    level: number,
    aggregate: Node,
+   present: boolean,
 ): string | undefined {
    const fn = (aggregate as { function?: unknown }).function;
-   if (fn === "min" || fn === "max" || fn === "distinct") return undefined;
+   if (
+      level === depthOf(pair) &&
+      !pair.leafKeyChecked &&
+      (fn === "count" || fn === "sum" || fn === "avg")
+   ) {
+      return "a count, sum or average through the inlined join whose key is not known unique and never null, which live reads by that key";
+   }
+   if (fn === "min" || fn === "max" || fn === "distinct") {
+      return !present || storedColumnOf(pair, level, aggregate)
+         ? undefined
+         : "a minimum, maximum or distinct count through the inlined join under the join's presence, which would skip the row live reads for a parent with none";
+   }
+   if (present && (fn === "count" || fn === "sum" || fn === "avg")) {
+      return undefined;
+   }
    if (fn === "count") {
       return "a count through the inlined join, which live takes over the join's own rows and the pair table's row for a parent with none would add to";
    }
-   const arg = (aggregate.e ?? {}) as Node;
-   const path = arg.node === "field" ? pathOf(arg) : undefined;
    if (
       (fn === "sum" || fn === "avg") &&
-      path !== undefined &&
-      path.length === level + 1 &&
-      levelOfNames(path, pair) === level &&
-      !(pair.computedFields ?? []).includes(path.join("."))
+      storedColumnOf(pair, level, aggregate)
    ) {
       return undefined;
    }
@@ -819,29 +971,32 @@ function unmatchedRowRefusal(
  * aggregates that level symmetrically by its primary key: the level and
  * every level above it is one whose rows have one parent row each
  * ({@link FlatPair.oneParentLevels}), so its flag marks one row per row of
- * the level in any group; and the aggregate is a sum or an average of one of
- * the level's stored columns (not a computed one), which is null on a
- * childless row's null-extended row, so it reads nothing there under the
- * flag or live. A count is not: the flag marks that null row, which live's
- * count by key skips. Nor is a computed column, which need not be null on
- * that row, where whether live's symmetric aggregate reads a null key's row
- * depends on the dialect (DuckDB's hash of a null key is not null).
+ * the level in any group; and the aggregate reads nothing on a childless
+ * row's null-extended row, which live's symmetric aggregate by key skips:
+ * under the level's presence field (`present`), a count, sum or average of
+ * anything, since the field drops that row; otherwise a sum or an average of
+ * one of the level's stored columns (not a computed one), null there. A
+ * count without the field is not: the flag marks that null row. Nor is a
+ * computed column, which need not be null on that row, where whether live's
+ * symmetric aggregate reads a null key's row depends on the dialect
+ * (DuckDB's hash of a null key is not null).
  */
 function besideDeeperExact(
    pair: FlatPair,
    level: number,
    aggregate: Node,
+   present: boolean,
 ): boolean {
    const proven = pair.oneParentLevels ?? [];
    for (let l = 1; l <= level; l++) if (!proven.includes(l)) return false;
-   // The aggregates Malloy places at a join are sums, averages and counts;
-   // a count reads no field (`items.count()`), so the argument check below
-   // refuses it.
-   const arg = (aggregate.e ?? {}) as Node;
-   const path = arg.node === "field" ? pathOf(arg) : undefined;
-   if (!path || path.length !== level + 1) return false;
-   if (levelOfNames(path, pair) !== level) return false;
-   return !(pair.computedFields ?? []).includes(path.join("."));
+   // The aggregates Malloy places at a join are sums, averages and counts.
+   const fn = (aggregate as { function?: unknown }).function;
+   if (present && (fn === "count" || fn === "sum" || fn === "avg")) {
+      return true;
+   }
+   // A count reads no field (`items.count()`), so the column check refuses
+   // it.
+   return storedColumnOf(pair, level, aggregate);
 }
 
 function pipelineOf(f: Field): Segment[] {

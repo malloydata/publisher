@@ -32,14 +32,7 @@ import {
 } from "./harness";
 
 /** Measures that count through the inlined path (see {@link expectPairServedVia}). */
-const PATH_COUNTS = [
-   "seg_n",
-   "long_legs",
-   "opt_n",
-   "crew_n",
-   "by_carrier",
-   "by_leg",
-];
+const PATH_COUNTS: string[] = [];
 
 // Flights 1–6: 4 and 5 have no segment; flight 3 has four. Segment 99 pairs
 // with no flight. Each segment's tag is a value no refusal may carry.
@@ -426,15 +419,16 @@ describe("R4: an inlined hidden join_many (known limitation 24)", () => {
       });
    }
 
-   it("answers live's count of a childless parent (none) through a hidden join_many, live", async () => {
+   it("serves live's count of a childless parent (none) through a hidden join_many", async () => {
       // Since malloydata/malloy#3208 live counts flight 4's segments as
-      // none; the pair table's row for it would count one, so it is answered
-      // live.
+      // none; the pair table's row for it would count one as written, so the
+      // served copy counts the rows whose stored segment key is not null,
+      // read through the hidden record in its own block.
       const run = await expectServed(
          fixture,
          "run: hidden_many -> { where: id = 3 | 4; group_by: id; aggregate: seg_n }",
       );
-      expect(run.servedVia).toBeUndefined();
+      expect(run.servedVia).toBe("served_copy");
       expect(
          run.live
             .map((r) => [Number(r.id), Number(r.seg_n)])
