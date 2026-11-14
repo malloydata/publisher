@@ -88,25 +88,9 @@ import {
    typeDeclaration,
 } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
+import { LegDecline } from "./leg_decline";
 
 type VirtualMap = Map<string, Map<string, string>>;
-
-/** Why a persisted view did not answer, as the path report maps it. */
-export type ViewSkipCode =
-   | "view_missing_field"
-   | "view_not_built"
-   | "view_stale";
-
-/** A persisted view that did not answer one query: expected, logged quietly. */
-export class ViewSkip extends Error {
-   constructor(
-      readonly code: ViewSkipCode,
-      /** In the caller's own terms, safe to show: never a table name. */
-      readonly callerDetail?: string,
-   ) {
-      super(callerDetail ?? code);
-   }
-}
 
 /** What the leg reads from the model that owns it. */
 export interface ViewVariantHost {
@@ -249,7 +233,7 @@ export class PersistedViewServe {
    }
 
    /**
-    * Answer `queryString` from the view it calls, or throw a {@link ViewSkip}.
+    * Answer `queryString` from the view it calls, or throw a {@link LegDecline}.
     * Call only when {@link calledView} names a view.
     */
    async attempt(args: {
@@ -262,11 +246,11 @@ export class PersistedViewServe {
    }): Promise<ViewAnswer> {
       const called = this.calledView(args.queryString);
       if (!called) {
-         throw new ViewSkip("view_missing_field");
+         throw new LegDecline("view_missing_field");
       }
       const { call, plan } = called;
       if (call.refined) {
-         throw new ViewSkip(
+         throw new LegDecline(
             "view_missing_field",
             `the query refines \`${call.view}\` (\`+ { … }\`), and the stored result holds only the view as written`,
          );
@@ -283,7 +267,7 @@ export class PersistedViewServe {
             ? prepared.structRef
             : undefined;
       if (!localName || struct?.sourceID !== plan.sourceID) {
-         throw new ViewSkip(
+         throw new LegDecline(
             "view_missing_field",
             `the query does not call \`${call.view}\` on the source that declares it`,
          );
@@ -295,7 +279,7 @@ export class PersistedViewServe {
             ...(args.givens ? { givens: args.givens as never } : {}),
          } as never);
          if (result.resultExplore.name !== plan.viewName) {
-            throw new ViewSkip(
+            throw new LegDecline(
                "view_missing_field",
                `the query is not a call of \`${call.view}\``,
             );
@@ -303,10 +287,10 @@ export class PersistedViewServe {
       }
       const table = this.tableOf(plan, args.buildManifest);
       if (!table.built) {
-         throw new ViewSkip("view_not_built");
+         throw new LegDecline("view_not_built");
       }
       if (table.stale || (!table.virtualMap && !table.colocatedTable)) {
-         throw new ViewSkip("view_stale");
+         throw new LegDecline("view_stale");
       }
       const variant = await this.compiledVariant(plan, localName, table);
       if (!variant.materializer || !variant.modelDef) {
@@ -315,7 +299,7 @@ export class PersistedViewServe {
             view: `${plan.sourceName} -> ${plan.viewName}`,
             error: variant.error,
          });
-         throw new ViewSkip(
+         throw new LegDecline(
             "view_missing_field",
             "the query does not compile against the stored view",
          );
@@ -332,7 +316,7 @@ export class PersistedViewServe {
          } as never);
          sql = result.sql;
       } catch {
-         throw new ViewSkip(
+         throw new LegDecline(
             "view_missing_field",
             "the query does not compile against the stored view",
          );
@@ -340,7 +324,7 @@ export class PersistedViewServe {
       // The compiled SQL must read the table, never recompute the view.
       const read = table.virtualMap ? table.quotedPath : table.colocatedTable;
       if (!read || !sql.includes(read)) {
-         throw new ViewSkip("view_stale");
+         throw new LegDecline("view_stale");
       }
       const { virtualMap, quotedPath, binding, colocatedTable, ...reported } =
          table;

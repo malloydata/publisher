@@ -178,37 +178,12 @@ import {
    sqlReadsTable,
    type ServeBinding,
 } from "./materialization_serve_transform";
-import {
-   ServedCopyDecline,
-   type ServedCopyJoinBasis,
-} from "./served_copy_serve";
+import type { ServedCopyJoinBasis } from "./served_copy_serve";
+import { isDeclineOf, LegDecline } from "./leg_decline";
 import type { MaterializedTableCatalog } from "./query_path";
 import { queryShapeOf } from "./query_path";
 
 type VirtualMap = Map<string, Map<string, string>>;
-
-/** Why a rollup did not answer, as the path report maps it. */
-export type RollupSkipCode =
-   | "rollup_grain_too_coarse"
-   | "rollup_missing_field"
-   | "rollup_count_semantics"
-   | "rollup_time_zone"
-   | "rollup_not_built"
-   | "rollup_contract"
-   | "rollup_cross_connection";
-
-/** A rollup that did not answer one query: expected, so logged quietly. */
-export class RollupSkip extends Error {
-   constructor(
-      readonly code: RollupSkipCode,
-      /** In the caller's own terms, safe to show: never a table or rollup name. */
-      readonly callerDetail: string,
-      /** Decided from the query's shape alone, before compiling against it. */
-      readonly shapeCheck = false,
-   ) {
-      super(callerDetail);
-   }
-}
 
 /** The query was not on a source with rollups: the leg does not apply. */
 export class NoRollupForQuery extends Error {}
@@ -452,7 +427,7 @@ export class RollupVariantServe {
 
    /**
     * Answer `queryString` from the coarsest rollup that reproduces it, or throw
-    * a {@link RollupSkip} (the last rollup's reason) or
+    * a {@link LegDecline} (the last rollup's reason) or
     * {@link NoRollupForQuery}.
     */
    async attempt(args: {
@@ -506,15 +481,15 @@ export class RollupVariantServe {
       // Anywhere in the query, a nest's own `timezone:` included: the build
       // truncated the grain's times in the model's zone.
       if (setsTimezone(prepared.query)) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_time_zone",
             "the query sets its own time zone, and the rollup was built in the model's",
          );
       }
       // The reason reported is the first rollup's that got past the grain
       // and measure check (the one closest to answering), else the first's.
-      let first: RollupSkip | undefined;
-      let closest: RollupSkip | undefined;
+      let first: LegDecline | undefined;
+      let closest: LegDecline | undefined;
       // An extension that adds more than fields declines its base's rollups
       // (row 22); its own joins' rollups (A7) are still tried.
       let ownPlans = plans;
@@ -522,7 +497,7 @@ export class RollupVariantServe {
          try {
             extension.delta = checkExtension(struct, extension.baseDef);
          } catch (error) {
-            if (!(error instanceof RollupSkip)) throw error;
+            if (!isDeclineOf(error, "rollup")) throw error;
             first = error;
             ownPlans = [];
          }
@@ -551,7 +526,7 @@ export class RollupVariantServe {
          try {
             return await this.attemptOne(plan, query, args);
          } catch (error) {
-            if (!(error instanceof RollupSkip)) throw error;
+            if (!isDeclineOf(error, "rollup")) throw error;
             first ??= error;
             if (!error.shapeCheck) closest ??= error;
          }
@@ -579,7 +554,7 @@ export class RollupVariantServe {
             });
          } catch (error) {
             if (error instanceof JoinNotRead) continue;
-            if (!(error instanceof RollupSkip)) throw error;
+            if (!isDeclineOf(error, "rollup")) throw error;
             first ??= error;
             if (!error.shapeCheck) closest ??= error;
          }
@@ -681,7 +656,7 @@ export class RollupVariantServe {
 
    /**
     * Answer from a joined source's rollup, read at its grain through the
-    * re-pointed join (A7, see join_rollup.ts), or throw a {@link RollupSkip}
+    * re-pointed join (A7, see join_rollup.ts), or throw a {@link LegDecline}
     * ({@link JoinNotRead} when the query reads nothing through the join).
     */
    private async attemptJoin(
@@ -704,7 +679,9 @@ export class RollupVariantServe {
          throw new JoinNotRead(name);
       }
       if (refusal) {
-         throw new RollupSkip(refusal.code, refusal.callerDetail, true);
+         throw new LegDecline(refusal.code, refusal.callerDetail, {
+            shapeCheck: true,
+         });
       }
       // A rollup in a storage destination is joined there, so only to a
       // query source the served copy reads from that destination too; Malloy
@@ -736,10 +713,10 @@ export class RollupVariantServe {
       const parentZone = (q.struct as { queryTimezone?: unknown } | undefined)
          ?.queryTimezone;
       if ((childDef?.queryTimezone ?? "") !== (parentZone ?? "")) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_time_zone",
             `\`${name}\` is read in the query source's time zone, and its rollup was built in its own`,
-            true,
+            { shapeCheck: true },
          );
       }
       const grain = new Set(plan.grainDimensions);
@@ -753,20 +730,20 @@ export class RollupVariantServe {
          ...q.shape.filteredBy,
       ]).find((f) => !grain.has(f) && !measures.has(f));
       if (coarse !== undefined) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_grain_too_coarse",
             `the query reads \`${name}.${coarse}\`, which the rollup's grain does not keep`,
-            true,
+            { shapeCheck: true },
          );
       }
       const missing = through(q.shape.measures).find(
          (m) => !measures.has(m) && !grain.has(m),
       );
       if (missing !== undefined) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_missing_field",
             `the query aggregates \`${name}.${missing}\`, which the rollup does not store`,
-            true,
+            { shapeCheck: true },
          );
       }
       // Every level reads rows by groups: a `select:` or `index:` stage would
@@ -774,7 +751,7 @@ export class RollupVariantServe {
       const levels = queryLevelFacts(q.prepared);
       const rowLevel = levels ? nonReduceLevel(levels) : "unreadable";
       if (rowLevel !== undefined) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_count_semantics",
             rowLevel === "unreadable"
                ? "the query has no stage the rollup can answer"
@@ -783,13 +760,13 @@ export class RollupVariantServe {
       }
       const written = aggregateWrittenThroughJoin(q.prepared, q.struct, name);
       if (written !== undefined) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_count_semantics",
             `\`${written}\` aggregates the rows of \`${name}\` itself, which its rollup does not keep`,
          );
       }
       if (q.usage === undefined) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_count_semantics",
             "the query's reads could not be traced",
          );
@@ -803,7 +780,7 @@ export class RollupVariantServe {
             levels,
             sourceFieldJoinReads(q.struct, name),
          );
-         if (loose) throw new RollupSkip(loose.code, loose.callerDetail);
+         if (loose) throw new LegDecline(loose.code, loose.callerDetail);
       }
       const read = new Set(
          q.usage
@@ -823,7 +800,7 @@ export class RollupVariantServe {
                ? undefined
                : this.keyUniqueness(plan, join.keyColumn);
          if (outside !== undefined && unique !== true) {
-            throw new RollupSkip(
+            throw new LegDecline(
                "rollup_count_semantics",
                unique === false
                   ? `${outside} aggregates rows outside the join_one \`${name}\`, whose key the data holds more than once, so live repeats those rows; its rollup holds one row per key`
@@ -843,7 +820,7 @@ export class RollupVariantServe {
             : this.parentKeyUniqueness(plan, q.struct),
       );
       if (keyProblem !== undefined) {
-         throw new RollupSkip("rollup_count_semantics", keyProblem);
+         throw new LegDecline("rollup_count_semantics", keyProblem);
       }
       // Another join_one the query reads, known not to keep its key unique:
       // live's rows repeat through it, and re-pointing this join changes how
@@ -851,7 +828,7 @@ export class RollupVariantServe {
       // limitation 29). Unknown is served, as before the check.
       const repeating = this.nonUniqueJoinOneRead(q.struct, name, q.usage);
       if (repeating !== undefined) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_count_semantics",
             `the query reads the join_one \`${repeating}\`, whose key the data holds more than once, so live repeats rows through it`,
          );
@@ -905,7 +882,7 @@ export class RollupVariantServe {
          (joinName) => innerMeetingNoRow(joinName) !== undefined,
       );
       if (problem !== undefined) {
-         throw new RollupSkip("rollup_count_semantics", problem);
+         throw new LegDecline("rollup_count_semantics", problem);
       }
       // The joined source's own key, when the join is keyed on another
       // column: live counts and sums its rows once per non-NULL key.
@@ -920,11 +897,11 @@ export class RollupVariantServe {
             : this.parentKeyUniqueness(plan, { sourceID: plan.baseSourceID }),
       );
       if (joinedProblem !== undefined) {
-         throw new RollupSkip("rollup_count_semantics", joinedProblem);
+         throw new LegDecline("rollup_count_semantics", joinedProblem);
       }
       const table = this.tableOf(plan);
       if (!table) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_not_built",
             "the rollup has no fresh table",
          );
@@ -947,7 +924,7 @@ export class RollupVariantServe {
                error: variant.error,
             },
          );
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_missing_field",
             "the query does not compile against the rollup",
          );
@@ -960,7 +937,7 @@ export class RollupVariantServe {
             ? q.args.buildManifest?.entries[table.sourceEntityId]?.tableName
             : undefined;
       if (!colocatedTable) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_not_built",
             "the rollup has no fresh table",
          );
@@ -972,13 +949,13 @@ export class RollupVariantServe {
             buildManifest: q.args.buildManifest ?? EMPTY_BUILD_MANIFEST,
          } as never);
       } catch {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_missing_field",
             "the query does not compile against the rollup",
          );
       }
       if (!result.sql.includes(colocatedTable)) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_not_built",
             "the rollup has no fresh table",
          );
@@ -998,10 +975,10 @@ export class RollupVariantServe {
       join: string,
    ): Promise<{ basis: ServedCopyJoinBasis; source: ServeBinding }> {
       const across = () =>
-         new RollupSkip(
+         new LegDecline(
             "rollup_cross_connection",
             `the rollup of \`${join}\` is in a storage destination, and the query's source is not read from that destination (it reads its own connection, or its table there is not built or not fresh)`,
-            true,
+            { shapeCheck: true },
          );
       let basis: ServedCopyJoinBasis | undefined;
       try {
@@ -1041,7 +1018,7 @@ export class RollupVariantServe {
       const name = join.name;
       const { basis, source } = at;
       const across = (why: string) =>
-         new RollupSkip(
+         new LegDecline(
             "rollup_cross_connection",
             `the rollup of \`${name}\` is in a storage destination, and ${why}`,
          );
@@ -1087,7 +1064,7 @@ export class RollupVariantServe {
                error: variant.error,
             },
          );
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_missing_field",
             "the query does not compile against the rollup",
          );
@@ -1118,7 +1095,7 @@ export class RollupVariantServe {
                "the query reads a definition its source's stored copy leaves out, since it reads a join to a source on another connection",
             );
          }
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_missing_field",
             "the query does not compile against the rollup",
          );
@@ -1127,7 +1104,7 @@ export class RollupVariantServe {
          sqlReadsTable(sql, boundTablePath(b)),
       );
       if (!sqlReadsTable(sql, table.quotedPath)) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_not_built",
             "the rollup has no fresh table",
          );
@@ -1143,7 +1120,7 @@ export class RollupVariantServe {
             tablesRead,
          });
       } catch (error) {
-         if (!(error instanceof ServedCopyDecline)) throw error;
+         if (!isDeclineOf(error, "served_copy")) throw error;
          throw servedCopySkip(error, name);
       }
       return {
@@ -1174,19 +1151,19 @@ export class RollupVariantServe {
       // live refuses.
       const zone = (query.struct as { queryTimezone?: unknown }).queryTimezone;
       if (typeof zone === "string" && zone !== "") {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_time_zone",
             "the query's source sets its own time zone, which the rollup's stored times are not read in",
-            true,
+            { shapeCheck: true },
          );
       }
       // A view's `where: sql_boolean("${TABLE}.region = …")` reads a column
       // no field reference names, so no grain check sees it.
       if (query.rawSql) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_missing_field",
             "the query reads raw SQL (`sql_*`), whose columns the rollup may not keep",
-            true,
+            { shapeCheck: true },
          );
       }
       const measures = new Set(plan.rollupMeasures.map((m) => m.name));
@@ -1205,23 +1182,23 @@ export class RollupVariantServe {
          (f) => !grain.has(f) && !measures.has(f),
       );
       if (coarse !== undefined) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_grain_too_coarse",
             `the query reads \`${coarse}\`, which the rollup's grain does not keep`,
-            true,
+            { shapeCheck: true },
          );
       }
       const missing = shape.measures.find((m) => !measures.has(m));
       if (missing !== undefined) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_missing_field",
             `the query aggregates \`${missing}\`, which the rollup does not store`,
-            true,
+            { shapeCheck: true },
          );
       }
       const table = this.tableOf(plan);
       if (!table) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_not_built",
             "the rollup has no fresh table",
          );
@@ -1245,7 +1222,7 @@ export class RollupVariantServe {
             rollup: plan.rollupSourceName,
             error: variant.error,
          });
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_missing_field",
             "the query does not compile against the rollup",
          );
@@ -1260,7 +1237,7 @@ export class RollupVariantServe {
             ? args.buildManifest?.entries[table.sourceEntityId]?.tableName
             : undefined;
       if (!table.virtualMap && !colocatedTable) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_not_built",
             "the rollup has no fresh table",
          );
@@ -1277,7 +1254,7 @@ export class RollupVariantServe {
                : (args.buildManifest ?? EMPTY_BUILD_MANIFEST),
          } as never);
       } catch {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_missing_field",
             "the query does not compile against the rollup",
          );
@@ -1293,7 +1270,7 @@ export class RollupVariantServe {
          (table.virtualMap ? table.quotedPath : colocatedTable) ?? "\u0000",
       );
       if (!readsTable) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_not_built",
             "the rollup has no fresh table",
          );
@@ -1848,7 +1825,7 @@ function pipelineSignature(pipeline: unknown): string {
 
 /**
  * What an extension adds over the base its rollups aggregate (row 22), or a
- * {@link RollupSkip} when that is more than fields: a `where:` of its own
+ * {@link LegDecline} when that is more than fields: a `where:` of its own
  * (its rows are not the base's, `GRAIN_TOO_COARSE`), or a `timezone:` of its
  * own (`TIME_ZONE`). A gate of its own never reaches here: the router skips
  * the leg for a gated entry point (`CONTRACT`).
@@ -1856,19 +1833,19 @@ function pipelineSignature(pipeline: unknown): string {
 function checkExtension(struct: object, baseDef: unknown): SourceDelta {
    const delta = sourceDelta(struct, baseDef);
    if (delta.addsFilter) {
-      throw new RollupSkip(
+      throw new LegDecline(
          "rollup_grain_too_coarse",
          "the query's source filters its rows (`where:`) beyond the source the rollup aggregates",
-         true,
+         { shapeCheck: true },
       );
    }
    const zone = (d: unknown) =>
       (d as { queryTimezone?: unknown } | undefined)?.queryTimezone;
    if (zone(struct) !== zone(baseDef)) {
-      throw new RollupSkip(
+      throw new LegDecline(
          "rollup_time_zone",
          "the query's source sets its own time zone, and the rollup was built in its base's",
-         true,
+         { shapeCheck: true },
       );
    }
    return delta;
@@ -1902,10 +1879,10 @@ function extensionDimensions(
       delta.changed.find((n) => grain.has(n) || measures.has(n)) ??
       delta.changed[0];
    if (clash !== undefined) {
-      throw new RollupSkip(
+      throw new LegDecline(
          "rollup_missing_field",
          `the query's source redefines \`${clash}\`, which the rollup's fields read as its base defines it`,
-         true,
+         { shapeCheck: true },
       );
    }
    interface AddedField {
@@ -2109,21 +2086,21 @@ source: ${identifier(servedName)} is ${identifier(servedCopyAlias(binding.destin
  * source it does not answer from the destination (opted out, or flagged by
  * the load-time checks) leaves the rollup across connections.
  */
-function servedCopySkip(error: ServedCopyDecline, join: string): RollupSkip {
+function servedCopySkip(error: LegDecline, join: string): LegDecline {
    switch (error.code) {
-      case "count_semantics":
-      case "pair_shape":
-         return new RollupSkip(
+      case "served_copy_count_semantics":
+      case "served_copy_pair_shape":
+         return new LegDecline(
             "rollup_count_semantics",
             `the query's source is read from a stored table that cannot answer it exactly with \`${join}\` joined to its rollup`,
          );
-      case "joined_annotations":
-         return new RollupSkip(
+      case "served_copy_joined_annotations":
+         return new LegDecline(
             "rollup_missing_field",
             "the query returns a field whose annotations the stored table cannot carry",
          );
       default:
-         return new RollupSkip(
+         return new LegDecline(
             "rollup_cross_connection",
             `the rollup of \`${join}\` is in a storage destination, and the query's source is not answered from it`,
          );
@@ -2326,11 +2303,11 @@ function flagLine(modelDef: unknown): string {
  * the gate's field or text: a caller may not learn a gate's shape from why
  * its query was answered live.
  */
-function contractSkip(): RollupSkip {
-   return new RollupSkip(
+function contractSkip(): LegDecline {
+   return new LegDecline(
       "rollup_contract",
       "the query's source has an access rule this rollup cannot apply",
-      true,
+      { shapeCheck: true },
    );
 }
 
@@ -2413,7 +2390,7 @@ export function proveGates(
 }
 
 /**
- * Throw a {@link RollupSkip} unless every aggregate the compiled query computes
+ * Throw a {@link LegDecline} unless every aggregate the compiled query computes
  * is a stored measure's merge and every fan-out grain dimension is fixed.
  * Read from the compiled query's IR (`queryLevelFacts`), never its text: the
  * variant source holds only the grain dimensions and the merged measures (the
@@ -2432,7 +2409,7 @@ export function checkCoverage(
    levels: QueryLevelFacts | undefined,
 ): void {
    if (!levels) {
-      throw new RollupSkip(
+      throw new LegDecline(
          "rollup_count_semantics",
          "the query has no stage the rollup can answer",
       );
@@ -2446,13 +2423,13 @@ export function checkCoverage(
    );
    const visit = (level: QueryLevelFacts, fixedAbove: ReadonlySet<string>) => {
       if (level.kind !== "reduce") {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_count_semantics",
             `a ${level.kind === "project" ? "select:" : level.kind === "index" ? "index:" : `${level.kind}`} stage reads the source's rows, which the rollup does not keep`,
          );
       }
       if (level.havings.some((h) => h.computesAggregate)) {
-         throw new RollupSkip(
+         throw new LegDecline(
             "rollup_count_semantics",
             "a having: filter aggregates the rollup's rows, not a stored measure",
          );
@@ -2468,13 +2445,13 @@ export function checkCoverage(
       for (const f of level.fields) {
          if (f.isNest) continue;
          if (f.computesAggregate) {
-            throw new RollupSkip(
+            throw new LegDecline(
                "rollup_count_semantics",
                `\`${f.name}\` aggregates the rollup's rows, not a stored measure`,
             );
          }
          if (f.ungrouped && (fanOut.size > 0 || anyMeasureFanOut.size > 0)) {
-            throw new RollupSkip(
+            throw new LegDecline(
                "rollup_grain_too_coarse",
                `\`${f.name}\` re-sums across a fan-out dimension of the rollup's grain`,
             );
@@ -2506,7 +2483,7 @@ export function checkCoverage(
          for (const d of fanOut) required.add(d);
          const loose = [...required].find((d) => !fixed.has(d));
          if (loose !== undefined) {
-            throw new RollupSkip(
+            throw new LegDecline(
                "rollup_grain_too_coarse",
                fanOut.has(loose)
                   ? `the query does not group by or fix \`${loose}\`, a fan-out dimension of the rollup's grain, so its measures would be counted once per value`
@@ -2517,7 +2494,7 @@ export function checkCoverage(
       for (const f of level.fields) {
          if (!f.isNest) continue;
          if (!f.nest) {
-            throw new RollupSkip(
+            throw new LegDecline(
                "rollup_count_semantics",
                `the nest \`${f.name}\` could not be read`,
             );

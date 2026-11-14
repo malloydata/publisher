@@ -40,10 +40,8 @@ import { recordStorageServeRouting } from "../materialization_metrics";
 import { sourceChain } from "./materialization/plan/source_map";
 import { type ServeBinding } from "./materialization/serve/materialization_serve_transform";
 import type { StorageBindings } from "./materialization/serve/storage_bindings";
-import {
-   ServedCopyDecline,
-   type ServedCopyServe,
-} from "./materialization/serve/served_copy_serve";
+import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
+import { explainDecline } from "./materialization/serve/leg_decline";
 import {
    type ApiQueryPath,
    buildQueryPath,
@@ -52,14 +50,10 @@ import {
    type StorageTable,
 } from "./materialization/serve/query_path";
 import type { BuildManifest } from "./materialization/types";
-import {
-   RollupSkip,
-   type RollupVariantServe,
-} from "./materialization/serve/rollup_variants";
-import {
-   type PersistedViewServe,
-   type ViewTable,
-   ViewSkip,
+import type { RollupVariantServe } from "./materialization/serve/rollup_variants";
+import type {
+   PersistedViewServe,
+   ViewTable,
 } from "./materialization/serve/view_variants";
 import {
    readPreparedQuery,
@@ -529,15 +523,7 @@ export function routeCandidates(
                },
             };
          },
-         explain: (err) =>
-            err instanceof ViewSkip
-               ? {
-                    code: err.code,
-                    ...(err.callerDetail
-                       ? { callerDetail: err.callerDetail }
-                       : {}),
-                 }
-               : undefined,
+         explain: (err) => explainDecline(err, "view"),
          onSkip: (err) => {
             logger.debug("the persisted view does not answer this query", {
                modelPath: host.modelPath,
@@ -583,10 +569,7 @@ export function routeCandidates(
                },
             };
          },
-         explain: (err) =>
-            err instanceof RollupSkip
-               ? { code: err.code, callerDetail: err.callerDetail }
-               : undefined,
+         explain: (err) => explainDecline(err, "rollup"),
          onSkip: (err) => {
             logger.debug("no #(preaggregate) rollup answers this query", {
                modelPath: host.modelPath,
@@ -636,15 +619,7 @@ export function routeCandidates(
                },
             };
          },
-         explain: (err) =>
-            err instanceof ServedCopyDecline
-               ? {
-                    code: `served_copy_${err.code}`,
-                    ...(err.callerDetail
-                       ? { callerDetail: err.callerDetail }
-                       : {}),
-                 }
-               : undefined,
+         explain: (err) => explainDecline(err, "served_copy"),
          onSkip: (err) => {
             logger.debug("served copy cannot answer this query", {
                modelPath: host.modelPath,
