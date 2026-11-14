@@ -50,6 +50,168 @@ describe("scenario grammar: strict parse", () => {
       expect(parsed.steps.map((s) => s.kind)).toEqual(["publisher", "query"]);
    });
 
+   it("parses each ## Destination action", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}
+## Destination tables
+
+Expect:
+
+| name |
+| ---- |
+| a    |
+
+## Destination drop a (schema=analytics)
+
+## Destination cleanup (snapshots=7d, files=0s)
+
+deleted: 1
+
+## Destination files (dest=other)
+
+Expect:
+
+| table |
+| ----- |
+| b     |
+`,
+         "t",
+      );
+      expect(
+         parsed.steps.map((s) =>
+            s.kind === "destination"
+               ? [
+                    s.action,
+                    s.dest,
+                    s.schema,
+                    s.table,
+                    s.snapshotsAgeMs,
+                    s.filesAgeMs,
+                    s.deleted,
+                 ]
+               : s.kind,
+         ),
+      ).toEqual([
+         ["tables", "lake", "main", undefined, undefined, undefined, undefined],
+         ["drop", "lake", "analytics", "a", undefined, undefined, undefined],
+         ["cleanup", "lake", "main", undefined, 7 * 864e5, 0, 1],
+         ["files", "other", "main", undefined, undefined, undefined, undefined],
+      ]);
+   });
+
+   it("parses a refused listing, and a destination's metadata schema", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}
+## Connection fresh (type=ducklake, metadataSchema=tenant_fresh)
+
+## Destination tables (dest=fresh)
+
+status: 404
+`,
+         "t",
+      );
+      expect(parsed.connectionDecls).toEqual([
+         {
+            env: "default",
+            name: "fresh",
+            kind: "ducklake",
+            metadataSchema: "tenant_fresh",
+         },
+      ]);
+      const step = parsed.steps[0]!;
+      expect(step.kind === "destination" && [step.action, step.status]).toEqual(
+         ["tables", 404],
+      );
+   });
+
+   it("parses (within=) on ## Destination tables, and refuses it elsewhere", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Destination tables (within=5s)\n\nExpect:\n\n| name |\n| ---- |\n| a    |\n`,
+         "t",
+      );
+      const step = parsed.steps[0]!;
+      expect(step.kind === "destination" && step.withinMs).toBe(5000);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Destination files (within=5s)\n\nExpect:\n\n| table |\n| ----- |\n| a     |\n`,
+            "t",
+         ),
+      ).toThrow(/applies only to ## Destination tables/);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Destination tables (within=5s)\n\nstatus: 404\n`,
+            "t",
+         ),
+      ).toThrow(/not a status/);
+      for (const bad of ["0s", "61s", "5", "500ms"])
+         expect(() =>
+            parseMarkdownForTest(
+               `${FRONT}\n## Destination tables (within=${bad})\n\nExpect:\n\n| name |\n| ---- |\n| a    |\n`,
+               "t",
+            ),
+         ).toThrow(/takes 1s to 60s/);
+   });
+
+   it("rejects status: anywhere it would not be compared", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Destination files\n\nstatus: 404\n`,
+            "t",
+         ),
+      ).toThrow(/applies only to ## Destination tables/);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Destination tables\n\nstatus: 404\n\nExpect:\n\n| name |\n| ---- |\n| a    |\n`,
+            "t",
+         ),
+      ).toThrow(/not both/);
+   });
+
+   it("parses dataPath=recorded on a ducklake connection, and only there", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Connection nb (type=ducklake, dataPath=recorded)\n`,
+         "t",
+      );
+      expect(parsed.connectionDecls).toEqual([
+         {
+            env: "default",
+            name: "nb",
+            kind: "ducklake",
+            recordedDataPath: true,
+         },
+      ]);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Connection pg2 (type=postgres, dataPath=recorded)\n`,
+            "t",
+         ),
+      ).toThrow(/applies only to type=ducklake/);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Connection nb (type=ducklake, dataPath=bucket)\n`,
+            "t",
+         ),
+      ).toThrow(/must be "recorded"/);
+   });
+
+   it("rejects a metadataSchema on anything but a ducklake connection", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Connection pg2 (type=postgres, metadataSchema=s)\n`,
+            "t",
+         ),
+      ).toThrow(/applies only to type=ducklake/);
+   });
+
+   it("requires a stated window on ## Destination cleanup", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Destination cleanup (files=0s)\n`,
+            "t",
+         ),
+      ).toThrow(/snapshots=<n>/);
+   });
+
    it("rejects an unknown section kind", () => {
       expect(() =>
          parseMarkdownForTest(`${FRONT}\n## Bulid targets\n`, "t"),
@@ -132,9 +294,11 @@ describe("scenario grammar: every step must verify something", () => {
          "warns",
          "rejected",
          "republish",
+         "preview",
          "await",
          "delete",
          "reclaim",
+         "destination",
       ]) {
          expect(stepMustAssert(kind)).toBe(true);
       }
@@ -324,12 +488,70 @@ run: daily -> { select: total }
          "t",
       );
       const step = parsed.steps[0] as {
-         sources: { src: string; name: string; dest: string; failed: boolean }[];
+         sources: {
+            src: string;
+            name: string;
+            dest: string;
+            failed: boolean;
+         }[];
       };
       expect(step.sources).toEqual([
          { src: "a", name: "t_a", dest: "lake", failed: false },
          { src: "b", name: "nosuch.t_b", dest: "lake", failed: true },
       ]);
+   });
+
+   it("reads per-source (reused) / (recomputed) on an orchestrated build", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Build (orchestrated)\n\n- a -> t_a @ lake (reused)\n- b -> t_b @ lake (recomputed)\n- c -> t_c @ lake\n`,
+         "t",
+      );
+      const step = parsed.steps[0] as {
+         sources: { src: string; upstreams?: string }[];
+      };
+      expect(step.sources.map((s) => [s.src, s.upstreams])).toEqual([
+         ["a", "reused"],
+         ["b", "recomputed"],
+         ["c", undefined],
+      ]);
+   });
+
+   // A source cannot have read its upstream's table AND recomputed it, and a
+   // failed source built nothing to describe. Accepting either pair would keep
+   // one assertion and silently drop the other.
+   it("rejects (reused) with (recomputed), and either with (failed)", () => {
+      for (const attrs of [
+         "reused, recomputed",
+         "failed, reused",
+         "recomputed, failed",
+      ]) {
+         expect(() =>
+            parseMarkdownForTest(
+               `${FRONT}\n## Build (orchestrated)\n\n- a -> t_a @ lake (${attrs})\n`,
+               "t",
+            ),
+         ).toThrow(/## Build \(orchestrated\)/);
+      }
+   });
+
+   it("reads expect upstreams: on a publish, and rejects a mode it does not know", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Publish\n\nexpect upstreams: rollup -> reused\nexpect upstreams: other -> recomputed\n`,
+         "t",
+      );
+      const step = parsed.steps[0] as {
+         upstreams: { source: string; mode: string }[];
+      };
+      expect(step.upstreams).toEqual([
+         { source: "rollup", mode: "reused" },
+         { source: "other", mode: "recomputed" },
+      ]);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Publish\n\nexpect upstreams: rollup -> stacked\n`,
+            "t",
+         ),
+      ).toThrow(/unknown mode "stacked"/);
    });
 
    it("rejects a misspelled orchestrated source attribute", () => {
@@ -375,7 +597,10 @@ run: daily -> { select: total }
          `${FRONT}\n## Build refusals\n\nExpect:\n\n| source |\n| ------ |\n`,
          "t",
       );
-      const step = parsed.steps[0] as { kind: string; expect: { rows: unknown[] } };
+      const step = parsed.steps[0] as {
+         kind: string;
+         expect: { rows: unknown[] };
+      };
       expect(step.kind).toBe("buildRefusals");
       expect(step.expect.rows).toEqual([]);
    });
@@ -387,5 +612,124 @@ run: daily -> { select: total }
             "t",
          ),
       ).toThrow(/requires a "source" column/);
+   });
+});
+
+describe("scenario grammar: package versions", () => {
+   it("refuses a package that is both configured and published", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Model sales/x.malloy\n\n${MODEL}\n\n` +
+               `## Version sales@1.0.0\n\n${MODEL}\n`,
+            "t",
+         ),
+      ).toThrow("either configured or published");
+   });
+
+   it("refuses (version=) on an orchestrated build, which could not carry it", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Build (orchestrated, version=1.0.0)\n\n- daily -> daily_t @ lake\n`,
+            "t",
+         ),
+      ).toThrow("not supported with (orchestrated)");
+   });
+
+   const MODEL = "```malloy\nsource: s is orders_pg.sql('SELECT 1 as n')\n```";
+
+   it("reads a published version, its scope, and a refusal's reason", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Version sales@1.2.0 (scope=version)\n\n${MODEL}\n\n` +
+            `## Version sales@1.2.0 (refused)\n\n${MODEL}\n\nreason: VERSION_CONFLICT\n`,
+         "t",
+      );
+      expect(
+         parsed.steps.map((s) => {
+            const v = s as {
+               kind: string;
+               pkg: string;
+               version: string;
+               scope?: string;
+               refused: boolean;
+               reason?: string;
+            };
+            return [v.kind, v.pkg, v.version, v.scope, v.refused, v.reason];
+         }),
+      ).toEqual([
+         ["version", "sales", "1.2.0", "version", false, undefined],
+         ["version", "sales", "1.2.0", undefined, true, "VERSION_CONFLICT"],
+      ]);
+   });
+
+   it("refuses a version step with no model, or with no version", () => {
+      expect(() =>
+         parseMarkdownForTest(`${FRONT}\n## Version sales@1.0.0\n`, "t"),
+      ).toThrow(/missing a ```malloy block/);
+      expect(() =>
+         parseMarkdownForTest(`${FRONT}\n## Version sales\n\n${MODEL}\n`, "t"),
+      ).toThrow(/expected <package>@<version>/);
+   });
+
+   it("refuses a reason on a step that does not expect a refusal", () => {
+      // A reason with nothing refused would assert nothing: the publish is
+      // checked for success, and the reason never read.
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Version sales@1.0.0\n\n${MODEL}\n\nreason: VERSION_CONFLICT\n`,
+            "t",
+         ),
+      ).toThrow(/describe a refusal/);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Archive sales@1.0.0\n\nreason: VERSION_IS_LATEST\n`,
+            "t",
+         ),
+      ).toThrow(/describes a refusal/);
+   });
+
+   it("reads latest, archive and unarchive as one lifecycle kind", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Latest sales@1.0.0\n\n## Archive sales@1.1.0 (refused)\n\nreason: VERSION_IS_LATEST\n\n## Unarchive sales@1.1.0\n`,
+         "t",
+      );
+      expect(
+         parsed.steps.map((s) => {
+            const v = s as { kind: string; action: string; refused: boolean };
+            return [v.kind, v.action, v.refused];
+         }),
+      ).toEqual([
+         ["versionLifecycle", "latest", false],
+         ["versionLifecycle", "archive", true],
+         ["versionLifecycle", "unarchive", false],
+      ]);
+   });
+
+   it("reads (version=) on a query and a publish, and rejects it where it means nothing", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Publish sales (version=1.0.0)\n\n## Query q (version=1.0.0)\n\n` +
+            "```malloy\nrun: s -> { select: n }\n```\n\nExpect:\n\n| n |\n| - |\n| 1 |\n",
+         "t",
+      );
+      expect(
+         parsed.steps.map((s) => (s as { versionId?: string }).versionId),
+      ).toEqual(["1.0.0", "1.0.0"]);
+      expect(() =>
+         parseMarkdownForTest(`${FRONT}\n## Restart (version=1.0.0)\n`, "t"),
+      ).toThrow(/unknown attribute "version"/);
+   });
+
+   it("requires a version column in ## Versions, and rejects one it cannot compare", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Versions sales\n\nExpect:\n\n| latest |\n| ------ |\n| true   |\n`,
+            "t",
+         ),
+      ).toThrow(/needs a "version" column/);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Versions sales\n\nExpect:\n\n| version | lateset |\n| ------- | ------- |\n| 1.0.0   | true    |\n`,
+            "t",
+         ),
+      ).toThrow(/unknown: lateset/);
    });
 });

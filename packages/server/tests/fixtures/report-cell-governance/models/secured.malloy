@@ -1,0 +1,18 @@
+##! experimental.givens
+
+#(secure)
+given: GROUPS :: number[]
+#(secure)
+given: ROLES :: string[]
+
+// A row-level gate, grafted onto whatever runs over this source.
+#(access_filter) id in $GROUPS
+source: gated is duckdb.table('data/orders.csv') extend {
+   measure: n is count()
+}
+
+// A gate on the whole source.
+#(authorize) 'admin' in $ROLES
+source: locked is duckdb.table('data/orders.csv') extend {
+   measure: n is count()
+}

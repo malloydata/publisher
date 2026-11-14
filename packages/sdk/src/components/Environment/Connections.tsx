@@ -29,6 +29,7 @@ const CONNECTION_TYPE_LABELS: Record<string, string> = {
    snowflake: "Snowflake",
    postgres: "PostgreSQL",
    mysql: "MySQL",
+   sqlserver: "SQL Server",
    trino: "Trino",
    databricks: "Databricks",
    duckdb: "DuckDB",

@@ -6,7 +6,8 @@ import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import { mergeConnectionUpdate } from "./connection_public_view";
-import { EnvironmentStore } from "./environment_store";
+import type { ConnectionAdmin } from "./environment_ports";
+import { parseEnvironmentName } from "./identity";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ReleaseCallback = () => Promise<void>;
@@ -67,9 +68,9 @@ function buildDeletedConnectionCleanup(
 }
 
 export class ConnectionService {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: ConnectionAdmin;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: ConnectionAdmin) {
       this.environmentStore = environmentStore;
    }
 
@@ -115,7 +116,6 @@ export class ConnectionService {
          `Adding connection "${connectionName}" to environment "${environmentName}"`,
       );
 
-      // Get database environment record and repository
       const repository = this.environmentStore.storageManager.getRepository();
       const dbEnvironment =
          await repository.getEnvironmentByName(environmentName);
@@ -126,7 +126,6 @@ export class ConnectionService {
          );
       }
 
-      // Check if connection already exists in database
       const existingDbConn = await repository.getConnectionByName(
          dbEnvironment.id,
          connectionName!,
@@ -138,9 +137,8 @@ export class ConnectionService {
          );
       }
 
-      // Update in-memory connections
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       await runEnvironmentConnectionUpdate(environment, async () => {
@@ -182,19 +180,17 @@ export class ConnectionService {
       const { dbEnvironment, dbConnection, repository } =
          await this.getConnection(environmentName, connectionName);
 
-      // Update in-memory connections
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       await runEnvironmentConnectionUpdate(environment, async () => {
          const existingConnections = environment.listApiConnections();
 
-         // A caller cannot echo back a credential the response never gave it,
-         // so an update that sends only the fields it can see must not be read
-         // as clearing the rest. mergeConnectionUpdate carries forward exactly
-         // what the response withholds; an explicitly sent value still wins,
-         // including an empty one, which is how a credential is cleared.
+         // A caller cannot echo back a credential the response withheld, so an
+         // omitted field must not clear it: mergeConnectionUpdate carries those
+         // forward. An explicitly sent value wins, and sending an empty one is
+         // how a credential is cleared.
          const updatedConnection = {
             ...mergeConnectionUpdate(
                dbConnection.config as ApiConnection,
@@ -208,9 +204,8 @@ export class ConnectionService {
                conn.name === connectionName ? updatedConnection : conn,
          );
 
-         // Pass isUpdateConnectionRequest=true so the DuckLake wrapper
-         // re-attaches against the updated catalog/storage settings instead
-         // of trusting the prior generation's persisted attach state.
+         // isUpdateConnectionRequest=true: DuckLake re-attaches with the new
+         // catalog/storage settings rather than the persisted attach state.
          const nextMalloyConfig = buildEnvironmentMalloyConfig(
             updatedConnections,
             environment.metadata.location || "",
@@ -250,9 +245,8 @@ export class ConnectionService {
          connectionName,
       );
 
-      // Update in-memory connections
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       await runEnvironmentConnectionUpdate(environment, async () => {

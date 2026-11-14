@@ -1,11 +1,11 @@
-## artifact { title="Linty" }
+## artifact { layout=linear title="Linty" tiles=["b -> v"] }
 source: a is duckdb.sql("select 1 as x")
 
 ##| markdown
 Prose under a mistyped opener.
 |##
 
-// A comment directly above a cell.
+// A run: beside tiles, which no tile shows.
 run: a -> { select: x }
 
 source: b is a extend {

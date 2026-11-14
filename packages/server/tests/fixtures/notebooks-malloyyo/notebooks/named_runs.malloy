@@ -1,5 +1,5 @@
 ##! experimental.givens
-## artifact { kind=notebook title="Named runs" }
+## artifact { layout=linear title="Named runs" }
 import "../models/orders.malloy"
 
 query: q is orders -> kpis

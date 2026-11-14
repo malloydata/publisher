@@ -1,27 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
-
-// Stub the missing optional dependency so db_utils.ts can be imported
-mock.module("@azure/identity", () => ({
-   ClientSecretCredential: class {},
-}));
-mock.module("@azure/storage-blob", () => ({
-   ContainerClient: class {},
-}));
-// Records bigquery.dataset() calls so tests can assert how a (possibly
-// project-qualified) schema name is split into datasetId + projectId.
-const bqDatasetCalls: Array<{ id: string; options?: unknown }> = [];
-mock.module("@google-cloud/bigquery", () => ({
-   BigQuery: class {
-      dataset(id: string, options?: unknown) {
-         bqDatasetCalls.push({ id, options });
-         return { getTables: async () => [[]] };
-      }
-   },
-}));
-
+import { BigQuery } from "@google-cloud/bigquery";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { Connection } from "@malloydata/malloy";
 import { BadRequestError } from "../errors";
 import { logger } from "../logger";
@@ -31,6 +12,7 @@ import {
    getSchemasForConnection,
    listTablesForSchema,
    sqlInFilter,
+   validateAzureUrl,
 } from "./db_utils";
 import { components } from "../api";
 
@@ -405,6 +387,49 @@ describe("listTablesForSchema", () => {
       });
    });
 
+   describe("sqlserver", () => {
+      const conn: ApiConnection = {
+         name: "test",
+         type: "sqlserver",
+         sqlserverConnection: {
+            server: "localhost",
+            port: 1433,
+            user: "sa",
+            password: "",
+            database: "testdb",
+         },
+      };
+
+      it("queries information_schema.columns for the schema and groups into ApiTable[]", async () => {
+         const m = mockConnection(columnRows);
+         const tables = await listTablesForSchema(conn, "dbo", m.conn);
+
+         expect(m.lastSQL).toContain("information_schema.columns");
+         expect(m.lastSQL).toContain("table_schema = N'dbo'");
+         // Plain rows, not the row_to_json wrapping Postgres needs.
+         expect(m.lastSQL).not.toContain("row_to_json");
+         expect(tables).toHaveLength(2);
+         expect(tables[0].resource).toBe("dbo.orders");
+         expect(tables[1].resource).toBe("dbo.customers");
+      });
+
+      it("includes IN filter when tableNames provided, quote-doubled", async () => {
+         const m = mockConnection(columnRows.slice(0, 2));
+         await listTablesForSchema(conn, "dbo", m.conn, ["orders", "o'b"]);
+         expect(m.lastSQL).toContain("AND table_name IN (N'orders', N'o''b')");
+      });
+
+      it("writes a non-ASCII schema and table name as Unicode literals", async () => {
+         // Without the N prefix, SQL Server converts the literal to the
+         // database's code page first; under a Latin1 collation `Продажи`
+         // becomes question marks and the listing comes back empty.
+         const m = mockConnection([]);
+         await listTablesForSchema(conn, "Продажи", m.conn, ["Заказы"]);
+         expect(m.lastSQL).toContain("table_schema = N'Продажи'");
+         expect(m.lastSQL).toContain("AND table_name IN (N'Заказы')");
+      });
+   });
+
    describe("column grouping", () => {
       it("lowercases data types", async () => {
          const conn: ApiConnection = {
@@ -582,6 +607,33 @@ describe("getSchemasForConnection", () => {
          expect(schemas).toHaveLength(1);
          expect(schemas[0].name).toBe("mydb");
          expect(schemas[0].isDefault).toBe(true);
+      });
+   });
+
+   describe("sqlserver", () => {
+      it("lists the schemas that own a table or view, dbo as the default", async () => {
+         const conn: ApiConnection = {
+            name: "test",
+            type: "sqlserver",
+            sqlserverConnection: {
+               server: "localhost",
+               port: 1433,
+               user: "sa",
+               password: "",
+               database: "mydb",
+            },
+         };
+         const m = mockConnection([
+            { schema_name: "dbo" },
+            { schema_name: "malloytest" },
+         ]);
+         const schemas = await getSchemasForConnection(conn, m.conn);
+
+         expect(m.lastSQL).toContain("information_schema.tables");
+         expect(schemas).toEqual([
+            { name: "dbo", isHidden: false, isDefault: true },
+            { name: "malloytest", isHidden: false, isDefault: false },
+         ]);
       });
    });
 
@@ -1310,9 +1362,23 @@ describe("listTablesForSchema bigquery", () => {
       },
    } as unknown as ApiConnection;
    const malloyConn = {} as unknown as Connection;
+   // Records bigquery.dataset() calls so tests can assert how a (possibly
+   // project-qualified) schema name is split into datasetId + projectId.
+   const bqDatasetCalls: Array<{ id: string; options?: unknown }> = [];
+   let datasetSpy: ReturnType<typeof spyOn>;
+   beforeEach(() => {
+      bqDatasetCalls.length = 0;
+      datasetSpy = spyOn(BigQuery.prototype, "dataset").mockImplementation(((
+         id: string,
+         options?: unknown,
+      ) => {
+         bqDatasetCalls.push({ id, options });
+         return { getTables: async () => [[]] };
+      }) as never);
+   });
+   afterEach(() => datasetSpy.mockRestore());
 
    it("splits a project-qualified schema into a bare dataset id + projectId", async () => {
-      bqDatasetCalls.length = 0;
       await listTablesForSchema(bqConnection, "myproj.myds", malloyConn);
       expect(bqDatasetCalls).toHaveLength(1);
       expect(bqDatasetCalls[0]?.id).toBe("myds");
@@ -1320,7 +1386,6 @@ describe("listTablesForSchema bigquery", () => {
    });
 
    it("splits on the last dot so domain-scoped project ids survive", async () => {
-      bqDatasetCalls.length = 0;
       await listTablesForSchema(
          bqConnection,
          "domain.com:proj.myds",
@@ -1333,7 +1398,6 @@ describe("listTablesForSchema bigquery", () => {
    });
 
    it("passes a bare dataset name through unqualified", async () => {
-      bqDatasetCalls.length = 0;
       await listTablesForSchema(bqConnection, "myds", malloyConn);
       expect(bqDatasetCalls).toHaveLength(1);
       expect(bqDatasetCalls[0]?.id).toBe("myds");
@@ -1358,6 +1422,7 @@ describe("SQL escaping and identifier validation", () => {
          "motherduck",
          "ducklake",
          "trino",
+         "sqlserver",
       ]) {
          expect(sqlLiteral("data\\archive", dialect)).toBe("data\\archive");
       }
@@ -1607,4 +1672,103 @@ describe("the rejection message matches what the guard actually accepts", () => 
       }
       expect(message).not.toContain("hyphen");
    });
+});
+
+// ---------------------------------------------------------------------------
+// A raw Azure URL is read only inside a configured attachment
+// ---------------------------------------------------------------------------
+describe("listTablesForSchema: Azure file URLs", () => {
+   const attached = (fileUrl: string): ApiConnection => ({
+      name: "lake",
+      type: "duckdb",
+      duckdbConnection: {
+         attachedDatabases: [
+            {
+               name: "az_files",
+               type: "azure",
+               azureConnection: {
+                  authType: "sas_token",
+                  sasUrl: fileUrl,
+               },
+            },
+         ],
+      },
+   });
+   const describeRows = [{ column_name: "id", column_type: "INTEGER" }];
+
+   it.each([
+      "https://internal.example/c/x.parquet",
+      "https://acct.blob.core.windows.net/other-container/x.parquet",
+      "https://other.blob.core.windows.net/data/x.parquet",
+      "abfss://other.dfs.core.windows.net/data/x.parquet",
+      "az://other.blob.core.windows.net/data/x.parquet",
+   ])(
+      "refuses %s, which no attachment covers, without reading it",
+      async (url) => {
+         const m = mockConnection(describeRows);
+         await expect(
+            listTablesForSchema(
+               attached(
+                  "https://acct.blob.core.windows.net/data/a.parquet?sv=1&sig=s",
+               ),
+               url,
+               m.conn,
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+         expect(m.lastSQL).toBe("");
+      },
+   );
+
+   it("refuses a URL on a connection with no Azure attachment", async () => {
+      const m = mockConnection(describeRows);
+      await expect(
+         listTablesForSchema(
+            { name: "plain", type: "duckdb", duckdbConnection: {} },
+            "https://acct.blob.core.windows.net/data/x.parquet",
+            m.conn,
+         ),
+      ).rejects.toBeInstanceOf(BadRequestError);
+      expect(m.lastSQL).toBe("");
+   });
+
+   it("reads a file inside the attachment's container", async () => {
+      const m = mockConnection(describeRows);
+      const tables = await listTablesForSchema(
+         attached(
+            "https://acct.blob.core.windows.net/data/a.parquet?sv=1&sig=s",
+         ),
+         "https://acct.blob.core.windows.net/data/sub/x.parquet",
+         m.conn,
+      );
+      expect(tables).toHaveLength(1);
+      expect(m.lastSQL).toContain(
+         "acct.blob.core.windows.net/data/sub/x.parquet",
+      );
+   });
+});
+
+describe("validateAzureUrl", () => {
+   const ok = [
+      "https://acct.blob.core.windows.net/data/x.parquet",
+      "abfss://data@acct.dfs.core.windows.net/sub/x.CSV?sas=1",
+      "az://data/sub/*.parquet",
+      "https://acct.blob.core.windows.net/data/**",
+   ];
+   for (const url of ok) {
+      it(`accepts ${url}`, () => {
+         expect(() => validateAzureUrl(url, "url")).not.toThrow();
+      });
+   }
+
+   const bad = [
+      "ftp://acct/data/x.parquet",
+      "https://acct.blob.core.windows.net/data/x.txt",
+      "https://acct.blob.core.windows.net/data/sub/*/*.parquet",
+      "https://acct.blob.core.windows.net/data/a*b/x.parquet",
+   ];
+   for (const url of bad) {
+      it(`rejects ${url}`, () => {
+         expect(() => validateAzureUrl(url, "url")).toThrow(BadRequestError);
+      });
+   }
 });

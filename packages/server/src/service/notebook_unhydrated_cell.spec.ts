@@ -1,6 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `.malloynb` notebooks (see RELEASE_NOTES deprecations). Every test in
+// this file is about that deprecated feature.
+
 /**
  * A `.malloynb` code cell whose query did not hydrate keeps its `queryInfo`
  * but has nothing to check it against the surface with. Driven over copies of
@@ -20,21 +24,17 @@ const FIXTURE_DIR = path.resolve(
    __dirname,
    "../../tests/fixtures/notebooks-malloyyo-surface",
 );
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 const NOTEBOOK = "notebooks/legacy_open.malloynb";
 
 describe("a .malloynb cell with no hydrated query", () => {
    const tempDirs: string[] = [];
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       await __setPackageLoadPoolForTests(new PackageLoadPool(1));
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
       for (const dir of tempDirs)
          fs.rmSync(dir, { recursive: true, force: true });
    });
@@ -77,13 +77,5 @@ describe("a .malloynb cell with no hydrated query", () => {
 
    it("shows its queryInfo when nothing is curated", async () => {
       expect((await lastCellOf(false))?.queryInfo).toContain("order_count");
-   });
-
-   it("keeps a served notebook cell's own markdown under a surface, whose queryInfo it withholds", async () => {
-      const cell = await lastCellOf(true, "notebooks/local.malloy");
-      expect(cell?.queryInfo).toBeUndefined();
-      expect(cell?.markdown).toStartWith("Reads the hidden file");
-      expect(cell?.proseLines).toEqual([[0, 0]]);
-      expect(cell?.codeLine).toBe(1);
    });
 });

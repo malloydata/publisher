@@ -163,10 +163,24 @@ class WarmRetrievalSeparatesFailureFromAbsence(unittest.TestCase):
             def read(self):
                 return json.dumps(self.payload).encode()
 
+        # Each scripted outcome is a package-resource payload or an error. A
+        # payload carrying `embeddingIndex` is served the way a current server
+        # serves it, from `GET …/embedding-index`; one without it is an older
+        # server, whose `/embedding-index` 404s and whose package resource
+        # answers instead.
+        pending = []
+
         def urlopen(req, timeout=None):
-            r = next(it)
+            url = req if isinstance(req, str) else req.full_url
+            r = pending.pop() if pending else next(it)
             if isinstance(r, Exception):
                 raise r
+            if url.endswith("/embedding-index"):
+                if "embeddingIndex" in r:
+                    return Resp(r["embeddingIndex"])
+                pending.append(r)
+                raise serve.urllib.error.HTTPError(url, 404, "Not Found",
+                                                   None, None)
             return Resp(r)
 
         with mock.patch.object(serve, "_mcp_call", lambda *a, **k: None), \
@@ -256,6 +270,11 @@ class ServerCmd(unittest.TestCase):
         cmd = serve.server_cmd(SERVER, pathlib.Path("/root"), 4811, 4040,
                                seed=True)
         self.assertIn("--init", cmd)
+
+    def test_launches_with_node_not_bun(self):
+        cmd = serve.server_cmd(SERVER, pathlib.Path("/root"), 4811, 4040,
+                               seed=False)
+        self.assertEqual(cmd[:2], ["node", str(SERVER)])
 
     def test_preserving_does_not_pass_init(self):
         cmd = serve.server_cmd(SERVER, pathlib.Path("/root"), 4811, 4040,
@@ -451,6 +470,46 @@ class Roles(unittest.TestCase):
                          '{"old": true}\n')
         self.assertFalse((root / "publisher.pid").exists())
 
+    def test_watch_env_reaches_the_server_as_publisher_watch(self):
+        """Watch mode is the one way an edit reaches a served package."""
+        d = a_set(TOML)
+        root = pathlib.Path(tempfile.mkdtemp(prefix="serve-root-"))
+        pub = pathlib.Path(tempfile.mkdtemp(prefix="serve-pub-"))
+        (pub / "dist").mkdir()
+        (pub / "dist" / "server.mjs").write_text("")
+        stuck = [sys.executable, "-c", "import time; time.sleep(60)"]
+        seen = {}
+        real_popen = serve.subprocess.Popen
+
+        def spy(cmd, **kwargs):
+            seen.update(kwargs["env"])
+            return real_popen(cmd, **kwargs)
+
+        with mock.patch.object(serve, "listening", return_value=False), \
+             mock.patch.object(serve, "alive", return_value=False), \
+             mock.patch.object(serve, "server_cmd", return_value=stuck), \
+             mock.patch.object(serve.subprocess, "Popen", side_effect=spy):
+            serve.main(["--role", "model", "--set", str(d),
+                        "--server-root", str(root), "--publisher-dir", str(pub),
+                        "--wait", "1", "--no-warm-retrieval",
+                        "--watch-env", "evals"])
+        self.assertEqual(seen.get("PUBLISHER_WATCH"), "evals")
+
+
+
+class WatchNote(unittest.TestCase):
+    """--watch-env mounts in place only on a start that seeds the store."""
+
+    def test_a_preserved_root_is_warned(self):
+        note = serve.watch_note("evals", seed=False)
+        self.assertIn("--reinit", note)
+        self.assertIn("immutable version", note)
+
+    def test_a_seeding_start_is_not(self):
+        self.assertIsNone(serve.watch_note("evals", seed=True))
+
+    def test_no_watch_env_is_not(self):
+        self.assertIsNone(serve.watch_note(None, seed=False))
 
 
 class WarmByDefault(unittest.TestCase):

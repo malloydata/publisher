@@ -6,15 +6,51 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { QueryTimeoutError } from "./errors";
 import {
    PUBLISHER_QUERY_TIMEOUT_REASON,
-   resetQueryTimeoutTelemetryForTesting,
    runWithQueryTimeout,
 } from "./query_timeout";
+import { resetInstrumentsForTesting } from "./telemetry";
 import {
    startMetricsHarness,
    type MetricsHarness,
 } from "./test_helpers/metrics_harness";
+import { installSettings } from "./test_helpers/settings_env";
 
 describe("runWithQueryTimeout", () => {
+   it("aborts fn's signal when the client goes away, with or without a timeout", async () => {
+      for (const timeoutMs of [0, 60_000]) {
+         const client = new AbortController();
+         let seen: AbortSignal | undefined;
+         const running = runWithQueryTimeout(
+            (signal) =>
+               new Promise<never>((_, reject) => {
+                  seen = signal;
+                  signal.addEventListener("abort", () =>
+                     reject(signal.reason as Error),
+                  );
+               }),
+            timeoutMs,
+            client.signal,
+         );
+         client.abort(new Error("client disconnected"));
+         await expect(running).rejects.toThrow("client disconnected");
+         expect(seen?.aborted).toBe(true);
+      }
+   });
+
+   it("starts aborted when the client is already gone", async () => {
+      const client = new AbortController();
+      client.abort(new Error("gone"));
+      let aborted: boolean | undefined;
+      await runWithQueryTimeout(
+         async (signal) => {
+            aborted = signal.aborted;
+         },
+         60_000,
+         client.signal,
+      );
+      expect(aborted).toBe(true);
+   });
+
    it("returns the inner result when fn finishes before the timeout", async () => {
       const result = await runWithQueryTimeout(async (signal) => {
          expect(signal).toBeInstanceOf(AbortSignal);
@@ -110,25 +146,28 @@ describe("runWithQueryTimeout", () => {
 
    describe("telemetry", () => {
       let harness: MetricsHarness;
+      /** Puts back a case's settings; the gauge reads them per scrape. */
+      let restoreSettings: (() => void) | undefined;
+      const installTimeout = (value: string): void => {
+         restoreSettings = installSettings({
+            env: { PUBLISHER_QUERY_TIMEOUT_MS: value },
+         }).restore;
+      };
       beforeEach(async () => {
          harness = await startMetricsHarness();
          // Drop cached instruments so they re-init against the new
          // provider; otherwise this test's writes go to a counter
          // bound to the *previous* provider's reader.
-         resetQueryTimeoutTelemetryForTesting();
+         resetInstrumentsForTesting();
       });
       afterEach(async () => {
-         delete process.env.PUBLISHER_QUERY_TIMEOUT_MS;
+         restoreSettings?.();
+         restoreSettings = undefined;
          await harness.shutdown();
-         resetQueryTimeoutTelemetryForTesting();
+         resetInstrumentsForTesting();
       });
 
-      /**
-       * Install telemetry without firing a timeout. After the
-       * `ensureTimeoutTelemetry` fix any successful call is enough
-       * — both the counter and the gauge register on every entry,
-       * not just the timeout branch.
-       */
+      /** Register the timeout gauge without firing a timeout. */
       async function primeTelemetry(): Promise<void> {
          await runWithQueryTimeout(async () => 0, 10_000);
       }
@@ -172,7 +211,7 @@ describe("runWithQueryTimeout", () => {
          // `publisher_query_timeout_ms` absent from `/metrics`
          // until the first 504. Operators tuning the timeout
          // BEFORE getting paged need this visible.
-         process.env.PUBLISHER_QUERY_TIMEOUT_MS = "30000";
+         installTimeout("30000");
          await runWithQueryTimeout(async () => "ok", 60_000);
          expect(await harness.collectGauge("publisher_query_timeout_ms")).toBe(
             30000,
@@ -180,7 +219,7 @@ describe("runWithQueryTimeout", () => {
       });
 
       it("publisher_query_timeout_ms gauge reports the current config", async () => {
-         process.env.PUBLISHER_QUERY_TIMEOUT_MS = "42000";
+         installTimeout("42000");
          await primeTelemetry();
          expect(await harness.collectGauge("publisher_query_timeout_ms")).toBe(
             42000,
@@ -188,7 +227,7 @@ describe("runWithQueryTimeout", () => {
       });
 
       it("publisher_query_timeout_ms gauge reports 0 when the timeout is opted out", async () => {
-         process.env.PUBLISHER_QUERY_TIMEOUT_MS = "0";
+         installTimeout("0");
          await primeTelemetry();
          expect(await harness.collectGauge("publisher_query_timeout_ms")).toBe(
             0,
@@ -196,7 +235,7 @@ describe("runWithQueryTimeout", () => {
       });
 
       it("publisher_query_timeout_ms gauge surfaces -1 on misconfig instead of crashing the scrape", async () => {
-         process.env.PUBLISHER_QUERY_TIMEOUT_MS = "garbage";
+         installTimeout("garbage");
          await primeTelemetry();
          // Operators must be able to *see* misconfig in dashboards
          // — silently dropping the data point would hide the

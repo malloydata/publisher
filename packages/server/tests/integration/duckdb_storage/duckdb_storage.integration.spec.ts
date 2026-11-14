@@ -61,7 +61,7 @@ describe("DuckDB storage stack (integration)", () => {
          manifestPath: "/srv/prod/sales/publisher.json",
       });
 
-      const conn = await repo.createConnection({
+      await repo.createConnection({
          environmentId: env.id,
          name: "warehouse",
          type: "snowflake",

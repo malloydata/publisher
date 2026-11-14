@@ -16,7 +16,8 @@ interface PublisherMuiThemeProviderProps {
  * `usePublisherTheme()` hook (the single source of truth, populated by
  * `ServerProvider` from localStorage + `prefers-color-scheme` + the
  * instance `defaultMode`) and rebuilds the MUI theme through
- * `createPublisherTheme(mode)` whenever the mode changes.
+ * `createPublisherTheme(mode, accent)` whenever the mode or the instance
+ * palette's accent changes.
  *
  * Must be mounted INSIDE `ServerProvider` so the SDK ThemeProvider is
  * already in scope when this component reads the hook.
@@ -24,8 +25,12 @@ interface PublisherMuiThemeProviderProps {
 export function PublisherMuiThemeProvider({
    children,
 }: PublisherMuiThemeProviderProps) {
-   const { mode } = usePublisherTheme();
-   const muiTheme = useMemo(() => createPublisherTheme(mode), [mode]);
+   const { mode, theme } = usePublisherTheme();
+   const { accent, accentHover, accentContrast } = theme;
+   const muiTheme = useMemo(
+      () => createPublisherTheme(mode, { accent, accentHover, accentContrast }),
+      [mode, accent, accentHover, accentContrast],
+   );
    return (
       <MuiThemeProvider theme={muiTheme}>
          <CssBaseline />

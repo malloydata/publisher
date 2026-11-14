@@ -1,0 +1,411 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [
+      {
+        "code": "materialize-pair-full-refresh",
+        "message": "#(materialize) on source \"flights_full\" declares refresh=\"incremental\", but its pair table is rebuilt in full on every refresh: watermark= names only the source's own fields, so a child added to a stored parent through `segments` would not move it and would never be stored; name a field of `segments` that moves with each child as well, such as watermark=[\"batch\", \"segments.loaded_at\"].",
+        "model": "pfx.malloy",
+        "route": "materialize",
+        "subject": "flights_full",
+        "tier": "unservable"
+      }
+    ],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "flights@<hammer>/pfx/pfx.malloy": [],
+          "flights_full@<hammer>/pfx/pfx.malloy": []
+        },
+        "order": [
+          "flights@<hammer>/pfx/pfx.malloy",
+          "flights_full@<hammer>/pfx/pfx.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "flights@<hammer>/pfx/pfx.malloy": {
+        "buildSourceName": "flights__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "carrier",
+            "computed": false,
+            "dimension": "carrier"
+          },
+          {
+            "column": "batch",
+            "computed": false,
+            "dimension": "batch"
+          },
+          {
+            "column": "segments__seg_id",
+            "computed": true,
+            "dimension": "seg_id",
+            "join": "segments"
+          },
+          {
+            "column": "segments__flight_id",
+            "computed": true,
+            "dimension": "flight_id",
+            "join": "segments"
+          },
+          {
+            "column": "segments__miles",
+            "computed": true,
+            "dimension": "miles",
+            "join": "segments"
+          },
+          {
+            "column": "segments__batch",
+            "computed": true,
+            "dimension": "batch",
+            "join": "segments"
+          }
+        ],
+        "inline": [
+          "segments"
+        ],
+        "nameDefaulted": true,
+        "pair": {
+          "childKey": "seg_id",
+          "childSourceID": "segments@<hammer>/pfx/pfx.malloy",
+          "join": "segments",
+          "parentKey": "id",
+          "parentRowColumn": "__parent_row",
+          "watermark": {
+            "column": "__pair_watermark",
+            "parts": [
+              "batch",
+              "segments__batch"
+            ]
+          }
+        },
+        "persist": {
+          "merge_key": "id",
+          "name": "flights",
+          "refresh": "incremental",
+          "storage": "lake",
+          "watermark": "__pair_watermark"
+        },
+        "sourceID": "flights@<hammer>/pfx/pfx.malloy",
+        "sourceName": "flights",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "carrier",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "batch",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "segments__seg_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "segments__flight_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "segments__miles",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "segments__batch",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "__parent_row",
+            "type": "BOOLEAN"
+          },
+          {
+            "name": "__pair_watermark",
+            "type": "DOUBLE"
+          }
+        ],
+        "uniquenessChecks": [
+          {
+            "connectionName": "orders_pg",
+            "join": "",
+            "joinedSourceID": "flights@<hammer>/pfx/pfx.malloy",
+            "keyColumn": "id",
+            "pairLevel": 0,
+            "queryName": "flights__mat__pair_key",
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"id\",\n     COUNT(1) as \"matches\"\n  FROM public.pfx_flights as base\n  GROUP BY 1\n)\nSELECT \n   base.\"id\" as \"id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"id\" IS NULL\nLIMIT 1\n"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "flights_full@<hammer>/pfx/pfx.malloy": {
+        "buildSourceName": "flights_full__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "carrier",
+            "computed": false,
+            "dimension": "carrier"
+          },
+          {
+            "column": "batch",
+            "computed": false,
+            "dimension": "batch"
+          },
+          {
+            "column": "segments__seg_id",
+            "computed": true,
+            "dimension": "seg_id",
+            "join": "segments"
+          },
+          {
+            "column": "segments__flight_id",
+            "computed": true,
+            "dimension": "flight_id",
+            "join": "segments"
+          },
+          {
+            "column": "segments__miles",
+            "computed": true,
+            "dimension": "miles",
+            "join": "segments"
+          },
+          {
+            "column": "segments__batch",
+            "computed": true,
+            "dimension": "batch",
+            "join": "segments"
+          }
+        ],
+        "inline": [
+          "segments"
+        ],
+        "pair": {
+          "childKey": "seg_id",
+          "childSourceID": "segments@<hammer>/pfx/pfx.malloy",
+          "join": "segments",
+          "parentKey": "id",
+          "parentRowColumn": "__parent_row"
+        },
+        "pairFullRefresh": "watermark= names only the source's own fields, so a child added to a stored parent through `segments` would not move it and would never be stored; name a field of `segments` that moves with each child as well, such as watermark=[\"batch\", \"segments.loaded_at\"]",
+        "persist": {
+          "name": "pfx_flights_full",
+          "storage": "lake"
+        },
+        "sourceID": "flights_full@<hammer>/pfx/pfx.malloy",
+        "sourceName": "flights_full",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "carrier",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "batch",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "segments__seg_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "segments__flight_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "segments__miles",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "segments__batch",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "__parent_row",
+            "type": "BOOLEAN"
+          }
+        ],
+        "uniquenessChecks": [
+          {
+            "connectionName": "orders_pg",
+            "join": "",
+            "joinedSourceID": "flights_full@<hammer>/pfx/pfx.malloy",
+            "keyColumn": "id",
+            "pairLevel": 0,
+            "queryName": "flights_full__mat__pair_key",
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"id\",\n     COUNT(1) as \"matches\"\n  FROM public.pfx_flights as base\n  GROUP BY 1\n)\nSELECT \n   base.\"id\" as \"id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"id\" IS NULL\nLIMIT 1\n"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "flights@<hammer>/pfx/pfx.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "flights_full@<hammer>/pfx/pfx.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "flights@<hammer>/pfx/pfx.malloy": "pfx.malloy",
+      "flights_full@<hammer>/pfx/pfx.malloy": "pfx.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "flights@<hammer>/pfx/pfx.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "flights_full@<hammer>/pfx/pfx.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "flights@<hammer>/pfx/pfx.malloy": {
+        "annotationFields": {
+          "merge_key": "id",
+          "name": "flights",
+          "refresh": "incremental",
+          "storage": "lake",
+          "watermark": "__pair_watermark"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "carrier",
+            "type": "string"
+          },
+          {
+            "name": "batch",
+            "type": "number"
+          },
+          {
+            "name": "segments__seg_id",
+            "type": "number"
+          },
+          {
+            "name": "segments__flight_id",
+            "type": "number"
+          },
+          {
+            "name": "segments__miles",
+            "type": "number"
+          },
+          {
+            "name": "segments__batch",
+            "type": "number"
+          },
+          {
+            "name": "__parent_row",
+            "type": "boolean"
+          },
+          {
+            "name": "__pair_watermark",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pfx.malloy",
+        "name": "flights",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": "incremental",
+        "sourceEntityId": "6d7c8ec876bb43d20d0fe128a9b6496061993c33daf789899eb25136c28ca4b0",
+        "sourceID": "flights@<hammer>/pfx/pfx.malloy",
+        "sql": "sha256:ed916aef143b4fea"
+      },
+      "flights_full@<hammer>/pfx/pfx.malloy": {
+        "annotationFields": {
+          "name": "pfx_flights_full",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "carrier",
+            "type": "string"
+          },
+          {
+            "name": "batch",
+            "type": "number"
+          },
+          {
+            "name": "segments__seg_id",
+            "type": "number"
+          },
+          {
+            "name": "segments__flight_id",
+            "type": "number"
+          },
+          {
+            "name": "segments__miles",
+            "type": "number"
+          },
+          {
+            "name": "segments__batch",
+            "type": "number"
+          },
+          {
+            "name": "__parent_row",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pfx.malloy",
+        "name": "flights_full",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "e9a0423e9691ec2a22099a295c06be1e716754975b61b5cbd847b1dbfb02da77",
+        "sourceID": "flights_full@<hammer>/pfx/pfx.malloy",
+        "sql": "sha256:acbe32551ac928f8"
+      }
+    }
+  }
+}

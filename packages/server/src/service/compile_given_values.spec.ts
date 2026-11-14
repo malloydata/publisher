@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "./access_record";
 import { type GivenValue } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
@@ -8,6 +9,8 @@ import os from "os";
 import path from "path";
 import { AccessDeniedError, BadRequestError } from "../errors";
 import { Environment } from "./environment";
+import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 // /compile takes given values too (they bind when it builds SQL), so a value a
 // `filter<T>` given cannot read is refused there the same way the query route
@@ -17,7 +20,8 @@ const MODEL = `##! experimental.givens
 
 given:
   FLAG :: filter<boolean> is f''
-  ROLE :: string
+#(secure)
+given: ROLE :: string
 
 source: orders is duckdb.sql("SELECT 1 as id, true as big") extend {
   measure: c is count()
@@ -37,14 +41,15 @@ describe("compileSource checks filter given values", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            JSON.stringify({ name: "pkg", description: "compile-givens" }),
-         );
-         await fs.writeFile(path.join(stagingPath, "model.malloy"), MODEL);
-      });
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(
+            stagingPath,
+            {
+               "model.malloy": MODEL,
+            },
+            { manifest: { name: "pkg", description: "compile-givens" } },
+         ),
+      );
    });
 
    afterEach(async () => {
@@ -139,16 +144,14 @@ describe("compileSource checks filter given values", () => {
          );
       expect(compileError).toBeInstanceOf(AccessDeniedError);
 
-      const model = (await env.getPackage("pkg")).getModel("model.malloy")!;
+      const model = (await env.getPackage(parsePackageName("pkg"))).getModel(
+         "model.malloy",
+      )!;
       const queryError = await model
-         .getQueryResults(
-            undefined,
-            undefined,
-            "run: gated -> filtered",
-            undefined,
-            undefined,
-            { FLAG: "asdf" },
-         )
+         .runQuery(unrecordedAudit(), {
+            query: "run: gated -> filtered",
+            givens: { FLAG: "asdf" },
+         })
          .then(
             () => undefined,
             (e: unknown) => e,

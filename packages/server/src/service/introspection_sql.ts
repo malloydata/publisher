@@ -10,8 +10,10 @@ import { logger } from "../logger";
  *
  * Taken from Malloy's own dialect layer (`stringLiteralStyle`, EscapeStyle
  * Backslash vs Doubled), not from memory: BigQuery, Snowflake, MySQL and
- * Databricks are Backslash; Postgres, DuckDB, MotherDuck, DuckLake and Trino
- * are Doubled. BigQuery is deliberately absent here; see
+ * Databricks are Backslash; Postgres, DuckDB, MotherDuck, DuckLake, Trino and
+ * SQL Server are Doubled (the SQL Server connector runs every batch with
+ * QUOTED_IDENTIFIER ON, and T-SQL has no backslash escape in a string
+ * literal). BigQuery is deliberately absent here; see
  * UNSUPPORTED_LITERAL_DIALECTS below.
  *
  * Session settings do not move these in our deployments. The Malloy Postgres
@@ -53,6 +55,7 @@ const DOUBLED_ESCAPE_DIALECTS = new Set([
    "motherduck",
    "postgres",
    "publisher",
+   "sqlserver",
    "trino",
 ]);
 

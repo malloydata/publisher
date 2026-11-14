@@ -76,6 +76,7 @@ WHERE_BY_OWNER = {
     "retrieval": NOT_RETURNED[2],
     "agent-skill": DELIVERED[2],
     "dataset": "dataset",
+    "package-skill": "package guidance",
 }
 # Which artifact the edit lands in. An owner nobody has named yet -- eval-
 # diagnose has not run, or it ran and declined (`undecided` for a
@@ -87,6 +88,7 @@ LEVER_BY_OWNER = {
     "retrieval": "retrieval",
     "agent-skill": "skill",
     "dataset": "dataset",
+    "package-skill": "package-skill",
 }
 
 

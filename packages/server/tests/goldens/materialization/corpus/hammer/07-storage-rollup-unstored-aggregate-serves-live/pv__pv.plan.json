@@ -1,0 +1,110 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders__preagg__category_qty__1f32fd3a@<hammer>/pv/pv.malloy.preagg.malloy": []
+        },
+        "order": [
+          "orders__preagg__category_qty__1f32fd3a@<hammer>/pv/pv.malloy.preagg.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {
+      "orders__preagg__category_qty__1f32fd3a@<hammer>/pv/pv.malloy.preagg.malloy": {
+        "baseSourceID": "orders@<hammer>/pv/pv.malloy",
+        "baseSourceName": "orders",
+        "grainDimensions": [
+          "category",
+          "qty"
+        ],
+        "measures": [
+          {
+            "name": "total",
+            "notes": [],
+            "partialName": "total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupSourceName": "orders__preagg__category_qty__1f32fd3a",
+        "storage": "lake"
+      }
+    },
+    "sourceGateOutcomes": {
+      "orders__preagg__category_qty__1f32fd3a@<hammer>/pv/pv.malloy.preagg.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders__preagg__category_qty__1f32fd3a@<hammer>/pv/pv.malloy.preagg.malloy": "pv.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders__preagg__category_qty__1f32fd3a@<hammer>/pv/pv.malloy.preagg.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders__preagg__category_qty__1f32fd3a@<hammer>/pv/pv.malloy.preagg.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "category",
+            "type": "string"
+          },
+          {
+            "name": "qty",
+            "type": "number"
+          },
+          {
+            "name": "total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pv.malloy",
+        "name": "orders__preagg__category_qty__1f32fd3a",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "orders",
+          "grainDimensions": [
+            "category",
+            "qty"
+          ],
+          "measures": [
+            "total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "cc21cfb7f21b6d88679631ae8c3816b77d0c4954749c44d0c9bc9f03522b99a6",
+        "sourceID": "orders__preagg__category_qty__1f32fd3a@<hammer>/pv/pv.malloy.preagg.malloy",
+        "sql": "sha256:7bb79b336c0b4138"
+      }
+    }
+  }
+}

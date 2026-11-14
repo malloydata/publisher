@@ -6,7 +6,7 @@ import { parseAnnotation } from "@malloydata/malloy-tag";
 import {
    parseTagLines,
    quoteFilterLiterals as sdkQuoteFilterLiterals,
-} from "../../../sdk/src/components/DashboardBuilder/tagParse";
+} from "../../../sdk/src/components/ReportBuilder/tagParse";
 import {
    ANNOTATION_TOO_LONG,
    ENV_REFERENCE_DROPPED,

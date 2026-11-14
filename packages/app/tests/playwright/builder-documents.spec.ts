@@ -8,7 +8,9 @@ import {
    serverFixture,
    type PackageEnv,
 } from "./helpers/packageEnv";
+import { pickView } from "./helpers/builder";
 import { saveChanges } from "./helpers/save";
+import { closeFilter } from "./helpers/filters";
 
 /**
  * Documents the builders open or create in shapes the happy path skips: a
@@ -20,7 +22,7 @@ const baseOf = (info: { project: { use: { baseURL?: string } } }) =>
    info.project.use.baseURL ?? "http://localhost:4000";
 
 const editing = (page: Page) =>
-   expect(page.getByText("Editing", { exact: true })).toBeVisible({
+   expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
       timeout: 60_000,
    });
 
@@ -41,9 +43,9 @@ test.describe("curated package notebook", () => {
    test("a notebook with its own sources opens in the editor instead of waiting on the package's text", async ({
       page,
    }) => {
-      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/local/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/local?edit`);
       await editing(page);
-      await expect(page.getByText("Opening the notebook…")).toHaveCount(0);
+      await expect(page.getByText("Opening the report…")).toHaveCount(0);
       await expect(page.getByText("A source over the surface")).toBeVisible();
    });
 });
@@ -71,15 +73,15 @@ import { orders } from '../orders.malloy'
    test("opens with the empty state, takes a first tile, and then serves", async ({
       page,
    }) => {
-      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/blank/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/blank?edit`);
       await editing(page);
       await expect(
-         page.getByText("This dashboard is not served until it has a tile."),
+         page.getByText("This report is not served until it has a tile."),
       ).toBeVisible();
 
       await page.locator("button", { hasText: /^Add tile$/ }).click();
       const dialog = page.getByRole("dialog", { name: "Add a tile" });
-      await dialog.getByRole("button", { name: "View totals" }).click();
+      await pickView(dialog, "totals");
       await dialog
          .getByRole("button", { name: "Add tile", exact: true })
          .click();
@@ -116,7 +118,7 @@ test.describe("joined filter", () => {
    test("a filter on a joined dimension is added, loads its options, saves quoted, and the package still loads", async ({
       page,
    }) => {
-      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/overview/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/overview?edit`);
       await editing(page);
       await page.getByRole("button", { name: "Add filter" }).click();
       const dialog = page.getByRole("dialog");
@@ -130,17 +132,25 @@ test.describe("joined filter", () => {
          .getByRole("button", { name: "Add filter", exact: true })
          .click();
 
-      // The new control's picker asks the server for its values.
-      const control = page.getByRole("combobox", { name: /state/i }).first();
-      await expect(control).toBeVisible({ timeout: 30_000 });
+      // The new filter's button opens its picker, which asks the server for
+      // its values.
+      await page
+         .getByRole("button", { name: /state[^:]*: /i })
+         .first()
+         .click({ timeout: 30_000 });
+      const control = page
+         .getByRole("dialog", { name: / filter$/ })
+         .getByRole("combobox")
+         .first();
+      await expect(control).toBeVisible();
       await control.click();
       await expect(page.getByRole("option").first()).toBeVisible({
          timeout: 30_000,
       });
-      await page.keyboard.press("Escape");
+      await closeFilter(page);
 
       await saveChanges(page);
-      expect(await pe.readSource("dashboards/overview.malloy")).toContain(
+      expect(await pe.readSource("overview.malloy")).toContain(
          'dimension="customers.state"',
       );
 
@@ -152,9 +162,9 @@ test.describe("joined filter", () => {
       ).toEqual([]);
 
       // The reader serves the saved file with the control in place.
-      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/overview`);
+      await page.goto(`/${pe.env}/${pe.pkg}/overview`);
       await expect(
-         page.getByRole("combobox", { name: /state/i }).first(),
+         page.getByRole("button", { name: /state[^:]*: /i }).first(),
       ).toBeVisible({
          timeout: 60_000,
       });

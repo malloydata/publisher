@@ -17,10 +17,8 @@ export const URL_READER: URLReader = {
 };
 
 /**
- * Skip dotfiles/dotdirs (.vscode, .git, .DS_Store, etc.) when walking a
- * package tree. These come from editors/VCS, never contain Malloy models
- * or databases, and have been a source of spurious ENOENTs when their
- * contents disappear mid-scan.
+ * Skip dotfiles and dotdirs when walking a package tree: they hold no models
+ * or data, and editor/VCS churn makes them vanish mid-scan (spurious ENOENT).
  */
 export function ignoreDotfiles(file: string): boolean {
    return path.basename(file).startsWith(".");

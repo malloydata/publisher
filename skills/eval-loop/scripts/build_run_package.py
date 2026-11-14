@@ -32,6 +32,7 @@ import pathlib
 import shlex
 import shutil
 import sys
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -40,6 +41,7 @@ TEMPLATE = pathlib.Path(__file__).resolve().parent.parent / "templates" / "eval-
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
 import config  # noqa: E402
+import golden_rows  # noqa: E402
 from score_retrieval import delivery, groups, score_case  # noqa: E402
 from flip_table import counts_toward_score, outcome  # noqa: E402  (same directory)
 
@@ -101,13 +103,19 @@ def split_entity(eid: str) -> tuple[str, str, str]:
     return "", "", eid or ""
 
 
-def golden_display(g: dict[str, Any]) -> str:
-    """One short human-readable line for the golden, whatever its shape."""
+def golden_display(g: dict[str, Any], rows: list[dict[str, Any]] | None = None
+                   ) -> str:
+    """One short human-readable line for the golden, whatever its shape.
+
+    `rows` are a rows golden's rows when they live in a file, not in `value`.
+    """
     if not g:
         return ""
     if g.get("kind") == "unanswerable":
         return "(unanswerable -- the model cannot answer this)"
     v = g.get("value")
+    if v is None and rows is not None:
+        v = rows
     if v is None:
         return "(unanswerable -- the model cannot answer this)"
     if isinstance(v, dict):
@@ -255,15 +263,23 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
     for c in cases:
         g = c.get("golden") or {}
         exp = c.get("expectedEntities") or {}
+        # A rows golden may keep its rows in a file; an unreadable one is shown
+        # as it was before (no value) and reported by the run itself.
+        try:
+            file_rows = (golden_rows.load_rows(g, set_dir, c["qid"])
+                         if g.get("kind") == "rows" else None)
+        except golden_rows.GoldenRowsError:
+            file_rows = None
+        shown = g.get("value") if g.get("value") is not None else file_rows
         case_rows.append({
             "qid": c["qid"], "question": c.get("question"),
             "split": c.get("split"), "coverage": c.get("coverage"),
             "coverage_note": c.get("coverageNote"),
             "golden_kind": g.get("kind"), "golden_status": g.get("status"),
             "golden_revision": c.get("goldenRevision"),
-            "golden_display": golden_display(g),
-            "golden_value": json.dumps(g.get("value"))[:40000]
-            if g.get("value") is not None else "",
+            "golden_display": golden_display(g, file_rows),
+            "golden_value": json.dumps(shown)[:40000]
+            if shown is not None else "",
             "rubric": (g.get("rubric") or "")[:2000],
             "must_state": g.get("mustState"),
             "n_required": len(exp.get("required") or []),
@@ -504,7 +520,7 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
         "attempt_key", "run_id", "qid", "sample", "phase", "submitted", "final_query",
         "answer_text", "n_get_context", "n_execute", "n_execute_errors",
         "host_tool_uses", "mcp_tool_uses", "reported_calls", "contaminated",
-        "final_query_source", "servedRevision",
+        "final_query_source", "final_givens", "servedRevision",
         "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
         "cost_usd",
         "num_turns", "wall_seconds", "run_error", "transcriptPath",
@@ -540,6 +556,7 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
     for name in ("publisher.json", "eval_run.malloy"):
         if (TEMPLATE / name).exists():
             shutil.copy(TEMPLATE / name, out / name)
+    stamp_version(out / "publisher.json")
     if (TEMPLATE / "notebooks").exists():
         shutil.copytree(TEMPLATE / "notebooks", out / "notebooks", dirs_exist_ok=True)
     if (TEMPLATE / "public").exists():
@@ -549,6 +566,27 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             "scores": len(scores), "calls": len(calls), "entities": len(ents),
             "clusters": len(cluster_rows), "issues": len(issues),
             "steps": len(steps_rows)}
+
+
+def stamp_version(manifest: pathlib.Path) -> None:
+    """Give this build a version of its own, higher than any earlier build's.
+
+    Publisher publishes a package from its location as the version its
+    publisher.json declares, and refuses different content under a version it
+    already holds (409). A version per build lets a rebuilt report replace the
+    one served: the highest version becomes `latest`. The patch is the time in
+    milliseconds, and above any version already in the file, so a second stamp
+    in the same millisecond still rises. Builds from different machines rely
+    on their clocks: one whose clock runs behind publishes a lower version,
+    which does not become `latest`.
+    """
+    if not manifest.exists():
+        return
+    body = json.loads(manifest.read_text())
+    previous = str(body.get("version", "")).rsplit(".", 1)[-1]
+    floor = int(previous) + 1 if previous.isdigit() else 0
+    body["version"] = f"1.0.{max(time.time_ns() // 1_000_000, floor)}"
+    manifest.write_text(json.dumps(body, indent=4) + "\n")
 
 
 def serving_lines(cfg: config.Config, run_dirs: list[pathlib.Path],
@@ -590,8 +628,10 @@ def serving_lines(cfg: config.Config, run_dirs: list[pathlib.Path],
 def register(base: str, env: str, out: pathlib.Path) -> str | None:
     """Register the built package on `base`, or return why it could not be.
 
-    A POST for a name the server already has re-copies the package, so a
-    rebuilt report replaces the one it served; no delete is needed first.
+    A POST publishes the build as the version stamp_version gave it, so a
+    rebuilt report becomes the package's `latest` and replaces the one it
+    served; no delete is needed first. (A server with versioning off
+    re-copies the package instead, to the same effect.)
     """
     body = json.dumps({"name": out.name, "location": str(out.resolve())}).encode()
     req = urllib.request.Request(

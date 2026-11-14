@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it, mock } from "bun:test";
+import { describe, expect, it } from "bun:test";
 
 // Tiers 3, 4 and 5 go through ConnectionController, so they were never driven
 // through the handler at all: the tier-5 defect (returning a DIFFERENT table as
@@ -10,19 +10,19 @@ import { describe, expect, it, mock } from "bun:test";
 const controllerCalls: string[] = [];
 let schemasResult: unknown[] = [];
 let tablesResult: unknown[] = [];
-mock.module("../../controller/connection.controller", () => ({
-   ConnectionController: class {
-      async listSchemas() {
-         controllerCalls.push("listSchemas");
-         return schemasResult;
-      }
-      async listTables() {
-         controllerCalls.push("listTables");
-         return tablesResult;
-      }
+const fakeController = {
+   async listSchemas() {
+      controllerCalls.push("listSchemas");
+      return schemasResult;
    },
-}));
+   async listTables() {
+      controllerCalls.push("listTables");
+      return tablesResult;
+   },
+} as unknown as ConnectionController;
+import type { ConnectionController } from "../../controller/connection.controller";
 import type { EnvironmentStore } from "../../service/environment_store";
+import { EnvironmentNotFoundError } from "../../errors";
 import {
    bareTableName,
    canPasteSource,
@@ -30,6 +30,7 @@ import {
    malloySourceSnippet,
    registerSearchDatabaseSchemaTool,
 } from "./search_database_schema_tool";
+import { testRetrieval } from "../../test_helpers/test_retrieval";
 
 type Handler = (params: Record<string, unknown>) => Promise<{
    isError?: boolean;
@@ -39,13 +40,15 @@ type Handler = (params: Record<string, unknown>) => Promise<{
 function captureHandler(store: Partial<EnvironmentStore>): Handler {
    let handler: Handler | undefined;
    const fakeServer = {
-      tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
+      registerTool: (_name: string, _config: unknown, h: Handler) => {
          handler = h;
       },
    };
    registerSearchDatabaseSchemaTool(
       fakeServer as never,
       store as EnvironmentStore,
+      fakeController,
+      testRetrieval(store as EnvironmentStore),
    );
    if (!handler) throw new Error("handler was not registered");
    return handler;
@@ -255,10 +258,10 @@ describe("search_database_schema tiers", () => {
       ]);
    });
 
-   it("returns a tool error when the environment does not exist", async () => {
+   it("returns a tool error when the environment lookup fails for another reason", async () => {
       const handler = captureHandler({
          getEnvironment: async () => {
-            throw new Error("Environment not found");
+            throw new Error("storage unavailable");
          },
       });
       const result = await handler({
@@ -267,6 +270,30 @@ describe("search_database_schema tiers", () => {
       });
       expect(result.isError).toBe(true);
       expect(parse(result).tables).toEqual([]);
+   });
+
+   it("names the unknown environment and the ones that exist", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => {
+            throw new EnvironmentNotFoundError(
+               'Environment "analytics" could not be resolved to a path.',
+               {
+                  environmentName: "analytics",
+                  availableEnvironments: ["default"],
+               },
+            );
+         },
+      });
+      const result = await handler({
+         environmentName: "analytics",
+         connectionName: "bq_demo",
+      });
+      expect(result.isError).toBe(true);
+      const parsed = parse(result);
+      expect(parsed.tables).toEqual([]);
+      expect(parsed.error).toBe(
+         "Environment 'analytics' not found. Available environments: default. Use a name from list_packages.",
+      );
    });
 });
 

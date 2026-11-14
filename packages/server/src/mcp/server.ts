@@ -2,100 +2,114 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { EnvironmentStore } from "../service/environment_store";
+import type { McpServices } from "../app_services";
 
-import { formatDuration, logger } from "../logger";
 import { registerCompileTool } from "./tools/compile_tool";
 import { registerDocsSearchTool } from "./tools/docs_search_tool";
 import { registerExecuteQueryTool } from "./tools/execute_query_tool";
-import {
-   registerGetContextTool,
-   registerListPackagesTool,
-} from "./tools/get_context_tool";
+import { registerGetContextTool } from "./tools/get_context_tool";
+import { registerListPackagesTool } from "./tools/list_packages_tool";
 import {
    registerReloadPackageTool,
    RELOAD_FAILURE_IS_SAFE,
+   RELOAD_NEEDS_WATCH_MODE,
 } from "./tools/reload_package_tool";
+import { registerGetAgentTool } from "./tools/get_agent_tool";
+import { registerGetSkillTool } from "./tools/get_skill_tool";
 import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema_tool";
 import { registerGetStatusTool } from "./tools/get_status_tool";
-import skillsBundle from "./skills/skills_bundle.json";
+import { registerReportAppTools } from "./tools/report_app_tools";
+import { BUNDLED_SKILLS } from "../service/skills/package_skills";
 import { SERVER_VERSION } from "../version";
 
-export const testServerInfo = {
+const testServerInfo = {
    name: "malloy-publisher-mcp-server",
    version: SERVER_VERSION,
    displayName: "Malloy Publisher MCP Server",
    description: "Provides access to Malloy models and query execution via MCP.",
 };
 
-// Build-time bundle of the agent skills (see skills/build_skills_bundle.ts),
-// exposed as MCP prompts for the dual-channel delivery below.
-const AGENT_SKILLS = (
-   skillsBundle as {
-      skills: { name: string; description: string; body: string }[];
-   }
-).skills;
-
-// Orientation delivered to any connecting MCP client via the initialize
-// response (the on-the-wire analog of AGENTS.md), so an agent that reached the
-// server over npx without cloning the repo still knows how to work. Kept
-// workflow-focused rather than a tool catalog, which the client already gets
-// from listTools, so it does not drift as the tool set changes.
-// SECURITY: this is delivered pre-authorization to any connecting client, so it
-// must stay STATIC. It may interpolate module-scope string LITERALS (see
-// RELOAD_FAILURE_IS_SAFE, shared with the tool description so the two cannot
-// drift). Not "constants": `const x = process.env.FOO` is a module-scope
-// constant and would put deployment config into an unauthenticated string. It
-// must never interpolate environment, package, connection, or request data.
+// Orientation sent in the initialize response (the on-the-wire AGENTS.md).
+// Workflow-focused, not a tool catalog (listTools covers that), so it does not
+// drift as tools change.
+// SECURITY: delivered pre-authorization, so it must stay STATIC. It may
+// interpolate module-scope string LITERALS (e.g. RELOAD_FAILURE_IS_SAFE), never
+// a constant read from process.env, nor environment, package, connection, or
+// request data.
 const MCP_INSTRUCTIONS = `Malloy Publisher serves one or more Malloy semantic-model packages, so you can discover what data exists and answer questions against it, grounded in the names the model actually defines.
 
-Start with list_packages, which takes no arguments and names every environment and the packages in each. Those names are what get_context needs, and it is also the only place a package that failed to load is visible rather than simply absent. Then call get_context, which takes search_targets -- one per concept your question needs, each {target_type, search_text} -- plus scopes, which is required and takes exactly one entry naming an environment and a package. One call answers: the response is a sources array with the entities that matched nested inside each source, so there is no drill-down call afterwards. Omit a target's search_text to enumerate that type instead of ranking it. There is no no-argument and no environment-only get_context call: both are validation errors, because retrieval is indexed per package. Use the names it returns verbatim and do not guess. Then run a query with execute_query. To change a model: validate the edit with compile_model, save it, then call reload_package so the new sources and views become queryable by name without restarting the server. ${RELOAD_FAILURE_IS_SAFE} After every model edit, call reload_package before querying: the server serves the model compiled at the last load, not your files, and a watch-mode save that fails to compile is otherwise silent. An empty get_context result does not mean the package is empty; check get_status for load errors and stale packages before concluding there is no data.
+Start with get_context. Called with no arguments it lists the environments; with environment, that environment's packages; with scopes naming a package and no search_targets, that package's sources; with scopes naming a source, its fields. A level with one choice is entered, so a server with one package answers a no-argument call with its sources. To answer a question, send search_targets -- one per concept your question needs, each {target_type, search_text} -- with scopes naming exactly one environment and package: retrieval is indexed per package, so a search names one. One call usually answers: the response is a sources array with the entities that matched nested inside each source, so there is no drill-down step. When a field you need is missing, a target is in unresolved_targets, or a warning says results were cut, call again with scopes[].source naming that source and one target per missing concept. Omit a target's search_text to enumerate that type instead of ranking it. list_packages also names every environment and package, and it is the only place a package that failed to load is visible rather than simply absent. Use the names it returns verbatim and do not guess. Then run a query with execute_query. To change a model: validate the edit with compile_model, save it, then call reload_package so the new sources and views become queryable by name without restarting the server. ${RELOAD_NEEDS_WATCH_MODE} ${RELOAD_FAILURE_IS_SAFE} In a watched environment, after every model edit, call reload_package before querying: the server serves the model compiled at the last load, not your files, and a watch-mode save that fails to compile is otherwise silent. An empty get_context result does not mean the package is empty; check get_status for load errors and stale packages before concluding there is no data.
 
 To build a model from a database rather than from an existing package, start with search_database_schema: it lists the connections, their schemas, and their tables, and ranks those tables against a plain-English description of the data you want. Each table it returns carries the source line to start from. It returns names and types only: no row value is returned.
 
-Task-specific guidance is served as prompts you can fetch by name: malloy-getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness.
+Task-specific guidance is served two ways. As prompts you can fetch by name: malloy-getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness. And through get_skill, which serves the same built-in guides plus any a PACKAGE ships about itself: call it with a package scope before answering questions against a package you have not worked in, because a package can document its own conventions and can replace a built-in guide with its own version for that package, which the prompts do not reflect.
+
+To show the user a report (a dashboard or a data story the package defines), call list_reports for its path, then show_report: a host that supports MCP Apps draws it, filters and all, in the conversation, and every host gets its address in the Publisher web UI.
 
 Results and any charts render in the Publisher web UI on the REST port (4000 by default).`;
 
-export function initializeMcpServer(
-   environmentStore: EnvironmentStore,
-): McpServer {
-   logger.info("[MCP Init] Starting initializeMcpServer...");
-   const startTime = performance.now();
-
+/**
+ * Builds one MCP server over the services the composition root built. The
+ * tools call those shared instances; none constructs its own controller.
+ */
+export function initializeMcpServer(services: McpServices): McpServer {
+   const {
+      environmentStore,
+      retrieval,
+      queryUseCase,
+      compileController,
+      packageController,
+      connectionController,
+      querySlots,
+      reportController,
+      queryController,
+      themeStore,
+   } = services;
    const mcpServer = new McpServer(testServerInfo, {
       instructions: MCP_INSTRUCTIONS,
    });
 
-   registerExecuteQueryTool(mcpServer, environmentStore);
-   registerGetContextTool(mcpServer, environmentStore);
+   registerExecuteQueryTool(mcpServer, environmentStore, queryUseCase);
+   registerGetContextTool(mcpServer, environmentStore, retrieval);
    registerListPackagesTool(mcpServer, environmentStore);
    registerDocsSearchTool(mcpServer, environmentStore);
-   registerCompileTool(mcpServer, environmentStore);
-   registerReloadPackageTool(mcpServer, environmentStore);
-   registerSearchDatabaseSchemaTool(mcpServer, environmentStore);
+   registerCompileTool(mcpServer, compileController, querySlots);
+   registerReloadPackageTool(mcpServer, packageController);
+   registerSearchDatabaseSchemaTool(
+      mcpServer,
+      environmentStore,
+      connectionController,
+      retrieval,
+   );
    registerGetStatusTool(mcpServer, environmentStore);
+   registerGetSkillTool(mcpServer, environmentStore, BUNDLED_SKILLS);
+   registerGetAgentTool(mcpServer, environmentStore);
+   registerReportAppTools(mcpServer, {
+      environmentStore,
+      reportController,
+      queryController,
+      themeStore,
+   });
 
    // Dual-channel: also expose each skill as an MCP prompt, so hosts that ingest
    // MCP but do not load skill files (e.g. Codex, ChatGPT, Cursor) can pull the
    // same guidance. Skill-aware hosts (Claude Code/Desktop) use the native skill
    // files. Note: MCP prompts are on-demand, so always-on "prevention" skills
    // become on-demand here; see docs/agent-skills/design-principles.md.
-   for (const skill of AGENT_SKILLS) {
-      mcpServer.prompt(skill.name, skill.description, () => ({
-         messages: [
-            {
-               role: "user" as const,
-               content: { type: "text" as const, text: skill.body },
-            },
-         ],
-      }));
+   for (const skill of BUNDLED_SKILLS) {
+      mcpServer.registerPrompt(
+         skill.name,
+         { description: skill.description },
+         () => ({
+            messages: [
+               {
+                  role: "user" as const,
+                  content: { type: "text" as const, text: skill.body },
+               },
+            ],
+         }),
+      );
    }
-
-   const endTime = performance.now();
-   logger.info(`[MCP Init] Finished initializeMcpServer`, {
-      duration: formatDuration(endTime - startTime),
-   });
 
    return mcpServer;
 }

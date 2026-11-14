@@ -2,79 +2,56 @@
 // SPDX-License-Identifier: MIT
 
 import { expect, test, type Page } from "@playwright/test";
-import fs from "fs";
-import os from "os";
-import path from "path";
-import { fileURLToPath } from "url";
-import { tmpName } from "./helpers/fixtures";
-import { saveChanges } from "./helpers/save";
+import {
+   registerPackageEnv,
+   serverFixture,
+   type PackageEnv,
+} from "./helpers/packageEnv";
+import { expectUnsaved, saveChanges } from "./helpers/save";
 
 /**
  * The dashboard builder, end to end in a browser: open a package dashboard in
- * the Console's editor, change the page's settings, save it back into the
- * package, and reorder the grid without a tile losing its chart.
+ * the Console's editor, edit its title, save it back into the package, reorder
+ * the grid without a tile losing its chart, and set a tile's width from its edge.
  *
- * Runs against its own environment built from the server's dashboards
- * fixture, registered and removed the way `package-dashboards.spec` does it.
- * The fixture is copied to a temporary directory first, because saving writes
- * the dashboard file and the fixture in the repository is not the place for
- * that. A server that refuses the registration is read-only, and the builder's
- * browser-draft path is covered by the SDK's own tests instead.
+ * Runs against a throwaway copy of the server's dashboards fixture, mounted in
+ * place in an authoring environment (see registerPackageEnv), because saving
+ * writes the dashboard file: the fixture in the repository is not the place
+ * for that, and a published version takes no writes. A server that refuses
+ * the registration is read-only, and the builder's browser-draft path is
+ * covered by the SDK's own tests instead.
  */
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURE = path.resolve(
-   __dirname,
-   "../../../server/tests/fixtures/dashboards-test",
-);
 const PKG = "dashboards-test";
 
-let env: string;
-let baseURL: string;
-let location: string;
+let pe: PackageEnv;
 
 test.describe("dashboard-builder", () => {
    // eslint-disable-next-line no-empty-pattern
    test.beforeAll(async ({}, testInfo) => {
-      baseURL = testInfo.project.use.baseURL ?? "http://localhost:4000";
-      env = tmpName("builder");
-      location = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-builder-"));
-      fs.cpSync(FIXTURE, location, { recursive: true });
-      const res = await fetch(`${baseURL}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: env,
-            packages: [{ name: PKG, location }],
-            connections: [],
-         }),
-      });
-      test.skip(
-         res.status === 405 || res.status === 403,
-         "publisher is read-only",
+      pe = await registerPackageEnv(
+         testInfo.project.use.baseURL ?? "http://localhost:4000",
+         "builder",
+         serverFixture(PKG),
+         PKG,
       );
-      expect(res.ok, await res.text()).toBe(true);
    });
 
    test.afterAll(async () => {
-      if (env && baseURL)
-         await fetch(`${baseURL}/api/v0/environments/${env}`, {
-            method: "DELETE",
-         }).catch(() => undefined);
-      if (location) fs.rmSync(location, { recursive: true, force: true });
+      await pe?.dispose();
    });
 
    // The title is matched loosely because one test above saves a new one into
    // the package, and every test here opens the same dashboard.
    const openEditor = async (page: Page) => {
-      await page.goto(`/${env}/${PKG}/dashboards/tiled/edit`);
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/tiled?edit`);
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       await expect(page.getByText(/^Tiled/).first()).toBeVisible();
    };
 
-   test("opens a package dashboard and saves a settings edit into the package", async ({
+   test("opens a package dashboard and saves a title edit into the package", async ({
       page,
    }) => {
       await openEditor(page);
@@ -85,30 +62,33 @@ test.describe("dashboard-builder", () => {
       ).toBeVisible();
 
       // The title is edited where it is shown.
-      await page.getByRole("heading", { level: 5 }).getByRole("button").click();
-      const title = page.getByLabel("Dashboard title");
+      // The report title is the page's h1, edited where it stands.
+      await page
+         .getByRole("heading", { level: 1 })
+         .first()
+         .getByRole("button")
+         .click();
+      const title = page.getByLabel("Report title");
       await title.fill("Tiled, edited");
       await title.press("Enter");
       await expect(
          page.getByText("Tiled, edited", { exact: true }),
       ).toBeVisible();
-      await expect(
-         page.getByRole("button", { name: "Save changes" }),
-      ).toBeEnabled();
+      await expectUnsaved(page);
 
       await saveChanges(page);
 
       // The save went into the package, so the next visit opens the edited
       // file itself: the new title, and nothing offering a browser draft.
-      await page.goto(`/${env}/${PKG}/dashboards/tiled/edit`);
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/tiled?edit`);
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       await expect(
          page.getByText("Tiled, edited", { exact: true }),
       ).toBeVisible();
       await expect(
-         page.getByText(/edits to this dashboard saved in this browser/),
+         page.getByText(/edits to this report saved in this browser/),
       ).toHaveCount(0);
    });
 
@@ -122,14 +102,15 @@ test.describe("dashboard-builder", () => {
       await expect(rendered).toHaveCount(4, { timeout: 60_000 });
 
       // A real pointer drag, because that is what re-runs the tiles' render
-      // effects: the grip of the last tile onto the first.
-      const grip = page.getByLabel("Move By region");
-      await grip.scrollIntoViewIfNeeded();
-      const from = await grip.boundingBox();
+      // effects: the last tile, picked up by its card, onto the first.
+      const last = page.getByLabel("Tile region_tile");
+      await last.scrollIntoViewIfNeeded();
+      const from = await last.boundingBox();
       const onto = await page.getByLabel("Tile order_tile").boundingBox();
       expect(from && onto).toBeTruthy();
       if (!from || !onto) return;
-      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+      // By its top padding: the title is a button and the body a chart.
+      await page.mouse.move(from.x + from.width / 2, from.y + 8);
       await page.mouse.down();
       for (let step = 1; step <= 10; step++) {
          await page.mouse.move(
@@ -139,9 +120,7 @@ test.describe("dashboard-builder", () => {
          );
       }
       await page.mouse.up();
-      await expect(
-         page.getByRole("button", { name: "Save changes" }),
-      ).toBeEnabled();
+      await expectUnsaved(page);
 
       // Each tile's chart still sits INSIDE its tile. The regression this
       // guards was not a missing chart but a displaced one: a stale render
@@ -165,17 +144,19 @@ test.describe("dashboard-builder", () => {
       expect(outside).toEqual([]);
    });
 
-   test("a tile's width is set from its menu and previewed on the grid", async ({
+   test("a tile's width is set from its right edge and previewed on the grid", async ({
       page,
    }) => {
       await openEditor(page);
-      // Width is never a drag: no edge handle is offered on any tile.
-      await expect(
-         page.getByRole("separator", { name: /^Resize / }),
-      ).toHaveCount(0);
-      await page.getByLabel("Settings for Orders").click();
-      await page.getByRole("button", { name: "Width Full" }).click();
-      await page.keyboard.press("Escape");
+      // The right edge is a focusable separator: the arrows step a column,
+      // Home and End go to one column and the full grid.
+      const edge = page.getByRole("separator", { name: "Width of Orders" });
+      await expect(edge).toHaveAttribute("aria-valuenow", "6");
+      await edge.focus();
+      await page.keyboard.press("ArrowLeft");
+      await expect(edge).toHaveAttribute("aria-valuenow", "5");
+      await page.keyboard.press("End");
+      await expect(edge).toHaveAttribute("aria-valuenow", "12");
       const tile = page.getByLabel("Tile order_tile");
       const revenue = page.getByLabel("Tile revenue_tile");
       // Full width: the next tile starts under it rather than beside it.
@@ -184,8 +165,6 @@ test.describe("dashboard-builder", () => {
          revenue.boundingBox(),
       ]);
       expect(a && b && b.y > a.y + a.height - 1).toBe(true);
-      await expect(
-         page.getByRole("button", { name: "Save changes" }),
-      ).toBeEnabled();
+      await expectUnsaved(page);
    });
 });

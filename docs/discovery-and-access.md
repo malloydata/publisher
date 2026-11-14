@@ -11,6 +11,13 @@ SPDX-License-Identifier: MIT
 > source by caller identity, see [authorize.md](authorize.md); to scope **which rows** they see, see
 > [row-level-access.md](row-level-access.md).
 
+> **Operating model.** Publisher is a microservice. It runs locally with your own permissions, or
+> inside your cloud behind the gateway or application that authenticates your users; it does not
+> authenticate anyone itself. The controls on this page are evaluated against what each request
+> carries, so they enforce your policy only when that gateway authenticates the user, sets the
+> givens from the verified identity, and is the only way to reach Publisher. See
+> [the operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway).
+
 **A package's published surface is its `index.malloy`.** Put a file with that name at the package
 root, `import` your models, and `export { … }` the sources you publish. What it exports is what
 Publisher lists **and** what callers may query. Nothing goes in `publisher.json`.
@@ -42,21 +49,26 @@ before this convention existed.
   names and types of its fields, which is what querying through it needs; the hidden source's table,
   SQL and connection are left out.
 
-  Notebooks and dashboards (`dashboards/*.malloy` files with an `# artifact` tag) are always
-  listed, whatever the surface. To hide a dashboard, remove its tag. An untagged file under
-  `dashboards/` is an ordinary model: hidden, unless `explores` lists it.
+  Reports (`.malloy` files with an `## artifact` tag, wherever they live in the package, and legacy
+  `.malloynb` files) are always listed, whatever the surface. To hide a report, remove its tag; the
+  file is then an ordinary model, hidden unless `explores` lists it or `index.malloy` exports it.
+  The root `index.malloy` is never a report, since it _is_ the surface.
 
-  Listed is not a way around the surface. A notebook cell may read only sources on the surface. A
+  Listed is not a way around the surface. A report's cell may read only sources on the surface. A
   cell over a hidden source answers 404, and 404 rather than 403 even when the source is also
   gated. A source an earlier cell declares on top of a published one
   (`source: mine is customers extend { … }`) still works. A cell's own source over a raw table
   (`duckdb.table(…)` or `.sql(…)`) has no published source under it, so on a curated package it is
-  refused. The notebook GET and each cell's response show only the sources the notebook may read.
-  A query a caller sends to the notebook's path is held to the surface the same way.
+  refused. The report GET and each cell's response show only the sources the report may read.
+  A query a caller sends to the report's path is held to the surface the same way.
 
-  Dashboards follow the same rule. A tile, a dashboard's single query, and a filter `suggest` may
-  read only sources on the surface, and a tile over a hidden source answers 404. The package load
-  warns about each one; see [dashboards.md](dashboards.md#what-publisher-checks-at-load).
+  Tiles follow the same rule. A tile, a report's single query, and a filter `suggest` may read only
+  sources on the surface, and a tile over a hidden source answers 404. The package load warns about
+  each one; see [reports.md](reports.md#what-publisher-checks-at-load).
+
+  A report reads the surface and never adds to it. So a model that `index.malloy` imports, or that
+  `explores` lists, stops contributing to the surface the moment it carries an artifact tag, and
+  the package warns (`report-on-surface`) naming the importer.
 
 - **Within a file — `export { … }`.** The discovery accessors list only the model's re-export
   closure (`modelDef.exports`), matching what Malloy's `modelInfo`/`sourceInfos` expose. A model
@@ -79,11 +91,11 @@ sources within a listed file are shown.
 Three separate mechanisms decide whether a caller gets rows, and they answer differently on
 purpose. Curation hides; `#(authorize)` denies; hiding is not denying.
 
-| the caller's situation            | the mechanism                                              | the answer                                                                |
-| --------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------- |
-| the source is off the surface     | not in any listed file's `export { … }` closure            | **404**, saying why, unless a gate is in play (below)                     |
-| the source is locked to them      | [`#(authorize)`](authorize.md) their givens do not satisfy | **403**                                                                   |
-| the source is row-scoped for them | [`#(access_filter)`](row-level-access.md)                  | **200**, with their rows — zero of them if it admits none                 |
+| the caller's situation            | the mechanism                                              | the answer                                                |
+| --------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------- |
+| the source is off the surface     | not in any listed file's `export { … }` closure            | **404**, saying why, unless a gate is in play (below)     |
+| the source is locked to them      | [`#(authorize)`](authorize.md) their givens do not satisfy | **403**                                                   |
+| the source is row-scoped for them | [`#(access_filter)`](row-level-access.md)                  | **200**, with their rows — zero of them if it admits none |
 
 The 404 is deliberate: a 403 would confirm that a hidden name exists, which is how a curated
 package becomes an enumeration oracle. Because curation is not an identity gate, it is also not the
@@ -104,7 +116,31 @@ the text targets a source on the surface, or one the text derives only from such
 a **400** whose `problems` locate each error in the submitted text, the same answer a package with
 no surface gives. When any statement targets a source off the surface, or a name the boundary cannot
 read, the answer is a 404 in the plain form, since text that does not compile names no target the
-boundary could explain.
+boundary could explain. One exception: text that fails only at the grammar and has no `run:` target
+to read (for example `run` with no colon) is a 400 with the grammar error, because a grammar error
+says nothing about the model. That holds only when the model carries no `#(authorize)` and no
+`#(access_filter)`, and every source the text joins is on the surface or derived from one; otherwise
+it is the plain 404.
+
+## Discovery under a lock
+
+Curation decides what exists for everyone. A `#(authorize)` lock decides who may enter a source,
+and discovery can read it too, when it knows who is asking. `get_context` takes a `givens`
+parameter and `GET …/models/{path}` a `givens` query parameter, each the caller's givens as the
+trusted tier set them. A source whose lock cannot admit the caller on the `#(secure)` givens
+supplied, or whose lock reads a secure given the trusted tier did not supply, is omitted from the
+listing and the ranked results, with its fields, queries and source info, the way a source locked
+with `#(authorize) false` always is. The counts count only what is shown.
+
+Only a secure given takes part. A plain given is whatever the request supplies, so hiding on it
+would hide nothing from a caller who can send any value; a lock term on a plain given is not
+evaluated and the source stays listed. `#(access_filter)` row filters never hide anything: they
+scope rows, not schema. With no givens supplied, every published source is listed, as before.
+
+This is discovery, not enforcement. The query route's gates decide what is served, and they decide
+the same way whether or not the source was listed; what this buys is an agent that sees only what
+its caller can enter, and nothing for an adversarial agent to learn from a listing that a query
+would not already answer. See [authorize.md](authorize.md) for the lock and `#(secure)`.
 
 ## Curating, and what curation is not
 
@@ -112,15 +148,27 @@ boundary could explain.
 gate over _who is asking_. Those gates are enforced against the complete source set and are never
 weakened by curation: a hidden source keeps its gate.
 
-The boundary applies to the **query** surface (`getQueryResults` and the MCP query tool). It does
-**not** gate `/compile` (or `compile_model`): compile is the authoring loop, so a curated package
-stays authorable. The consequence is that `/compile` can reveal a hidden source's schema, and with
+The boundary applies to the **query** surface (`POST …/query` and the MCP `execute_query` tool). It does
+**not** gate plain `/compile` (or `compile_model`) text: compile is the authoring loop, so a curated package
+stays authorable. A document compiled at scope `append` (text carrying a model-level `## artifact` tag) is
+the exception, because it is served and run: each cell and tile is held to the surface, so a document that
+compiles also runs. The consequence is that `/compile` can reveal a hidden source's schema, and with
 `includeSql` its SQL. That is by design. Use `#(authorize)` when the contents themselves must be
 protected rather than merely removed from discovery: a lock is truth-evaluated on `/compile`, so a
 refused caller gets a 403 and no SQL. `#(access_filter)` is not,
 because it decides rows and `/compile` returns none. A source that is both hidden and locked still
 answers `/compile` with the boundary's generic 404, so the exemption cannot be used to enumerate
-gated names.
+gated names. In a deployment, admit `/compile` and `compile_model` at the gateway only for the
+role that authors the package, so a caller who may only query cannot use the authoring loop to read a
+hidden source's schema. A compliance review treats the same gap as a finding: an unpublished source
+with no `#(authorize) false` is one export away from open, and the `locked_bases` check in
+[compliance-review.md](compliance-review.md) fails it.
+
+`GET …/packages/{pkg}/entities`, what each model declares in the form an indexer reads, follows the
+surface the way `GET …/models/{path}` does: by default it reports only the package's discovery
+surface, and it withholds a source locked with `#(authorize) false`. With
+`includeHiddenFilesAndSources=true` it returns every `.malloy` file and every source, for a host that
+indexes them; as with `/compile`, admit that flag at the gateway only for that host.
 
 The boundary checks the source a query **runs**. A query over an exported source that joins a
 hidden source still runs, and returns the joined fields.
@@ -161,14 +209,13 @@ queryable by name.
 
 - **`explores`** — an optional `string[]` of `.malloy` file paths, relative to the package root,
   naming the surface. The listed files are listed and queryable, and the surface is what they
-  export, wherever they live. The one exception is a tagged dashboard it lists,
-  which reads the surface and adds nothing to it; an untagged file under `dashboards/` that it lists
-  is an ordinary listed file. An explicit `explores` always wins over `index.malloy`. Its warnings:
+  export, wherever they live. The one exception is a tagged report it lists, which reads the
+  surface and adds nothing to it. An explicit `explores` always wins over `index.malloy`. Its warnings:
   - a non-empty list: `"explores" in publisher.json is deprecated.`, then either `Fix: import …
-    into index.malloy, export the sources you publish from it, then delete "explores".` (with the
+into index.malloy, export the sources you publish from it, then delete "explores".` (with the
     package's own file names) or, when the list names only `index.malloy`, `index.malloy already
-    publishes the same thing. Fix: delete "explores".` Dashboard entries need no replacement, since
-    every dashboard is served.
+publishes the same thing. Fix: delete "explores".` Report entries need no replacement, since
+    every report is served.
   - a list that leaves out an existing `index.malloy` gets a second warning saying `index.malloy`
     is ignored.
   - `"explores": []` beside an `index.malloy` stops that file from limiting what the package
@@ -208,7 +255,7 @@ the package answering differently than its author expects:
   warning instead.
 - **A malformed `explores`** is not a warning at all: it fails the package load (`424`), like an
   invalid `scope`, with `Invalid "explores" in publisher.json: it must be a list of file names, but
-  is […]. The package was not loaded. Fix: delete "explores" and add an index.malloy.` Ignoring it
+is […]. The package was not loaded. Fix: delete "explores" and add an index.malloy.` Ignoring it
   would resolve to no surface and publish every source the key was meant to withhold, and keeping
   the entries that parse would serve a surface the author did not write.
 - **The whole surface failed to compile.** A surface that does not compile exports nothing, so the

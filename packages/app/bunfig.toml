@@ -1,0 +1,8 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+[test]
+# Installs a DOM onto globalThis before any spec runs, so the Console's
+# components and hooks can be rendered under `bun test`. Same setup as the
+# SDK's (packages/sdk/test/README.md); see test/setup.ts.
+preload = ["./test/setup.ts"]

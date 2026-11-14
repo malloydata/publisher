@@ -27,6 +27,8 @@ import {
    filterInnerType,
    isFilterType,
 } from "../given/filterValue";
+import type { DrillClause } from "./drillClauses";
+import type { RowsDimension, RowsTarget } from "./rowsTarget";
 
 /**
  * The parsed-tag surface this module reads, structurally typed.
@@ -40,6 +42,8 @@ export interface DrillTagReader {
    tag(...at: string[]): DrillTagReader | undefined;
    text(...at: string[]): string | undefined;
    textArray(...at: string[]): string[] | undefined;
+   array?(...at: string[]): DrillTagReader[] | undefined;
+   has?(...at: string[]): boolean;
 }
 
 /** The clicked field, as much of it as drill reads. */
@@ -55,6 +59,8 @@ export interface DrillField {
     * carry the method; absent, the field is taken at its word.
     */
    wasDimension?: () => boolean;
+   /** The column header: the field's `# label`, else its name. */
+   getLabel?: () => string;
 }
 
 /**
@@ -79,6 +85,19 @@ export interface DrillClickPayload {
     * this value" runs against is read from here.
     */
    context?: string;
+   /**
+    * Every dimension of the clicked row, enclosing rows included, as the
+    * renderer's `onDrill` reports them. Set by `RenderedResult` for a table
+    * cell; absent for a click the renderer reports no row for.
+    */
+   drillClauses?: readonly DrillClause[];
+   /** The query timezone, which a truncated timestamp in a clause is read in. */
+   timezone?: string;
+   /**
+    * Set by a host that shows no rows for this click's tile (a restricted
+    * one). Tag drills still apply.
+    */
+   noRows?: boolean;
 }
 
 /**
@@ -93,6 +112,16 @@ export interface DrillRowsRequest {
    label: string;
    /** {@link DrillClickPayload.context}, when the host set one. */
    context?: string;
+   /** {@link DrillClickPayload.drillClauses}: the whole row, not just `field`. */
+   drillClauses?: readonly DrillClause[];
+   /** {@link DrillClickPayload.timezone}. */
+   timezone?: string;
+   /** The source and filters the rows run with, from the result's metadata. */
+   target?: RowsTarget;
+   /** The row's dimensions as code with their values, from `drillClauses`. */
+   dimensions?: readonly RowsDimension[];
+   /** The clicked field's code, for a click that came with no row. */
+   code?: string;
 }
 
 /** The literal `to=self`: filter the current view instead of leaving it. */
@@ -116,7 +145,7 @@ export function drillDestinations(field: DrillField | undefined): string[] {
    if (!drill) return [];
    // Malloyyo accepts a lone destination unbracketed (`to=overview`) as well as
    // the list form. The server grows the same leniency in `readDrillTag`
-   // (`service/dashboard.ts`) with the dashboard slice of this split; it is not
+   // (`service/report_manifest.ts`) with the dashboard slice of this split; it is not
    // in the tree yet, so keep the two in step when it lands.
    return (
       drill.textArray("to") ?? [drill.text("to")].filter(isNonEmpty)
@@ -158,7 +187,14 @@ export function drillGivenName(field: DrillField): string {
 
 /** Where a `# drill` click wants to go, for the host to route however it routes. */
 export interface DrillNavigation {
-   /** The destination dashboard's slug. */
+   /**
+    * The destination report, as the tag's `to=` names it: a package path
+    * without `.malloy` (`sales/overview`); a bare name is a file at the root.
+    * It may contain `/`, so resolve it with `resolveDrillTarget` against
+    * `GET …/reports` rather than using it as one URL segment.
+    */
+   path: string;
+   /** @deprecated Use `path`; always the same value. */
    dashboard: string;
    /**
     * Control values to open it with: the clicked value seeded into the drill's

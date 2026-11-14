@@ -4,49 +4,56 @@
 /// <reference types="bun-types" />
 
 /**
- * Served notebooks (`notebooks/*.malloy` with a model-level `## artifact` note)
- * through the real server: the notebook GET, running cells, the reader's
- * refusal, and, on a package with a surface, the same governed cell path a
- * `.malloynb` runs through.
+ * Linear `.malloy` reports through the real server: a file written as `run:`
+ * cells, the retired format, is no report and says why; a report written as
+ * tiles serves its manifest, runs each tile through `POST …/models/{path}/query`,
+ * and reads as cells (its definitions, then its tiles) on the deprecated
+ * notebook routes; and, on a package with a surface, each tile takes the same
+ * governed path a `.malloynb` cell runs through.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
+import { resetAuthorizeGuardTelemetryForTesting } from "../../../src/authorize_metrics";
 import { resetNotebookMetricsForTest } from "../../../src/notebook_metrics";
+import { resetReportMetricsForTest } from "../../../src/report_metrics";
 import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../../../src/test_helpers/metrics_harness";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   fixture,
+   startPackageEnv,
+   type PackageEnv,
+} from "../../harness/reports";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const ENV_NAME = "malloyyo-notebooks-env";
 const PLAIN = "notebooks-malloyyo";
 const SURFACE = "notebooks-malloyyo-surface";
-const REFUSED = "notebooks/refused.malloy";
-/** Written as a tile layout, so it has no cells to expect kinds for. */
+/** The one report in `PLAIN`'s `notebooks/` written as tiles. */
 const LAYOUT = "notebooks/layout.malloy";
 const CELLS = "notebooks/cells.malloy";
 
-const fixture = (name: string) =>
-   path.resolve(__dirname, `../../fixtures/${name}`);
+const CELLS_REMOVED =
+   "a linear report written as `run:` cells is no longer read, so this file is not a report. Fix: list its tiles in `tiles=[…]` (a text tile per prose block, a query tile per view), or remove the `## artifact` tag.";
 
 interface Cell {
    type?: string;
    kind?: string;
    text?: string;
    queryInfo?: string;
-   markdown?: string;
-   proseLines?: [number, number][];
-   codeLine?: number;
-   caption?: string;
    result?: string;
 }
 
-/** The rows of a cell result, as plain objects keyed by column. */
+interface Problem {
+   code?: string;
+   severity: string;
+   message: string;
+   model?: string;
+   at?: { range: { start: { line: number } } };
+}
+
+/** The rows of a result, as plain objects keyed by column. */
 function rowsOf(result: string | undefined): Record<string, unknown>[] {
    const parsed = JSON.parse(result ?? "{}") as {
       data?: {
@@ -67,405 +74,266 @@ function rowsOf(result: string | undefined): Record<string, unknown>[] {
    );
 }
 
-/** Every served fixture notebook and the kinds of its cells, in order. */
-const KINDS: Record<string, string[]> = {
-   "notebooks/revenue_review.malloy": [
-      "definition",
-      "markdown",
-      "definition",
-      "markdown",
-      "query",
-   ],
-   "notebooks/definitions_only.malloy": [
-      "definition",
-      "definition",
-      "definition",
-   ],
-   "notebooks/adjacent_blocks.malloy": [
-      "definition",
-      "markdown",
-      "markdown",
-      "query",
-   ],
-   "notebooks/imported_prose.malloy": ["definition", "markdown", "query"],
-   "notebooks/prose_lines.malloy": [
-      "definition",
-      "markdown",
-      "markdown",
-      "query",
-   ],
-   "notebooks/tagged_runs.malloy": ["definition", "query", "query", "markdown"],
-   "notebooks/attached_prose.malloy": [
-      "definition",
-      "definition",
-      "definition",
-      "query",
-   ],
-   "notebooks/named_runs.malloy": [
-      "definition",
-      "definition",
-      "query",
-      "query",
-      "query",
-   ],
-   "notebooks/structure.malloy": [
-      "definition",
-      "markdown",
-      "definition",
-      "definition",
-      "query",
-   ],
-};
-
-describe("Malloyyo notebooks served through the real server (E2E)", () => {
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
+describe("Linear .malloy reports through the real server (E2E)", () => {
+   let env: PackageEnv;
    let harness: MetricsHarness;
-   let baseUrl: string;
 
-   const pkgUrl = (pkg: string, sub: string) =>
-      `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${pkg}${sub}`;
+   const pkgUrl = (pkg: string, sub: string) => env.api(sub, pkg);
    const getJson = async <T>(
       url: string,
    ): Promise<{ status: number; body: T }> => {
       const res = await fetch(url);
       return { status: res.status, body: (await res.json()) as T };
    };
-   const runCell = (
+   /** A report's cells, off the deprecated `GET …/notebooks/{path}`. */
+   const getCells = (pkg: string, report: string) =>
+      getJson<{ format?: string; modelInfo?: string; notebookCells?: Cell[] }>(
+         pkgUrl(pkg, `/notebooks/${report}`),
+      );
+   /** A report's tiles, off `GET …/reports/{path}`. */
+   const tilesOf = async (pkg: string, report: string) =>
+      (
+         await getJson<{ tiles?: { kind?: string; query?: string }[] }>(
+            pkgUrl(pkg, `/reports/${report}`),
+         )
+      ).body.tiles ?? [];
+   /** Run one tile the way a viewer does: `run: <tile>` through the query route. */
+   const runTile = async (
       pkg: string,
-      notebook: string,
+      report: string,
       index: number,
+      givens?: Record<string, unknown>,
+   ): Promise<{ status: number; body: { result?: string } }> => {
+      const tile = (await tilesOf(pkg, report))[index];
+      if (tile?.query === undefined)
+         throw new Error(`${pkg}/${report} has no query tile ${index}`);
+      const res = await env.query(
+         report,
+         { query: `run: ${tile.query}`, givens },
+         pkg,
+      );
+      return {
+         status: res.status,
+         body: (await res.json()) as { result?: string },
+      };
+   };
+   /** The deprecated per-cell route, by the cell's text. */
+   const runCellRoute = async (
+      pkg: string,
+      report: string,
+      text: string,
       params: {
          givens?: Record<string, unknown>;
          filterParams?: Record<string, unknown>;
       } = {},
    ) => {
+      const cells = (await getCells(pkg, report)).body.notebookCells ?? [];
+      const index = cells.findIndex((cell) => cell.text === text);
+      if (index < 0) throw new Error(`${pkg}/${report} has no cell ${text}`);
       const query = new URLSearchParams();
       if (params.givens) query.set("givens", JSON.stringify(params.givens));
       if (params.filterParams)
          query.set("filter_params", JSON.stringify(params.filterParams));
       return getJson<Cell & { message?: string }>(
-         pkgUrl(pkg, `/notebooks/${notebook}/cells/${index}?${query}`),
+         pkgUrl(pkg, `/notebooks/${report}/cells/${index}?${query}`),
       );
+   };
+   const compile = async (
+      pkg: string,
+      modelPath: string,
+      source: string,
+      scope: string,
+   ) => {
+      const res = await env.post(pkgUrl(pkg, `/models/${modelPath}/compile`), {
+         source,
+         scope,
+      });
+      expect(res.status).toBe(200);
+      return (await res.json()) as { problems: Problem[]; document?: unknown };
    };
 
    beforeAll(async () => {
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-      // After the server is imported, so its meter provider is the one replaced.
-      harness = await startMetricsHarness();
-      resetNotebookMetricsForTest();
-      const res = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: [
-               { name: PLAIN, location: fixture(PLAIN) },
-               { name: SURFACE, location: fixture(SURFACE) },
-            ],
-            connections: [],
-         }),
-      });
-      if (!res.ok) {
-         throw new Error(
-            `Failed to create test environment (${res.status}): ${await res.text()}`,
-         );
-      }
-      // Loading is lazy: touch both packages so discovery has run before any assertion.
-      for (const pkg of [PLAIN, SURFACE]) {
-         const loaded = await fetch(pkgUrl(pkg, ""));
-         if (!loaded.ok) {
-            throw new Error(`${pkg} did not load (${loaded.status})`);
-         }
-      }
-   });
+      env = await startPackageEnv(
+         "malloyyo-notebooks-env",
+         { [PLAIN]: fixture(PLAIN), [SURFACE]: fixture(SURFACE) },
+         {
+            // After the server is imported, so its meter provider is the one
+            // replaced, and before the packages load, so their discovery counts.
+            beforeCreate: async () => {
+               harness = await startMetricsHarness();
+               resetNotebookMetricsForTest();
+               resetReportMetricsForTest();
+               resetAuthorizeGuardTelemetryForTesting();
+            },
+         },
+      );
+   }, 300_000);
 
    afterAll(async () => {
-      if (baseUrl) {
-         try {
-            await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-               method: "DELETE",
-            });
-         } catch {
-            // best-effort
-         }
-      }
-      resetNotebookMetricsForTest();
-      await harness?.shutdown();
       await env?.stop();
-      env = null;
+      resetNotebookMetricsForTest();
+      resetReportMetricsForTest();
+      await harness?.shutdown();
    });
 
-   describe("a package with no surface", () => {
-      it("has a kinds expectation for every served fixture notebook", () => {
-         const onDisk = fs
-            .readdirSync(path.join(fixture(PLAIN), "notebooks"))
-            .map((file) => `notebooks/${file}`)
-            .filter((p) => p !== REFUSED && p !== LAYOUT);
-         expect(onDisk.sort()).toEqual(Object.keys(KINDS).sort());
+   describe("a file written as `run:` cells", () => {
+      const cellFiles = fs
+         .readdirSync(path.join(fixture(PLAIN), "notebooks"))
+         .map((file) => `notebooks/${file}`)
+         .filter((p) => p !== LAYOUT);
+
+      it("is no report: not listed, and its report GET answers 404", async () => {
+         expect(cellFiles.length).toBeGreaterThan(5);
+         const { body } = await getJson<{ path: string }[]>(
+            pkgUrl(PLAIN, "/reports"),
+         );
+         expect(body.map((r) => r.path)).toEqual([
+            "dashboards/text_tiles.malloy",
+            LAYOUT,
+         ]);
+         for (const report of cellFiles) {
+            expect({
+               report,
+               status: (await fetch(pkgUrl(PLAIN, `/reports/${report}`)))
+                  .status,
+            }).toEqual({ report, status: 404 });
+         }
       });
 
-      it("describes every run on the model GET, over imports it does not export too", async () => {
-         const { status, body } = await getJson<{
-            modelInfo?: string;
-            sourceText?: string;
-         }>(pkgUrl(PLAIN, "/models/notebooks/tagged_runs.malloy"));
+      it("stays the model it is", async () => {
+         const { status, body } = await getJson<{ sourceText?: string }>(
+            pkgUrl(PLAIN, "/models/notebooks/tagged_runs.malloy"),
+         );
          expect(status).toBe(200);
-         // With no surface nothing is unpublished, so the file text comes back.
          expect(body.sourceText).toContain("## artifact");
-         const info = JSON.parse(body.modelInfo ?? "{}") as {
-            anonymous_queries?: unknown[];
-         };
-         expect(info.anonymous_queries).toHaveLength(2);
       });
 
-      for (const [notebook, kinds] of Object.entries(KINDS)) {
-         it(`serves ${notebook} as a malloy-format notebook with its cells`, async () => {
-            const { status, body } = await getJson<{
-               format?: string;
-               notebookCells?: Cell[];
-            }>(pkgUrl(PLAIN, `/notebooks/${notebook}`));
+      it("is one package error per file, naming the fix", async () => {
+         const { body } = await getJson<{
+            warnings?: {
+               model?: string;
+               code?: string;
+               severity?: string;
+               message?: string;
+            }[];
+         }>(pkgUrl(PLAIN, ""));
+         const findings = (body.warnings ?? []).filter(
+            (w) => w.code === "report-cells-removed",
+         );
+         expect(findings.map((w) => w.model).sort()).toEqual(
+            [...cellFiles].sort(),
+         );
+         for (const finding of findings) {
+            expect(finding.severity).toBe("error");
+            expect(finding.message).toEndWith(CELLS_REMOVED);
+         }
+         expect(
+            await harness.collectCounter(
+               "publisher_report_lint_findings_total",
+               { code: "report-cells-removed", severity: "error" },
+            ),
+         ).toBeGreaterThanOrEqual(cellFiles.length);
+      });
+
+      it("fails a compile check at file and package scope, at the tag's line", async () => {
+         const report = "notebooks/revenue_review.malloy";
+         const text = fs.readFileSync(
+            path.join(fixture(PLAIN), report),
+            "utf8",
+         );
+         const tagLine = text
+            .split("\n")
+            .findIndex((line) => line.startsWith("## artifact"));
+         for (const scope of ["file", "package"]) {
+            const { problems } = await compile(PLAIN, report, text, scope);
+            const refusal = problems.find(
+               (p) => p.code === "report-cells-removed",
+            );
+            expect(refusal).toMatchObject({
+               severity: "error",
+               message: `Line ${tagLine + 1}: ${CELLS_REMOVED}`,
+            });
+            expect(refusal?.at?.range.start.line).toBe(tagLine);
+         }
+      });
+
+      it("answers text written as cells at append scope with the finding and no document", async () => {
+         const { problems, document } = await compile(
+            PLAIN,
+            "models/orders.malloy",
+            "## artifact { layout=linear }\n##(markdown) Prose\nrun: orders -> kpis\n",
+            "append",
+         );
+         expect(document).toBeUndefined();
+         expect(
+            problems.map(({ code, severity, message }) => ({
+               code,
+               severity,
+               message,
+            })),
+         ).toEqual([
+            {
+               code: "report-cells-removed",
+               severity: "error",
+               message: `Line 1: ${CELLS_REMOVED}`,
+            },
+         ]);
+      });
+   });
+
+   describe("a linear report written as tiles", () => {
+      it("serves its manifest, and runs a tile over the include's CSV, which resolves from the package root", async () => {
+         const tiles = await tilesOf(PLAIN, LAYOUT);
+         expect(tiles.map((t) => t.kind)).toEqual(["text", "query", "query"]);
+         const { status, body } = await runTile(PLAIN, LAYOUT, 1);
+         expect(status).toBe(200);
+         expect(rowsOf(body.result)).toEqual([{ order_count: 6 }]);
+      });
+
+      // DEPRECATED FEATURE COVERAGE — delete together with
+      // the `…/notebooks` routes (see RELEASE_NOTES deprecations).
+      describe("deprecated: the …/notebooks routes", () => {
+         it("reads it as its definitions, then its tiles", async () => {
+            const { status, body } = await getCells(PLAIN, LAYOUT);
             expect(status).toBe(200);
             expect(body.format).toBe("malloy");
-            expect(body.notebookCells?.map((cell) => cell.kind)).toEqual(kinds);
-            expect(
-               body.notebookCells?.map((cell) =>
-                  cell.kind === "markdown" ? "markdown" : "code",
-               ),
-            ).toEqual(body.notebookCells?.map((cell) => cell.type));
-         });
-      }
-
-      it("serves a cell's own (markdown) prose beside its exact text", async () => {
-         const { body } = await getJson<{ notebookCells?: Cell[] }>(
-            pkgUrl(PLAIN, "/notebooks/notebooks/attached_prose.malloy"),
-         );
-         expect(body.notebookCells?.map((cell) => cell.markdown)).toEqual([
-            undefined,
-            "The region filter.",
-            "Orders in the US only.",
-            "### Orders by region\nExcludes refunds.",
-         ]);
-         // `text` is the exact source slice, so a CRLF checkout keeps its `\r`.
-         expect(
-            body.notebookCells?.[3].text.replace(/\r\n/g, "\n"),
-         ).toStartWith("# bar_chart\n#|(markdown)");
-         expect(body.notebookCells?.map((cell) => cell.proseLines)).toEqual([
-            [],
-            [[0, 0]],
-            [[0, 0]],
-            [[1, 4]],
-         ]);
-         expect(body.notebookCells?.map((cell) => cell.codeLine)).toEqual([
-            0, 1, 1, 6,
-         ]);
-      });
-
-      it("serves a query cell's #\" caption as its own field", async () => {
-         const { body } = await getJson<{ notebookCells?: Cell[] }>(
-            pkgUrl(PLAIN, "/notebooks/notebooks/tagged_runs.malloy"),
-         );
-         expect(body.notebookCells?.map((cell) => cell.caption)).toEqual([
-            undefined,
-            "Revenue for each month.",
-            undefined,
-            undefined,
-         ]);
-      });
-
-      it("runs a query cell over the include's CSV, which resolves from the package root", async () => {
-         const { status, body } = await runCell(
-            PLAIN,
-            "notebooks/revenue_review.malloy",
-            4,
-            { givens: { REGION: "US" } },
-         );
-         expect(status).toBe(200);
-         expect(body.kind).toBe("query");
-         expect(rowsOf(body.result).map((row) => row.total_amount)).toEqual([
-            50, 200, 100,
-         ]);
-      });
-
-      it("runs a cell over the notebook's own named query", async () => {
-         const { status, body } = await runCell(
-            PLAIN,
-            "notebooks/named_runs.malloy",
-            2,
-         );
-         expect(status).toBe(200);
-         expect(rowsOf(body.result)).toEqual([
-            { order_count: 6, total_amount: 1550 },
-         ]);
-      });
-
-      it("answers a definition cell with its text and kind and no result", async () => {
-         const { status, body } = await runCell(
-            PLAIN,
-            "notebooks/named_runs.malloy",
-            1,
-         );
-         expect(status).toBe(200);
-         expect(body).toMatchObject({
-            type: "code",
-            kind: "definition",
-            text: "query: q is orders -> kpis",
-         });
-         expect(body.result).toBeUndefined();
-      });
-
-      describe("a notebook the reader refuses", () => {
-         it("lists with the error, naming the line", async () => {
-            const { body } = await getJson<{ path: string; error?: string }[]>(
-               pkgUrl(PLAIN, "/notebooks"),
-            );
-            expect(body.find((nb) => nb.path === REFUSED)?.error).toContain(
-               "Line 7:",
-            );
-         });
-
-         it("fails the notebook GET and a cell run as a notebook that did not compile does", async () => {
-            expect(
-               (await getJson(pkgUrl(PLAIN, `/notebooks/${REFUSED}`))).status,
-            ).toBe(424);
-            expect((await runCell(PLAIN, REFUSED, 0)).status).toBe(424);
-         });
-
-         it("is a package warning of severity error", async () => {
-            const { body } = await getJson<{
-               warnings?: { model?: string; severity?: string }[];
-            }>(pkgUrl(PLAIN, ""));
-            expect(body.warnings).toContainEqual(
-               expect.objectContaining({ model: REFUSED, severity: "error" }),
-            );
-         });
-
-         it("fails an agent's compile check with an error problem at the line", async () => {
-            const text = fs.readFileSync(
-               path.join(fixture(PLAIN), REFUSED),
-               "utf8",
-            );
-            for (const scope of ["file", "package"]) {
-               const res = await fetch(
-                  pkgUrl(PLAIN, `/models/${REFUSED}/compile`),
-                  {
-                     method: "POST",
-                     headers: { "Content-Type": "application/json" },
-                     body: JSON.stringify({ source: text, scope }),
-                  },
-               );
-               expect(res.status).toBe(200);
-               const { problems } = (await res.json()) as {
-                  problems: {
-                     severity: string;
-                     message: string;
-                     model?: string;
-                     at?: { range: { start: { line: number } } };
-                  }[];
-               };
-               const refusal = problems.find(
-                  (p) =>
-                     p.severity === "error" && p.message.includes("Line 7:"),
-               );
-               expect(refusal?.at?.range.start.line).toBe(6);
-               expect(refusal?.model).toBe(REFUSED);
-            }
-         });
-
-         it("compiles a readable notebook with no reader problem", async () => {
-            const notebook = "notebooks/revenue_review.malloy";
-            const text = fs.readFileSync(
-               path.join(fixture(PLAIN), notebook),
-               "utf8",
-            );
-            const res = await fetch(
-               pkgUrl(PLAIN, `/models/${notebook}/compile`),
-               {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ source: text, scope: "file" }),
-               },
-            );
-            expect(res.status).toBe(200);
-            const { problems } = (await res.json()) as {
-               problems: { severity: string }[];
-            };
-            expect(problems.filter((p) => p.severity === "error")).toEqual([]);
-         });
-
-         it("reads the appended text at append scope, so a fragment onto a refused notebook still fails", async () => {
-            const append = async (notebook: string) => {
-               const res = await fetch(
-                  pkgUrl(PLAIN, `/models/${notebook}/compile`),
-                  {
-                     method: "POST",
-                     headers: { "Content-Type": "application/json" },
-                     body: JSON.stringify({
-                        source: "run: orders -> kpis",
-                        scope: "append",
-                     }),
-                  },
-               );
-               expect(res.status).toBe(200);
-               return (
-                  (await res.json()) as {
-                     problems: {
-                        severity: string;
-                        message: string;
-                        model?: string;
-                     }[];
-                  }
-               ).problems.filter((p) => p.severity === "error");
-            };
-            expect(await append("notebooks/revenue_review.malloy")).toEqual([]);
-            expect(await append(REFUSED)).toEqual([
-               expect.objectContaining({
-                  model: REFUSED,
-                  message: expect.stringContaining("Line 7:"),
-               }),
+            expect(body.notebookCells?.map((cell) => cell.kind)).toEqual([
+               "definition",
+               "definition",
+               "markdown",
+               "query",
+               "query",
             ]);
          });
 
-         it("is counted at discovery as refused", async () => {
-            expect(
-               await harness.collectCounter(
-                  "publisher_notebook_discovery_total",
-                  { format: "malloy", outcome: "refused" },
-               ),
-            ).toBeGreaterThan(0);
+         it("answers a definition cell with its text and kind and no result", async () => {
+            const { status, body } = await runCellRoute(
+               PLAIN,
+               LAYOUT,
+               'import "../models/orders.malloy"',
+            );
+            expect(status).toBe(200);
+            expect(body).toMatchObject({ type: "code", kind: "definition" });
+            expect(body.result).toBeUndefined();
+         });
+
+         it("runs a tile cell", async () => {
+            const { status, body } = await runCellRoute(
+               PLAIN,
+               LAYOUT,
+               "run: orders_tiles -> headline",
+            );
+            expect(status).toBe(200);
+            expect(rowsOf(body.result)).toEqual([{ order_count: 6 }]);
          });
       });
    });
 
    describe("a package with a surface", () => {
-      /** The column names the notebook GET's model info describes for its runs. */
-      const describedRuns = async (notebook: string) => {
-         const { status, body } = await getJson<{ modelInfo?: string }>(
-            pkgUrl(SURFACE, `/notebooks/${notebook}`),
-         );
-         expect(status).toBe(200);
-         const info = JSON.parse(body.modelInfo ?? "{}") as {
-            anonymous_queries?: { schema?: { fields?: { name: string }[] } }[];
-         };
-         return {
-            modelInfo: body.modelInfo ?? "",
-            columns: (info.anonymous_queries ?? []).flatMap((q) =>
-               (q.schema?.fields ?? []).map((f) => f.name),
-            ),
-         };
-      };
-
-      it("applies the cells' surface filter to a served notebook GET's model info", async () => {
-         const { modelInfo, columns } = await describedRuns(CELLS);
-         // Positive control: a run over a curated source is still described.
-         expect(columns).toContain("order_count");
-         expect(modelInfo).not.toContain("secret_total");
-      });
-
       it("describes only the named queries over readable sources in the notebook GET's model info", async () => {
-         const { body } = await getJson<{ modelInfo?: string }>(
-            pkgUrl(SURFACE, `/notebooks/${CELLS}`),
-         );
+         const { status, body } = await getCells(SURFACE, CELLS);
+         expect(status).toBe(200);
+         expect(body.modelInfo ?? "").not.toContain("secret_total");
          const info = JSON.parse(body.modelInfo ?? "{}") as {
             entries?: { name?: string }[];
          };
@@ -473,96 +341,148 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
          expect(info.entries?.map((e) => e.name)).toEqual(["own_cells_query"]);
       });
 
-      it("applies the cells' surface filter to a .malloynb GET's model info", async () => {
-         expect(
-            (await describedRuns("notebooks/legacy.malloynb")).modelInfo,
-         ).not.toContain("secret_total");
-         // Positive control: a last cell over a curated source is still described.
-         const open = await describedRuns("notebooks/legacy_open.malloynb");
-         expect(open.columns).toEqual(["order_count"]);
-         expect(open.modelInfo).not.toContain("secret_total");
+      // DEPRECATED FEATURE COVERAGE — delete together with
+      // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+      describe("deprecated: .malloynb notebooks", () => {
+         it("applies the cells' surface filter to a .malloynb GET's model info", async () => {
+            const columns = async (notebook: string) => {
+               const { status, body } = await getCells(SURFACE, notebook);
+               expect(status).toBe(200);
+               const info = JSON.parse(body.modelInfo ?? "{}") as {
+                  anonymous_queries?: {
+                     schema?: { fields?: { name: string }[] };
+                  }[];
+               };
+               return {
+                  modelInfo: body.modelInfo ?? "",
+                  columns: (info.anonymous_queries ?? []).flatMap((q) =>
+                     (q.schema?.fields ?? []).map((f) => f.name),
+                  ),
+               };
+            };
+            expect(
+               (await columns("notebooks/legacy.malloynb")).modelInfo,
+            ).not.toContain("secret_total");
+            // Positive control: a last cell over a curated source is still described.
+            const open = await columns("notebooks/legacy_open.malloynb");
+            expect(open.columns).toEqual(["order_count"]);
+            expect(open.modelInfo).not.toContain("secret_total");
+         });
       });
 
-      it("runs a cell over a curated source", async () => {
-         const { status, body } = await runCell(SURFACE, CELLS, 5);
+      it("runs a tile over a curated source", async () => {
+         const { status, body } = await runTile(SURFACE, CELLS, 0);
          expect(status).toBe(200);
          expect(rowsOf(body.result)).toEqual([{ order_count: 6 }]);
       });
 
-      it("refuses a cell over an imported source the surface hides, as a .malloynb cell is", async () => {
-         expect((await runCell(SURFACE, CELLS, 6)).status).toBe(404);
+      it("refuses a tile over an imported source the surface hides, as a .malloynb cell is", async () => {
+         expect((await runTile(SURFACE, CELLS, 1)).status).toBe(404);
       });
 
-      it("grafts a row-level gate onto the cell that runs over it", async () => {
-         const { status, body } = await runCell(SURFACE, CELLS, 7, {
-            givens: { GROUPS: [1, 2] },
+      it("grafts a row-level gate onto the tile that runs over it", async () => {
+         const { status, body } = await runTile(SURFACE, CELLS, 2, {
+            GROUPS: [1, 2],
          });
          expect(status).toBe(200);
          expect(rowsOf(body.result)).toEqual([{ n: 2 }]);
       });
 
-      it("rebuilds a cell with the source's #(filter) values", async () => {
-         const unfiltered = await runCell(SURFACE, CELLS, 8);
-         expect(unfiltered.status).toBe(200);
-         expect(rowsOf(unfiltered.body.result)).toEqual([{ n: 6 }]);
-         const filtered = await runCell(SURFACE, CELLS, 8, {
-            filterParams: { region: "EU" },
+      // DEPRECATED FEATURE COVERAGE — delete together with
+      // `#(filter)` / `filter_params` (see RELEASE_NOTES deprecations).
+      describe("deprecated: #(filter)", () => {
+         it("rebuilds a tile cell with the source's #(filter) values", async () => {
+            const text = "run: filtered -> { aggregate: n }";
+            const unfiltered = await runCellRoute(SURFACE, CELLS, text);
+            expect(unfiltered.status).toBe(200);
+            expect(rowsOf(unfiltered.body.result)).toEqual([{ n: 6 }]);
+            const filtered = await runCellRoute(SURFACE, CELLS, text, {
+               filterParams: { region: "EU" },
+            });
+            expect(filtered.status).toBe(200);
+            expect(rowsOf(filtered.body.result)).toEqual([{ n: 3 }]);
          });
-         expect(filtered.status).toBe(200);
-         expect(rowsOf(filtered.body.result)).toEqual([{ n: 3 }]);
       });
 
       it("binds the request's givens", async () => {
-         const { status, body } = await runCell(SURFACE, CELLS, 9, {
-            givens: { REGION: "EU" },
+         const { status, body } = await runTile(SURFACE, CELLS, 4, {
+            REGION: "EU",
          });
          expect(status).toBe(200);
          expect(rowsOf(body.result)).toEqual([{ order_count: 3 }]);
       });
 
-      it("does not admit the notebook's own named query by name on the model query route", async () => {
-         const res = await fetch(pkgUrl(SURFACE, `/models/${CELLS}/query`), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ queryName: "own_cells_query" }),
-         });
+      it("does not admit the report's own named query by name on the model query route", async () => {
+         const res = await env.query(
+            CELLS,
+            { queryName: "own_cells_query" },
+            SURFACE,
+         );
          expect(res.status).toBe(404);
       });
 
-      it("refuses a cell over its own named query over a hidden source, and withholds its queryInfo", async () => {
-         expect((await runCell(SURFACE, CELLS, 11)).status).toBe(404);
-         const { body } = await getJson<{ notebookCells?: Cell[] }>(
-            pkgUrl(SURFACE, `/notebooks/${CELLS}`),
+      it("refuses a tile naming its own query over a hidden source, and withholds its queryInfo", async () => {
+         expect((await runTile(SURFACE, CELLS, 5)).status).toBe(404);
+         const cells =
+            (await getCells(SURFACE, CELLS)).body.notebookCells ?? [];
+         const hidden = cells.find((cell) => cell.text === "run: hidden_q");
+         expect(hidden?.kind).toBe("query");
+         expect(hidden?.queryInfo).toBeUndefined();
+         // Positive control: the tile over a curated source keeps its queryInfo.
+         const open = cells.find(
+            (cell) => cell.text === "run: orders -> { aggregate: order_count }",
          );
-         expect(body.notebookCells?.[11]).toMatchObject({
-            kind: "query",
-            text: "run: hidden_q",
-         });
-         expect(body.notebookCells?.[11].queryInfo).toBeUndefined();
-         // Positive control: the cell over a curated source keeps its queryInfo.
-         expect(body.notebookCells?.[5].queryInfo).toBeDefined();
+         expect(open?.queryInfo).toBeDefined();
       });
 
-      it("answers 403 on a locked cell without the role, and runs it with the role", async () => {
-         expect((await runCell(SURFACE, CELLS, 13)).status).toBe(403);
+      it("answers 403 on a locked tile's query without the role, and runs it with the role", async () => {
+         // Either denial counts: the gate refusing a role it does not admit,
+         // or a gate it cannot decide (no ROLES given). Both answer 403.
+         const denied = async () =>
+            (await harness.collectCounter("publisher_authorize_lock_total", {
+               decision: "denied_by_lock",
+            })) +
+            (await harness.collectCounter("publisher_authorize_lock_total", {
+               decision: "denied_unresolvable",
+            }));
+         const before = await denied();
+         expect((await runTile(SURFACE, CELLS, 6)).status).toBe(403);
          expect(
-            (
-               await runCell(SURFACE, CELLS, 13, {
-                  givens: { ROLES: ["viewer"] },
-               })
-            ).status,
+            (await runTile(SURFACE, CELLS, 6, { ROLES: ["viewer"] })).status,
          ).toBe(403);
-         const allowed = await runCell(SURFACE, CELLS, 13, {
-            givens: { ROLES: ["admin"] },
+         const allowed = await runTile(SURFACE, CELLS, 6, {
+            ROLES: ["admin"],
          });
          expect(allowed.status).toBe(200);
          expect(rowsOf(allowed.body.result)).toEqual([{ n: 6 }]);
-         expect(
-            await harness.collectCounter(
-               "publisher_notebook_cell_executions_total",
-               { format: "malloy", kind: "query", outcome: "denied" },
-            ),
-         ).toBeGreaterThanOrEqual(2);
+         expect((await denied()) - before).toBe(2);
+      });
+
+      // DEPRECATED FEATURE COVERAGE — delete together with
+      // the `…/notebooks` routes (see RELEASE_NOTES deprecations).
+      describe("deprecated: the …/notebooks routes", () => {
+         it("answers 403 on a locked tile cell without the role, and runs it with the role", async () => {
+            const text = "run: locked -> { aggregate: n }";
+            expect((await runCellRoute(SURFACE, CELLS, text)).status).toBe(403);
+            expect(
+               (
+                  await runCellRoute(SURFACE, CELLS, text, {
+                     givens: { ROLES: ["viewer"] },
+                  })
+               ).status,
+            ).toBe(403);
+            const allowed = await runCellRoute(SURFACE, CELLS, text, {
+               givens: { ROLES: ["admin"] },
+            });
+            expect(allowed.status).toBe(200);
+            expect(rowsOf(allowed.body.result)).toEqual([{ n: 6 }]);
+            expect(
+               await harness.collectCounter(
+                  "publisher_notebook_cell_executions_total",
+                  { format: "malloy", kind: "query", outcome: "denied" },
+               ),
+            ).toBeGreaterThanOrEqual(2);
+         });
       });
    });
 });

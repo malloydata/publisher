@@ -2,26 +2,30 @@
 // SPDX-License-Identifier: MIT
 
 import { components } from "../api";
-import { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
+import { VersionRef } from "../service/identity";
+import { loadedPackage } from "./loaded_package";
 
 type ApiDatabase = components["schemas"]["Database"];
 
 export class DatabaseController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: PackageLookup;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: PackageLookup) {
       this.environmentStore = environmentStore;
    }
 
    public async listDatabases(
       environmentName: string,
       packageName: string,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiDatabase[]> {
-      const environment = await this.environmentStore.getEnvironment(
+      const p = await loadedPackage(
+         this.environmentStore,
          environmentName,
-         false,
+         packageName,
+         versionId,
       );
-      const p = await environment.getPackage(packageName, false);
       return p.listDatabases();
    }
 }

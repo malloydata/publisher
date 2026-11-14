@@ -1,0 +1,118 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/cti/cti.malloy": [],
+          "rollup@<hammer>/cti/cti.malloy": [
+            "daily@<hammer>/cti/cti.malloy"
+          ]
+        },
+        "order": [
+          "daily@<hammer>/cti/cti.malloy",
+          "rollup@<hammer>/cti/cti.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/cti/cti.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollup@<hammer>/cti/cti.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/cti/cti.malloy": "cti.malloy",
+      "rollup@<hammer>/cti/cti.malloy": "cti.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/cti/cti.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/cti/cti.malloy"
+              ],
+              "sourceID": "rollup@<hammer>/cti/cti.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/cti/cti.malloy": {
+        "annotationFields": {
+          "name": "cti_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cti.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "e65255304b213b45b04d9021f7bce7502de93d2f49b6f8ca33b364b6206fd293",
+        "sourceID": "daily@<hammer>/cti/cti.malloy",
+        "sql": "sha256:48ac916c6bc104b9"
+      },
+      "rollup@<hammer>/cti/cti.malloy": {
+        "annotationFields": {
+          "name": "cti_rollup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "grand_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cti.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "40f5f840284ecb473274db7715d9d756feb8ff569add70721df0c8653074be25",
+        "sourceID": "rollup@<hammer>/cti/cti.malloy",
+        "sql": "sha256:6d4fbc2dfb809b52"
+      }
+    }
+  }
+}

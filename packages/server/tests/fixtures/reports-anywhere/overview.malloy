@@ -1,0 +1,3 @@
+##" A grid report at the package root.
+## artifact { layout=grid title="Overview" tiles=["orders -> by_brand", "orders -> by_region"] } dashboard { columns=12 }
+import { orders } from "orders.malloy"

@@ -1,5 +1,5 @@
 ##! experimental.givens
-## artifact { kind=notebook title="Structure" }
+## artifact { layout=linear title="Structure" }
 ## title="A non-prose note after the tag"
 ##(filters) ["orders.region"]
 

@@ -522,7 +522,8 @@ conductor. Do not:
 
 ## Prime directives
 
-- The model is the only thing improve edits. No question text, qids, or
+- Improve edits the model repo and nothing else: a `.malloy` file, or a package
+  skill under the package's `skills/`. No question text, qids, or
   expected values in any name, doc, or comment.
 - **You are measuring a model, not reviewing this harness.** Read a script when
   a number you have to report cannot be explained otherwise, and stop there. Do

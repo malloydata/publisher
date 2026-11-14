@@ -8,8 +8,14 @@
  * itself, and `versionId` has to land in both the request and the key from the
  * prop alone.
  */
-import { beforeEach, expect, it, mock } from "bun:test";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, mock } from "bun:test";
+import {
+   act,
+   fireEvent,
+   render,
+   screen,
+   waitFor,
+} from "@testing-library/react";
 import {
    cacheKeys,
    clearCache,
@@ -24,6 +30,8 @@ const executeQueryModel = mock(
       _packageName: string,
       _modelPath: string,
       _request: { versionId?: string },
+      _includeHidden?: boolean,
+      _options?: { signal?: AbortSignal },
    ) => pending(),
 );
 
@@ -126,4 +134,91 @@ it("puts the filter warning under the heading and above the result", () => {
       Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
    expect(follows(heading, tag)).toBe(true);
    expect(follows(tag, body)).toBe(true);
+});
+
+// The request's own signal, as react-query handed it to `executeQueryModel`.
+const signalOf = (call: number) =>
+   executeQueryModel.mock.calls[call][5]?.signal as AbortSignal;
+
+it("cancels a tile's request when the tile goes away", async () => {
+   const { unmount } = render(tileAt("v1"), { wrapper: serverWrapper });
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(1));
+   expect(signalOf(0).aborted).toBe(false);
+
+   unmount();
+
+   await waitFor(() => expect(signalOf(0).aborted).toBe(true));
+});
+
+it("cancels the superseded request when what the tile asks for changes", async () => {
+   const { rerender } = render(tileAt("v1"), { wrapper: serverWrapper });
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(1));
+
+   rerender(tileAt("v2"));
+
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(2));
+   await waitFor(() => expect(signalOf(0).aborted).toBe(true));
+   expect(signalOf(1).aborted).toBe(false);
+   // A cancelled run is not a failed one: the tile is still waiting, not erroring.
+   expect(screen.getByText("Running…")).toBeDefined();
+});
+
+// An observer the spec drives by hand: `enter()` reports every observed element
+// as intersecting, the way a scroll into the margin would.
+let observers: Array<{
+   callback: IntersectionObserverCallback;
+   targets: Element[];
+}> = [];
+class DrivenIntersectionObserver {
+   private record: (typeof observers)[number];
+   constructor(callback: IntersectionObserverCallback) {
+      this.record = { callback, targets: [] };
+      observers.push(this.record);
+   }
+   observe(target: Element) {
+      this.record.targets.push(target);
+   }
+   disconnect() {
+      this.record.targets = [];
+   }
+   unobserve() {}
+   takeRecords() {
+      return [];
+   }
+}
+const enter = () =>
+   observers.forEach(({ callback, targets }) =>
+      callback(
+         targets.map(
+            (target) =>
+               ({ isIntersecting: true, target }) as IntersectionObserverEntry,
+         ),
+         {} as IntersectionObserver,
+      ),
+   );
+
+const originalObserver = globalThis.IntersectionObserver;
+const originalRect = HTMLElement.prototype.getBoundingClientRect;
+afterEach(() => {
+   globalThis.IntersectionObserver = originalObserver;
+   HTMLElement.prototype.getBoundingClientRect = originalRect;
+   observers = [];
+});
+
+it("holds a tile's query until the tile comes near the viewport", async () => {
+   (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      DrivenIntersectionObserver;
+   // Mounted far below the fold.
+   HTMLElement.prototype.getBoundingClientRect = () =>
+      ({ top: 10_000, bottom: 10_400 }) as DOMRect;
+   render(tileAt(), { wrapper: serverWrapper });
+
+   // Offscreen: nothing asked of the warehouse, and the card is still drawn.
+   await new Promise((resolve) => setTimeout(resolve, 20));
+   expect(executeQueryModel).not.toHaveBeenCalled();
+   expect(screen.getByText("Sales by month")).toBeDefined();
+
+   act(() => enter());
+
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(1));
 });

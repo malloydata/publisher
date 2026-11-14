@@ -10,19 +10,10 @@ import {
 import type { SerializedError } from "./protocol";
 
 /**
- * The error shape that crosses the package-load worker boundary, in either
- * direction. Both sides use the same pair so a classification one side
- * attaches is the one the other side restores.
- */
-
-/**
- * Flatten an error for postMessage. The class is carried as flags, because
- * structured clone keeps neither the prototype nor non-enumerable fields:
- * a Malloy compile error and a `ModelCompilationError` keep their
- * compilation-error classification (the main thread answers 424, not a
- * generic 500), an unusable publisher.json keeps its manifest-error
- * classification, and a Node errno error keeps the fields that identify a
- * refused filesystem access.
+ * Flatten an error for postMessage across the worker boundary (both directions
+ * use this pair). The class travels as flags, because structured clone keeps
+ * neither the prototype nor non-enumerable fields; losing them would turn a
+ * 424 compile or manifest error into a generic failure.
  */
 export function serializeError(error: unknown): SerializedError {
    const serialized = serializeErrorShape(error);
@@ -81,9 +72,6 @@ export function deserializeError(serialized: SerializedError): Error {
          serialized.malloyProblems;
    }
    if (serialized.isCompilationError) {
-      // ModelCompilationError's ctor expects a MalloyError-shaped input but
-      // only reads `.message` at runtime. Cast through to satisfy the nominal
-      // type without losing data.
       const wrapped = new ModelCompilationError(
          err as unknown as ConstructorParameters<
             typeof ModelCompilationError

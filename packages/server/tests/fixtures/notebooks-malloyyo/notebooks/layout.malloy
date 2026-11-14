@@ -1,5 +1,5 @@
 ##" A notebook written as one column of tiles.
-## artifact { kind=notebook title="Layout" tiles=[intro { kind=text }, "orders_tiles -> headline", "orders -> by_month"] }
+## artifact { layout=linear title="Layout" tiles=[intro { kind=text }, "orders_tiles -> headline", "orders -> by_month"] }
 import "../models/orders.malloy"
 
 ##|(markdown) intro

@@ -3,10 +3,11 @@
 
 import { useCallback, useMemo } from "react";
 import type { Given } from "../client";
+import type { HostGivenValue } from "./givenValue";
 import { useDrillSelf } from "../components/drill/useDrillSelf";
 import type { GivensPanelProps } from "../components/given/GivensPanel";
 import { useGivensState, type UseGivensStateResult } from "./useGivensState";
-import { useSuggestOptions } from "./useSuggestOptions";
+import { type OptionSearch, useSuggestOptions } from "./useSuggestOptions";
 
 /**
  * Everything a document's control row needs, from what the document declares.
@@ -63,6 +64,10 @@ export interface UseDocumentControlsOptions {
    versionId?: string;
    /** How the document names itself in a refused-drill warning. */
    documentName: string;
+   /** Text-source mode: the document's definitions, which a suggest runs after as the viewer's own text. */
+   preamble?: string;
+   /** Givens the host sets with no control, so a suggest over a source they gate still carries them. */
+   hostGivens?: Readonly<Record<string, HostGivenValue>>;
 }
 
 export interface DocumentControls extends UseGivensStateResult {
@@ -71,6 +76,10 @@ export interface DocumentControls extends UseGivensStateResult {
    options: Map<string, string[]>;
    optionsLoading: boolean;
    optionsFailed: ReadonlySet<string>;
+   /** Givens whose option list was cut off; see `useSuggestOptions`. */
+   optionsTruncated: ReadonlySet<string>;
+   /** Server search for a truncated list, per given. */
+   optionSearch: ReadonlyMap<string, OptionSearch>;
    /** For `useDrill`: whether a `to=self` on this given can be honoured. */
    canSelf: (given: string) => boolean;
    /** For `useDrill`: set the given to the clicked value, encoded for its type. */
@@ -92,6 +101,8 @@ export function useDocumentControls({
    modelPath,
    versionId,
    documentName,
+   preamble,
+   hostGivens,
 }: UseDocumentControlsOptions): DocumentControls {
    const declaredTypes = useMemo(
       () =>
@@ -129,6 +140,8 @@ export function useDocumentControls({
       options,
       isLoading: optionsLoading,
       failed: optionsFailed,
+      truncated: optionsTruncated,
+      search: optionSearch,
    } = useSuggestOptions(
       environmentName,
       packageName,
@@ -136,7 +149,12 @@ export function useDocumentControls({
       specs,
       versionId,
       // So a suggest over a gated or scoped source carries the givens it needs.
-      { values: state.applied, declaredTypes },
+      {
+         values: state.applied,
+         declaredTypes,
+         ...(hostGivens ? { host: hostGivens } : {}),
+      },
+      preamble,
    );
 
    const { canSelf, onSelf } = useDrillSelf({
@@ -151,6 +169,8 @@ export function useDocumentControls({
       options,
       optionsLoading,
       optionsFailed,
+      optionsTruncated,
+      optionSearch,
       canSelf,
       onSelf,
       panel: {
@@ -158,9 +178,12 @@ export function useDocumentControls({
          values: state.draft,
          onChange: state.setGiven,
          onReset: state.reset,
+         canReset: !state.atStart,
          options,
          optionsLoading,
          optionsFailed,
+         optionsTruncated,
+         optionSearch,
          // Absent means autorun; only an explicit `false` batches behind Apply.
          apply: autorun
             ? undefined

@@ -10,8 +10,7 @@ import useMediaQuery from "@mui/material/useMediaQuery";
 import { Suspense, useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
 import { layout } from "../../../theme";
-import { ThemeToggle } from "../../common/ThemeToggle";
-import { VisualizationThemeButton } from "../../common/VisualizationThemeButton";
+import { DocumentModeButton } from "../../common/DocumentModeButton";
 import { HeaderProps } from "../Header/Header";
 import BreadcrumbNav from "../BreadcrumbNav/BreadcrumbNav";
 import Sidebar from "../Sidebar/Sidebar";
@@ -106,8 +105,7 @@ export default function MainPage({ headerProps }: MainPageProps) {
                      gap: 1,
                   }}
                >
-                  <VisualizationThemeButton />
-                  <ThemeToggle />
+                  <DocumentModeButton />
                   {headerProps?.endCap}
                </Box>
             </Box>

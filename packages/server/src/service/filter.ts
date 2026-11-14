@@ -11,6 +11,8 @@
  * based on the provided filter values and the declared filter definitions.
  */
 
+import { escapeString, quotedIdentifier } from "./malloy_text";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -28,9 +30,7 @@ const VALID_FILTER_TYPES = new Set<FilterType>([
 export interface FilterDefinition {
    /** Display name for the filter. Defaults to the dimension name. */
    name: string;
-   /** The source dimension this filter targets. */
    dimension: string;
-   /** Comparator type. */
    type: FilterType;
    /** Hidden from user/agent summaries; set by infrastructure (e.g. row-level security). */
    implicit: boolean;
@@ -38,17 +38,14 @@ export interface FilterDefinition {
    required: boolean;
 }
 
-/**
- * Filter values provided at query time.
- * Keys are filter names, values are the filter input(s).
- */
+/** Filter values provided at query time, keyed by filter name. */
 export type FilterParams = Record<string, string | string[]>;
 
 // ---------------------------------------------------------------------------
 // Annotation Parsing
 // ---------------------------------------------------------------------------
 
-const ANNOTATION_PREFIX = "#(filter)";
+export const FILTER_ANNOTATION_PREFIX = "#(filter)";
 
 /**
  * Parse a single `#(filter)` annotation string into a definition.
@@ -59,11 +56,11 @@ export function parseFilterAnnotation(
    annotation: string,
 ): FilterDefinition | null {
    const trimmed = annotation.trim();
-   if (!trimmed.startsWith(ANNOTATION_PREFIX)) {
+   if (!trimmed.startsWith(FILTER_ANNOTATION_PREFIX)) {
       return null;
    }
 
-   const body = trimmed.slice(ANNOTATION_PREFIX.length).trim();
+   const body = trimmed.slice(FILTER_ANNOTATION_PREFIX.length).trim();
    const tokens = tokenize(body);
 
    let name: string | undefined;
@@ -125,16 +122,32 @@ export function parseFilterAnnotation(
    };
 }
 
+/** The annotation chain a source's `#(filter)` notes are read from. */
+export interface FilterNoteSource {
+   blockNotes?: { text: string }[];
+   inherits?: FilterNoteSource;
+}
+
 /**
- * Extract all `#(filter)` definitions from a list of annotation strings
- * (as found on a Malloy source's `blockNotes`).
+ * A source's `blockNotes` texts across its `extend` chain, the inherited base's
+ * first, so {@link parseFilters} lets an extending source override its base by
+ * name. The query path reads filters from here and nowhere else.
  */
+export function sourceFilterNotes(
+   annotations: FilterNoteSource | undefined,
+): string[] {
+   const collected: string[][] = [];
+   for (let cur = annotations; cur; cur = cur.inherits) {
+      if (cur.blockNotes)
+         collected.push(cur.blockNotes.map((note) => note.text));
+   }
+   return collected.reverse().flat();
+}
+
+/** Extract all `#(filter)` definitions from a source's `blockNotes`. */
 export function parseFilters(annotations: string[]): FilterDefinition[] {
-   // Use a Map keyed by filter name so that later annotations (from an
-   // extending source) override earlier ones (from the base source).
-   // This is important when `source: child is parent extend {}` inherits
-   // blockNotes from the parent — the child's annotations come last and
-   // should win.
+   // Keyed by name so an extending source's annotations, which come after
+   // the inherited base's, override them.
    const byName = new Map<string, FilterDefinition>();
    for (const annotation of annotations) {
       const parsed = parseFilterAnnotation(annotation);
@@ -149,16 +162,6 @@ export function parseFilters(annotations: string[]): FilterDefinition[] {
 // Filter Clause Generation
 // ---------------------------------------------------------------------------
 
-/**
- * Escape a string value for embedding in a Malloy query literal.
- */
-function escapeMalloyString(value: string): string {
-   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-}
-
-/**
- * Returns true if the string is a bare boolean literal.
- */
 function isBooleanLiteral(v: string): boolean {
    const lower = v.toLowerCase();
    return lower === "true" || lower === "false";
@@ -167,19 +170,11 @@ function isBooleanLiteral(v: string): boolean {
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
 
-/**
- * Returns true if the string looks like an ISO date or timestamp.
- */
 function isDateLiteral(v: string): boolean {
    return ISO_DATE_RE.test(v) || ISO_TIMESTAMP_RE.test(v);
 }
 
-/**
- * Format a scalar value for Malloy.
- * - Boolean literals → unquoted true/false
- * - Date/timestamp strings → Malloy temporal literal @YYYY-MM-DD
- * - Everything else → single-quoted string
- */
+/** Booleans unquoted, ISO dates/timestamps as `@YYYY-MM-DD`, else a quoted string. */
 function malloyLiteral(v: string): string {
    if (isBooleanLiteral(v)) {
       return v.toLowerCase();
@@ -187,17 +182,14 @@ function malloyLiteral(v: string): string {
    if (isDateLiteral(v)) {
       return `@${v.slice(0, 10)}`;
    }
-   return `'${escapeMalloyString(v)}'`;
+   return `'${escapeString(v)}'`;
 }
 
-/**
- * Build a single Malloy predicate expression for one filter.
- */
 function buildPredicate(
    filter: FilterDefinition,
    value: string | string[],
 ): string {
-   const dim = `\`${filter.dimension}\``;
+   const dim = quotedIdentifier(filter.dimension);
 
    switch (filter.type) {
       case "equal": {
@@ -214,7 +206,7 @@ function buildPredicate(
       }
       case "like": {
          const v = Array.isArray(value) ? value[0] : value;
-         const escaped = escapeMalloyString(v.toLowerCase());
+         const escaped = escapeString(v.toLowerCase());
          const pattern =
             escaped.startsWith("%") || escaped.endsWith("%")
                ? escaped
@@ -233,12 +225,9 @@ function buildPredicate(
 }
 
 /**
- * Whether `params` actually supplies a value for `filter` — the single
- * source of truth for "was this filter injected", shared by
- * {@link buildFilterClause} (what goes in the `where:`) and by the binding
- * guard's caller (which filters actually need their binding checked; an
- * optional filter the caller never supplied a value for was never injected
- * at all, so there is nothing for it to have misbound).
+ * Whether `params` supplies a value for `filter`: the single definition of
+ * "was this filter injected", shared by {@link buildFilterClause} and the
+ * binding guard's caller (a filter never injected cannot be misbound).
  */
 export function filterHasValue(
    filter: FilterDefinition,
@@ -253,11 +242,8 @@ export function filterHasValue(
 }
 
 /**
- * Build a complete Malloy `where:` clause fragment from filter definitions
- * and provided parameter values.
- *
- * Returns an empty string when no filters apply.
- * Throws if a required filter has no value.
+ * Build a Malloy `where:` clause body from the filters that have values, or
+ * "" when none apply. Throws if a required filter has no value.
  */
 export function buildFilterClause(
    filters: FilterDefinition[],
@@ -286,17 +272,14 @@ export function buildFilterClause(
 }
 
 /**
- * Append a filter refinement to a Malloy query string.
- * Uses Malloy's `+ {where: ...}` refinement syntax.
- *
- * The refinement is placed on its own line so that a trailing line comment
- * (`//` or `--`) on the caller's query cannot extend over it and neutralize
- * the filter.
- *
- * If `filterClause` is empty, returns the original query unchanged.
+ * Append `+ {where: ...}` to a query; an empty clause leaves it unchanged.
+ * The refinement goes on its own line so a trailing `//` or `--` comment in
+ * the caller's query cannot swallow it and neutralize the filter.
  */
 export function injectFilterRefinement(
+   // malloy-text: the caller's own query, refined as written
    query: string,
+   // malloy-text: a filter clause the caller's request carries, Malloy as written
    filterClause: string,
 ): string {
    if (!filterClause) {
@@ -320,10 +303,7 @@ export class FilterValidationError extends Error {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Simple tokenizer that splits on whitespace but respects quoted values.
- * Handles: `name="Foo Bar" dimension=status type=equal implicit`
- */
+/** Split on whitespace, respecting quotes: `name="Foo Bar" dimension=status`. */
 function tokenize(input: string): string[] {
    const tokens: string[] = [];
    let current = "";

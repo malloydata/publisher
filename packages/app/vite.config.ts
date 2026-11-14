@@ -5,7 +5,11 @@ import react from "@vitejs/plugin-react";
 import path from "path";
 import { defineConfig } from "vite";
 
-export default ({ mode }) => {
+/**
+ * How the Console resolves the SDK: its sources in development, its built
+ * `dist` otherwise. Shared with `vite.mcp-app.config.ts`.
+ */
+export function sdkResolve(mode: string) {
    const isDev = mode === "development";
    // In Dev, Resolve the SDK locally as src, not /dist so it can hot reload
    // But for CSS files, we need to point to dist since they're only generated during build
@@ -40,6 +44,12 @@ export default ({ mode }) => {
               path.resolve(__dirname, "../sdk/dist/index.es.js"),
       },
    };
+   return resolve;
+}
+
+export default ({ mode }) => {
+   const isDev = mode === "development";
+   const resolve = sdkResolve(mode);
 
    // Disable chunking entirely to avoid initialization order issues
    const manualChunks = undefined;
@@ -49,6 +59,22 @@ export default ({ mode }) => {
          ? {
               proxy: {
                  "/api/v0": {
+                    target:
+                       process.env.PUBLISHER_URL ?? "http://localhost:4000",
+                    changeOrigin: true,
+                 },
+                 // A data app's own files, which the Console embeds in an
+                 // iframe at the server's address. In dev that address is
+                 // this one, so without this the iframe got the Console's
+                 // "Nothing to open at this path" page. No Console route
+                 // starts with /environments.
+                 "^/environments/[^/]+/packages/[^/]+(/.*)?$": {
+                    target:
+                       process.env.PUBLISHER_URL ?? "http://localhost:4000",
+                    changeOrigin: true,
+                 },
+                 // The client script a data app loads (`<script src="/sdk/publisher.js">`).
+                 "/sdk/publisher.js": {
                     target:
                        process.env.PUBLISHER_URL ?? "http://localhost:4000",
                     changeOrigin: true,

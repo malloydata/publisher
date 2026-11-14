@@ -1,0 +1,16 @@
+##| artifact { layout=linear title="Story"
+  tiles=[
+    question { kind=text },
+    "story_tiles -> brands"
+  ]
+}
+|##
+import { orders } from "../orders.malloy"
+
+##|(markdown) question
+How do brands compare?
+|##
+
+source: story_tiles is orders extend {
+   view: brands is by_brand
+}

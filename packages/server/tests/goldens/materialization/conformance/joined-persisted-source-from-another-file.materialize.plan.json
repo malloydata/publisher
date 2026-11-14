@@ -1,0 +1,236 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "customer_dim@<pkg>/dims.malloy": []
+        },
+        "order": [
+          "customer_dim@<pkg>/dims.malloy"
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "order_facts@<pkg>/facts.malloy": []
+        },
+        "order": [
+          "order_facts@<pkg>/facts.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "customer_dim@<pkg>/dims.malloy": {
+        "buildSourceName": "customer_dim__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "segment",
+            "computed": false,
+            "dimension": "segment"
+          },
+          {
+            "column": "home_region",
+            "computed": false,
+            "dimension": "home_region"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "customer_dim",
+          "storage": "lake"
+        },
+        "sourceID": "customer_dim@<pkg>/dims.malloy",
+        "sourceName": "customer_dim",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "segment",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "home_region",
+            "type": "VARCHAR"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "order_facts@<pkg>/facts.malloy": {
+        "buildSourceName": "order_facts__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "order_facts",
+          "storage": "lake"
+        },
+        "sourceID": "order_facts@<pkg>/facts.malloy",
+        "sourceName": "order_facts",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "customer_dim@<pkg>/dims.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "order_facts@<pkg>/facts.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "customer_dim@<pkg>/dims.malloy": "dims.malloy",
+      "order_facts@<pkg>/facts.malloy": "facts.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "customer_dim@<pkg>/dims.malloy"
+            }
+          ]
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "order_facts@<pkg>/facts.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "customer_dim@<pkg>/dims.malloy": {
+        "annotationFields": {
+          "name": "customer_dim",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "segment",
+            "type": "string"
+          },
+          {
+            "name": "home_region",
+            "type": "string"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "dims.malloy",
+        "name": "customer_dim",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "bf4286a91b893ea3bbeb2399ae99134474169fa1ea85a6dec9df7b2e2c845f59",
+        "sourceID": "customer_dim@<pkg>/dims.malloy",
+        "sql": "sha256:06d209c15bc097df"
+      },
+      "order_facts@<pkg>/facts.malloy": {
+        "annotationFields": {
+          "name": "order_facts",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "facts.malloy",
+        "name": "order_facts",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e",
+        "sourceID": "order_facts@<pkg>/facts.malloy",
+        "sql": "sha256:8ef05e37e9bb47eb"
+      }
+    }
+  }
+}

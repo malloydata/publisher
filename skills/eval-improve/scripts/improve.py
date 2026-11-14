@@ -4,9 +4,10 @@
   python improve.py --run <workdir>/runs/<label> --set <set-dir> --watch-mode
   # the model directory comes from [model] repo in the set's eval.toml
 
-One agent per `owner: model` cluster, each holding `skill:eval-improve`, each
-producing at most one smallest edit with probe receipts. Appends one `candidate`
-event per cluster to the run's `events.jsonl`.
+One agent per fixable cluster (`owner: model` or `owner: package-skill`), each
+holding `skill:eval-improve`, each producing at most one smallest edit with
+probe receipts. Appends one `candidate` event per cluster to the run's
+`events.jsonl`.
 
 THIS SCRIPT CONTAINS NO MODELING DOCTRINE
 
@@ -38,13 +39,18 @@ events describe diffs that never existed alone.
 
 MAKING AN EDIT VISIBLE TO THE SERVER
 
-Publisher normally serves a snapshot copy under `publisher_data/<env>/<pkg>/`,
-so editing the repo and reloading recompiles the unchanged copy: the reload
-succeeds, nothing changes, and the verification probe quietly tests the old
-model. `--watch-mode` says Publisher was started with `--watch-env`, which
-symlinks local-dir packages in place and makes edits live; then the helper is
-just a reload. Without it the helper syncs first. Either way the agent gets one
-generated script rather than a general shell.
+Publisher serves a package outside a watched environment as a published
+version under `publisher_data/<env>/<pkg>/<version>/`, which is immutable:
+editing the repo and reloading changes nothing, and the verification probe
+quietly tests the old model. `--watch-mode` says Publisher was started with
+`--watch-env` (`eval.py serve model --set <set> --watch-env <env>`), which symlinks
+local-dir packages in place and makes edits live; then the helper is just a
+reload. Without it the helper syncs the edit onto the served copy first, which
+works only on a server with versioning off. Either way a package the server
+serves as a published version is refused before any agent starts (the server
+is asked, in both modes): nothing synced there is served, the sync would
+delete it, and a reload of it answers 200 without reading the edit. Either way
+the agent gets one generated script rather than a general shell.
 """
 from __future__ import annotations
 
@@ -54,6 +60,7 @@ import pathlib
 import subprocess
 import sys
 import time
+import urllib.request
 from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
@@ -64,20 +71,46 @@ from agent_harness import default_manifest, manifest_skills, skills_roots, spawn
 import config  # noqa: E402
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
+import golden_rows  # noqa: E402
 
 SKILLS_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 IMPROVE_TOOLS = ("mcp__publisher__get_context",
                  "mcp__publisher__execute_query",
                  "mcp__publisher__compile_model",
                  "mcp__publisher__reload_package",
+                 "mcp__publisher__get_skill",
+                 "mcp__publisher__get_status",
                  "Read", "Edit", "Write", "Grep", "Glob",
                  "Bash(bash ./sync_and_reload.sh)")
 
-RELOAD = """curl -s -m 60 -X POST "{mcp_url}" \\
-  -H "Content-Type: application/json" \\
-  -H "Accept: application/json, text/event-stream" \\
-  -d '{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"reload_package","arguments":{{"environmentName":"{environment}","packageName":"{package}"}}}}}}' \\
-  | grep -o '"sourceContentSha":"[^"]*"' | head -1"""
+# REST, not MCP: an MCP reply escapes its inner JSON. The sha is read from the
+# package's serving state after the reload (the reload response itself carries
+# it only while the server inlines the serving fields). A failed reload prints
+# its error and stops, so the previous load's sha is never shown for it.
+RELOAD = """reload_body=$(mktemp)
+reload_code=$(curl -s -m 60 -o "$reload_body" -w "%{{http_code}}" "{rest_url}/api/v0/environments/{environment}/packages/{package}?reload=true" || echo 000)
+if [ "$reload_code" != "200" ]; then
+  echo "reload failed (HTTP $reload_code):"; cat "$reload_body"; echo; rm -f "$reload_body"; exit 1
+fi
+rm -f "$reload_body"
+python3 -c '
+import json, urllib.request
+base = "{rest_url}/api/v0"
+def get(path):
+    try:
+        with urllib.request.urlopen(base + path, timeout=30) as r:
+            return json.load(r)
+    except Exception:
+        return {{}}
+sha = get("/environments/{environment}/packages/{package}/status").get("sourceContentSha")
+if not sha:  # a server from before that route: the package`s /status entry
+    for e in get("/status").get("environments") or []:
+        for p in (e.get("packages") or []) if e.get("name") == "{environment}" else []:
+            if p.get("name") == "{package}" and p.get("sourceContentSha"):
+                sha = p["sourceContentSha"]
+if sha:
+    print("\\"sourceContentSha\\":\\"%s\\"" % sha)
+'"""
 
 SYNC_SCRIPT = """#!/bin/bash
 set -euo pipefail
@@ -86,9 +119,60 @@ echo "reloaded; if sourceContentSha did not change, the edit did not reach the s
 """
 
 
+SYNC_HELPER = "sync_and_reload.sh"
+
+
+def served_version(rest_url: str | None, environment: str,
+                   package: str) -> str | None:
+    """The version the model server serves this package as, or None.
+
+    The server's own answer: a published version's resource carries its
+    `versionId`, and a watch-mounted or copied package has none. A version
+    is immutable, so neither the sync nor watch mode reaches it. None also
+    when the server cannot be asked; the folder check below still stands.
+    """
+    if not rest_url:
+        return None
+    url = (f"{rest_url.rstrip('/')}/api/v0/environments/{environment}"
+           f"/packages/{package}")
+    try:
+        with urllib.request.urlopen(url, timeout=30) as r:
+            return json.load(r).get("versionId") or None
+    except Exception:
+        return None
+
+
+def served_as_versions(served: pathlib.Path) -> bool:
+    """Whether Publisher serves this package folder as published versions.
+
+    A version lives in `<pkg>/<version>/`, so the folder holds no
+    publisher.json of its own. A copy (versioning off) does, and a watch
+    mount is a symlink to the source.
+    """
+    return (served.is_dir() and not served.is_symlink()
+            and not (served / "publisher.json").exists())
+
+
 def git(args: list[str], cwd: pathlib.Path) -> str:
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True,
                           text=True).stdout
+
+
+def candidate_diff(model_dir: pathlib.Path, extra: tuple[str, ...] = ()) -> str:
+    """The agent's edit: tracked changes plus new files, minus our own helper.
+
+    `git diff` alone omits untracked files, so a new skills/ file left an empty
+    patch that `git clean` then deleted. `--no-index` diffs each against
+    /dev/null without touching the index.
+    """
+    out = git(["diff", *extra, "--", "."], model_dir)
+    new = git(["ls-files", "--others", "--exclude-standard", "--", "."],
+              model_dir).splitlines()
+    for f in new:
+        if f != SYNC_HELPER:
+            out += git(["diff", "--no-index", *extra, "--", "/dev/null", f],
+                       model_dir)
+    return out
 
 
 # Thin on purpose: the cluster, the cases, the one operational fact the skill
@@ -110,7 +194,8 @@ MAKING YOUR EDIT REACH THE SERVER
 
 After each edit run `bash ./sync_and_reload.sh`. It prints `sourceContentSha`.
 If that value does not change, your edit did NOT reach the server and every
-probe you run afterwards is testing the old model.
+probe you run afterwards is testing the old model. This covers a package skill
+under skills/ as well as a .malloy file: both are part of the hash.
 
 One edit for the cluster's shared root cause, not one per case.
 
@@ -233,6 +318,22 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
             "tail": (p.stdout or p.stderr or "").strip().splitlines()[-25:]}
 
 
+def cluster_members(issue: dict[str, Any], cases: dict[str, Any],
+                    set_dir: pathlib.Path | None) -> list[dict[str, Any]]:
+    """Each case in the cluster with its question, key and rubric.
+
+    The key comes through `golden_rows`, so a rows golden kept in
+    `golden.path` reaches the improver as its rows rather than as no key.
+    """
+    out = []
+    for q in issue.get("qids", []):
+        g = (cases.get(q) or {}).get("golden") or {}
+        out.append({"qid": q, "question": (cases.get(q) or {}).get("question"),
+                    "golden": golden_rows.key_value_or_note(g, set_dir, q),
+                    "rubric": g.get("rubric")})
+    return out
+
+
 def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
                     a: argparse.Namespace, art: pathlib.Path) -> dict[str, Any]:
     cid = issue["issue_id"]
@@ -242,7 +343,8 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
         return {**json.loads(out.read_text()), "_cached": True}
     d.mkdir(parents=True, exist_ok=True)
 
-    reload_cmd = RELOAD.format(mcp_url=a.mcp_url, environment=a.environment,
+    reload_cmd = RELOAD.format(rest_url=a.rest_url.rstrip("/"),
+                               environment=a.environment,
                                package=a.package)
     sync = ""
     if not a.watch_mode:
@@ -251,14 +353,11 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
         if served:
             sync = (f'rsync -a --delete --exclude .git '
                     f'"{a.model_dir.resolve()}/" "{served.resolve()}/"\n')
-    helper = a.model_dir / "sync_and_reload.sh"
+    helper = a.model_dir / SYNC_HELPER
     helper.write_text(SYNC_SCRIPT.format(sync=sync, reload=reload_cmd))
     helper.chmod(0o755)
 
-    members = [{"qid": q, "question": (cases.get(q) or {}).get("question"),
-                "golden": ((cases.get(q) or {}).get("golden") or {}).get("value"),
-                "rubric": ((cases.get(q) or {}).get("golden") or {}).get("rubric")}
-               for q in issue.get("qids", [])]
+    members = cluster_members(issue, cases, a.set_dir)
 
     r = spawn_agent(
         IMPROVE_PROMPT.format(
@@ -284,9 +383,9 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
         save_transcript=d / "improver.jsonl")
     (d / "improver.md").write_text(r.text)
 
-    diff = git(["diff", "--", "."], a.model_dir)
+    diff = candidate_diff(a.model_dir)
     (d / "edit.patch").write_text(diff)
-    stat = git(["diff", "--stat", "--", "."], a.model_dir).strip()
+    stat = candidate_diff(a.model_dir, ("--stat",)).strip()
 
     # While the edit is still in the tree: the mechanical half of Step 4. Only
     # catches drift and rubric sentences that contradict the model -- a golden
@@ -324,7 +423,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--server-root", type=pathlib.Path, default=None,
                     help="Publisher SERVER_ROOT; only needed without watch "
                          "mode. Each accepted edit is rsynced onto the copy "
-                         "this root serves and reloaded. Default: the one "
+                         "this root serves and reloaded, which works only "
+                         "with versioning off: a root serving published "
+                         "versions is refused. Default: the one "
                          "`serve.py --role model` uses, when it exists")
     ap.add_argument("--watch-mode", action="store_true",
                     help="Publisher was started with --watch-env, so edits are "
@@ -333,6 +434,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--environment", default=None)
     ap.add_argument("--package", default=None)
     ap.add_argument("--mcp-url", default=None)
+    ap.add_argument("--rest-url", default=None,
+                    help="REST base; the reload receipt is read from here, "
+                         "because the MCP reply double-encodes its JSON. "
+                         "Default: the [model] server in the set's eval.toml")
     # No built-in port: a fixed default once named the server holding the
     # model under test, which cannot verify its own goldens. The fallback is
     # the [truth] section of the set's eval.toml. With neither, the value
@@ -392,6 +497,7 @@ def main(argv: list[str] | None = None) -> int:
                              "--environment")
     a.package = cfg.need(a.package, "model", "package", "--package")
     a.mcp_url = a.mcp_url or cfg.model_mcp_url()
+    a.rest_url = a.rest_url or cfg.model_publisher()
     a.truth_publisher = a.truth_publisher or cfg.truth_publisher()
     a.truth_environment = a.truth_environment or cfg.get("truth", "environment")
     a.skills_root = a.skills_root or cfg.get("paths", "skills_root")
@@ -416,6 +522,21 @@ def main(argv: list[str] | None = None) -> int:
         print("warning: no --watch-mode and no --server-root, so the agent "
               "cannot sync its edit into Publisher's snapshot; every probe it "
               "runs will test the unedited model")
+    # Asked in both modes: --watch-mode is the caller's claim, and a server
+    # started with --watch-env over a preserved root still serves a version.
+    version = served_version(a.rest_url, a.environment, a.package)
+    served = (a.server_root / "publisher_data" / a.environment / a.package
+              if a.server_root and not a.watch_mode else None)
+    if version or (served is not None and served_as_versions(served)):
+        what = (f"the model server serves {a.package} as published version "
+                f"{version}" if version else f"{served} holds published versions")
+        why = ("so watch mode is not in effect for it" if a.watch_mode else
+               "no edit synced there is ever served, and the sync would "
+               "delete them")
+        raise SystemExit(
+            f"{what}, which is immutable: {why}. Fix: restart the model "
+            f"server in watch mode, `eval.py serve model --set {a.set_dir} "
+            f"--watch-env {a.environment} --reinit`, then pass --watch-mode")
 
     events = read_jsonl(a.run / "events.jsonl")
     cases = {c["qid"]: c for c in read_jsonl(a.set_dir / "cases.jsonl")}
@@ -425,7 +546,7 @@ def main(argv: list[str] | None = None) -> int:
         if e.get("kind") == "issue_status":
             status[e["issue_id"]] = e["status"]
     issues = [e for e in events if e.get("kind") == "issue"
-              and e.get("owner") == "model"
+              and e.get("owner") in ("model", "package-skill")
               and status.get(e["issue_id"]) == "open"]
     if a.only:
         want = {x.strip() for x in a.only.split(",")}
@@ -436,13 +557,14 @@ def main(argv: list[str] | None = None) -> int:
     if a.limit is not None:
         issues = issues[:a.limit]
     if not issues:
-        print("no open model-owned issues; run diagnose.py first, or every "
-              "cluster is owned by retrieval, agent-skill, or dataset")
+        print("no open model- or package-skill-owned issues; run diagnose.py "
+              "first, or every cluster is owned by retrieval, agent-skill, "
+              "or dataset")
         return 0
 
     art = a.run / "artifacts"
     art.mkdir(parents=True, exist_ok=True)
-    print(f"{len(issues)} model-owned clusters, agent {a.model}, "
+    print(f"{len(issues)} model/package-skill clusters, agent {a.model}, "
           f"{'isolated' if a.isolate else 'cumulative'}, "
           f"{'watch mode' if a.watch_mode else 'snapshot sync'}")
 

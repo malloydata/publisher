@@ -5,7 +5,9 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import {
    createDocument,
    editorOpen,
+   openAddTile,
    pickChart,
+   pickView,
    queryTiles,
 } from "./helpers/builder";
 import {
@@ -40,26 +42,14 @@ test.describe("builder chart type", () => {
    const renderAs = (scope: Locator | Page) =>
       scope.locator("[data-malloy-render-as]").first();
 
-   test("a converted notebook tile follows the picker: bar, from the view, table", async ({
+   test("a linear report's tile follows the picker: bar, default, table", async ({
       page,
    }) => {
-      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/category-review/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/category-review?edit`);
       await editorOpen(page);
-      // Opened as an unsaved conversion, whose tiles are placeholders until it is saved.
       await expect(queryTiles(page)).toHaveCount(3, { timeout: 60_000 });
-      await expect(
-         page.getByText("order_items_tiles → revenue_by_month", {
-            exact: true,
-         }),
-      ).toBeVisible();
-      await expect(
-         page.getByText("Preview appears after you Save", { exact: true }),
-      ).toHaveCount(3);
-      await expect(page.locator("[data-malloy-render-as]")).toHaveCount(0);
-      await saveChanges(page);
-      await expect(
-         page.getByText("Preview appears after you Save"),
-      ).toHaveCount(0);
+      // A tile runs once it is near the screen: bring the last one near.
+      await queryTiles(page).last().scrollIntoViewIfNeeded();
       await expect(page.locator("[data-malloy-render-as]")).toHaveCount(3, {
          timeout: 60_000,
       });
@@ -77,7 +67,7 @@ test.describe("builder chart type", () => {
          "bar",
          { timeout: 60_000 },
       );
-      await pickChart(page, tile, "From the view");
+      await pickChart(page, tile, "Default");
       await expect(renderAs(tile)).toHaveAttribute(
          "data-malloy-render-as",
          "line",
@@ -103,11 +93,9 @@ test.describe("builder chart type", () => {
       );
 
       // A second query, added from the toolbar, set to a bar.
-      await page.getByRole("button", { name: "Add tile", exact: true }).click();
+      await openAddTile(page);
       const dialog = page.getByRole("dialog", { name: "Add a tile" });
-      await dialog.getByRole("combobox", { name: "Source" }).click();
-      await page.getByRole("option", { name: "order_items" }).first().click();
-      await dialog.getByRole("button", { name: "View sales_by_month" }).click();
+      await pickView(dialog, "sales_by_month", "order_items");
       await dialog
          .getByRole("button", { name: "Add tile", exact: true })
          .click();
@@ -123,7 +111,7 @@ test.describe("builder chart type", () => {
       await saveChanges(page);
 
       // The saved file, not the editor's memory, is what the reader draws.
-      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/${slug}`);
+      await page.goto(`/${pe.env}/${pe.pkg}/${slug}`);
       const drawn = page.locator("[data-malloy-render-as]");
       await expect(drawn).toHaveCount(2, { timeout: 60_000 });
       await expect(drawn.nth(0)).toHaveAttribute(
@@ -153,21 +141,21 @@ test.describe("builder chart type", () => {
       );
       await pickChart(page, tile, "Bar");
       await saveChanges(page);
-      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/${slug}`);
+      await page.goto(`/${pe.env}/${pe.pkg}/${slug}`);
       await expect(
          page.locator("[data-malloy-render-as]").first(),
       ).toHaveAttribute("data-malloy-render-as", "bar", { timeout: 60_000 });
 
-      // Table, then From the view, each saved and read back by the reader.
+      // Table, then Default, each saved and read back by the reader.
       for (const [option, drawn] of [
          ["Table", "table"],
-         ["From the view", "line"],
+         ["Default", "line"],
       ] as const) {
-         await page.goto(`/${pe.env}/${pe.pkg}/dashboards/${slug}/edit`);
+         await page.goto(`/${pe.env}/${pe.pkg}/${slug}?edit`);
          await editorOpen(page);
          await pickChart(page, queryTiles(page).first(), option);
          await saveChanges(page);
-         await page.goto(`/${pe.env}/${pe.pkg}/dashboards/${slug}`);
+         await page.goto(`/${pe.env}/${pe.pkg}/${slug}`);
          await expect(
             page.locator("[data-malloy-render-as]").first(),
          ).toHaveAttribute("data-malloy-render-as", drawn, { timeout: 60_000 });
@@ -194,7 +182,7 @@ test.describe("builder chart type", () => {
       );
       for (const [option, drawn] of [
          ["Table", "table"],
-         ["From the view", "line"],
+         ["Default", "line"],
       ] as const) {
          await pickChart(page, tile, option);
          await expect(renderAs(tile)).toHaveAttribute(

@@ -12,11 +12,19 @@ export { AppDialog } from "./AppDialog";
 export { UnsavedChangesDialog } from "./UnsavedChangesDialog";
 export { BackLink } from "./BackLink";
 export { NarrowEditGate } from "./NarrowEditGate";
-export { DashboardBar } from "./Dashboard/DashboardBar";
+// For a host that holds a report as text and resolves its own givens.
+export { localGivenSpec } from "./ReportBuilder/localGiven";
+export { malloyLiteral } from "../utils/malloyLiteral";
+export {
+   clearReportDraft,
+   draftStorageAvailable,
+   reportDraftKey,
+   type ReportDraftTarget,
+} from "./ReportBuilder/useReportDraft";
 // The Console's palette, and the two maps drawn from it. Exported so a host
 // paints its own chrome — the Publisher app's theme included — from the same
 // hues rather than picking a near-miss beside them.
-export { PALETTE, SURFACE_TINT } from "./styles";
+export { MONO_FONT_FAMILY, PALETTE, SURFACE_TINT } from "./styles";
 export { useRouterClickHandler, type NavigationClick } from "./click_helper";
 export * from "./Dashboard";
 export * from "./DataAppViewer";
@@ -28,7 +36,7 @@ export * from "./Home";
 export * from "./Loading";
 export * from "./Materializations";
 export * from "./Model";
-export * from "./Notebook";
+export * from "./ModelViewer";
 export * from "./Package";
 export {
    Prose,
@@ -38,6 +46,12 @@ export {
 } from "./Prose";
 export * from "./QueryResult";
 export * from "./RenderedResult";
+export * from "./Report";
+export * from "./legacy";
 export { ServerProvider, useServer } from "./ServerProvider";
-export type { ServerContextValue, ServerProviderProps } from "./ServerProvider";
+export type {
+   ModelPage,
+   ServerContextValue,
+   ServerProviderProps,
+} from "./ServerProvider";
 export * from "./DocumentStorage";

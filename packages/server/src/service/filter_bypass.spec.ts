@@ -1,6 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+// DEPRECATED FEATURE COVERAGE — delete together with `#(filter)`,
+// `filterParams` and `bypassFilters` (see RELEASE_NOTES deprecations).
+// Every test in this file is about that deprecated feature.
+
 /**
  * Filter-param (`#(filter)`) enforcement across source-derivation paths.
  *
@@ -21,17 +25,22 @@
  * covered in `restricted_mode.spec.ts`.
  */
 
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { mkdtempSync } from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { BadRequestError } from "../errors";
 import { Model } from "./model";
 import type { FilterParams } from "./filter";
+import { QueryPrivileges } from "./model_query_request";
 
-const TEST_DIR = path.join(os.tmpdir(), "filter-bypass-tests");
+// Unique per run: a fixed path makes concurrent runs collide on the
+// database file's lock.
+const TEST_DIR = mkdtempSync(path.join(os.tmpdir(), "filter-bypass-tests-"));
 const TEST_DB_DIR = path.join(TEST_DIR, "db");
 const TEST_DB_PATH = path.join(TEST_DB_DIR, "test.duckdb");
 const TEST_PKG_DIR = path.join(TEST_DIR, "pkg");
@@ -186,12 +195,10 @@ async function runAdHoc(
    query: string,
    filterParams?: FilterParams,
 ): Promise<Row[]> {
-   const { compactResult } = await model.getQueryResults(
-      undefined,
-      undefined,
+   const { compactResult } = await model.runQuery(unrecordedAudit(), {
       query,
       filterParams,
-   );
+   });
    return asRows(compactResult);
 }
 
@@ -209,12 +216,10 @@ async function expectFilterRejected(
 ): Promise<void> {
    let leakedRows: number | undefined;
    try {
-      const { compactResult } = await model.getQueryResults(
-         undefined,
-         undefined,
+      const { compactResult } = await model.runQuery(unrecordedAudit(), {
          query,
          filterParams,
-      );
+      });
       leakedRows = asRows(compactResult).length;
    } catch (error) {
       expect(error).toBeInstanceOf(BadRequestError);
@@ -497,7 +502,7 @@ describe("alias/extend/chain of a protected source is enforced (not restricted)"
 // the opposite failure direction from the query boundary's identical
 // exact-match miss, which 404s — so a statement smuggled through either field
 // reads the protected source with NO filter clause at all. Nothing here
-// depends on `explores`: `Model.create` leaves the boundary inert, which is
+// depends on a curated surface: `Model.create` leaves the boundary inert, which is
 // exactly the default deployment shape.
 // ===========================================================================
 
@@ -515,10 +520,10 @@ async function expectNamedInjectionRejected(
 ): Promise<void> {
    let leaked: Row[] | undefined;
    try {
-      const { compactResult } = await model.getQueryResults(
+      const { compactResult } = await model.runQuery(unrecordedAudit(), {
          sourceName,
          queryName,
-      );
+      });
       leaked = asRows(compactResult);
    } catch {
       return;
@@ -560,7 +565,10 @@ describe("a name field cannot smuggle a statement past filter injection", () => 
       const model = await makeModel("mixed.malloy");
       let rejected = false;
       try {
-         await model.getQueryResults("products", "by_org");
+         await model.runQuery(unrecordedAudit(), {
+            sourceName: "products",
+            queryName: "by_org",
+         });
       } catch (error) {
          rejected = true;
          expect(error).toBeInstanceOf(BadRequestError);
@@ -568,12 +576,11 @@ describe("a name field cannot smuggle a statement past filter injection", () => 
       }
       expect(rejected).toBe(true);
 
-      const { compactResult } = await model.getQueryResults(
-         "products",
-         "by_org",
-         undefined,
-         { Organization: "acme" },
-      );
+      const { compactResult } = await model.runQuery(unrecordedAudit(), {
+         sourceName: "products",
+         queryName: "by_org",
+         filterParams: { Organization: "acme" },
+      });
       expectAcmeScoped(asRows(compactResult), 2);
    });
 });
@@ -595,12 +602,13 @@ describe("regressions", () => {
 
    it("bypassFilters short-circuits filter enforcement on a derivation", async () => {
       const model = await makeModel("products.malloy");
-      const { compactResult } = await model.getQueryResults(
-         undefined,
-         undefined,
-         "source: a is products\nrun: a -> { group_by: org_id; aggregate: n is count() }",
-         {},
-         true,
+      const { compactResult } = await model.runQuery(
+         unrecordedAudit(),
+         {
+            query: "source: a is products\nrun: a -> { group_by: org_id; aggregate: n is count() }",
+            filterParams: {},
+         },
+         QueryPrivileges.of({ bypassFilters: true }),
       );
       expect(asRows(compactResult).length).toBe(3);
    });

@@ -1,0 +1,4 @@
+{
+   "name": "curated-compile-errors-gated",
+   "description": "The same curated package with one #(authorize) gate in a hidden file."
+}

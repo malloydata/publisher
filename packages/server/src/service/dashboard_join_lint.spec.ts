@@ -17,15 +17,13 @@ import {
    it,
 } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import { Package } from "./package";
-
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
+import { writeTempPackage } from "../test_helpers/temp_package";
 
 const MODEL = `##! experimental.givens
 
@@ -40,12 +38,12 @@ source: order_items is duckdb.sql("select 1 as product_id, 5 as qty") extend {
 `;
 
 const dashboard = (dimension: string) => `##! experimental.givens
+## artifact { layout=grid title="By category" tiles=["by_category"] }
 import { order_items } from '../model.malloy'
 
 # control=select suggest { source=order_items dimension="${dimension}" }
 given: CATEGORY :: filter<string> is f''
 
-# artifact { title="By category" }
 query: by_category is order_items -> {
    where: products.category ~ $CATEGORY
    group_by: products.category
@@ -58,24 +56,22 @@ describe("dashboard lint: suggest over a joined dimension", () => {
    let pool: PackageLoadPool;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
    });
 
    beforeEach(() => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-joinlint-"));
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "test package" }),
-      );
-      fs.writeFileSync(path.join(tempDir, "model.malloy"), MODEL);
+      tempDir = writeTempPackage(
+         { "model.malloy": MODEL },
+         {
+            prefix: "publisher-joinlint-",
+            manifest: { name: "pkg", description: "test package" },
+         },
+      ).dir;
       fs.mkdirSync(path.join(tempDir, "dashboards"));
    });
 

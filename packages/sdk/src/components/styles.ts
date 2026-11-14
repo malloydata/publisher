@@ -63,8 +63,8 @@ export const SURFACE_TINT = {
 
 /**
  * Monospace font stack used by code-like surfaces inside the SDK
- * (file-path labels in `ItemRow`, code blocks, etc.). Matches the
- * `MONO_FONT_FAMILY` defined in the publisher app's theme.
+ * (file-path labels in `ItemRow`, code blocks, etc.) and by the
+ * Console, which re-exports it from its theme.
  */
 export const MONO_FONT_FAMILY =
    '"JetBrains Mono", "ui-monospace", "SFMono-Regular", "Menlo", monospace';
@@ -87,25 +87,6 @@ export const StyledCardContent = styled(CardContent)({
 
 export const StyledCardMedia = styled(CardMedia)({
    padding: "0",
-});
-
-// New clean notebook styles
-export const CleanNotebookContainer = styled("div")(({ theme }) => ({
-   backgroundColor: theme.palette.background.default,
-   padding: "0 8px 0px 8px",
-   borderRadius: "12px",
-   boxShadow: "none",
-   border: "none",
-   maxWidth: "1200px",
-   margin: "0 auto",
-}));
-
-export const CleanNotebookSection = styled("div")({
-   marginBottom: "48px",
-   padding: "0",
-   backgroundColor: "transparent",
-   border: "none",
-   boxShadow: "none",
 });
 
 export const CleanMetricCard = styled("div")({

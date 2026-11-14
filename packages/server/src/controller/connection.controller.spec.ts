@@ -7,18 +7,64 @@ import type {
    RunSQLOptions,
    StreamingConnection,
 } from "@malloydata/malloy";
+import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterEach, describe, expect, it } from "bun:test";
+import * as net from "net";
 import sinon from "sinon";
 
 import {
    BadRequestError,
    ConnectionError,
+   ConnectionFailedError,
+   ConnectionNotFoundError,
+   ConnectionPoolExhaustedError,
+   internalErrorToHttpError,
    InvalidArgumentError,
+   PackageNotFoundError,
    PayloadTooLargeError,
    TableNotFoundError,
+   UnconfiguredConnectionError,
 } from "../errors";
-import type { EnvironmentStore } from "../service/environment_store";
-import { ConnectionController } from "./connection.controller";
+import { logger } from "../logger";
+import {
+   ConnectionController,
+   lookupFailureDriverMessage,
+} from "./connection.controller";
+import { installSettings } from "../test_helpers/settings_env";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { ConnectionAdmin } from "../service/environment_ports";
+
+/**
+ * The variables the current test has set; the settings are re-installed from
+ * them on each change.
+ */
+let testEnv: Record<string, string> = {};
+/** Puts back the settings from before the current test's first `setEnv`. */
+let restoreSettings: (() => void) | undefined;
+
+/**
+ * Set (or, given `undefined`, unset) variables for the rest of this test, the
+ * way assigning `process.env` once did: the settings are re-installed from
+ * every variable this test has set so far, and everything else is at its
+ * default.
+ */
+function setEnv(vars: Record<string, string | undefined>): void {
+   for (const [name, value] of Object.entries(vars)) {
+      if (value === undefined) delete testEnv[name];
+      else testEnv[name] = value;
+   }
+   restoreSettings?.();
+   restoreSettings = installSettings({ env: testEnv }).restore;
+}
+
+afterEach(() => {
+   restoreSettings?.();
+   restoreSettings = undefined;
+   testEnv = {};
+});
+
+/** A fake environment's lookup: a connection that is not a managed database. */
+const unmanagedConnection = () => ({ name: "warehouse", type: "postgres" });
 
 /**
  * Tests for the row-cap path inside
@@ -51,10 +97,13 @@ function buildController(
    const fakeConnection = { runSQL } as unknown as Connection;
    const assertCanAdmitQuery =
       opts.assertCanAdmitQuery ?? sinon.stub().returns(undefined);
-   const fakeEnv = { assertCanAdmitQuery };
-   const fakeStore = {
+   const fakeEnv = {
+      assertCanAdmitQuery,
+      getApiConnection: unmanagedConnection,
+   };
+   const fakeStore = fakeOf<ConnectionAdmin>({
       getEnvironment: sinon.stub().resolves(fakeEnv),
-   } as unknown as EnvironmentStore;
+   });
    const controller = new ConnectionController(fakeStore);
    // `getMalloyConnection` is private; cast through `unknown` so we
    // can swap it without exposing internals on the public surface.
@@ -116,19 +165,12 @@ describe("ConnectionController connection queryMetadata", () => {
 });
 
 describe("ConnectionController.getConnectionQueryData row cap", () => {
-   const originalEnv = process.env.PUBLISHER_MAX_QUERY_ROWS;
-
    afterEach(() => {
       sinon.restore();
-      if (originalEnv === undefined) {
-         delete process.env.PUBLISHER_MAX_QUERY_ROWS;
-      } else {
-         process.env.PUBLISHER_MAX_QUERY_ROWS = originalEnv;
-      }
    });
 
    it("passes the SQL through verbatim and asks the connector for cap+1 rows", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "5";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "5" });
       const runSQL = sinon.stub().resolves({ rows: [{ a: 1 }], totalRows: 1 });
       const { controller } = buildController(runSQL);
 
@@ -137,6 +179,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
          "conn",
          "SELECT a FROM t",
          "",
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       expect(runSQL.calledOnce).toBe(true);
@@ -151,7 +197,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("returns the result when row count equals the cap exactly", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "3";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "3" });
       const rows = [{ a: 1 }, { a: 2 }, { a: 3 }];
       const runSQL = sinon.stub().resolves({ rows, totalRows: rows.length });
       const { controller } = buildController(runSQL);
@@ -161,6 +207,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
          "conn",
          "SELECT a FROM t",
          "",
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       const parsed = JSON.parse(result.data ?? "") as { rows: unknown[] };
@@ -168,7 +218,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("throws PayloadTooLargeError when the connection returns cap+1 rows", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "3";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "3" });
       const rows = [{ a: 1 }, { a: 2 }, { a: 3 }, { a: 4 }];
       const runSQL = sinon.stub().resolves({ rows, totalRows: rows.length });
       const { controller } = buildController(runSQL);
@@ -179,6 +229,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
             "conn",
             "SELECT a FROM t",
             "",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toBeInstanceOf(PayloadTooLargeError);
       await expect(
@@ -187,17 +241,30 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
             "conn",
             "SELECT a FROM t",
             "",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toThrow("more than 3 rows");
    });
 
    it("forwards non-SELECT statements verbatim with rowLimit applied", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "10";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "10" });
       const rows = [{ table_name: "a" }, { table_name: "b" }];
       const runSQL = sinon.stub().resolves({ rows, totalRows: rows.length });
       const { controller } = buildController(runSQL);
 
-      await controller.getConnectionQueryData("env", "conn", "SHOW TABLES", "");
+      await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SHOW TABLES",
+         "",
+         undefined,
+         undefined,
+         undefined,
+         {},
+      );
 
       expect(runSQL.firstCall.args[0]).toBe("SHOW TABLES");
       const opts = runSQL.firstCall.args[1] as { rowLimit?: number };
@@ -205,7 +272,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("disables rowLimit when PUBLISHER_MAX_QUERY_ROWS=0", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "0";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "0" });
       const rows = Array.from({ length: 100 }, (_, i) => ({ a: i }));
       const runSQL = sinon.stub().resolves({ rows, totalRows: rows.length });
       const { controller } = buildController(runSQL);
@@ -215,6 +282,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
          "conn",
          "SELECT a FROM t",
          "",
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       expect(runSQL.firstCall.args[0]).toBe("SELECT a FROM t");
@@ -225,11 +296,20 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("uses the default cap when PUBLISHER_MAX_QUERY_ROWS is unset", async () => {
-      delete process.env.PUBLISHER_MAX_QUERY_ROWS;
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: undefined });
       const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
       const { controller } = buildController(runSQL);
 
-      await controller.getConnectionQueryData("env", "conn", "SELECT 1", "");
+      await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SELECT 1",
+         "",
+         undefined,
+         undefined,
+         undefined,
+         {},
+      );
 
       const opts = runSQL.firstCall.args[1] as { rowLimit?: number };
       // Default cap is 100_000, so we request cap+1 = 100_001.
@@ -237,7 +317,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("preserves a caller-supplied rowLimit when it is below the cap", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "100";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "100" });
       const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
       const { controller } = buildController(runSQL);
 
@@ -246,6 +326,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
          "conn",
          "SELECT 1",
          JSON.stringify({ rowLimit: 5 }),
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       const opts = runSQL.firstCall.args[1] as { rowLimit?: number };
@@ -253,7 +337,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("clamps a caller-supplied rowLimit that exceeds the cap+1 sentinel and replaces any caller-supplied abortSignal with the publisher's timeout signal", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "10";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "10" });
       const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
       const { controller } = buildController(runSQL);
 
@@ -262,6 +346,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
          "conn",
          "SELECT 1",
          JSON.stringify({ rowLimit: 50, abortSignal: {} }),
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       const opts = runSQL.firstCall.args[1] as {
@@ -305,6 +393,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
                "conn",
                sqlStatement as unknown as string,
                "",
+               undefined,
+               undefined,
+               undefined,
+               {},
             ),
          ).rejects.toBeInstanceOf(BadRequestError);
          expect(runSQL.called).toBe(false);
@@ -327,6 +419,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
                "conn",
                "SELECT 1",
                options as unknown as string,
+               undefined,
+               undefined,
+               undefined,
+               {},
             ),
          ).rejects.toBeInstanceOf(BadRequestError);
          expect(runSQL.called).toBe(false);
@@ -342,12 +438,20 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
          "conn",
          "SELECT 1",
          undefined as unknown as string,
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
       await controller.getConnectionQueryData(
          "env",
          "conn",
          "SELECT 1",
          null as unknown as string,
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       expect(runSQL.callCount).toBe(2);
@@ -378,6 +482,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
                "conn",
                "SELECT 1",
                options,
+               undefined,
+               undefined,
+               undefined,
+               {},
             ),
          ).rejects.toBeInstanceOf(BadRequestError);
          expect(runSQL.called).toBe(false);
@@ -394,6 +502,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
             "conn",
             "SELECT 1",
             "{not json",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toBeInstanceOf(BadRequestError);
       expect(runSQL.called).toBe(false);
@@ -409,22 +521,82 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
  * the way in, plus an overflow check on the way out (same sentinel
  * pattern as the non-streaming path).
  */
-describe("ConnectionController.getConnectionQueryData streaming", () => {
-   const originalRowsEnv = process.env.PUBLISHER_MAX_QUERY_ROWS;
-   const originalBytesEnv = process.env.PUBLISHER_MAX_RESPONSE_BYTES;
+describe("ConnectionController.getConnectionQueryData pool exhaustion", () => {
+   afterEach(() => sinon.restore());
 
+   const exhausted = () =>
+      new ConnectionPoolExhaustedError(
+         "Connection 'conn' has no free database session: this server opens at most 5 at a time for it, and none came free within 30 s. Retry once fewer queries are running on this connection.",
+      );
+
+   it("passes a ConnectionPoolExhaustedError from runSQL through unwrapped", async () => {
+      const error = exhausted();
+      const runSQL = sinon.stub().rejects(error);
+      const { controller } = buildController(runSQL);
+
+      const thrown = await controller
+         .getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT 1",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         )
+         .catch((e: unknown) => e);
+
+      expect(thrown).toBe(error);
+   });
+
+   it("passes a ConnectionPoolExhaustedError from runSQLStream through unwrapped", async () => {
+      const error = exhausted();
+      const fakeConnection = {
+         canStream(): true {
+            return true;
+         },
+         // eslint-disable-next-line require-yield -- the stream fails before its first row
+         async *runSQLStream(): AsyncIterableIterator<QueryRecord> {
+            throw error;
+         },
+      } as unknown as Connection;
+      const fakeStore = fakeOf<ConnectionAdmin>({
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub().returns(undefined),
+            getApiConnection: unmanagedConnection,
+         }),
+      });
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(fakeConnection);
+
+      const thrown = await controller
+         .getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT 1",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         )
+         .catch((e: unknown) => e);
+
+      expect(thrown).toBe(error);
+   });
+});
+
+describe("ConnectionController.getConnectionQueryData streaming", () => {
    afterEach(() => {
       sinon.restore();
-      if (originalRowsEnv === undefined) {
-         delete process.env.PUBLISHER_MAX_QUERY_ROWS;
-      } else {
-         process.env.PUBLISHER_MAX_QUERY_ROWS = originalRowsEnv;
-      }
-      if (originalBytesEnv === undefined) {
-         delete process.env.PUBLISHER_MAX_RESPONSE_BYTES;
-      } else {
-         process.env.PUBLISHER_MAX_RESPONSE_BYTES = originalBytesEnv;
-      }
    });
 
    /**
@@ -465,10 +637,11 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
       } as unknown as StreamingConnection;
       const fakeEnv = {
          assertCanAdmitQuery: sinon.stub().returns(undefined),
+         getApiConnection: unmanagedConnection,
       };
-      const fakeStore = {
+      const fakeStore = fakeOf<ConnectionAdmin>({
          getEnvironment: sinon.stub().resolves(fakeEnv),
-      } as unknown as EnvironmentStore;
+      });
       const controller = new ConnectionController(fakeStore);
       sinon
          .stub(
@@ -482,7 +655,7 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
    }
 
    it("routes through runSQLStream and asks the driver for cap+1 rows", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "5";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "5" });
       const rows = [{ a: 1 }, { a: 2 }];
       const { controller, seenSql, seenOptions } = buildStreamingController({
          rows,
@@ -493,6 +666,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
          "conn",
          "SELECT a FROM t",
          "",
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       expect(seenSql.value).toBe("SELECT a FROM t");
@@ -502,7 +679,7 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
    });
 
    it("preserves a caller-supplied rowLimit when it is below the cap+1 ceiling", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "100";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "100" });
       const { controller, seenOptions } = buildStreamingController({
          rows: [{ a: 1 }],
       });
@@ -512,13 +689,17 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
          "conn",
          "SELECT a FROM t",
          JSON.stringify({ rowLimit: 10 }),
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       expect(seenOptions.value?.rowLimit).toBe(10);
    });
 
    it("throws PayloadTooLargeError when the stream yields more than the row cap", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "2";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "2" });
       const rows = [{ a: 1 }, { a: 2 }, { a: 3 }, { a: 4 }];
       const { controller } = buildStreamingController({
          rows,
@@ -531,6 +712,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
             "conn",
             "SELECT a FROM t",
             "",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toBeInstanceOf(PayloadTooLargeError);
       await expect(
@@ -539,13 +724,19 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
             "conn",
             "SELECT a FROM t",
             "",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toThrow("more than 2 rows");
    });
 
    it("throws PayloadTooLargeError when the stream exceeds the byte cap", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "1000";
-      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "60";
+      setEnv({
+         PUBLISHER_MAX_QUERY_ROWS: "1000",
+         PUBLISHER_MAX_RESPONSE_BYTES: "60",
+      });
       const big = "x".repeat(40);
       const rows = [{ s: big }, { s: big }, { s: big }];
       const { controller } = buildStreamingController({
@@ -559,6 +750,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
             "conn",
             "SELECT s FROM t",
             "",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toBeInstanceOf(PayloadTooLargeError);
       await expect(
@@ -567,13 +762,19 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
             "conn",
             "SELECT s FROM t",
             "",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toThrow("exceeded 60 bytes");
    });
 
    it("disables byte cap when PUBLISHER_MAX_RESPONSE_BYTES=0", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "1000";
-      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "0";
+      setEnv({
+         PUBLISHER_MAX_QUERY_ROWS: "1000",
+         PUBLISHER_MAX_RESPONSE_BYTES: "0",
+      });
       const big = "x".repeat(10_000);
       const rows: QueryRecord[] = Array.from({ length: 3 }, () => ({ s: big }));
       const { controller } = buildStreamingController({
@@ -586,6 +787,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
          "conn",
          "SELECT s FROM t",
          "",
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       const parsed = JSON.parse(result.data ?? "") as { rows: QueryRecord[] };
@@ -593,7 +798,7 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
    });
 
    it("omits rowLimit when PUBLISHER_MAX_QUERY_ROWS=0 and no caller limit is given", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "0";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "0" });
       const rows = [{ a: 1 }, { a: 2 }, { a: 3 }];
       const { controller, seenOptions } = buildStreamingController({
          rows,
@@ -605,6 +810,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
          "conn",
          "SELECT a FROM t",
          "",
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       expect(seenOptions.value?.rowLimit).toBeUndefined();
@@ -613,7 +822,7 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
    });
 
    it("replaces caller-supplied abortSignal with a real AbortSignal", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "10";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "10" });
       const { controller, seenOptions } = buildStreamingController({
          rows: [{ a: 1 }],
       });
@@ -623,6 +832,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
          "conn",
          "SELECT 1",
          JSON.stringify({ abortSignal: {} }),
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       // The controller clears the caller-supplied abortSignal (which
@@ -661,7 +874,16 @@ describe("ConnectionController.getConnectionQueryData admission gate", () => {
       });
 
       await expect(
-         controller.getConnectionQueryData("env", "conn", "SELECT 1", ""),
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT 1",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         ),
       ).rejects.toBeInstanceOf(ServiceUnavailableError);
 
       // The gate must fire *before* the connector — no SQL should ever
@@ -674,7 +896,16 @@ describe("ConnectionController.getConnectionQueryData admission gate", () => {
       const runSQL = sinon.stub().resolves({ rows: [{ a: 1 }], totalRows: 1 });
       const { controller, assertCanAdmitQuery } = buildController(runSQL);
 
-      await controller.getConnectionQueryData("env", "conn", "SELECT 1", "");
+      await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SELECT 1",
+         "",
+         undefined,
+         undefined,
+         undefined,
+         {},
+      );
 
       expect(assertCanAdmitQuery.called).toBe(true);
       expect(runSQL.called).toBe(true);
@@ -682,19 +913,12 @@ describe("ConnectionController.getConnectionQueryData admission gate", () => {
 });
 
 describe("ConnectionController.getConnectionQueryData query timeout", () => {
-   const originalTimeout = process.env.PUBLISHER_QUERY_TIMEOUT_MS;
-
    afterEach(() => {
       sinon.restore();
-      if (originalTimeout === undefined) {
-         delete process.env.PUBLISHER_QUERY_TIMEOUT_MS;
-      } else {
-         process.env.PUBLISHER_QUERY_TIMEOUT_MS = originalTimeout;
-      }
    });
 
    it("surfaces QueryTimeoutError when the driver outlasts PUBLISHER_QUERY_TIMEOUT_MS, with the publisher's AbortSignal delivered to runSQL", async () => {
-      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "20";
+      setEnv({ PUBLISHER_QUERY_TIMEOUT_MS: "20" });
       // The driver "hangs" until the publisher's abort signal
       // fires; on abort it rejects with a driver-shaped error. The
       // controller's runWithQueryTimeout wrapper converts that into
@@ -713,7 +937,16 @@ describe("ConnectionController.getConnectionQueryData query timeout", () => {
 
       const { QueryTimeoutError } = await import("../errors");
       await expect(
-         controller.getConnectionQueryData("env", "conn", "SELECT 1", ""),
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT 1",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         ),
       ).rejects.toBeInstanceOf(QueryTimeoutError);
 
       // Critical invariant: the abort signal MUST actually fire
@@ -742,10 +975,13 @@ function buildTemporaryTableController(
    const fakeConnection = { manifestTemporaryTable } as unknown as Connection;
    const assertCanAdmitQuery =
       opts.assertCanAdmitQuery ?? sinon.stub().returns(undefined);
-   const fakeEnv = { assertCanAdmitQuery };
-   const fakeStore = {
+   const fakeEnv = {
+      assertCanAdmitQuery,
+      getApiConnection: unmanagedConnection,
+   };
+   const fakeStore = fakeOf<ConnectionAdmin>({
       getEnvironment: sinon.stub().resolves(fakeEnv),
-   } as unknown as EnvironmentStore;
+   });
    const controller = new ConnectionController(fakeStore);
    sinon
       .stub(
@@ -764,18 +1000,11 @@ function buildTemporaryTableController(
  * the same three OOM guards as `getConnectionQueryData` must apply:
  * sqlStatement shape, admission, and wall-clock timeout. The
  * per-pod concurrency cap is wired at the route layer in `server.ts`
- * / `server-old.ts` and exercised by `oom_guards.integration.spec.ts`.
+ * / `server-old.ts` and exercised by `tests/component/oom_guards.component.spec.ts`.
  */
 describe("ConnectionController.getConnectionTemporaryTable guards", () => {
-   const originalTimeout = process.env.PUBLISHER_QUERY_TIMEOUT_MS;
-
    afterEach(() => {
       sinon.restore();
-      if (originalTimeout === undefined) {
-         delete process.env.PUBLISHER_QUERY_TIMEOUT_MS;
-      } else {
-         process.env.PUBLISHER_QUERY_TIMEOUT_MS = originalTimeout;
-      }
    });
 
    it("rejects non-string sqlStatement at the boundary (CodeQL type guard)", async () => {
@@ -785,10 +1014,14 @@ describe("ConnectionController.getConnectionTemporaryTable guards", () => {
       );
 
       await expect(
-         controller.getConnectionTemporaryTable("env", "conn", [
-            "SELECT 1",
-            "SELECT 2",
-         ] as unknown as string),
+         controller.getConnectionTemporaryTable(
+            "env",
+            "conn",
+            ["SELECT 1", "SELECT 2"] as unknown as string,
+            undefined,
+            undefined,
+            {},
+         ),
       ).rejects.toBeInstanceOf(BadRequestError);
 
       expect(manifestTemporaryTable.called).toBe(false);
@@ -810,7 +1043,14 @@ describe("ConnectionController.getConnectionTemporaryTable guards", () => {
       );
 
       await expect(
-         controller.getConnectionTemporaryTable("env", "conn", "SELECT 1"),
+         controller.getConnectionTemporaryTable(
+            "env",
+            "conn",
+            "SELECT 1",
+            undefined,
+            undefined,
+            {},
+         ),
       ).rejects.toBeInstanceOf(ServiceUnavailableError);
 
       // Load-shedding invariant: the gate must fire BEFORE any
@@ -830,6 +1070,9 @@ describe("ConnectionController.getConnectionTemporaryTable guards", () => {
          "env",
          "conn",
          "SELECT 1",
+         undefined,
+         undefined,
+         {},
       );
 
       expect(assertCanAdmitQuery.called).toBe(true);
@@ -838,7 +1081,7 @@ describe("ConnectionController.getConnectionTemporaryTable guards", () => {
    });
 
    it("surfaces QueryTimeoutError when manifestTemporaryTable outlasts PUBLISHER_QUERY_TIMEOUT_MS", async () => {
-      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "20";
+      setEnv({ PUBLISHER_QUERY_TIMEOUT_MS: "20" });
       // `manifestTemporaryTable` does not accept an abortSignal, so
       // the timeout is a pure wall-clock guard — the DDL keeps
       // running inside the DB but the HTTP response unblocks as
@@ -852,7 +1095,14 @@ describe("ConnectionController.getConnectionTemporaryTable guards", () => {
 
       const { QueryTimeoutError } = await import("../errors");
       await expect(
-         controller.getConnectionTemporaryTable("env", "conn", "SELECT 1"),
+         controller.getConnectionTemporaryTable(
+            "env",
+            "conn",
+            "SELECT 1",
+            undefined,
+            undefined,
+            {},
+         ),
       ).rejects.toBeInstanceOf(QueryTimeoutError);
    });
 });
@@ -861,7 +1111,7 @@ describe("ConnectionController.testConnectionConfiguration name validation", () 
    afterEach(() => sinon.restore());
 
    const controller = () =>
-      new ConnectionController({} as unknown as EnvironmentStore);
+      new ConnectionController(fakeOf<ConnectionAdmin>({}));
 
    it.each([
       ["duckdb", "../evil"],
@@ -901,9 +1151,9 @@ describe("ConnectionController getTable not-found mapping", () => {
             .stub()
             .returns({ name: "warehouse", type: "postgres" }),
       };
-      const fakeStore = {
+      const fakeStore = fakeOf<ConnectionAdmin>({
          getEnvironment: sinon.stub().resolves(fakeEnv),
-      } as unknown as EnvironmentStore;
+      });
       const controller = new ConnectionController(fakeStore);
       sinon
          .stub(
@@ -918,6 +1168,34 @@ describe("ConnectionController getTable not-found mapping", () => {
 
    const getTable = (controller: ConnectionController) =>
       controller.getTable("env", "warehouse", "ds", "ds.missing");
+
+   it("lists a record column's members after it, as a listing does", async () => {
+      const { controller } = buildTableController(
+         sinon.stub().resolves({
+            type: "table",
+            name: "ds.orders",
+            fields: [
+               { name: "id", type: "number" },
+               {
+                  name: "delivery",
+                  type: "record",
+                  fields: [{ name: "city", type: "string" }],
+               },
+            ],
+         }),
+      );
+      const table = await controller.getTable(
+         "env",
+         "warehouse",
+         "ds",
+         "ds.orders",
+      );
+      expect(table.columns).toEqual([
+         { name: "id", type: "number" },
+         { name: "delivery", type: "record" },
+         { name: "delivery.city", type: "string" },
+      ]);
+   });
 
    it("classifies BigQuery's returned not-found string as TableNotFoundError", async () => {
       // BigQuery's driver RETURNS the message instead of throwing, discarding
@@ -1070,13 +1348,13 @@ describe("ConnectionController getConnectionSqlSource error mapping", () => {
       controller: ConnectionController;
    } {
       const fakeConnection = { fetchSelectSchema } as unknown as Connection;
-      const fakeStore = {
+      const fakeStore = fakeOf<ConnectionAdmin>({
          getEnvironment: sinon.stub().resolves({
             getApiConnection: sinon
                .stub()
                .returns({ name: "warehouse", type: "postgres" }),
          }),
-      } as unknown as EnvironmentStore;
+      });
       const controller = new ConnectionController(fakeStore);
       sinon
          .stub(
@@ -1121,6 +1399,41 @@ describe("ConnectionController getConnectionSqlSource error mapping", () => {
       );
    });
 
+   it("answers a statement Postgres rejected as a 400 with the driver's message", async () => {
+      // node-pg's DatabaseError, as fetchSelectSchema lets it through: prod
+      // 2026-10-13, a column the customer dropped while their model still
+      // selected it. Classified as 502 before, this paged the router SLO.
+      const { controller } = buildSqlController(
+         sinon.stub().rejects(
+            Object.assign(new Error('column "sundance_name" does not exist'), {
+               code: "42703",
+            }),
+         ),
+      );
+      await expect(getSqlSource(controller)).rejects.toBeInstanceOf(
+         InvalidArgumentError,
+      );
+      await expect(getSqlSource(controller)).rejects.toThrow(
+         'column "sundance_name" does not exist',
+      );
+   });
+
+   it("answers a table the statement names but Postgres lacks as not found", async () => {
+      const { controller } = buildSqlController(
+         sinon.stub().rejects(
+            Object.assign(
+               new Error('relation "public.spaces" does not exist'),
+               {
+                  code: "42P01",
+               },
+            ),
+         ),
+      );
+      await expect(getSqlSource(controller)).rejects.toBeInstanceOf(
+         TableNotFoundError,
+      );
+   });
+
    it("preserves the message of a thrown string", async () => {
       // `(error as Error).message` on a thrown string is undefined, which lost
       // the only diagnostic the caller had.
@@ -1132,5 +1445,648 @@ describe("ConnectionController getConnectionSqlSource error mapping", () => {
       await expect(getSqlSource(controller)).rejects.toThrow(
          "plain string failure",
       );
+   });
+});
+
+describe("ConnectionController.getConnectionQueryData statement rejection", () => {
+   afterEach(() => sinon.restore());
+
+   it("answers a statement Postgres rejected as a 400, not an upstream fault", async () => {
+      // Same classification as sqlSource: runSQL lets node-pg's DatabaseError
+      // through, and its SQLSTATE says the statement, not the connection, is
+      // what the caller has to fix.
+      const runSQL = sinon.stub().rejects(
+         Object.assign(new Error('column "sundance_name" does not exist'), {
+            code: "42703",
+         }),
+      );
+      const { controller } = buildController(runSQL);
+      await expect(
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT sundance_name FROM public.spaces",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         ),
+      ).rejects.toBeInstanceOf(InvalidArgumentError);
+   });
+
+   it("answers a table the statement names but Postgres lacks as not found, on this path too", async () => {
+      // sqlRunFailure is the only place the sqlQuery wiring lives, and the
+      // router's retry suppression depends on the 404 carrying
+      // TABLE_NOT_FOUND here as on sqlSource.
+      const { controller } = buildController(
+         sinon
+            .stub()
+            .rejects(
+               Object.assign(
+                  new Error('relation "public.spaces" does not exist'),
+                  { code: "42P01" },
+               ),
+            ),
+      );
+      await expect(
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT 1 FROM public.spaces",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         ),
+      ).rejects.toBeInstanceOf(TableNotFoundError);
+   });
+
+   it("classifies the same on the streaming path Postgres actually takes in prod", async () => {
+      // Postgres canStream()s, so prod goes through runSQLStream and
+      // streamSqlWithBudget rethrows the driver error unwrapped. Pin that
+      // the SQLSTATE survives that path, not only buffered runSQL.
+      const fakeConnection = {
+         canStream(): true {
+            return true;
+         },
+         // eslint-disable-next-line require-yield
+         async *runSQLStream(): AsyncIterableIterator<QueryRecord> {
+            throw Object.assign(
+               new Error('column "sundance_name" does not exist'),
+               { code: "42703" },
+            );
+         },
+      } as unknown as StreamingConnection;
+      const fakeStore = fakeOf<ConnectionAdmin>({
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub().returns(undefined),
+            getApiConnection: unmanagedConnection,
+         }),
+      });
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(fakeConnection as unknown as Connection);
+      await expect(
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT sundance_name FROM public.spaces",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         ),
+      ).rejects.toBeInstanceOf(InvalidArgumentError);
+   });
+
+   it("still answers a codeless driver failure as a 502-class ConnectionError", async () => {
+      const { controller } = buildController(
+         sinon.stub().rejects(new Error("something the driver said")),
+      );
+      await expect(
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT 1",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         ),
+      ).rejects.toBeInstanceOf(ConnectionError);
+   });
+});
+
+describe("ConnectionController.getConnectionTemporaryTable statement rejection", () => {
+   afterEach(() => sinon.restore());
+
+   it("answers a statement Postgres rejected in CREATE TEMPORARY TABLE AS as a 400", async () => {
+      // The same sqlRunFailure as sqlQuery, behind the timeout race.
+      const manifestTemporaryTable = sinon.stub().rejects(
+         Object.assign(new Error('column "sundance_name" does not exist'), {
+            code: "42703",
+         }),
+      );
+      const { controller } = buildTemporaryTableController(
+         manifestTemporaryTable,
+      );
+      await expect(
+         controller.getConnectionTemporaryTable(
+            "env",
+            "conn",
+            "SELECT sundance_name FROM public.spaces",
+            undefined,
+            undefined,
+            {},
+         ),
+      ).rejects.toBeInstanceOf(InvalidArgumentError);
+   });
+});
+
+describe("ConnectionController on a database that cannot be reached", () => {
+   // A real Malloy Postgres driver aimed at a port nothing listens on, so the
+   // error is the one node-pg actually raises, carried through db_utils.
+   let pg: PostgresConnection | undefined;
+
+   afterEach(async () => {
+      sinon.restore();
+      await pg?.close();
+      pg = undefined;
+   });
+
+   async function deadPostgres(): Promise<PostgresConnection> {
+      const server = net.createServer();
+      await new Promise<void>((resolve) =>
+         server.listen(0, "127.0.0.1", () => resolve()),
+      );
+      const { port } = server.address() as net.AddressInfo;
+      await new Promise((resolve) => server.close(resolve));
+      pg = new PostgresConnection({
+         name: "warehouse",
+         host: "127.0.0.1",
+         port,
+         username: "nobody",
+         databaseName: "nothing",
+      });
+      return pg;
+   }
+
+   function controllerOn(malloyConnection: Connection): ConnectionController {
+      const fakeStore = fakeOf<ConnectionAdmin>({
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub(),
+            getApiConnection: unmanagedConnection,
+         }),
+      });
+      const controller = new ConnectionController(fakeStore);
+      const internals = controller as unknown as {
+         getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+         getApiConnectionForLookup: (...args: unknown[]) => unknown;
+      };
+      sinon.stub(internals, "getMalloyConnection").resolves(malloyConnection);
+      sinon.stub(internals, "getApiConnectionForLookup").returns({
+         name: "warehouse",
+         type: "postgres",
+         postgresConnection: {},
+      });
+      return controller;
+   }
+
+   it("answers sqlQuery with a connection failure", async () => {
+      const controller = controllerOn(await deadPostgres());
+      await expect(
+         controller.getConnectionQueryData(
+            "env",
+            "warehouse",
+            "SELECT 1",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         ),
+      ).rejects.toBeInstanceOf(ConnectionFailedError);
+   });
+
+   it("answers a schema listing with a connection failure, not a 500", async () => {
+      const controller = controllerOn(await deadPostgres());
+      await expect(
+         controller.listSchemas("env", "warehouse"),
+      ).rejects.toBeInstanceOf(ConnectionFailedError);
+   });
+
+   it.each([
+      [
+         "a table listing",
+         (c: ConnectionController) =>
+            c.listTables("env", "warehouse", "public"),
+      ],
+      [
+         "the table lookup",
+         (c: ConnectionController) =>
+            c.getTable("env", "warehouse", "public", "public.orders"),
+      ],
+      [
+         "sqlSource",
+         (c: ConnectionController) =>
+            c.getConnectionSqlSource("env", "warehouse", "SELECT 1"),
+      ],
+      [
+         "sqlTemporaryTable",
+         (c: ConnectionController) =>
+            c.getConnectionTemporaryTable(
+               "env",
+               "warehouse",
+               "SELECT 1",
+               undefined,
+               undefined,
+               {},
+            ),
+      ],
+   ])("answers %s with a connection failure", async (_route, call) => {
+      const controller = controllerOn(await deadPostgres());
+      await expect(call(controller)).rejects.toBeInstanceOf(
+         ConnectionFailedError,
+      );
+   });
+
+   it("logs a table lookup on a dead database once, at warn, not again as an error", async () => {
+      // Malloy's Postgres driver returns this failure as text rather than
+      // throwing, so it also pins that the text is still recognized.
+      const controller = controllerOn(await deadPostgres());
+      const logError = sinon.stub(logger, "error");
+      await expect(
+         controller.getTable("env", "warehouse", "public", "public.orders"),
+      ).rejects.toBeInstanceOf(ConnectionFailedError);
+      expect(logError.called).toBe(false);
+   });
+
+   it("leaves a schema listing that failed for another reason as it was", async () => {
+      // Only an unreachable database is reclassified. A failure the listing
+      // wrapped for any other reason keeps its old status.
+      const rejected = Object.assign(new Error("permission denied"), {
+         code: "42501",
+      });
+      const controller = controllerOn({
+         runSQL: sinon.stub().rejects(rejected),
+      } as unknown as Connection);
+      const error = await controller.listSchemas("env", "warehouse").then(
+         () => undefined,
+         (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(ConnectionError);
+   });
+});
+
+/**
+ * The per-package "duckdb" lookup. A router that cached which worker serves a
+ * package version re-resolves on a 404 and retries; a 400 sends it back to the
+ * same worker. So a package this server does not hold must be a 404, while a
+ * lookup that names no package in a multi-package environment stays a 400.
+ */
+describe("ConnectionController per-package duckdb lookup", () => {
+   afterEach(() => sinon.restore());
+
+   function buildDuckdbController(packageNames: string[]): {
+      controller: ConnectionController;
+      envLookup: sinon.SinonStub;
+   } {
+      const envLookup = sinon.stub().rejects(new Error("env lookup reached"));
+      const fakeStore = fakeOf<ConnectionAdmin>({
+         getEnvironment: sinon.stub().resolves({
+            listPackages: sinon
+               .stub()
+               .resolves(packageNames.map((name) => ({ name }))),
+            getMalloyConnection: envLookup,
+         }),
+      });
+      return { controller: new ConnectionController(fakeStore), envLookup };
+   }
+
+   const sqlSource = (controller: ConnectionController, packageName?: string) =>
+      controller.getConnectionSqlSource(
+         "env",
+         "duckdb",
+         "SELECT 1",
+         packageName,
+      );
+
+   it("answers 404 for a package the environment does not hold", async () => {
+      const { controller } = buildDuckdbController(["pkg@1.0.13"]);
+      const error = await sqlSource(controller, "pkg@1.0.12").catch((e) => e);
+      expect(error).toBeInstanceOf(PackageNotFoundError);
+      expect(error.message).toBe(
+         'Package "pkg@1.0.12" not found in environment "env"',
+      );
+      expect(internalErrorToHttpError(error, { log: false }).status).toBe(404);
+   });
+
+   it("answers 404 when the environment holds no packages at all", async () => {
+      // The worker unloaded its only package. This used to fall through to the
+      // environment-level lookup, which has no "duckdb" connection.
+      const { controller, envLookup } = buildDuckdbController([]);
+      const error = await sqlSource(controller, "pkg@1.0.12").catch((e) => e);
+      expect(error).toBeInstanceOf(PackageNotFoundError);
+      expect(error.message).toBe(
+         'Package "pkg@1.0.12" not found in environment "env"',
+      );
+      expect(envLookup.called).toBe(false);
+   });
+
+   it("keeps an unnamed lookup across several packages a 400", async () => {
+      const { controller } = buildDuckdbController(["a", "b"]);
+      const error = await sqlSource(controller).catch((e) => e);
+      expect(error).toBeInstanceOf(BadRequestError);
+      expect(error.message).toMatch(/^Ambiguous "duckdb" connection lookup/);
+   });
+});
+
+describe("ConnectionController connection lookup failures", () => {
+   afterEach(() => sinon.restore());
+
+   function controllerWhoseLookupRejects(error: unknown): ConnectionController {
+      const fakeStore = fakeOf<ConnectionAdmin>({
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub(),
+            getApiConnection: unmanagedConnection,
+            getMalloyConnection: sinon.stub().rejects(error),
+         }),
+      });
+      return new ConnectionController(fakeStore);
+   }
+
+   it("answers a lookup that could not reach the database as a connection failure", async () => {
+      // A Postgres connection behind an SSH tunnel opens the tunnel on first
+      // lookup, before any route's own catch.
+      const refused = Object.assign(new Error("connect ECONNREFUSED"), {
+         code: "ECONNREFUSED",
+      });
+      const controller = controllerWhoseLookupRejects(refused);
+      const error = await controller
+         .getConnectionSqlSource("env", "warehouse", "SELECT 1")
+         .catch((e) => e);
+      expect(error).toBeInstanceOf(ConnectionFailedError);
+      expect(internalErrorToHttpError(error, { log: false })).toMatchObject({
+         status: 502,
+         json: { reason: "CONNECTION_FAILED" },
+      });
+   });
+
+   it("answers a connection name the environment does not have as 404, as the listing routes do", async () => {
+      const controller = controllerWhoseLookupRejects(
+         new UnconfiguredConnectionError("warehuose"),
+      );
+      const error = await controller
+         .getConnectionQueryData(
+            "env",
+            "warehuose",
+            "SELECT 1",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         )
+         .catch((e) => e);
+      expect(error).toBeInstanceOf(ConnectionNotFoundError);
+      expect(internalErrorToHttpError(error, { log: false })).toEqual({
+         status: 404,
+         json: { code: 404, message: "Connection warehuose not found" },
+      });
+   });
+});
+
+describe("lookupFailureDriverMessage", () => {
+   it("takes the driver message from Postgres's and Databricks's shape", () => {
+      expect(
+         lookupFailureDriverMessage(
+            "Error fetching schema for public.t: connect ECONNREFUSED 10.0.0.5:5432",
+            "public.t",
+         ),
+      ).toBe("connect ECONNREFUSED 10.0.0.5:5432");
+   });
+
+   it("takes it from the SQL Server connector's shape, without the error number", () => {
+      // 0 is the connector's number for a failure before the server answered.
+      expect(
+         lookupFailureDriverMessage(
+            "Error fetching schema for table dbo.t: 0: Failed to connect to 127.0.0.1:1 - Could not connect (sequence)",
+            "dbo.t",
+         ),
+      ).toBe("Failed to connect to 127.0.0.1:1 - Could not connect (sequence)");
+      expect(
+         lookupFailureDriverMessage(
+            "Error fetching schema for table dbo.t: 229: The SELECT permission was denied",
+            "dbo.t",
+         ),
+      ).toBe("The SELECT permission was denied");
+   });
+
+   it("is undefined for any other text", () => {
+      expect(
+         lookupFailureDriverMessage("Invalid table path x: bad", "x"),
+      ).toBeUndefined();
+   });
+});
+
+/**
+ * A DuckLake connection's table path as the remote connection sends it: the
+ * path's first segment as the schema. A bare `lake.table('orders')` must read
+ * the catalog's default schema, not a schema named `orders`.
+ */
+describe("ConnectionController getTable DuckLake paths", () => {
+   afterEach(() => sinon.restore());
+
+   async function describedPath(
+      schemaName: string,
+      tablePath: string,
+   ): Promise<string> {
+      const fetchTableSchema = sinon.stub().resolves({
+         type: "table",
+         name: "orders",
+         dialect: "duckdb",
+         tablePath,
+         connection: "lake",
+         fields: [],
+      });
+      const fakeConnection = { fetchTableSchema } as unknown as Connection;
+      const fakeEnv = {
+         getApiConnection: sinon
+            .stub()
+            .returns({ name: "lake", type: "ducklake" }),
+      };
+      const fakeStore = fakeOf<ConnectionAdmin>({
+         getEnvironment: sinon.stub().resolves(fakeEnv),
+      });
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(fakeConnection);
+      await controller.getTable("env", "lake", schemaName, tablePath);
+      return fetchTableSchema.firstCall.args[1] as string;
+   }
+
+   it("reads a bare name the remote connection sends from the default schema", async () => {
+      expect(await describedPath("orders", "orders")).toBe("lake.orders");
+   });
+
+   it("reads a bare name under a schema the route names", async () => {
+      expect(await describedPath("main", "orders")).toBe("lake.main.orders");
+   });
+
+   it("prefixes a schema-qualified path with the catalog", async () => {
+      expect(await describedPath("main", "main.orders")).toBe(
+         "lake.main.orders",
+      );
+   });
+
+   it("leaves a path already naming the catalog as it is", async () => {
+      expect(await describedPath("lake", "lake.main.orders")).toBe(
+         "lake.main.orders",
+      );
+   });
+});
+
+describe("raw SQL on a managed database", () => {
+   afterEach(() => sinon.restore());
+
+   function controllerOn(apiConnection: Record<string, unknown> | Error) {
+      const runSQL = sinon.stub().resolves({ rows: [{ n: 1 }], totalRows: 1 });
+      const manifestTemporaryTable = sinon.stub().resolves("tmp_1");
+      const fetchSelectSchema = sinon.stub().resolves({ fields: [] });
+      const fakeStore = fakeOf<ConnectionAdmin>({
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub(),
+            getApiConnection: unmanagedConnection,
+         }),
+      });
+      const controller = new ConnectionController(fakeStore);
+      const internals = controller as unknown as {
+         getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+         getApiConnectionForLookup: (...args: unknown[]) => unknown;
+      };
+      sinon.stub(internals, "getMalloyConnection").resolves({
+         runSQL,
+         manifestTemporaryTable,
+         fetchSelectSchema,
+      } as unknown as Connection);
+      const lookup = sinon.stub(internals, "getApiConnectionForLookup");
+      if (apiConnection instanceof Error) lookup.throws(apiConnection);
+      else lookup.returns(apiConnection);
+      return { controller, runSQL, manifestTemporaryTable, fetchSelectSchema };
+   }
+
+   const managed = { name: "sales", type: "ducklake", managed: true };
+
+   it("runs a single SELECT", async () => {
+      const { controller, runSQL } = controllerOn(managed);
+      const result = await controller.getConnectionQueryData(
+         "env",
+         "sales",
+         "SELECT * FROM sales.main.orders",
+         "",
+         undefined,
+         undefined,
+         undefined,
+         {},
+      );
+      expect(runSQL.calledOnce).toBe(true);
+      expect(JSON.parse(result.data!)).toEqual({
+         rows: [{ n: 1 }],
+         totalRows: 1,
+      });
+   });
+
+   it.each([
+      [
+         "a statement that is not a SELECT",
+         "CREATE SECRET s (TYPE s3, PROVIDER config)",
+      ],
+      ["a SELECT followed by another statement", "SELECT 1; SET threads = 1"],
+   ])(
+      "refuses %s with a 400, before the connection runs anything",
+      async (_label, sql) => {
+         const { controller, runSQL } = controllerOn(managed);
+         const refused = controller.getConnectionQueryData(
+            "env",
+            "sales",
+            sql,
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         );
+         await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+         expect(runSQL.called).toBe(false);
+      },
+   );
+
+   it("refuses a temporary table, which is a CREATE", async () => {
+      const { controller, manifestTemporaryTable } = controllerOn(managed);
+      const refused = controller.getConnectionTemporaryTable(
+         "env",
+         "sales",
+         "SELECT 1",
+         undefined,
+         undefined,
+         {},
+      );
+      await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+      await expect(refused).rejects.toThrow("cannot create a temporary table");
+      expect(manifestTemporaryTable.called).toBe(false);
+   });
+
+   it("leaves a connection that is not managed as it was: a script runs", async () => {
+      const { controller, runSQL } = controllerOn({
+         name: "lake",
+         type: "ducklake",
+      });
+      await controller.getConnectionQueryData(
+         "env",
+         "lake",
+         "SELECT 1; SELECT 2",
+         "",
+         undefined,
+         undefined,
+         undefined,
+         {},
+      );
+      expect(runSQL.calledOnce).toBe(true);
+   });
+
+   it("reads a single SELECT's schema", async () => {
+      const { controller, fetchSelectSchema } = controllerOn(managed);
+      await controller.getConnectionSqlSource(
+         "env",
+         "sales",
+         "SELECT * FROM sales.main.orders",
+      );
+      expect(fetchSelectSchema.calledOnce).toBe(true);
+   });
+
+   it("refuses a schema read of anything else, before the connection runs it", async () => {
+      const { controller, fetchSelectSchema } = controllerOn(managed);
+      const refused = controller.getConnectionSqlSource(
+         "env",
+         "sales",
+         "SELECT 1; SET threads = 1",
+      );
+      await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+      expect(fetchSelectSchema.called).toBe(false);
+   });
+
+   it("fails closed when the connection lookup fails for a reason other than not found", async () => {
+      const { controller, runSQL } = controllerOn(
+         new Error("config unreadable"),
+      );
+      const refused = controller.getConnectionQueryData(
+         "env",
+         "sales",
+         "SELECT 1; SET threads = 1",
+         "",
+         undefined,
+         undefined,
+         undefined,
+         {},
+      );
+      await expect(refused).rejects.toThrow("config unreadable");
+      expect(runSQL.called).toBe(false);
    });
 });

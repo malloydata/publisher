@@ -13,20 +13,39 @@ import {
    IconButton,
    InputAdornment,
    MenuItem,
+   Paper,
+   type PaperProps,
    Slider,
    Stack,
    TextField,
    Typography,
+   type SxProps,
+   type Theme,
 } from "@mui/material";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
-import dayjs from "dayjs";
+import dayjs, { type Dayjs } from "dayjs";
 import utc from "dayjs/plugin/utc";
-import { type ReactNode, useEffect, useState } from "react";
+import {
+   createContext,
+   type FocusEvent,
+   type ReactNode,
+   useContext,
+   useEffect,
+   useRef,
+   useState,
+} from "react";
 import { Given } from "../../client";
 import { paramToGiven, pickedDayToUtc } from "./paramCodec";
 import { GivenValue } from "../../hooks/givenValue";
+import { useSettledDraft } from "../../hooks/useSettledDraft";
+import {
+   type OptionSearch,
+   SUGGEST_OPTION_LIMIT,
+   SUGGEST_SEARCH_LIMIT,
+} from "../../hooks/useSuggestOptions";
+import { type OptionSearchState, useOptionSearch } from "./useOptionSearch";
 import {
    decodeAtLeast,
    decodeBetween,
@@ -44,6 +63,7 @@ import {
    isPlainFilterList,
    TIME_PRESETS,
 } from "./filterValue";
+import { usePublisherTheme } from "../../theme/ThemeContext";
 import { renderGivenDefault } from "./utils";
 
 dayjs.extend(utc);
@@ -84,6 +104,22 @@ export interface GivenInputProps {
     * Free text still works, so the control degrades rather than locking up.
     */
    optionsFailed?: boolean;
+   /**
+    * The option list was cut off: more values exist than `options` holds. The
+    * dropdown says so, since a value missing from it may still be in the data.
+    */
+   optionsTruncated?: boolean;
+   /**
+    * Search the whole dimension on the server as the reader types, for a list
+    * that was cut off. Absent, typing filters `options` in the browser.
+    */
+   optionSearch?: OptionSearch;
+   /**
+    * The control is opening, for a caller that fetches `options` only when
+    * one is wanted (see `useSuggestOptions`' `only`). Called by a picker's
+    * list and by a filter button's popover; harmless to call again.
+    */
+   onOpen?: () => void;
 }
 
 /**
@@ -144,8 +180,12 @@ export function GivenInput({
    options,
    optionsLoading,
    optionsFailed,
+   optionsTruncated,
+   optionSearch,
+   onOpen,
 }: GivenInputProps) {
    const label = given.label ?? given.name ?? "";
+   const { theme: publisherTheme } = usePublisherTheme();
    const type = given.type ?? "string";
    const helperText = annotationHelperText(given);
    const defaultDisplay = renderGivenDefault(type, given.default);
@@ -251,6 +291,18 @@ export function GivenInput({
           ? [value]
           : [];
 
+   // What the reader is typing into the picker, for a server search of a list
+   // that was cut off. Called for every given, as hooks must be; inert unless
+   // the picker below renders with a search to run.
+   const [typed, setTyped] = useState("");
+   // The thumb(s) while the reader holds them; the value commits on release.
+   const [drag, setDrag] = useState<number | number[] | null>(null);
+   const gesture = useRef<number | number[] | null>(null);
+   const search = useOptionSearch(
+      pickerControl ? optionSearch : undefined,
+      typed,
+   );
+
    if (
       pickerControl &&
       pickableType &&
@@ -301,95 +353,134 @@ export function GivenInput({
          onChange(filtered ? (encoded as string) : next[0]);
       };
 
+      const hint = optionHint(search, optionsTruncated, optionSearch);
       return (
-         <Autocomplete
-            multiple={multiple}
-            // Picking one value out of several should not put the list away;
-            // MUI closes on select by default, which makes "and also Aurora"
-            // cost a second click to reopen.
-            disableCloseOnSelect={multiple}
-            // Free text keeps the control from being a cage: the suggest query
-            // returns the common values, not necessarily every legal one.
-            freeSolo
-            // MUI hides the dropdown arrow whenever `freeSolo` is set, which
-            // left a control that HAS a list of values looking exactly like a
-            // plain text box: nothing on it said the list existed, so the only
-            // way to find the options was to guess that clicking would reveal
-            // them. Reported independently by a reader as "the controls render
-            // as text boxes rather than dropdowns"; the options were being
-            // fetched and offered correctly the whole time, and only the
-            // affordance was missing. Same principle as `markDrillableCells`:
-            // something you can act on has to look like it.
-            forcePopupIcon
-            // Keeps text the reader typed but did not pick from the list. A
-            // `freeSolo` Autocomplete without this discards it on blur, so a
-            // value that is legal but absent from `suggest` could be typed and
-            // then silently vanish.
-            autoSelect
-            options={options ?? []}
-            loading={optionsLoading}
-            noOptionsText={
-               optionsFailed ? "Options unavailable" : "No matching values"
-            }
-            value={multiple ? selected : (selected[0] ?? null)}
-            onChange={(_event, next) =>
-               commit(
-                  next === null
-                     ? []
-                     : Array.isArray(next)
-                       ? (next as string[])
-                       : [next as string],
-               )
-            }
-            renderInput={(params) => (
-               <TextField
-                  {...params}
-                  label={label}
-                  size="small"
-                  // The model's own default when it has one, as a ghost, the
-                  // way every other unset control shows it. A hardcoded "All"
-                  // told the reader nothing would be filtered while the query
-                  // was about to run on the declared default.
-                  //
-                  // Except when an explicit `""` is in force. That is the EMPTY
-                  // filter, so the default is precisely what is NOT running,
-                  // and showing it as a ghost made the control assert one
-                  // filter while the query used another.
-                  placeholder={
-                     selected.length !== 0
-                        ? undefined
-                        : value === ""
-                          ? "All"
-                          : (defaultDisplay ?? "All")
-                  }
-                  error={optionsFailed}
-                  helperText={
-                     optionsFailed ? (
-                        <>
-                           Could not load the options for this control. Type a
-                           value to filter anyway.
-                           {helperNode ? <br /> : null}
-                           {helperNode}
-                        </>
-                     ) : (
-                        helperNode
-                     )
-                  }
-                  slotProps={{
-                     input: {
-                        ...params.InputProps,
-                        endAdornment: (
+         <OptionHint.Provider value={hint}>
+            <Autocomplete
+               multiple={multiple}
+               // Picking one value out of several should not put the list away;
+               // MUI closes on select by default, which makes "and also Aurora"
+               // cost a second click to reopen.
+               disableCloseOnSelect={multiple}
+               onOpen={onOpen}
+               // Free text keeps the control from being a cage: the suggest query
+               // returns the common values, not necessarily every legal one.
+               freeSolo
+               // MUI hides the dropdown arrow whenever `freeSolo` is set, which
+               // left a control that HAS a list of values looking exactly like a
+               // plain text box: nothing on it said the list existed, so the only
+               // way to find the options was to guess that clicking would reveal
+               // them. Reported independently by a reader as "the controls render
+               // as text boxes rather than dropdowns"; the options were being
+               // fetched and offered correctly the whole time, and only the
+               // affordance was missing. Same principle as `markDrillableCells`:
+               // something you can act on has to look like it.
+               forcePopupIcon
+               // Keeps text the reader typed but did not pick from the list. A
+               // `freeSolo` Autocomplete without this discards it on blur, so a
+               // value that is legal but absent from `suggest` could be typed and
+               // then silently vanish.
+               //
+               // Single-pick only. On blur MUI's `autoSelect` also picks the
+               // HIGHLIGHTED option while the list is open, and a multi-pick
+               // keeps its list open after a pick with that option still
+               // highlighted, so clicking away picked it a second time, which in
+               // a multi-pick takes it back out: choose Aurora, click the page,
+               // and the filter was gone. A multi-pick keeps typed text itself,
+               // in the input's blur below.
+               autoSelect={!multiple}
+               // The server's matches once it has answered for exactly what is
+               // typed; until then the list in hand, filtered here as usual.
+               options={search.page?.values ?? options ?? []}
+               // Already matched on the server, case and all: filtering them
+               // again here could only hide a match.
+               {...(search.page
+                  ? { filterOptions: (found: string[]) => found }
+                  : {})}
+               onInputChange={(_event, text, reason) =>
+                  // Only typing searches. MUI also sets the text on a pick and
+                  // on a reset to the value, and searching for the value just
+                  // picked would replace the list with that one value.
+                  setTyped(reason === "input" ? text : "")
+               }
+               loading={optionsLoading || search.searching}
+               loadingText={search.searching ? "Searching…" : "Loading…"}
+               noOptionsText={
+                  optionsFailed ? "Options unavailable" : "No matching values"
+               }
+               slots={{ paper: HintPaper }}
+               value={multiple ? selected : (selected[0] ?? null)}
+               onChange={(_event, next) =>
+                  commit(
+                     next === null
+                        ? []
+                        : Array.isArray(next)
+                          ? (next as string[])
+                          : [next as string],
+                  )
+               }
+               renderInput={(params) => (
+                  <TextField
+                     {...params}
+                     label={label}
+                     size="small"
+                     // The model's own default when it has one, as a ghost, the
+                     // way every other unset control shows it. A hardcoded "All"
+                     // told the reader nothing would be filtered while the query
+                     // was about to run on the declared default.
+                     //
+                     // Except when an explicit `""` is in force. That is the EMPTY
+                     // filter, so the default is precisely what is NOT running,
+                     // and showing it as a ghost made the control assert one
+                     // filter while the query used another.
+                     placeholder={
+                        selected.length !== 0
+                           ? undefined
+                           : value === ""
+                             ? "All"
+                             : (defaultDisplay ?? "All")
+                     }
+                     error={optionsFailed}
+                     helperText={
+                        optionsFailed ? (
                            <>
-                              {optionsLoading && <CircularProgress size={16} />}
-                              {params.InputProps.endAdornment}
+                              Could not load the options for this control. Type
+                              a value to filter anyway.
+                              {helperNode ? <br /> : null}
+                              {helperNode}
                            </>
-                        ),
-                     },
-                  }}
-               />
-            )}
-            fullWidth
-         />
+                        ) : (
+                           helperNode
+                        )
+                     }
+                     slotProps={{
+                        input: {
+                           ...params.InputProps,
+                           endAdornment: (
+                              <>
+                                 {optionsLoading && (
+                                    <CircularProgress size={16} />
+                                 )}
+                                 {params.InputProps.endAdornment}
+                              </>
+                           ),
+                        },
+                        htmlInput: {
+                           ...params.inputProps,
+                           onBlur: (event: FocusEvent<HTMLInputElement>) => {
+                              params.inputProps.onBlur?.(event);
+                              if (!multiple) return;
+                              const typed = event.target.value.trim();
+                              if (typed !== "" && !selected.includes(typed))
+                                 commit([...selected, typed]);
+                           },
+                        },
+                     }}
+                  />
+               )}
+               fullWidth
+            />
+         </OptionHint.Provider>
       );
    }
 
@@ -451,9 +542,16 @@ export function GivenInput({
          return unrepresentable("number");
       }
       // An unset control rests at the low end, which is the no-op threshold.
-      const position = current ?? rangeMin;
+      const dragged = drag !== null;
+      const position = dragged
+         ? Array.isArray(drag)
+            ? drag[0]
+            : drag
+         : (current ?? rangeMin);
       // And an unset range spans the whole track, which selects everything.
-      const thumbs: [number, number] = handles ?? [rangeMin, rangeMax];
+      const thumbs: [number, number] = Array.isArray(drag)
+         ? [drag[0], drag[1]]
+         : (handles ?? [rangeMin, rangeMax]);
       // A range reads as `lo to hi`, and as `≥ lo` once the upper handle is at
       // the ceiling, which is also what the value on the wire says.
       const rangeReadout =
@@ -469,8 +567,9 @@ export function GivenInput({
       // third state: not unset, and not `≥ position` either. Printing
       // `≥ rangeMin` for it asserted a lower bound nobody had chosen, just as
       // counting it unset had hidden that an override was in force at all.
-      const emptyFilterOverride = numericFilter && value === "";
-      const isOverridden = current !== undefined || emptyFilterOverride;
+      const emptyFilterOverride = numericFilter && value === "" && !dragged;
+      const isOverridden =
+         current !== undefined || emptyFilterOverride || dragged;
       // TWO LIMITATIONS here, both reachable as soon as a given carries
       // `rangeMin`/`rangeMax`, and both about the plain `number` arm rather than
       // the filter arm. Written when no server populated those fields; slice 6
@@ -484,27 +583,43 @@ export function GivenInput({
       // to show when it does not.
       return (
          <FormControl fullWidth>
-            {/* A slider is the one control with no box around it, so it has to
-                borrow the outlined inputs' metrics to sit in a row with them:
-                their content is inset 14px and their field is 42px tall, and
-                a control that matches both puts its helper text on the same
-                line as its neighbours'. Left to itself the label started at
-                the column edge and the helper sat 10px lower than the rest,
-                which is most of what made a mixed control row look crooked. */}
+            {/* Drawn as an outlined field, label notched into its edge, so it
+                sits in a row of selects and date pickers as one of them. A
+                fieldset and legend rather than an OutlinedInput: a real input
+                would add a textbox role beside the handles' own, and the legend
+                names the group without painting a patch over the border. The
+                box is taller than a text field (readout, track and min/max
+                captions), so a neighbour's helper line sits under its own box,
+                not level. */}
             <Box
-               sx={{
-                  height: SLIDER_FIELD_HEIGHT,
+               component="fieldset"
+               sx={(theme) => ({
+                  m: 0,
+                  minWidth: 0,
+                  border: publisherTheme.cardBorder,
+                  borderRadius: 2,
                   px: `${INPUT_CONTENT_INSET}px`,
-                  display: "flex",
-                  flexDirection: "column",
-                  justifyContent: "center",
-               }}
+                  pt: 0,
+                  pb: 0.75,
+                  minHeight: SLIDER_FIELD_HEIGHT,
+                  transition: "border-color 120ms ease-in",
+                  "&:hover": { borderColor: theme.palette.text.secondary },
+                  "&:focus-within": { borderColor: theme.palette.text.primary },
+               })}
             >
+               <Typography
+                  component="legend"
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ px: 0.5, lineHeight: 1 }}
+               >
+                  {label}
+               </Typography>
                <Stack direction="row" alignItems="center" spacing={1}>
-                  <Typography variant="body2" color="text.secondary" noWrap>
-                     {label}
-                  </Typography>
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                  <Typography
+                     variant="body2"
+                     sx={{ fontWeight: "fontWeightMedium" }}
+                  >
                      {/* `≥ N` only for a FILTER, whose value IS a lower
                          bound. A plain `number` given is an ordinary value, and
                          the onChange below says so by committing `picked`
@@ -521,20 +636,16 @@ export function GivenInput({
                             : String(position)}
                   </Typography>
                   {isOverridden && (
-                     <IconButton
-                        size="small"
-                        aria-label="clear value"
+                     <ClearButton
                         // `null`, like every other × in this file: revert the
                         // override. It used to send `""` for a filter, which
                         // `decodeAtLeast` reads back as undefined, so the
                         // control redrew as "Any" and hid this button while the
                         // given was still explicitly set to the empty filter.
                         // The reader could neither see the override nor undo it.
-                        onClick={() => onChange(null)}
+                        onClear={() => onChange(null)}
                         sx={{ p: 0 }}
-                     >
-                        <ClearIcon fontSize="small" />
-                     </IconButton>
+                     />
                   )}
                </Stack>
                <Slider
@@ -561,6 +672,16 @@ export function GivenInput({
                   // gives the thumb somewhere to be.
                   sx={{ py: 0, mt: 0.5 }}
                   onChange={(_event, next) => {
+                     gesture.current = next;
+                     setDrag(next);
+                  }}
+                  // MUI repeats the previous gesture's value for a click that
+                  // moved nothing, which would bring a cleared value back.
+                  onChangeCommitted={() => {
+                     const next = gesture.current;
+                     gesture.current = null;
+                     setDrag(null);
+                     if (next === null) return;
                      if (numericFilter) {
                         const [lo, hi] = Array.isArray(next)
                            ? [next[0], next[1]]
@@ -588,6 +709,14 @@ export function GivenInput({
                      onChange(Array.isArray(next) ? next[0] : next);
                   }}
                />
+               <Stack direction="row" justifyContent="space-between">
+                  <Typography variant="caption" color="text.secondary">
+                     {rangeMin}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                     {rangeMax}
+                  </Typography>
+               </Stack>
             </Box>
             {helperNode && (
                <FormHelperText sx={{ mx: `${INPUT_CONTENT_INSET}px` }}>
@@ -652,28 +781,18 @@ export function GivenInput({
    // was in force. The text box shows the filter as written, and editable.
    if (isDateFilter && dateIsPickable) {
       const parsed = bareDate ? dayjs.utc(value as string) : null;
+      // Cleared means UNSET, `null`, not an empty filter expression. `""` is a
+      // value for a filter given (the empty string is meaningful there), so it
+      // reached the wire as a filter of no characters instead of dropping the
+      // override.
       return (
-         <LocalizationProvider dateAdapter={AdapterDayjs}>
-            <DatePicker
-               label={label}
-               value={parsed?.isValid() ? parsed : null}
-               // Cleared means UNSET, `null`, not an empty filter expression.
-               // `""` is a value for a filter given (the empty string is
-               // meaningful there), so it reached the wire as a filter of no
-               // characters instead of dropping the override.
-               onChange={(next) =>
-                  onChange(next ? next.format("YYYY-MM-DD") : null)
-               }
-               slotProps={{
-                  textField: {
-                     fullWidth: true,
-                     size: "small",
-                     helperText: helperNode,
-                  },
-                  field: { clearable: true, onClear: () => onChange(null) },
-               }}
-            />
-         </LocalizationProvider>
+         <SettledDatePicker
+            label={label}
+            committed={parsed?.isValid() ? parsed : null}
+            toValue={(next) => next.format("YYYY-MM-DD")}
+            onChange={onChange}
+            helperText={helperNode}
+         />
       );
    }
 
@@ -735,14 +854,7 @@ export function GivenInput({
                   label={label}
                />
                {isOverridden && (
-                  <IconButton
-                     size="small"
-                     aria-label="clear value"
-                     onClick={() => onChange(null)}
-                     edge="end"
-                  >
-                     <ClearIcon fontSize="small" />
-                  </IconButton>
+                  <ClearButton onClear={() => onChange(null)} edge="end" />
                )}
             </Stack>
             {helperNode && <FormHelperText>{helperNode}</FormHelperText>}
@@ -751,11 +863,10 @@ export function GivenInput({
    }
 
    if (type === "number") {
-      const num = typeof value === "number" ? value : "";
       // Track whether a value is OVERRIDDEN, the way the string branch below
       // does, rather than whether the box happens to render non-empty. A
-      // non-number renders blank (see `num` above), and keying the revert off
-      // that blank left the user no way to clear it.
+      // non-number renders blank, and keying the revert off that blank left
+      // the user no way to clear it.
       const isOverridden = value !== undefined && value !== null;
       // `""` is an empty box, not an unreadable value. `paramToGiven` now reads
       // `?N=` as UNSET so it no longer arrives here at all, but a host passing
@@ -765,25 +876,15 @@ export function GivenInput({
          return unrepresentable("number");
       }
       return (
-         <TextField
+         <SettledTextField
             label={label}
             type="number"
-            value={num}
-            onChange={(e) => {
-               const v = e.target.value;
-               onChange(v === "" ? null : Number(v));
-            }}
+            committed={typeof value === "number" ? String(value) : ""}
+            onCommit={(text) => onChange(text === "" ? null : Number(text))}
             placeholder={defaultDisplay}
             helperText={helperNode}
-            slotProps={{
-               input: {
-                  endAdornment: isOverridden && (
-                     <ClearAdornment onClear={() => onChange(null)} />
-                  ),
-               },
-            }}
-            fullWidth
-            size="small"
+            isOverridden={isOverridden}
+            onClear={() => onChange(null)}
          />
       );
    }
@@ -827,27 +928,15 @@ export function GivenInput({
       // The date picker shows a format mask, not a placeholder, so the default
       // rides on the shared helper line.
       return (
-         <LocalizationProvider dateAdapter={AdapterDayjs}>
-            <DatePicker
-               label={label}
-               value={dateValue}
-               // The clicked day rebuilt in UTC, never `next.toDate()`, which
-               // is local-mode and lands a day out. See `pickedDayToUtc`.
-               onChange={(next) =>
-                  onChange(
-                     next ? pickedDayToUtc(next, asDate ?? undefined) : null,
-                  )
-               }
-               slotProps={{
-                  textField: {
-                     fullWidth: true,
-                     size: "small",
-                     helperText: helperNode,
-                  },
-                  field: { clearable: true, onClear: () => onChange(null) },
-               }}
-            />
-         </LocalizationProvider>
+         <SettledDatePicker
+            label={label}
+            committed={dateValue}
+            // The picked day rebuilt in UTC, never `next.toDate()`, which is
+            // local-mode and lands a day out. See `pickedDayToUtc`.
+            toValue={(next) => pickedDayToUtc(next, asDate ?? undefined)}
+            onChange={onChange}
+            helperText={helperNode}
+         />
       );
    }
 
@@ -865,10 +954,10 @@ export function GivenInput({
    const str = typeof value === "string" ? value : "";
    const isOverridden = value !== undefined && value !== null;
    return (
-      <TextField
+      <SettledTextField
          label={label}
-         value={str}
-         onChange={(e) => onChange(e.target.value)}
+         committed={str}
+         onCommit={onChange}
          placeholder={
             isOverridden
                ? undefined
@@ -876,30 +965,174 @@ export function GivenInput({
                  (type.startsWith("filter<") ? type : undefined))
          }
          helperText={helperNode}
+         isOverridden={isOverridden}
+         emptyOverrides
+         onClear={() => onChange(null)}
+      />
+   );
+}
+
+/**
+ * A text box that applies what is typed once the reader pauses, tabs away or
+ * presses Enter, rather than on every keystroke: under autorun each applied
+ * value is a wave of queries, and one wave per keystroke floods the workers.
+ */
+function SettledTextField({
+   label,
+   type,
+   committed,
+   onCommit,
+   placeholder,
+   helperText,
+   isOverridden,
+   emptyOverrides = false,
+   onClear,
+}: {
+   label: string;
+   type?: "number";
+   committed: string;
+   onCommit: (text: string) => void;
+   placeholder: string | undefined;
+   helperText: ReactNode;
+   isOverridden: boolean;
+   /** An emptied box is a deliberate `""` override, not a revert to the default. */
+   emptyOverrides?: boolean;
+   onClear: () => void;
+}) {
+   const { draft, change, reset, bind } = useSettledDraft(committed, onCommit, {
+      unset: emptyOverrides && !isOverridden,
+   });
+   return (
+      <TextField
+         label={label}
+         type={type}
+         value={draft}
+         onChange={(e) => change(e.target.value)}
+         placeholder={placeholder}
+         helperText={helperText}
          slotProps={{
             input: {
                endAdornment: isOverridden && (
-                  <ClearAdornment onClear={() => onChange(null)} />
+                  <ClearAdornment
+                     onClear={() => {
+                        // Before the revert, so the blur it provokes finds
+                        // nothing left to commit.
+                        reset("");
+                        onClear();
+                     }}
+                  />
                ),
             },
          }}
+         {...bind}
          fullWidth
          size="small"
       />
    );
 }
 
+// Calendar parts, not instants: a typed day is local midnight and the committed
+// one is UTC, which are equal days but different instants outside UTC.
+const sameDay = (a: Dayjs | null, b: Dayjs | null) =>
+   a === null || b === null
+      ? a === b
+      : a.year() === b.year() &&
+        a.month() === b.month() &&
+        a.date() === b.date();
+
+/**
+ * A day picker that applies a typed date once the reader pauses or tabs away,
+ * for the same reason as `SettledTextField`: each section typed into the field
+ * is a valid date of its own. A day clicked in the calendar applies at once.
+ */
+function SettledDatePicker({
+   label,
+   committed,
+   toValue,
+   onChange,
+   helperText,
+   minDate,
+}: {
+   label: string;
+   committed: Dayjs | null;
+   toValue: (picked: Dayjs) => GivenValue;
+   onChange: (next: GivenValue) => void;
+   helperText?: ReactNode;
+   minDate?: Dayjs;
+}) {
+   const { draft, change, reset, bind } = useSettledDraft<Dayjs | null>(
+      committed,
+      // A half-typed date is an invalid Dayjs, which is not a value yet.
+      (next) => {
+         if (next === null) onChange(null);
+         else if (next.isValid()) onChange(toValue(next));
+      },
+      { same: sameDay },
+   );
+   return (
+      <LocalizationProvider dateAdapter={AdapterDayjs}>
+         <DatePicker
+            label={label}
+            value={draft}
+            minDate={minDate}
+            onChange={change}
+            slotProps={{
+               textField: {
+                  fullWidth: true,
+                  size: "small",
+                  helperText,
+                  ...bind,
+               },
+               field: {
+                  clearable: true,
+                  onClear: () => {
+                     reset(null);
+                     onChange(null);
+                  },
+               },
+               // Keeps the click from blurring, and so committing, the field first.
+               clearButton: { onMouseDown: (e) => e.preventDefault() },
+            }}
+         />
+      </LocalizationProvider>
+   );
+}
+
+/**
+ * The × that reverts a control to its default: one button, so every control
+ * says the same thing to a screen reader and offers the same 24px target.
+ */
+function ClearButton({
+   onClear,
+   edge,
+   sx,
+}: {
+   onClear: () => void;
+   edge?: "start" | "end";
+   sx?: SxProps<Theme>;
+}) {
+   return (
+      <IconButton
+         size="small"
+         aria-label="Clear value"
+         onClick={onClear}
+         edge={edge}
+         sx={[
+            { minWidth: 24, minHeight: 24 },
+            ...(Array.isArray(sx) ? sx : [sx]),
+         ]}
+      >
+         <ClearIcon fontSize="small" />
+      </IconButton>
+   );
+}
+
 function ClearAdornment({ onClear }: { onClear: () => void }) {
    return (
-      <InputAdornment position="end">
-         <IconButton
-            size="small"
-            aria-label="clear value"
-            onClick={onClear}
-            edge="end"
-         >
-            <ClearIcon fontSize="small" />
-         </IconButton>
+      // Keeps focus in the field, so the click does not first blur it into a
+      // commit of whatever was typed.
+      <InputAdornment position="end" onMouseDown={(e) => e.preventDefault()}>
+         <ClearButton onClear={onClear} edge="end" />
       </InputAdornment>
    );
 }
@@ -953,14 +1186,10 @@ function BooleanFilterControl({
                },
                input: {
                   endAdornment: isOverridden ? (
-                     <IconButton
-                        size="small"
-                        aria-label="clear value"
-                        onClick={() => onChange(null)}
+                     <ClearButton
+                        onClear={() => onChange(null)}
                         sx={{ mr: 2 }}
-                     >
-                        <ClearIcon fontSize="small" />
-                     </IconButton>
+                     />
                   ) : undefined,
                },
             }}
@@ -1103,18 +1332,14 @@ function TimeRangeControl({
                   endAdornment: isOverridden ? (
                      // Before the dropdown arrow, which MUI positions on its
                      // own; the × reverts, like every × in this file.
-                     <IconButton
-                        size="small"
-                        aria-label="clear value"
-                        onClick={() => {
+                     <ClearButton
+                        onClear={() => {
                            setCustom(false);
                            setDraft({});
                            onChange(null);
                         }}
                         sx={{ mr: 2 }}
-                     >
-                        <ClearIcon fontSize="small" />
-                     </IconButton>
+                     />
                   ) : undefined,
                },
             }}
@@ -1144,32 +1369,91 @@ function TimeRangeControl({
             <MenuItem value={CUSTOM_RANGE}>Custom range</MenuItem>
          </TextField>
          {custom && (
-            <LocalizationProvider dateAdapter={AdapterDayjs}>
-               <DatePicker
+            <>
+               <SettledDatePicker
                   label="From"
-                  value={day(draft.from)}
+                  committed={day(draft.from)}
+                  toValue={(d) => d.format("YYYY-MM-DD")}
                   onChange={(next) =>
                      commitDays({
                         ...draft,
-                        from: next ? next.format("YYYY-MM-DD") : undefined,
+                        from: next === null ? undefined : String(next),
                      })
                   }
-                  slotProps={{ textField: { size: "small" } }}
                />
-               <DatePicker
+               <SettledDatePicker
                   label="To"
-                  value={day(draft.to)}
+                  committed={day(draft.to)}
                   minDate={day(draft.from) ?? undefined}
+                  toValue={(d) => d.format("YYYY-MM-DD")}
                   onChange={(next) =>
                      commitDays({
                         ...draft,
-                        to: next ? next.format("YYYY-MM-DD") : undefined,
+                        to: next === null ? undefined : String(next),
                      })
                   }
-                  slotProps={{ textField: { size: "small" } }}
                />
-            </LocalizationProvider>
+            </>
          )}
       </Stack>
    );
+}
+
+/** The line under a picker's options that says the list is partial, or being searched. */
+const OptionHint = createContext<string | undefined>(undefined);
+
+/**
+ * The picker's dropdown, with a line under its options when there is
+ * something to say about them. Read from context rather than props: MUI
+ * renders the slot itself and passes it only its own props.
+ */
+function HintPaper({ children, ...props }: PaperProps) {
+   const hint = useContext(OptionHint);
+   return (
+      <Paper {...props}>
+         {children}
+         {hint && (
+            <Box
+               role="note"
+               sx={{
+                  px: 2,
+                  py: 1,
+                  borderTop: 1,
+                  borderColor: "divider",
+                  color: "text.secondary",
+                  typography: "caption",
+               }}
+            >
+               {hint}
+            </Box>
+         )}
+      </Paper>
+   );
+}
+
+const count = (n: number) => n.toLocaleString("en-US");
+
+/**
+ * What the dropdown says about its options, if anything. Only a cut-off list
+ * has something to say: a whole list needs no footnote.
+ */
+export function optionHint(
+   search: OptionSearchState,
+   truncated: boolean | undefined,
+   searchable: OptionSearch | undefined,
+): string | undefined {
+   if (search.active) {
+      if (search.searching) return "Searching all values…";
+      if (search.failed)
+         return `Could not search all values. Showing matches in the first ${count(SUGGEST_OPTION_LIMIT)}.`;
+      if (search.page?.truncated)
+         return `Showing the first ${count(SUGGEST_SEARCH_LIMIT)} matches. Keep typing to narrow them.`;
+      return undefined;
+   }
+   if (!truncated) return undefined;
+   // A named suggest query cannot be searched on the server, so the list in
+   // hand is all there is to filter; a value past it can still be typed in.
+   return searchable
+      ? `Showing the first ${count(SUGGEST_OPTION_LIMIT)} values. Type to search them all.`
+      : `Showing the first ${count(SUGGEST_OPTION_LIMIT)} values. A value not listed can still be typed.`;
 }

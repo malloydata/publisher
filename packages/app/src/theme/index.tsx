@@ -1,7 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { PALETTE, type ThemeMode } from "@malloy-publisher/sdk";
+import {
+   accentFor,
+   MOTION_FAST,
+   reducedMotionSx,
+   type ThemeMode,
+} from "@malloy-publisher/sdk";
 import { createTheme } from "@mui/material/styles";
 import { colors, greyScale, SANS_FONT_FAMILY } from "./colors";
 
@@ -26,7 +31,11 @@ const DARK_DIVIDER = "#334155";
  * is resolved upstream). Component-level overrides switch on `isDark`
  * rather than re-reading the palette so the file is grep-able per token.
  */
-export const createPublisherTheme = (mode: ThemeMode = "light") => {
+export const createPublisherTheme = (
+   mode: ThemeMode = "light",
+   /** The instance palette's accent (`ResolvedTheme.accent` and its pair); absent, the default blue. */
+   accentPair?: { accent: string; accentHover: string; accentContrast: string },
+) => {
    const isDark = mode === "dark";
    const background = isDark ? DARK_BACKGROUND : colors.white;
    const surface = isDark ? DARK_SURFACE : colors.white;
@@ -36,10 +45,10 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
 
    // Contained primary buttons read their bg from primary.main and their text
    // from contrastText, so this is the colour of every confirming action in
-   // the Console. The palette's anchor blue, which is also its first chart
-   // series: the button that saves a dashboard and the first line on it are
-   // the same hue, and the page has one accent rather than a neutral button
-   // beside coloured content.
+   // the Console. The palette's first chart series, as the SDK resolves it
+   // into `accent`: the button that saves a dashboard and the first line on it
+   // are the same hue, and the page has one accent rather than a neutral
+   // button beside coloured content. Without a palette, the anchor blue.
    //
    // Dark mode inverts the pair rather than shifting the blue. A mid blue on a
    // slate page is only 3.5:1 against the page and puts white text at 3.7:1,
@@ -47,9 +56,11 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
    // resting one. A bright fill with a near-black label reads at 7:1 on both
    // counts, and is what a dark theme wants anyway: the button is the lit
    // thing on the page, not a darker patch of it.
-   const primaryMain = isDark ? "#60a5fa" : PALETTE.blue;
-   const primaryHover = isDark ? "#93c5fd" : "#1d4ed8";
-   const primaryContrast = isDark ? "#0f172a" : "#ffffff";
+   const {
+      accent: primaryMain,
+      accentHover: primaryHover,
+      accentContrast: primaryContrast,
+   } = accentPair ?? accentFor(undefined, mode);
 
    return createTheme({
       cssVariables: { nativeColor: true },
@@ -99,14 +110,28 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
             textTransform: "none",
          },
       },
+      // The control radius. Cards, menus and popovers take 8 and dialogs 12,
+      // set on each below: one shape per kind of thing, as the SDK's report
+      // surfaces draw them (`controlTokens.ts`).
       shape: {
-         borderRadius: 4,
+         borderRadius: 6,
       },
       components: {
          MuiButtonBase: {
             defaultProps: {
                disableRipple: true,
                disableTouchRipple: true,
+            },
+            styleOverrides: {
+               // The ripple is off, so keyboard focus needs a mark of its own:
+               // without one a tabbed-to button looks exactly like its
+               // neighbours.
+               root: {
+                  "&:focus-visible": {
+                     outline: `2px solid ${primaryMain}`,
+                     outlineOffset: 2,
+                  },
+               },
             },
          },
          MuiCssBaseline: {
@@ -135,6 +160,26 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
                      background: isDark ? "#1e293b" : greyScale[100],
                   },
                },
+               // A result table that scrolls sideways keeps a visible
+               // scrollbar, as the renderer draws it: an overlay scrollbar
+               // (what `scrollbar-width` above gives on macOS) hides until you
+               // scroll, so a narrowed tile read as cut off rather than as
+               // having more columns. Any standard `scrollbar-*` value makes
+               // Chrome ignore the `::-webkit-scrollbar` rules, so both are
+               // put back to `auto` here, and the track is themed to match.
+               ".malloy-table.root": {
+                  scrollbarWidth: "auto",
+                  scrollbarColor: "auto",
+                  "&::-webkit-scrollbar, &::-webkit-scrollbar-track, &::-webkit-scrollbar-corner":
+                     {
+                        background: isDark ? "#1e293b" : greyScale[100],
+                     },
+                  "&::-webkit-scrollbar-thumb": {
+                     background: isDark ? "#475569" : greyScale[300],
+                     border: "none",
+                     borderRadius: "4px",
+                  },
+               },
                "div[data-radix-popper-content-wrapper]": {
                   zIndex: "1300 !important",
                },
@@ -142,18 +187,28 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
          },
          MuiButton: {
             styleOverrides: {
+               // One height for every button, small or not, and the control
+               // radius rather than a pill: the builder toolbar beside these
+               // draws at 32px and 6px, and two button shapes on one page read
+               // as two products. See the SDK's `controlTokens.ts`.
                root: {
-                  borderRadius: 20,
+                  borderRadius: 6,
                   textTransform: "none",
                   fontWeight: 500,
+                  fontSize: 13,
+                  minHeight: 32,
+                  paddingTop: 0,
+                  paddingBottom: 0,
                   boxShadow: "none",
                   "&:hover": {
-                     boxShadow: SUBTLE_SHADOW,
+                     boxShadow: "none",
                   },
                },
+               sizeSmall: { minHeight: 32, paddingLeft: 10, paddingRight: 10 },
+               sizeMedium: { minHeight: 32, paddingLeft: 12, paddingRight: 12 },
                contained: {
                   "&:hover": {
-                     boxShadow: "0 2px 4px rgba(0, 0, 0, 0.1)",
+                     boxShadow: "none",
                   },
                   // A disabled filled button defaults to a WHITE wash, which
                   // on a dark dialog is lighter than the surface it sits on —
@@ -185,10 +240,20 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
                },
             },
          },
+         MuiIconButton: {
+            styleOverrides: {
+               root: { borderRadius: 6 },
+            },
+         },
+         MuiPopover: {
+            styleOverrides: {
+               paper: { borderRadius: 8 },
+            },
+         },
          MuiCard: {
             styleOverrides: {
                root: {
-                  borderRadius: 4,
+                  borderRadius: 8,
                   boxShadow: SUBTLE_SHADOW,
                   border: "1px solid",
                   borderColor: divider,
@@ -199,7 +264,7 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
          MuiChip: {
             styleOverrides: {
                root: {
-                  borderRadius: 4,
+                  borderRadius: 6,
                   fontWeight: 500,
                },
             },
@@ -208,7 +273,7 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
             styleOverrides: {
                root: {
                   "& .MuiOutlinedInput-root": {
-                     borderRadius: 4,
+                     borderRadius: 6,
                   },
                   "& .MuiInputLabel-outlined": {
                      backgroundColor: surface,
@@ -239,7 +304,7 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
          MuiDialog: {
             styleOverrides: {
                paper: {
-                  borderRadius: 4,
+                  borderRadius: 12,
                   // Stated rather than inherited, so a dialog's surface cannot
                   // drift from the fields drawn on it.
                   backgroundColor: surface,
@@ -288,8 +353,9 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
                   // (#cbd5e1 / #475569), which is these same two points on the
                   // slate ramp.
                   border: `1px solid ${isDark ? greyScale[600] : greyScale[300]}`,
-                  borderRadius: 8,
-                  transition: "border-color 120ms ease-in",
+                  borderRadius: 6,
+                  transition: `border-color ${MOTION_FAST} ease-in`,
+                  ...reducedMotionSx,
                   backgroundColor: surface,
                   // Rest darkened, so hover and focus each move up a rung to
                   // stay told apart from it — a field whose hover state is its
@@ -322,7 +388,7 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
          MuiMenu: {
             styleOverrides: {
                paper: {
-                  borderRadius: 4,
+                  borderRadius: 8,
                   boxShadow:
                      "0px 10px 15px -3px rgba(0, 0, 0, 0.1), 0px 4px 6px -2px rgba(0, 0, 0, 0.05)",
                   border: `1px solid ${divider}`,
@@ -356,7 +422,7 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
          MuiListItemButton: {
             styleOverrides: {
                root: {
-                  borderRadius: 28,
+                  borderRadius: 6,
                   margin: "2px 8px",
                   padding: "8px 16px",
                   "&:hover": {

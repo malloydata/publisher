@@ -1,12 +1,12 @@
 /// <reference types="bun-types" />
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { type ChildProcess, spawn } from "child_process";
-import fs from "fs";
-import net from "net";
-import os from "os";
-import path from "path";
-import { fileURLToPath } from "url";
+import {
+   singlePackageConfig,
+   spawnServer,
+   type SpawnedServer,
+   writeSourcePackage,
+} from "../../harness/spawn_server";
 
 /**
  * A connection's credentials must not appear in any response body, from any
@@ -27,10 +27,6 @@ import { fileURLToPath } from "url";
  * is safe.
  */
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// tests/integration/connection_secrets -> packages/server
-const SERVER_DIR = path.resolve(__dirname, "../../..");
-
 const ENV_NAME = "secret-env";
 const PKG_NAME = "secret-pkg";
 
@@ -39,158 +35,69 @@ const BQ_SECRET = "S3NT1NEL-bq-private-key-do-not-return";
 const SF_SECRET = "S3NT1NEL-sf-private-key-do-not-return";
 const ALL_SECRETS = [PG_SECRET, BQ_SECRET, SF_SECRET];
 
-async function getFreePort(): Promise<number> {
-   return new Promise<number>((resolve, reject) => {
-      const srv = net.createServer();
-      srv.on("error", reject);
-      srv.listen(0, "127.0.0.1", () => {
-         const addr = srv.address();
-         const found = typeof addr === "object" && addr ? addr.port : 0;
-         srv.close(() =>
-            found ? resolve(found) : reject(new Error("no free port")),
-         );
-      });
-   });
-}
-
-async function poll(
-   predicate: () => Promise<boolean>,
-   timeoutMs: number,
-   intervalMs = 300,
-): Promise<boolean> {
-   const deadline = Date.now() + timeoutMs;
-   while (Date.now() < deadline) {
-      if (await predicate()) return true;
-      await new Promise((r) => setTimeout(r, intervalMs));
-   }
-   return false;
-}
+const CONNECTIONS = [
+   {
+      name: "pg_conn",
+      type: "postgres",
+      postgresConnection: {
+         host: "127.0.0.1",
+         port: 5432,
+         databaseName: "analytics",
+         userName: "reader",
+         password: "${TEST_PG_PASSWORD}",
+      },
+   },
+   {
+      name: "bq_conn",
+      type: "bigquery",
+      bigqueryConnection: {
+         defaultProjectId: "demo-project",
+         serviceAccountKeyJson: JSON.stringify({
+            type: "service_account",
+            project_id: "demo-project",
+            client_email: "demo@demo.iam.gserviceaccount.com",
+            private_key: "${TEST_BQ_PRIVATE_KEY}",
+         }),
+      },
+   },
+   {
+      name: "sf_conn",
+      type: "snowflake",
+      snowflakeConnection: {
+         account: "acct",
+         username: "reader",
+         warehouse: "WH",
+         privateKey: "${TEST_SF_PRIVATE_KEY}",
+      },
+   },
+];
 
 describe("connection credentials never reach a response body", () => {
-   let proc: ChildProcess | undefined;
-   let exited = false;
-   let combinedLog = "";
-   let serverRoot = "";
-   let srcDir = "";
-   let port = 0;
+   let server: SpawnedServer;
+   let src: { dir: string; cleanup: () => void };
 
-   const url = (suffix: string) => `http://127.0.0.1:${port}${suffix}`;
+   const url = (suffix: string) => `${server.baseUrl}${suffix}`;
 
    beforeAll(async () => {
-      srcDir = fs.mkdtempSync(path.join(os.tmpdir(), "secret-src-"));
-      fs.writeFileSync(
-         path.join(srcDir, "publisher.json"),
-         JSON.stringify({ name: PKG_NAME }),
-      );
-      fs.writeFileSync(
-         path.join(srcDir, "first.malloy"),
-         'source: first_source is duckdb.sql("SELECT 1 as n")\n',
-      );
-
-      serverRoot = fs.mkdtempSync(path.join(os.tmpdir(), "secret-root-"));
-      fs.writeFileSync(
-         path.join(serverRoot, "publisher.config.json"),
-         JSON.stringify({
-            frozenConfig: false,
-            environments: [
-               {
-                  name: ENV_NAME,
-                  packages: [{ name: PKG_NAME, location: srcDir }],
-                  connections: [
-                     {
-                        name: "pg_conn",
-                        type: "postgres",
-                        postgresConnection: {
-                           host: "127.0.0.1",
-                           port: 5432,
-                           databaseName: "analytics",
-                           userName: "reader",
-                           password: "${TEST_PG_PASSWORD}",
-                        },
-                     },
-                     {
-                        name: "bq_conn",
-                        type: "bigquery",
-                        bigqueryConnection: {
-                           defaultProjectId: "demo-project",
-                           serviceAccountKeyJson: JSON.stringify({
-                              type: "service_account",
-                              project_id: "demo-project",
-                              client_email: "demo@demo.iam.gserviceaccount.com",
-                              private_key: "${TEST_BQ_PRIVATE_KEY}",
-                           }),
-                        },
-                     },
-                     {
-                        name: "sf_conn",
-                        type: "snowflake",
-                        snowflakeConnection: {
-                           account: "acct",
-                           username: "reader",
-                           warehouse: "WH",
-                           privateKey: "${TEST_SF_PRIVATE_KEY}",
-                        },
-                     },
-                  ],
-               },
-            ],
-         }),
-      );
-
-      port = await getFreePort();
-      let mcpPort = await getFreePort();
-      while (mcpPort === port) mcpPort = await getFreePort();
-
-      proc = spawn("bun", ["src/server.ts"], {
-         cwd: SERVER_DIR,
+      src = writeSourcePackage(PKG_NAME);
+      server = await spawnServer({
+         config: singlePackageConfig(
+            ENV_NAME,
+            { name: PKG_NAME, location: src.dir },
+            CONNECTIONS,
+         ),
          env: {
-            ...process.env,
-            SERVER_ROOT: serverRoot,
-            PUBLISHER_HOST: "127.0.0.1",
-            PUBLISHER_PORT: String(port),
-            MCP_PORT: String(mcpPort),
             TEST_PG_PASSWORD: PG_SECRET,
             TEST_BQ_PRIVATE_KEY: BQ_SECRET,
             TEST_SF_PRIVATE_KEY: SF_SECRET,
          },
-         stdio: ["ignore", "pipe", "pipe"],
       });
-      proc.stdout?.on("data", (d: Buffer) => {
-         combinedLog += d.toString();
-      });
-      proc.stderr?.on("data", (d: Buffer) => {
-         combinedLog += d.toString();
-      });
-      proc.on("exit", () => {
-         exited = true;
-      });
-
-      const serving = await poll(async () => {
-         if (exited) throw new Error("server exited before becoming ready");
-         try {
-            const res = await fetch(url("/api/v0/status"));
-            if (!res.ok) return false;
-            const body = (await res.json()) as { operationalState?: string };
-            return body.operationalState === "serving";
-         } catch {
-            return false;
-         }
-      }, 120_000);
-      if (!serving) {
-         throw new Error(
-            `server did not reach serving within 120s\n--- log tail ---\n${combinedLog.slice(-4000)}`,
-         );
-      }
+      await server.waitUntilServing();
    }, 180_000);
 
    afterAll(async () => {
-      if (proc && !exited) {
-         proc.kill("SIGKILL");
-         await new Promise((r) => setTimeout(r, 200));
-      }
-      for (const dir of [serverRoot, srcDir]) {
-         if (dir) fs.rmSync(dir, { recursive: true, force: true });
-      }
+      await server?.stop();
+      src?.cleanup();
    });
 
    /**
@@ -262,7 +169,7 @@ describe("connection credentials never reach a response body", () => {
 
    it("does not write a credential to the server log", async () => {
       for (const secret of ALL_SECRETS) {
-         expect(combinedLog.includes(secret)).toBe(false);
+         expect(server.output().includes(secret)).toBe(false);
       }
    });
 

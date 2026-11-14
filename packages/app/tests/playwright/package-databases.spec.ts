@@ -6,18 +6,18 @@ import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 
 test.describe("package-databases — embedded", () => {
-   test("Package Data section is visible with at least one parquet row", async ({
+   test("Data section is visible with at least one parquet row", async ({
       page,
    }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
 
-      // Redesigned package page lists databases under a "Package Data"
+      // Redesigned package page lists databases under a "Data"
       // section as flat rows (no <table>). The h6 heading + at least one
       // .parquet row are the load-bearing affordances.
       await expect(
-         page.getByRole("heading", { name: "Package Data", level: 6 }),
+         page.getByRole("heading", { name: "Data", level: 6, exact: true }),
       ).toBeVisible();
       await expect(page.getByText(/\.parquet/).first()).toBeVisible();
    });

@@ -2,19 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import { components } from "../api";
-import { getQueryTimeoutMs } from "../config";
-import { ModelNotFoundError, NotQueryableError } from "../errors";
+import { ModelNotFoundError } from "../errors";
 import { logger } from "../logger";
-import { runWithQueryTimeout } from "../query_timeout";
-import { EnvironmentStore } from "../service/environment_store";
-import type { FilterParams } from "../service/filter";
-import type { NotebookCellRunResult } from "../service/model";
+import type { PackageLookup } from "../service/environment_ports";
+import { lockedForCaller } from "../service/discovery_lock";
 import type { GivenValue } from "@malloydata/malloy";
+import type { VersionRef } from "../service/identity";
+import { loadedPackage } from "./loaded_package";
 
-type ApiNotebook = components["schemas"]["Notebook"];
 type ApiModel = components["schemas"]["Model"];
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
-type ApiRawNotebook = components["schemas"]["RawNotebook"];
 
 /**
  * `includeHiddenFilesAndSources`: also show the files a package's surface hides. It
@@ -23,12 +20,65 @@ type ApiRawNotebook = components["schemas"]["RawNotebook"];
  */
 export interface ModelReadOptions {
    includeHiddenFilesAndSources?: boolean;
+   /** The published version to read; absent, empty or null means `latest`. */
+   versionId?: VersionRef;
+   /**
+    * The caller's givens as the trusted tier set them. A source whose
+    * `#(authorize)` lock cannot admit the caller on the `#(secure)` givens is
+    * omitted from the compiled model, with its queries and source info
+    * (service/discovery_lock.ts). Absent: every published source.
+    */
+   givens?: Record<string, GivenValue>;
+}
+
+/**
+ * The compiled model without the sources the caller cannot enter: their
+ * `sources` entries, the named `queries` over them, and their `sourceInfos`
+ * (JSON strings, matched on their `name`).
+ */
+function withoutLockedSources(
+   compiled: ApiCompiledModel,
+   givens: Record<string, GivenValue>,
+): ApiCompiledModel {
+   const locked = lockedForCaller(compiled.sources, givens);
+   if (locked.size === 0) return compiled;
+   const nameOfInfo = (info: string): string | undefined => {
+      try {
+         return (JSON.parse(info) as { name?: string }).name;
+      } catch {
+         return undefined;
+      }
+   };
+   return {
+      ...compiled,
+      ...(compiled.sources
+         ? {
+              sources: compiled.sources.filter(
+                 (s) => !locked.has(s.name ?? ""),
+              ),
+           }
+         : {}),
+      ...(compiled.queries
+         ? {
+              queries: compiled.queries.filter(
+                 (q) => !q.sourceName || !locked.has(q.sourceName),
+              ),
+           }
+         : {}),
+      ...(compiled.sourceInfos
+         ? {
+              sourceInfos: compiled.sourceInfos.filter(
+                 (info) => !locked.has(nameOfInfo(info) ?? ""),
+              ),
+           }
+         : {}),
+   };
 }
 
 export class ModelController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: PackageLookup;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: PackageLookup) {
       this.environmentStore = environmentStore;
    }
 
@@ -37,24 +87,13 @@ export class ModelController {
       packageName: string,
       options: ModelReadOptions = {},
    ): Promise<ApiModel[]> {
-      const environment = await this.environmentStore.getEnvironment(
+      const p = await loadedPackage(
+         this.environmentStore,
          environmentName,
-         false,
+         packageName,
+         options.versionId,
       );
-      const p = await environment.getPackage(packageName, false);
       return p.listModels(options);
-   }
-
-   public async listNotebooks(
-      environmentName: string,
-      packageName: string,
-   ): Promise<ApiNotebook[]> {
-      const environment = await this.environmentStore.getEnvironment(
-         environmentName,
-         false,
-      );
-      const p = await environment.getPackage(packageName, false);
-      return p.listNotebooks();
    }
 
    public async getModel(
@@ -65,156 +104,49 @@ export class ModelController {
    ): Promise<ApiCompiledModel> {
       const includeHiddenFilesAndSources =
          options.includeHiddenFilesAndSources === true;
-      try {
-         const environment = await this.environmentStore.getEnvironment(
-            environmentName,
-            false,
-         );
-         const p = await environment.getPackage(packageName, false);
-         const model = p.getModel(modelPath);
-         if (!model) {
-            throw new ModelNotFoundError(`${modelPath} does not exist`);
-         }
-         if (model.getType() === "notebook") {
-            throw new ModelNotFoundError(`${modelPath} is a notebook`);
-         }
-         // A file nobody can query is not shown either: same rule, same 404
-         // text as the query route. Inert with no surface and under "all",
-         // and skipped when the caller asked to see the files off the surface.
-         if (!includeHiddenFilesAndSources) model.assertFileOnSurface();
-         // The compiled view and the file's own text, together: the file is on
-         // disk beside the package, and a client showing code next to the model
-         // otherwise has no way to fetch it. The read stays on `getPackage`'s
-         // lock-free fast path (see environment.ts: callers reachable from
-         // `Model.getModel()` must not take the package lock): a single
-         // `readFile` against a mid-swap tree sees the old file, the new file,
-         // or ENOENT, and only the last needs handling — it withholds the text,
-         // never the compiled model the spec marks it optional beside.
-         const [compiled, sourceText] = await Promise.all([
-            model.getModel(),
-            // Withheld when the text names a source the file does not publish,
-            // unless the caller asked to see the files off the surface: then
-            // the text is the point, and the compiled body stays curated.
-            p
-               .getModelFileText(modelPath)
-               .then((text) =>
-                  includeHiddenFilesAndSources || model.showsFileText(text)
-                     ? text
-                     : undefined,
-               )
-               .catch((error: unknown) => {
-                  logger.warn("getModel: model source text unavailable", {
-                     environmentName,
-                     packageName,
-                     modelPath,
-                     error:
-                        error instanceof Error ? error.message : String(error),
-                  });
-                  return undefined;
-               }),
-         ]);
-         return sourceText === undefined
-            ? compiled
-            : { ...compiled, sourceText };
-      } catch (error) {
-         // Re-throw these as-is, so they keep their 404.
-         if (
-            error instanceof ModelNotFoundError ||
-            error instanceof NotQueryableError
-         ) {
-            throw error;
-         }
-         // Wrap other errors with more context
-         throw new Error(
-            `Failed to get model ${modelPath} from package ${packageName} in environment ${environmentName}: ${error}`,
-         );
-      }
-   }
-
-   public async getNotebook(
-      environmentName: string,
-      packageName: string,
-      notebookPath: string,
-   ): Promise<ApiRawNotebook> {
-      const environment = await this.environmentStore.getEnvironment(
+      const p = await loadedPackage(
+         this.environmentStore,
          environmentName,
-         false,
+         packageName,
+         options.versionId,
       );
-      const p = await environment.getPackage(packageName, false);
-      const model = p.getModel(notebookPath);
+      const model = p.getModel(modelPath);
       if (!model) {
-         throw new ModelNotFoundError(`${notebookPath} does not exist`);
+         throw new ModelNotFoundError(`${modelPath} does not exist`);
       }
-      if (!model.isNotebook()) {
-         throw new ModelNotFoundError(`${notebookPath} is a model`);
+      if (model.getType() === "notebook") {
+         throw new ModelNotFoundError(`${modelPath} is a notebook`);
       }
-
-      return model.getNotebook();
-   }
-
-   public async executeNotebookCell(
-      environmentName: string,
-      packageName: string,
-      notebookPath: string,
-      cellIndex: number,
-      filterParams?: FilterParams,
-      bypassFilters?: boolean,
-      givens?: Record<string, GivenValue>,
-   ): Promise<NotebookCellRunResult> {
-      const environment = await this.environmentStore.getEnvironment(
-         environmentName,
-         false,
-      );
-      // Shed load before any disk / DB work; same rationale as
-      // QueryController.getQuery — already-loaded packages bypass the
-      // package-load admission gate.
-      environment.assertCanAdmitQuery();
-      const p = await environment.getPackage(packageName, false);
-      const model = p.getModel(notebookPath);
-      if (!model) {
-         throw new ModelNotFoundError(`${notebookPath} does not exist`);
-      }
-      if (!model.isNotebook()) {
-         throw new ModelNotFoundError(`${notebookPath} is a model`);
-      }
-
-      return runWithQueryTimeout(
-         (abortSignal) =>
-            model.executeNotebookCell(
-               cellIndex,
-               filterParams,
-               bypassFilters,
-               givens,
-               abortSignal,
-               {
-                  environment: environmentName,
-                  // The package owns its manifest, so the least-specific
-                  // author-declared layer is read here; the model knows only its
-                  // own file and its package's NAME.
-                  packageDeclaration: p.getDeclaredQueryMetadata(),
-                  // The environment owns the connection configs, so the default
-                  // and enforced layers are read here rather than from the model.
-                  connectionMetadata: (connectionName) => {
-                     try {
-                        const connection =
-                           environment.getApiConnection(connectionName);
-                        return {
-                           default: connection.queryMetadata,
-                           enforced: connection.queryMetadataEnforced,
-                        };
-                     } catch (error) {
-                        // Fails open, and says so: what an unreadable
-                        // connection costs is the enforced layer.
-                        logger.debug(
-                           "No query-metadata layers for connection",
-                           { connectionName, error },
-                        );
-                        return null;
-                     }
-                  },
-               },
-            ),
-         getQueryTimeoutMs(),
-      );
+      // A file nobody can query is not shown either: same rule, same 404
+      // text as the query route.
+      if (!includeHiddenFilesAndSources) model.assertFileOnSurface();
+      // The file text is read without the package lock (callers reachable
+      // from `Model.getModel()` must not take it): a mid-swap read sees the
+      // old file, the new one, or ENOENT, and ENOENT only withholds the text.
+      const [compiled, sourceText] = await Promise.all([
+         model.getModel(),
+         // Withheld when the text names a source the file does not publish,
+         // unless the caller asked to see the files off the surface.
+         p
+            .getModelFileText(modelPath)
+            .then((text) =>
+               includeHiddenFilesAndSources || model.showsFileText(text)
+                  ? text
+                  : undefined,
+            )
+            .catch((error: unknown) => {
+               logger.warn("getModel: model source text unavailable", {
+                  environmentName,
+                  packageName,
+                  modelPath,
+                  error: error instanceof Error ? error.message : String(error),
+               });
+               return undefined;
+            }),
+      ]);
+      const shown = options.givens
+         ? withoutLockedSources(compiled, options.givens)
+         : compiled;
+      return sourceText === undefined ? shown : { ...shown, sourceText };
    }
 }

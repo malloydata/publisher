@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { useServer } from "../components/ServerProvider";
 import { FilterSelection, FilterValuePrimitive } from "./useDimensionFilters";
 import { useQueryWithApiError } from "./useQueryWithApiError";
-import { escapeMalloyString } from "../utils/malloyString";
+import { filterCondition } from "../utils/filterCondition";
 
 /**
  * Filter types for dimensions
@@ -119,100 +119,6 @@ export interface DimensionalFilterRangeDataResult {
 }
 
 /**
- * Formats a value for use in Malloy query
- */
-function formatMalloyValue(
-   value: FilterValuePrimitive | null | undefined,
-   isDate: boolean = false,
-): string {
-   if (value === null || value === undefined) {
-      return "null";
-   }
-
-   if (isDate) {
-      if (value instanceof Date) {
-         // Format as YYYY-MM-DD
-         return `@${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
-      }
-      // If it's a string, assume it's already in ISO format
-      return `@${value}`;
-   }
-
-   if (typeof value === "string") {
-      return `'${escapeMalloyString(value)}'`;
-   }
-
-   if (typeof value === "number") {
-      return String(value);
-   }
-
-   if (typeof value === "boolean") {
-      return value ? "true" : "false";
-   }
-
-   return String(value);
-}
-
-/**
- * Generates a Malloy filter condition for a single filter selection
- */
-function generateFilterCondition(selection: FilterSelection): string {
-   const { dimensionName, matchType, value, value2 } = selection;
-   const fieldName = `\`${dimensionName}\``;
-
-   // Determine if this is a date field based on the value
-   const isDate = value instanceof Date;
-
-   switch (matchType) {
-      case "Equals":
-      case "Semantic Search":
-         if (Array.isArray(value) && value.length > 0) {
-            // Handle multi-select: (field = val1 or field = val2)
-            const conditions = value.map(
-               (v) => `${fieldName} = ${formatMalloyValue(v, isDate)}`,
-            );
-            return `(${conditions.join(" or ")})`;
-         }
-         // Empty array or single value
-         if (Array.isArray(value)) return "";
-         return `${fieldName} = ${formatMalloyValue(value, isDate)}`;
-
-      case "Contains":
-         if (typeof value === "string") {
-            return `${fieldName} ~  f'%${escapeMalloyString(value)}%'`;
-         }
-         if (Array.isArray(value)) return "";
-         return `${fieldName} = ${formatMalloyValue(value)}`;
-
-      case "After":
-         if (Array.isArray(value)) return "";
-         return `${fieldName} > ${formatMalloyValue(value, isDate)}`;
-
-      case "Before":
-         if (Array.isArray(value)) return "";
-         return `${fieldName} < ${formatMalloyValue(value, isDate)}`;
-
-      case "Greater Than":
-         if (Array.isArray(value)) return "";
-         return `${fieldName} > ${formatMalloyValue(value)}`;
-
-      case "Less Than":
-         if (Array.isArray(value)) return "";
-         return `${fieldName} < ${formatMalloyValue(value)}`;
-
-      case "Between":
-         if (Array.isArray(value)) return "";
-         if (value2 !== undefined) {
-            return `${fieldName} >= ${formatMalloyValue(value, isDate)} and ${fieldName} <= ${formatMalloyValue(value2, isDate)}`;
-         }
-         return `${fieldName} >= ${formatMalloyValue(value, isDate)}`;
-
-      default:
-         return "";
-   }
-}
-
-/**
  * Groups dimension specs by source/model combination
  * Returns a map where key is "source|model" and value is array of specs for that combo
  */
@@ -235,8 +141,11 @@ function groupSpecsBySourceModel(
  * Builds a Malloy index query to fetch dimension values for a single source
  * Uses Malloy's built-in index operator for dimensional search
  * Reference: https://docs.malloydata.dev/documentation/patterns/dim_index
+ *
+ * Exported for its spec: the active filters are written by `filterCondition`,
+ * the same as the result rows' query, so both agree on what a filter matches.
  */
-function buildDimensionalIndexQuery(
+export function buildDimensionalIndexQuery(
    source: string,
    dimensionSpecs: DimensionSpec[],
    indexLimit: number,
@@ -270,7 +179,9 @@ function buildDimensionalIndexQuery(
    const whereConditions =
       filtersForSource.length > 0
          ? filtersForSource
-              .map((selection) => generateFilterCondition(selection))
+              .map((selection) =>
+                 filterCondition(`\`${selection.dimensionName}\``, selection),
+              )
               .filter((condition) => condition.length > 0)
               .join(" and ")
          : "";
@@ -698,7 +609,7 @@ export function useDimensionalFilterRangeData(
          versionId,
          activeFilters,
       ],
-      queryFn: async () => {
+      queryFn: async ({ signal }) => {
          if (!shouldExecuteQuery) {
             // Return empty map if no query needed (using composite keys)
             const emptyMap = new Map<string, DimensionValue[]>();
@@ -721,6 +632,8 @@ export function useDimensionalFilterRangeData(
                      versionId: versionId,
                      bypassFilters: true,
                   },
+                  undefined,
+                  { signal },
                );
                return {
                   config,

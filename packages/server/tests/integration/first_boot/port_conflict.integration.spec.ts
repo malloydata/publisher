@@ -3,13 +3,17 @@
 
 /// <reference types="bun-types" />
 
-import { afterEach, describe, expect, it } from "bun:test";
-import { type ChildProcess, spawn } from "child_process";
+import { afterEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import fs from "fs";
 import net from "net";
-import os from "os";
 import path from "path";
-import { fileURLToPath } from "url";
+import {
+   getFreePort,
+   pollUntil,
+   spawnServer,
+   type SpawnedServer,
+   tempDir,
+} from "../../harness/spawn_server";
 
 /**
  * End-to-end coverage for a boot whose REST or MCP port is already taken.
@@ -23,24 +27,7 @@ import { fileURLToPath } from "url";
  * left behind. Spans process boundaries, so it needs real subprocesses.
  */
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// tests/integration/first_boot -> packages/server
-const SERVER_DIR = path.resolve(__dirname, "../../..");
-
-/** Allocate an OS-assigned free TCP port (avoids fixed-port collisions). */
-async function getFreePort(): Promise<number> {
-   return new Promise<number>((resolve, reject) => {
-      const srv = net.createServer();
-      srv.on("error", reject);
-      srv.listen(0, "127.0.0.1", () => {
-         const addr = srv.address();
-         const found = typeof addr === "object" && addr ? addr.port : 0;
-         srv.close(() =>
-            found ? resolve(found) : reject(new Error("no free port")),
-         );
-      });
-   });
-}
+setDefaultTimeout(120_000);
 
 /** Bind and hold a fresh port so the server under test collides with it. */
 async function occupyPort(): Promise<{ port: number; release: () => void }> {
@@ -56,85 +43,31 @@ async function occupyPort(): Promise<{ port: number; release: () => void }> {
    });
 }
 
-interface BootResult {
-   exitCode: number | null;
-   log: string;
-   /** The cwd the server booted in: where .mcp.json would land. */
-   workDir: string;
-}
-
-const cleanups: Array<() => void> = [];
-afterEach(() => {
-   while (cleanups.length) cleanups.pop()?.();
+const cleanups: Array<() => unknown> = [];
+afterEach(async () => {
+   while (cleanups.length) await cleanups.pop()?.();
 });
 
 /**
- * Boot a real server against the given ports and wait for it to exit. The cwd
- * is a fresh non-git temp dir, so the `.mcp.json` write is NOT suppressed by
- * the git-worktree guard: if the boot wrongly writes one, this harness sees it.
+ * Boot a real server on the given ports, in a fresh non-git temp cwd so the
+ * `.mcp.json` write is NOT suppressed by the git-worktree guard: if the boot
+ * wrongly writes one, the caller sees it at `<workDir>/.mcp.json`.
  */
-async function bootExpectingExit(
-   publisherPort: number,
+async function boot(
+   restPort: number,
    mcpPort: number,
-): Promise<BootResult> {
-   const workDir = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), "port-conflict-cwd-")),
-   );
-   const serverRoot = fs.mkdtempSync(
-      path.join(os.tmpdir(), "port-conflict-root-"),
-   );
-   fs.writeFileSync(
-      path.join(serverRoot, "publisher.config.json"),
-      JSON.stringify({ frozenConfig: false, environments: [] }),
-   );
-   cleanups.push(() => {
-      for (const dir of [workDir, serverRoot]) {
-         try {
-            fs.rmSync(dir, { recursive: true, force: true });
-         } catch {
-            // best-effort cleanup
-         }
-      }
+): Promise<{ server: SpawnedServer; mcpJson: string }> {
+   const work = tempDir("port-conflict-cwd-");
+   const workDir = fs.realpathSync(work.dir);
+   const server = await spawnServer({
+      cwd: workDir,
+      restPort,
+      mcpPort,
+      config: { frozenConfig: false, environments: [] },
+      env: { PUBLISHER_NO_MCP_CONFIG: undefined },
    });
-
-   let log = "";
-   const proc: ChildProcess = spawn(
-      "bun",
-      [path.join(SERVER_DIR, "src", "server.ts")],
-      {
-         cwd: workDir,
-         env: {
-            ...process.env,
-            SERVER_ROOT: serverRoot,
-            PUBLISHER_HOST: "127.0.0.1",
-            PUBLISHER_PORT: String(publisherPort),
-            MCP_PORT: String(mcpPort),
-         },
-         stdio: ["ignore", "pipe", "pipe"],
-      },
-   );
-   proc.stdout?.on("data", (d: Buffer) => {
-      log = (log + d.toString()).slice(-16000);
-   });
-   proc.stderr?.on("data", (d: Buffer) => {
-      log = (log + d.toString()).slice(-16000);
-   });
-
-   const exitCode = await new Promise<number | null>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-         proc.kill("SIGKILL");
-         reject(
-            new Error(
-               `server did not exit within 90s\n--- log tail ---\n${log}`,
-            ),
-         );
-      }, 90_000);
-      proc.on("exit", (code) => {
-         clearTimeout(timeout);
-         resolve(code);
-      });
-   });
-   return { exitCode, log, workDir };
+   cleanups.push(work.cleanup, () => server.stop());
+   return { server, mcpJson: path.join(workDir, ".mcp.json") };
 }
 
 describe("boot with both ports free", () => {
@@ -142,63 +75,17 @@ describe("boot with both ports free", () => {
       // The write is deferred until BOTH listeners bind; this is the first
       // test of the real boot-time call site (mcp_config.spec.ts covers the
       // function, not the wiring).
-      const publisherPort = await getFreePort();
+      const restPort = await getFreePort();
       let mcpPort = await getFreePort();
-      while (mcpPort === publisherPort) mcpPort = await getFreePort();
+      while (mcpPort === restPort) mcpPort = await getFreePort();
 
-      const workDir = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "port-happy-cwd-")),
+      const { server, mcpJson } = await boot(restPort, mcpPort);
+      const written = await pollUntil(
+         () => server.exited() || fs.existsSync(mcpJson),
+         90_000,
       );
-      const serverRoot = fs.mkdtempSync(
-         path.join(os.tmpdir(), "port-happy-root-"),
-      );
-      fs.writeFileSync(
-         path.join(serverRoot, "publisher.config.json"),
-         JSON.stringify({ frozenConfig: false, environments: [] }),
-      );
-
-      const proc: ChildProcess = spawn(
-         "bun",
-         [path.join(SERVER_DIR, "src", "server.ts")],
-         {
-            cwd: workDir,
-            env: {
-               ...process.env,
-               SERVER_ROOT: serverRoot,
-               PUBLISHER_HOST: "127.0.0.1",
-               PUBLISHER_PORT: String(publisherPort),
-               MCP_PORT: String(mcpPort),
-            },
-            stdio: ["ignore", "ignore", "pipe"],
-         },
-      );
-      let exited = false;
-      proc.on("exit", () => {
-         exited = true;
-      });
-      cleanups.push(() => {
-         if (!exited) proc.kill("SIGKILL");
-         for (const dir of [workDir, serverRoot]) {
-            try {
-               fs.rmSync(dir, { recursive: true, force: true });
-            } catch {
-               // best-effort cleanup
-            }
-         }
-      });
-
-      const file = path.join(workDir, ".mcp.json");
-      const written = await (async () => {
-         const deadline = Date.now() + 90_000;
-         while (Date.now() < deadline) {
-            if (exited) return false;
-            if (fs.existsSync(file)) return true;
-            await new Promise((r) => setTimeout(r, 200));
-         }
-         return false;
-      })();
-      expect(written).toBe(true);
-      expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({
+      expect(written && !server.exited()).toBe(true);
+      expect(JSON.parse(fs.readFileSync(mcpJson, "utf8"))).toEqual({
          mcpServers: {
             malloy: {
                type: "http",
@@ -206,35 +93,33 @@ describe("boot with both ports free", () => {
             },
          },
       });
-   }, 120_000);
+   });
 });
 
 describe("boot with a busy port", () => {
    it("REST port busy: one actionable line, nonzero exit, and no .mcp.json left behind", async () => {
       const blocker = await occupyPort();
       cleanups.push(blocker.release);
-      const mcpPort = await getFreePort();
 
-      const result = await bootExpectingExit(blocker.port, mcpPort);
-      expect(result.exitCode).not.toBe(0);
-      expect(result.log).toContain(
+      const { server, mcpJson } = await boot(blocker.port, await getFreePort());
+      expect(await server.waitForExit()).not.toBe(0);
+      expect(server.output()).toContain(
          `Port ${blocker.port} in use; pass --port <n>`,
       );
       // The old failure shape: MCP wins the bind race, writes the file,
       // REST dies. The file must not exist for a boot that failed.
-      expect(fs.existsSync(path.join(result.workDir, ".mcp.json"))).toBe(false);
-   }, 120_000);
+      expect(fs.existsSync(mcpJson)).toBe(false);
+   });
 
    it("MCP port busy: names --mcp_port, nonzero exit, and no .mcp.json left behind", async () => {
       const blocker = await occupyPort();
       cleanups.push(blocker.release);
-      const publisherPort = await getFreePort();
 
-      const result = await bootExpectingExit(publisherPort, blocker.port);
-      expect(result.exitCode).not.toBe(0);
-      expect(result.log).toContain(
+      const { server, mcpJson } = await boot(await getFreePort(), blocker.port);
+      expect(await server.waitForExit()).not.toBe(0);
+      expect(server.output()).toContain(
          `Port ${blocker.port} in use; pass --mcp_port <n>`,
       );
-      expect(fs.existsSync(path.join(result.workDir, ".mcp.json"))).toBe(false);
-   }, 120_000);
+      expect(fs.existsSync(mcpJson)).toBe(false);
+   });
 });

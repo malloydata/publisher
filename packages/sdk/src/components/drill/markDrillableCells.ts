@@ -20,6 +20,7 @@
  * `@malloydata/render`, which offers no per-cell hook.
  */
 
+import { reportClasses } from "../../theme/classes";
 import type { DrillField } from "./resolveDrill";
 
 /**
@@ -27,7 +28,7 @@ import type { DrillField } from "./resolveDrill";
  * Malloyyo's counterpart is `dash-drill`; the name is local to each app's
  * stylesheet, and only the tag grammar is a compatibility surface.
  */
-export const DRILL_CELL_CLASS = "publisher-drill";
+export const DRILL_CELL_CLASS = reportClasses.drillCell;
 
 /** As much of the renderer's viz handle as the affordance reads. */
 export interface DrillMetadataSource {

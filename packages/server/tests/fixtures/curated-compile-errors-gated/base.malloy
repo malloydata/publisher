@@ -1,0 +1,8 @@
+// A building block. index.malloy does not export it, so it is off the surface.
+source: stores is duckdb.sql("select 1 as store_id, 'North' as region") extend {
+  primary_key: store_id
+}
+
+// One gate anywhere in the package keeps every boundary refusal generic.
+#(authorize) false
+source: vault is duckdb.sql("select 1 as id")

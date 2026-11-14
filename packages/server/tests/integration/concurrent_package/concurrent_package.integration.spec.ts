@@ -20,16 +20,12 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import path from "path";
-import { fileURLToPath } from "url";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Use a unique env name per run so stale state from a previous run (env
 // directory, persisted env metadata in publisher.db) can't poison startup.
 const ENV_NAME = `concurrent-package-test-env-${Date.now()}`;
-const PACKAGE_NAME = "gcs_faa";
+const PACKAGE_NAME = "concurrent_pkg";
 const CONCURRENCY = 12;
 
 const FORBIDDEN_ERROR_FRAGMENTS = [
@@ -52,7 +48,12 @@ describe("Concurrent package operations (E2E)", () => {
    beforeAll(async () => {
       env = await startRestE2E();
       baseUrl = env.baseUrl;
-      fixtureDir = "gs://publisher_test_packages/gcs_faa.zip";
+      // A local zip goes through the same staging extract as a downloaded
+      // one, which is what the race lived in, with no network.
+      fixtureDir = path.resolve(
+         import.meta.dir,
+         "../../fixtures/concurrent_package/concurrent_pkg.zip",
+      );
 
       // Seed the environment with the package once so the env exists on disk.
       // addEnvironment requires at least one package.
@@ -213,13 +214,16 @@ describe("Concurrent package operations (E2E)", () => {
       const postBody = await postRes.json().catch(() => null);
       expect(findForbiddenError(postBody)).toBeUndefined();
 
-      // PATCH either succeeds (ran after POST loaded the package) or 404s
-      // (ran before POST populated `this.packages`). It must NOT silently
-      // rewrite disk and then 404, and must never surface the forbidden
-      // error fragments.
+      // PATCH either applies the description (ran after POST published the
+      // version: a published package's description is not its content, so a
+      // PATCH may change it: 200), is refused (ran against the package
+      // installed from a location before it, whose description a reload
+      // would discard: 409) or 404s (ran before POST populated
+      // `this.packages`). It must NOT silently rewrite disk and then 404, and
+      // must never surface the forbidden error fragments.
       const patchBody = await patchRes.json().catch(() => null);
       expect(findForbiddenError(patchBody)).toBeUndefined();
-      expect([200, 404]).toContain(patchRes.status);
+      expect([200, 404, 409]).toContain(patchRes.status);
 
       // Whatever happened, the package must remain loadable.
       const getRes = await fetch(

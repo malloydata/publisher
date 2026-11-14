@@ -7,31 +7,25 @@ import { AuthClient, GoogleAuth, Impersonated } from "google-auth-library";
  * Google Cloud service-account impersonation for BigQuery connections.
  *
  * A connection that sets `impersonateServiceAccount` runs every BigQuery call
- * as that service account, using short-lived tokens minted through the IAM
- * Service Account Credentials API (`generateAccessToken`) — no exportable key
- * material anywhere. The publisher's own credential (ambient ADC) is only the
- * token *minter*: it needs `roles/iam.serviceAccountTokenCreator` on each
- * target service account, and the data-access roles live on the target instead.
+ * as that service account, with short-lived tokens from the IAM
+ * `generateAccessToken` API, so no key material is exported. The publisher's
+ * ambient ADC credential only mints tokens: it needs
+ * `roles/iam.serviceAccountTokenCreator` on each target, which holds the
+ * data-access roles.
  *
- * Two consumers share the clients built here, deliberately:
- *  - Malloy query execution, via the `gcpImpersonation` config overlay that
- *    `buildEnvironmentMalloyConfig` registers (the connection pojo carries
- *    `authClient: {gcpImpersonation: "<sa-email>"}`), and
- *  - schema discovery (`db_utils.ts` `createBigQueryClient`), which passes the
- *    same client as `ServiceOptions.authClient` to `new BigQuery(...)`.
- * If discovery built its own client from ADC it would silently read as the
- * publisher's broad identity — exactly what impersonation exists to prevent.
+ * Query execution (the `gcpImpersonation` overlay) and schema discovery
+ * (`db_utils.ts` `createBigQueryClient`) deliberately share these clients: a
+ * discovery client built from ADC would silently read as the publisher's
+ * broad identity, which is what impersonation exists to prevent.
  */
 
 const CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
 
 /**
- * The publisher's ambient credential, fetched once per process and shared by
- * every impersonated connection. `GoogleAuth.getClient()` resolves ADC (a
- * mounted credentials file, workload identity, or the metadata server); the
- * promise is cached rather than the client so concurrent first callers share
- * one resolution. A failed resolution is NOT cached — the next call retries —
- * so a transient metadata-server hiccup at boot doesn't wedge the process.
+ * The publisher's ambient ADC credential, shared by every impersonated
+ * connection. The promise is cached so concurrent first callers share one
+ * resolution; a failed resolution is not cached, so a transient
+ * metadata-server error at boot does not wedge the process.
  */
 let sourceClientPromise: Promise<AuthClient> | undefined;
 
@@ -50,11 +44,9 @@ function getSourceClient(): Promise<AuthClient> {
 }
 
 /**
- * One `Impersonated` client per target service account. The client refreshes
- * its own short-lived tokens (default lifetime 3600s) for the process
- * lifetime, so callers never see an expired credential, and one entry per
- * distinct target keeps the `generateAccessToken` call volume at
- * one-mint-per-hour per tenant rather than per query.
+ * One `Impersonated` client per target service account. Each refreshes its own
+ * tokens (3600s lifetime), so token minting is once an hour per target rather
+ * than per query.
  */
 const impersonatedClients = new Map<string, Promise<Impersonated>>();
 
@@ -80,17 +72,12 @@ export async function getImpersonatedAuthClient(
 }
 
 /**
- * The `gcpImpersonation` config overlay. A connection pojo referencing
- * `authClient: {gcpImpersonation: "sa@project.iam.gserviceaccount.com"}`
- * resolves through this to a live `Impersonated` client. The property is
- * declared `opaque` + `source: 'overlay'` + `mustHaveValue` on the bigquery
- * connection type, so the reference can only be filled by this registration —
- * never by a config literal — and a failure to resolve errors instead of
- * silently falling back to ambient ADC.
- *
- * The overlay resolver awaits async overlays, so returning the promise is
- * fine. An empty path means a malformed reference; refuse it rather than
- * letting `Impersonated` target `undefined`.
+ * The `gcpImpersonation` config overlay: resolves
+ * `authClient: {gcpImpersonation: "<sa-email>"}` to a live `Impersonated`
+ * client. The bigquery `authClient` property is `opaque`, overlay-sourced and
+ * `mustHaveValue`, so only this registration can fill it (never a config
+ * literal) and a failed resolution errors instead of falling back to ambient
+ * ADC. An empty path is a malformed reference and is refused.
  */
 export function gcpImpersonationOverlay(): (
    path: string[],

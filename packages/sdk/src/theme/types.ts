@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Theme } from "../client";
+import type { ReportUi } from "./ui";
 
 export type { Theme };
 
@@ -14,16 +15,28 @@ export type ThemeMode = "light" | "dark";
  * `buildTableCssVars`, `buildVegaThemeOverride`, and
  * `buildMalloyExplicitTheme` never have to branch on mode themselves.
  *
- * The seven `palette.*` colour keys are stored per-mode on the raw Theme
- * (one of light/dark per field) and collapse to the active mode here.
- * The six "derived" fields (border, cardBorder, pinnedBorder,
- * valueColor, foreground, axisFaint) are computed once from the resolved mode so
- * the same hex literal isn't repeated across three builders.
+ * The thirteen per-mode `palette.*` colour keys are stored per-mode on the
+ * raw Theme (one of light/dark per field) and collapse to the active mode
+ * here. The chrome fields keep their historical names: `border`,
+ * `cardBorder` and `pinnedBorder` are `1px solid <colour>` shorthands from
+ * `palette.border` / `palette.cardBorder`; `valueColor` is `palette.value`,
+ * `foreground` is `palette.chartText`, `axisFaint` is `palette.axis`, and
+ * `gridline` is `palette.gridline`.
  */
 export interface ResolvedTheme {
    mode: ThemeMode;
 
    series: string[];
+   /**
+    * The Console's accent — primary buttons, sliders, the builder's selection
+    * — taken from the first series colour, lifted toward white in dark mode.
+    * See `accentFor`.
+    */
+   accent: string;
+   /** The accent's hover state. */
+   accentHover: string;
+   /** The label colour that reads on the accent. */
+   accentContrast: string;
    font: {
       family: string;
       size: number;
@@ -42,6 +55,7 @@ export interface ResolvedTheme {
     */
    mapColor: string;
 
+   /** Table gridline / row rule, as a `1px solid <colour>` shorthand. */
    border: string;
    /**
     * The edge of a dashboard CARD, kept off `border` on purpose. `border` is
@@ -53,10 +67,22 @@ export interface ResolvedTheme {
     * so the two still read as one system.
     */
    cardBorder: string;
+   /** Pinned table header rule: `palette.cardBorder` as a border shorthand. */
    pinnedBorder: string;
+   /** The big-value (KPI) number colour (`palette.value`). */
    valueColor: string;
+   /** Chart text: axis labels/titles, legend, titles (`palette.chartText`). */
    foreground: string;
+   /** Chart axis domain and tick lines (`palette.axis`). */
    axisFaint: string;
+   /** Chart gridlines (`palette.gridline`). */
+   gridline: string;
+   /**
+    * The lift under something that responds to the pointer (a builder tile on
+    * hover), and under something being carried (a tile mid-drag). Mode-keyed:
+    * a black shadow alone disappears on the dark page, so dark adds an edge.
+    */
+   shadow: { lift: string; drag: string };
    /**
     * Background for the renderer's HTML chrome (the area between
     * dashboard tiles). Mode-keyed and intentionally NOT
@@ -86,4 +112,10 @@ export interface ResolvedTheme {
     * panel BETWEEN tiles and stays mode-keyed / neutral.
     */
    tableBackground: string;
+   /**
+    * The chrome's design tokens (radii, sizes, type, the mono face, the menu
+    * shadow): {@link DEFAULT_UI} under the host's `ui` overrides. The host's,
+    * not the operator's: see `ui.ts`.
+    */
+   ui: ReportUi;
 }

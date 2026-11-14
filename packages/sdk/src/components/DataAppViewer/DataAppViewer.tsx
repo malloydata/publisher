@@ -19,10 +19,15 @@ interface DataAppViewerProps {
 
 function parseDataAppResource(resourceUri: string) {
    try {
-      const { environmentName, packageName, modelPath } =
+      const { environmentName, packageName, modelPath, versionId } =
          parseResourceUri(resourceUri);
       if (!environmentName || !packageName || !modelPath) return null;
-      return { environmentName, packageName, dataAppPath: modelPath };
+      return {
+         environmentName,
+         packageName,
+         dataAppPath: modelPath,
+         versionId,
+      };
    } catch {
       return null;
    }
@@ -58,7 +63,10 @@ export default function DataAppViewer({ resourceUri }: DataAppViewerProps) {
    const environmentName = parsed?.environmentName ?? "";
    const packageName = parsed?.packageName ?? "";
    const dataAppPath = parsed?.dataAppPath ?? "";
+   const versionId = parsed?.versionId;
 
+   // A pinned version rides on the page's own URL, which the page's runtime
+   // reads to pin its queries; absent, the server serves `latest`.
    const standaloneUrl = useMemo(
       () =>
          packageFileUrl({
@@ -66,8 +74,9 @@ export default function DataAppViewer({ resourceUri }: DataAppViewerProps) {
             environmentName,
             packageName,
             path: dataAppPath,
+            ...(versionId !== undefined ? { versionId } : {}),
          }),
-      [server, environmentName, packageName, dataAppPath],
+      [server, environmentName, packageName, dataAppPath, versionId],
    );
 
    // Use the /data-apps endpoint to grab the <title> for the header. Any error
@@ -76,9 +85,13 @@ export default function DataAppViewer({ resourceUri }: DataAppViewerProps) {
    // renders. The app itself is loaded via the iframe `src`, not from this
    // query, so blocking the viewer on a metadata lookup would be wrong.
    const dataAppsQuery = useQueryWithApiError({
-      queryKey: ["data-apps", environmentName, packageName],
+      queryKey: ["data-apps", environmentName, packageName, versionId],
       queryFn: () =>
-         apiClients.dataApps.listDataApps(environmentName, packageName),
+         apiClients.dataApps.listDataApps(
+            environmentName,
+            packageName,
+            versionId,
+         ),
       enabled: !!parsed,
    });
    const dataAppMeta = dataAppsQuery.data?.data?.find(
@@ -117,8 +130,8 @@ export default function DataAppViewer({ resourceUri }: DataAppViewerProps) {
 
    if (!parsed) {
       return (
-         <Box sx={{ p: 3, maxWidth: 1200, mx: "auto" }}>
-            <Typography variant="h6" sx={{ fontWeight: 600 }}>
+         <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
+            <Typography variant="h6" sx={{ fontWeight: "fontWeightMedium" }}>
                Can&apos;t open data app
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
@@ -145,7 +158,7 @@ export default function DataAppViewer({ resourceUri }: DataAppViewerProps) {
             // parent.
             ...(fillViewport
                ? { height: "100%", display: "flex", flexDirection: "column" }
-               : { maxWidth: 1200, mx: "auto" }),
+               : { maxWidth: 1600, mx: "auto" }),
          }}
       >
          <Stack
@@ -156,7 +169,10 @@ export default function DataAppViewer({ resourceUri }: DataAppViewerProps) {
          >
             <Typography
                variant="h6"
-               sx={{ fontWeight: 600, letterSpacing: "-0.025em" }}
+               sx={{
+                  fontWeight: "fontWeightMedium",
+                  letterSpacing: "-0.025em",
+               }}
             >
                {title}
             </Typography>

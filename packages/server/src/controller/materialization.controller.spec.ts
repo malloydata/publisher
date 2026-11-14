@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import { BadRequestError } from "../errors";
-import type { MaterializationService } from "../service/materialization_service";
+import type { MaterializationService } from "../service/materialization/run/materialization_service";
 import { MaterializationController } from "./materialization.controller";
 
 /**
@@ -380,6 +380,55 @@ describe("MaterializationController.createMaterialization validation", () => {
       ).rejects.toThrow(BadRequestError);
    });
 
+   // ms2data/service#6756.
+   describe("warehouseReach", () => {
+      const SOURCE = {
+         sourceEntityId: "b2",
+         materializedTableId: "mt-2",
+         physicalTableName: "downstream_v1",
+         realization: "COPY",
+      };
+
+      it("passes recompute and refuse through", async () => {
+         for (const warehouseReach of ["recompute", "refuse"]) {
+            const parsed = await parse({
+               buildInstructions: {
+                  sources: [SOURCE],
+                  strictUpstreams: true,
+                  warehouseReach,
+               },
+            });
+            expect(parsed).toMatchObject({
+               strictUpstreams: true,
+               warehouseReach,
+            });
+         }
+      });
+
+      it("reads null and absent alike, as the default", async () => {
+         for (const buildInstructions of [
+            { sources: [SOURCE], warehouseReach: null },
+            { sources: [SOURCE] },
+         ]) {
+            const parsed = await parse({ buildInstructions });
+            expect("warehouseReach" in parsed).toBe(false);
+         }
+      });
+
+      it("rejects any other value with a 400 naming the accepted ones", async () => {
+         for (const warehouseReach of ["REFUSE", "skip", 1, true]) {
+            const { controller } = build();
+            await expect(
+               controller.createMaterialization("env", "pkg", {
+                  buildInstructions: { sources: [SOURCE], warehouseReach },
+               }),
+            ).rejects.toThrow(
+               /warehouseReach must be one of recompute \| refuse/,
+            );
+         }
+      });
+   });
+
    it("rejects a non-boolean strictUpstreams", async () => {
       const { controller } = build();
       await expect(
@@ -460,5 +509,48 @@ describe("MaterializationController.createMaterialization validation", () => {
       expect(
          await parse({ runContext: { trigger: "publish", runId: "run-42" } }),
       ).toEqual({ runContext: { trigger: "publish", runId: "run-42" } });
+   });
+});
+
+describe("MaterializationController responses", () => {
+   // The record keeps the version a run built; the wire Materialization has
+   // no `version` field, so every route leaves it off and the version goes
+   // out in metadata.versionId. With versioning off the record's version is
+   // null, and the response must still match the schema.
+   const run = (version: string | null) => ({
+      id: "m1",
+      environmentId: "env-1",
+      packageName: "pkg",
+      status: "MANIFEST_FILE_READY",
+      manifest: null,
+      metadata: version ? { versionId: version, scope: "version" } : {},
+      startedAt: null,
+      completedAt: null,
+      error: null,
+      version,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+   });
+
+   it("never answers with the record's version, on any route", async () => {
+      for (const version of ["1.0.0", null]) {
+         const service = {
+            createMaterialization: sinon.stub().resolves(run(version)),
+            stopMaterialization: sinon.stub().resolves(run(version)),
+            getMaterialization: sinon.stub().resolves(run(version)),
+            listMaterializations: sinon.stub().resolves([run(version)]),
+         } as unknown as MaterializationService;
+         const controller = new MaterializationController(service);
+         const answers = [
+            await controller.createMaterialization("env", "pkg", {}),
+            await controller.stopMaterialization("env", "pkg", "m1"),
+            await controller.getMaterialization("env", "pkg", "m1"),
+            ...(await controller.listMaterializations("env", "pkg")),
+         ];
+         for (const answer of answers) {
+            expect("version" in answer).toBe(false);
+            expect(answer.metadata).toEqual(run(version).metadata);
+         }
+      }
    });
 });

@@ -787,8 +787,8 @@ The Answer, Sensitivity and Limits report sheets are constants copied from a run
   retained".
 - **An HTML data app running Pyodide.** A package's `public/` page can load Pyodide
   (CPython compiled to WebAssembly) and run `scipy.optimize` in the browser over rows it
-  fetched with `Publisher.query(...)`; see `skill:malloy-html-data-apps` and
-  `skill:malloy-html-data-app-runtime`. Vendor Pyodide into `public/vendor/` rather than
+  fetched with `Publisher.query(...)`; see `skill:malloy-html-data-apps` and its
+  `reference/runtime.md`. Vendor Pyodide into `public/vendor/` rather than
   loading it from a CDN, for the reason the data-app skills give. **Untested here**: the
   Python runs in the viewer's browser with the viewer's data authority, outside
   Publisher, and nothing in this skill executed it. Offer it as an option, not a result,

@@ -13,7 +13,7 @@
  *   - Every query now enters through an `import`. Malloy marks imported entries
  *     `exported: false` and inlines their struct at the reference site, which is
  *     exactly the shape that once denied AUTHORIZED callers by grafting a gate
- *     onto an entry nothing consults (see authorize_import_hop.integration.spec.ts,
+ *     onto an entry nothing consults (see tests/component/authorize/import_hop.spec.ts,
  *     whose header notes no other fixture put a gated source behind an import).
  *     The example now does, permanently.
  *   - The givens that drive the notebook's Parameters panel are declared in the
@@ -25,6 +25,7 @@
  * boundary is a package-level policy and is the half `shipped_example_authorize`
  * cannot see.
  */
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { describe, expect, it } from "bun:test";
 import * as path from "path";
@@ -110,17 +111,14 @@ describe("examples/governed-analytics is curated by its index.malloy", () => {
       try {
          const { result } = await pkg
             .getModel("index.malloy")!
-            .getQueryResults(
-               "sales",
-               "by_region",
-               undefined,
-               undefined,
-               false,
-               {
+            .runQuery(unrecordedAudit(), {
+               sourceName: "sales",
+               queryName: "by_region",
+               givens: {
                   REGION: "",
                   MIN_AMOUNT: 0,
                },
-            );
+            });
          expect(result.data).toBeDefined();
       } finally {
          await close();
@@ -133,14 +131,11 @@ describe("examples/governed-analytics is curated by its index.malloy", () => {
          const tenantsFor = async (TENANTS: string[]): Promise<string[]> => {
             const { compactResult } = await pkg
                .getModel("index.malloy")!
-               .getQueryResults(
-                  "orders_secured",
-                  "by_tenant",
-                  undefined,
-                  undefined,
-                  false,
-                  { TENANTS },
-               );
+               .runQuery(unrecordedAudit(), {
+                  sourceName: "orders_secured",
+                  queryName: "by_tenant",
+                  givens: { TENANTS },
+               });
             return (compactResult as { tenant: string }[]).map((r) => r.tenant);
          };
 
@@ -163,13 +158,9 @@ describe("examples/governed-analytics is curated by its index.malloy", () => {
          // Same outcome the retired `explores` + `queryableSources: "declared"`
          // pair produced, now from no manifest key at all.
          await expect(
-            pkg
-               .getModel("internal.malloy")!
-               .getQueryResults(
-                  undefined,
-                  undefined,
-                  "run: orders_base -> { aggregate: c is count() }",
-               ),
+            pkg.getModel("internal.malloy")!.runQuery(unrecordedAudit(), {
+               query: "run: orders_base -> { aggregate: c is count() }",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
          await close();

@@ -21,7 +21,9 @@ import { PackageSection } from "../PackageSection";
 import { useServer } from "../ServerProvider";
 import { describeCron, formatNextRun } from "./cron";
 import CreateMaterializationDialog from "./CreateMaterializationDialog";
-import MaterializationDetailDialog from "./MaterializationDetailDialog";
+import MaterializationDetailDialog, {
+   type BuildPlanState,
+} from "./MaterializationDetailDialog";
 import MaterializationRunsList from "./MaterializationRunsList";
 import ScopeButton from "./ScopeButton";
 import SetScheduleDialog from "./SetScheduleDialog";
@@ -31,6 +33,13 @@ const MATERIALIZATION_POLL_MS = 3000;
 
 interface MaterializationsProps {
    resourceUri: string;
+   /**
+    * The package has published versions, or whether it has is not known yet.
+    * A version's scope and schedule come from its own publisher.json, which
+    * never changes, so the scope and schedule controls are not offered; a new
+    * build still is.
+    */
+   versioned?: boolean;
 }
 
 /**
@@ -41,10 +50,13 @@ interface MaterializationsProps {
  */
 export default function Materializations({
    resourceUri,
+   versioned = false,
 }: MaterializationsProps) {
    const { apiClients, mutable } = useServer();
    const queryClient = useQueryClient();
-   const { environmentName, packageName } = parseResourceUri(resourceUri);
+   // A pinned version lists, builds and stops its own runs; absent, `latest`.
+   const { environmentName, packageName, versionId } =
+      parseResourceUri(resourceUri);
    const [notificationMessage, setNotificationMessage] = useState("");
    const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -55,11 +67,14 @@ export default function Materializations({
    }
 
    const listQuery = useQueryWithApiError({
-      queryKey: ["materializations", environmentName, packageName],
+      queryKey: ["materializations", environmentName, packageName, versionId],
       queryFn: () =>
          apiClients.materializations.listMaterializations(
             environmentName,
             packageName,
+            undefined,
+            undefined,
+            versionId,
          ),
       refetchInterval: (query) => {
          const payload = query.state.data as
@@ -72,12 +87,43 @@ export default function Materializations({
       },
    });
 
-   // The build plan is a property of the compiled package (Package.buildPlan),
-   // not of a historical run, so fetch it from the package for the detail view.
+   // The package's materialization settings (schedule, freshness, scope).
    const packageQuery = useQueryWithApiError({
-      queryKey: ["package", environmentName, packageName],
+      queryKey: ["package", environmentName, packageName, versionId],
       queryFn: () =>
-         apiClients.packages.getPackage(environmentName, packageName),
+         apiClients.packages.getPackage(
+            environmentName,
+            packageName,
+            versionId,
+         ),
+   });
+
+   // The build plan of the package as loaded, from its own route. Only the
+   // detail dialog shows it, so it is fetched when a run is opened rather than
+   // on mount. A server that predates the route answers 404, and its package
+   // response still carries the plan inline, so that is read instead (`inline`
+   // below). Any other failure — a plan that failed at load answers 409
+   // BUILD_PLAN_UNAVAILABLE — is shown as unavailable, never as "no persist
+   // sources".
+   const buildPlanQuery = useQueryWithApiError({
+      queryKey: ["package-build-plan", environmentName, packageName, versionId],
+      queryFn: async ({ signal }) => {
+         try {
+            const response = await apiClients.packages.getPackageBuildPlan(
+               environmentName,
+               packageName,
+               versionId,
+               { signal },
+            );
+            return { inline: false, plan: response.data };
+         } catch (error) {
+            const status = (error as { response?: { status?: number } })
+               ?.response?.status;
+            if (status === 404) return { inline: true, plan: null };
+            throw error;
+         }
+      },
+      enabled: selectedId !== null,
    });
 
    const invalidateList = () =>
@@ -97,6 +143,7 @@ export default function Materializations({
                packageName,
                {
                   forceRefresh: opts.forceRefresh,
+                  ...(versionId !== undefined ? { versionId } : {}),
                },
             ),
       ),
@@ -120,6 +167,7 @@ export default function Materializations({
                packageName,
                materialization.id as string,
                MaterializationActionActionEnum.Stop,
+               versionId,
             ),
       ),
       onSuccess() {
@@ -147,6 +195,7 @@ export default function Materializations({
                packageName,
                materialization.id as string,
                dropTables,
+               versionId,
             ),
       ),
       onSuccess() {
@@ -223,6 +272,20 @@ export default function Materializations({
       stopMaterialization.isPending ||
       deleteMaterialization.isPending;
 
+   const buildPlan: BuildPlanState = buildPlanQuery.isError
+      ? { status: "unavailable" }
+      : !buildPlanQuery.isSuccess
+        ? { status: "loading" }
+        : !buildPlanQuery.data.inline
+          ? { status: "ready", plan: buildPlanQuery.data.plan }
+          : packageQuery.isSuccess
+            ? // `buildPlan` is deprecated on the package response; it is read
+              // only from a server old enough to lack the route.
+              { status: "ready", plan: currentPackage?.buildPlan ?? null }
+            : packageQuery.isError
+              ? { status: "unavailable" }
+              : { status: "loading" };
+
    const schedule = currentPackage?.materialization?.schedule ?? null;
    const scope =
       currentPackage?.scope === PackageScopeEnum.Version
@@ -257,7 +320,7 @@ export default function Materializations({
             action={
                mutable && (
                   <Stack direction="row" spacing={1} alignItems="center">
-                     {!orchestrated && (
+                     {!orchestrated && !versioned && (
                         <ScopeButton
                            scope={scope}
                            // A schedule requires version scope, so the server
@@ -275,7 +338,7 @@ export default function Materializations({
                            }
                         />
                      )}
-                     {!orchestrated && (
+                     {!orchestrated && !versioned && (
                         <SetScheduleDialog
                            currentSchedule={schedule}
                            isSubmitting={updateSchedule.isPending}
@@ -337,7 +400,7 @@ export default function Materializations({
 
          <MaterializationDetailDialog
             materialization={selected}
-            buildPlan={packageQuery.data?.data?.buildPlan ?? null}
+            buildPlan={buildPlan}
             onClose={() => setSelectedId(null)}
          />
 

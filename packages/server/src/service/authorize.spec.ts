@@ -103,9 +103,7 @@ describe("parseAuthorizeAnnotation", () => {
    });
 
    it("returns null for non-authorize annotations", () => {
-      expect(
-         parseAuthorizeAnnotation(`#(filter) dimension=x type=equal`),
-      ).toBeNull();
+      expect(parseAuthorizeAnnotation(`#(doc) a description`)).toBeNull();
       expect(parseAuthorizeAnnotation(`##! experimental.givens`)).toBeNull();
       expect(parseAuthorizeAnnotation(`## just a doc comment`)).toBeNull();
       expect(parseAuthorizeAnnotation(`# plain`)).toBeNull();
@@ -205,7 +203,7 @@ describe("containsAuthorizeAnnotationTag", () => {
 
    it("returns false for a non-authorize annotation", () => {
       expect(containsAuthorizeAnnotationTag([`# bar_chart`])).toBe(false);
-      expect(containsAuthorizeAnnotationTag([`#(filter) x=1`])).toBe(false);
+      expect(containsAuthorizeAnnotationTag([`#(doc) x=1`])).toBe(false);
    });
 
    it("checks every text in the list", () => {
@@ -220,7 +218,7 @@ describe("collectAuthorizeExprs", () => {
       expect(
          collectAuthorizeExprs([
             `##(authorize) "$ROLE = 'admin'"`,
-            `#(filter) dimension=x type=equal`,
+            `#(doc) a description`,
             `#(authorize) "$REGION = 'us-west'"`,
          ]),
       ).toEqual([
@@ -230,9 +228,9 @@ describe("collectAuthorizeExprs", () => {
    });
 
    it("returns [] when there are no authorize annotations", () => {
-      expect(
-         collectAuthorizeExprs([`#(filter) dimension=x type=equal`, `## doc`]),
-      ).toEqual([]);
+      expect(collectAuthorizeExprs([`#(doc) a description`, `## doc`])).toEqual(
+         [],
+      );
    });
 
    it("keeps duplicate gates (no dedup — every term joins the AND conjunction)", () => {

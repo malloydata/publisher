@@ -8,6 +8,7 @@ import React, {
    type ReactNode,
 } from "react";
 import { resolveTheme } from "./resolveTheme";
+import { mergeUi, type ReportUiOverrides } from "./ui";
 import type { ResolvedTheme, Theme, ThemeMode } from "./types";
 
 interface ThemeContextValue {
@@ -46,6 +47,12 @@ interface ThemeProviderProps {
    userChoice: ThemeMode | "auto" | undefined;
    setMode: (mode: ThemeMode | "auto") => void;
    allowUserToggle?: boolean;
+   /**
+    * The host's design tokens for the report and builder chrome: radii,
+    * control sizes, the type scale, the mono face, the menu shadow. Any subset;
+    * the rest stay the SDK's. See `ReportUi`.
+    */
+   ui?: ReportUiOverrides;
    children: ReactNode;
 }
 
@@ -55,9 +62,22 @@ export function ThemeProvider({
    userChoice,
    setMode,
    allowUserToggle = true,
+   ui,
    children,
 }: ThemeProviderProps) {
-   const theme = useMemo(() => resolveTheme(layers, mode), [layers, mode]);
+   // Keyed on the tokens' content, not the object: a host writing `ui={{…}}`
+   // inline hands a new object every render, and a new theme every render
+   // repainted every chart on the page.
+   const uiKey = JSON.stringify(ui ?? null);
+   const merged = useMemo(
+      () => mergeUi(ui),
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [uiKey],
+   );
+   const theme = useMemo(
+      () => ({ ...resolveTheme(layers, mode), ui: merged }),
+      [layers, mode, merged],
+   );
    const value = useMemo<ThemeContextValue>(
       () => ({ theme, layers, mode, userChoice, setMode, allowUserToggle }),
       [theme, layers, mode, userChoice, setMode, allowUserToggle],

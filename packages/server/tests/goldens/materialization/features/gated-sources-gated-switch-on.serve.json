@@ -1,0 +1,758 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "gated_mat",
+        "tier": "storage"
+      },
+      {
+        "name": "by_column__rollup__region_status__5f704d70",
+        "tier": "colocated"
+      },
+      {
+        "name": "by_lock__rollup__status__eb4380b4",
+        "tier": "colocated"
+      }
+    ],
+    "verdicts": [
+      "gated_mat:serves",
+      "locked_mat:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "filtered",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [
+          "REGION"
+        ],
+        "gates": {
+          "accessFilter": [
+            "region = $REGION"
+          ],
+          "authorize": []
+        },
+        "givenNames": [
+          "REGION",
+          "ROLE"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "763efcc5b4220bdb",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "by_column",
+          "stages": 1
+        },
+        "source": "by_column"
+      },
+      "equalToLive": true,
+      "givens": [
+        "REGION",
+        "ROLE"
+      ],
+      "malloy": "run: by_column -> { group_by: status; aggregate: total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "gated_mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "by_column"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a row filter over a rollup",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "admitted",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": [
+            "'admin' = $ROLE"
+          ]
+        },
+        "givenNames": [
+          "REGION",
+          "ROLE"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "5047d86bff463630",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "by_lock",
+          "stages": 1
+        },
+        "source": "by_lock"
+      },
+      "equalToLive": true,
+      "givens": [
+        "REGION",
+        "ROLE"
+      ],
+      "malloy": "run: by_lock -> { group_by: status; aggregate: total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "gated_mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "by_lock"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a lock admitting over a rollup",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {},
+      "error": "Access denied for source \"by_lock\".",
+      "givens": [
+        "REGION",
+        "ROLE"
+      ],
+      "malloy": "run: by_lock -> { group_by: status; aggregate: total }",
+      "query": "a lock refusing",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "filtered",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [
+          "REGION"
+        ],
+        "gates": {
+          "accessFilter": [
+            "region = $REGION"
+          ],
+          "authorize": []
+        },
+        "givenNames": [
+          "REGION",
+          "ROLE"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "6441fda2c32a4c05",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "total"
+          ],
+          "source": "gated_mat",
+          "stages": 1
+        },
+        "source": "gated_mat"
+      },
+      "equalToLive": true,
+      "givens": [
+        "REGION",
+        "ROLE"
+      ],
+      "malloy": "run: gated_mat -> { group_by: status; aggregate: n, total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "locked_mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "n",
+            "total"
+          ],
+          "sourceName": "gated_mat"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a row filter over a materialized source",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "admitted",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": [
+            "'admin' = $ROLE"
+          ]
+        },
+        "givenNames": [
+          "REGION",
+          "ROLE"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "1255e8c3c97fef9b",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "locked_mat",
+          "stages": 1
+        },
+        "source": "locked_mat"
+      },
+      "equalToLive": true,
+      "givens": [
+        "REGION",
+        "ROLE"
+      ],
+      "malloy": "run: locked_mat -> { group_by: region; aggregate: n }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "gated_mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "locked_mat"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a lock over a materialized source",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "filtered",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [
+          "REGION"
+        ],
+        "gates": {
+          "accessFilter": [
+            "region = $REGION"
+          ],
+          "authorize": []
+        },
+        "givenNames": [
+          "REGION",
+          "ROLE"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "763efcc5b4220bdb",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "by_column",
+          "stages": 1
+        },
+        "source": "by_column"
+      },
+      "equalToLive": true,
+      "givens": [
+        "REGION",
+        "ROLE"
+      ],
+      "malloy": "run: by_column -> { group_by: status; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "by_lock",
+            "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "gated_mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "by_column"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
+        },
+        "warnings": []
+      },
+      "query": "a row filter over a rollup",
+      "servedBy": "rollup",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "admitted",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": [
+            "'admin' = $ROLE"
+          ]
+        },
+        "givenNames": [
+          "REGION",
+          "ROLE"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "5047d86bff463630",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "by_lock",
+          "stages": 1
+        },
+        "source": "by_lock"
+      },
+      "equalToLive": true,
+      "givens": [
+        "REGION",
+        "ROLE"
+      ],
+      "malloy": "run: by_lock -> { group_by: status; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "by_column",
+            "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "gated_mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "by_lock"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
+        },
+        "warnings": []
+      },
+      "query": "a lock admitting over a rollup",
+      "servedBy": "rollup",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {},
+      "error": "Access denied for source \"by_lock\".",
+      "givens": [
+        "REGION",
+        "ROLE"
+      ],
+      "malloy": "run: by_lock -> { group_by: status; aggregate: total }",
+      "query": "a lock refusing",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "filtered",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [
+          "REGION"
+        ],
+        "gates": {
+          "accessFilter": [
+            "region = $REGION"
+          ],
+          "authorize": []
+        },
+        "givenNames": [
+          "REGION",
+          "ROLE"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "6441fda2c32a4c05",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "total"
+          ],
+          "source": "gated_mat",
+          "stages": 1
+        },
+        "source": "gated_mat"
+      },
+      "equalToLive": true,
+      "givens": [
+        "REGION",
+        "ROLE"
+      ],
+      "malloy": "run: gated_mat -> { group_by: status; aggregate: n, total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "by_column",
+            "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "by_lock",
+            "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "n",
+            "total"
+          ],
+          "sourceName": "gated_mat"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a row filter over a materialized source",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "admitted",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": [
+            "'admin' = $ROLE"
+          ]
+        },
+        "givenNames": [
+          "REGION",
+          "ROLE"
+        ],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "1255e8c3c97fef9b",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "locked_mat",
+          "stages": 1
+        },
+        "source": "locked_mat"
+      },
+      "equalToLive": true,
+      "givens": [
+        "REGION",
+        "ROLE"
+      ],
+      "malloy": "run: locked_mat -> { group_by: region; aggregate: n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "by_column",
+            "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "by_lock",
+            "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "locked_mat"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a lock over a materialized source",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

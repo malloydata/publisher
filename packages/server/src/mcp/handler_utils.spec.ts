@@ -1,20 +1,44 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { MalloyError } from "@malloydata/malloy";
-import { classifyToolError } from "./handler_utils";
+import {
+   BACK_PRESSURE_SUGGESTIONS,
+   classifyToolError,
+   getModelForQuery,
+} from "./handler_utils";
+import {
+   getEnvironmentNotFoundError,
+   getInternalError,
+   getMalloyErrorDetails,
+   getNotFoundError,
+   type ErrorDetails,
+} from "./error_messages";
+import { logger } from "../logger";
+import { linesMentioning } from "../test_helpers/log_lines";
 import {
    AccessDeniedError,
    BadRequestError,
+   ConnectionAuthError,
+   ConnectionFailedError,
+   EnvironmentNotFoundError,
    InvalidArgumentError,
    ModelCompilationError,
+   ModelNotFoundError,
+   NotQueryableError,
+   OffSurfaceError,
    PackageManifestError,
+   PackageVersionError,
    PackageNotFoundError,
    PayloadTooLargeError,
    ResponseUnserializableError,
    ServiceUnavailableError,
+   ConnectionPoolExhaustedError,
+   UnconfiguredConnectionError,
 } from "../errors";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { PackageLookup } from "../service/environment_ports";
 
 /**
  * classifyToolError decides what an agent is told to do about a failure, so
@@ -40,6 +64,100 @@ describe("classifyToolError", () => {
       expect(JSON.stringify(details.suggestions)).not.toContain("Malloy file");
    });
 
+   it("tells the agent an unreachable database is not its query to fix", () => {
+      const details = classifyToolError(
+         "executeQuery",
+         "env/pkg",
+         new ConnectionFailedError("connect ECONNREFUSED 10.0.0.5:5432"),
+      );
+      expect(details).toEqual({
+         message:
+            "The database connection for env/pkg is down: the database could not be reached, so the query never ran.",
+         suggestions: [
+            "The query and the model are fine. Do not rewrite them.",
+            "Retry once. If it fails again, report that the database connection is down rather than changing the query.",
+         ],
+      });
+      // The driver's text names an internal host; it is logged, not returned.
+      expect(JSON.stringify(details)).not.toContain("10.0.0.5");
+   });
+
+   it("tells the agent rejected credentials are the connection's to fix, not a retry", () => {
+      const details = classifyToolError(
+         "executeQuery",
+         "env/pkg",
+         new ConnectionAuthError(
+            'password authentication failed for user "analytics"',
+         ),
+      );
+      expect(details).toEqual({
+         message:
+            "The database rejected the connection's credentials for env/pkg. The query never ran.",
+         suggestions: [
+            "The query and the model are fine. Do not rewrite them, and do not retry: it fails the same way until the credentials are fixed.",
+            "Report that the connection's user, password, key or token needs updating.",
+         ],
+      });
+      expect(JSON.stringify(details)).not.toContain("analytics");
+   });
+
+   it("tells the agent a model naming a missing connection is not a retry", () => {
+      const details = classifyToolError(
+         "executeQuery",
+         "env/pkg",
+         new UnconfiguredConnectionError("bq_demo"),
+      );
+      expect(details).toEqual({
+         message:
+            'No connection named "bq_demo" found in config. The model for env/pkg uses a connection this environment does not have, so the query never ran.',
+         suggestions: [
+            "The query is fine. Do not rewrite it, and do not retry: it fails the same way until the connection exists.",
+            "Report that the environment is missing this connection; it was likely deleted or renamed.",
+         ],
+      });
+   });
+
+   it("names an unknown environment and the environments that exist", () => {
+      // The generic "Resource not found: analytics/bq_demo" did not say which
+      // half was wrong, and the store's own error, which knew, was dropped.
+      const details = classifyToolError(
+         "searchDatabaseSchema",
+         "analytics/bq_demo",
+         new EnvironmentNotFoundError(
+            'Environment "analytics" could not be resolved to a path.',
+            { environmentName: "analytics", availableEnvironments: ["a", "b"] },
+         ),
+      );
+      expect(details.message).toBe(
+         "Environment 'analytics' not found. Available environments: a, b. Use a name from list_packages.",
+      );
+   });
+
+   it("says so when no environment is loaded at all", () => {
+      const details = classifyToolError(
+         "op",
+         "env/pkg",
+         new EnvironmentNotFoundError("x", {
+            environmentName: "analytics",
+            availableEnvironments: [],
+         }),
+      );
+      expect(details.message).toBe(
+         "Environment 'analytics' not found. This server has no environments loaded. Use a name from list_packages.",
+      );
+   });
+
+   it("keeps the generic not-found for an environment error with no lookup", () => {
+      // The other throw sites carry a storage path or bucket in the message,
+      // which the generic text exists not to echo.
+      const details = classifyToolError(
+         "op",
+         "env/pkg",
+         new EnvironmentNotFoundError("Environment path /srv/x not found"),
+      );
+      expect(details.message).toBe("Resource not found: env/pkg");
+   });
+
    it("homes back-pressure as retryable, not as Malloy", () => {
       const details = classifyToolError(
          "op",
@@ -48,6 +166,22 @@ describe("classifyToolError", () => {
       );
       expect(details.message).toContain("Memory limit reached");
       expect(JSON.stringify(details.suggestions)).toContain("Retry");
+      expect(JSON.stringify(details.suggestions)).not.toContain("Malloy file");
+   });
+
+   it("homes an exhausted connection pool as retryable, not as Malloy", () => {
+      const details = classifyToolError(
+         "op",
+         "env/pkg",
+         new ConnectionPoolExhaustedError(
+            "Connection 'pg' has no free database session: this server opens at most 5 at a time for it, and none came free within 30 s. Retry once fewer queries are running on this connection.",
+         ),
+      );
+      expect(details.message).toContain("has no free database session");
+      expect(JSON.stringify(details.suggestions)).toContain("Retry");
+      expect(JSON.stringify(details.suggestions)).toContain(
+         "PUBLISHER_POSTGRES_POOL_MAX",
+      );
       expect(JSON.stringify(details.suggestions)).not.toContain("Malloy file");
    });
 
@@ -88,9 +222,9 @@ describe("classifyToolError", () => {
       // An authorize denial reaches the Malloy helper and is REFINED there: the
       // message pattern replaces the generic suggestion list outright, so the
       // marker is the authorize advice, not "Malloy file".
-      expect(
-         advice(new AccessDeniedError('Access denied for source "orders"')),
-      ).toContain("restricted by an authorize gate");
+      expect(advice(AccessDeniedError.forSource("orders"))).toContain(
+         "restricted by an authorize gate",
+      );
       expect(advice(new BadRequestError("Invalid query request."))).toContain(
          "Malloy file",
       );
@@ -202,6 +336,137 @@ describe("classifyToolError", () => {
          expect(JSON.stringify(details.suggestions)).not.toContain(
             "Malloy file",
          );
+      }
+   });
+});
+
+/**
+ * getModelForQuery's setup failures, pinned to the exact details each class
+ * produced: the ones it homes (not-found, version, compile, denial,
+ * back-pressure) and the ones it reports as an internal setup fault even
+ * though classifyToolError would home them.
+ */
+describe("getModelForQuery setup failures", () => {
+   const ENV = "env";
+   const PKG = "pkg";
+   const MODEL = "m.malloy";
+   const modelId = `${ENV}/${PKG}/${MODEL}`;
+   const LOAD = "executeQuery (load model)";
+
+   async function failWith(error: unknown) {
+      const store = fakeOf<PackageLookup>({
+         getEnvironment: async () => {
+            throw error;
+         },
+      });
+      const result = await getModelForQuery(store, ENV, PKG, MODEL);
+      if (!("error" in result)) throw new Error("expected a failure");
+      expect(result.cause).toBe(error);
+      return result.error;
+   }
+
+   const lookup = { environmentName: ENV, availableEnvironments: ["other"] };
+   const homed: Array<[string, unknown, ErrorDetails]> = [
+      [
+         "an environment lookup",
+         new EnvironmentNotFoundError("no env", lookup),
+         getEnvironmentNotFoundError(lookup),
+      ],
+      [
+         "a bare environment miss",
+         new EnvironmentNotFoundError("no env"),
+         getNotFoundError(`environment '${ENV}'`),
+      ],
+      [
+         "a package miss",
+         new PackageNotFoundError("no pkg"),
+         getNotFoundError(`package '${PKG}' in environment '${ENV}'`),
+      ],
+      [
+         "a model miss",
+         new ModelNotFoundError("no model"),
+         getNotFoundError(
+            `model '${MODEL}' in package '${PKG}' for environment '${ENV}'`,
+         ),
+      ],
+      [
+         "a compile failure",
+         new ModelCompilationError({ message: "bad model" }),
+         getMalloyErrorDetails(
+            LOAD,
+            modelId,
+            new ModelCompilationError({ message: "bad model" }),
+         ),
+      ],
+      [
+         "an authorize denial",
+         new AccessDeniedError("denied"),
+         getMalloyErrorDetails(LOAD, modelId, new AccessDeniedError("denied")),
+      ],
+      [
+         "back-pressure",
+         new ServiceUnavailableError("busy"),
+         { message: "busy", suggestions: [...BACK_PRESSURE_SUGGESTIONS] },
+      ],
+   ];
+
+   it.each(homed)("homes %s", async (_label, error, expected) => {
+      expect(await failWith(error)).toEqual(expected);
+   });
+
+   it("homes a package version refusal with its own message", async () => {
+      const error = new PackageVersionError("VERSION_NOT_FOUND", "no latest");
+      const details = await failWith(error);
+      expect(details.message).toBe("no latest");
+      expect(details).toEqual(
+         classifyToolError(
+            LOAD,
+            `package '${PKG}' in environment '${ENV}'`,
+            error,
+         ),
+      );
+   });
+
+   it.each([
+      ["an off-surface model", new OffSurfaceError("off surface"), "curation"],
+      [
+         "an unusable manifest",
+         new PackageManifestError("bad manifest"),
+         "publisher.json is invalid",
+      ],
+   ])(
+      "answers %s with its own guidance, not as an internal fault",
+      async (_label, error, guidance) => {
+         const details = await failWith(error);
+         expect(details.message).toBe(error.message);
+         expect(details.suggestions.join(" ")).toContain(guidance);
+      },
+   );
+
+   it.each([
+      ["a connection failure", new ConnectionFailedError("host down")],
+      ["a malformed argument", new InvalidArgumentError("bad arg")],
+      ["a query-boundary denial", new NotQueryableError("not queryable")],
+      ["anything else", new TypeError("undefined is not a function")],
+   ])("reports %s as an internal setup fault", async (_label, error) => {
+      expect(await failWith(error)).toEqual(
+         getInternalError("executeQuery (Setup)", error),
+      );
+   });
+
+   it("logs a caller's error at warn and an internal fault at error", async () => {
+      const warn = spyOn(logger, "warn");
+      const error = spyOn(logger, "error");
+      try {
+         await failWith(new PackageNotFoundError("setup-level-pkg-miss"));
+         await failWith(new TypeError("setup-level-bug"));
+         expect(linesMentioning(warn, "setup-level-pkg-miss")).toHaveLength(1);
+         expect(linesMentioning(error, "setup-level-pkg-miss")).toHaveLength(0);
+         expect(linesMentioning(error, "setup-level-bug")).toHaveLength(1);
+         expect(linesMentioning(warn, "setup-level-bug")).toHaveLength(0);
+      } finally {
+         warn.mockRestore();
+         error.mockRestore();
       }
    });
 });

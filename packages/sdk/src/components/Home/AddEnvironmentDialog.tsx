@@ -97,7 +97,7 @@ export default function AddEnvironmentDialog() {
                      id="description"
                      name="description"
                      label="Description"
-                     placeholder="Explore semantic models, run queries, and build dashboards"
+                     placeholder="Explore semantic models, run queries, and build reports"
                      type="text"
                      fullWidth
                      size="small"

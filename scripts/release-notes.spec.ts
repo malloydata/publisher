@@ -3,14 +3,12 @@
 
 // Tests for scripts/release-notes.mjs, the release workflow's narrative step.
 //
-// This script is exercised exactly once per release, on `main`, after npm and
-// Docker have already published — so a bug in it is discovered by reading a
-// wrong release page, and the cheapest fix is a commit that lands after the
-// damage. Two of the cases below are bugs that reached review: a bare
-// `## [Unreleased]` heading put `## ## [Unreleased]` onto the public page, and
-// `extract`/`stamp` read different trees, so a section merged during the release
-// window was stamped with a version it never shipped in and could never appear
-// on a later page.
+// This script is exercised once per release, on a dispatch-only path that CI
+// cannot run: `prepare` stamps the release branch and `gh-release` extracts from
+// it after npm and Docker have already published. A bug in it is discovered by
+// reading a wrong release page. One of the cases below is a bug that reached
+// review: a bare `## [Unreleased]` heading put `## ## [Unreleased]` onto the
+// public page.
 //
 // The script is run as a subprocess rather than imported: its argv parsing,
 // exit codes and stdout contract are the interface the workflow depends on, and
@@ -33,13 +31,13 @@ discuss prior releases constantly and a blanket replace would rewrite this line.
 
 const workspaces: string[] = [];
 
-/** A throwaway RELEASE_NOTES.md, plus a path for the titles artifact. */
+/** A throwaway RELEASE_NOTES.md. */
 function workspace(notes: string) {
   const dir = mkdtempSync(path.join(tmpdir(), "release-notes-"));
   workspaces.push(dir);
   const file = path.join(dir, "RELEASE_NOTES.md");
   writeFileSync(file, notes);
-  return { file, titles: path.join(dir, "titles.txt") };
+  return { file };
 }
 
 afterEach(() => {
@@ -153,38 +151,83 @@ body
     expect(code).toBe(0);
     expect(stdout).toBe("");
   });
+});
 
-  it("records the exact heading lines it consumed", () => {
-    const { file, titles } = workspace(`${HEADER}
-## [Unreleased] — first
+describe("extract <version>", () => {
+  // `gh-release` reads the release branch after `prepare` stamped it, so the
+  // narrative it puts on the page is whatever is headed with this version.
+  const NOTES = `${HEADER}
+## [Unreleased] — merged after the release was cut
+
+later body
+
+---
+
+## [0.0.249] — first
 
 a
 
 ---
 
-## [Unreleased]: second
+## [0.0.249]: second
 
 b
-`);
 
-    const { code } = run(file, "extract", "--titles", titles);
+---
+
+## [0.0.248] — previous release
+
+old body
+`;
+
+  it("prints only the sections headed with that version", () => {
+    const { file } = workspace(NOTES);
+
+    const { code, stdout } = run(file, "extract", "0.0.249");
     expect(code).toBe(0);
-    expect(readFileSync(titles, "utf8")).toBe(
-      "## [Unreleased] — first\n## [Unreleased]: second\n",
-    );
+    expect(stdout).toBe("## first\n\na\n\n---\n\n## second\n\nb\n");
   });
 
-  it("writes an empty titles file when there is no narrative", () => {
-    // Not skipping the write: an empty list is a real answer, and a stamp that
-    // then finds sections must leave them alone.
-    const { file, titles } = workspace(`${HEADER}
+  it("does not match a version that only shares a prefix", () => {
+    // `.` is escaped, and the closing bracket is part of the match, so 0.0.24
+    // is not read as a prefix of 0.0.249 or 0.0.248.
+    const { file } = workspace(NOTES);
+
+    const { code, stdout } = run(file, "extract", "0.0.24");
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+  });
+
+  it("reads back exactly what [Unreleased] would have printed after a stamp", () => {
+    // The workflow's contract: `prepare` stamps, `gh-release` extracts by
+    // version, and the release page is the same text the authors wrote.
+    const { file } = workspace(`${HEADER}
+## [Unreleased] — em dash
+
+dash body
+
+---
+
+## [Unreleased]: colon
+
+colon body
+
+---
+
 ## [0.0.248] — already shipped
 
-body
+old body
 `);
+    const before = run(file, "extract");
+    expect(before.code).toBe(0);
+    expect(before.stdout).not.toBe("");
 
-    expect(run(file, "extract", "--titles", titles).code).toBe(0);
-    expect(readFileSync(titles, "utf8")).toBe("");
+    expect(run(file, "stamp", "0.0.249").stdout).toBe("2\n");
+
+    const after = run(file, "extract", "0.0.249");
+    expect(after.code).toBe(0);
+    expect(after.stdout).toBe(before.stdout);
+    expect(run(file, "extract").stdout).toBe("");
   });
 });
 
@@ -213,6 +256,38 @@ body
     expect(after).not.toContain("[Unreleased]");
     // The preamble's prose mention is untouched.
     expect(after).toContain("mentions the word Unreleased in prose");
+  });
+
+  it("stamps only the exact [Unreleased] marker, not other bracketed headings", () => {
+    const { file } = workspace(`${HEADER}
+## [Unreleased] — shipping now
+
+a
+
+## [0.0.1-rc] — a prerelease section
+
+b
+
+## [Warning] — not a release
+
+c
+
+## [unreleased] — lowercase is not the marker
+
+d
+`);
+
+    expect(run(file, "stamp", "0.0.249").stdout).toBe("1\n");
+    const headings = readFileSync(file, "utf8").match(/^## \[.*$/gm);
+    expect(headings).toEqual([
+      "## [0.0.249] — shipping now",
+      "## [0.0.1-rc] — a prerelease section",
+      "## [Warning] — not a release",
+      "## [unreleased] — lowercase is not the marker",
+    ]);
+    expect(run(file, "extract", "0.0.249").stdout).toBe(
+      "## shipping now\n\na\n",
+    );
   });
 
   it("is a no-op, byte for byte, when there is nothing to stamp", () => {
@@ -261,117 +336,6 @@ body
   });
 });
 
-describe("stamp --titles", () => {
-  // The window bug, in the shape that exposed it. `extract` runs against the
-  // release branch's snapshot; `stamp` runs against whatever `main` became
-  // minutes later. Recent releases take 4-10 minutes, so a PR merging inside
-  // that window is ordinary.
-  const SNAPSHOT = `${HEADER}
-## [Unreleased] — feature A in this release
-
-A body
-`;
-
-  const MAIN_LATER = `${HEADER}
-## [Unreleased] — feature B merged mid-release
-
-B body
-
----
-
-## [Unreleased] — feature A in this release
-
-A body
-`;
-
-  it("stamps only the sections that reached the release page", () => {
-    const { file: snapshot, titles } = workspace(SNAPSHOT);
-    const { file: main } = workspace(MAIN_LATER);
-
-    const extracted = run(snapshot, "extract", "--titles", titles);
-    expect(extracted.code).toBe(0);
-    expect(extracted.stdout).toContain("## feature A in this release");
-    expect(extracted.stdout).not.toContain("feature B");
-
-    const stamped = run(main, "stamp", "0.0.249", "--titles", titles);
-    expect(stamped.code).toBe(0);
-    expect(stamped.stdout).toBe("1\n");
-
-    const after = readFileSync(main, "utf8");
-    // A shipped, so it is history now.
-    expect(after).toContain("## [0.0.249] — feature A in this release");
-    // B did not, so it must still be claimable by the next release.
-    expect(after).toContain("## [Unreleased] — feature B merged mid-release");
-  });
-
-  it("without --titles, stamps the mid-release section too (the bug)", () => {
-    // The control for the case above: this is what the workflow used to do, and
-    // it is why the titles artifact exists. B is stamped 0.0.249 without ever
-    // appearing on that release's page, and no later release can find it.
-    const { file: main } = workspace(MAIN_LATER);
-
-    expect(run(main, "stamp", "0.0.249").stdout).toBe("2\n");
-    const after = readFileSync(main, "utf8");
-    expect(after).toContain("## [0.0.249] — feature B merged mid-release");
-    expect(after).not.toContain("[Unreleased]");
-  });
-
-  it("stamps nothing when the titles file is empty", () => {
-    const { file: snapshot, titles } = workspace(`${HEADER}
-## [0.0.248] — already shipped
-
-body
-`);
-    const { file: main } = workspace(MAIN_LATER);
-    const before = readFileSync(main, "utf8");
-
-    expect(run(snapshot, "extract", "--titles", titles).code).toBe(0);
-
-    const stamped = run(main, "stamp", "0.0.249", "--titles", titles);
-    expect(stamped.code).toBe(0);
-    expect(stamped.stdout).toBe("0\n");
-    expect(readFileSync(main, "utf8")).toBe(before);
-  });
-
-  it("reports a recorded section that is no longer in the file", () => {
-    const { file: snapshot, titles } = workspace(`${HEADER}
-## [Unreleased] — edited during the release
-
-body
-`);
-    // Someone reworded the heading after the release page was built.
-    const { file: main } = workspace(`${HEADER}
-## [Unreleased] — edited during the release, then reworded
-
-body
-`);
-
-    expect(run(snapshot, "extract", "--titles", titles).code).toBe(0);
-
-    const stamped = run(main, "stamp", "0.0.249", "--titles", titles);
-    expect(stamped.code).toBe(0);
-    expect(stamped.stdout).toBe("0\n");
-    expect(stamped.stderr).toContain("no longer in");
-    expect(stamped.stderr).toContain("edited during the release");
-    // Reported, not corrected: the file is left as the author left it.
-    expect(readFileSync(main, "utf8")).toContain("[Unreleased]");
-  });
-
-  it("fails loudly when the titles file is missing", () => {
-    const { file, titles } = workspace(`${HEADER}
-## [Unreleased] — shipping now
-
-body
-`);
-    const before = readFileSync(file, "utf8");
-
-    const stamped = run(file, "stamp", "0.0.249", "--titles", titles);
-    expect(stamped.code).toBe(1);
-    expect(stamped.stderr).toContain("could not read the titles file");
-    expect(readFileSync(file, "utf8")).toBe(before);
-  });
-});
-
 describe("bad invocations leave the file alone", () => {
   const NOTES = `${HEADER}
 ## [Unreleased] — shipping now
@@ -386,7 +350,8 @@ body
     ["an empty version", ["stamp", ""]],
     ["an unknown command", ["publish", "0.0.249"]],
     ["no command", []],
-    ["--titles with no path", ["extract", "--titles"]],
+    ["extract with a version that is not a version", ["extract", "nope"]],
+    ["a stray extra argument", ["stamp", "0.0.249", "0.0.250"]],
   ];
 
   for (const [name, args] of cases) {

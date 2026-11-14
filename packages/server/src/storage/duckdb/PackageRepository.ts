@@ -1,52 +1,45 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Package } from "../DatabaseInterface";
+import { PackageRecord } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
+import { newId, Row, rowTimestamps, updateRow } from "./rows";
 
 export class PackageRepository {
    constructor(private db: DuckDBConnection) {}
 
-   private generateId(): string {
-      return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-   }
-
-   private now(): Date {
-      return new Date();
-   }
-
-   async listPackages(environmentId: string): Promise<Package[]> {
-      const rows = await this.db.all<Record<string, unknown>>(
+   async listPackages(environmentId: string): Promise<PackageRecord[]> {
+      const rows = await this.db.all<Row>(
          "SELECT * FROM packages WHERE environment_id = ? ORDER BY name",
          [environmentId],
       );
-      return rows.map(this.mapToPackage);
+      return rows.map(mapToPackage);
    }
 
-   async getPackageById(id: string): Promise<Package | null> {
-      const row = await this.db.get<Record<string, unknown>>(
+   async getPackageById(id: string): Promise<PackageRecord | null> {
+      const row = await this.db.get<Row>(
          "SELECT * FROM packages WHERE id = ?",
          [id],
       );
-      return row ? this.mapToPackage(row) : null;
+      return row ? mapToPackage(row) : null;
    }
 
    async getPackageByName(
       environmentId: string,
       name: string,
-   ): Promise<Package | null> {
-      const row = await this.db.get<Record<string, unknown>>(
+   ): Promise<PackageRecord | null> {
+      const row = await this.db.get<Row>(
          "SELECT * FROM packages WHERE environment_id = ? AND name = ?",
          [environmentId, name],
       );
-      return row ? this.mapToPackage(row) : null;
+      return row ? mapToPackage(row) : null;
    }
 
    async createPackage(
-      pkg: Omit<Package, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Package> {
-      const id = this.generateId();
-      const now = this.now();
+      pkg: Omit<PackageRecord, "id" | "createdAt" | "updatedAt">,
+   ): Promise<PackageRecord> {
+      const id = newId();
+      const now = new Date();
 
       await this.db.run(
          `INSERT INTO packages (id, environment_id, name, description, manifest_path, metadata, created_at, updated_at)
@@ -66,6 +59,8 @@ export class PackageRepository {
       return {
          id,
          ...pkg,
+         // Not written above: only the version calls move the pointer.
+         latestVersion: null,
          createdAt: now,
          updatedAt: now,
       };
@@ -73,44 +68,24 @@ export class PackageRepository {
 
    async updatePackage(
       id: string,
-      updates: Partial<Package>,
-   ): Promise<Package> {
+      updates: Partial<PackageRecord>,
+   ): Promise<PackageRecord> {
       const existing = await this.getPackageById(id);
       if (!existing) {
          throw new Error(`Package with id ${id} not found`);
       }
 
-      const now = this.now();
-      const setClauses: string[] = [];
-      const params: unknown[] = [];
+      await updateRow(this.db, "packages", id, {
+         name: updates.name,
+         description: updates.description,
+         manifest_path: updates.manifestPath,
+         metadata:
+            updates.metadata !== undefined
+               ? JSON.stringify(updates.metadata)
+               : undefined,
+      });
 
-      if (updates.name !== undefined) {
-         setClauses.push(`name = ?`);
-         params.push(updates.name);
-      }
-      if (updates.description !== undefined) {
-         setClauses.push(`description = ?`);
-         params.push(updates.description);
-      }
-      if (updates.manifestPath !== undefined) {
-         setClauses.push(`manifest_path = ?`);
-         params.push(updates.manifestPath);
-      }
-      if (updates.metadata !== undefined) {
-         setClauses.push(`metadata = ?`);
-         params.push(JSON.stringify(updates.metadata));
-      }
-
-      setClauses.push(`updated_at = ?`);
-      params.push(now.toISOString());
-      params.push(id);
-
-      await this.db.run(
-         `UPDATE packages SET ${setClauses.join(", ")} WHERE id = ?`,
-         params,
-      );
-
-      return this.getPackageById(id) as Promise<Package>;
+      return this.getPackageById(id) as Promise<PackageRecord>;
    }
 
    async deletePackage(id: string): Promise<void> {
@@ -120,19 +95,17 @@ export class PackageRepository {
    async deletePackagesByEnvironmentId(id: string): Promise<void> {
       await this.db.run("DELETE FROM packages WHERE environment_id = ?", [id]);
    }
+}
 
-   private mapToPackage(row: Record<string, unknown>): Package {
-      return {
-         id: row.id as string,
-         environmentId: row.environment_id as string,
-         name: row.name as string,
-         description: row.description as string | undefined,
-         manifestPath: row.manifest_path as string,
-         metadata: row.metadata
-            ? JSON.parse(row.metadata as string)
-            : undefined,
-         createdAt: new Date(row.created_at as string),
-         updatedAt: new Date(row.updated_at as string),
-      };
-   }
+function mapToPackage(row: Row): PackageRecord {
+   return {
+      id: row.id as string,
+      environmentId: row.environment_id as string,
+      name: row.name as string,
+      description: row.description as string | undefined,
+      manifestPath: row.manifest_path as string,
+      metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined,
+      ...rowTimestamps(row),
+      latestVersion: (row.latest_version as string | null) ?? null,
+   };
 }

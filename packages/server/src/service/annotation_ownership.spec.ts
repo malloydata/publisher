@@ -31,7 +31,6 @@ import {
 } from "@malloydata/malloy";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import {
    PackageLoadPool,
@@ -43,6 +42,7 @@ import {
    ownModelNotes,
 } from "./annotations";
 import { Package } from "./package";
+import { writeTempPackage } from "../test_helpers/temp_package";
 
 /**
  * A shared include carrying a model-level `##(filters)`. This is the tag behind
@@ -178,21 +178,16 @@ source: local is orders extend { dimension: two is 2 }`,
 });
 
 describe("notebook API response reports its own `##`, not its include's", () => {
-   const ORIGINAL_WORKERS = process.env.PACKAGE_LOAD_WORKERS;
    let pool: PackageLoadPool;
    let tempDir = "";
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_WORKERS === undefined)
-         delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_WORKERS;
    });
 
    afterEach(() => {
@@ -206,54 +201,65 @@ describe("notebook API response reports its own `##`, not its include's", () => 
       }
    });
 
-   it("keeps a shared include's `##(filters)` out of the notebook response", async () => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-own-notes-"));
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "test package" }),
-      );
-      fs.writeFileSync(path.join(tempDir, "shared.malloy"), SHARED_MALLOY);
-      fs.writeFileSync(
-         path.join(tempDir, "report.malloynb"),
-         `>>>malloy
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("keeps a shared include's `##(filters)` out of the notebook response", async () => {
+         tempDir = writeTempPackage(
+            { "shared.malloy": SHARED_MALLOY },
+            {
+               prefix: "publisher-own-notes-",
+               manifest: { name: "pkg", description: "test package" },
+            },
+         ).dir;
+         fs.writeFileSync(
+            path.join(tempDir, "report.malloynb"),
+            `>>>malloy
 import "shared.malloy"
 ## title="Sales report"
 
 >>>malloy
 run: orders -> { select: * }`,
-      );
-
-      const { MalloyConfig } = await import("@malloydata/malloy");
-      const duckdb = new DuckDBConnection("duckdb", ":memory:");
-      const malloyConfig = new MalloyConfig({ connections: {} });
-      malloyConfig.wrapConnections(
-         () => new FixedConnectionMap(new Map([["duckdb", duckdb]]), "duckdb"),
-      );
-
-      try {
-         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         const notebook = (await pkg
-            .getModel("report.malloynb")!
-            .getNotebook()) as { type: string; annotations?: string[] };
-
-         expect(notebook.type).toBe("notebook");
-         const annotations = notebook.annotations ?? [];
-
-         // Non-vacuous: the notebook's own model-level tag IS reported, so an
-         // empty list would not pass this test by accident.
-         expect(annotations.map((t) => t.trim())).toContain(
-            '## title="Sales report"',
          );
 
-         // The bug. `shared.malloy` declares `##(filters)`; the notebook only
-         // imports it. Folding the lineage handed that tag to the SDK's filter
-         // parser and configured a filter panel this notebook never asked for.
-         expect(annotations.filter(isFilterTag)).toEqual([]);
-         expect(annotations.map((t) => t.trim())).not.toContain(
-            '## title="Shared include"',
+         const { MalloyConfig } = await import("@malloydata/malloy");
+         const duckdb = new DuckDBConnection("duckdb", ":memory:");
+         const malloyConfig = new MalloyConfig({ connections: {} });
+         malloyConfig.wrapConnections(
+            () =>
+               new FixedConnectionMap(new Map([["duckdb", duckdb]]), "duckdb"),
          );
-      } finally {
-         await duckdb.close();
-      }
-   }, 120000);
+
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const notebook = (await pkg
+               .getModel("report.malloynb")!
+               .getNotebook()) as { type: string; annotations?: string[] };
+
+            expect(notebook.type).toBe("notebook");
+            const annotations = notebook.annotations ?? [];
+
+            // Non-vacuous: the notebook's own model-level tag IS reported, so an
+            // empty list would not pass this test by accident.
+            expect(annotations.map((t) => t.trim())).toContain(
+               '## title="Sales report"',
+            );
+
+            // The bug. `shared.malloy` declares `##(filters)`; the notebook only
+            // imports it. Folding the lineage handed that tag to the SDK's filter
+            // parser and configured a filter panel this notebook never asked for.
+            expect(annotations.filter(isFilterTag)).toEqual([]);
+            expect(annotations.map((t) => t.trim())).not.toContain(
+               '## title="Shared include"',
+            );
+         } finally {
+            await duckdb.close();
+         }
+      }, 120000);
+   });
 });

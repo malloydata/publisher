@@ -3,7 +3,13 @@
 
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { renderHook } from "@testing-library/react";
+import type { ReactNode } from "react";
 import type { GivenValue } from "../../hooks/givenValue";
+import {
+   reportEmitter,
+   ReportEventsContext,
+   type ReportEvent,
+} from "../Report/telemetry";
 import { useDrillSelf } from "./useDrillSelf";
 
 const TYPES = new Map<string, string | undefined>([
@@ -11,13 +17,28 @@ const TYPES = new Map<string, string | undefined>([
    ["MIN_AMOUNT", "number"],
 ]);
 
-function hook(setGiven = mock((_n: string, _v: GivenValue) => {})) {
-   const view = renderHook(() =>
-      useDrillSelf({
-         declaredTypes: TYPES,
-         setGiven,
-         documentName: "overview",
-      }),
+function hook(
+   setGiven = mock((_n: string, _v: GivenValue) => {}),
+   onEvent?: (event: ReportEvent) => void,
+) {
+   const events = reportEmitter(
+      { path: "overview.malloy", layout: "grid" },
+      onEvent,
+   );
+   const view = renderHook(
+      () =>
+         useDrillSelf({
+            declaredTypes: TYPES,
+            setGiven,
+            documentName: "overview",
+         }),
+      {
+         wrapper: ({ children }: { children: ReactNode }) => (
+            <ReportEventsContext.Provider value={events}>
+               {children}
+            </ReportEventsContext.Provider>
+         ),
+      },
    );
    return { ...view.result.current, setGiven };
 }
@@ -60,5 +81,37 @@ describe("useDrillSelf", () => {
       expect(warn).toHaveBeenCalledWith(
          expect.stringContaining("Drill declined"),
       );
+   });
+
+   describe("inside a report", () => {
+      const outcomes = (onEvent: ReturnType<typeof mock>) =>
+         (onEvent.mock.calls as [ReportEvent][]).map(([event]) => event);
+
+      it("reports a drill that set the given as resolved", () => {
+         const onEvent = mock((_event: ReportEvent) => {});
+         hook(undefined, onEvent).onSelf("region", "West");
+         expect(outcomes(onEvent)).toEqual([
+            {
+               type: "report.drill",
+               path: "overview.malloy",
+               layout: "grid",
+               to: "self",
+               outcome: "resolved",
+            },
+         ]);
+      });
+
+      it("reports an undeclared name as unresolved and an unencodable value as malformed, instead of warning", () => {
+         warn = spyOn(console, "warn").mockImplementation(() => {});
+         const onEvent = mock((_event: ReportEvent) => {});
+         const { onSelf } = hook(undefined, onEvent);
+         onSelf("STATE", "CA");
+         onSelf("MIN_AMOUNT", "not a number");
+         expect(outcomes(onEvent).map((event) => event)).toMatchObject([
+            { type: "report.drill", outcome: "unresolved" },
+            { type: "report.drill", outcome: "malformed" },
+         ]);
+         expect(warn).not.toHaveBeenCalled();
+      });
    });
 });

@@ -11,7 +11,7 @@ import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { GivensPanel } from "../given";
 import { givensToRequest } from "../given/paramCodec";
-import { Loading } from "../Loading";
+import { Loading, LOADING_COPY } from "../Loading";
 import { StyledCard, StyledCardContent, StyledCardMedia } from "../styles";
 import { runGate } from "./runGate";
 import { QueryExplorerResult, SourcesExplorer } from "./SourcesExplorer";
@@ -164,7 +164,7 @@ export function ModelExplorer({
    }
 
    if (!effectiveData) {
-      return <Loading text="Loading..." />;
+      return <Loading text={LOADING_COPY.loading} />;
    }
 
    const sourceOptions = (effectiveData?.sourceInfos || []).map(

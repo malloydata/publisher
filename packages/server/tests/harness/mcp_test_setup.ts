@@ -14,6 +14,8 @@ import { AddressInfo } from "net";
 import path from "path";
 import { fileURLToPath } from "url";
 import { URL } from "url";
+import { installSettings } from "../../src/test_helpers/settings_env";
+import { pollUntil } from "./spawn_server";
 
 // --- Real Server Import ---
 // Import the actual configured Express app instance
@@ -24,12 +26,18 @@ export interface McpE2ETestEnvironment {
    httpServer: http.Server;
    serverUrl: string;
    mcpClient: Client<Request, Notification, Result>;
-   originalServerRoot: string | undefined;
-   originalInitializeStorage: string | undefined;
+   /** Puts back the settings that were current before setup. */
+   restoreSettings: () => void;
 }
 
-// Counter for unique port assignment per test suite (incremented only under e2eSetupMutex)
-let portCounter = 0;
+/** This process's variables, as a server process started here would read them. */
+function processEnv(): Record<string, string> {
+   return Object.fromEntries(
+      Object.entries(process.env).filter(
+         (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+   );
+}
 
 // True mutex: the previous Promise-based lock had a TOCTOU race where two beforeAll hooks
 // could both pass the `if (initializationLock)` check and run setup concurrently, sharing
@@ -39,146 +47,123 @@ const e2eSetupMutex = new Mutex();
 /**
  * Starts the real application server and connects a real MCP client.
  */
-export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> {
+/**
+ * `env` holds the variables a suite starts its server with, over this
+ * process's own; a key set to undefined is removed.
+ */
+export async function setupE2ETestEnvironment(
+   options: { env?: Record<string, string | undefined> } = {},
+): Promise<McpE2ETestEnvironment> {
    return e2eSetupMutex.runExclusive(async () => {
       console.log(
          "[E2E Test Setup] Acquired setup mutex; starting environment...",
       );
-      return setupE2ETestEnvironmentInternal();
+      return setupE2ETestEnvironmentInternal(options.env ?? {});
    });
 }
 
-async function setupE2ETestEnvironmentInternal(): Promise<McpE2ETestEnvironment> {
-   // --- Store and Set SERVER_ROOT Env Var ---
-   // The EnvironmentStore relies on SERVER_ROOT to find publisher.config.json.
-   const originalServerRoot = process.env.SERVER_ROOT; // Store original value
+async function setupE2ETestEnvironmentInternal(
+   suiteEnv: Record<string, string | undefined>,
+): Promise<McpE2ETestEnvironment> {
    // Resolve the path to 'packages/server' based on the location of this file
    // Use import.meta.url for cross-platform compatibility (works on Windows)
    const __filename = fileURLToPath(import.meta.url);
    const __dirname = path.dirname(__filename);
    const serverPackageDir = path.resolve(__dirname, "../../"); // Go up two levels from .../packages/server/tests/harness
-   process.env.SERVER_ROOT = serverPackageDir;
-   console.log(
-      `[E2E Test Setup] Temporarily set SERVER_ROOT=${process.env.SERVER_ROOT}`,
-   );
 
-   // --- Set INITIALIZE_STORAGE to ensure packages are downloaded ---
-   // This ensures packages from GitHub are cloned/downloaded during initialization
-   const originalInitializeStorage = process.env.INITIALIZE_STORAGE; // Store original value
-   process.env.INITIALIZE_STORAGE = "true";
-   console.log(
-      `[E2E Test Setup] Temporarily set INITIALIZE_STORAGE=${process.env.INITIALIZE_STORAGE}`,
-   );
-
-   // --- IMPORTANT: Import server *after* setting env var ---
-   // Dynamically import the actual app instance
-   const { mcpApp } = await import("../../src/server");
-
-   let serverInstance: http.Server;
-   let serverUrl: string;
-
-   // Use unique port per test suite to avoid conflicts when running in parallel
-   // Increment port counter and use it to create unique ports: 4042, 4043, 4044, etc.
-   const portOffset = portCounter++;
-   const TEST_MCP_PORT = Number(process.env.MCP_PORT || 4040) + 2 + portOffset;
-
-   await new Promise<void>((resolve, reject) => {
-      const server = http
-         .createServer(mcpApp)
-         .listen(TEST_MCP_PORT, "127.0.0.1", () => {
-            // Use explicit TEST_MCP_PORT
-            try {
-               const address = server.address() as AddressInfo;
-               if (!address)
-                  throw new Error("Server address is null after listen");
-               serverInstance = server;
-               serverUrl = `http://127.0.0.1:${TEST_MCP_PORT}`;
-               console.log(
-                  `[E2E Test Setup] Real server (using mcpApp) listening on ${serverUrl} (Port: ${TEST_MCP_PORT})`,
-               );
-               resolve();
-            } catch (err) {
-               reject(err);
-            }
-         });
-      server.on("error", (err: NodeJS.ErrnoException) => {
-         // Provide more specific error info if available (like EADDRINUSE)
-         console.error(
-            `[E2E Test Setup] Server failed to start on port ${TEST_MCP_PORT}: ${err.code} - ${err.message}`,
-         );
-         reject(err);
-      });
+   // --- Install the settings the server starts with ---
+   // The server runs in this process, so it starts with this process's
+   // variables, as a server process started here would, and then the suite's.
+   // On top of them, the server root is packages/server, where
+   // publisher.config.json is, and INITIALIZE_STORAGE makes initialization
+   // clone/download the packages from GitHub. Kept until cleanup, since the
+   // server reads settings as it runs.
+   const env: Record<string, string> = processEnv();
+   for (const [key, value] of Object.entries(suiteEnv)) {
+      if (value === undefined) delete env[key];
+      else env[key] = value;
+   }
+   const { restore: restoreSettings } = installSettings({
+      env: {
+         ...env,
+         SERVER_ROOT: serverPackageDir,
+         INITIALIZE_STORAGE: "true",
+      },
+      cwd: process.cwd(),
    });
+   console.log(
+      `[E2E Test Setup] Installed settings with SERVER_ROOT=${serverPackageDir} INITIALIZE_STORAGE=true`,
+   );
+   try {
+      return await startServerAndClient(restoreSettings);
+   } catch (error) {
+      restoreSettings();
+      throw error;
+   }
+}
 
-   // Ensure serverInstance and serverUrl are assigned
-   const listeningServerInstance = serverInstance!;
-   const listeningServerUrl = serverUrl!;
+async function startServerAndClient(
+   restoreSettings: () => void,
+): Promise<McpE2ETestEnvironment> {
+   // --- IMPORTANT: Boot the server *after* installing the settings ---
+   // It reads them when first booted; later suites share that one server.
+   const { bootMainServer } = await import("./main_server");
+   const { mcp: mcpApp } = await bootMainServer();
 
-   // --- Wait a moment for server to start accepting connections ---
-   console.log("[E2E Test Setup] Waiting for server to accept connections...");
-   await new Promise((resolve) => setTimeout(resolve, 1000));
+   // An OS-assigned port: suites set up one after another under the mutex,
+   // and a fixed port could be held by anything else on the machine.
+   const listeningServerInstance = await new Promise<http.Server>(
+      (resolve, reject) => {
+         const server = http
+            .createServer(mcpApp)
+            .listen(0, "127.0.0.1", () => resolve(server));
+         server.on("error", (err: NodeJS.ErrnoException) => {
+            console.error(
+               `[E2E Test Setup] Server failed to start: ${err.code} - ${err.message}`,
+            );
+            reject(err);
+         });
+      },
+   );
+   const { port } = listeningServerInstance.address() as AddressInfo;
+   const listeningServerUrl = `http://127.0.0.1:${port}`;
+   console.log(
+      `[E2E Test Setup] Real server (using mcpApp) listening on ${listeningServerUrl}`,
+   );
 
    // --- Wait for server to be ready (packages downloaded) ---
-   // Poll the readiness endpoint to ensure initialization completes before tests run
-   // Allow >90s: cold CI can spend most of the budget on clone + package load before markReady().
-   console.log("[E2E Test Setup] Waiting for server to be ready...");
-   const maxWaitTime = 150000; // 150 seconds (INITIALIZE_STORAGE + large samples can be slow)
-   const pollInterval = 1000; // Check every second
-   const startTime = Date.now();
-   let isReady = false;
-
-   while (!isReady && Date.now() - startTime < maxWaitTime) {
-      try {
-         // Use Promise.race to add timeout to fetch
-         const fetchPromise = fetch(`${listeningServerUrl}/health/readiness`);
-         const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("Fetch timeout")), 5000),
-         );
-         const response = await Promise.race([fetchPromise, timeoutPromise]);
-
-         if (response.ok) {
-            const data = await response.json();
-            if (data.status === "UP") {
-               isReady = true;
-               console.log("[E2E Test Setup] Server is ready.");
-               break;
-            } else {
-               console.log(
-                  `[E2E Test Setup] Server not ready yet (status: ${data.status}), waiting... (${Math.round((Date.now() - startTime) / 1000)}s)`,
-               );
-            }
-         } else {
-            console.log(
-               `[E2E Test Setup] Readiness check returned ${response.status}, waiting... (${Math.round((Date.now() - startTime) / 1000)}s)`,
+   // Allow >90s: cold CI can spend most of the budget on clone + package load
+   // before markReady().
+   const maxWaitTime = 150_000;
+   const isReady = await pollUntil(
+      async () => {
+         try {
+            const response = await fetch(
+               `${listeningServerUrl}/health/readiness`,
+               { signal: AbortSignal.timeout(5_000) },
             );
-         }
-      } catch (error) {
-         // Server might not be ready yet, continue polling
-         const errorMsg =
-            error instanceof Error ? error.message : String(error);
-         // Only log every 5 seconds to reduce noise
-         const elapsed = Math.round((Date.now() - startTime) / 1000);
-         if (elapsed % 5 === 0) {
-            console.log(
-               `[E2E Test Setup] Readiness check failed (${errorMsg}), waiting... (${elapsed}s)`,
+            return (
+               response.ok &&
+               ((await response.json()) as { status?: string }).status === "UP"
             );
+         } catch {
+            return false;
          }
-      }
-      await new Promise((resolve) => setTimeout(resolve, pollInterval));
-   }
+      },
+      maxWaitTime,
+      250,
+   );
 
    if (!isReady) {
-      // Cleanup before throwing
-      if (listeningServerInstance?.listening) {
-         listeningServerInstance.closeAllConnections?.();
-         await new Promise<void>((res) =>
-            listeningServerInstance.close(() => res()),
-         );
-      }
+      listeningServerInstance.closeAllConnections?.();
+      await new Promise<void>((res) =>
+         listeningServerInstance.close(() => res()),
+      );
       throw new Error(
          `Server did not become ready within ${maxWaitTime / 1000} seconds. Package downloads may have failed.`,
       );
    }
+   console.log("[E2E Test Setup] Server is ready.");
 
    // --- Client Setup ---
    const mcpClient = new Client<Request, Notification, Result>({
@@ -232,8 +217,7 @@ async function setupE2ETestEnvironmentInternal(): Promise<McpE2ETestEnvironment>
       httpServer: listeningServerInstance,
       serverUrl: listeningServerUrl,
       mcpClient,
-      originalServerRoot,
-      originalInitializeStorage,
+      restoreSettings,
    };
 }
 
@@ -248,30 +232,16 @@ export async function cleanupE2ETestEnvironment(
       return;
    }
 
-   // --- Restore Original SERVER_ROOT and INITIALIZE_STORAGE ---
-   // Restore the original SERVER_ROOT value after tests are complete.
-   const { originalServerRoot, originalInitializeStorage } = env;
-   if (originalServerRoot === undefined) {
-      delete process.env.SERVER_ROOT;
-      console.log("[E2E Test Cleanup] Restored SERVER_ROOT (deleted)");
-   } else {
-      process.env.SERVER_ROOT = originalServerRoot;
-      console.log(
-         `[E2E Test Cleanup] Restored SERVER_ROOT=${process.env.SERVER_ROOT}`,
-      );
+   try {
+      await closeClientAndServer(env);
+   } finally {
+      // After the server is closed, since it reads settings until then.
+      env.restoreSettings();
+      console.log("[E2E Test Cleanup] Restored the settings.");
    }
+}
 
-   // Restore the original INITIALIZE_STORAGE value after tests are complete.
-   if (originalInitializeStorage === undefined) {
-      delete process.env.INITIALIZE_STORAGE;
-      console.log("[E2E Test Cleanup] Restored INITIALIZE_STORAGE (deleted)");
-   } else {
-      process.env.INITIALIZE_STORAGE = originalInitializeStorage;
-      console.log(
-         `[E2E Test Cleanup] Restored INITIALIZE_STORAGE=${process.env.INITIALIZE_STORAGE}`,
-      );
-   }
-
+async function closeClientAndServer(env: McpE2ETestEnvironment): Promise<void> {
    const { mcpClient, httpServer } = env;
 
    // 1. Close client first (with timeout)

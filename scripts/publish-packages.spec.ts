@@ -15,9 +15,6 @@
 // "main moved" fast-forward compare never triggers here — that guard has no
 // registry or git dependency of its own and is exercised by reading the
 // script, not by this harness.
-//
-// python-client's publish is paused in the script; the fake python3 and curl
-// keep it skipping (already on PyPI) if that line is restored.
 
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import {
@@ -30,6 +27,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+
+// These run the real script, which diffs the watched content against an older
+// commit of this checkout; a large diff on the Windows runner needs room.
+const GIT_DIFF_TIMEOUT_MS = 60_000;
 
 const REPO_ROOT = path.join(import.meta.dir, "..");
 const SCRIPT = path.join(REPO_ROOT, "scripts", "publish-packages.sh");
@@ -161,18 +162,6 @@ console.error("fake gh: unsupported command " + args.join(" "));
 process.exit(1);
 `;
 
-// Always reports HTTP 200 (published), so registry_has's pypi branch treats
-// python-client as already published and publish_pkg skips it.
-const FAKE_CURL = `#!/usr/bin/env node
-process.stdout.write("200");
-process.exit(0);
-`;
-
-const FAKE_PYTHON3 = `#!/bin/sh
-case "$*" in *"tomllib.load"*) echo "malloy-publisher-sdk 0.1.0 malloy-publisher-sdk" ;; esac
-exit 0
-`;
-
 function makeFakeBin(): string {
   const dir = mkdtempSync(path.join(tmpdir(), "publish-packages-bin-"));
   dirs.push(dir);
@@ -183,8 +172,6 @@ function makeFakeBin(): string {
   };
   write("npm", FAKE_NPM);
   write("gh", FAKE_GH);
-  write("curl", FAKE_CURL);
-  write("python3", FAKE_PYTHON3);
   return dir;
 }
 
@@ -294,255 +281,284 @@ describe("publish-packages.sh", () => {
     expect(result.npmLog.length).toBe(0);
   });
 
-  it("skills content changed: dispatches skills-npm.yml and the scaffolder with the right inputs", () => {
-    const result = runPublishScript(
-      baseConfig({
-        "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
-        "@malloy-publisher/skills@0.1.28 gitHead": { stdout: OLD_SHA },
-        "@malloy-publisher/skills versions": {
-          stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
-        },
-        "@malloy-publisher/skills@0.1.29 version": [
-          { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
-          { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
-          { stdout: "0.1.29" },
-        ],
-        "@malloy-publisher/create-malloy-package dist-tags.latest": {
-          stdout: "0.0.22",
-        },
-        "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
-          stdout: "",
-        },
-        // Unused by the decision here (the pin doesn't match, so it publishes
-        // regardless), but gather_scaffolder_facts always reads it.
-        "@malloy-publisher/create-malloy-package@0.0.22 gitHead": {
-          stdout: HEAD_SHA,
-        },
-        "@malloy-publisher/create-malloy-package versions": {
-          stdout: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
-        },
-        "@malloy-publisher/create-malloy-package@0.0.23 version": [
-          { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
-          { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
-          { stdout: "0.0.23" },
-        ],
-        "@malloy-publisher/server dist-tags.latest": { stdout: "0.9.0" },
-      }),
-    );
+  it(
+    "skills content changed: dispatches skills-npm.yml and the scaffolder with the right inputs",
+    () => {
+      const result = runPublishScript(
+        baseConfig({
+          "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
+          "@malloy-publisher/skills@0.1.28 gitHead": { stdout: OLD_SHA },
+          "@malloy-publisher/skills versions": {
+            stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
+          },
+          "@malloy-publisher/skills@0.1.29 version": [
+            { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
+            { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
+            { stdout: "0.1.29" },
+          ],
+          "@malloy-publisher/create-malloy-package dist-tags.latest": {
+            stdout: "0.0.22",
+          },
+          "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
+            stdout: "",
+          },
+          // Unused by the decision here (the pin doesn't match, so it publishes
+          // regardless), but gather_scaffolder_facts always reads it.
+          "@malloy-publisher/create-malloy-package@0.0.22 gitHead": {
+            stdout: HEAD_SHA,
+          },
+          "@malloy-publisher/create-malloy-package versions": {
+            stdout: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
+          },
+          "@malloy-publisher/create-malloy-package@0.0.23 version": [
+            { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
+            { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
+            { stdout: "0.0.23" },
+          ],
+          "@malloy-publisher/server dist-tags.latest": { stdout: "0.9.0" },
+        }),
+      );
 
-    expect(result.stderr).toBe("");
-    expect(result.code).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.code).toBe(0);
 
-    const skillsRun = dispatchedArgs(result.ghLog, "skills-npm.yml");
-    expect(skillsRun).not.toBeNull();
-    expect(skillsRun).toEqual(expect.arrayContaining(["-f", "version=0.1.29"]));
+      const skillsRun = dispatchedArgs(result.ghLog, "skills-npm.yml");
+      expect(skillsRun).not.toBeNull();
+      expect(skillsRun).toEqual(
+        expect.arrayContaining(["-f", "version=0.1.29"]),
+      );
 
-    const scaffolderRun = dispatchedArgs(
-      result.ghLog,
-      "create-malloy-package-npm.yml",
-    );
-    expect(scaffolderRun).not.toBeNull();
-    expect(scaffolderRun).toEqual(
-      expect.arrayContaining([
-        "-f",
-        "version=0.0.23",
-        "-f",
-        "server_version=0.9.0",
-        "-f",
-        "skills_version=0.1.29",
-      ]),
-    );
-  }, 15000);
+      const scaffolderRun = dispatchedArgs(
+        result.ghLog,
+        "create-malloy-package-npm.yml",
+      );
+      expect(scaffolderRun).not.toBeNull();
+      expect(scaffolderRun).toEqual(
+        expect.arrayContaining([
+          "-f",
+          "version=0.0.23",
+          "-f",
+          "server_version=0.9.0",
+          "-f",
+          "skills_version=0.1.29",
+        ]),
+      );
+    },
+    GIT_DIFF_TIMEOUT_MS,
+  );
 
-  it("skills latest rolled back by hand after 0.1.28 published: still dispatches skills at 0.1.29, then the scaffolder", () => {
-    // The bug this whole change fixes: `npm dist-tag add ...skills@0.1.27
-    // latest` while 0.1.28 is still published. `latest` alone would recompute
-    // 0.1.28 and checkFree would abort with "already on npm"; the versions
-    // list still has 0.1.28, so the ceiling has to come from there instead.
-    const result = runPublishScript(
-      baseConfig({
-        "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.27" },
-        "@malloy-publisher/skills@0.1.27 gitHead": { stdout: OLD_SHA },
-        "@malloy-publisher/skills versions": {
-          stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
-        },
-        "@malloy-publisher/skills@0.1.29 version": [
-          { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
-          { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
-          { stdout: "0.1.29" },
-        ],
-        "@malloy-publisher/create-malloy-package dist-tags.latest": {
-          stdout: "0.0.22",
-        },
-        "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
-          stdout: "",
-        },
-        "@malloy-publisher/create-malloy-package@0.0.22 gitHead": {
-          stdout: HEAD_SHA,
-        },
-        "@malloy-publisher/create-malloy-package versions": {
-          stdout: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
-        },
-        "@malloy-publisher/create-malloy-package@0.0.23 version": [
-          { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
-          { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
-          { stdout: "0.0.23" },
-        ],
-        "@malloy-publisher/server dist-tags.latest": { stdout: "0.9.0" },
-      }),
-    );
+  it(
+    "skills latest rolled back by hand after 0.1.28 published: still dispatches skills at 0.1.29, then the scaffolder",
+    () => {
+      // The bug this whole change fixes: `npm dist-tag add ...skills@0.1.27
+      // latest` while 0.1.28 is still published. `latest` alone would recompute
+      // 0.1.28 and checkFree would abort with "already on npm"; the versions
+      // list still has 0.1.28, so the ceiling has to come from there instead.
+      const result = runPublishScript(
+        baseConfig({
+          "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.27" },
+          "@malloy-publisher/skills@0.1.27 gitHead": { stdout: OLD_SHA },
+          "@malloy-publisher/skills versions": {
+            stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
+          },
+          "@malloy-publisher/skills@0.1.29 version": [
+            { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
+            { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
+            { stdout: "0.1.29" },
+          ],
+          "@malloy-publisher/create-malloy-package dist-tags.latest": {
+            stdout: "0.0.22",
+          },
+          "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
+            stdout: "",
+          },
+          "@malloy-publisher/create-malloy-package@0.0.22 gitHead": {
+            stdout: HEAD_SHA,
+          },
+          "@malloy-publisher/create-malloy-package versions": {
+            stdout: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
+          },
+          "@malloy-publisher/create-malloy-package@0.0.23 version": [
+            { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
+            { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
+            { stdout: "0.0.23" },
+          ],
+          "@malloy-publisher/server dist-tags.latest": { stdout: "0.9.0" },
+        }),
+      );
 
-    expect(result.stderr).toBe("");
-    expect(result.code).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.code).toBe(0);
 
-    const skillsRun = dispatchedArgs(result.ghLog, "skills-npm.yml");
-    expect(skillsRun).not.toBeNull();
-    expect(skillsRun).toEqual(expect.arrayContaining(["-f", "version=0.1.29"]));
+      const skillsRun = dispatchedArgs(result.ghLog, "skills-npm.yml");
+      expect(skillsRun).not.toBeNull();
+      expect(skillsRun).toEqual(
+        expect.arrayContaining(["-f", "version=0.1.29"]),
+      );
 
-    const scaffolderRun = dispatchedArgs(
-      result.ghLog,
-      "create-malloy-package-npm.yml",
-    );
-    expect(scaffolderRun).not.toBeNull();
-    expect(scaffolderRun).toEqual(
-      expect.arrayContaining(["-f", "version=0.0.23", "-f", "skills_version=0.1.29"]),
-    );
-  }, 15000);
+      const scaffolderRun = dispatchedArgs(
+        result.ghLog,
+        "create-malloy-package-npm.yml",
+      );
+      expect(scaffolderRun).not.toBeNull();
+      expect(scaffolderRun).toEqual(
+        expect.arrayContaining([
+          "-f",
+          "version=0.0.23",
+          "-f",
+          "skills_version=0.1.29",
+        ]),
+      );
+    },
+    GIT_DIFF_TIMEOUT_MS,
+  );
 
-  it("skills content unchanged: skips skills-npm.yml, still dispatches the scaffolder with skills' npm latest", () => {
-    const result = runPublishScript(
-      baseConfig({
-        "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
-        "@malloy-publisher/skills@0.1.28 gitHead": { stdout: HEAD_SHA },
-        "@malloy-publisher/skills versions": {
-          stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
-        },
-        "@malloy-publisher/create-malloy-package dist-tags.latest": {
-          stdout: "0.0.22",
-        },
-        "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
-          stdout: "",
-        },
-        "@malloy-publisher/create-malloy-package versions": {
-          stdout: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
-        },
-        "@malloy-publisher/create-malloy-package@0.0.23 version": [
-          { exit: 1, stdout: "npm ERR! code E404" },
-          { exit: 1, stdout: "npm ERR! code E404" },
-          { stdout: "0.0.23" },
-        ],
-        "@malloy-publisher/server dist-tags.latest": { stdout: "0.9.0" },
-      }),
-    );
+  it(
+    "skills content unchanged: skips skills-npm.yml, still dispatches the scaffolder with skills' npm latest",
+    () => {
+      const result = runPublishScript(
+        baseConfig({
+          "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
+          "@malloy-publisher/skills@0.1.28 gitHead": { stdout: HEAD_SHA },
+          "@malloy-publisher/skills versions": {
+            stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
+          },
+          "@malloy-publisher/create-malloy-package dist-tags.latest": {
+            stdout: "0.0.22",
+          },
+          "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
+            stdout: "",
+          },
+          "@malloy-publisher/create-malloy-package versions": {
+            stdout: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
+          },
+          "@malloy-publisher/create-malloy-package@0.0.23 version": [
+            { exit: 1, stdout: "npm ERR! code E404" },
+            { exit: 1, stdout: "npm ERR! code E404" },
+            { stdout: "0.0.23" },
+          ],
+          "@malloy-publisher/server dist-tags.latest": { stdout: "0.9.0" },
+        }),
+      );
 
-    expect(dispatchedArgs(result.ghLog, "skills-npm.yml")).toBeNull();
-    expect(result.summary).toContain("skipped: nothing to publish");
+      expect(dispatchedArgs(result.ghLog, "skills-npm.yml")).toBeNull();
+      expect(result.summary).toContain("skipped: nothing to publish");
 
-    const scaffolderRun = dispatchedArgs(
-      result.ghLog,
-      "create-malloy-package-npm.yml",
-    );
-    expect(scaffolderRun).not.toBeNull();
-    expect(scaffolderRun).toEqual(
-      expect.arrayContaining([
-        "-f",
-        "version=0.0.23",
-        "-f",
-        "server_version=0.9.0",
-        "-f",
-        "skills_version=0.1.28",
-      ]),
-    );
-  }, 15000);
+      const scaffolderRun = dispatchedArgs(
+        result.ghLog,
+        "create-malloy-package-npm.yml",
+      );
+      expect(scaffolderRun).not.toBeNull();
+      expect(scaffolderRun).toEqual(
+        expect.arrayContaining([
+          "-f",
+          "version=0.0.23",
+          "-f",
+          "server_version=0.9.0",
+          "-f",
+          "skills_version=0.1.28",
+        ]),
+      );
+    },
+    GIT_DIFF_TIMEOUT_MS,
+  );
 
-  it("scaffolder publisherServer already equals this release AND content unchanged: skips it, dispatches nothing for it", () => {
-    const result = runPublishScript(
-      baseConfig({
-        "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
-        "@malloy-publisher/skills@0.1.28 gitHead": { stdout: OLD_SHA },
-        "@malloy-publisher/skills versions": {
-          stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
-        },
-        "@malloy-publisher/skills@0.1.29 version": [
-          { exit: 1, stdout: "npm ERR! code E404" },
-          { exit: 1, stdout: "npm ERR! code E404" },
-          { stdout: "0.1.29" },
-        ],
-        "@malloy-publisher/create-malloy-package dist-tags.latest": {
-          stdout: "0.0.22",
-        },
-        // Already pinned to this release's server version: a re-run.
-        "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
-          stdout: "0.9.0",
-        },
-        // Diffing HEAD against HEAD is always empty, so this reads "unchanged".
-        "@malloy-publisher/create-malloy-package@0.0.22 gitHead": {
-          stdout: HEAD_SHA,
-        },
-        "@malloy-publisher/create-malloy-package versions": {
-          stdout: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
-        },
-      }),
-    );
+  it(
+    "scaffolder publisherServer already equals this release AND content unchanged: skips it, dispatches nothing for it",
+    () => {
+      const result = runPublishScript(
+        baseConfig({
+          "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
+          "@malloy-publisher/skills@0.1.28 gitHead": { stdout: OLD_SHA },
+          "@malloy-publisher/skills versions": {
+            stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
+          },
+          "@malloy-publisher/skills@0.1.29 version": [
+            { exit: 1, stdout: "npm ERR! code E404" },
+            { exit: 1, stdout: "npm ERR! code E404" },
+            { stdout: "0.1.29" },
+          ],
+          "@malloy-publisher/create-malloy-package dist-tags.latest": {
+            stdout: "0.0.22",
+          },
+          // Already pinned to this release's server version: a re-run.
+          "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
+            stdout: "0.9.0",
+          },
+          // Diffing HEAD against HEAD is always empty, so this reads "unchanged".
+          "@malloy-publisher/create-malloy-package@0.0.22 gitHead": {
+            stdout: HEAD_SHA,
+          },
+          "@malloy-publisher/create-malloy-package versions": {
+            stdout: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
+          },
+        }),
+      );
 
-    expect(dispatchedArgs(result.ghLog, "skills-npm.yml")).not.toBeNull();
-    expect(
-      dispatchedArgs(result.ghLog, "create-malloy-package-npm.yml"),
-    ).toBeNull();
-    expect(result.summary).toContain(
-      "@malloy-publisher/create-malloy-package` skipped: nothing to publish",
-    );
-    // The specific reason (decideScaffolder's stderr) rides on stdout via the
-    // job log prefixer, not the step summary.
-    expect(result.stdout).toContain(
-      "latest's publisherServer already equals 0.9.0",
-    );
-  }, 15000);
+      expect(dispatchedArgs(result.ghLog, "skills-npm.yml")).not.toBeNull();
+      expect(
+        dispatchedArgs(result.ghLog, "create-malloy-package-npm.yml"),
+      ).toBeNull();
+      expect(result.summary).toContain(
+        "@malloy-publisher/create-malloy-package` skipped: nothing to publish",
+      );
+      // The specific reason (decideScaffolder's stderr) rides on stdout via the
+      // job log prefixer, not the step summary.
+      expect(result.stdout).toContain(
+        "latest's publisherServer already equals 0.9.0",
+      );
+    },
+    GIT_DIFF_TIMEOUT_MS,
+  );
 
-  it("scaffolder publisherServer already equals this release BUT content changed since npm latest's gitHead: publishes anyway", () => {
-    // A scaffolder pinning this release was already published (a hand
-    // dispatch, or an earlier attempt), and scaffolder content landed on
-    // main before this run. Skipping here would leave that new content
-    // unshipped for the whole release.
-    const result = runPublishScript(
-      baseConfig({
-        "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
-        "@malloy-publisher/skills@0.1.28 gitHead": { stdout: HEAD_SHA },
-        "@malloy-publisher/skills versions": {
-          stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
-        },
-        "@malloy-publisher/create-malloy-package dist-tags.latest": {
-          stdout: "0.0.22",
-        },
-        "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
-          stdout: "0.9.0",
-        },
-        // OLD_SHA is an ancestor commit distinct from HEAD, so the diff
-        // against it reads "changed".
-        "@malloy-publisher/create-malloy-package@0.0.22 gitHead": {
-          stdout: OLD_SHA,
-        },
-        "@malloy-publisher/create-malloy-package versions": {
-          stdout: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
-        },
-        "@malloy-publisher/create-malloy-package@0.0.23 version": [
-          { exit: 1, stdout: "npm ERR! code E404" },
-          { exit: 1, stdout: "npm ERR! code E404" },
-          { stdout: "0.0.23" },
-        ],
-        "@malloy-publisher/server dist-tags.latest": { stdout: "0.9.0" },
-      }),
-    );
+  it(
+    "scaffolder publisherServer already equals this release BUT content changed since npm latest's gitHead: publishes anyway",
+    () => {
+      // A scaffolder pinning this release was already published (a hand
+      // dispatch, or an earlier attempt), and scaffolder content landed on
+      // main before this run. Skipping here would leave that new content
+      // unshipped for the whole release.
+      const result = runPublishScript(
+        baseConfig({
+          "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
+          "@malloy-publisher/skills@0.1.28 gitHead": { stdout: HEAD_SHA },
+          "@malloy-publisher/skills versions": {
+            stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
+          },
+          "@malloy-publisher/create-malloy-package dist-tags.latest": {
+            stdout: "0.0.22",
+          },
+          "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
+            stdout: "0.9.0",
+          },
+          // OLD_SHA is an ancestor commit distinct from HEAD, so the diff
+          // against it reads "changed".
+          "@malloy-publisher/create-malloy-package@0.0.22 gitHead": {
+            stdout: OLD_SHA,
+          },
+          "@malloy-publisher/create-malloy-package versions": {
+            stdout: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
+          },
+          "@malloy-publisher/create-malloy-package@0.0.23 version": [
+            { exit: 1, stdout: "npm ERR! code E404" },
+            { exit: 1, stdout: "npm ERR! code E404" },
+            { stdout: "0.0.23" },
+          ],
+          "@malloy-publisher/server dist-tags.latest": { stdout: "0.9.0" },
+        }),
+      );
 
-    const scaffolderRun = dispatchedArgs(
-      result.ghLog,
-      "create-malloy-package-npm.yml",
-    );
-    expect(scaffolderRun).not.toBeNull();
-    expect(scaffolderRun).toEqual(
-      expect.arrayContaining(["-f", "version=0.0.23"]),
-    );
-  }, 15000);
+      const scaffolderRun = dispatchedArgs(
+        result.ghLog,
+        "create-malloy-package-npm.yml",
+      );
+      expect(scaffolderRun).not.toBeNull();
+      expect(scaffolderRun).toEqual(
+        expect.arrayContaining(["-f", "version=0.0.23"]),
+      );
+    },
+    GIT_DIFF_TIMEOUT_MS,
+  );
 
   it("gitHead empty: aborts, exits non-zero, dispatches nothing", () => {
     const result = runPublishScript(

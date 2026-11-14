@@ -1,9 +1,11 @@
-## artifact { kind=notebook title="Clean" }
+## artifact { layout=linear title="Clean" tiles=[prose { kind=text }, "a_tiles -> x_chart"] }
 source: a is duckdb.sql("select 1 as x")
 
-##|(markdown)
+##|(markdown) prose
 Prose in a well-formed block.
 |##
 
-# bar_chart
-run: a -> { select: x }
+source: a_tiles is a extend {
+   # bar_chart
+   view: x_chart is { select: x }
+}

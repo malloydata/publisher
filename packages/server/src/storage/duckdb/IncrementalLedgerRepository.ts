@@ -16,23 +16,18 @@ import { DuckDBConnection } from "./DuckDBConnection";
  * was computed under and the source address it was computed for.
  *
  * Keyed on the table because that is what the boundary is a fact about. The source
- * address and the package name are recorded but NOT keys — see the schema comment
- * for why keying on them broke a table shared across package versions.
+ * address and package name are recorded but are NOT keys, so a table shared across
+ * package versions keeps one boundary (see the schema comment).
  *
- * The key includes the STORE, because a table persisted colocated and one
- * persisted into a destination under the same name are two different tables that
- * coexist legitimately. Keyed without it they would share one row and both would
- * seed forever, each overwriting the other on the way out.
+ * The key includes the STORE: a colocated table and a destination table with the
+ * same name are different tables. Without it they would share one row and each
+ * would overwrite the other, so both would re-seed forever.
  *
- * Deliberately has NO locking of its own. The single writer is already
- * guaranteed one level up, by the `active_key` unique index on
- * `materializations` that permits at most one active run per
- * (environment, package) — a lease here could only ever disagree with it.
+ * No locking of its own: the `active_key` unique index on `materializations`
+ * already guarantees one active run per (environment, package).
  *
- * Writes are upserts because a boundary has exactly one current value; there is
- * no history to append. An advance that is applied twice (a retried run) must
- * land on the same row, which is what makes the retry a no-op rather than a
- * second boundary.
+ * Writes are upserts because a boundary has one current value; a retried advance
+ * lands on the same row and is a no-op.
  */
 export class IncrementalLedgerRepository {
    constructor(private db: DuckDBConnection) {}
@@ -146,10 +141,9 @@ export class IncrementalLedgerRepository {
 
    /**
     * Forget every boundary tagged with a package, for when that package is
-    * deleted. Best-effort by nature now that the package is not part of the key:
-    * the tag names whoever last advanced a row, so a table shared across versions
-    * of a package keeps its boundary if a different version wrote it last. That
-    * costs at most one seed, and only if the table survives its package.
+    * deleted. Best-effort because the package is not part of the key: the tag
+    * names whoever last advanced a row, so a table shared across versions keeps
+    * its boundary if another version wrote it last. That costs at most one seed.
     */
    async deleteByPackage(
       environmentId: string,

@@ -1,0 +1,13 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {},
+    "sourceModelPaths": {}
+  },
+  "loadWarnings": [],
+  "wirePlan": null
+}

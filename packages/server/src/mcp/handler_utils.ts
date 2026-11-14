@@ -1,26 +1,16 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { MalloyError } from "@malloydata/malloy";
-import { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import {
-   AccessDeniedError,
-   BadRequestError,
-   ConnectionNotFoundError,
-   InvalidArgumentError,
-   PackageNotFoundError,
-   ModelNotFoundError,
-   ModelCompilationError,
    EnvironmentNotFoundError,
-   NotQueryableError,
-   OffSurfaceError,
-   PackageManifestError,
-   PayloadTooLargeError,
-   QueryTimeoutError,
-   ResponseUnserializableError,
-   ServiceUnavailableError,
+   errorMapping,
+   logInternalFailure,
+   ModelNotFoundError,
+   type ErrorMapping,
 } from "../errors";
 import {
+   getEnvironmentNotFoundError,
    getNotFoundError,
    getInternalError,
    getMalloyErrorDetails,
@@ -29,32 +19,25 @@ import {
 import type { Model } from "../service/model";
 import type { Environment } from "../service/environment";
 import type { Package } from "../service/package";
+import {
+   resolveCommandModel,
+   resolveQueryTarget,
+   type QueryResolutionOptions,
+} from "../usecases/query";
 import { logger } from "../logger";
 
-/**
- * Remediation for a ServiceUnavailableError, shared by every caller that homes
- * one. The error covers both the memory governor and the concurrency slots, so
- * the wording names both rather than only memory.
- */
-export const BACK_PRESSURE_SUGGESTIONS: readonly string[] = [
-   "Retry once the publisher is below its configured memory or concurrency limit.",
-   "If this persists, raise the limit or scale up the pod.",
-];
+/** Remediation for a ServiceUnavailableError; defined with the error table. */
+export { BACK_PRESSURE_SUGGESTIONS } from "../errors";
 
 /**
- * Turns a thrown error into agent-facing ErrorDetails, homed by error class.
+ * Turns a thrown error into agent-facing ErrorDetails, from the error table's
+ * `mcp` column for the error's kind (errors.ts ERROR_TABLE), so a missing
+ * package or a back-pressure rejection is not dressed up as a Malloy syntax
+ * problem. Only kinds about the caller's Malloy or request get the Malloy
+ * advice; anything without a row of its own is reported as internal.
  *
- * Without this, a tool that funnels every failure through getMalloyErrorDetails
- * dresses each one up as a Malloy language problem: a missing package tells the
- * agent to check its Malloy syntax, and a back-pressure rejection sends it
- * hunting for a typo instead of retrying.
- *
- * Only the classes that really are about the caller's Malloy or request reach
- * the Malloy advice; anything else is reported as internal rather than blamed
- * on the model. Routing by class and not by message is deliberate:
- * getMalloyErrorDetails refines on message patterns that the shipped engine
- * does not emit (its syntax pattern wants "no viable alternative at input"
- * where a real error says "unexpected '@'"), so "did it refine?" would send
+ * Routing is by kind, not message: getMalloyErrorDetails's message patterns
+ * do not all match what the tools emit, so a pattern check would send
  * genuine compile errors to the internal branch.
  *
  * @param operation The operation that failed (e.g. 'compile', 'reloadPackage').
@@ -65,226 +48,169 @@ export function classifyToolError(
    identifier: string,
    error: unknown,
 ): ErrorDetails {
-   if (error instanceof OffSurfaceError) {
-      // Checked before the not-found branch, which would drop this message and
-      // tell the agent to check its spelling. The message names the surface and
-      // the fix, and is only ever built where nothing is gated (see the class).
-      return {
-         message: error.message,
-         suggestions: [
-            "This is curation, not a typo: the name is real and the package does not publish it. Retrying with a different spelling will not help.",
-            "To query what IS published, call get_context for this package and use the model_path it returns, verbatim.",
-         ],
-      } satisfies ErrorDetails;
+   const { mcp } = errorMapping(error) as ErrorMapping<unknown>;
+   switch (mcp.advice) {
+      case "fixed":
+         if (mcp.log) {
+            // The error's text is withheld from the agent, so it is logged.
+            logInternalFailure(
+               `${mcp.log} during ${operation}`,
+               error as Error,
+               "warn",
+            );
+         }
+         return {
+            message: mcp.message
+               ? mcp.message(error, { operation, identifier })
+               : (error as Error).message,
+            suggestions: [...mcp.suggestions],
+         };
+      case "environment_not_found":
+         if (error instanceof EnvironmentNotFoundError && error.lookup) {
+            return getEnvironmentNotFoundError(error.lookup);
+         }
+         return getNotFoundError(identifier);
+      case "not_found":
+         return getNotFoundError(identifier);
+      case "malloy":
+         return getMalloyErrorDetails(operation, identifier, error);
+      case "internal":
+         return getInternalError(operation, error);
    }
-   if (error instanceof PackageManifestError) {
-      // An unusable publisher.json, from reload_package or a package-scope
-      // compile_model. The internal branch would call it unexpected and say to
-      // retry, and the Malloy branch would send the agent to its .malloy files.
-      // The message already names the field and what was wrong with it.
-      return {
-         message: error.message,
-         suggestions: [
-            "This is not transient. The package's publisher.json is invalid, so retrying fails the same way until the file is fixed.",
-            "Fix the field the message names in publisher.json, then call reload_package.",
-         ],
-      } satisfies ErrorDetails;
-   }
-   if (
-      error instanceof EnvironmentNotFoundError ||
-      error instanceof PackageNotFoundError ||
-      error instanceof ModelNotFoundError ||
-      // A query-boundary denial is a deliberate 404, and reporting it as a
-      // server fault would tell the caller to contact support about a boundary
-      // that is working. getNotFoundError also drops the source name this class
-      // is careful not to confirm.
-      error instanceof NotQueryableError ||
-      // A mistyped connection name is the most likely caller error of all, and
-      // as an unclassified throw it came back as "unexpected internal error,
-      // try again later", which an agent then does forever.
-      error instanceof ConnectionNotFoundError
-   ) {
-      return getNotFoundError(identifier);
-   }
-   if (error instanceof ServiceUnavailableError) {
-      // Back-pressure: surface the server's own message so the caller knows to
-      // retry rather than to go edit its Malloy.
-      return {
-         message: error.message,
-         suggestions: [...BACK_PRESSURE_SUGGESTIONS],
-      } satisfies ErrorDetails;
-   }
-   if (error instanceof ResponseUnserializableError) {
-      // Checked before the shared branch below, which would otherwise offer to
-      // raise the cap. There is no cap at which a response that will not
-      // serialize starts serializing, so that advice would send an agent to
-      // change a setting and hit the identical failure.
-      return {
-         message: error.message,
-         suggestions: [
-            "This is not transient. The same query will fail the same way, so change the query rather than retrying it.",
-            "Raising the byte cap will not help, because the response cannot be serialized at any cap. Shrink it instead: project fewer columns, add a LIMIT, or filter out the wide values.",
-         ],
-      } satisfies ErrorDetails;
-   }
-   if (
-      error instanceof QueryTimeoutError ||
-      error instanceof PayloadTooLargeError
-   ) {
-      // The query was too slow or too big. Both classes already carry their own
-      // "refine the query" remediation in the message, so the suggestions say
-      // the part the message leaves out and the internal branch got backwards:
-      // this is not transient, and retrying it unchanged fails identically.
-      // That distinction is the whole reason these are 504/413 and not the
-      // retryable 503 (see the QueryTimeoutError docstring in errors.ts).
-      return {
-         message: error.message,
-         suggestions: [
-            "This is not transient. The same query will fail the same way, so change the query rather than retrying it.",
-            "If it is already minimal, raise the configured cap named in the message.",
-         ],
-      } satisfies ErrorDetails;
-   }
-   // Must precede the Malloy branch: InvalidArgumentError extends
-   // BadRequestError, which that branch matches.
-   if (error instanceof InvalidArgumentError) {
-      // One named argument was malformed, and it is NOT about Malloy. A schema
-      // introspection argument error ("DuckDB schema name must be qualified as
-      // catalog.schema") answered with the Malloy advice came back with four
-      // suggestions about checking `source:` and `view:` keywords in a model
-      // file the caller never mentioned. These messages are already specific;
-      // the suggestions only need to say that retrying unchanged is pointless.
-      //
-      // Deliberately NOT widened to BadRequestError, which the branch below
-      // still handles. That class is also the general wrapper for query-time
-      // failures, including "Model compilation failed: ..." (the fallback for
-      // compile errors that are not ModelCompilationError), and those are
-      // genuine Malloy problems that want the syntax guidance and doc links.
-      return {
-         message: error.message,
-         suggestions: [
-            "This is not transient. The same arguments will fail the same way, so change them rather than retrying.",
-            "The message above names what was wrong. If it names an expected format, use that format exactly.",
-         ],
-      } satisfies ErrorDetails;
-   }
-   if (
-      // A raw engine error: what a bad query throws (syntax, undefined name,
-      // field not found). executeQuery's catch sees these, so they must keep
-      // the Malloy advice.
-      error instanceof MalloyError ||
-      // The same thing wrapped: what a failed compile or reload throws.
-      error instanceof ModelCompilationError ||
-      // An #(authorize) denial, whose message getMalloyErrorDetails recognizes.
-      error instanceof AccessDeniedError ||
-      // A malformed request is the caller's to fix, not ours to retry. Covers
-      // model.ts's query-time failures, which are about Malloy.
-      error instanceof BadRequestError
-   ) {
-      return getMalloyErrorDetails(operation, identifier, error);
-   }
-   // Everything else (a filesystem EACCES, a TypeError, a worker crash, a
-   // timeout) is not the caller's Malloy. Telling them to check their syntax
-   // sends them to edit a model that is fine.
-   return getInternalError(operation, error);
+}
+
+/** The three names a query's model is resolved from. */
+export interface QueryModelIds {
+   environmentName: string;
+   packageName: string;
+   modelPath: string;
 }
 
 /**
- * Fetches and validates the Package and Model instances needed for query execution.
- * Handles errors related to package/model access and initial compilation.
- *
- * The resolved Environment comes back with the model because a query needs it for
- * more than the lookup: it owns the connection configs the per-query metadata
- * layers are read from.
- *
- * @returns An object containing the Model instance or a pre-formatted ErrorDetails object.
+ * How MCP resolves a query's model, beside {@link resolveCommandModel}: a
+ * notebook or a missing model is refused while resolving, and the model is
+ * compiled eagerly. execute_query and value search both run with it.
+ */
+export const MCP_MODEL_RESOLUTION = {
+   resolveModel: resolveCommandModel,
+   refuseNotebook: true,
+   eagerCompile: true,
+   modelNotFound: (ids: QueryModelIds) =>
+      new ModelNotFoundError(modelNotFoundDetails(ids).message),
+} satisfies QueryResolutionOptions;
+
+/** MCP's refusal of a model the package does not serve as queryable (a notebook, or no such file). */
+export function modelNotFoundDetails({
+   environmentName,
+   packageName,
+   modelPath,
+}: QueryModelIds): ErrorDetails {
+   return getNotFoundError(
+      `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`,
+   );
+}
+
+/**
+ * The account an MCP caller reads of a failure to set up a query (resolving
+ * or compiling its model), logged as it is reported: a failure the caller can
+ * act on (the error table's `mcpSetup` column names what it names) is
+ * classified and logged as a warning; anything else is an internal setup
+ * fault, logged as an error.
+ */
+export function mapQuerySetupError(
+   error: unknown,
+   fields: QueryModelIds,
+): ErrorDetails {
+   const { environmentName, packageName, modelPath } = fields;
+   const identifier = setupIdentifier(
+      error,
+      environmentName,
+      packageName,
+      modelPath,
+   );
+   if (identifier === undefined) {
+      logger.error(
+         "[MCP Server Error] Error accessing package/model for query",
+         { ...fields, error },
+      );
+      return getInternalError("executeQuery (Setup)", error);
+   }
+   logger.warn("[MCP Tool executeQuery] model setup refused", {
+      ...fields,
+      error: error instanceof Error ? error.message : String(error),
+   });
+   return classifyToolError("executeQuery (load model)", identifier, error);
+}
+
+/**
+ * Resolves the model to query, or the ErrorDetails explaining why it cannot be.
+ * The Environment is returned too because it owns the connection configs the
+ * per-query metadata layers are read from. Value search's resolver.
  */
 export async function getModelForQuery(
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    environmentName: string,
    packageName: string,
    modelPath: string,
 ): Promise<
    | { model: Model; environment: Environment; pkg: Package }
-   | { error: ErrorDetails }
+   // `cause` is what the access record classifies; `error` is what the caller reads.
+   | { error: ErrorDetails; cause: unknown }
 > {
+   const fields = { environmentName, packageName, modelPath };
+   let refusal: ErrorDetails | undefined;
    try {
-      const environment = await environmentStore.getEnvironment(
-         environmentName,
-         false,
+      // The MCP tools serve the package's `latest`.
+      const { environment, pkg, model } = await resolveQueryTarget(
+         environmentStore,
+         { ...fields, identity: {} },
+         {
+            ...MCP_MODEL_RESOLUTION,
+            modelNotFound: () => {
+               refusal = modelNotFoundDetails(fields);
+               return new ModelNotFoundError(refusal.message);
+            },
+         },
       );
-      // Shed load before any disk / DB work; mirrors the HTTP query
-      // controllers so MCP traffic obeys the same back-pressure rules.
-      environment.assertCanAdmitQuery();
-      const pkg = await environment.getPackage(packageName, false);
-      const model = pkg.getModel(modelPath);
-      if (!model || model.getModelType() === "notebook") {
-         // Ensure it's actually a model
-         const details = getNotFoundError(
-            `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`,
-         );
-         return { error: details };
-      }
-      // Attempt to get the model definition early to catch initial compilation errors
-      await model.getModel(); // This might throw ModelCompilationError
-      return { model, environment, pkg };
+      // refuseNotebook refused a missing model above.
+      return { model: model!, environment, pkg };
    } catch (error) {
-      // Handle errors during package/model access or initial compilation
-      let errorDetails: ErrorDetails;
-      if (error instanceof EnvironmentNotFoundError) {
-         errorDetails = getNotFoundError(`environment '${environmentName}'`);
-      } else if (error instanceof PackageNotFoundError) {
-         errorDetails = getNotFoundError(
-            `package '${packageName}' in environment '${environmentName}'`,
-         );
-      } else if (error instanceof ModelNotFoundError) {
-         errorDetails = getNotFoundError(
-            `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`,
-         );
-      } else if (error instanceof ModelCompilationError) {
-         errorDetails = getMalloyErrorDetails(
-            "executeQuery (load model)",
-            `${environmentName}/${packageName}/${modelPath}`,
-            error,
-         );
-      } else if (error instanceof AccessDeniedError) {
-         // An #(authorize) denial during model setup. Funnel through
-         // getMalloyErrorDetails (which recognizes the access-denied message and
-         // gives supply-the-givens guidance) so a 403 never surfaces as an
-         // opaque internal error. Defensive: the gate fires during query
-         // execution today, not setup, but this keeps every error class homed.
-         errorDetails = getMalloyErrorDetails(
-            "executeQuery (load model)",
-            `${environmentName}/${packageName}/${modelPath}`,
-            error,
-         );
-      } else if (error instanceof ServiceUnavailableError) {
-         // Back-pressure: don't dress this up as a 404/500. Surface the
-         // server's own message so the MCP caller knows to retry.
-         errorDetails = {
-            message: error.message,
-            suggestions: [...BACK_PRESSURE_SUGGESTIONS],
-         } satisfies ErrorDetails;
-      } else {
-         // Unexpected error during setup
-         errorDetails = getInternalError("executeQuery (Setup)", error);
-      }
-      logger.error(
-         `[MCP Server Error] Error accessing package/model for query: ${environmentName}/${packageName}/${modelPath}`,
-         { error },
-      );
-      return { error: errorDetails };
+      return {
+         error: refusal ?? mapQuerySetupError(error, fields),
+         cause: error,
+      };
    }
 }
 
 /**
- * Constructs a malloy:// URI string identifying the model a tool response came
- * from. Attached as `uri` metadata on tool results (get-context, execute-query,
- * docs-search); it is not a fetchable MCP resource.
- *
- * @param components The URI parts (environment, package, and optionally the model).
- * @param fragment Optional fragment identifier (e.g., "result", "get-context").
- * @returns A malloy:// URI string.
+ * What a setup failure that is the caller's to act on names, from the error
+ * table's `mcpSetup` column. A kind without one (a connection fault, a
+ * malformed argument) is undefined: reported as an internal setup fault, not
+ * classified.
+ */
+function setupIdentifier(
+   error: unknown,
+   environmentName: string,
+   packageName: string,
+   modelPath: string,
+): string | undefined {
+   switch (errorMapping(error).mcpSetup) {
+      case "environment":
+         return `environment '${environmentName}'`;
+      case "package":
+         return `package '${packageName}' in environment '${environmentName}'`;
+      case "model":
+         return `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`;
+      case "resource":
+         return `${environmentName}/${packageName}/${modelPath}`;
+      case undefined:
+         return undefined;
+   }
+}
+
+/**
+ * Builds the malloy:// URI attached as `uri` metadata on tool results. It
+ * identifies where a result came from; it is not a fetchable MCP resource.
  */
 export function buildMalloyUri(
    components: {
@@ -300,7 +226,6 @@ export function buildMalloyUri(
    if (components.environment) {
       path += encodeURIComponent(components.environment);
    } else {
-      // Default to 'home' if not provided, consistent with current behavior
       path += "home";
    }
 
@@ -317,7 +242,7 @@ export function buildMalloyUri(
 
    // The URL constructor normalizes malloy://path to malloy:///path, so we
    // build the string manually to keep the malloy://environment/... shape.
-   let uriString = "malloy:/" + path; // Start with one slash after scheme
+   let uriString = "malloy:/" + path;
 
    if (fragment) {
       uriString += "#" + fragment;

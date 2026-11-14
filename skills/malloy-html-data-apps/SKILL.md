@@ -1,6 +1,6 @@
 ---
 name: malloy-html-data-apps
-description: Build or modify an in-package HTML data app for a Malloy Publisher package (a public/ directory the package serves). Use when the user wants a hand-authored HTML dashboard or web page backed by a package's Malloy models, with no build step.
+description: "Build or modify an in-package HTML data app for a Malloy Publisher package (a public/ directory the package serves): design it, write its Publisher.query code, embed it. Hand-authored, no build step."
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -17,7 +17,7 @@ SPDX-License-Identifier: MIT
 |---|---|
 | A hand-authored HTML/JS dashboard, no toolchain | this skill (an HTML data app) |
 | A React app with managed components | the Publisher React SDK (out of scope here) |
-| An analyst notebook with charts | a Malloy notebook (`notebooks/<slug>.malloy`) |
+| An analyst notebook or dashboard with charts | a Malloy report (`<slug>.malloy` at the package root, `layout=linear` or `layout=grid`; the `malloy-reports` skill) |
 | Point-and-click exploration, no code | the Publisher Explorer |
 
 Pick an HTML data app when the user wants full control of the markup and only plain web files.
@@ -36,18 +36,18 @@ my-package/
       chart.umd.js
 ```
 
-Only `public/` is reachable over the web, at `/environments/<env>/packages/<pkg>/<file>`. Models, data, and `publisher.json` are private and reached only through the query API, which still applies the model's filters, access modifiers, and authorize rules. There is no flag to set: a `public/` directory is what makes a package an app.
+Only `public/` is reachable over the web, at `/environments/<env>/packages/<pkg>/<file>`. Models, data, and `publisher.json` are private and reached only through the query API, which still applies the model's filters, `private:` fields, and authorize rules. There is no flag to set: a `public/` directory is what makes a package an app.
 
 ## Build sequence
 
 The agent orchestrates these. Each query and chart step hands off to a focused skill.
 
-1. DESIGN IT FIRST with `skill:malloy-data-app-design`: who opens it, the decision it serves, the archetype, the form each tile takes, and the depth plan. Skipping this is what produces an app that enumerates the model - a KPI row and a chart grid, whatever the domain - instead of one that answers a question. Hand the brief to the user before scaffolding.
+1. DESIGN IT FIRST. Read `reference/design.md`: who opens it, the decision it serves, the archetype, the form each tile takes, and the depth plan. Skipping this is what produces an app that enumerates the model - a KPI row and a chart grid, whatever the domain - instead of one that answers a question. Hand the brief to the user before scaffolding.
 2. READ THE MODEL. Get the model's real source and view names, through your environment's context tool if it has one, or by opening the `.malloy` file directly. Never guess field or view names.
 3. SCAFFOLD the package (template below).
-4. WRITE THE QUERIES with `skill:malloy-html-data-app-runtime`. Validate each before pasting it into the page, using whatever query tool your environment provides or a running Publisher (see `skill:malloy-html-data-app-runtime`). Malloy syntax questions go to `skill:malloy-queries`.
-5. CHOOSE CHARTS with `skill:malloy-charts` when rendering through `<malloy-render>`; otherwise it is your own chart library drawing the returned rows. Vendor any chart library into `public/` and load it locally, not from a CDN. Two reasons: embedded author JavaScript runs with the viewing user's data authority, and a blocked CDN (agent sandboxes and many corporate networks block them) is easy to miss, because the script never runs and the charts come up empty. The `storefront` example ships its chart library in `public/vendor/` and loads it from `public/index.html` as `./vendor/chart.umd.js`. Copy that, but resolve the path against the page's own directory: a page in a subdirectory (`public/reports/index.html`) needs `../vendor/chart.umd.js`. A wrong relative path 404s and leaves the charts blank, which is the failure you are trying to avoid.
-6. EMBED (optional) with `skill:malloy-html-data-app-embedding`.
+4. WRITE THE QUERIES. Read `reference/runtime.md`. Validate each before pasting it into the page, using whatever query tool your environment provides or a running Publisher (see `reference/runtime.md`). Malloy syntax questions go to `skill:malloy-queries`.
+5. CHOOSE CHARTS with `skill:malloy-charts` when rendering through `<malloy-render>`; otherwise it is your own chart library drawing the returned rows. Vendor any chart library into `public/` and load it locally, not from a CDN. Two reasons: embedded author JavaScript runs with the viewing user's data authority, and a blocked CDN (agent sandboxes and many corporate networks block them) is easy to miss, because the script never runs and the charts come up empty. The `storefront` example ships its chart library in `public/vendor/` and loads it from `public/index.html` as `./vendor/chart.umd.js`. Copy its vendoring, not its loading (it uses a plain `<script>`, which the next sentences rule out), and resolve the path against the page's own directory: a page in a subdirectory (`public/reports/index.html`) needs `../vendor/chart.umd.js`. A wrong relative path 404s and leaves the charts blank, which is the failure you are trying to avoid. Load it off the critical path (`<link rel="preload">`, then injected on the first chart), not as a plain `<script>` ahead of the app: it is usually most of the page's weight and would hold every query until it has parsed (`reference/performance.md`).
+6. EMBED (optional). Read `reference/embedding.md`.
 7. PREVIEW with the local authoring loop (below).
 8. VERIFY before you call it done (see "What 'done' means" below). This step is not optional.
 
@@ -58,14 +58,17 @@ The scaffold in step 3 only proves the wiring. It is the start, not the delivera
 A data app you can defend has all of these. Build to this list, not to the scaffold.
 
 - **Real names, never guessed.** Every source, view, and field name comes from the model you read in step 2. A name you derived or assumed is a bug waiting to surface as an empty tile.
-- **A real name is not the same as a correct measure.** Using the model's declared measures is right by default, but a wrong one fails far more quietly than a wrong name: an empty tile is obvious, a plausible wrong number is not. Before a measure reaches a headline, confirm it against the raw column values (`skill:malloy-data-app-design` step 2 of the inventory). The case that bites is a predicate like `!= null` over a column whose "absent" value is a sentinel string - measured on a real build, that reported 95.6% of police cases cleared where the true figure was 16.6%, and every check in this skill still passed.
+- **A real name is not the same as a correct measure.** Using the model's declared measures is right by default, but a wrong one fails far more quietly than a wrong name: an empty tile is obvious, a plausible wrong number is not. Before a measure reaches a headline, confirm it against the raw column values (`reference/design.md` step 2 of the inventory). The case that bites is a predicate like `!= null` over a column whose "absent" value is a sentinel string - measured on a real build, that reported 95.6% of police cases cleared where the true figure was 16.6%, and every check in this skill still passed.
 - **DOM-only - never `innerHTML` with interpolated values.** Build every element with `createElement` + `textContent`; do not assign `innerHTML` (or `insertAdjacentHTML`, `document.write`) with any string that contains a model value. Query results render any markup they contain - an XSS vector, and blocked outright under a Trusted-Types CSP. This is a hard build rule, not a lint suggestion: an app that interpolates a model value into `innerHTML` is not done.
-- **Modular, not one inline blob.** Split the page into modules per `skill:malloy-html-data-app-runtime` (pure formatting helpers, a chart layer, your tile/query definitions as data, a thin entry point). One source of truth for each tile's model/source/view, no parallel maps that drift.
-- **Every tile handles loading, empty, and error on its own.** One failing query must not blank the page. (`skill:malloy-html-data-app-runtime`.)
-- **Defensible numbers.** Missing ≠ zero (omit the point, don't plot a fake 0); show the latest non-null value for "current"; guard division with `nullif`; convert units explicitly. (`skill:malloy-html-data-app-runtime`.)
+- **Modular, not one inline blob.** Split the page into modules per `reference/runtime.md` (pure formatting helpers, a chart layer, your tile/query definitions as data, a thin entry point). One source of truth for each tile's model/source/view, no parallel maps that drift.
+- **Every tile handles loading, empty, and error on its own.** One failing query must not blank the page. (`reference/runtime.md`.)
+- **Defensible numbers.** Missing ≠ zero (omit the point, don't plot a fake 0); show the latest non-null value for "current"; guard division with `nullif`; convert units explicitly. (`reference/runtime.md`.)
 - **Visible assumptions.** When you assume something (two sources joined by month, an in-month proxy that differs from a certified definition) or a metric is incomplete, say so *in the app*: a caption, a footnote, a placeholder card with the reason. The non-technical user cannot see your reasoning; bury a caveat and you have misled them. Don't silently drop a metric you couldn't model. Show a placeholder that names what's missing and why.
-- **Built to the design brief, not to the model's shape.** The app matches the archetype, forms, and depth plan from step 1 (`skill:malloy-data-app-design`), carries a real token contract (surfaces, text ramp, semantic colors, a categorical chart palette) that the chart code reads at runtime rather than hardcoding, and puts visible weight on the two or three numbers that lead. A uniform grid of same-size cards, or a tile per view, means the brief was skipped.
-- **Vendored libraries.** Chart and helper libraries live in `public/`, loaded locally (step 5).
+- **Built to the design brief, not to the model's shape.** The app matches the archetype, forms, and depth plan from step 1 (`reference/design.md`), carries a real token contract (surfaces, text ramp, semantic colors, a categorical chart palette) that the chart code reads at runtime rather than hardcoding, and puts visible weight on the two or three numbers that lead. A uniform grid of same-size cards, or a tile per view, means the brief was skipped.
+- **Vendored libraries.** Chart and helper libraries live in `public/`, loaded locally (step 5). When a package agent builds apps, every file it copies into one (a vendored library for `public/vendor/`, its own components, a template) lives in its skill's `assets/` and is copied from there, never pasted into the skill's Markdown (`skill:malloy-define-agent`).
+- **Light, and nothing waits on the chart library.** Pages that draw charts preload the library and load it on first use; a page that draws none never loads it. Trim it to the series types the app draws once it is big enough to matter, and verify a trimmed build by reading pixels, because a missing type draws an empty box without an error. One query text per resource, so any cache or prefetch actually hits. (`reference/performance.md`, which also has two opt-in recipes, answering from the last visit and starting a drawer's queries on intent, each with the conditions it needs.)
+- **Holds still while it loads.** Script-filled blocks reserve their final size in the HTML, skeletons are sized from what is coming, settled tile heights are remembered for the next visit, and a tile re-running for a new filter keeps its last answer dimmed instead of collapsing. Target: layout shift under 0.1 on a first visit and 0 on a repeat, embedded as well as standalone. (`reference/performance.md`.)
+- **Works embedded.** Inside an auto-sized frame there is no viewport: the frame never scrolls, nothing extends past the content, and anything that floats (a drawer, a tray) is placed over the slice of the page the reader can see, keeps its scroll to itself, and returns the reader exactly where they were. A drawer built the standalone way opens at the top of the document and drags the host page up to meet it. (`reference/embedding.md`, `reference/overlays.md`.)
 - **Lazy-load below the fold, once the page has more than about eight query-backed tiles.** ("Many" is not decidable; that is the threshold.) Tiles sitting below the fold is *why* the technique works, not a second trigger for it - almost every real data app scrolls, so reading it as one makes the rule "always" and contradicts the count. Under that threshold, firing every tile at once is cheaper than the machinery. Don't fire every tile's query on load. `reference/lazy-load.md` is the recipe: `IntersectionObserver` (rootMargin ~240px) + a small concurrency cap + reserve each tile's height so lazy tiles don't reflow. Includes the verification trap - on a short/tall-default viewport all tiles intersect at once and you get a false "everything deferred" pass, so test on a deliberately small viewport.
 
 ### Verify before you call it done
@@ -73,7 +76,8 @@ A data app you can defend has all of these. Build to this list, not to the scaff
 You are building for someone who cannot tell a correct dashboard from a broken one. Verification is your job, not theirs.
 
 - **Validate every query against the model before wiring it in** (step 4): confirm it compiles and that the column names match what your render code reads.
-- **Load the finished page and confirm every tile shows real numbers**: not stuck on "Loading…", not an error, not an empty state you didn't intend. In a headless browser, wait on `load` plus a content selector, not network idle (`publisher.js` holds an SSE stream open; see `skill:malloy-html-data-app-runtime`). Don't hand-roll this each time - `reference/verification-harness.md` is a copy-adaptable recipe: a mock `sdk/publisher.js` returning canned rows keyed by `(model, query)`, a `python3 -m http.server` webroot, and Playwright assertions (KPIs non-null, no `.is-error`, no stuck `.kit-skeleton`, a chart/table present). It also documents the false-"stuck skeleton" trap (assert after the mock's async delay, never on `networkidle`).
+- **Load the finished page and confirm every tile shows real numbers**: not stuck on "Loading…", not an error, not an empty state you didn't intend. In a headless browser, wait on `load` plus a content selector, not network idle (`publisher.js` holds an SSE stream open; see `reference/runtime.md`). Don't hand-roll this each time - `reference/verification-harness.md` is a copy-adaptable recipe: a mock `sdk/publisher.js` returning canned rows keyed by `(model, query)`, a `python3 -m http.server` webroot, and Playwright assertions (KPIs non-null, no `.is-error`, no stuck `.kit-skeleton`, a chart/table present). It also documents the false-"stuck skeleton" trap (assert after the mock's async delay, never on `networkidle`).
+- **Check it embedded, for stability, and through its drawers.** Load each page inside the Publisher console (`/<env>/<package>/data-apps/<path>`) as well as on its own, measure layout shift on a first and a repeat visit, confirm the app never scrolls inside its frame, and open a drawer from well down the page after scrolling the host with real wheel events: the page behind must not move, the drawer must span exactly the visible area, and its scroll must stay in it. `reference/verification-harness.md` section 4 has the checks. A tile check alone passed on a build where every one of these was broken.
 - **Unit-test any non-trivial pure logic** (a month-join, a de-cumulation, a unit conversion). Keep that logic in DOM-free helpers so `node --test` can cover it, and run it.
 
 ## Minimal scaffold
@@ -126,7 +130,7 @@ Then render the rows. This page builds a table from whatever columns the view re
 </script>
 ```
 
-Build row content with `textContent`, not `innerHTML` with model values: an `innerHTML` table renders any markup a value contains. This is the HTML-output side of the don't-trust-interpolated-values rule that `skill:malloy-html-data-app-runtime` applies to Malloy query strings.
+Build row content with `textContent`, not `innerHTML` with model values: an `innerHTML` table renders any markup a value contains. This is the HTML-output side of the don't-trust-interpolated-values rule that `reference/runtime.md` applies to Malloy query strings.
 
 Two invariants break a page most often:
 
@@ -147,9 +151,9 @@ Run a local Publisher from the directory that holds your `publisher.config.json`
 npx @malloy-publisher/server --server_root . --port 4000 --watch-env <env>
 ```
 
-**`--watch-env` is not optional if you are adding `public/` to a package that is already loaded.** Without it the server COPIES each package into `publisher_data/<env>/<pkg>/` at load time and serves static files from that copy, so a `public/` directory you create afterwards is never seen: every file in it 404s while the rest of the app serves normally. This is the most expensive mistake in this skill, because it looks like your page is broken rather than like the server is stale,.
+**`--watch-env` is not optional if you are adding `public/` to a package that is already loaded.** Without it the server publishes each package at load time as an immutable version under `publisher_data/<env>/<pkg>/<version>/` and serves static files from that version, so a `public/` directory you create afterwards is never seen: every file in it 404s while the rest of the app serves normally. This is the most expensive mistake in this skill, because it looks like your page is broken rather than like the server is stale.
 
-If you did not start the server (someone handed you a running one), **probe before you build**: write a throwaway file into the package's `public/`, request it, and see whether you get 200 or 404. If it 404s, either restart with `--watch-env <env>` or mirror your files into the served copy after every edit.
+If you did not start the server (someone handed you a running one), **probe before you build**: write a throwaway file into the package's `public/`, request it, and see whether you get 200 or 404. If it 404s, either restart with `--watch-env <env>`, or ship your files as a new version: bump the `version` in `publisher.json` and publish the package again. Never write into `publisher_data/`, which holds the published versions.
 
 `--watch-env <env>` (or `PUBLISHER_WATCH=<env>`) mounts that environment's local-dir packages in place (a symlink, not a copy) and watches them: editing a `.malloy` recompiles the package, and editing a `public/` file live-reloads any open page over an SSE stream. Nothing to wire in the page. The app is served at `http://localhost:4000/environments/<env>/packages/<pkg>/index.html`.
 

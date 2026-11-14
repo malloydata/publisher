@@ -4,16 +4,16 @@
 /// <reference types="bun-types" />
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import path from "path";
-import { fileURLToPath } from "url";
-import { type RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   fixture,
+   startPackageEnv,
+   type PackageEnv,
+} from "../../harness/reports";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ENV_NAME = "notebook-unbound-given-env";
 const PKG = "notebook-unbound-given";
 const NOTEBOOK = "notebooks/nb.malloy";
 
-/** The aggregate count out of a notebook cell's nested result encoding. */
+/** The aggregate count out of a query result's nested encoding. */
 function cellCount(body: { result?: string }): number {
    const parsed = JSON.parse(body.result ?? "{}") as {
       data?: {
@@ -25,88 +25,46 @@ function cellCount(body: { result?: string }): number {
    return parsed.data?.array_value?.[0]?.record_value?.[0]?.number_value ?? -1;
 }
 
-describe("a notebook cell reading a given with no default (HTTP E2E)", () => {
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
-   let baseUrl: string;
-   const pkgUrl = (sub: string) =>
-      `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}${sub}`;
+describe("a linear report tile reading a given with no default (HTTP E2E)", () => {
+   let env: PackageEnv;
+   const pkgUrl = (sub: string) => env.api(sub);
 
    beforeAll(async () => {
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-      const fixtureDir = path.resolve(
-         __dirname,
-         "../../fixtures/notebook-unbound-given",
-      );
-      const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: [{ name: PKG, location: fixtureDir }],
-            connections: [],
-         }),
+      env = await startPackageEnv("notebook-unbound-given-env", {
+         [PKG]: fixture(PKG),
       });
-      if (!createRes.ok) {
-         throw new Error(
-            `Failed to create test environment (${createRes.status}): ${await createRes.text()}`,
-         );
-      }
-      const deadline = Date.now() + 30_000;
-      let loaded = false;
-      while (Date.now() < deadline) {
-         if ((await fetch(pkgUrl(""))).ok) {
-            loaded = true;
-            break;
-         }
-         await new Promise((r) => setTimeout(r, 250));
-      }
-      if (!loaded) throw new Error(`package ${PKG} never loaded within 30s`);
-   });
+   }, 300_000);
 
-   afterAll(async () => {
-      await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-         method: "DELETE",
-      }).catch(() => {});
-      await env?.stop();
-   });
+   afterAll(() => env?.stop());
 
-   async function queryCellIndex(): Promise<number> {
-      const res = await fetch(pkgUrl(`/notebooks/${NOTEBOOK}`));
+   /** The report's one query tile, off `GET …/reports/{path}`, as the query a viewer runs. */
+   async function queryCellText(): Promise<string> {
+      const res = await fetch(pkgUrl(`/reports/${NOTEBOOK}`));
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
-         notebookCells?: Array<{ kind?: string }>;
+         tiles?: Array<{ kind?: string; query?: string }>;
       };
-      const index = (body.notebookCells ?? []).findIndex(
-         (c) => c.kind === "query",
-      );
-      expect(index).toBeGreaterThanOrEqual(0);
-      return index;
+      const tile = (body.tiles ?? []).find((t) => t.kind === "query");
+      expect(tile?.query).toBeDefined();
+      return `run: ${tile?.query ?? ""}`;
    }
 
-   const runCell = (index: number, givens?: Record<string, unknown>) =>
-      fetch(
-         pkgUrl(
-            `/notebooks/${NOTEBOOK}/cells/${index}${
-               givens
-                  ? `?givens=${encodeURIComponent(JSON.stringify(givens))}`
-                  : ""
-            }`,
-         ),
-      );
+   /** Run the tile the way a viewer does: through the query route. */
+   const runCell = (text: string, givens?: Record<string, unknown>) =>
+      env.query(NOTEBOOK, { query: text, givens });
 
-   it("serves the notebook and its cell", async () => {
-      await queryCellIndex();
+   it("serves the report and its tile", async () => {
+      await queryCellText();
    });
 
-   it("runs the cell when the given is supplied", async () => {
-      const res = await runCell(await queryCellIndex(), { ORG: 1 });
+   it("runs the tile when the given is supplied", async () => {
+      const res = await runCell(await queryCellText(), { ORG: 1 });
       expect(res.status).toBe(200);
       expect(cellCount((await res.json()) as { result?: string })).toBe(2);
    });
 
-   it("refuses the cell when the given is not supplied", async () => {
-      const res = await runCell(await queryCellIndex());
+   it("refuses the tile when the given is not supplied", async () => {
+      const res = await runCell(await queryCellText());
       expect(res.status).toBe(400);
    });
 });

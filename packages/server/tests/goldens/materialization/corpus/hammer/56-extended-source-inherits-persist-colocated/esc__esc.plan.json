@@ -1,0 +1,124 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/esc/esc.malloy": [],
+          "daily_with_avg@<hammer>/esc/esc.malloy": []
+        },
+        "order": [
+          "daily@<hammer>/esc/esc.malloy",
+          "daily_with_avg@<hammer>/esc/esc.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/esc/esc.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "daily_with_avg@<hammer>/esc/esc.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/esc/esc.malloy": "esc.malloy",
+      "daily_with_avg@<hammer>/esc/esc.malloy": "esc.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/esc/esc.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "daily_with_avg@<hammer>/esc/esc.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/esc/esc.malloy": {
+        "annotationFields": {
+          "name": "esc_daily"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          },
+          {
+            "name": "num_orders",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "esc.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "cca41dbf6d0f0b9aface3cd2d1995416d4867fcebae6acede78e1d2622658bc6",
+        "sourceID": "daily@<hammer>/esc/esc.malloy",
+        "sql": "sha256:705e6d613f63b83c"
+      },
+      "daily_with_avg@<hammer>/esc/esc.malloy": {
+        "annotationFields": {
+          "name": "esc_daily"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          },
+          {
+            "name": "num_orders",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "esc.malloy",
+        "name": "daily_with_avg",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "cca41dbf6d0f0b9aface3cd2d1995416d4867fcebae6acede78e1d2622658bc6",
+        "sourceID": "daily_with_avg@<hammer>/esc/esc.malloy",
+        "sql": "sha256:705e6d613f63b83c"
+      }
+    }
+  }
+}

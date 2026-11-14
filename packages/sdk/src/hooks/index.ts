@@ -42,7 +42,15 @@ export {
    type UseGivensStateOptions,
    type UseGivensStateResult,
 } from "./useGivensState";
-export { useSuggestOptions } from "./useSuggestOptions";
+export {
+   type OptionPage,
+   type OptionSearch,
+   useSuggestOptions,
+} from "./useSuggestOptions";
+export {
+   useCompiledDocument,
+   type CompiledDocumentSpec,
+} from "./useCompiledDocument";
 
 // One query, and one control row, as every surface asks for them
 export {

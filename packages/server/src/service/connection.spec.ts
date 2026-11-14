@@ -2,13 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
+import type { PooledPostgresConnection } from "@malloydata/db-postgres";
 import {
    afterAll,
    afterEach,
+   beforeAll,
    beforeEach,
    describe,
    expect,
    it,
+   mock,
+   spyOn,
 } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
@@ -16,11 +20,15 @@ import path from "path";
 import sinon from "sinon";
 import { components } from "../api";
 import {
+   attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
    buildCloudStorageSecretSQL,
+   storageSecretScope,
    buildEnvironmentMalloyConfig,
+   buildPgConnectionString,
    buildProxiedSslQuery,
    createEnvironmentConnections,
+   EnvironmentPooledPostgresConnection,
    resolveProxiedTls,
    testConnectionConfig,
    isExpiredCredentialError,
@@ -31,8 +39,32 @@ import {
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
-import { UnsupportedCatalogFormatError } from "../errors";
+import { listStorageTables } from "./materialization/run/materialization_build_session";
+import {
+   ConnectionPoolExhaustedError,
+   internalErrorToHttpError,
+   PayloadTooLargeError,
+   StorageCatalogNotFoundError,
+   UnconfiguredConnectionError,
+   UnsupportedCatalogFormatError,
+} from "../errors";
+import { logger } from "../logger";
+import { pollUntil } from "../test_helpers/poll";
+import {
+   clientPrivatePem,
+   closeQuietly,
+   startSshServer,
+} from "../test_helpers/ssh_tunnel_harness";
+import type { ProxyEndpoint } from "./proxy";
+import { isStreamingConnection, streamSqlWithBudget } from "../stream_helpers";
+import {
+   startClosingListener,
+   type ClosingListener,
+} from "../test_helpers/closing_listener";
+import { installSettings } from "../test_helpers/settings_env";
 import { EnvironmentStore } from "./environment_store";
+import { parseEnvironmentName, parsePackageName } from "./identity";
+import { startedStore } from "../test_helpers/started_store";
 
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
@@ -882,11 +914,15 @@ describe("connection integration tests", () => {
                // DO NOT copy this pattern into a test that points
                // EnvironmentStore at a non-empty or shared serverRoot
                // — it will delete state.
-               const previousInitializeStorage = process.env.INITIALIZE_STORAGE;
-               process.env.INITIALIZE_STORAGE = "true";
+               const { restore } = installSettings({
+                  env: { INITIALIZE_STORAGE: "true" },
+                  cwd: tempServerRoot,
+               });
 
                try {
-                  const envStore = new EnvironmentStore(tempServerRoot);
+                  const envStore = startedStore(
+                     new EnvironmentStore(tempServerRoot),
+                  );
                   await envStore.finishedInitialization;
 
                   // initialize() swallows top-level errors and just calls
@@ -900,7 +936,9 @@ describe("connection integration tests", () => {
                   expect(status.operationalState).toBe("serving");
                   expect(status.loadErrors).toBeUndefined();
 
-                  const env = await envStore.getEnvironment("malloy-samples");
+                  const env = await envStore.getEnvironment(
+                     parseEnvironmentName("malloy-samples"),
+                  );
                   const apiPackages = await env.listPackages();
                   expect(apiPackages.map((p) => p.name)).toContain(
                      "bigquery-hackernews",
@@ -918,7 +956,9 @@ describe("connection integration tests", () => {
                   // if every BQ schema introspection failed. Filter for
                   // models that compiled cleanly: at least one is the
                   // real proof that BQ-on-behalf-of-a-package works.
-                  const pkg = await env.getPackage("bigquery-hackernews");
+                  const pkg = await env.getPackage(
+                     parsePackageName("bigquery-hackernews"),
+                  );
                   const models = await pkg.listModels();
                   const okModels = models.filter((m) => !m.error);
                   if (okModels.length === 0) {
@@ -929,11 +969,7 @@ describe("connection integration tests", () => {
                   }
                   expect(okModels.length).toBeGreaterThan(0);
                } finally {
-                  if (previousInitializeStorage === undefined) {
-                     delete process.env.INITIALIZE_STORAGE;
-                  } else {
-                     process.env.INITIALIZE_STORAGE = previousInitializeStorage;
-                  }
+                  restore();
                }
             },
             { timeout: 180000 },
@@ -1689,6 +1725,119 @@ describe("connection integration tests", () => {
                   { timeout: 60000 },
                );
 
+               // A fresh session, so what it has attached is only what the call
+               // under test attached.
+               const freshSession = async (label: string) => {
+                  const workDir = await fs.mkdtemp(
+                     path.join(os.tmpdir(), `dl-${label}-`),
+                  );
+                  const conn = new DuckDBConnection(label, ":memory:", workDir);
+                  createdConnections.push(conn);
+                  return conn;
+               };
+
+               const schemaExists = async (
+                  conn: DuckDBConnection,
+                  schema: string,
+               ) => {
+                  await conn.runSQL(
+                     `ATTACH '${pgConnString()}' AS insp_s (TYPE postgres, READ_ONLY);`,
+                  );
+                  const r = await conn.runSQL(
+                     `SELECT count(*) AS n FROM duckdb_schemas() ` +
+                        `WHERE database_name = 'insp_s' AND schema_name = '${schema}';`,
+                  );
+                  return firstValue(r.rows) > 0;
+               };
+
+               it(
+                  "finds a catalog that was never created absent, and attaches nothing",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     const schema = uniqueSchema("absent");
+                     const cfg = await duckLakeConfig("dl_absent", schema);
+                     const conn = await freshSession("dl_absent_probe");
+
+                     expect(
+                        await attachDuckLakeReadOnlyIfPresent(
+                           conn,
+                           "dl_absent",
+                           cfg,
+                        ),
+                     ).toBe(false);
+                     const attached = await conn.runSQL(
+                        `SELECT count(*) AS n FROM duckdb_databases() WHERE database_name = 'dl_absent';`,
+                     );
+                     expect(firstValue(attached.rows)).toBe(0);
+                     // Looking must not create the catalog, or its schema.
+                     expect(await schemaExists(conn, schema)).toBe(false);
+                  },
+                  { timeout: 60000 },
+               );
+
+               it(
+                  "attaches a catalog that exists",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     const schema = uniqueSchema("present");
+                     const cfg = await duckLakeConfig("dl_present", schema);
+                     const boot = await bootstrapCatalog("dl_present", cfg);
+                     await boot.runSQL(
+                        `CREATE OR REPLACE TABLE dl_present.t AS SELECT 3 AS x`,
+                     );
+
+                     const conn = await freshSession("dl_present_probe");
+                     expect(
+                        await attachDuckLakeReadOnlyIfPresent(
+                           conn,
+                           "dl_present",
+                           cfg,
+                        ),
+                     ).toBe(true);
+                     const r = await conn.runSQL(`SELECT x FROM dl_present.t;`);
+                     expect(firstValue(r.rows)).toBe(3);
+                  },
+                  { timeout: 60000 },
+               );
+
+               it(
+                  "lists a storage destination that was never built as a 404, not a failed attach",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     const schema = uniqueSchema("list_absent");
+                     const cfg = await duckLakeConfig("dl_list", schema);
+                     let err: unknown;
+                     try {
+                        await listStorageTables({
+                           destinationName: "dl_list",
+                           destinationConnection: {
+                              name: "dl_list",
+                              type: "ducklake",
+                              ducklakeConnection: cfg,
+                           } as ApiConnection,
+                           schemaName: "main",
+                           environmentPath: testEnvironmentPath,
+                        });
+                     } catch (e) {
+                        err = e;
+                     }
+                     expect(err).toBeInstanceOf(StorageCatalogNotFoundError);
+                     expect(internalErrorToHttpError(err as Error).status).toBe(
+                        404,
+                     );
+                  },
+                  { timeout: 60000 },
+               );
+
                it(
                   "attaches without a metadataSchema exactly as before",
                   async () => {
@@ -1777,7 +1926,9 @@ describe("connection integration tests", () => {
                   ],
                   testEnvironmentPath,
                ),
-            ).rejects.toThrow(/has no attached databases/);
+            ).rejects.toThrow(
+               /must provide either attachedDatabases or non-empty setupSQL/,
+            );
          });
 
          it("should reject unsupported DuckDB connector fields", async () => {
@@ -1785,11 +1936,11 @@ describe("connection integration tests", () => {
                createEnvironmentConnections(
                   [
                      {
-                        name: "duckdb_with_setup_sql",
+                        name: "duckdb_with_unsupported_field",
                         type: "duckdb",
                         duckdbConnection: {
                            attachedDatabases: [],
-                           setupSQL: "INSTALL httpfs",
+                           customUnsupportedField: "invalid",
                         },
                      } as unknown as ApiConnection,
                   ],
@@ -1989,6 +2140,443 @@ describe("connection integration tests", () => {
             }
          });
 
+         const testPostgresFields = () => ({
+            host: process.env.POSTGRES_TEST_HOST,
+            port: parseInt(process.env.POSTGRES_TEST_PORT || "5432"),
+            userName: process.env.POSTGRES_TEST_USER!,
+            password: process.env.POSTGRES_TEST_PASSWORD!,
+            databaseName: process.env.POSTGRES_TEST_DATABASE,
+         });
+
+         const buildPlainPostgresConfig = () =>
+            buildEnvironmentMalloyConfig(
+               [
+                  {
+                     name: "pg_pooled",
+                     type: "postgres",
+                     postgresConnection: testPostgresFields(),
+                  },
+               ],
+               testEnvironmentPath,
+            );
+
+         it(
+            "should resolve a plain environment-level Postgres connection as pooled and capped",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+
+               // The pool's resolved options, not just the constructor arguments.
+               const config = buildPlainPostgresConfig();
+
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_pooled",
+                     );
+                  expect(connection.isPool()).toBe(true);
+                  // isPool() narrows to a type without getPool().
+                  const pooled =
+                     connection as unknown as PooledPostgresConnection;
+                  const pool = await pooled.getPool();
+                  expect(pool.options.max).toBe(5);
+                  expect(pool.options.maxUses).toBe(1);
+                  expect(pool.options.application_name).toBe(
+                     "malloy-publisher",
+                  );
+
+                  // runSQL de-JSONs each row via row.row.
+                  const result = await connection.runSQL(
+                     "SELECT row_to_json(t) AS row FROM (SELECT 1 AS ok) t",
+                  );
+                  expect(result.rows[0]).toEqual({ ok: 1 });
+               } finally {
+                  await config.releaseConnections();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should size a plain Postgres connection's pool from PUBLISHER_POSTGRES_POOL_MAX",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+               const { restore } = installSettings({
+                  env: { PUBLISHER_POSTGRES_POOL_MAX: "3" },
+               });
+               const config = buildPlainPostgresConfig();
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_pooled",
+                     );
+                  const pool = await (
+                     connection as unknown as PooledPostgresConnection
+                  ).getPool();
+                  expect(pool.options.max).toBe(3);
+               } finally {
+                  await config.releaseConnections();
+                  restore();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should keep a plain Postgres connection usable after more row-cap overflows than its pool size",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+
+               // Each overflow stops its stream early; one more than the pool size
+               // shows that every early stop returns its slot.
+               const config = buildPlainPostgresConfig();
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_pooled",
+                     );
+                  if (!isStreamingConnection(connection)) {
+                     throw new Error(
+                        "Expected a streaming Postgres connection",
+                     );
+                  }
+                  const manyRows =
+                     "SELECT row_to_json(t) AS row FROM (SELECT generate_series(1, 1000) AS n) t";
+                  for (let i = 0; i < 6; i++) {
+                     await expect(
+                        streamSqlWithBudget(
+                           connection,
+                           manyRows,
+                           { rowLimit: 11 },
+                           { maxRows: 10, maxBytes: 0 },
+                        ),
+                     ).rejects.toBeInstanceOf(PayloadTooLargeError);
+                  }
+                  const pool = await (
+                     connection as unknown as PooledPostgresConnection
+                  ).getPool();
+                  expect(pool.totalCount - pool.idleCount).toBe(0);
+                  const result = await connection.runSQL(
+                     "SELECT row_to_json(t) AS row FROM (SELECT 42 AS answer) t",
+                  );
+                  expect(result.rows).toEqual([{ answer: 42 }]);
+               } finally {
+                  await config.releaseConnections();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should not carry one query's session state into the next query on a plain Postgres connection",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+
+               // now() equals statement_timestamp() only outside a transaction left
+               // open by an earlier query.
+               const config = buildPlainPostgresConfig();
+               const probe =
+                  "SELECT row_to_json(t) AS row FROM (SELECT current_setting('search_path') AS search_path, now() = statement_timestamp() AS own_txn) t";
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_pooled",
+                     );
+                  const before = (await connection.runSQL(probe)).rows[0];
+                  await connection.runSQL("SET search_path TO no_such_schema");
+                  await connection.runSQL("BEGIN");
+                  const after = (await connection.runSQL(probe)).rows[0];
+                  expect(after).toEqual(before);
+                  expect(after).toEqual(
+                     expect.objectContaining({ own_txn: true }),
+                  );
+               } finally {
+                  await config.releaseConnections();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should fail a query that waited out a full pool with ConnectionPoolExhaustedError on a plain Postgres connection",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+
+               class OneSessionShortWait extends EnvironmentPooledPostgresConnection {
+                  protected poolLimits() {
+                     return { max: 1, connectionTimeoutMillis: 200 };
+                  }
+               }
+               const connection = new OneSessionShortWait({
+                  name: "pg_wait",
+                  host: process.env.POSTGRES_TEST_HOST,
+                  port: parseInt(process.env.POSTGRES_TEST_PORT || "5432"),
+                  username: process.env.POSTGRES_TEST_USER,
+                  password: process.env.POSTGRES_TEST_PASSWORD,
+                  databaseName: process.env.POSTGRES_TEST_DATABASE,
+               });
+               const waitedOut =
+                  "Connection 'pg_wait' has no free database session: this server opens at most 1 at a time for it, and none came free within 0.2 s. Retry once fewer queries are running on this connection.";
+               const expectExhausted = async (run: Promise<unknown>) => {
+                  const thrown = await run.catch((e: unknown) => e);
+                  expect(thrown).toBeInstanceOf(ConnectionPoolExhaustedError);
+                  expect((thrown as Error).message).toBe(waitedOut);
+               };
+               const one =
+                  "SELECT row_to_json(t) AS row FROM (SELECT 1 AS v) t";
+               try {
+                  await connection.getPool();
+                  const holding = connection.runSQL(
+                     "SELECT row_to_json(t) AS row FROM (SELECT pg_sleep(2)::text AS s) t",
+                  );
+                  await new Promise((resolve) => setTimeout(resolve, 100));
+                  await expectExhausted(connection.runSQL(one));
+                  const drain = async () => {
+                     for await (const _row of connection.runSQLStream(one)) {
+                        // drain
+                     }
+                  };
+                  await expectExhausted(drain());
+                  await holding;
+               } finally {
+                  await connection.close();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should apply a direct connection's statementTimeoutMilliseconds on the database",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+               const config = buildEnvironmentMalloyConfig(
+                  [
+                     {
+                        name: "pg_stmt_timeout",
+                        type: "postgres",
+                        postgresConnection: {
+                           ...testPostgresFields(),
+                           statementTimeoutMilliseconds: 750,
+                        },
+                     },
+                  ],
+                  testEnvironmentPath,
+               );
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_stmt_timeout",
+                     );
+                  // The server's own view of the session setting, not ours.
+                  const setting = await connection.runSQL(
+                     "SELECT row_to_json(t) AS row FROM (SELECT current_setting('statement_timeout') AS v) t",
+                  );
+                  expect(setting.rows[0]).toEqual({ v: "750ms" });
+                  // And the server enforces it: a statement that outlives the
+                  // timeout is cancelled rather than left to run.
+                  await expect(
+                     connection.runSQL(
+                        "SELECT row_to_json(t) AS row FROM (SELECT pg_sleep(2)::text AS s) t",
+                     ),
+                  ).rejects.toThrow(
+                     "canceling statement due to statement timeout",
+                  );
+               } finally {
+                  await config.releaseConnections();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should connect a direct connection with the sslmode it sets, not the deployment's",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+               // The test server runs without TLS, which makes the mode that
+               // reached pg observable: `disable` connects, `no-verify`
+               // demands TLS and is refused.
+               const lookupAndQuery = async (
+                  sslmode: "disable" | "no-verify",
+               ) => {
+                  const config = buildEnvironmentMalloyConfig(
+                     [
+                        {
+                           name: `pg_ssl_${sslmode.replace("-", "_")}`,
+                           type: "postgres",
+                           postgresConnection: {
+                              ...testPostgresFields(),
+                              sslmode,
+                           },
+                        },
+                     ],
+                     testEnvironmentPath,
+                  );
+                  try {
+                     const connection =
+                        await config.malloyConfig.connections.lookupConnection(
+                           `pg_ssl_${sslmode.replace("-", "_")}`,
+                        );
+                     return await connection.runSQL(
+                        "SELECT row_to_json(t) AS row FROM (SELECT 1 AS ok) t",
+                     );
+                  } finally {
+                     await config.releaseConnections();
+                  }
+               };
+               const previous = process.env.PGSSLMODE;
+               // The deployment default says the opposite of each field, so
+               // a pass proves the field won.
+               process.env.PGSSLMODE = "no-verify";
+               try {
+                  const result = await lookupAndQuery("disable");
+                  expect(result.rows[0]).toEqual({ ok: 1 });
+               } finally {
+                  process.env.PGSSLMODE = "disable";
+               }
+               try {
+                  await expect(lookupAndQuery("no-verify")).rejects.toThrow(
+                     "The server does not support SSL connections",
+                  );
+               } finally {
+                  if (previous === undefined) delete process.env.PGSSLMODE;
+                  else process.env.PGSSLMODE = previous;
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should apply an attached database's statementTimeoutMilliseconds through DuckDB",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+               const { malloyConnections } = await createEnvironmentConnections(
+                  [
+                     {
+                        name: "duckdb_pg_stmt_timeout",
+                        type: "duckdb",
+                        duckdbConnection: {
+                           attachedDatabases: [
+                              {
+                                 name: "pg_stmt_timeout",
+                                 type: "postgres",
+                                 postgresConnection: {
+                                    ...testPostgresFields(),
+                                    statementTimeoutMilliseconds: 750,
+                                 },
+                              },
+                           ],
+                        },
+                     },
+                  ],
+                  testEnvironmentPath,
+               );
+               const connection = malloyConnections.get(
+                  "duckdb_pg_stmt_timeout",
+               ) as DuckDBConnection;
+               createdConnections.push(connection);
+               // postgres_query runs on the attach's own Postgres session, so
+               // this reads the setting the libpq `options` pair gave it.
+               const result = await connection.runSQL(
+                  "SELECT * FROM postgres_query('pg_stmt_timeout', 'SELECT current_setting(''statement_timeout'') AS v')",
+               );
+               expect(Object.values(result.rows[0])[0]).toBe("750ms");
+            },
+            { timeout: 30000 },
+         );
+
+         it.each(["uri", "keyword"] as const)(
+            "should keep a %s connectionString's own options when adding the statement timeout to an attach",
+            async (form) => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+               const f = testPostgresFields();
+               const connectionString =
+                  form === "uri"
+                     ? `postgresql://${encodeURIComponent(f.userName)}:${encodeURIComponent(f.password)}@${f.host}:${f.port}/${f.databaseName}?options=${encodeURIComponent("-c search_path=pg_catalog -c statement_timeout=100")}`
+                     : `host=${f.host} port=${f.port} dbname=${f.databaseName} user=${f.userName} password=${f.password} options='-c search_path=pg_catalog -c statement_timeout=100'`;
+               const name = `pg_opts_${form}`;
+               const { malloyConnections } = await createEnvironmentConnections(
+                  [
+                     {
+                        name: `duckdb_${name}`,
+                        type: "duckdb",
+                        duckdbConnection: {
+                           attachedDatabases: [
+                              {
+                                 name,
+                                 type: "postgres",
+                                 postgresConnection: {
+                                    connectionString,
+                                    statementTimeoutMilliseconds: 750,
+                                 },
+                              },
+                           ],
+                        },
+                     },
+                  ],
+                  testEnvironmentPath,
+               );
+               const connection = malloyConnections.get(
+                  `duckdb_${name}`,
+               ) as DuckDBConnection;
+               createdConnections.push(connection);
+               // libpq's own parse of the merged string, read back from the
+               // session it opened: the string's search_path survives and the
+               // field's timeout replaces the string's.
+               const result = await connection.runSQL(
+                  `SELECT * FROM postgres_query('${name}', 'SELECT current_setting(''search_path'') AS sp, current_setting(''statement_timeout'') AS st')`,
+               );
+               expect(result.rows[0]).toEqual({
+                  sp: "pg_catalog",
+                  st: "750ms",
+               });
+            },
+            { timeout: 30000 },
+         );
+
          it("should use environment-root-relative file paths for environment-level DuckDB", async () => {
             const insideCsvPath = path.join(testEnvironmentPath, "inside.csv");
             await fs.writeFile(insideCsvPath, "id\n1\n");
@@ -2143,6 +2731,15 @@ describe("connection integration tests", () => {
    });
 
    describe("testConnectionConfig", () => {
+      // Where the specs below send a Postgres connection that has to fail.
+      let unreachable: ClosingListener;
+      beforeAll(async () => {
+         unreachable = await startClosingListener();
+      });
+      afterAll(async () => {
+         await unreachable.close();
+      });
+
       it(
          "should successfully test valid PostgreSQL connection",
          async () => {
@@ -2201,11 +2798,69 @@ describe("connection integration tests", () => {
          expect(result.errorMessage).toContain("name is required");
       });
 
-      // These specs drive real attach failures offline: nothing can listen on
-      // localhost port 1 without root, so DuckDB's postgres extension fails
-      // with "Connection refused" and echoes the full connection string into
-      // the error message. The assertions prove that string reaches the
-      // caller redacted (`***`) and never in cleartext.
+      // The connection test is unauthenticated and stores nothing, so it is
+      // where an unscreened setupSQL would run first. The marker file is the
+      // proof: setupSQL either ran (file present) or it did not.
+      describe("DuckDB setupSQL opt-in", () => {
+         let restoreSettings: (() => void) | undefined;
+         let dir: string;
+
+         beforeEach(async () => {
+            dir = await fs.mkdtemp(path.join(os.tmpdir(), "setupsql-gate-"));
+         });
+
+         afterEach(async () => {
+            restoreSettings?.();
+            restoreSettings = undefined;
+            await fs.rm(dir, { recursive: true, force: true });
+         });
+
+         const markerConfig = (marker: string): ApiConnection => ({
+            name: "setup_sql_gate",
+            type: "duckdb",
+            duckdbConnection: {
+               setupSQL: `COPY (SELECT 1 AS ran) TO '${marker}'`,
+            },
+         });
+
+         const exists = (file: string) =>
+            fs.access(file).then(
+               () => true,
+               () => false,
+            );
+
+         it("refuses setupSQL without running it when the opt-in is unset", async () => {
+            restoreSettings = installSettings({ env: {} }).restore;
+            const marker = path.join(dir, "ran.csv");
+
+            const result = await testConnectionConfig(markerConfig(marker));
+
+            expect(result.status).toBe("failed");
+            expect(result.errorMessage).toContain(
+               "PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true",
+            );
+            expect(await exists(marker)).toBe(false);
+         });
+
+         it("runs setupSQL when the opt-in is set", async () => {
+            restoreSettings = installSettings({
+               env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
+            }).restore;
+            const marker = path.join(dir, "ran.csv");
+
+            const result = await testConnectionConfig(markerConfig(marker));
+
+            expect(result.status).toBe("ok");
+            expect(await exists(marker)).toBe(true);
+         });
+      });
+
+      // These specs drive real attach failures offline: the closing listener
+      // accepts the connection and drops it, so DuckDB's postgres extension
+      // fails with "server closed the connection unexpectedly" and echoes the
+      // full connection string into the error message. The assertions prove
+      // that string reaches the caller redacted (`***`) and never in
+      // cleartext.
       describe("errorMessage redaction", () => {
          const leakedPassword = "supersecretpw";
 
@@ -2242,7 +2897,7 @@ describe("connection integration tests", () => {
                            name: "redact_pg_url_db",
                            type: "postgres",
                            postgresConnection: {
-                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/mydb`,
+                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:${unreachable.port}/mydb`,
                            },
                         },
                      ],
@@ -2268,7 +2923,7 @@ describe("connection integration tests", () => {
                            type: "postgres",
                            postgresConnection: {
                               host: "127.0.0.1",
-                              port: 1,
+                              port: unreachable.port,
                               userName: "alice",
                               password: leakedPassword,
                               databaseName: "mydb",
@@ -2293,7 +2948,7 @@ describe("connection integration tests", () => {
                   ducklakeConnection: {
                      catalog: {
                         postgresConnection: {
-                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/mydb`,
+                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:${unreachable.port}/mydb`,
                         },
                      },
                      storage: {
@@ -2313,7 +2968,7 @@ describe("connection integration tests", () => {
          );
 
          // The three specs above depend on the DuckDB postgres extension
-         // loading so the attach reaches a DSN-bearing "connection refused".
+         // loading so the attach reaches a DSN-bearing connection failure.
          // This one pins the redaction wiring independently: stub runSQL to
          // throw a DSN-bearing error, so the failure carries a secret whether
          // or not any extension is available, and assert it comes back
@@ -2383,7 +3038,7 @@ describe("connection integration tests", () => {
                      ducklakeConnection: {
                         catalog: {
                            postgresConnection: {
-                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/${database}`,
+                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:${unreachable.port}/${database}`,
                            },
                         },
                         storage: {
@@ -2439,6 +3094,37 @@ describe("connection integration tests", () => {
             const attach = sql.find((q) => q.includes("TYPE postgres"));
             expect(attach).toBeDefined();
             expect(attach).toContain('AS "evil-db"');
+         });
+
+         it("hands libpq require, not no-verify, in an attached database's raw connectionString", async () => {
+            const sql: string[] = [];
+            sinon
+               .stub(DuckDBConnection.prototype, "runSQL")
+               .callsFake(async (query: string) => {
+                  sql.push(query);
+                  return { rows: [], totalRows: 0, runStats: {} } as never;
+               });
+
+            await testConnectionConfig({
+               name: "probe_noverify",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "pg_nv",
+                        type: "postgres",
+                        postgresConnection: {
+                           connectionString:
+                              "postgres://u:p@127.0.0.1:1/db?sslmode=no-verify",
+                        },
+                     },
+                  ],
+               },
+            });
+
+            const attach = sql.find((q) => q.includes("TYPE postgres"));
+            expect(attach).toContain("sslmode=require");
+            expect(attach).not.toContain("no-verify");
          });
 
          // An absent alias must fail before the ATTACH is built: emitting
@@ -2534,8 +3220,7 @@ describe("connection integration tests", () => {
                            name: "probe_db",
                            type: "postgres",
                            postgresConnection: {
-                              connectionString:
-                                 "postgres://u:p@127.0.0.1:1/mydb",
+                              connectionString: `postgres://u:p@127.0.0.1:${unreachable.port}/mydb`,
                            },
                         },
                      ],
@@ -2947,9 +3632,19 @@ describe("buildCloudStorageSecretSQL", () => {
             endpoint: "https://minio.internal:9000",
          });
          expect(sql).toContain("PROVIDER credential_chain");
-         expect(sql).toContain("ENDPOINT 'https://minio.internal:9000'");
+         expect(sql).toContain("ENDPOINT 'minio.internal:9000'");
          expect(sql).toContain("URL_STYLE 'path'");
+         expect(sql).not.toContain("USE_SSL");
          expect(sql).not.toContain("KEY_ID");
+      });
+
+      it("refuses a plain http:// endpoint, which would send the host's credentials in cleartext", () => {
+         expect(() =>
+            chainSQL({
+               provider: "credential_chain",
+               endpoint: "http://minio.internal:9000",
+            }),
+         ).toThrow("must use https:// with provider credential_chain");
       });
 
       it("escapes a chain containing a quote", () => {
@@ -2981,7 +3676,7 @@ describe("buildCloudStorageSecretSQL", () => {
             chainSQL({
                ...keys,
                region: "us-west-2",
-               endpoint: "https://mi.no",
+               endpoint: "mi.no",
             }),
          ).toBe(`
             CREATE OR REPLACE SECRET s3_root (
@@ -2989,8 +3684,64 @@ describe("buildCloudStorageSecretSQL", () => {
                KEY_ID 'AKIA',
                SECRET 'shhh',
                REGION 'us-west-2',
-               ENDPOINT 'https://mi.no',
+               ENDPOINT 'mi.no',
                URL_STYLE 'path'
+            );
+         `);
+      });
+
+      // DuckDB's ENDPOINT takes no scheme: given one, it requested
+      // `https://https://mi.no/…`. An https:// endpoint now writes the same
+      // secret a bare one always did.
+      it("custom endpoint written with https:// gives the bare endpoint's secret", () => {
+         expect(
+            chainSQL({
+               ...keys,
+               region: "us-west-2",
+               endpoint: "https://mi.no/",
+            }),
+         ).toBe(chainSQL({ ...keys, region: "us-west-2", endpoint: "mi.no" }));
+      });
+
+      // The endpoint arm used to drop the token, so a temporary key pair behind
+      // an endpoint listed fine (the SDK sent it) and failed every DuckDB read.
+      it("custom endpoint with a session token keeps the token", () => {
+         expect(
+            chainSQL({
+               ...keys,
+               region: "us-west-2",
+               endpoint: "mi.no",
+               sessionToken: "tok",
+            }),
+         ).toBe(`
+            CREATE OR REPLACE SECRET s3_root (
+               TYPE s3,
+               KEY_ID 'AKIA',
+               SECRET 'shhh',
+               REGION 'us-west-2',
+               ENDPOINT 'mi.no',
+               URL_STYLE 'path',
+               SESSION_TOKEN 'tok'
+            );
+         `);
+      });
+
+      it("custom endpoint written with http:// turns TLS off", () => {
+         expect(
+            chainSQL({
+               ...keys,
+               region: "us-west-2",
+               endpoint: "http://minio:9000",
+            }),
+         ).toBe(`
+            CREATE OR REPLACE SECRET s3_root (
+               TYPE s3,
+               KEY_ID 'AKIA',
+               SECRET 'shhh',
+               REGION 'us-west-2',
+               ENDPOINT 'minio:9000',
+               URL_STYLE 'path',
+               USE_SSL false
             );
          `);
       });
@@ -3172,5 +3923,887 @@ describe("redactTestFailure", () => {
    it("leaves a failure carrying no credential untouched", () => {
       const msg = "getaddrinfo ENOTFOUND db.internal";
       expect(redactTestFailure(msg, config)).toBe(msg);
+   });
+});
+
+describe("environment connection lookup for a connection the environment does not have", () => {
+   it("raises UnconfiguredConnectionError with Malloy's message, and still resolves a configured one", async () => {
+      // The staging case: a model loaded while `bq_demo` existed, then the
+      // connection was deleted. Malloy's own lookup throws a plain Error.
+      const config = buildEnvironmentMalloyConfig(
+         [
+            {
+               name: "present",
+               type: "postgres",
+               postgresConnection: { host: "127.0.0.1", userName: "x" },
+            },
+         ],
+         "/tmp",
+      );
+      try {
+         const missing = await config.malloyConfig.connections
+            .lookupConnection("bq_demo")
+            .then(
+               () => undefined,
+               (e: unknown) => e,
+            );
+         expect(missing).toBeInstanceOf(UnconfiguredConnectionError);
+         expect((missing as Error).message).toBe(
+            'No connection named "bq_demo" found in config',
+         );
+         expect(
+            await config.malloyConfig.connections.lookupConnection("present"),
+         ).toBeDefined();
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+});
+
+describe("environment connection lookup for a proxied Postgres connection", () => {
+   const proxied = (): ApiConnection => ({
+      name: "pg_tunneled",
+      type: "postgres",
+      postgresConnection: {
+         host: "db.internal",
+         port: 5432,
+         userName: "u",
+         password: "p",
+         databaseName: "d",
+      },
+      proxy: {
+         type: "ssh",
+         ssh: {
+            host: "bastion",
+            username: "u",
+            privateKey: "key",
+            hostKey: "AAAA",
+         },
+      },
+   });
+
+   // A scripted tunnel: `die()` is the tunnel dying on its own.
+   const tunnels = () => {
+      const opened: {
+         endpoint: ProxyEndpoint;
+         die: () => void;
+         close: ReturnType<typeof mock>;
+      }[] = [];
+      const open = async (): Promise<ProxyEndpoint> => {
+         const listeners: ((cause?: Error) => void)[] = [];
+         const close = mock(async () => {});
+         const endpoint: ProxyEndpoint = {
+            host: "127.0.0.1",
+            port: 40000 + opened.length,
+            close,
+            onClose: (listener) => listeners.push(listener),
+         };
+         opened.push({
+            endpoint,
+            close,
+            die: () => listeners.forEach((l) => l(new Error("ssh gone"))),
+         });
+         return endpoint;
+      };
+      return { opened, open };
+   };
+
+   let infoSpy: ReturnType<typeof spyOn<typeof logger, "info">>;
+   beforeEach(() => {
+      infoSpy = spyOn(logger, "info").mockImplementation(() => logger);
+   });
+   afterEach(() => infoSpy.mockRestore());
+
+   const build = (open: () => Promise<ProxyEndpoint>) =>
+      buildEnvironmentMalloyConfig([proxied()], "/tmp", false, {
+         openProxy: open,
+      });
+   const lookup = (config: ReturnType<typeof build>) =>
+      config.malloyConfig.connections.lookupConnection("pg_tunneled");
+
+   it("sizes the pool like a direct connection, without running a query", async () => {
+      const { open } = tunnels();
+      const config = build(open);
+      try {
+         const connection = (await lookup(
+            config,
+         )) as unknown as PooledPostgresConnection;
+         const { options } = await connection.getPool();
+         expect(options.max).toBe(5);
+         expect(options.maxUses).toBe(1);
+         expect(options.connectionTimeoutMillis).toBe(30_000);
+         expect(options.application_name).toBe("malloy-publisher");
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+
+   it("rebuilds the tunnel on the next lookup after it dies", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      try {
+         const first = await lookup(config);
+         expect(await lookup(config)).toBe(first);
+         const closeFirst = spyOn(first, "close");
+         opened[0].die();
+         const second = await lookup(config);
+         expect(opened).toHaveLength(2);
+         expect(second).not.toBe(first);
+         expect(closeFirst).toHaveBeenCalledTimes(1);
+         expect(opened[0].close).toHaveBeenCalledTimes(1);
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+
+   it("shares one rebuild between concurrent lookups after an eviction", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      try {
+         await lookup(config);
+         opened[0].die();
+         const [a, b] = await Promise.all([lookup(config), lookup(config)]);
+         expect(a).toBe(b);
+         expect(opened).toHaveLength(2);
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+
+   it("ignores a close from a superseded tunnel", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      try {
+         await lookup(config);
+         opened[0].die();
+         const second = await lookup(config);
+         opened[0].die();
+         expect(await lookup(config)).toBe(second);
+         expect(opened).toHaveLength(2);
+         expect(opened[1].close).not.toHaveBeenCalled();
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+
+   it("releases an evicted connection's replacement without closing anything twice", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      const first = await lookup(config);
+      const closeFirst = spyOn(first, "close");
+      opened[0].die();
+      await lookup(config);
+      await config.releaseConnections();
+      expect(closeFirst).toHaveBeenCalledTimes(1);
+      expect(opened[0].close).toHaveBeenCalledTimes(1);
+      expect(opened[1].close).toHaveBeenCalledTimes(1);
+   });
+
+   it("waits for an evicted connection's close before release resolves", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      const first = await lookup(config);
+      let finishClose!: () => void;
+      spyOn(first, "close").mockImplementation(
+         () => new Promise<void>((res) => (finishClose = res)),
+      );
+      opened[0].die();
+      let released = false;
+      const release = config.releaseConnections().then(() => {
+         released = true;
+      });
+      await new Promise((res) => setTimeout(res, 20));
+      expect(released).toBe(false);
+      finishClose();
+      await release;
+      expect(released).toBe(true);
+   });
+
+   it(
+      "recovers on the next query after the SSH tunnel to a real Postgres drops",
+      async () => {
+         if (!hasPostgresCredentials()) {
+            console.log("Skipping: PostgreSQL credentials not configured");
+            return;
+         }
+         const bastion = await startSshServer({});
+         const fields = {
+            host: process.env.POSTGRES_TEST_HOST,
+            port: parseInt(process.env.POSTGRES_TEST_PORT || "5432"),
+            userName: process.env.POSTGRES_TEST_USER!,
+            password: process.env.POSTGRES_TEST_PASSWORD!,
+            databaseName: process.env.POSTGRES_TEST_DATABASE,
+            // The test server has no TLS, and a proxied default demands it.
+            sslmode: "disable" as const,
+         };
+         const config = buildEnvironmentMalloyConfig(
+            [
+               {
+                  name: "pg_tunneled",
+                  type: "postgres",
+                  postgresConnection: fields,
+                  proxy: {
+                     type: "ssh",
+                     ssh: {
+                        host: "127.0.0.1",
+                        port: bastion.port,
+                        username: "testuser",
+                        privateKey: clientPrivatePem,
+                        hostKey: bastion.hostKeyBase64,
+                     },
+                  },
+               },
+            ],
+            "/tmp",
+         );
+         const sql = "SELECT row_to_json(t) AS row FROM (SELECT 1 AS ok) t";
+         try {
+            const first = await lookup(config);
+            expect((await first.runSQL(sql)).rows[0]).toEqual({ ok: 1 });
+
+            bastion.destroySockets();
+            // A dropped session is noticed on the client's next write (here a
+            // query; idle, the keepalive), so the query on it fails first.
+            const started = Date.now();
+            await expect(first.runSQL(sql)).rejects.toThrow();
+            expect(Date.now() - started).toBeLessThan(10_000);
+            let second = first;
+            expect(
+               await pollUntil(async () => {
+                  second = await lookup(config);
+                  return second !== first;
+               }, 5_000),
+            ).toBe(true);
+            expect((await second.runSQL(sql)).rows[0]).toEqual({ ok: 1 });
+         } finally {
+            await config.releaseConnections();
+            await closeQuietly(() => bastion.close());
+         }
+      },
+      { timeout: 30000 },
+   );
+
+   it("does not double-end a pool when release races an eviction", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      const first = await lookup(config);
+      const closeFirst = spyOn(first, "close");
+      const release = config.releaseConnections();
+      opened[0].die();
+      await release;
+      expect(closeFirst).toHaveBeenCalledTimes(1);
+   });
+});
+
+describe("buildPgConnectionString", () => {
+   const fields = {
+      host: "db.example.com",
+      port: 5432,
+      databaseName: "lake",
+      userName: "u",
+      password: "p",
+   };
+   let previousPgSslMode: string | undefined;
+   beforeEach(() => {
+      previousPgSslMode = process.env.PGSSLMODE;
+      delete process.env.PGSSLMODE;
+   });
+   afterEach(() => {
+      if (previousPgSslMode === undefined) delete process.env.PGSSLMODE;
+      else process.env.PGSSLMODE = previousPgSslMode;
+   });
+
+   it("builds a DuckLake catalog's string without its statement timeout, and with no sslmode when neither it nor PGSSLMODE sets one", () => {
+      expect(
+         buildPgConnectionString(
+            { ...fields, statementTimeoutMilliseconds: 5000 },
+            { name: "lake", applyConnectionOptions: false },
+         ),
+      ).toBe("host=db.example.com port=5432 dbname=lake user=u password=p");
+   });
+
+   describe("a DuckLake catalog given as fields", () => {
+      // The worker's PGSSLMODE=allow makes libpq try plaintext first; a server
+      // that requires TLS refuses and logs each refusal.
+      beforeEach(() => {
+         process.env.PGSSLMODE = "allow";
+      });
+
+      it("takes its own sslmode over the deployment PGSSLMODE", () => {
+         expect(
+            buildPgConnectionString(
+               { ...fields, sslmode: "no-verify" },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).toBe(
+            "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
+         );
+         const verifyFull = buildPgConnectionString(
+            { ...fields, sslmode: "verify-full" },
+            { name: "lake", applyConnectionOptions: false },
+         );
+         expect(verifyFull).toContain("sslmode=verify-full");
+         expect(verifyFull).toContain("sslrootcert=");
+         expect(verifyFull).not.toContain("sslmode=allow");
+      });
+
+      it("gets no statement timeout, whatever the connection sets", () => {
+         expect(
+            buildPgConnectionString(
+               {
+                  ...fields,
+                  sslmode: "no-verify",
+                  statementTimeoutMilliseconds: 5000,
+               },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).not.toContain("statement_timeout");
+      });
+
+      it("takes its own disable over the deployment PGSSLMODE", () => {
+         expect(
+            buildPgConnectionString(
+               { ...fields, sslmode: "disable" },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).toBe(
+            "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=disable",
+         );
+      });
+
+      it("falls back to the deployment PGSSLMODE when it sets no sslmode", () => {
+         expect(
+            buildPgConnectionString(fields, {
+               name: "lake",
+               applyConnectionOptions: false,
+            }),
+         ).toBe(
+            "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=allow",
+         );
+      });
+   });
+
+   it("gives an attached database its statement timeout and its own sslmode", () => {
+      process.env.PGSSLMODE = "disable";
+      expect(
+         buildPgConnectionString(
+            {
+               ...fields,
+               sslmode: "no-verify",
+               statementTimeoutMilliseconds: 5000,
+            },
+            { name: "pg_att", applyConnectionOptions: true },
+         ),
+      ).toBe(
+         "host=db.example.com port=5432 dbname=lake user=u password=p options='-c statement_timeout=5000' sslmode=require",
+      );
+   });
+
+   it("falls back to the deployment PGSSLMODE when an attached database sets no sslmode", () => {
+      process.env.PGSSLMODE = "require";
+      expect(
+         buildPgConnectionString(fields, {
+            name: "pg_att",
+            applyConnectionOptions: true,
+         }),
+      ).toBe(
+         "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
+      );
+   });
+
+   it("appends the statement timeout to a URI connectionString as a query parameter", () => {
+      expect(
+         buildPgConnectionString(
+            {
+               connectionString:
+                  "postgresql://u:p@db.example.com/lake?sslmode=require",
+               statementTimeoutMilliseconds: 5000,
+            },
+            { name: "pg_att", applyConnectionOptions: true },
+         ),
+      ).toBe(
+         "postgresql://u:p@db.example.com/lake?sslmode=require&options=-c%20statement_timeout%3D5000",
+      );
+   });
+
+   it("appends the statement timeout to a keyword connectionString as an options pair", () => {
+      expect(
+         buildPgConnectionString(
+            {
+               connectionString: "host=db.example.com dbname=lake",
+               statementTimeoutMilliseconds: 5000,
+            },
+            { name: "pg_att", applyConnectionOptions: true },
+         ),
+      ).toBe(
+         "host=db.example.com dbname=lake options='-c statement_timeout=5000'",
+      );
+   });
+
+   it.each([
+      [
+         "a URI",
+         "postgresql://u:p@db.example.com/lake?options=-c%20search_path%3Danalytics&sslmode=require",
+         "postgresql://u:p@db.example.com/lake?options=-c%20search_path%3Danalytics%20-c%20statement_timeout%3D5000&sslmode=require",
+      ],
+      [
+         "a keyword string with a quoted value",
+         "host=db.example.com dbname=lake options='-c search_path=analytics'",
+         "host=db.example.com dbname=lake options='-c search_path=analytics -c statement_timeout=5000'",
+      ],
+      [
+         "a keyword string with an unquoted value",
+         "host=db.example.com options=-csearch_path=analytics dbname=lake",
+         "host=db.example.com options='-csearch_path=analytics -c statement_timeout=5000' dbname=lake",
+      ],
+   ])(
+      "merges the statement timeout into %s connectionString's existing options",
+      (_shape, connectionString, expected) => {
+         const warn = sinon.stub(logger, "warn");
+         try {
+            expect(
+               buildPgConnectionString(
+                  { connectionString, statementTimeoutMilliseconds: 5000 },
+                  { name: "pg_att", applyConnectionOptions: true },
+               ),
+            ).toBe(expected);
+            expect(warn.called).toBe(false);
+         } finally {
+            warn.restore();
+         }
+      },
+   );
+
+   it.each([
+      [
+         "a URI",
+         "postgresql://u:p@db.example.com/lake?options=-c%20statement_timeout%3D100%20-c%20search_path%3Danalytics",
+         "postgresql://u:p@db.example.com/lake?options=-c%20search_path%3Danalytics%20-c%20statement_timeout%3D5000",
+      ],
+      [
+         "a keyword string",
+         "host=db.example.com options='-c statement_timeout=100 --search_path=analytics -cstatement_timeout=200 --statement-timeout=300'",
+         "host=db.example.com options='--search_path=analytics -c statement_timeout=5000'",
+      ],
+   ])(
+      "replaces a statement_timeout already in %s connectionString's options and warns",
+      (_shape, connectionString, expected) => {
+         const warn = sinon.stub(logger, "warn");
+         try {
+            expect(
+               buildPgConnectionString(
+                  { connectionString, statementTimeoutMilliseconds: 5000 },
+                  { name: "pg_att", applyConnectionOptions: true },
+               ),
+            ).toBe(expected);
+            expect(warn.calledOnce).toBe(true);
+            expect(warn.firstCall.args[0] as unknown).toBe(
+               "Connection 'pg_att' sets statementTimeoutMilliseconds and its connectionString's options also set statement_timeout; statementTimeoutMilliseconds applies.",
+            );
+         } finally {
+            warn.restore();
+         }
+      },
+   );
+
+   describe("sslmode=no-verify in a raw connectionString", () => {
+      const build = (connectionString: string) =>
+         buildPgConnectionString(
+            { connectionString },
+            { name: "pg_att", applyConnectionOptions: true },
+         );
+
+      it("rewrites a URI's no-verify to require, which libpq understands", () => {
+         expect(
+            build("postgresql://u:p@db.example.com/lake?sslmode=no-verify"),
+         ).toBe("postgresql://u:p@db.example.com/lake?sslmode=require");
+         expect(
+            build(
+               "postgres://u:p@db/lake?application_name=a&sslmode=no-verify&x=y",
+            ),
+         ).toBe(
+            "postgres://u:p@db/lake?application_name=a&sslmode=require&x=y",
+         );
+      });
+
+      it("rewrites a keyword/value string's no-verify, quoted or not, and leaves the rest alone", () => {
+         expect(
+            build("host=db.example.com dbname=lake sslmode=no-verify user=u"),
+         ).toBe("host=db.example.com dbname=lake sslmode=require user=u");
+         expect(build("host=db sslmode = 'no-verify'")).toBe(
+            "host=db sslmode=require",
+         );
+      });
+
+      it("does not treat a Unicode space as a pair separator, as libpq does not", () => {
+         const raw =
+            "host=db password=a\u2003sslmode=no-verify sslmode=disable";
+         expect(build(raw)).toBe(raw);
+      });
+
+      it("rewrites no-verify alongside adding the statement timeout", () => {
+         expect(
+            buildPgConnectionString(
+               {
+                  connectionString: "host=db sslmode=no-verify",
+                  statementTimeoutMilliseconds: 5000,
+               },
+               { name: "pg_att", applyConnectionOptions: true },
+            ),
+         ).toBe("host=db sslmode=require options='-c statement_timeout=5000'");
+      });
+
+      it("leaves every other sslmode, and a string without one, unchanged", () => {
+         for (const mode of [
+            "disable",
+            "allow",
+            "prefer",
+            "require",
+            "verify-ca",
+            "verify-full",
+         ]) {
+            expect(build(`postgresql://u:p@db/lake?sslmode=${mode}`)).toBe(
+               `postgresql://u:p@db/lake?sslmode=${mode}`,
+            );
+            expect(build(`host=db sslmode=${mode}`)).toBe(
+               `host=db sslmode=${mode}`,
+            );
+         }
+         expect(build("postgresql://u:p@db/lake")).toBe(
+            "postgresql://u:p@db/lake",
+         );
+         expect(build("postgresql://u:p@db/no-verify?sslmode=require")).toBe(
+            "postgresql://u:p@db/no-verify?sslmode=require",
+         );
+      });
+
+      it("rewrites no-verify in a DuckLake catalog's string too, without the connection's own options", () => {
+         expect(
+            buildPgConnectionString(
+               {
+                  connectionString: "host=db sslmode=no-verify",
+                  statementTimeoutMilliseconds: 5000,
+               },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).toBe("host=db sslmode=require");
+      });
+
+      describe("node-pg-only URI params libpq rejects", () => {
+         const u = "postgresql://u:p@db/lake";
+
+         it("drops uselibpqcompat", () => {
+            expect(build(`${u}?uselibpqcompat=true&sslmode=require`)).toBe(
+               `${u}?sslmode=require`,
+            );
+         });
+
+         it("drops ssl beside an sslmode, in either order, so it cannot downgrade verify-full", () => {
+            for (const ssl of ["ssl=1", "ssl=true"]) {
+               expect(build(`${u}?sslmode=verify-full&${ssl}`)).toBe(
+                  `${u}?sslmode=verify-full`,
+               );
+               expect(build(`${u}?${ssl}&sslmode=verify-full`)).toBe(
+                  `${u}?sslmode=verify-full`,
+               );
+            }
+         });
+
+         it("respells ssl when there is no sslmode", () => {
+            expect(build(`${u}?ssl=no-verify`)).toBe(`${u}?sslmode=require`);
+            expect(build(`${u}?ssl=1`)).toBe(`${u}?ssl=true`);
+            expect(build(`${u}?ssl=true`)).toBe(`${u}?ssl=true`);
+            expect(build(`${u}?ssl=0`)).toBe(`${u}?sslmode=disable`);
+         });
+
+         it("drops ssl=0 rather than disabling TLS when a cert param is present", () => {
+            expect(build(`${u}?ssl=0&sslrootcert=x`)).toBe(
+               `${u}?sslrootcert=x`,
+            );
+         });
+
+         it("leaves a keyword/value string's ssl alone", () => {
+            expect(build("host=db ssl=1")).toBe("host=db ssl=1");
+         });
+      });
+
+      describe("with PGSSLMODE=no-verify in the deployment", () => {
+         beforeEach(() => {
+            process.env.PGSSLMODE = "no-verify";
+         });
+
+         it("adds sslmode=require to a string that sets none, URI or keyword/value", () => {
+            for (const applyConnectionOptions of [true, false]) {
+               const build2 = (connectionString: string) =>
+                  buildPgConnectionString(
+                     { connectionString },
+                     { name: "pg_att", applyConnectionOptions },
+                  );
+               expect(build2("postgresql://u:p@db/lake")).toBe(
+                  "postgresql://u:p@db/lake?sslmode=require",
+               );
+               expect(build2("postgresql://u:p@db/lake?x=y")).toBe(
+                  "postgresql://u:p@db/lake?x=y&sslmode=require",
+               );
+               expect(build2("host=db dbname=lake")).toBe(
+                  "host=db dbname=lake sslmode=require",
+               );
+            }
+         });
+
+         it("leaves a string that names a libpq service alone", () => {
+            expect(build("postgresql://db/lake?service=prod")).toBe(
+               "postgresql://db/lake?service=prod",
+            );
+            expect(build("service=prod dbname=lake")).toBe(
+               "service=prod dbname=lake",
+            );
+         });
+
+         it("adds exactly one sslmode when ssl=0 is respelled", () => {
+            expect(build("postgresql://u:p@db/lake?ssl=0")).toBe(
+               "postgresql://u:p@db/lake?sslmode=disable",
+            );
+         });
+
+         it("leaves a string alone when the deployment sets PGSERVICE", () => {
+            const previous = process.env.PGSERVICE;
+            process.env.PGSERVICE = "prod";
+            try {
+               expect(build("postgresql://u:p@db/lake")).toBe(
+                  "postgresql://u:p@db/lake",
+               );
+            } finally {
+               if (previous === undefined) delete process.env.PGSERVICE;
+               else process.env.PGSERVICE = previous;
+            }
+         });
+
+         it("leaves a string that sets its own sslmode to that sslmode", () => {
+            expect(build("postgresql://u:p@db/lake?sslmode=verify-full")).toBe(
+               "postgresql://u:p@db/lake?sslmode=verify-full",
+            );
+            expect(build("host=db sslmode=disable")).toBe(
+               "host=db sslmode=disable",
+            );
+         });
+      });
+   });
+
+   it("maps the PGSSLMODE fallback no-verify to require, not plaintext", () => {
+      process.env.PGSSLMODE = "no-verify";
+      expect(
+         buildPgConnectionString(fields, {
+            name: "pg_att",
+            applyConnectionOptions: true,
+         }),
+      ).toBe(
+         "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
+      );
+   });
+
+   it("leaves a connectionString's sslmode alone and warns that the field was ignored", () => {
+      const warn = sinon.stub(logger, "warn");
+      try {
+         expect(
+            buildPgConnectionString(
+               {
+                  connectionString: "postgresql://u:p@db.example.com/lake",
+                  sslmode: "verify-full",
+               },
+               { name: "pg_att", applyConnectionOptions: true },
+            ),
+         ).toBe("postgresql://u:p@db.example.com/lake");
+         expect(warn.calledOnce).toBe(true);
+         expect(warn.firstCall.args[0] as unknown).toBe(
+            "Connection 'pg_att' sets both postgresConnection.sslmode and connectionString; " +
+               "sslmode is ignored and the connectionString's own sslmode applies.",
+         );
+      } finally {
+         warn.restore();
+      }
+   });
+});
+
+describe("buildCloudStorageSecretSQL — scope", () => {
+   const base = { accessKeyId: "AK", secretAccessKey: "SK", region: "r" };
+
+   it("adds SCOPE to the S3 chain, S3 key and GCS arms", () => {
+      const chain = buildCloudStorageSecretSQL("s", {
+         type: "s3",
+         ...base,
+         provider: "credential_chain",
+         scope: "s3://b/p/",
+      });
+      const key = buildCloudStorageSecretSQL("s", {
+         type: "s3",
+         ...base,
+         scope: "s3://b/p/",
+      });
+      const gcs = buildCloudStorageSecretSQL("s", {
+         type: "gcs",
+         ...base,
+         scope: "gs://b/p/",
+      });
+      expect(chain).toContain("PROVIDER credential_chain");
+      expect(chain).toContain("SCOPE 's3://b/p/'");
+      expect(key).toContain("SCOPE 's3://b/p/'");
+      expect(gcs).toContain("SCOPE 'gs://b/p/'");
+   });
+
+   it("escapes the scope literal", () => {
+      expect(
+         buildCloudStorageSecretSQL("s", {
+            type: "s3",
+            ...base,
+            scope: "s3://b/o'brien/",
+         }),
+      ).toContain("SCOPE 's3://b/o''brien/'");
+   });
+
+   it("emits no SCOPE when none is set, as the generic attach does", () => {
+      for (const type of ["s3", "gcs"] as const) {
+         expect(
+            buildCloudStorageSecretSQL("s", { type, ...base }),
+         ).not.toContain("SCOPE");
+      }
+   });
+});
+
+// The prefix a DuckLake storage secret is held to. A configured data path wins;
+// a catalog whose config states none (an orchestrator's, which leaves the path to
+// the catalog so no attach can create one) is scoped to the path it recorded.
+describe("storageSecretScope", () => {
+   const main = { path: "main/", relative: true };
+
+   it("takes the configured data path with exactly one trailing slash", () => {
+      for (const [url, scope] of [
+         ["s3://bucket", "s3://bucket/"],
+         ["s3://bucket/prefix", "s3://bucket/prefix/"],
+         ["s3://bucket/prefix/", "s3://bucket/prefix/"],
+         ["s3://bucket/prefix//", "s3://bucket/prefix/"],
+      ]) {
+         expect(
+            storageSecretScope({
+               configuredDataPath: url,
+               readOnly: false,
+               managed: false,
+            }),
+         ).toBe(scope);
+      }
+   });
+
+   it("falls back to the data path the catalog recorded", () => {
+      expect(
+         storageSecretScope({
+            recordedDataPath: "gs://bucket/org_a/db_b/",
+            mainSchemaPath: main,
+            readOnly: false,
+            managed: false,
+         }),
+      ).toBe("gs://bucket/org_a/db_b/");
+   });
+
+   it("prefers a configured path over the recorded one", () => {
+      expect(
+         storageSecretScope({
+            configuredDataPath: "s3://bucket/configured",
+            recordedDataPath: "s3://bucket/recorded/",
+            readOnly: false,
+            managed: false,
+         }),
+      ).toBe("s3://bucket/configured/");
+   });
+
+   it("narrows a managed read-only attach to the main schema's path", () => {
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b",
+            mainSchemaPath: main,
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBe("s3://bucket/org_a/db_b/main/");
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            mainSchemaPath: { path: "/main", relative: true },
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBe("s3://bucket/org_a/db_b/main/");
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            mainSchemaPath: { path: "s3://elsewhere/main", relative: false },
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBe("s3://elsewhere/main/");
+   });
+
+   it("does not narrow a managed read-write attach, which writes other schemas", () => {
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            mainSchemaPath: main,
+            readOnly: false,
+            managed: true,
+         }),
+      ).toBe("s3://bucket/org_a/db_b/");
+   });
+
+   it("fails closed: no path, or a managed view without its main path, scopes to nothing", () => {
+      expect(
+         storageSecretScope({ readOnly: true, managed: false }),
+      ).toBeUndefined();
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBeUndefined();
+   });
+
+   it("reads an empty main path as the data path itself, as a catalog migrated from DuckLake 0.2 records it", () => {
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b",
+            mainSchemaPath: { path: "", relative: true },
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBe("s3://bucket/org_a/db_b/");
+   });
+
+   it("refuses a root that names no bucket, which DuckDB would match against every URL of the scheme", () => {
+      for (const root of ["s3://", "s3:///", "gs://"]) {
+         expect(
+            storageSecretScope({
+               configuredDataPath: root,
+               readOnly: false,
+               managed: false,
+            }),
+         ).toBeUndefined();
+      }
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            mainSchemaPath: { path: "gs://", relative: false },
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBeUndefined();
+   });
+
+   it("leaves a local data path alone", () => {
+      expect(
+         storageSecretScope({
+            configuredDataPath: "/srv/lake//",
+            readOnly: false,
+            managed: false,
+         }),
+      ).toBe("/srv/lake/");
    });
 });

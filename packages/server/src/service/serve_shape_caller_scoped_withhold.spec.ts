@@ -12,11 +12,11 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import {
    duckdbTestConnections,
    loadTestModel,
-} from "./incremental_test_harness";
+} from "../test_helpers/incremental_test_harness";
 import {
    withholdUnreproducibleCallerScopedJoins,
    type ServeBinding,
-} from "./materialization_serve_transform";
+} from "./materialization/serve/materialization_serve_transform";
 
 let connections: FixedConnectionMap;
 

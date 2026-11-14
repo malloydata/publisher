@@ -1,0 +1,21 @@
+##! experimental.givens
+import { BRAND, SINCE } from './givens.malloy'
+
+source: orders is duckdb.table('data/orders.csv') extend {
+   primary_key: id
+
+   measure: order_count is count()
+   measure: total_amount is sum(amount)
+
+   view: by_brand is {
+      where: brand ~ $BRAND
+      group_by: brand
+      aggregate: total_amount
+   }
+
+   // The one view filtering by a scalar date given.
+   view: since_totals is {
+      where: ordered_at >= $SINCE
+      aggregate: order_count
+   }
+}

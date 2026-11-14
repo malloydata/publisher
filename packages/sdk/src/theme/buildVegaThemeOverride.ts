@@ -7,18 +7,18 @@ import type { ResolvedTheme } from "./types";
  * Produce a `vegaConfigOverride` callback for `new MalloyRenderer({...})`.
  * The renderer invokes the callback once per chart type and merges the
  * returned object into the Vega spec's config. We set the category
- * colour scale, the global font, the page background, and foreground /
- * faint colours so chart text and axis chrome inherit the active mode.
+ * colour scale, the global font, the page background, and the text, axis
+ * and gridline colours so chart text and axis chrome inherit the active mode.
  *
- * Foreground and axis-faint values come from {@link ResolvedTheme}
+ * Text, axis and gridline values come from {@link ResolvedTheme}
  * (computed once in `resolveTheme`), so this builder no longer branches
  * on mode itself.
  *
- * The same config is returned for every chart type today. The
- * parameter is reserved for future per-chart-type tweaks.
+ * The same config is returned for every chart type except `shape_map`,
+ * which also moves its legend below the map.
  */
 export function buildVegaThemeOverride(theme: ResolvedTheme) {
-   const { foreground, axisFaint, font } = theme;
+   const { foreground, axisFaint, gridline, font } = theme;
 
    const config: Record<string, unknown> = {
       background: theme.background,
@@ -29,7 +29,7 @@ export function buildVegaThemeOverride(theme: ResolvedTheme) {
          titleColor: foreground,
          domainColor: axisFaint,
          tickColor: axisFaint,
-         gridColor: axisFaint,
+         gridColor: gridline,
          labelFont: font.family,
          titleFont: font.family,
       },
@@ -43,5 +43,12 @@ export function buildVegaThemeOverride(theme: ResolvedTheme) {
       range: { category: theme.series },
    };
 
-   return (_chartType: string) => config;
+   // The renderer draws a shape_map fixed-width with its legend on the right, which clips in a tile.
+   const shapeMapConfig = {
+      ...config,
+      legend: { ...(config.legend as object), orient: "bottom" },
+   };
+
+   return (chartType: string) =>
+      chartType === "shape_map" ? shapeMapConfig : config;
 }

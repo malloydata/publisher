@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportClasses } from "../../theme/classes";
 import {
    Box,
    Paper,
@@ -8,12 +9,20 @@ import {
    type SxProps,
    type Theme,
 } from "@mui/material";
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { DASHBOARD_CARD_PADDING_PX } from "../../theme/buildTableCssVars";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 
 /** `card` is a dashboard tile's panel; `none` is a notebook's bare flow. */
 export type TileChrome = "card" | "none";
+
+/**
+ * The least a carded tile is drawn at, by kind: a query tile holds a spinner
+ * and then a result, so it keeps room for one; a text tile holds a line or two
+ * of prose and is no taller than its text needs, past a floor that keeps a
+ * one-word tile from reading as a sliver. A bare (`none`) tile has no floor.
+ */
+export const TILE_MIN_HEIGHT = { query: 120, text: 72 } as const;
 
 /**
  * The card a dashboard tile sits in, and nothing else — so the builder, which
@@ -26,8 +35,10 @@ export type TileChrome = "card" | "none";
  * a different card. Both surfaces moved together when the edge was darkened;
  * either one left behind is a dashboard whose tiles are outlined two ways.
  *
- * Radius stays on the host's
- * `shape.borderRadius`, which the renderer card is pointed at too. The
+ * Radius is the report surfaces' tile radius ({@link ui.radius.tile}), which the
+ * renderer card is pointed at too, rather than the host's `shape.borderRadius`:
+ * a host's control radius is not a card radius, and taking it made tiles as
+ * round as buttons. The
  * background is `theme.tile`, the value the renderer card paints — left unset,
  * on a theme whose page is also white the composite tiles lost the tint that
  * separates a card from the page while the single-query form kept it.
@@ -46,32 +57,49 @@ export type TileChrome = "card" | "none";
 export function TileCard({
    borderless = false,
    chrome = "card",
+   kind = "query",
    sx,
+   cardRef,
    children,
 }: {
    borderless?: boolean;
+   /** What the tile holds, which sets its {@link TILE_MIN_HEIGHT}. */
+   kind?: keyof typeof TILE_MIN_HEIGHT;
    /** `none` drops the card entirely, for a document that reads top to bottom. */
    chrome?: TileChrome;
    sx?: SxProps<Theme>;
+   /** The card's element, for a caller that watches where it is on the page. */
+   cardRef?: Ref<HTMLDivElement>;
    children: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    const bare = borderless || chrome === "none";
    return (
       <Paper
+         ref={cardRef}
+         className={reportClasses.tile}
          elevation={0}
          data-chrome={chrome}
+         // What it holds, for a host waiting on the query tiles to draw.
+         data-tile-kind={kind}
          sx={[
             {
                border: bare ? "none" : theme.cardBorder,
-               borderRadius: bare ? 0 : 1,
+               borderRadius: bare ? 0 : ui.radius.tile,
                background: bare ? "none" : theme.tile,
                overflow: "hidden",
+               // Its own stacking context, so nothing inside a tile is drawn
+               // over the page around it. A table's pinned header row is
+               // `z-index: 100` in the renderer's CSS; without this it painted
+               // over the sticky control row (z 4) as the tile scrolled under
+               // it. Popups (tooltips, menus) are portalled out and unaffected.
+               isolation: "isolate",
                // A column so a tile's result can take the room under its heading.
                display: "flex",
                flexDirection: "column",
                minWidth: 0,
-               minHeight: chrome === "none" ? 0 : 120,
+               minHeight: chrome === "none" ? 0 : TILE_MIN_HEIGHT[kind],
                p:
                   chrome === "none"
                      ? 0
@@ -86,6 +114,12 @@ export function TileCard({
       </Paper>
    );
 }
+
+/**
+ * The class on a tile heading's root, so a surface that draws controls over
+ * the heading (the builder's tile menu) can leave room for them.
+ */
+export const TILE_HEADING_CLASS = reportClasses.tileHeading;
 
 /** The heading's text as nodes, for a surface that makes it editable in place. */
 export interface TileHeadingSlots {
@@ -105,7 +139,7 @@ export function TileHeading({
    action,
    quiet = false,
 }: {
-   /** A small caption instead of a heading, for a tile with no card around it. */
+   /** A tighter gap under the heading, for a tile with no card around it. */
    quiet?: boolean;
    title: ReactNode;
    subtitle?: ReactNode;
@@ -115,8 +149,10 @@ export function TileHeading({
    action?: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    return (
       <Box
+         className={TILE_HEADING_CLASS}
          sx={{
             pb: quiet ? 0.5 : 1.5,
             display: "flex",
@@ -125,12 +161,13 @@ export function TileHeading({
          }}
       >
          <Box sx={{ minWidth: 0, flex: 1 }}>
+            {/* One title style in both layouts: a linear report's tile titles
+             were 12px captions, smaller than the prose around them. */}
             <Typography
-               variant={quiet ? "caption" : "subtitle2"}
+               component="div"
                sx={{
-                  fontWeight: quiet ? 400 : 500,
-                  display: quiet ? "block" : undefined,
-                  opacity: quiet ? 0.8 : undefined,
+                  ...ui.type.tileTitle,
+                  display: "block",
                   color: theme.tileTitle,
                   fontFamily: theme.font.family,
                }}
@@ -140,12 +177,14 @@ export function TileHeading({
             </Typography>
             {subtitle !== undefined && (
                <Typography
-                  variant="caption"
+                  component="div"
                   sx={{
+                     ...ui.type.caption,
                      display: "block",
+                     mt: "2px",
                      color: theme.tileTitle,
                      fontFamily: theme.font.family,
-                     opacity: 0.8,
+                     opacity: 0.75,
                   }}
                >
                   {subtitle}

@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { routeOf } from "@malloydata/malloy";
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { createRequire } from "module";
 import { BadRequestError } from "../errors";
+import { logger } from "../logger";
+import { linesMentioning } from "../test_helpers/log_lines";
 import {
    AUTHORIZE_TAG_LIKE,
    assertNoAuthorizeTagLike,
@@ -116,7 +118,7 @@ describe("hasCallerAuthorizeAnnotation: markdown and text block bodies are prose
       ],
       [
          "a notebook file whose prose mentions both tags",
-         `##! experimental.givens\n## artifact { kind=notebook }\n\n##|(markdown)\nRows are limited by #(access_filter); the source is locked by #(authorize).\n|##\n\n${RUN}\n`,
+         `##! experimental.givens\n## artifact { layout=linear }\n\n##|(markdown)\nRows are limited by #(access_filter); the source is locked by #(authorize).\n|##\n\n${RUN}\n`,
       ],
    ];
    for (const [name, text] of accepted) {
@@ -150,7 +152,7 @@ describe("hasCallerAuthorizeAnnotation: markdown and text block bodies are prose
    it("accepts the one-line markdown cell the notebook writer emits", () => {
       expect(
          refuses(
-            `## artifact { kind=notebook }\n\n##(markdown) Rows are limited by #(access_filter).\n\n${RUN}\n`,
+            `## artifact { layout=linear }\n\n##(markdown) Rows are limited by #(access_filter).\n\n${RUN}\n`,
          ),
       ).toBe(false);
    });
@@ -255,19 +257,18 @@ describe("hasCallerAuthorizeAnnotation: everything outside a prose body is refus
 
       it("warns once, without caller text, and still refuses", () => {
          setMalloyParserLoaderForTest(() => null);
-         const warned: unknown[][] = [];
-         const original = console.warn;
-         console.warn = (...args: unknown[]) => void warned.push(args);
+         const warnSpy = spyOn(logger, "warn");
+         let warned: unknown[][];
          try {
             expect(refuses("#|(markdown)\n#(authorize) SECRET\n")).toBe(true);
             expect(refuses(`#(authorize) true\n${RUN}\n`)).toBe(true);
             expect(refuses(`${RUN}\n`)).toBe(false);
+            warned = linesMentioning(warnSpy, "guard disabled");
          } finally {
-            console.warn = original;
+            warnSpy.mockRestore();
          }
          expect(warned).toHaveLength(1);
-         expect(String(warned[0][0])).toContain("guard disabled");
-         expect(String(warned[0][0])).not.toContain("SECRET");
+         expect(JSON.stringify(warned[0])).not.toContain("SECRET");
          expect(lastCallerGuardRefusalKind()).toBe("no_lexer");
       });
    });
@@ -295,13 +296,15 @@ describe("hasCallerAuthorizeAnnotation: everything outside a prose body is refus
          return performance.now() - started;
       };
       time(prose(1000));
-      const single = Math.min(time(prose(32500)), time(prose(32500)));
-      const double = Math.min(time(prose(65000)), time(prose(65000)));
+      const small = Math.min(time(prose(16250)), time(prose(16250)));
+      const large = Math.min(time(prose(65000)), time(prose(65000)));
       console.log(
-         `caller-annotation guard, three asks: ${Math.round(single)}ms at ~490KB, ${Math.round(double)}ms at ~975KB`,
+         `caller-annotation guard, three asks: ${Math.round(small)}ms at ~245KB, ${Math.round(large)}ms at ~975KB`,
       );
-      // Quadratic doubles to 4x; linear stays near 2x, so 3x leaves room for noise.
-      expect(double).toBeLessThan(3 * single + 50);
+      // Four times the text: linear takes about 4x, quadratic 16x. 8x keeps
+      // that apart with room for a shared runner's noise, which a 2x step
+      // (2x against 4x) did not: Windows CI measured 3.5x on linear code.
+      expect(large).toBeLessThan(8 * small + 50);
       expect(
          hasCallerAuthorizeAnnotation(`${prose(65000)}\n#(authorize) y\n`),
       ).toBe(true);
@@ -334,11 +337,15 @@ describe("hasCallerAuthorizeAnnotation: everything outside a prose body is refus
          newMalformed.source.lastIndexOf("(?:") + 3,
          -1,
       );
+      const spaceAfterOpener = (tag: string) => {
+         const at = tag.search(/[([{<]/);
+         return at < 0 ? tag : `${tag.slice(0, at + 1)}\t ${tag.slice(at + 1)}`;
+      };
       const samples = [...EVERY_SPELLING, ...NEAR_MISSES].flatMap((tag) => [
          tag,
          ` ${tag}`,
          tag.replace(/^(##?\|?)/, "$1 \t "),
-         tag.replace(/([([{<])/, "$1\t "),
+         spaceAfterOpener(tag),
          `${tag}x`,
          `${tag})`,
          `prose ${tag} true`,

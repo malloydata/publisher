@@ -358,6 +358,26 @@ class RefreshNeverWritesAnEmptyResult(unittest.TestCase):
         self.assertEqual(stored["golden"]["value"], {"total": 99})
         self.assertEqual(r["refreshed"], ["q1"])
 
+    def test_a_file_held_rows_golden_is_not_refreshed_into_cases(self):
+        # Writing `value` would shadow `path` from then on, and the case would
+        # silently stop reading its file.
+        (self.tmp / "gold").mkdir()
+        (self.tmp / "gold" / "q1.csv").write_text("brand,n\na,3\n")
+        golden = {"status": "verified", "kind": "rows", "path": "gold/q1.csv"}
+        self.write(golden)
+        before = (self.tmp / "cases.jsonl").read_text()
+        with unittest.mock.patch.object(
+                verify_goldens, "check_value",
+                return_value=("diff", "", [{"brand": "a", "n": 4}])):
+            r = verify(self.tmp, "http://truth", "samples", refresh=True,
+                       quiet=True)
+        self.assertEqual((self.tmp / "cases.jsonl").read_text(), before)
+        self.assertEqual(r["refreshed"], [])
+        self.assertIn(
+            "q1: not refreshed: its rows live in gold/q1.csv, which --refresh "
+            "does not rewrite. Replace that file with the fresh rows",
+            r["findings"])
+
 
 class QuestionDrift(unittest.TestCase):
     def sealed(self, question, asked=None):
@@ -939,6 +959,33 @@ class RubricFigures(unittest.TestCase):
             "Right: 747 page views.", views=747))
         self.assertEqual(f, [])
 
+    def test_a_figure_in_a_path_held_golden_is_not_reported(self):
+        # Read from `value` alone, a file-held golden had no figures, so every
+        # figure its rubric quoted was reported missing.
+        set_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, set_dir, True)
+        (set_dir / "gold").mkdir()
+        (set_dir / "gold" / "q.csv").write_text("region,sales\nWest,1234.5\n")
+        case = {"qid": "q", "golden": {"kind": "rows", "path": "gold/q.csv",
+                                        "rubric": "Right: West at 1234.5."}}
+        self.assertEqual(verify_goldens.rubric_number_findings(case, set_dir),
+                         [])
+        (set_dir / "gold" / "q.csv").write_text("region,sales\nWest,99.5\n")
+        self.assertEqual(verify_goldens.rubric_number_findings(case, set_dir),
+                         ["review q: rubric asserts 1234.5 as right; not in "
+                          "the golden rows or their column sums"])
+
+    def test_an_unreadable_golden_path_is_one_finding(self):
+        case = {"qid": "q", "golden": {"kind": "rows", "path": "gold/no.csv",
+                                        "rubric": "Right: 1234.5."}}
+        set_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, set_dir, True)
+        f = verify_goldens.rubric_number_findings(case, set_dir)
+        self.assertEqual(len(f), 1)
+        self.assertTrue(f[0].startswith(
+            "review q: rubric figures not checked: q: golden.path "
+            "'gold/no.csv' does not exist"), f[0])
+
 
 
 class ScalarValueShape(unittest.TestCase):
@@ -1044,6 +1091,14 @@ class NumericRendering(unittest.TestCase):
 
     def test_a_real_difference_is_still_drift(self):
         self.assertFalse(close_enough("75.70", "76.1", None))
+
+    def test_a_boolean_matches_its_spelling_as_text(self):
+        # A CSV-held golden has no types: its `True` is the string 'True'.
+        self.assertTrue(close_enough("True", True, None))
+        self.assertTrue(close_enough("false", False, None))
+        self.assertTrue(close_enough(True, "TRUE", None))
+        self.assertFalse(close_enough("True", False, None))
+        self.assertFalse(close_enough("yes", True, None))
 
     def test_a_compound_string_is_left_alone(self):
         # Out of scope on purpose: it parses as no single number, so it stays
@@ -1295,6 +1350,53 @@ class NothingIsDefinedBelowTheMainGuard(unittest.TestCase):
         self.assertEqual(len(guard), 1)
         below = [l for l in src[guard[0]:] if l.startswith(("class ", "def "))]
         self.assertEqual(below, [], f"defined below the main guard: {below}")
+
+
+class RowsGoldenInAFile(unittest.TestCase):
+    """The value check read rows goldens from `golden.value` only, so a golden
+    whose rows live in a CSV was reported as an error on every audit."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        (self.tmp / "gold").mkdir()
+        (self.tmp / "gold" / "q.csv").write_text("region,total\nWest,12\n")
+        self.a = argparse.Namespace(
+            publisher="http://x", environment="truth", truth_package="t",
+            truth_model="truth.malloy", rewrite=False, set_dir=self.tmp)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def check(self, rows):
+        c = {"qid": "q", "golden": {"kind": "rows", "path": "gold/q.csv",
+                                    "canonicalQuery": "run: t -> { ... }"}}
+        with unittest.mock.patch("verify_goldens.try_query",
+                                 return_value=(rows, None)):
+            return check_value(c, self.a)
+
+    def test_matching_rows_pass(self):
+        status, detail, _ = self.check([{"region": "West", "total": 12}])
+        self.assertEqual((status, detail), ("ok", "1 rows"))
+
+    def test_a_differing_row_is_drift_not_an_error(self):
+        status, detail, _ = self.check([{"region": "West", "total": 13}])
+        self.assertEqual(status, "diff")
+        self.assertIn("total", detail)
+
+    def test_a_csv_boolean_matches_a_returned_boolean(self):
+        (self.tmp / "gold" / "q.csv").write_text("enabled\nTrue\n")
+        status, detail, _ = self.check([{"enabled": True}])
+        self.assertEqual((status, detail), ("ok", "1 rows"))
+
+    def test_an_unreadable_file_is_an_error_naming_the_path(self):
+        c = {"qid": "q", "golden": {"kind": "rows", "path": "gold/none.csv",
+                                    "canonicalQuery": "run: t -> { ... }"}}
+        with unittest.mock.patch("verify_goldens.try_query",
+                                 return_value=([{"a": 1}], None)):
+            status, detail, _ = check_value(c, self.a)
+        self.assertEqual(status, "error")
+        self.assertIn("gold/none.csv", detail)
 
 
 if __name__ == "__main__":

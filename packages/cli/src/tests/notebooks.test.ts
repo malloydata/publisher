@@ -13,7 +13,7 @@ describe("Notebook Commands", () => {
   test("listNotebooks calls the API", async () => {
     const mockClient = {
       listNotebooks: mock(() =>
-        Promise.resolve([{ path: "analysis.malloynb", error: "" }]),
+        Promise.resolve([{ path: "analysis.malloy", error: "" }]),
       ),
     } as unknown as PublisherClient;
 
@@ -33,7 +33,7 @@ describe("Notebook Commands", () => {
   });
 
   test("getNotebook fetches and prints JSON", async () => {
-    const notebook = { path: "analysis.malloynb", notebookCells: [] };
+    const notebook = { path: "analysis.malloy", notebookCells: [] };
     const mockClient = {
       getNotebook: mock(() => Promise.resolve(notebook)),
     } as unknown as PublisherClient;
@@ -42,13 +42,13 @@ describe("Notebook Commands", () => {
       mockClient,
       "env",
       "pkg",
-      "analysis.malloynb",
+      "analysis.malloy",
     );
 
     expect(mockClient.getNotebook).toHaveBeenCalledWith(
       "env",
       "pkg",
-      "analysis.malloynb",
+      "analysis.malloy",
     );
   });
 });

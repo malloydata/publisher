@@ -1,15 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   afterEach,
-   beforeEach,
-   describe,
-   expect,
-   it,
-   mock,
-   spyOn,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import {
    chmodSync,
    existsSync,
@@ -23,21 +15,29 @@ import { promises as fsPromises } from "fs";
 import * as path from "path";
 import * as sinon from "sinon";
 import { components } from "../api";
-import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
-import { BadRequestError } from "../errors";
-import { _resetEmbeddingIndexStateForTests } from "../mcp/tools/embedding_index";
-import { Environment, PackageStatus } from "./environment";
+import { BadRequestError, EnvironmentNotFoundError } from "../errors";
+import { withSettings, type SettingsInput } from "../test_helpers/settings_env";
+import { stubStorageManager } from "../test_helpers/storage_manager_stub";
+import { inMemoryVersionRegistry } from "../test_helpers/in_memory_version_registry";
+import { RetrievalService } from "../retrieval/service";
+import { Environment } from "./environment";
+import { EnvironmentStore, formatReadinessLine } from "./environment_store";
 import {
    CloneProgressReporter,
    cloneProgressLabel,
-   EnvironmentStore,
-   formatReadinessLine,
    GIT_CLONE_OPTIONS,
    parseGitHubUrl,
    resolvePackageLocation,
    stripGitProgressNoise,
-} from "./environment_store";
+} from "./package_sources";
+import {
+   parseEnvironmentName,
+   parsePackageName,
+   type EnvironmentName,
+} from "./identity";
+import { startedStore } from "../test_helpers/started_store";
+import type { simpleGit } from "simple-git";
 
 type MockData = Record<string, unknown>;
 
@@ -91,243 +91,189 @@ function managedDestination(name = "managed"): Connection {
 const embeddingCleanupRuns: Array<{ sql: string; params: unknown[] }> = [];
 let embeddingCleanupBlocks = false;
 
-mock.module("../storage/StorageManager", () => {
-   return {
-      StorageManager: class MockStorageManager {
-         async initialize(_reInit?: boolean): Promise<void> {
-            return;
-         }
+// The package rows and version registry the mock database holds. A configured
+// package is published as a version at boot, so the store records it here.
+// Fresh for every test (the file-level beforeEach below); two stores in one
+// test share it, as a restart shares publisher.db.
+let versionRegistry = inMemoryVersionRegistry();
+beforeEach(() => {
+   versionRegistry = inMemoryVersionRegistry();
+});
 
-         getDuckDbConnection() {
-            return {
-               run: (sql: string, params?: unknown[]) => {
-                  embeddingCleanupRuns.push({ sql, params: params ?? [] });
-                  return embeddingCleanupBlocks
-                     ? new Promise<void>(() => {})
-                     : Promise.resolve();
-               },
-               all: async () => [],
-               get: async () => null,
-            };
-         }
-
-         getRepository() {
-            return {
-               // ===== PROJECT METHODS =====
-               listEnvironments: async (): Promise<unknown[]> =>
-                  mockDbEnvironments,
-
-               getEnvironmentById: async (
-                  id: string,
-               ): Promise<MockData | null> => ({
-                  id,
-                  name: "test-project",
-                  path: "/test/path",
-                  description: "Test description",
-                  metadata: {},
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               getEnvironmentByName: async (
-                  _name: string,
-               ): Promise<MockData | null> => {
-                  // Return null to simulate "project doesn't exist yet"
-                  return null;
-               },
-
-               createEnvironment: async (
-                  data: MockData,
-               ): Promise<MockData> => ({
-                  id: "test-project-id",
-                  name: data.name,
-                  path: data.path,
-                  description: data.description,
-                  metadata: data.metadata,
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               updateEnvironment: async (
-                  id: string,
-                  data: MockData,
-               ): Promise<MockData> => ({
-                  id,
-                  name: "test-project",
-                  path: "/test/path",
-                  description: data.description,
-                  metadata: {
-                     ...(data.metadata || {}),
-                     readme: data.readme,
-                  },
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               deleteEnvironment: async (_id: string): Promise<void> => {},
-
-               // ===== PACKAGE METHODS =====
-               listPackages: async (
-                  _environmentId: string,
-               ): Promise<unknown[]> => [],
-
-               getPackageById: async (
-                  id: string,
-               ): Promise<MockData | null> => ({
-                  id,
-                  environmentId: "test-project-id",
-                  name: "test-package",
-                  description: "Test package",
-                  manifestPath: "/test/manifest.json",
-                  metadata: {},
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               getPackageByName: async (
-                  _environmentId: string,
-                  _name: string,
-               ): Promise<MockData | null> => null,
-
-               createPackage: async (data: MockData): Promise<MockData> => ({
-                  id: "test-package-id",
-                  environmentId: data.environmentId,
-                  name: data.name,
-                  description: data.description,
-                  manifestPath: data.manifestPath,
-                  metadata: data.metadata,
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               updatePackage: async (
-                  id: string,
-                  data: MockData,
-               ): Promise<MockData> => ({
-                  id,
-                  environmentId: "test-project-id",
-                  name: "test-package",
-                  description: data.description,
-                  manifestPath: "/test/manifest.json",
-                  metadata: data.metadata || {},
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               deletePackage: async (_id: string): Promise<void> => {},
-
-               // ===== CONNECTION METHODS =====
-               listConnections: async (
-                  _environmentId: string,
-               ): Promise<unknown[]> => [],
-
-               getConnectionById: async (
-                  id: string,
-               ): Promise<MockData | null> => ({
-                  id,
-                  environmentId: "test-project-id",
-                  name: "test-connection",
-                  type: "postgres",
-                  config: {},
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               getConnectionByName: async (
-                  _environmentId: string,
-                  _name: string,
-               ): Promise<MockData | null> => null,
-
-               createConnection: async (data: MockData): Promise<MockData> => ({
-                  id: "test-connection-id",
-                  environmentId: data.environmentId,
-                  name: data.name,
-                  type: data.type,
-                  config: data.config,
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               updateConnection: async (
-                  id: string,
-                  data: MockData,
-               ): Promise<MockData> => ({
-                  id,
-                  environmentId: "test-project-id",
-                  name: "test-connection",
-                  type: "postgres",
-                  config: data.config || {},
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               deleteConnection: async (_id: string): Promise<void> => {},
-
-               // ===== STORAGE DESTINATION METHODS =====
-               // Backed by `mockDbDestinations` rather than stubbed out, so a
-               // test can drive both directions the store uses: what a restart
-               // reads back, and what the sync writes and prunes.
-               listStorageDestinations: async (
-                  environmentId: string,
-               ): Promise<unknown[]> => {
-                  if (failNextDestinationReads > 0) {
-                     failNextDestinationReads -= 1;
-                     throw new Error("destination read failed (simulated)");
-                  }
-                  return mockDbDestinations.filter(
-                     (row) => row.environmentId === environmentId,
-                  );
-               },
-
-               getStorageDestinationByName: async (
-                  environmentId: string,
-                  name: string,
-               ): Promise<MockData | null> =>
-                  mockDbDestinations.find(
-                     (row) =>
-                        row.environmentId === environmentId &&
-                        row.name === name,
-                  ) ?? null,
-
-               upsertStorageDestination: async (
-                  data: MockData,
-               ): Promise<MockData> => {
-                  const row = {
-                     id: `${data.environmentId}-${data.name}`,
-                     environmentId: data.environmentId as string,
-                     name: data.name as string,
-                     type: data.type as string,
-                     config: data.config as Record<string, unknown>,
-                  };
-                  const index = mockDbDestinations.findIndex(
-                     (existing) => existing.id === row.id,
-                  );
-                  if (index === -1) {
-                     mockDbDestinations.push(row);
-                  } else {
-                     mockDbDestinations[index] = row;
-                  }
-                  return row;
-               },
-
-               deleteStorageDestination: async (id: string): Promise<void> => {
-                  mockDbDestinations = mockDbDestinations.filter(
-                     (row) => row.id !== id,
-                  );
-               },
-
-               deleteStorageDestinationsByEnvironmentId: async (
-                  environmentId: string,
-               ): Promise<void> => {
-                  mockDbDestinations = mockDbDestinations.filter(
-                     (row) => row.environmentId !== environmentId,
-                  );
-               },
-            };
-         }
+const storageManager = stubStorageManager({
+   getDuckDbConnection: () => ({
+      run: (sql: string, params?: unknown[]) => {
+         embeddingCleanupRuns.push({ sql, params: params ?? [] });
+         return embeddingCleanupBlocks
+            ? new Promise<void>(() => {})
+            : Promise.resolve();
       },
-      StorageConfig: {} as Record<string, unknown>,
-   };
+      all: async () => [],
+      get: async () => null,
+   }),
+
+   getRepository: () => ({
+      // ===== PROJECT METHODS =====
+      listEnvironments: async (): Promise<unknown[]> => mockDbEnvironments,
+
+      getEnvironmentById: async (id: string): Promise<MockData | null> => ({
+         id,
+         name: "test-project",
+         path: "/test/path",
+         description: "Test description",
+         metadata: {},
+         createdAt: new Date(),
+         updatedAt: new Date(),
+      }),
+
+      getEnvironmentByName: async (_name: string): Promise<MockData | null> => {
+         // Return null to simulate "project doesn't exist yet"
+         return null;
+      },
+
+      createEnvironment: async (data: MockData): Promise<MockData> => ({
+         id: "test-project-id",
+         name: data.name,
+         path: data.path,
+         description: data.description,
+         metadata: data.metadata,
+         createdAt: new Date(),
+         updatedAt: new Date(),
+      }),
+
+      updateEnvironment: async (
+         id: string,
+         data: MockData,
+      ): Promise<MockData> => ({
+         id,
+         name: "test-project",
+         path: "/test/path",
+         description: data.description,
+         metadata: {
+            ...(data.metadata || {}),
+            readme: data.readme,
+         },
+         createdAt: new Date(),
+         updatedAt: new Date(),
+      }),
+
+      deleteEnvironment: async (_id: string): Promise<void> => {},
+
+      // ===== PACKAGE METHODS =====
+      listPackages: async (_environmentId: string): Promise<unknown[]> => [],
+
+      getPackageById: async (id: string): Promise<MockData | null> => ({
+         id,
+         environmentId: "test-project-id",
+         name: "test-package",
+         description: "Test package",
+         manifestPath: "/test/manifest.json",
+         metadata: {},
+         createdAt: new Date(),
+         updatedAt: new Date(),
+      }),
+
+      // ===== PACKAGE ROWS AND VERSIONS: an in-memory registry =====
+      ...versionRegistry,
+
+      // ===== CONNECTION METHODS =====
+      listConnections: async (_environmentId: string): Promise<unknown[]> => [],
+
+      getConnectionById: async (id: string): Promise<MockData | null> => ({
+         id,
+         environmentId: "test-project-id",
+         name: "test-connection",
+         type: "postgres",
+         config: {},
+         createdAt: new Date(),
+         updatedAt: new Date(),
+      }),
+
+      getConnectionByName: async (
+         _environmentId: string,
+         _name: string,
+      ): Promise<MockData | null> => null,
+
+      createConnection: async (data: MockData): Promise<MockData> => ({
+         id: "test-connection-id",
+         environmentId: data.environmentId,
+         name: data.name,
+         type: data.type,
+         config: data.config,
+         createdAt: new Date(),
+         updatedAt: new Date(),
+      }),
+
+      updateConnection: async (
+         id: string,
+         data: MockData,
+      ): Promise<MockData> => ({
+         id,
+         environmentId: "test-project-id",
+         name: "test-connection",
+         type: "postgres",
+         config: data.config || {},
+         createdAt: new Date(),
+         updatedAt: new Date(),
+      }),
+
+      deleteConnection: async (_id: string): Promise<void> => {},
+
+      // ===== STORAGE DESTINATION METHODS =====
+      // Backed by `mockDbDestinations` rather than stubbed out, so a
+      // test can drive both directions the store uses: what a restart
+      // reads back, and what the sync writes and prunes.
+      listStorageDestinations: async (
+         environmentId: string,
+      ): Promise<unknown[]> => {
+         if (failNextDestinationReads > 0) {
+            failNextDestinationReads -= 1;
+            throw new Error("destination read failed (simulated)");
+         }
+         return mockDbDestinations.filter(
+            (row) => row.environmentId === environmentId,
+         );
+      },
+
+      getStorageDestinationByName: async (
+         environmentId: string,
+         name: string,
+      ): Promise<MockData | null> =>
+         mockDbDestinations.find(
+            (row) => row.environmentId === environmentId && row.name === name,
+         ) ?? null,
+
+      upsertStorageDestination: async (data: MockData): Promise<MockData> => {
+         const row = {
+            id: `${data.environmentId}-${data.name}`,
+            environmentId: data.environmentId as string,
+            name: data.name as string,
+            type: data.type as string,
+            config: data.config as Record<string, unknown>,
+         };
+         const index = mockDbDestinations.findIndex(
+            (existing) => existing.id === row.id,
+         );
+         if (index === -1) {
+            mockDbDestinations.push(row);
+         } else {
+            mockDbDestinations[index] = row;
+         }
+         return row;
+      },
+
+      deleteStorageDestination: async (id: string): Promise<void> => {
+         mockDbDestinations = mockDbDestinations.filter((row) => row.id !== id);
+      },
+
+      deleteStorageDestinationsByEnvironmentId: async (
+         environmentId: string,
+      ): Promise<void> => {
+         mockDbDestinations = mockDbDestinations.filter(
+            (row) => row.environmentId !== environmentId,
+         );
+      },
+   }),
 });
 
 type Connection = components["schemas"]["Connection"];
@@ -357,17 +303,18 @@ describe("EnvironmentStore Service", () => {
       failNextDestinationReads = 0;
       sandbox = sinon.createSandbox();
 
-      // Mock the configuration to prevent initialization errors
-      mock(isPublisherConfigFrozen).mockReturnValue(false);
-      mock.module("../config", () => ({
-         isPublisherConfigFrozen: () => false,
-      }));
-
-      // Create project store after mocking
-      environmentStore = new EnvironmentStore(serverRootPath);
+      environmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
    });
 
    afterEach(async () => {
+      // A test that boots its own store never awaits this one, whose
+      // initialization recreates serverRootPath. Left running, it can land
+      // between the rm and the mkdir below, which then fails with EEXIST.
+      await environmentStore.finishedInitialization;
       // Clean up the test directory after each test
       if (existsSync(serverRootPath)) {
          rmSync(serverRootPath, { recursive: true, force: true });
@@ -381,7 +328,9 @@ describe("EnvironmentStore Service", () => {
 
    it("should not load a package if the project does not exist", async () => {
       await expect(
-         environmentStore.getEnvironment("non-existent-project"),
+         environmentStore.getEnvironment(
+            parseEnvironmentName("non-existent-project"),
+         ),
       ).rejects.toThrow();
    });
 
@@ -395,6 +344,7 @@ describe("EnvironmentStore Service", () => {
          writeFileSync(
             path.join(projectPath, "publisher.json"),
             JSON.stringify({
+               version: "1.0.0",
                name: projectName,
                description: "Test package",
             }),
@@ -430,7 +380,9 @@ describe("EnvironmentStore Service", () => {
          );
 
          // Test that the project can be retrieved
-         const project = await environmentStore.getEnvironment(projectName);
+         const project = await environmentStore.getEnvironment(
+            parseEnvironmentName(projectName),
+         );
          expect(project).toBeInstanceOf(Environment);
          expect(project.metadata.name).toBe(projectName);
       },
@@ -493,7 +445,11 @@ describe("EnvironmentStore Service", () => {
       );
 
       // Create a new project store that will read the configuration
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await newEnvironmentStore.finishedInitialization;
 
       // Test that both projects can be listed
@@ -515,6 +471,7 @@ describe("EnvironmentStore Service", () => {
       writeFileSync(
          path.join(validProjectPath, "publisher.json"),
          JSON.stringify({
+            version: "1.0.0",
             name: validProjectName,
             description: "Valid project",
          }),
@@ -522,6 +479,7 @@ describe("EnvironmentStore Service", () => {
       writeFileSync(
          path.join(invalidProjectPath, "publisher.json"),
          JSON.stringify({
+            version: "1.0.0",
             name: invalidProjectName,
             description: "Invalid project",
          }),
@@ -566,13 +524,19 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await newEnvironmentStore.finishedInitialization;
 
       const projects = await newEnvironmentStore.listEnvironments();
       expect(projects.map((p) => p.name)).toEqual([validProjectName]);
       await expect(
-         newEnvironmentStore.getEnvironment(invalidProjectName),
+         newEnvironmentStore.getEnvironment(
+            parseEnvironmentName(invalidProjectName),
+         ),
       ).rejects.toThrow();
 
       // The skip is not fatal, so the server still serves. getStatus is the
@@ -594,7 +558,11 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(projectPath, { recursive: true });
       writeFileSync(
          path.join(projectPath, "publisher.json"),
-         JSON.stringify({ name: projectName, description: "Test package" }),
+         JSON.stringify({
+            version: "1.0.0",
+            name: projectName,
+            description: "Test package",
+         }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -610,7 +578,11 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await newEnvironmentStore.finishedInitialization;
 
       // Absent, not an empty array: a healthy status is unchanged by this
@@ -632,7 +604,7 @@ describe("EnvironmentStore Service", () => {
          mkdirSync(dir, { recursive: true });
          writeFileSync(
             path.join(dir, "publisher.json"),
-            JSON.stringify({ name: path.basename(dir) }),
+            JSON.stringify({ version: "1.0.0", name: path.basename(dir) }),
          );
       }
       writeFileSync(
@@ -652,14 +624,20 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await newEnvironmentStore.finishedInitialization;
 
       const status = await newEnvironmentStore.getStatus();
       expect(status.operationalState).toBe("serving");
       expect(status.environments.map((e) => e.name)).toEqual([projectName]);
 
-      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      const environment = await newEnvironmentStore.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       const packages = await environment.listPackages();
       expect(packages.map((p) => p.name).sort()).toEqual(["good-a", "good-b"]);
 
@@ -684,7 +662,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(source, { recursive: true });
       writeFileSync(
          path.join(source, "publisher.json"),
-         JSON.stringify({ name: "zipped" }),
+         JSON.stringify({ version: "1.0.0", name: "zipped" }),
       );
       const mount = path.join(serverRootPath, "mount");
       mkdirSync(mount, { recursive: true });
@@ -711,12 +689,18 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await newEnvironmentStore.finishedInitialization;
 
       const status = await newEnvironmentStore.getStatus();
       expect(status.loadErrors).toBeUndefined();
-      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      const environment = await newEnvironmentStore.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       const packages = await environment.listPackages();
       expect(packages.map((p) => p.name)).toEqual(["zipped"]);
       // Nothing was written beside the archive.
@@ -732,7 +716,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(projectPath, { recursive: true });
       writeFileSync(
          path.join(projectPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(projectPath, "model.malloy"),
@@ -752,24 +736,25 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const store = new EnvironmentStore(serverRootPath);
+      // A reload recompiles a package mounted in place (a watched
+      // environment's); a published version is immutable and answers a
+      // reload unchanged. So the environment is mounted in place, and the
+      // break lands in the package's own source.
+      const store = new EnvironmentStore(serverRootPath, { storageManager });
+      store.markInPlace(projectName);
+      startedStore(store);
       await store.finishedInitialization;
       expect((await store.getStatus()).loadErrors).toBeUndefined();
 
-      // Without a watch env the package is served from its copy under
-      // publisher_data, and that copy is what a reload recompiles, so the
-      // break has to land there.
-      const servedModel = path.join(
-         serverRootPath,
-         "publisher_data",
-         projectName,
-         projectName,
-         "model.malloy",
-      );
+      const servedModel = path.join(projectPath, "model.malloy");
       writeFileSync(servedModel, "source: s1 is duckdb.sql(\n"); // parse error
 
-      const environment = await store.getEnvironment(projectName);
-      await expect(environment.getPackage(projectName, true)).rejects.toThrow();
+      const environment = await store.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
+      await expect(
+         environment.getPackage(parsePackageName(projectName), true),
+      ).rejects.toThrow();
 
       const status = await store.getStatus();
       // Still serving: the package remains listed under its environment...
@@ -789,7 +774,7 @@ describe("EnvironmentStore Service", () => {
       // Fixing the file and reloading clears the entry: a healthy status
       // omits loadErrors entirely (the byte-for-byte-healthy contract).
       writeFileSync(servedModel, 'source: s1 is duckdb.sql("SELECT 2 as n")\n');
-      await environment.getPackage(projectName, true);
+      await environment.getPackage(parsePackageName(projectName), true);
       const healthy = await store.getStatus();
       expect(healthy.loadErrors).toBeUndefined();
    });
@@ -803,7 +788,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(projectPath, { recursive: true });
       writeFileSync(
          path.join(projectPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(projectPath, "model.malloy"),
@@ -826,7 +811,11 @@ describe("EnvironmentStore Service", () => {
       const loaded: Array<{ environmentName: string; packageName: string }> =
          [];
       const instances: unknown[] = [];
-      const store = new EnvironmentStore(serverRootPath);
+      // Mounted in place, as a watched environment is: only such a package
+      // recompiles on a reload (a published version answers it unchanged).
+      const store = new EnvironmentStore(serverRootPath, { storageManager });
+      store.markInPlace(projectName);
+      startedStore(store);
       store.setPackageLoadedHook((environmentName, pkg) => {
          loaded.push({ environmentName, packageName: pkg.getPackageName() });
          instances.push(pkg);
@@ -838,15 +827,71 @@ describe("EnvironmentStore Service", () => {
       ]);
 
       // Looking the package up again is not a load.
-      const environment = await store.getEnvironment(projectName);
-      await environment.getPackage(projectName, false);
+      const environment = await store.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
+      await environment.getPackage(parsePackageName(projectName), false);
       expect(loaded.length).toBe(1);
 
       // A reload is a new Package instance, and so a new notification.
-      const reloaded = await environment.getPackage(projectName, true);
+      const reloaded = await environment.getPackage(
+         parsePackageName(projectName),
+         true,
+      );
       expect(loaded.length).toBe(2);
       expect(instances[1]).toBe(reloaded);
       expect(instances[1]).not.toBe(instances[0]);
+   });
+
+   it("forwards the version hooks to every environment, naming it, and detaches them with null", async () => {
+      const projectPath = path.join(serverRootPath, projectName);
+      mkdirSync(projectPath, { recursive: true });
+      writeFileSync(
+         path.join(projectPath, "publisher.json"),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: projectPath }],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+      const store = startedStore(
+         new EnvironmentStore(serverRootPath, { storageManager }),
+      );
+      await store.finishedInitialization;
+      const environment = await store.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
+      type Forwarded = (packageName: string, versionId: string) => unknown;
+      const forwarded = (name: string) =>
+         (environment as unknown as Record<string, Forwarded | null>)[name];
+
+      const calls: unknown[][] = [];
+      store.setVersionArchivedHook((...args) => void calls.push(args));
+      store.setVersionDeletedHook((...args) => void calls.push(args));
+      store.setOwedReclaimHook(async (...args) => void calls.push(args));
+      forwarded("versionArchivedHook")?.("pkg", "1.0.0");
+      forwarded("versionDeletedHook")?.("pkg", "1.0.1");
+      await forwarded("owedReclaimHook")?.("pkg", "1.0.2");
+      expect(calls).toEqual([
+         [projectName, "pkg", "1.0.0"],
+         [projectName, "pkg", "1.0.1"],
+         [environment, "pkg", "1.0.2"],
+      ]);
+
+      store.setVersionArchivedHook(null);
+      store.setVersionDeletedHook(null);
+      store.setOwedReclaimHook(null);
+      expect(forwarded("versionArchivedHook")).toBeNull();
+      expect(forwarded("versionDeletedHook")).toBeNull();
+      expect(forwarded("owedReclaimHook")).toBeNull();
    });
 
    it("keeps sibling packages serving when one sharing their location fails to extract", async () => {
@@ -855,12 +900,26 @@ describe("EnvironmentStore Service", () => {
       // siblings queued behind it: the group-level catch used to wrap the whole
       // loop, so with three packages from one repo a throw on the second meant
       // the third was never copied even though nothing was wrong with it.
-      const shared = path.join(serverRootPath, "shared-src");
-      mkdirSync(shared, { recursive: true });
-      writeFileSync(
-         path.join(shared, "publisher.json"),
-         JSON.stringify({ name: "shared" }),
-      );
+      // A repository, because a local location is published without the
+      // shared download (publishConfiguredPackages).
+      const packageNames = ["first", "middle", "last"];
+      const fakeGit = (() => ({
+         clone: (
+            _repoUrl: string,
+            dir: string,
+            _opts: unknown,
+            cb: (err: Error | null) => void,
+         ) => {
+            for (const name of packageNames) {
+               mkdirSync(path.join(dir, name), { recursive: true });
+               writeFileSync(
+                  path.join(dir, name, "publisher.json"),
+                  JSON.stringify({ version: "1.0.0", name }),
+               );
+            }
+            cb(null);
+         },
+      })) as unknown as typeof simpleGit;
 
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -868,21 +927,20 @@ describe("EnvironmentStore Service", () => {
             environments: [
                {
                   name: projectName,
-                  packages: [
-                     { name: "first", location: shared },
-                     { name: "middle", location: shared },
-                     { name: "last", location: shared },
-                  ],
+                  packages: packageNames.map((name) => ({
+                     name,
+                     location: `https://github.com/example/repo/tree/main/${name}`,
+                  })),
                   connections: [],
                },
             ],
          }),
       );
 
-      // Fail exactly one package's copy. Everything reachable from config is
-      // shared across the group (same location, hence the same source path), so
-      // the copy is the only per-package step that can realistically fail on
-      // its own — the same shape as a GitHub subdirectory that isn't there.
+      // Fail exactly one package's copy. Everything before it is shared across
+      // the group (one clone), so the copy is the only per-package step that
+      // can realistically fail on its own — the same shape as a GitHub
+      // subdirectory that isn't there.
       const realCp = fsPromises.cp;
       const cpStub = sinon.stub(fsPromises, "cp").callsFake((async (
          src: Parameters<typeof realCp>[0],
@@ -896,11 +954,17 @@ describe("EnvironmentStore Service", () => {
       }) as typeof realCp);
 
       try {
-         const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+         const newEnvironmentStore = startedStore(
+            new EnvironmentStore(serverRootPath, {
+               storageManager,
+               simpleGit: fakeGit,
+            }),
+         );
          await newEnvironmentStore.finishedInitialization;
 
-         const environment =
-            await newEnvironmentStore.getEnvironment(projectName);
+         const environment = await newEnvironmentStore.getEnvironment(
+            parseEnvironmentName(projectName),
+         );
          const packages = await environment.listPackages();
          // "last" is the one that regressed: it is queued behind the failure.
          expect(packages.map((p) => p.name).sort()).toEqual(["first", "last"]);
@@ -927,7 +991,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(good, { recursive: true });
       writeFileSync(
          path.join(good, "publisher.json"),
-         JSON.stringify({ name: "good" }),
+         JSON.stringify({ version: "1.0.0", name: "good" }),
       );
 
       writeFileSync(
@@ -946,12 +1010,21 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      // Mounted in place, as a watched environment is: the one mount whose
+      // root is the environment directory itself. Elsewhere a local package is
+      // published without a mount, and a remote one mounts into `.staging`.
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
+      newEnvironmentStore.markInPlace(projectName);
+      startedStore(newEnvironmentStore);
       await newEnvironmentStore.finishedInitialization;
 
       // Boot pre-validates the names and skips the environment, so reach the
       // lazy path, which passes the config's package names through unchecked.
-      await newEnvironmentStore.getEnvironment(projectName).catch(() => {});
+      await newEnvironmentStore
+         .getEnvironment(parseEnvironmentName(projectName))
+         .catch(() => {});
 
       const envDir = path.join(serverRootPath, "publisher_data", projectName);
       // The environment directory and the healthy sibling must both survive.
@@ -968,7 +1041,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(projectPath, { recursive: true });
       writeFileSync(
          path.join(projectPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -990,7 +1063,11 @@ describe("EnvironmentStore Service", () => {
          .stub(EnvironmentStore.prototype, "addEnvironmentToDatabase")
          .rejects(new Error("database write failed"));
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await newEnvironmentStore.finishedInitialization;
 
       const status = await newEnvironmentStore.getStatus();
@@ -1038,7 +1115,11 @@ describe("EnvironmentStore Service", () => {
          },
       ];
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await newEnvironmentStore.finishedInitialization;
 
       const status = await newEnvironmentStore.getStatus();
@@ -1057,7 +1138,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
 
       writeFileSync(
@@ -1091,7 +1172,11 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await newEnvironmentStore.finishedInitialization;
 
       const status = await newEnvironmentStore.getStatus();
@@ -1115,7 +1200,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1132,7 +1217,11 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const firstBoot = new EnvironmentStore(serverRootPath);
+      const firstBoot = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await firstBoot.finishedInitialization;
 
       expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
@@ -1162,10 +1251,16 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const afterRestart = new EnvironmentStore(serverRootPath);
+      const afterRestart = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await afterRestart.finishedInitialization;
 
-      const environment = await afterRestart.getEnvironment(projectName);
+      const environment = await afterRestart.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       expect(
          environment.getStorageDestination("managed").ducklakeConnection
             ?.storage?.bucketUrl,
@@ -1179,7 +1274,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1196,7 +1291,11 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await newEnvironmentStore.finishedInitialization;
       expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
 
@@ -1221,7 +1320,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1238,7 +1337,11 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const firstBoot = new EnvironmentStore(serverRootPath);
+      const firstBoot = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await firstBoot.finishedInitialization;
       expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
 
@@ -1267,7 +1370,11 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const afterRestart = new EnvironmentStore(serverRootPath);
+      const afterRestart = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await afterRestart.finishedInitialization;
 
       expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
@@ -1282,7 +1389,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       // Config declares nothing, so the fallback on a failed read is an empty list.
       writeFileSync(
@@ -1322,7 +1429,11 @@ describe("EnvironmentStore Service", () => {
       // The read at restore fails; every later read (the sync's own) succeeds.
       failNextDestinationReads = 1;
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await newEnvironmentStore.finishedInitialization;
 
       // An ordinary environment write — a readme edit is enough to reach the sync.
@@ -1341,7 +1452,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1358,7 +1469,11 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await newEnvironmentStore.finishedInitialization;
       expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
 
@@ -1378,7 +1493,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ version: "1.0.0", name: projectName }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1403,10 +1518,16 @@ describe("EnvironmentStore Service", () => {
          },
       ];
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await newEnvironmentStore.finishedInitialization;
 
-      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      const environment = await newEnvironmentStore.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       expect(environment.listStorageDestinations().map((d) => d.name)).toEqual([
          "managed",
       ]);
@@ -1421,7 +1542,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(goodPackagePath, { recursive: true });
       writeFileSync(
          path.join(goodPackagePath, "publisher.json"),
-         JSON.stringify({ name: goodPackageName }),
+         JSON.stringify({ version: "1.0.0", name: goodPackageName }),
       );
       // The directory exists, so the environment mounts; the package inside it
       // has no manifest, so only that package fails. This is the second, and
@@ -1446,10 +1567,16 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await newEnvironmentStore.finishedInitialization;
 
-      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      const environment = await newEnvironmentStore.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       const packages = await environment.listPackages();
       expect(packages.map((p) => p.name)).toEqual([goodPackageName]);
 
@@ -1470,7 +1597,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(goodPackagePath, { recursive: true });
       writeFileSync(
          path.join(goodPackagePath, "publisher.json"),
-         JSON.stringify({ name: goodPackageName }),
+         JSON.stringify({ version: "1.0.0", name: goodPackageName }),
       );
       mkdirSync(badPackagePath, { recursive: true });
 
@@ -1491,10 +1618,16 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await newEnvironmentStore.finishedInitialization;
 
-      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      const environment = await newEnvironmentStore.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       expect((await newEnvironmentStore.getStatus()).loadErrors).toHaveLength(
          1,
       );
@@ -1537,10 +1670,19 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      // Mounted in place, as a watched environment is: only such a package
+      // is fixed where it is served and re-added (a published version is
+      // immutable; it is fixed by publishing another).
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
+      newEnvironmentStore.markInPlace(projectName);
+      startedStore(newEnvironmentStore);
       await newEnvironmentStore.finishedInitialization;
 
-      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      const environment = await newEnvironmentStore.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       expect((await newEnvironmentStore.getStatus()).loadErrors).toHaveLength(
          1,
       );
@@ -1573,6 +1715,7 @@ describe("EnvironmentStore Service", () => {
       writeFileSync(
          path.join(projectPath, "publisher.json"),
          JSON.stringify({
+            version: "1.0.0",
             name: projectName,
             description: "Test package",
          }),
@@ -1603,7 +1746,9 @@ describe("EnvironmentStore Service", () => {
       await environmentStore.finishedInitialization;
 
       // Get the project
-      const project = await environmentStore.getEnvironment(projectName);
+      const project = await environmentStore.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
 
       // Update the project
       await project.update({
@@ -1633,6 +1778,7 @@ describe("EnvironmentStore Service", () => {
          writeFileSync(
             path.join(projectPath, "publisher.json"),
             JSON.stringify({
+               version: "1.0.0",
                name: projectName,
                description: "Test package",
             }),
@@ -1661,11 +1807,13 @@ describe("EnvironmentStore Service", () => {
          );
 
          // Get the project
-         const project1 = await environmentStore.getEnvironment(projectName);
+         const project1 = await environmentStore.getEnvironment(
+            parseEnvironmentName(projectName),
+         );
 
          // Get the project again with reload=true
          const project2 = await environmentStore.getEnvironment(
-            projectName,
+            parseEnvironmentName(projectName),
             true,
          );
 
@@ -1701,11 +1849,17 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await newEnvironmentStore.finishedInitialization;
 
       // The environment loaded rather than being skipped.
-      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      const environment = await newEnvironmentStore.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       expect(environment.metadata.name).toBe(projectName);
 
       // And the failure is reported at the package level, not the env level.
@@ -1726,7 +1880,11 @@ describe("EnvironmentStore Service", () => {
       writeFileSync(publisherConfigPath, "invalid json");
 
       // Create a new project store that will read the invalid config
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
 
       // Test that the project store handles invalid JSON gracefully by falling back to empty config
       await newEnvironmentStore.finishedInitialization;
@@ -1748,7 +1906,11 @@ describe("EnvironmentStore Service", () => {
          writeFileSync(publisherConfigPath, '{"environments":[]}');
          chmodSync(publisherConfigPath, 0o000);
          try {
-            const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+            const newEnvironmentStore = startedStore(
+               new EnvironmentStore(serverRootPath, {
+                  storageManager,
+               }),
+            );
             await newEnvironmentStore.finishedInitialization;
             const status = await newEnvironmentStore.getStatus();
             expect(status.initError).toContain("EACCES");
@@ -1762,6 +1924,24 @@ describe("EnvironmentStore Service", () => {
       await environmentStore.finishedInitialization;
       const status = await environmentStore.getStatus();
       expect(status.initError).toBeUndefined();
+   });
+
+   // A value outside the set stops startup in the settings loader, before any
+   // store exists; the contract table and the first-boot specs cover that.
+   it("reports the model page the Console shows, the Explorer by default", async () => {
+      await environmentStore.finishedInitialization;
+      await withSettings({ cwd: serverRootPath }, async () =>
+         expect((await environmentStore.getStatus()).modelPage).toBe(
+            "explorer",
+         ),
+      );
+      await withSettings(
+         { cwd: serverRootPath, env: { PUBLISHER_MODEL_PAGE: "viewer" } },
+         async () =>
+            expect((await environmentStore.getStatus()).modelPage).toBe(
+               "viewer",
+            ),
+      );
    });
 
    it("should handle invalid field names in publisher config without crashing", async () => {
@@ -1797,7 +1977,11 @@ describe("EnvironmentStore Service", () => {
       );
 
       // Create a new project store that will read the invalid config
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
 
       // Test that the project store handles invalid fields gracefully without crashing
       await newEnvironmentStore.finishedInitialization;
@@ -1818,6 +2002,7 @@ describe("EnvironmentStore Service", () => {
       writeFileSync(
          path.join(validProjectPath, "publisher.json"),
          JSON.stringify({
+            version: "1.0.0",
             name: "valid-project",
             description: "Valid project",
          }),
@@ -1872,7 +2057,11 @@ describe("EnvironmentStore Service", () => {
       );
 
       // Create a new project store that will read the config
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
 
       // Test that invalid projects are filtered out
       await newEnvironmentStore.finishedInitialization;
@@ -1893,6 +2082,7 @@ describe("EnvironmentStore Service", () => {
          writeFileSync(
             path.join(projectPath, "publisher.json"),
             JSON.stringify({
+               version: "1.0.0",
                name: projectName,
                description: "Test package",
             }),
@@ -1930,7 +2120,7 @@ describe("EnvironmentStore Service", () => {
 
          // Test concurrent access to the same project
          const promises = Array.from({ length: 5 }, () =>
-            environmentStore.getEnvironment(projectName),
+            environmentStore.getEnvironment(parseEnvironmentName(projectName)),
          );
 
          const projects = await Promise.all(promises);
@@ -1971,14 +2161,11 @@ describe("Project Service Error Recovery", () => {
       sandbox = sinon.createSandbox();
       mkdirSync(serverRootPath, { recursive: true });
 
-      // Mock the configuration to prevent initialization errors
-      mock(isPublisherConfigFrozen).mockReturnValue(false);
-      mock.module("../config", () => ({
-         isPublisherConfigFrozen: () => false,
-      }));
-
-      // Create project store after mocking
-      environmentStore = new EnvironmentStore(serverRootPath);
+      environmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
    });
 
    afterEach(async () => {
@@ -2017,11 +2204,16 @@ describe("Project Service Error Recovery", () => {
             }),
          );
 
-         const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+         const newEnvironmentStore = startedStore(
+            new EnvironmentStore(serverRootPath, {
+               storageManager,
+            }),
+         );
          await newEnvironmentStore.finishedInitialization;
 
-         const environment =
-            await newEnvironmentStore.getEnvironment(projectName);
+         const environment = await newEnvironmentStore.getEnvironment(
+            parseEnvironmentName(projectName),
+         );
          expect(environment.metadata.name).toBe(projectName);
 
          const status = await newEnvironmentStore.getStatus();
@@ -2040,6 +2232,7 @@ describe("Project Service Error Recovery", () => {
             writeFileSync(
                path.join(projectPath, "publisher.json"),
                JSON.stringify({
+                  version: "1.0.0",
                   name: projectName,
                   description: "Test package",
                }),
@@ -2076,7 +2269,9 @@ describe("Project Service Error Recovery", () => {
 
             // Test that the project store handles corrupted connection files gracefully
             // (The current implementation loads the project even with corrupted connection files)
-            const project = await environmentStore.getEnvironment(projectName);
+            const project = await environmentStore.getEnvironment(
+               parseEnvironmentName(projectName),
+            );
             expect(project).toBeInstanceOf(Environment);
             expect(project.metadata.name).toBe(projectName);
          },
@@ -2095,6 +2290,7 @@ describe("Project Service Error Recovery", () => {
             writeFileSync(
                path.join(projectPath, "publisher.json"),
                JSON.stringify({
+                  version: "1.0.0",
                   name: projectName,
                   description: "Test package",
                }),
@@ -2126,17 +2322,26 @@ describe("Project Service Error Recovery", () => {
             );
 
             // Get the project successfully
-            const project = await environmentStore.getEnvironment(projectName);
+            const project = await environmentStore.getEnvironment(
+               parseEnvironmentName(projectName),
+            );
             expect(project).toBeInstanceOf(Environment);
 
-            // Try to get a non-existent project
-            await expect(
-               environmentStore.getEnvironment("non-existent"),
-            ).rejects.toThrow();
+            // Try to get a non-existent project. The error carries the loaded
+            // names, which is what the MCP tools show an agent that guessed.
+            const missing = await environmentStore
+               .getEnvironment(parseEnvironmentName("non-existent"))
+               .catch((e: unknown) => e);
+            expect(missing).toBeInstanceOf(EnvironmentNotFoundError);
+            expect((missing as EnvironmentNotFoundError).lookup).toEqual({
+               environmentName: "non-existent",
+               availableEnvironments: [projectName],
+            });
 
             // Verify the original project is still accessible
-            const projectAgain =
-               await environmentStore.getEnvironment(projectName);
+            const projectAgain = await environmentStore.getEnvironment(
+               parseEnvironmentName(projectName),
+            );
             expect(projectAgain).toBeInstanceOf(Environment);
             expect(projectAgain.metadata.name).toBe(projectName);
          },
@@ -2167,11 +2372,11 @@ describe("EnvironmentStore path-injection guards", () => {
          rmSync(serverRootPath, { recursive: true, force: true });
       }
       mkdirSync(serverRootPath);
-      mock(isPublisherConfigFrozen).mockReturnValue(false);
-      mock.module("../config", () => ({
-         isPublisherConfigFrozen: () => false,
-      }));
-      environmentStore = new EnvironmentStore(serverRootPath);
+      environmentStore = startedStore(
+         new EnvironmentStore(serverRootPath, {
+            storageManager,
+         }),
+      );
       await environmentStore.finishedInitialization;
    });
 
@@ -2239,8 +2444,10 @@ describe("EnvironmentStore path-injection guards", () => {
       it.each(TRAVERSAL_NAMES)(
          "rejects %s as environmentName (%p)",
          async (_label, name) => {
+            expect(() => parseEnvironmentName(name)).toThrow(BadRequestError);
+            // The sink-side check holds even for a name cast past the parse.
             await expect(
-               environmentStore.getEnvironment(name),
+               environmentStore.getEnvironment(name as EnvironmentName),
             ).rejects.toBeInstanceOf(BadRequestError);
          },
       );
@@ -2339,9 +2546,9 @@ describe("Environment.getServingPackageCount", () => {
       // (would say 3) and a full inversion (would say 1), so the count really
       // is "registered minus failed".
       const env = await Environment.create("e", envRoot, []);
-      env.setPackageStatus("good-1", PackageStatus.SERVING);
-      env.setPackageStatus("good-2", PackageStatus.SERVING);
-      env.setPackageStatus("bad", PackageStatus.SERVING);
+      env.registerConfiguredPackage("good-1");
+      env.registerConfiguredPackage("good-2");
+      env.registerConfiguredPackage("bad");
       env.setPackageMountError("bad", "location does not exist");
 
       expect(env.getServingPackageCount()).toBe(2);
@@ -2563,27 +2770,14 @@ describe("CloneProgressReporter", () => {
 });
 
 describe("formatReadinessLine", () => {
-   const SAVED = ["PUBLISHER_HOST", "PUBLISHER_PORT", "MCP_PORT"] as const;
-   let saved: Record<string, string | undefined>;
-
-   beforeEach(() => {
-      saved = {};
-      for (const key of SAVED) {
-         saved[key] = process.env[key];
-         delete process.env[key];
-      }
-   });
-
-   afterEach(() => {
-      for (const key of SAVED) {
-         if (saved[key] === undefined) delete process.env[key];
-         else process.env[key] = saved[key];
-      }
-   });
+   const readinessLine = (
+      input: SettingsInput,
+      counts: { environments: number; packages: number; loadErrors: number },
+   ) => withSettings(input, () => formatReadinessLine(counts));
 
    it("uses the server defaults and displays the wildcard bind as localhost", () => {
       expect(
-         formatReadinessLine({ environments: 1, packages: 3, loadErrors: 0 }),
+         readinessLine({}, { environments: 1, packages: 3, loadErrors: 0 }),
       ).toBe(
          "PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 " +
             "environments=1 packages=3 load_errors=0",
@@ -2591,9 +2785,11 @@ describe("formatReadinessLine", () => {
    });
 
    it("brackets an IPv6 literal host so the URL is dialable", () => {
-      process.env.PUBLISHER_HOST = "::1";
       expect(
-         formatReadinessLine({ environments: 1, packages: 1, loadErrors: 0 }),
+         readinessLine(
+            { env: { PUBLISHER_HOST: "::1" } },
+            { environments: 1, packages: 1, loadErrors: 0 },
+         ),
       ).toBe(
          "PUBLISHER_READY url=http://[::1]:4000 mcp=http://[::1]:4040 " +
             "environments=1 packages=1 load_errors=0",
@@ -2601,26 +2797,49 @@ describe("formatReadinessLine", () => {
    });
 
    it("displays the :: wildcard bind as localhost", () => {
-      process.env.PUBLISHER_HOST = "::";
       expect(
-         formatReadinessLine({ environments: 1, packages: 1, loadErrors: 0 }),
+         readinessLine(
+            { env: { PUBLISHER_HOST: "::" } },
+            { environments: 1, packages: 1, loadErrors: 0 },
+         ),
       ).toBe(
          "PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 " +
             "environments=1 packages=1 load_errors=0",
       );
    });
 
-   it("respects the flag-derived env vars", () => {
-      // parseArgs writes --host/--port/--mcp_port here before the store exists.
-      process.env.PUBLISHER_HOST = "127.0.0.1";
-      process.env.PUBLISHER_PORT = "4321";
-      process.env.MCP_PORT = "4361";
-      expect(
-         formatReadinessLine({ environments: 2, packages: 5, loadErrors: 1 }),
-      ).toBe(
+   it("respects the host and ports given by flag or by variable", () => {
+      const expected =
          "PUBLISHER_READY url=http://127.0.0.1:4321 mcp=http://127.0.0.1:4361 " +
-            "environments=2 packages=5 load_errors=1",
-      );
+         "environments=2 packages=5 load_errors=1";
+      const counts = { environments: 2, packages: 5, loadErrors: 1 };
+      expect(
+         readinessLine(
+            {
+               argv: [
+                  "--host",
+                  "127.0.0.1",
+                  "--port",
+                  "4321",
+                  "--mcp_port",
+                  "4361",
+               ],
+            },
+            counts,
+         ),
+      ).toBe(expected);
+      expect(
+         readinessLine(
+            {
+               env: {
+                  PUBLISHER_HOST: "127.0.0.1",
+                  PUBLISHER_PORT: "4321",
+                  MCP_PORT: "4361",
+               },
+            },
+            counts,
+         ),
+      ).toBe(expected);
    });
 });
 
@@ -2638,7 +2857,10 @@ describe("readiness line emission", () => {
    const writePackage = (name: string) => {
       const dir = path.join(readinessRoot, "src-packages", name);
       mkdirSync(dir, { recursive: true });
-      writeFileSync(path.join(dir, "publisher.json"), JSON.stringify({ name }));
+      writeFileSync(
+         path.join(dir, "publisher.json"),
+         JSON.stringify({ version: "1.0.0", name }),
+      );
       return dir;
    };
 
@@ -2647,9 +2869,6 @@ describe("readiness line emission", () => {
          rmSync(readinessRoot, { recursive: true, force: true });
       }
       mkdirSync(readinessRoot, { recursive: true });
-      mock.module("../config", () => ({
-         isPublisherConfigFrozen: () => false,
-      }));
       stderrWrites = [];
       stderrSpy = spyOn(process.stderr, "write").mockImplementation(
          (chunk: string | Uint8Array) => {
@@ -2684,7 +2903,9 @@ describe("readiness line emission", () => {
          }),
       );
 
-      const store = new EnvironmentStore(readinessRoot);
+      const store = startedStore(
+         new EnvironmentStore(readinessRoot, { storageManager }),
+      );
       await store.finishedInitialization;
 
       const lines = readyLines();
@@ -2721,7 +2942,9 @@ describe("readiness line emission", () => {
          }),
       );
 
-      const store = new EnvironmentStore(readinessRoot);
+      const store = startedStore(
+         new EnvironmentStore(readinessRoot, { storageManager }),
+      );
       await store.finishedInitialization;
 
       const lines = readyLines();
@@ -2764,7 +2987,9 @@ describe("readiness line emission", () => {
          }),
       );
 
-      const store = new EnvironmentStore(readinessRoot);
+      const store = startedStore(
+         new EnvironmentStore(readinessRoot, { storageManager }),
+      );
       await store.finishedInitialization;
 
       const lines = readyLines();
@@ -2901,6 +3126,21 @@ describe("parseGitHubUrl", () => {
 describe("EnvironmentStore embeddings cleanup wiring", () => {
    const serverRootPath = path.join(TEMP_DIR_PATH, "cleanup-wiring-tests");
 
+   /** A store with the deletion hooks main_server installs. */
+   function storeWithCleanupHooks(): EnvironmentStore {
+      const store = startedStore(
+         new EnvironmentStore(serverRootPath, { storageManager }),
+      );
+      const retrieval = new RetrievalService(store, store.storageManager);
+      store.setPackageDeletedHook((environmentName, packageName) =>
+         retrieval.purge(environmentName, packageName),
+      );
+      store.setEnvironmentDeletedHook((environmentName) =>
+         retrieval.purge(environmentName),
+      );
+      return store;
+   }
+
    beforeEach(() => {
       if (existsSync(serverRootPath)) {
          rmSync(serverRootPath, { recursive: true, force: true });
@@ -2911,19 +3151,17 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       failNextDestinationReads = 0;
       embeddingCleanupRuns.length = 0;
       embeddingCleanupBlocks = false;
-      _resetEmbeddingIndexStateForTests();
    });
 
    afterEach(() => {
       embeddingCleanupBlocks = false;
-      _resetEmbeddingIndexStateForTests();
       if (existsSync(serverRootPath)) {
          rmSync(serverRootPath, { recursive: true, force: true });
       }
    });
 
    it("deletePackageFromDatabase fires cleanup without awaiting it, even with no metadata row", async () => {
-      const store = new EnvironmentStore(serverRootPath);
+      const store = storeWithCleanupHooks();
       await store.finishedInitialization;
 
       // The cleanup's SQL never resolves: were the store awaiting it,
@@ -2933,22 +3171,23 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       embeddingCleanupBlocks = true;
       await store.deletePackageFromDatabase("wiring-env", "wiring-pkg");
 
+      // The first statement of the cleanup; it never resolves, so it is the only one.
       const deletes = embeddingCleanupRuns.filter((r) =>
-         r.sql.includes("DELETE FROM entity_embeddings"),
+         r.sql.includes("DELETE FROM catalog_nodes"),
       );
       expect(deletes.length).toBe(1);
       expect(deletes[0].params).toEqual(["wiring-env", "wiring-pkg"]);
    });
 
    it("deleteEnvironmentFromDatabase fires the env-wide cleanup without awaiting it", async () => {
-      const store = new EnvironmentStore(serverRootPath);
+      const store = storeWithCleanupHooks();
       await store.finishedInitialization;
 
       embeddingCleanupBlocks = true;
       await store.deleteEnvironmentFromDatabase("wiring-env");
 
       const deletes = embeddingCleanupRuns.filter((r) =>
-         r.sql.includes("DELETE FROM entity_embeddings"),
+         r.sql.includes("DELETE FROM catalog_nodes"),
       );
       expect(deletes.length).toBe(1);
       expect(deletes[0].params).toEqual(["wiring-env"]);

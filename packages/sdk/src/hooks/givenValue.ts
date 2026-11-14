@@ -11,3 +11,12 @@
  * to be canonical this week.
  */
 export type GivenValue = string | number | boolean | Date | null;
+
+/**
+ * A value the HOST sets for a given no control shows. Only a host can send a
+ * list (`GivenValue` leaves arrays out on purpose: a control's value must
+ * round-trip through a URL), and the server accepts one for a `string[]` given.
+ */
+export type HostGivenValue =
+   | GivenValue
+   | readonly (string | number | boolean)[];

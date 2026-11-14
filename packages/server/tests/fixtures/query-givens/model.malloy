@@ -2,9 +2,9 @@
 
 given: target_region :: string is 'US'
 given: min_amount :: number is 0
+#(secure)
 given: role :: string
 
-#(filter) dimension=status type=equal
 source: orders is duckdb.table('data/orders.csv') extend {
    primary_key: id
 

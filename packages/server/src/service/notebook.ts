@@ -3,59 +3,12 @@
 
 import {
    MalloyTranslator,
-   payloadOf,
-   routeOf,
    type LogMessage,
    type ModelDef,
 } from "@malloydata/malloy";
-import { MODEL_FILE_SUFFIX } from "../constants";
-import { ownModelNoteObjects, type AnnotationNote } from "./annotations";
-import { closesBlock } from "./query_text";
-import { docCommentText, motlyTag, tagText } from "./motly";
-
-/** The package-relative directory a served notebook must live in. */
-export const NOTEBOOKS_DIR = "notebooks";
-
-/**
- * True for a package-relative path that notebook discovery considers: a
- * `.malloy` directly inside the top-level `notebooks/` directory. Only the
- * candidate filter; the file is a notebook only if it carries a model-level
- * `## artifact` note.
- */
-export function isNotebookModelPath(modelPath: string): boolean {
-   if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
-   const segments = modelPath.split("/");
-   return segments.length === 2 && segments[0] === NOTEBOOKS_DIR;
-}
-
-/** The package-relative directory a dashboard is created in. */
-export const DASHBOARDS_DIR = "dashboards";
-
-/** True for a `.malloy` directly inside `dashboards/` or `notebooks/`: where a document may live. */
-export function isDocumentModelPath(modelPath: string): boolean {
-   if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
-   const segments = modelPath.split("/");
-   return (
-      segments.length === 2 &&
-      (segments[0] === NOTEBOOKS_DIR || segments[0] === DASHBOARDS_DIR)
-   );
-}
-
-export type DocumentKind = "dashboard" | "notebook";
-
-/** The kind an artifact tag declares; the folder decides only when the tag names none. */
-export function documentKind(
-   modelPath: string,
-   tagKind: string | undefined,
-): DocumentKind {
-   if (tagKind === "notebook" || tagKind === "dashboard") return tagKind;
-   return isNotebookModelPath(modelPath) ? "notebook" : "dashboard";
-}
-
-/** A text test, which a `RegExp` is too. */
-export interface LineTest {
-   test(text: string): boolean;
-}
+import { payloadOfNote, routeOfNote } from "./annotation_reader";
+import { type AnnotationNote } from "./annotations";
+import { docCommentText } from "./motly";
 
 /**
  * A `##` note or `##|` block that sets `artifact` as a top-level property,
@@ -64,7 +17,7 @@ export interface LineTest {
  * (`title=artifact`) or a dotted path's tail. The SDK's `artifactTag` reads the
  * same rule; `artifact_tag_parity.spec.ts` holds the two to the tag parser.
  */
-const ARTIFACT_NOTE: LineTest = {
+const ARTIFACT_NOTE = {
    test(note: string): boolean {
       // Malloy's route rule: a routed note (`##(markdown)`, `##"`, `##artifact`) or a flag (`##!`) is never a tag.
       const prefix = /^##\|?(?:[ \t\r\n]|$)/.exec(note);
@@ -117,22 +70,11 @@ const ARTIFACT_NOTE: LineTest = {
    },
 };
 
-/**
- * A `#` or `##` tag line, or a `##|` block, with an `artifact` property anywhere
- * outside a quoted string. Loose on purpose: a query can carry a dashboard's
- * tag, the write path's post-reload verify still rolls back a file that turns
- * out untagged, and a false negative hides a real dashboard.
- */
-export const ANY_ARTIFACT_NOTE =
-   /^#{1,2}\|?(?=[ \t\r\n])(?:[^"'\\]|\\.|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')*?(?<![\w\u00C0-\u024F\u1E00-\u1EFF.$-])artifact(?![\w\u00C0-\u024F\u1E00-\u1EFF])/;
-
 /** The note route whose payload is markdown: a floating cell at `##`, a cell's own prose at `#`. */
 export const MARKDOWN_ROUTE = "markdown";
 
-/** Malloy's own routing for one note: its route, empty for a plain tag, `undefined` when the prefix is malformed. */
-export function routeOfNote(text: string): string | undefined {
-   return routeOf({ value: text.trimStart() } as Parameters<typeof routeOf>[0]);
-}
+/** Malloy's own routing for one note (see annotation_reader.ts). */
+export { routeOfNote };
 
 /** Whether a note is on the `(markdown)` route, at either level and in either form. */
 export function isMarkdownNote(text: string): boolean {
@@ -178,8 +120,8 @@ export function docNotesAboveArtifact(
 
 /**
  * A dashboard's description notes: those above the artifact line, or, when they
- * carry no prose, those below it, so a `"` note below the tag (where a
- * dashboard's description used to be read from) still describes the page.
+ * carry no prose, those below it, so a `"` note written below the tag still
+ * describes the page.
  */
 export function dashboardDescriptionNotes(
    notes: readonly AnnotationNote[],
@@ -193,100 +135,58 @@ export function dashboardDescriptionNotes(
 }
 
 /**
- * Whether raw file text has a line matching `artifact` outside a `##|` (or
- * `#|`) block body, whose prose could otherwise pass for a tag. For a file that
- * did not compile, where no note can be read.
+ * A file's model-level notes read off its text: each top-level `##` note, and
+ * each `##|` block without its `|##` closer, in file order: what the compiler
+ * collects as the file's own notes, so `readReportTag` answers the same for
+ * uncompiled text as for the compiled file (`reportLayoutParity.json` holds
+ * the two together).
  */
-export function hasArtifactLineOutsideBlocks(
-   source: string,
-   artifactLine: LineTest,
-): boolean {
-   return findArtifactLineOutsideBlocks(source, artifactLine) !== undefined;
-}
-
-/**
- * Finds the first line after `after` that closes a block opened at `column`
- * with `closer`, or -1. Asked in rising `after` order, it reads each line once,
- * so a file of unclosed openers is not rescanned to its end per opener.
- */
-function blockCloserFinder(
-   lines: readonly string[],
-): (column: number, closer: string, after: number) => number {
-   const byKey = new Map<string, number[]>();
-   lines.forEach((line, at) => {
-      const indent = /^[ \t]*/.exec(line)?.[0].length ?? 0;
-      for (const closer of ["|##", "|#"])
-         if (closesBlock(line, 0, indent, closer)) {
-            const key = `${indent}${closer}`;
-            const ats = byKey.get(key);
-            if (ats) ats.push(at);
-            else byKey.set(key, [at]);
-            break;
-         }
-   });
-   const cursor = new Map<string, number>();
-   return (column, closer, after) => {
-      const key = `${column}${closer}`;
-      const ats = byKey.get(key) ?? [];
-      let k = cursor.get(key) ?? 0;
-      while (k < ats.length && ats[k] <= after) k++;
-      cursor.set(key, k);
-      return ats[k] ?? -1;
-   };
-}
-
-function findArtifactLineOutsideBlocks(
-   source: string,
-   artifactLine: LineTest,
-): string | undefined {
-   const lines = source.split(/\r\n|\r|\n/);
-   const closerAfter = blockCloserFinder(lines);
-   for (let i = 0; i < lines.length; i++) {
-      const trimmed = lines[i].trimStart();
-      const opener = /^(#{1,2})\|/.exec(trimmed);
-      if (opener) {
-         // The lexer takes the opener's whole line, so a `|##` on it closes nothing.
-         const column = lines[i].length - trimmed.length;
-         const end = closerAfter(column, `|${opener[1]}`, i);
-         // An unclosed opener holds no block, so it must not hide the rest of the file.
-         if (end !== -1) {
-            const block = [trimmed, ...lines.slice(i + 1, end)].join("\n");
-            // An artifact tag may itself be written as a block, so the opener decides, not the body.
-            if (artifactLine.test(block)) return block;
-            i = end;
-            continue;
-         }
+export function modelNotesOfParse(
+   parse: NotebookParse,
+   text: string,
+): string[] {
+   const root = parse.root as ParseNode | undefined;
+   if (!root || typeof root.getChild !== "function") return [];
+   const map = codePointMap(text);
+   const notes: string[] = [];
+   for (let i = 0; i < (root.childCount ?? 0); i++) {
+      const child = root.getChild(i);
+      if (!isRuleNode(child)) continue;
+      const group = callAccessor(child, "docAnnotations") as
+         | ParseNode
+         | undefined;
+      if (!group) continue;
+      for (const note of (callAccessor(group, "docAnnotation") ??
+         []) as ParseNode[]) {
+         if (!note.start || !note.stop) continue;
+         const noteText = text.slice(
+            map[note.start.startIndex],
+            map[note.stop.stopIndex + 1],
+         );
+         notes.push(modelNoteBody(noteText));
       }
-      if (artifactLine.test(trimmed)) return trimmed;
    }
-   return undefined;
+   return notes;
 }
 
-/** The `kind` of the artifact tag among a file's own notes. */
-export function artifactKindOfNotes(
-   notes: readonly AnnotationNote[],
-): string | undefined {
-   const tag = motlyTag(
-      notes.map((note) => note.text).filter(isArtifactNoteText),
-   );
-   return tagText(tag?.tag("artifact"), "kind");
+/** A model-level note's tag text: a block note ends at its closer, which is not part of the tag. */
+export function modelNoteBody(noteText: string): string {
+   return noteText.replace(/\r?\n\|##[^\n]*\n?$/, "");
 }
 
-export function claimsToBeANotebook(source: string): boolean {
-   return hasArtifactLineOutsideBlocks(source, ARTIFACT_NOTE);
+/** {@link modelNotesOfParse} for raw text; no notes when the text cannot be parsed at all. */
+export function modelNotesOfText(text: string): string[] {
+   try {
+      const { parse } = translateToParse(text);
+      return parse ? modelNotesOfParse(parse, text) : [];
+   } catch {
+      return [];
+   }
 }
 
-/** A file's artifact tag as written, a `## artifact` line or a `##|` block, read off its text. */
-export function artifactTagText(source: string): string | undefined {
-   return findArtifactLineOutsideBlocks(source, ARTIFACT_NOTE);
-}
-
-/** The `kind` of a file's `## artifact` line, read off its text for a file that did not compile. */
-export function artifactKindInText(source: string): string | undefined {
-   const line = artifactTagText(source);
-   return line === undefined
-      ? undefined
-      : tagText(motlyTag([line])?.tag("artifact"), "kind");
+/** The first model-level note of `text` that sets `artifact`: the tag as written. */
+export function artifactNoteOfText(text: string): string | undefined {
+   return modelNotesOfText(text).find(isArtifactNoteText);
 }
 
 /* ------------------------------------------------------------------ */
@@ -315,6 +215,14 @@ export interface NotebookCellSpan {
    /** A query cell's index into `modelDef.queryList` and `modelInfo.anonymous_queries`. */
    queryIndex?: number;
 }
+
+/**
+ * The 0-based `[start, end)` character offsets of a code cell's `text` in the
+ * file it was read from. Kept beside the cell rather than on it so a cell stays
+ * exactly what it is served as; for blanking a cell without touching a
+ * neighbor on its line.
+ */
+export const cellOffsets = new WeakMap<NotebookCellSpan, [number, number]>();
 
 /** Why the reader refused a notebook: the 1-based line, and a message that names the fix. */
 export interface NotebookReaderError {
@@ -495,14 +403,14 @@ type ReaderItem =
         caption?: string;
         startLine: number;
         endLine: number;
+        start: number;
+        end: number;
      }
    | { kind: "note"; note: ReaderNote };
 
 /** A `(markdown)` block's body: text on its opener line is prose too, except a lone bare word, which names it. */
 function markdownBlockBody(opener: string, bodyLines: string[]): string {
-   const rest = payloadOf({ value: opener } as Parameters<
-      typeof payloadOf
-   >[0]).trim();
+   const rest = payloadOfNote(opener).trim();
    // Only a `(markdown)` or `(text)` opener names its block; a `"` opener's text is always prose.
    const onOpener =
       routeOfNote(opener) !== '"' && TEXT_BLOCK_NAME.test(rest) ? "" : rest;
@@ -513,9 +421,7 @@ function markdownBlockBody(opener: string, bodyLines: string[]): string {
 
 /** A `(markdown)` line note's prose: what follows the route and its one separator. */
 function markdownLineBody(noteText: string): string {
-   return normalizeNewlines(
-      payloadOf({ value: noteText } as Parameters<typeof payloadOf>[0]),
-   ).replace(/\n$/, "");
+   return normalizeNewlines(payloadOfNote(noteText)).replace(/\n$/, "");
 }
 
 /**
@@ -534,7 +440,7 @@ function markdownLineBody(noteText: string): string {
  */
 export function readNotebookCells(
    parse: NotebookParse,
-   modelDef: Pick<ModelDef, "queryList">,
+   modelDef: Pick<ModelDef, "queryList"> | undefined,
    text: string,
 ): NotebookReadResult {
    const refuse = (error: NotebookReaderError): NotebookReadResult => ({
@@ -771,6 +677,8 @@ export function readNotebookCells(
             ...(caption !== undefined && { caption }),
             startLine: span.startLine,
             endLine: span.endLine,
+            start: span.start,
+            end: span.end,
          });
          continue;
       }
@@ -847,14 +755,15 @@ export function readNotebookCells(
       return refuse({
          line: 1,
          message:
-            "Line 1: this notebook has no ## artifact note, so its header cannot be told from its cells. Fix: add `## artifact { kind=notebook }` after the ##! line.",
+            "Line 1: this notebook has no ## artifact note, so its header cannot be told from its cells. Fix: add `## artifact { layout=linear tiles=[…] }` after the ##! line.",
       });
    }
 
    const runCount = items.filter(
       (item) => item.kind === "statement" && item.run,
    ).length;
-   if (runCount !== modelDef.queryList.length) {
+   // No modelDef reads cells off text that is not compiled whole (a document with restricted cells blanked).
+   if (modelDef && runCount !== modelDef.queryList.length) {
       return refuse({
          line: 1,
          message: `Line 1: the notebook reader found ${runCount} run: statements where Malloy compiled ${modelDef.queryList.length}, so its query cells cannot be matched to their results. Fix: none in the file; report it, since the reader and the compiler disagree.`,
@@ -872,7 +781,7 @@ export function readNotebookCells(
          lineRun = undefined;
          const queryIndex = item.run ? runsSeen++ : undefined;
          // A `run:` above the tag is header, so a definition cell, but it still holds its queryList slot.
-         cells.push(
+         const pushed: NotebookCellSpan =
             item.run && belowTag
                ? {
                     kind: "query",
@@ -904,8 +813,9 @@ export function readNotebookCells(
                     }),
                     startLine: item.startLine,
                     endLine: item.endLine,
-                 },
-         );
+                 };
+         cellOffsets.set(pushed, [item.start, item.end]);
+         cells.push(pushed);
          return;
       }
       const { note } = item;
@@ -951,9 +861,7 @@ export function parseMarkdownOpener(
    const route = routeOfNote(line);
    if (route !== MARKDOWN_ROUTE && !(sigil[1] === "##" && route === "text"))
       return undefined;
-   const rest = payloadOf({ value: line } as Parameters<
-      typeof payloadOf
-   >[0]).trim();
+   const rest = payloadOfNote(line).trim();
    return {
       level: sigil[1].length as 1 | 2,
       route,
@@ -1022,30 +930,17 @@ export function readMarkdownBlocks(
    return blocks;
 }
 
-/**
- * The compile problem for a served notebook the reader would refuse, so a
- * compile check (an agent's, or the builder's save gate) fails on a notebook
- * that would not open. Undefined for anything that is not a served notebook.
- */
-export function notebookReaderProblem(
-   modelPath: string,
-   text: string,
-   modelDef: ModelDef,
+/** The code of the finding for a linear report whose cells the reader refuses. */
+export const CELLS_UNREADABLE = "notebook-cells-unreadable";
+
+/** The reader's refusal as a compile problem at its line, wherever it is reported. */
+export function cellsUnreadableProblem(
+   error: NotebookReaderError,
    url: string,
-): LogMessage | undefined {
-   if (!isDocumentModelPath(modelPath)) return undefined;
-   const notes = ownModelNoteObjects(modelDef);
-   if (artifactNoteLine(notes) === undefined) return undefined;
-   if (documentKind(modelPath, artifactKindOfNotes(notes)) !== "notebook")
-      return undefined;
-   const parse = parseNotebookText(text);
-   const error = isNotebookReaderError(parse)
-      ? parse
-      : readNotebookCells(parse, modelDef, text).error;
-   if (!error) return undefined;
+): LogMessage {
    const line = error.line - 1;
    return {
-      code: "notebook-cells-unreadable",
+      code: CELLS_UNREADABLE,
       severity: "error",
       message: error.message,
       at: {

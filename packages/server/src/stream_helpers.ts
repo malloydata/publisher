@@ -2,24 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Helpers for streaming the ad-hoc connection SQL endpoints
- * (`/environments/.../connections/.../sqlQuery`) so the publisher
- * process never has to hold a whole result set in memory before
- * returning it.
- *
- * The Step 1 row cap (`PUBLISHER_MAX_QUERY_ROWS`) is necessary but
- * not sufficient: row count is a poor proxy for memory pressure
- * because a single 10 MB JSON column blows past the 100k-row cap's
- * safe envelope. The byte cap (`PUBLISHER_MAX_RESPONSE_BYTES`) is
- * the actual memory bound, and bytes can only be enforced by
- * iterating row-at-a-time on `runSQLStream` — `runSQL` returns a
- * fully-buffered result, so by the time we'd count bytes the
- * connector has already done the damage.
- *
- * On streaming-capable connections (Postgres, DuckDB, ...) the
- * controller routes here. On other connections it stays on the
- * Step 1 path; client-side byte counting after the fact would be
- * security theatre.
+ * Streaming for the ad-hoc connection SQL endpoints, so the byte cap
+ * (`PUBLISHER_MAX_RESPONSE_BYTES`) bounds memory as rows arrive. Row count is
+ * a poor proxy for memory (one wide JSON column defeats it), and `runSQL`
+ * buffers the whole result before bytes could be counted. Connections that
+ * cannot stream stay on the buffered, row-capped path.
  */
 
 import type {
@@ -33,12 +20,7 @@ import type {
 import { PayloadTooLargeError } from "./errors";
 import { recordQueryCapExceeded } from "./query_cap_metrics";
 
-/**
- * Runtime check + type narrow for streaming-capable connections.
- * `Connection.canStream` is declared as `this is StreamingConnection`
- * by the Malloy SDK, so a positive result is enough to safely call
- * `runSQLStream`.
- */
+/** Runtime check and type narrow for streaming-capable connections. */
 export function isStreamingConnection(
    connection: Connection,
 ): connection is StreamingConnection {
@@ -49,42 +31,22 @@ export function isStreamingConnection(
 }
 
 export interface StreamBudget {
-   /**
-    * Maximum number of rows to return. A value of `0` disables the
-    * row cap (the caller-supplied `rowLimit` in `runSQLOptions` may
-    * still bound the stream, but the helper will not raise on
-    * overflow).
-    */
+   /** `0` disables the row cap (`runSQLOptions.rowLimit` may still bound it). */
    maxRows: number;
    /**
-    * Maximum aggregate JSON-serialized byte size of returned rows.
-    * `0` disables the byte cap. Measured as the sum of
-    * `Buffer.byteLength(JSON.stringify(row))` for each yielded row
-    * — the same bytes the eventual response will contain inside
-    * `result.rows`.
+    * Cap on the summed `Buffer.byteLength(JSON.stringify(row))` of returned
+    * rows — the bytes the response will carry. `0` disables it.
     */
    maxBytes: number;
 }
 
 /**
- * Drain `runSQLStream` into a `MalloyQueryData`-shaped buffer,
- * enforcing both a row cap and a byte cap. Aborts the underlying
- * iterator via an internal `AbortController` the moment either cap
- * is breached so the driver stops producing rows immediately
- * (Postgres' `pg-query-stream` and DuckDB's streaming iterator both
- * honor `abortSignal`).
+ * Drain `runSQLStream` into a `MalloyQueryData`, aborting the driver the
+ * moment either cap is breached and throwing `PayloadTooLargeError`.
  *
- * The row cap is detected by the `cap + 1` sentinel pattern: the
- * controller has already clamped `runSQLOptions.rowLimit` to
- * `min(callerLimit, cap + 1)`, so receiving `cap + 1` rows
- * unambiguously means the request would have overflowed. This
- * matches the non-streaming path's overflow detection so behavior
- * is identical regardless of which connector served the request.
- *
- * On overflow the helper throws `PayloadTooLargeError` directly —
- * the message includes the relevant env-var name so the operator
- * sees a self-contained tuning hint without having to cross-
- * reference the controller.
+ * The row cap uses the `cap + 1` sentinel: the controller has clamped
+ * `rowLimit` to `cap + 1`, so receiving that many rows means overflow, the
+ * same detection the non-streaming path uses.
  */
 export async function streamSqlWithBudget(
    connection: StreamingConnection,
@@ -98,24 +60,9 @@ export async function streamSqlWithBudget(
    let byteTotal = 0;
    let overflowMessage: string | undefined;
 
-   // Compose two abort sources so a caller-supplied signal (the
-   // publisher's query timeout) and the internal cap-abort signal
-   // *both* cancel the underlying iterator:
-   //
-   //   - If the caller's signal fires first, the controller's
-   //     `runWithQueryTimeout` will throw `QueryTimeoutError` → 504.
-   //   - If the cap-abort fires first, we throw
-   //     `PayloadTooLargeError` → 413.
-   //
-   // Without composition the streaming branch would silently drop
-   // the caller's signal — historically the only way to abort here
-   // was the cap, so the legacy controller cleared
-   // `runSQLOptions.abortSignal`. Step 5 reverses that: the caller's
-   // signal is now authoritative.
-   //
-   // `AbortSignal.any` is widely available (Node 20+); guard with a
-   // typeof check so a stale runtime falls back to the legacy
-   // cap-only behavior instead of crashing at module load.
+   // Both the caller's signal (query timeout → 504) and the cap abort
+   // (→ 413) must cancel the iterator. The typeof guard falls back to
+   // cap-only on a runtime without `AbortSignal.any`.
    const externalSignal = runSQLOptions.abortSignal;
    const composedSignal: AbortSignal =
       externalSignal && typeof AbortSignal.any === "function"
@@ -129,11 +76,8 @@ export async function streamSqlWithBudget(
       })) {
          rows.push(row);
          if (maxBytes > 0) {
-            // Measure exactly what the eventual response body will
-            // contain for this row. O(rowSize) per row, duplicated
-            // against the final `JSON.stringify(result)` — the
-            // early-abort win on overflow dwarfs the bookkeeping
-            // cost in the bounded-success case.
+            // Duplicates the final stringify per row; the early abort on
+            // overflow is worth it.
             byteTotal += Buffer.byteLength(JSON.stringify(row), "utf8");
             if (byteTotal > maxBytes) {
                recordQueryCapExceeded("bytes", "connection_sql");
@@ -150,12 +94,9 @@ export async function streamSqlWithBudget(
          }
       }
    } catch (err) {
-      // `pg-query-stream` surfaces `query.destroy()` (which our
-      // abort handler triggers) as a synthetic error in some
-      // versions. Swallow it iff we triggered the abort ourselves —
-      // otherwise it's a real connection error (or the caller's
-      // timeout, which the controller's runWithQueryTimeout will
-      // surface as a 504) that the controller must see.
+      // Some `pg-query-stream` versions surface our own abort as an error.
+      // Swallow it only when we aborted; anything else (a connection error,
+      // the caller's timeout) must propagate.
       if (!overflowMessage) throw err;
    }
 

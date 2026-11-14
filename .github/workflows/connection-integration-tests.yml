@@ -9,16 +9,31 @@ on:
     paths:
       - "packages/server/src/service/connection.ts"
       - "packages/server/src/service/connection.spec.ts"
-      - "packages/server/src/service/materialization_build_session.ts"
-      - "packages/server/src/service/build_read_cost.ts"
-      - "packages/server/src/service/build_query_tag.ts"
-      - "packages/server/src/service/storage_build_bigquery.integration.spec.ts"
+      - "packages/server/src/service/ducklake_init_race.spec.ts"
+      - "packages/server/src/service/proxy.ts"
+      - "packages/server/src/test_helpers/ssh_tunnel_harness.ts"
+      - "packages/server/src/service/materialization/run/materialization_build_session.ts"
+      - "packages/server/src/service/materialization/run/build_read_cost.ts"
+      - "packages/server/src/service/materialization/run/build_query_tag.ts"
+      - "packages/server/tests/component/storage_build_bigquery.component.spec.ts"
       # Produces the value the manifest assertion pins.
-      - "packages/server/src/service/materialization_service.ts"
+      - "packages/server/src/service/materialization/run/**"
       # The metadata bag's own contract, and the dialect-aware escaper the
       # Snowflake lookup builds its literal with.
       - "packages/server/src/service/query_metadata.ts"
       - "packages/server/src/service/introspection_sql.ts"
+      # The admin API's catalog routes, whose tests (tests/integration/admin_catalogs)
+      # run against this job's Postgres.
+      - "packages/server/src/service/catalog_admin.ts"
+      - "packages/server/src/service/materialization/run/storage_table_load.ts"
+      - "packages/server/src/service/statement_usage.ts"
+      - "packages/server/tests/integration/admin_catalogs/**"
+      # A colocated table's warehouse column types, read from each dialect's
+      # catalog, and the cast a big-integer column is served through
+      # (tests run against this job's Postgres, MySQL and Trino).
+      - "packages/server/src/service/materialization/run/colocated_native_types.ts"
+      - "packages/server/src/service/materialization/run/colocated_native_types.spec.ts"
+      - "packages/server/src/service/materialization/stored_column_types.ts"
       # The passthrough surfaces this job exists to catch are provided by the
       # DuckDB extensions, which move with a dependency bump rather than with any
       # file above.
@@ -30,16 +45,31 @@ on:
     paths:
       - "packages/server/src/service/connection.ts"
       - "packages/server/src/service/connection.spec.ts"
-      - "packages/server/src/service/materialization_build_session.ts"
-      - "packages/server/src/service/build_read_cost.ts"
-      - "packages/server/src/service/build_query_tag.ts"
-      - "packages/server/src/service/storage_build_bigquery.integration.spec.ts"
+      - "packages/server/src/service/ducklake_init_race.spec.ts"
+      - "packages/server/src/service/proxy.ts"
+      - "packages/server/src/test_helpers/ssh_tunnel_harness.ts"
+      - "packages/server/src/service/materialization/run/materialization_build_session.ts"
+      - "packages/server/src/service/materialization/run/build_read_cost.ts"
+      - "packages/server/src/service/materialization/run/build_query_tag.ts"
+      - "packages/server/tests/component/storage_build_bigquery.component.spec.ts"
       # Produces the value the manifest assertion pins.
-      - "packages/server/src/service/materialization_service.ts"
+      - "packages/server/src/service/materialization/run/**"
       # The metadata bag's own contract, and the dialect-aware escaper the
       # Snowflake lookup builds its literal with.
       - "packages/server/src/service/query_metadata.ts"
       - "packages/server/src/service/introspection_sql.ts"
+      # The admin API's catalog routes, whose tests (tests/integration/admin_catalogs)
+      # run against this job's Postgres.
+      - "packages/server/src/service/catalog_admin.ts"
+      - "packages/server/src/service/materialization/run/storage_table_load.ts"
+      - "packages/server/src/service/statement_usage.ts"
+      - "packages/server/tests/integration/admin_catalogs/**"
+      # A colocated table's warehouse column types, read from each dialect's
+      # catalog, and the cast a big-integer column is served through
+      # (tests run against this job's Postgres, MySQL and Trino).
+      - "packages/server/src/service/materialization/run/colocated_native_types.ts"
+      - "packages/server/src/service/materialization/run/colocated_native_types.spec.ts"
+      - "packages/server/src/service/materialization/stored_column_types.ts"
       # The passthrough surfaces this job exists to catch are provided by the
       # DuckDB extensions, which move with a dependency bump rather than with any
       # file above.
@@ -56,6 +86,17 @@ env:
 # declares it itself.
 permissions:
   contents: read
+
+# One run per pull request: a new push to a PR cancels that PR's run still in
+# flight, since only its newest commit can merge. Every other event (a push to
+# main, workflow_run, schedule, workflow_dispatch) gets a group of its own
+# keyed on the run id, so it is never cancelled and never replaced while it
+# waits: every merged commit is tested. (Keying those on github.ref with
+# cancel-in-progress off would still drop runs, because a group holds only one
+# pending run and a newer one cancels it.)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   connection-integration-tests:
@@ -86,6 +127,30 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: mysql
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pmysql"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 24
+        ports:
+          - 3306:3306
+      # Trino's coordinator takes tens of seconds to accept queries; its image
+      # ships the health check. Bounded: about three minutes, then the job
+      # fails rather than waits.
+      trino:
+        image: trinodb/trino:476
+        options: >-
+          --health-cmd /usr/lib/trino/bin/health-check
+          --health-interval 5s
+          --health-timeout 5s
+          --health-start-period 10s
+          --health-retries 36
+        ports:
+          - 8080:8080
 
     steps:
       - name: Checkout code
@@ -166,6 +231,38 @@ jobs:
           cd packages/server
           bun test --timeout 100000 ./src/service/connection.spec.ts
 
+      # Builds attaching one DuckLake catalog that does not exist yet, at once,
+      # on this job's Postgres: every one must write into it, not lose the
+      # create race. Skipped everywhere this variable is not set.
+      - name: Run DuckLake catalog-create race test
+        env:
+          PUBLISHER_TEST_POSTGRES_URL: "postgresql://postgres:postgres@localhost:5432/malloy_test"
+        run: |
+          cd packages/server
+          bun test --timeout 120000 ./src/service/ducklake_init_race.spec.ts
+
+      # The admin API's catalogs against a real catalog database: creates,
+      # loads, ownership through the owner role, error reasons, snapshot
+      # deletion. Skipped everywhere this variable is not set.
+      - name: Run admin catalog integration tests
+        env:
+          PUBLISHER_TEST_ADMIN_SUPERUSER: "host=localhost port=5432 user=postgres password=postgres"
+        run: |
+          cd packages/server
+          bun test --timeout 120000 ./tests/integration/admin_catalogs
+
+      # Each dialect's catalog read of a colocated table's column types, and the
+      # big-integer cast it feeds, served against live on real Postgres, MySQL
+      # and Trino (a memory catalog). Skipped where these variables are unset.
+      - name: Run colocated native-type integration tests
+        env:
+          PUBLISHER_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/malloy_test
+          PUBLISHER_TEST_MYSQL_URL: mysql://root:mysql@127.0.0.1:3306
+          PUBLISHER_TEST_TRINO_URL: http://localhost:8080
+        run: |
+          cd packages/server
+          bun test --timeout 100000 ./src/service/materialization/run/colocated_native_types.spec.ts
+
       # The storage= build's warehouse read reaches BigQuery job records the unit
       # suite cannot: bigquery_execute's returned job id, the child job a
       # parentJobId listing finds, and the anonymous result table it names. Those
@@ -179,5 +276,5 @@ jobs:
       - name: Run storage= build integration tests
         run: |
           cd packages/server
-          bun test --timeout 100000 ./src/service/storage_build_bigquery.integration.spec.ts
+          bun test --timeout 100000 ./tests/component/storage_build_bigquery.component.spec.ts
 

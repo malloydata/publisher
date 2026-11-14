@@ -16,6 +16,7 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { pollFor, TERMINAL_STATUSES, waitUntilOk } from "./polling";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -76,12 +77,7 @@ describe("Per-query freshness gate (E2E)", () => {
          );
       }
 
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline) {
-         const res = await fetch(`${baseUrl}${API}`);
-         if (res.ok) break;
-         await new Promise((r) => setTimeout(r, 500));
-      }
+      await waitUntilOk(`${baseUrl}${API}`, "Test package");
 
       // Physically build the persist source (auto-run self-assigns
       // physicalTableName = "order_summary"), then revert to live so the
@@ -135,16 +131,16 @@ describe("Per-query freshness gate (E2E)", () => {
       id: string,
       timeoutMs = 90_000,
    ): Promise<Record<string, unknown>> {
-      const terminal = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-         const res = await fetch(url(`/materializations/${id}`));
-         expect(res.status).toBe(200);
-         const data = (await res.json()) as Record<string, unknown>;
-         if (terminal.includes(data.status as string)) return data;
-         await new Promise((r) => setTimeout(r, 250));
-      }
-      throw new Error(`Materialization ${id} did not reach a terminal state`);
+      return pollFor(
+         async () => {
+            const res = await fetch(url(`/materializations/${id}`));
+            expect(res.status).toBe(200);
+            return (await res.json()) as Record<string, unknown>;
+         },
+         (data) => TERMINAL_STATUSES.includes(data.status as string),
+         `Materialization ${id} did not reach a terminal state`,
+         timeoutMs,
+      );
    }
 
    async function buildTableThenRevertToLive(): Promise<void> {
@@ -294,13 +290,19 @@ describe("Per-query freshness gate (E2E)", () => {
          expect(fresh).not.toContain("data/orders.csv");
          expect(fresh).toContain("order_summary");
 
-         // Wait for the window to elapse — no rebind, no reload.
-         const waitMs = windowSeconds * 1000 - (Date.now() - anchor) + 1500;
-         await new Promise((r) => setTimeout(r, Math.max(waitMs, 0)));
-
-         // The very next query re-evaluates freshness and now serves live.
-         const afterCrossing = await executedSql();
-         expect(afterCrossing).toContain("data/orders.csv");
+         // Once the window elapses a query re-evaluates freshness and serves
+         // live — no rebind, no reload. Polled rather than slept: the flip is
+         // the condition, and it must not come before the window has passed.
+         await pollFor(
+            executedSql,
+            (sql) => sql.includes("data/orders.csv"),
+            "the served query never fell back to live after its window",
+            windowSeconds * 1000 + 30_000,
+            500,
+         );
+         expect(Date.now() - anchor).toBeGreaterThanOrEqual(
+            windowSeconds * 1000,
+         );
 
          await revertToLive();
       },

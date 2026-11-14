@@ -8,5 +8,5 @@ export {
    artifactTag,
    splitSourceLines,
    type ArtifactTag,
-} from "./components/DashboardBuilder/malloyText";
+} from "./utils/malloyText";
 export { canRetryRequest } from "./components/DocumentCreate/canRetry";

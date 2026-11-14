@@ -114,6 +114,11 @@ ANSWER_TOOLS = ("mcp__publisher__get_context",
                 "mcp__publisher__execute_query",
                 "mcp__publisher__search_malloy_docs")
 
+# Granted on top of ANSWER_TOOLS only to the `--package-skills=tool` arm, and
+# denied everywhere else, so the one divergence from the hosted default is
+# explicit and local to that arm.
+TOOL_ARM_TOOLS = ("mcp__publisher__get_skill",)
+
 # Publisher tools the answerer must NOT hold. `--allowedTools` grants
 # permission, it does not restrict availability, so the four above were the
 # allow list while all EIGHT of this server's tools were offered. Two of the
@@ -126,19 +131,31 @@ ANSWER_TOOLS = ("mcp__publisher__get_context",
 #   reload_package          recompiles the package mid-attempt, so the model
 #                           under measurement is not the one the run pinned.
 #
-#   compile_model           authoring surface, per ANSWER_TOOLS above.
+#   compile_model           authoring surface.
+#   get_agent               adopting a package agent changes who is answering;
+#                           the run measures the model, not a persona.
 #
 # `get_status` and `list_packages` reveal the other packages on the server and
 # are no use to an answerer given its scope in the prompt.
+#
+#   report_api              a second query path, under REST rules rather than
+#                           execute_query's; its answer is not one about the model.
+#   show_report             draws a panel for a person; a headless answerer gets
+#   list_reports            only text, and report titles and descriptions are
+#                           discovery outside get_context, the thing measured.
 #
 # Enumerated, because deny beats allow: naming the server (`mcp__publisher`,
 # or `mcp__publisher__*`) removes ALL of its tools including the ones wanted,
 # verified 2026-09-08.
 ANSWER_DENIED = ("mcp__publisher__compile_model",
+                 "mcp__publisher__get_agent",
                  "mcp__publisher__search_database_schema",
                  "mcp__publisher__reload_package",
                  "mcp__publisher__get_status",
-                 "mcp__publisher__list_packages")
+                 "mcp__publisher__list_packages",
+                 "mcp__publisher__list_reports",
+                 "mcp__publisher__show_report",
+                 "mcp__publisher__report_api")
 
 # Every tool this server exposes, so the two lists above can be checked to
 # PARTITION it rather than merely not overlap. That is the answer to the one
@@ -148,9 +165,11 @@ ANSWER_DENIED = ("mcp__publisher__compile_model",
 # side it belongs on. Read from `get_status`/`tools/list` on a running server
 # when this needs re-checking; the authority is the server's registration, and
 # a mismatch here is a decision, not a lint.
-PUBLISHER_MCP_TOOLS = ("compile_model", "execute_query", "get_context",
-                       "get_status", "list_packages", "reload_package",
-                       "search_database_schema", "search_malloy_docs")
+PUBLISHER_MCP_TOOLS = ("compile_model", "execute_query", "get_agent",
+                       "get_context", "get_skill", "get_status",
+                       "list_packages", "list_reports", "reload_package",
+                       "report_api", "search_database_schema",
+                       "search_malloy_docs", "show_report")
 # The platform target: a hosted MCP server exposing the same two operations
 # under its own names. The CLI addresses a tool as `mcp__<server>__<tool>`, so
 # both halves are configuration -- `--hosted-mcp-server` names the server (which
@@ -178,11 +197,13 @@ RESOURCE = re.compile(r"\[Resource from publisher at [^\]]+\]\s*(\{.*)", re.S)
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
 import config  # noqa: E402
+import golden_rows  # noqa: E402
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from mcp_payload import (doc_tokens, entity_hits,  # noqa: E402
                          entity_ids, search_terms, target_shapes)
-from publisher_rest import package_identity, served_model_path, try_query  # noqa: E402
+from publisher_rest import (package_identity, package_skill_names,  # noqa: E402
+                            served_model_path, served_package_dir, try_query)
 from score_retrieval import (  # noqa: E402
     cascade, coverage_report_summary, load_coverage_report, score_case,
     summarise)
@@ -228,7 +249,7 @@ REPO_ROOT = SKILLS_ROOT.parent
 # prompt stops having to define everything, and a judge that needs to understand
 # a Malloy query can reach for the skills beside it instead of being handed a
 # transcription of them.
-JUDGE_SKILLS = ("eval-judge", "malloy-analysis-pitfalls", "malloy-gotchas-queries")
+JUDGE_SKILLS = ("eval-judge", "malloy-queries")
 
 
 def usage_fields(usage: dict[str, Any] | None) -> dict[str, Any]:
@@ -816,7 +837,7 @@ def server_alive(a: argparse.Namespace) -> bool:
 
     A dead Publisher returns an empty body that the answerer reads as a bad
     answer and the judge scores as a miss (Publisher's own friction log, item
-    7; the VideoAmp run's server died mid-session and a raw probe caught it,
+    7; a past run's server died mid-session and a raw probe caught it,
     not the harness). So every attempt asks first. Local: the REST root.
     Platform: any HTTP answer from the MCP URL -- it says 405 to a bare GET,
     which is fine; refusal or timeout is not.
@@ -907,13 +928,45 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any],
     envelope = json.loads(raw)
     if "error" in envelope:
         raise ValueError(str(envelope["error"])[:200])
-    for chunk in (envelope.get("result") or {}).get("content") or []:
-        text = chunk.get("text") or (chunk.get("resource") or {}).get("text")
-        if not text:
-            continue
+    result = envelope.get("result") or {}
+    texts = [t for t in ((ch.get("text") or (ch.get("resource") or {}).get("text"))
+                         for ch in result.get("content") or []) if t]
+    if result.get("isError"):
+        # A tool error is an ordinary reply. Its text may be plain prose (an
+        # argument validation failure) or a JSON payload followed by prose
+        # (`jsonToolError`, which is how get_context reports a retrieval
+        # failure). Parsing the prose as JSON reported "Expecting value: line
+        # 1 column 1" and hid what the server said, so raise with the text,
+        # and carry the payload when there is one for a caller that reads it.
+        raise McpToolError(tool, " ".join(texts), _first_json(texts))
+    for text in texts:
         m = RESOURCE.search(text)
         return json.loads(m.group(1) if m else text)
     raise ValueError("tools/call returned no readable content")
+
+
+def _first_json(texts: list[str]) -> Any:
+    """The first text chunk that parses as JSON, else None."""
+    for text in texts:
+        m = RESOURCE.search(text)
+        try:
+            return json.loads(m.group(1) if m else text)
+        except ValueError:
+            continue
+    return None
+
+
+class McpToolError(ValueError):
+    """A `tools/call` reply with `isError: true`.
+
+    `payload` is the reply's JSON payload when it carried one (the
+    `{error, suggestions, ...}` object `jsonToolError` builds), else None.
+    """
+
+    def __init__(self, tool: str, said: str, payload: Any = None):
+        self.payload = payload
+        super().__init__(
+            f"{tool} returned isError: {said[:500] or '(no message)'}")
 
 
 class AuthRequired(Exception):
@@ -962,6 +1015,14 @@ def retrieval_probe(a: argparse.Namespace) -> tuple[str | None, str | None]:
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise AuthRequired(e.code, a.mcp_url) from e
+        raise
+    except McpToolError as e:
+        # get_context reports a retrieval-provider failure (a bad API key,
+        # say) as an error reply whose payload says `retrieval: "error"`.
+        # That is an answer the gate stops on, not a failed probe to retry.
+        # Any other error reply (an unknown package) stays a failed probe.
+        if isinstance(e.payload, dict) and e.payload.get("retrieval") == "error":
+            return retrieval_of(e.payload)
         raise
     return retrieval_of(payload)
 
@@ -1382,6 +1443,60 @@ def _model_path_of(query: str, runs: list[dict[str, Any]]) -> str | None:
     hits = [c for c in runs if _norm(c.get("query") or "") == _norm(query)]
     ok = [c for c in hits if not c.get("error")]
     return next((c.get("modelPath") for c in reversed(ok or hits)), None)
+
+
+def as_givens(raw: Any) -> dict[str, Any] | None:
+    """A call's `givens` argument as a non-empty dict, else None.
+
+    A client may send the object as a JSON string; anything that does not
+    decode to an object is treated as absent rather than guessed at.
+    """
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    return raw if isinstance(raw, dict) and raw else None
+
+
+def _givens_of(query: str, runs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The givens of the call `_model_path_of` would pick for this query.
+
+    Same rule, same reason: the givens and the file are facts about ONE call,
+    so a probe's givens never get paired with the answer's query.
+    """
+    hits = [c for c in runs if _norm(c.get("query") or "") == _norm(query)]
+    ok = [c for c in hits if not c.get("error")]
+    return next((c.get("givens") for c in reversed(ok or hits)), None)
+
+
+def queries_for_judge(att: dict[str, Any]) -> str:
+    """Every query the answerer ran, numbered, each with its givens.
+
+    Givens are an argument beside the text, so a query shown without them
+    reads as unfiltered next to rows that were filtered, and the judge can
+    fail a correct answer for it. Each query's givens are the ones recorded
+    with that call (`query_givens`), never looked up by text: the same text
+    run under West and then East is two queries, and a lookup showed East on
+    both. A record without them (a judge fixture, or an attempt parsed before
+    they were kept) has only `final_givens`, shown on the last entry that is
+    the final query.
+    """
+    queries = att.get("queries") or []
+    per_query = att.get("query_givens")
+    if not (isinstance(per_query, list) and len(per_query) == len(queries)):
+        per_query = [None] * len(queries)
+        final_givens = as_givens(att.get("final_givens"))
+        final = att.get("final_query")
+        hits = [i for i, q in enumerate(queries) if q == final]
+        if final_givens and hits:
+            per_query[hits[-1]] = final_givens
+    out = []
+    for i, (q, g) in enumerate(zip(queries, per_query), 1):
+        g = as_givens(g)
+        out.append(f"[{i}] {q}" + (f"\n    givens: {json.dumps(g, sort_keys=True)}"
+                                   if g else ""))
+    return "\n\n".join(out) or "(none)"
 
 
 def pick_final_query(queries: list[str], calls: list[dict[str, Any]],
@@ -2066,7 +2181,8 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         # the cwd, so `Read` reaches the doctrine and never the eval set.
         if a.answerer_skills:
             work = str(build_workspace(a.answerer_skills, a.roots,
-                                       mcp_url=None, prefix=f"ans-{qid}-"))
+                                       mcp_url=None, prefix=f"ans-{qid}-",
+                                       package_skills_dir=a.package_skills_dir))
         else:
             work = tempfile.mkdtemp(prefix=f"ans-{qid}-")
         mcp = os.path.join(work, "mcp.json")
@@ -2085,12 +2201,12 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         t0 = time.time()
         events = claude(
             prompt, work, a.model, mcp=mcp,
-            tools=a.hosted_tools if platform else ANSWER_TOOLS,
+            tools=answer_tools(a),
             # Only the local arm: the hosted server's tool surface belongs to
             # the platform, so there is no complement here to enumerate. That
             # arm is covered by `isolation_breaches`, which RECORDS whatever it
             # was granted rather than pretending to have denied it.
-            denied=() if platform else ANSWER_DENIED,
+            denied=answer_denied(a),
             turns=a.max_turns, effort=a.effort, timeout=a.timeout,
             skills=bool(a.answerer_skills))
         elapsed = round(time.time() - t0, 1)
@@ -2099,6 +2215,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         shutil.rmtree(work, ignore_errors=True)
 
     calls, answer, queries = [], [], []
+    query_givens: list[dict[str, Any] | None] = []
     n_get, n_exec, n_err, host_tools = 0, 0, 0, 0
     foreign_skills: list[str] = []
     # Skills the answerer actually OPENED. The harness tracked only the breach
@@ -2163,6 +2280,12 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         q = c["input"].get("query") or named_query(c["input"])
                         if q:
                             queries.append(q)
+                            # Appended in the same step as the text, so entry
+                            # i is always query i's givens. Looked up by text
+                            # instead, one text run under two different givens
+                            # showed the last givens on both.
+                            query_givens.append(
+                                as_givens(c["input"].get("givens")))
                         # The query AND the file it was written against go onto
                         # the call, not into lists beside it: picking the final
                         # query needs to know which of them the server actually
@@ -2176,7 +2299,14 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                                             "query": q,
                                             "modelPath": (
                                                 c["input"].get("modelPath")
-                                                or c["input"].get("model_path"))}
+                                                or c["input"].get("model_path")),
+                                            # Runtime filters the answerer
+                                            # scoped this query with. They are
+                                            # an argument beside the text, so
+                                            # the text alone is a different
+                                            # (unfiltered) query.
+                                            "givens": as_givens(
+                                                c["input"].get("givens"))}
                     else:
                         # The CLI ships ~17 skills of its own (batch, loop,
                         # code-review, dataviz ...) that no flag removes from
@@ -2187,7 +2317,10 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         # recorded as a breach.
                         if name == "Skill":
                             sk = (c.get("input") or {}).get("skill")
-                            if sk and sk not in (a.answerer_skills or []):
+                            # A package skill this run installed is under test, not a stray.
+                            in_scope = (list(a.answerer_skills or [])
+                                        + list(a.package_skill_names or []))
+                            if sk and sk not in in_scope:
                                 foreign_skills.append(sk)
                             elif sk:
                                 used_skills.append(sk)
@@ -2267,6 +2400,9 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
 
     final_query, final_source, final_path = pick_final_query(
         queries, calls, text)
+    final_givens = _givens_of(final_query, [
+        c for c in calls if c.get("tool") == "execute_query" and c.get("query")
+    ]) if final_query else None
 
     return {
         "qid": qid,
@@ -2276,9 +2412,12 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         # follow-up probe to sanity-check the date range, and the judge -- told
         # the answer must be supported by the final query -- graded the probe.
         "queries": queries,
+        # The givens each entry of `queries` was sent with, index for index.
+        "query_givens": query_givens,
         "final_query": final_query,
         "final_query_source": final_source,
         "final_model_path": final_path,
+        "final_givens": final_givens,
         "answer_text": text,
         "n_get_context": n_get,
         "n_execute": n_exec,
@@ -2293,7 +2432,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         "error": res.get("subtype") if res.get("is_error") else None,
         "calls": calls,
         "breaches": isolation_breaches(
-            events, a.hosted_tools if a.target == "platform" else ANSWER_TOOLS)
+            events, answer_tools(a))
         + path_breaches(events, a.set_dir)
         + [f"invoked a skill outside the manifest: {sk}"
            for sk in sorted(set(foreign_skills))],
@@ -2485,13 +2624,15 @@ def prior_judge_cost(out: pathlib.Path) -> float | None:
     Must be read BEFORE `run_config` rewrites run.json. Read afterwards it is
     always None, which is the version of this that silently does nothing.
     """
-    f = out / "run.json"
-    if not f.exists():
-        return None
+    return prior_run_json(out).get("judgeCostUsd")
+
+
+def prior_run_json(out: pathlib.Path) -> dict[str, Any]:
+    """The run.json already in this directory, or {} when absent or unreadable."""
     try:
-        return json.loads(f.read_text()).get("judgeCostUsd")
+        return json.loads((out / "run.json").read_text())
     except (json.JSONDecodeError, OSError):
-        return None
+        return {}
 
 
 def carry_judge_cost(judge_cost: float,
@@ -2556,12 +2697,17 @@ def prediction_for(case: dict[str, Any], att: dict[str, Any],
     holds is not a cache of that query.
     """
     q = att.get("final_query")
+    # Records made before givens were captured have none; they re-run as before.
+    givens = as_givens(att.get("final_givens"))
     cache = art / case["qid"] / "prediction.json"
     if cache.exists():
         c = json.loads(cache.read_text())
         # A file written before this key existed has no `query`, so it is not
         # reusable for any query: re-execute rather than trust it.
-        if "query" in c and c.get("query") == q:
+        # `givens` is part of the key for the same reason: rows cached from an
+        # unscoped run are not the rows of the scoped query.
+        if ("query" in c and c.get("query") == q
+                and (c.get("givens") or None) == givens):
             return c.get("rendered") or "(no prediction)"
 
     if not q:
@@ -2577,10 +2723,12 @@ def prediction_for(case: dict[str, Any], att: dict[str, Any],
         # that file. Then the case's, then the run default.
         mp = (att.get("final_model_path") or case.get("modelPath")
               or a.model_path)
-        rows, err = try_query(a.publisher, a.environment, a.package, mp, q)
+        rows, err = try_query(a.publisher, a.environment, a.package, mp, q,
+                              givens=givens)
         rendered = (f"(re-execution failed: {err})" if err else format_rows(rows))
     cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps({"query": q, "rendered": rendered}, indent=2))
+    cache.write_text(json.dumps(
+        {"query": q, "givens": givens, "rendered": rendered}, indent=2))
     return rendered
 
 
@@ -2650,7 +2798,40 @@ def golden_refusal(golden: dict[str, Any] | None) -> str | None:
     return None
 
 
-def golden_for_judge(golden: dict[str, Any] | None) -> str:
+def rows_golden_problems(cases: list[dict[str, Any]],
+                         set_dir: pathlib.Path) -> list[str]:
+    """One line per `rows` golden the judge will be shown whose `path` cannot
+    be read.
+
+    Checked before any model call, so a missing or misplaced file stops the run
+    where it costs nothing instead of surfacing as a judge error per case. A
+    golden `golden_refusal` withholds a verdict for is never rendered, so its
+    file is not this run's problem and does not stop it.
+    """
+    out = []
+    for c in cases:
+        g = c.get("golden") or {}
+        if g.get("kind") != "rows" or golden_refusal(g):
+            continue
+        try:
+            golden_rows.load_rows(g, set_dir, c["qid"])
+        except golden_rows.GoldenRowsError as exc:
+            out.append(str(exc))
+    return out
+
+
+def renders_goldens(a: argparse.Namespace) -> bool:
+    """Whether this run shows any golden to a judge.
+
+    `--no-judge` judges nothing, and a rebuild without `--rejudge` reuses the
+    saved verdicts, so neither reads a golden's file.
+    """
+    return not a.no_judge and (not a.rebuild or bool(a.rejudge))
+
+
+def golden_for_judge(golden: dict[str, Any] | None,
+                     set_dir: pathlib.Path | None = None,
+                     qid: str = "?") -> str:
     """The GOLDEN line of the judge prompt, rendered BY KIND.
 
     A golden holds its key in a different place depending on its kind, and one
@@ -2670,7 +2851,7 @@ def golden_for_judge(golden: dict[str, Any] | None) -> str:
     reason):
 
       scalar        golden.value, a dict
-      rows          golden.value, a list
+      rows          golden.value, a list, or the CSV golden.path names
       criteria      golden.rubric -- no value, ever
       unanswerable  nothing; the pass is a refusal
 
@@ -2694,6 +2875,13 @@ def golden_for_judge(golden: dict[str, Any] | None) -> str:
     value = g.get("value")
     if value is not None:
         return json.dumps(value)
+    if kind == "rows" and g.get("path"):
+        # Rows kept in a file beside the set. Read here, and raised rather than
+        # swallowed: "(unanswerable)" for a key that exists makes the judge
+        # mark a correct answer as one that should have declined.
+        rows = golden_rows.load_rows(g, set_dir, qid)
+        if rows is not None:
+            return golden_rows.render(rows)
     return "(unanswerable: the model cannot answer this)"
 
 
@@ -2829,15 +3017,14 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     # "this alternate reading is fine" into one that appeared not to.
     prompt = JUDGE_PROMPT.format(
         rubric=rubric, question=case["question"], kind=g.get("kind"),
-        golden=golden_for_judge(g),
+        golden=golden_for_judge(g, a.set_dir, case["qid"]),
         rubric_note=(g.get("rubric") or "none"),
         must_not_use=(must_not_use_note(
             must_not_use_check(g.get("mustNotUse"), att.get("final_query")))
             or "(nothing beyond the rubric)"),
         answer=(att["answer_text"] or "(the answerer returned no prose; judge "
                 "from the queries and the re-executed rows)"),
-        query="\n\n".join(f"[{i}] {q}" for i, q in
-                          enumerate(att.get("queries") or [], 1)) or "(none)",
+        query=queries_for_judge(att),
         prediction=prediction_for(case, att, a, art, reexec),
         model=model_src or "(model source unavailable)")
 
@@ -2883,6 +3070,120 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     return {**parse_verdict(text), "judge_cost_usd": res.get("total_cost_usd")}
 
 
+def resolve_package_skills(a: argparse.Namespace,
+                           prior: dict[str, Any] | None = None) -> None:
+    """Settle --package-skills against what the server actually serves.
+
+    The mode is a claim about the answerer's environment, and its parts live in
+    different places: the flag, the files in the model repo, and whether the
+    package under test ships them at all. A run that asked
+    for one arm and measured another is worse than a run that refused, because
+    the label on the result is wrong and nothing downstream can tell.
+
+    So each mode is checked, not assumed:
+
+    - `install`: the package must have a skills/ directory to copy. Nothing to
+      copy means this arm is silently the `off` arm.
+    - `tool`: the server must be serving the package's skills, or the answerer
+      has nothing to fetch and this arm is silently the `off` arm too.
+    - `off`: the served package must hold no skills, or the answerer can reach
+      guidance the baseline is supposed to exclude. Point --package at a copy
+      of the package without skills/.
+
+    A run that spawns no answerer (`--rebuild`, `--rejudge`, `--from`, signalled
+    by a non-None `prior`) resolves nothing: it carries the prior run's recorded
+    mode and sha, since the files and the server may have moved since. A
+    platform run records null: the hosted workspace's skills are not reachable
+    from here. A package that ships no skills under the default `tool` mode is
+    recorded as `off` (the answerer is denied get_skill, so that is what it
+    measures) rather than refused.
+
+    Sets `package_skills_dir` (the tree to install, or None) and
+    `package_skills_sha` (a content hash pinned on the run, so two runs
+    differing only in guidance are distinguishable in the ledger).
+    """
+    a.package_skills_dir = None
+    a.package_skills_sha = None
+    # Directory names of the package skills this run INSTALLS. The answerer
+    # addresses a skill by that name, and the provenance check below needs to
+    # tell one this run put there deliberately from one of the CLI's own.
+    a.package_skill_names: list[str] = []
+
+    if prior is not None:
+        a.package_skills = prior.get("packageSkillsMode")
+        a.package_skills_sha = prior.get("packageSkillsSha")
+        return
+    if a.target == "platform":
+        a.package_skills = None
+        return
+    if a.package_skills == "install" and a.no_answerer_skills:
+        raise SystemExit(
+            "--package-skills=install with --no-answerer-skills installs "
+            "nothing, so the run would be labelled install while measuring "
+            "the 'off' arm. Drop one of the two.")
+
+    # The SERVED copy, not the working tree. The `tool` arm fetches what the
+    # server holds, so installing those same bytes is what makes the two arms
+    # differ only in delivery -- which is the whole comparison. An explicit
+    # --package-skills-dir wins, for a server whose tree is not local.
+    local = None
+    if a.package_skills_dir_override:
+        # Checked here rather than left to build_workspace: this resolver runs
+        # before the first spawn precisely so a mistyped path stops the run at
+        # second zero instead of after it has started answering.
+        override = pathlib.Path(a.package_skills_dir_override)
+        if not override.is_dir():
+            raise SystemExit(
+                f"--package-skills-dir {override} is not a directory.")
+        local = override
+    else:
+        pkg_dir = served_package_dir(a.publisher, a.environment, a.package)
+        skills_dir = pkg_dir / "skills" if pkg_dir is not None else None
+        if skills_dir is not None and skills_dir.is_symlink():
+            raise SystemExit(
+                f"{skills_dir} is a link; refusing to read or install through "
+                f"it, since it can point at the eval set.")
+        if skills_dir is not None and skills_dir.is_dir():
+            local = skills_dir
+    served = package_skill_names(a.publisher, a.environment, a.package)
+
+    if a.package_skills == "install":
+        if local is None:
+            raise SystemExit(
+                "--package-skills=install, but no skills/ directory was found "
+                "for the package. Installing nothing measures the 'off' arm "
+                "under the 'install' label. Pass --package-skills-dir, or pick "
+                "another mode.")
+        a.package_skills_dir = local
+        a.package_skill_names = sorted(
+            c.name for c in local.iterdir()
+            if c.is_dir() and not c.name.startswith("."))
+    elif a.package_skills == "tool":
+        if not served:
+            print(f"  ! the server serves no package skills for "
+                  f"{a.environment}/{a.package}; recording packageSkillsMode "
+                  f"'off' (get_skill is denied) rather than 'tool'.")
+            a.package_skills = "off"
+    elif a.package_skills == "off":
+        if served:
+            raise SystemExit(
+                "--package-skills=off, but the server IS serving package "
+                f"skills for {a.environment}/{a.package}: "
+                f"{', '.join(served)}. The answerer could fetch them with "
+                "get_skill, so this is not a baseline. Serve a copy of the "
+                "package without skills/.")
+
+    if local is not None:
+        h = hashlib.sha256()
+        for f in sorted(local.rglob("*")):
+            if f.is_file():
+                h.update(str(f.relative_to(local)).encode())
+                h.update(b"\0")
+                h.update(f.read_bytes())
+                h.update(b"\0")
+        a.package_skills_sha = h.hexdigest()
+
+
 def resolve_config(a: argparse.Namespace) -> config.Config:
     """Fill every unset server, name and path from the set's eval.toml.
 
@@ -2921,6 +3222,62 @@ def resolve_config(a: argparse.Namespace) -> config.Config:
             f"package into loadErrors. Fix: pass an --out outside any package, "
             f"or omit it for {cfg.workdir() / 'runs'}")
     return cfg
+
+
+def attempt_event(c: dict[str, Any], att: dict[str, Any], phase: str | None,
+                  served_identity: dict[str, Any]) -> dict[str, Any]:
+    """The ledger `attempt` event for one case's attempt."""
+    return ledger.event(
+        "attempt", qid=c["qid"], sample=None, phase=phase,
+        question_sha=question_sha(c),
+        submitted=att["submitted"],
+        final_query=att["final_query"],
+        final_query_source=att.get("final_query_source"),
+        # The runtime parameters the final query ran under.
+        # Without them a replay of final_query runs unscoped.
+        final_givens=att.get("final_givens"),
+        # The revision that actually answered. Documented
+        # as "package revision actually queried" and left
+        # None until now, so nothing could tell an attempt
+        # answered before a reload from one answered after.
+        servedRevision=served_identity.get("servedRevision"),
+        n_get_context=att["n_get_context"],
+        n_execute=att["n_execute"],
+        n_execute_errors=att["n_execute_errors"],
+        host_tool_uses=att["host_tool_uses"],
+        mcp_tool_uses=att.get("mcp_tool_uses"),
+        skills_invoked=att.get("skills_invoked") or [],
+        reported_calls=att["n_get_context"] + att["n_execute"],
+        contaminated=bool(att.get("breaches")),
+        contamination_reasons=att.get("breaches") or [],
+        input_tokens=att.get("input_tokens"),
+        output_tokens=att.get("output_tokens"),
+        cache_read_tokens=att.get("cache_read_tokens"),
+        cache_write_tokens=att.get("cache_write_tokens"),
+        cost_usd=att.get("cost_usd"),
+        num_turns=att.get("num_turns"),
+        wall_seconds=att.get("wall_seconds"),
+        answer_text=att.get("answer_text"),
+        run_error=att.get("error"),
+        transcriptPath=att["transcriptPath"])
+
+
+def answer_tools(a: argparse.Namespace) -> tuple[str, ...]:
+    """What the answerer is granted: the hosted tools, or Publisher's four."""
+    if a.target == "platform":
+        return tuple(a.hosted_tools)
+    return ANSWER_TOOLS + (TOOL_ARM_TOOLS if _tool_arm(a) else ())
+
+
+def _tool_arm(a: argparse.Namespace) -> bool:
+    # getattr: tests build this Namespace by hand.
+    return getattr(a, "package_skills", "off") == "tool"
+
+
+def answer_denied(a: argparse.Namespace) -> tuple[str, ...]:
+    if a.target == "platform":
+        return ()
+    return ANSWER_DENIED + (() if _tool_arm(a) else TOOL_ARM_TOOLS)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2984,6 +3341,23 @@ def main(argv: list[str] | None = None) -> int:
                          "last two are both --target platform. Default: "
                          "from [model] mcp_port in eval.toml, else "
                          f"{LOCAL_MCP_URL}")
+    ap.add_argument("--package-skills", choices=("install", "tool", "off"),
+                    default="tool",
+                    help="how the package's own skills reach the answerer. "
+                         "install = copied into its workspace, so they load "
+                         "like any other skill. tool = not installed; the "
+                         "answerer must call get_skill, which is what a real "
+                         "agent against this server does. off = the served package "
+                         "ships none (serve a copy without skills/), the "
+                         "baseline arm. "
+                         "The default is `tool` because it is the unmodified "
+                         "product behaviour.")
+    ap.add_argument("--package-skills-dir", dest="package_skills_dir_override",
+                    default=None,
+                    help="the skills/ tree to install for --package-skills="
+                         "install. Defaults to the served package's own, which "
+                         "is what the `tool` arm would fetch; pass this only "
+                         "when the served tree is not reachable locally.")
     ap.add_argument("--publisher", default=None,
                     help="Publisher REST base, used to re-execute the answerer's "
                          "final query so the judge sees rows rather than prose. "
@@ -3312,6 +3686,8 @@ def main(argv: list[str] | None = None) -> int:
               "(--truth-publisher); goldens are taken as they stand")
 
     served_identity = package_identity(a.publisher, a.environment, a.package)
+    resolve_package_skills(
+        a, prior_run_json(a.from_run or a.out) if answers_exist else None)
     set_meta = {}
     if (a.set_dir / "set.json").exists():
         set_meta = json.loads((a.set_dir / "set.json").read_text())
@@ -3394,7 +3770,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Lint the set's expected entities before a dollar is spent: an id the
     # model does not declare is a stale set, not a retrieval miss, and both
-    # VideoAmp platform runs carried five of them (the set was written against
+    # platform runs of one set carried five of them (the set was written against
     # a later package) which read as misses until someone checked by hand.
     declared = None
     if a.target != "platform" and a.publisher:
@@ -3427,6 +3803,12 @@ def main(argv: list[str] | None = None) -> int:
         cases, a.set_dir.name)
     if refuse:
         raise SystemExit(refuse)
+    unreadable = (rows_golden_problems(cases, a.set_dir)
+                  if renders_goldens(a) else [])
+    if unreadable:
+        raise SystemExit(
+            "a rows golden names a file the run cannot read, so the judge "
+            "would be shown no key for it:\n  " + "\n  ".join(unreadable))
     if unscorable_goldens:
         print(f"  ! {len(unscorable_goldens)} of {len(cases)} cases will take "
               f"no verdict (no established golden): "
@@ -3502,8 +3884,8 @@ def main(argv: list[str] | None = None) -> int:
         # repair moves this without anyone remembering to bump anything.
         datasetSha=ledger.dataset_sha(a.set_dir),
         # What the SERVER says it served, taken rather than recomputed.
-        # packageSha covers every model path in the package, so an edit to an
-        # imported file moves it where a sha of the one --model-path does not.
+        # packageSha covers every model path, skill and agent in the package, so
+        # an edit to an imported file moves it where a sha of --model-path does not.
         packageSha=served_identity.get("sourceContentSha"),
         servedRevision=served_identity.get("servedRevision"),
         environment=a.environment, package=a.package,
@@ -3523,6 +3905,8 @@ def main(argv: list[str] | None = None) -> int:
         skillsVersion=ledger.skills_git_sha(a.roots[0]),
         skillsRoot=str(a.roots[0]),
         harnessVersion=ledger.skills_git_sha(),
+        packageSkillsMode=a.package_skills,
+        packageSkillsSha=a.package_skills_sha,
         answererManifest=a.answerer_manifest if a.answerer_skills else None,
         answererSkills=a.answerer_skills or [],
         judgeSkills=a.judge_skills or [],
@@ -3605,35 +3989,7 @@ def main(argv: list[str] | None = None) -> int:
         qid = c["qid"]
         att = attempts[qid]
         base = {"qid": qid, "sample": None, "phase": a.phase}
-        events.append(ledger.event("attempt", **base,
-                      question_sha=question_sha(c),
-                      submitted=att["submitted"],
-                      final_query=att["final_query"],
-                      final_query_source=att.get("final_query_source"),
-                      # The revision that actually answered. Documented
-                      # as "package revision actually queried" and left
-                      # None until now, so nothing could tell an attempt
-                      # answered before a reload from one answered after.
-                      servedRevision=served_identity.get("servedRevision"),
-                      n_get_context=att["n_get_context"],
-                      n_execute=att["n_execute"],
-                      n_execute_errors=att["n_execute_errors"],
-                      host_tool_uses=att["host_tool_uses"],
-                      mcp_tool_uses=att.get("mcp_tool_uses"),
-                      skills_invoked=att.get("skills_invoked") or [],
-                      reported_calls=att["n_get_context"] + att["n_execute"],
-                      contaminated=bool(att.get("breaches")),
-                      contamination_reasons=att.get("breaches") or [],
-                      input_tokens=att.get("input_tokens"),
-                      output_tokens=att.get("output_tokens"),
-                      cache_read_tokens=att.get("cache_read_tokens"),
-                      cache_write_tokens=att.get("cache_write_tokens"),
-                      cost_usd=att.get("cost_usd"),
-                      num_turns=att.get("num_turns"),
-                      wall_seconds=att.get("wall_seconds"),
-                      answer_text=att.get("answer_text"),
-                      run_error=att.get("error"),
-                      transcriptPath=att["transcriptPath"]))
+        events.append(attempt_event(c, att, a.phase, served_identity))
         for call in att["calls"]:
             events.append(ledger.event("tool_call", **base, **call,
                                        traceId=None))

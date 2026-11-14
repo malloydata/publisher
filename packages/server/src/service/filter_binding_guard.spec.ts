@@ -8,7 +8,7 @@
  * (join-depth exhaustion) or that a single alias mismatch would otherwise
  * bury in a large integration fixture. Every other shape this
  * module covers (grafted gates, plain inherited `where:`, `#(filter)`
- * injection) is exercised end to end in `filter_binding_guard_integration.spec.ts`.
+ * injection) is exercised end to end in `tests/component/filter_binding_guard.component.spec.ts`.
  */
 import { describe, expect, it } from "bun:test";
 import type {
@@ -18,6 +18,7 @@ import type {
    SourceDef,
 } from "@malloydata/malloy";
 import {
+   assertFilterConditionBindsToDeclaringSource,
    assertGraftedGateBindsToDeclaringSource,
    assertInheritedSourceFiltersBind,
    fieldPathIdentical,
@@ -82,6 +83,45 @@ describe("filter_binding_guard — assertInheritedSourceFiltersBind join-depth b
       } as unknown as FieldDef);
       expect(() =>
          assertInheritedSourceFiltersBind(self, undefined),
+      ).not.toThrow();
+   });
+});
+
+describe("filter_binding_guard — composite nesting bound", () => {
+   /** `depth` composites, each the sole member of the next, over one leaf. */
+   function nestedComposite(depth: number): SourceDef {
+      let current = joinedLeaf("leaf");
+      for (let i = 0; i < depth; i++) {
+         current = {
+            type: "composite",
+            name: `c${i}`,
+            fields: [],
+            sources: [current],
+         } as unknown as SourceDef;
+      }
+      return current;
+   }
+   const condition = {
+      code: "true",
+      refSummary: { fieldUsage: [] },
+   } as unknown as FilterCondition;
+   const check = (composite: SourceDef) => () =>
+      assertFilterConditionBindsToDeclaringSource(
+         composite,
+         joinedLeaf("executed"),
+         condition,
+         composite,
+      );
+
+   it("throws when composites nest past MAX_JOIN_RECURSION_DEPTH (deny, not a truncated member list)", () => {
+      expect(check(nestedComposite(MAX_JOIN_RECURSION_DEPTH + 4))).toThrow(
+         /composite nesting exceeded the resolution bound/,
+      );
+   });
+
+   it("does not throw within the bound (negative control)", () => {
+      expect(
+         check(nestedComposite(MAX_JOIN_RECURSION_DEPTH - 2)),
       ).not.toThrow();
    });
 });

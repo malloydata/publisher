@@ -1,7 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Typography } from "@mui/material";
+import { Alert, Box } from "@mui/material";
+import type { ReactNode } from "react";
+import { MONO_FONT_FAMILY } from "./styles";
 
 export interface ApiError extends Error {
    status?: number;
@@ -16,26 +18,43 @@ export interface ApiErrorDisplayProps {
    context?: string;
 }
 
-export function ApiErrorDisplay({ error, context }: ApiErrorDisplayProps) {
-   const errorMessage = error.data?.message || "Unknown Error";
+/**
+ * An error as an MUI `Alert`: a one-line summary, and the server's own words
+ * under it in a monospace block that keeps their line breaks. Themed, so it
+ * reads in dark mode as well as light. Shared with a notebook cell that could
+ * not run, so every request failure in a document looks the same.
+ */
+export function ErrorDetailAlert({
+   summary,
+   detail,
+}: {
+   summary?: ReactNode;
+   detail: ReactNode;
+}) {
    return (
-      <>
-         {context && (
-            <Typography variant="body2" sx={{ p: "10px", m: "auto" }}>
-               {context}
-            </Typography>
-         )}
-
-         <pre
-            style={{
+      <Alert
+         severity="error"
+         sx={{ "& .MuiAlert-message": { minWidth: 0, flex: 1 } }}
+      >
+         {summary !== undefined && <Box sx={{ mb: 0.5 }}>{summary}</Box>}
+         <Box
+            component="pre"
+            sx={{
+               m: 0,
                whiteSpace: "pre-wrap",
-               color: "red",
-               padding: "10px",
-               margin: "auto",
+               wordBreak: "break-word",
+               fontFamily: MONO_FONT_FAMILY,
+               fontSize: "0.8125rem",
+               color: "text.secondary",
             }}
          >
-            {errorMessage}
-         </pre>
-      </>
+            {detail}
+         </Box>
+      </Alert>
    );
+}
+
+export function ApiErrorDisplay({ error, context }: ApiErrorDisplayProps) {
+   const errorMessage = error.data?.message || "Unknown error";
+   return <ErrorDetailAlert summary={context} detail={errorMessage} />;
 }

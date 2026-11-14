@@ -8,7 +8,7 @@ import {
    serverFixture,
    type PackageEnv,
 } from "./helpers/packageEnv";
-import { saveChanges } from "./helpers/save";
+import { expectUnsaved, saveChanges } from "./helpers/save";
 
 /**
  * The fixture is copied to a temp directory because saving writes the notebook
@@ -22,7 +22,7 @@ const FILE = `notebooks/${SLUG}.malloy`;
 const EDITED = "Revenue prose, edited in the browser";
 
 const REVENUE_REVIEW = `##! experimental.givens
-## artifact { kind=notebook title="Revenue review" tiles=[prose { kind=text }, "revenue_tiles -> by_month_tile"] }
+## artifact { layout=linear title="Revenue review" tiles=[prose { kind=text }, "revenue_tiles -> by_month_tile"] }
 import "../models/orders.malloy"
 
 ##|(markdown) prose
@@ -62,14 +62,12 @@ test.describe("notebook-builder", () => {
       // The reader's Edit button leads into the editor.
       await page.goto(`/${pe.env}/${pe.pkg}/notebooks/${SLUG}`);
       await page.getByRole("button", { name: "Edit", exact: true }).click();
-      await expect(page).toHaveURL(new RegExp(`/notebooks/${SLUG}/edit$`));
+      await expect(page).toHaveURL(new RegExp(`/notebooks/${SLUG}\\?edit$`));
       await editorOpen(page);
       await expect(page.getByText("Where revenue came from")).toBeVisible();
 
       await editText(tileByKey(page, "text.prose"), EDITED);
-      await expect(
-         page.getByRole("button", { name: "Save changes" }),
-      ).toBeEnabled();
+      await expectUnsaved(page);
       await saveChanges(page);
 
       // On disk: the edited tile, and every byte after it untouched.

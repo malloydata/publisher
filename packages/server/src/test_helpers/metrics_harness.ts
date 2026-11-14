@@ -15,11 +15,11 @@
  *   expect(sums).toBe(1);
  *   await harness.shutdown();
  *
- * The OTel JS API resolves `metrics.getMeter(name)` lazily through a
- * `ProxyMeter`, so registering the MeterProvider here AFTER the
- * production modules have already cached their meter handles works
- * — subsequent `.add()` / observable callbacks route to this
- * harness's provider.
+ * The OTel metrics API has no proxy meter: an instrument created before
+ * this provider is registered is a no-op forever. Production modules
+ * create theirs lazily (`lazyCounter` and friends in `telemetry.ts`), so
+ * call `resetInstrumentsForTesting()` after starting a harness to make
+ * them rebind to it.
  *
  * The harness drains all of the provider's metrics via
  * `MetricReader.collect()` and reads the cumulative data points
@@ -74,6 +74,8 @@ export interface MetricsHarness {
       name: string,
       attributeFilter?: Record<string, string | number | boolean>,
    ): Promise<{ count: number; sum: number; boundaries: number[] }>;
+   /** The attribute set of every data point recorded for the named metric. */
+   collectAttributes(name: string): Promise<Record<string, unknown>[]>;
    shutdown(): Promise<void>;
 }
 
@@ -142,6 +144,18 @@ export async function startMetricsHarness(): Promise<MetricsHarness> {
             }
          }
          return { count, sum, boundaries };
+      },
+      async collectAttributes(name: string) {
+         const result = await reader.collect();
+         return result.resourceMetrics.scopeMetrics.flatMap((scope) =>
+            scope.metrics
+               .filter((metric) => metric.descriptor.name === name)
+               .flatMap((metric) =>
+                  metric.dataPoints.map(
+                     (dp) => (dp.attributes ?? {}) as Record<string, unknown>,
+                  ),
+               ),
+         );
       },
       async collectGauge(name: string): Promise<number | undefined> {
          const result = await reader.collect();

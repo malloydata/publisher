@@ -9,18 +9,22 @@
 //   - Publisher.query(model, malloy, opts?)     → Promise<rows[]>
 //   - Publisher.queryFull(model, malloy, opts?) → Promise<MalloyResult>  (envelope for <malloy-render>)
 //       opts: { environment?, package?, sourceName?, queryName?, filterParams?,
-//               bypassFilters?, givens? }. givens is a name→value map bound as
+//               bypassFilters?, givens?, versionId? }. versionId names a published
+//               version; a page opened with `?versionId=` queries its own
+//               package at that version by default. givens is a name→value map bound as
 //               Malloy given: runtime parameters for this query (safe parameterization,
-//               not string interpolation) — see the malloy-html-data-app-runtime skill.
+//               not string interpolation) — see the malloy-html-data-apps skill (reference/runtime.md).
 //   - Publisher.embed(selector, { src, height?, token? })
 //   - Publisher.context  ({ environment, package } inferred from URL)
 //   - Publisher.setToken(token)  (override Bearer token; default uses cookies)
 //
 // When loaded inside an iframe served from /environments/<env>/packages/<pkg>/...,
 // the runtime auto-subscribes to a Server-Sent Events live-reload stream
-// (GET .../events) and reloads the page on file changes. It also posts size
-// updates to the parent window so Publisher.embed() in the host can resize
-// the iframe.
+// (GET .../events) and reloads the page on file changes. Served from
+// /apps/<env>/<pkg>/... (a hosted embed surface) it infers the same context
+// but does not subscribe: that page belongs to a customer's site. On both it
+// posts size updates to the parent window so Publisher.embed() in the host
+// can resize the iframe.
 //
 // The "publisher:resize" postMessage protocol below is the SAME contract the
 // SPA host consumes. Its canonical definition lives in
@@ -32,16 +36,19 @@
    "use strict";
 
    // --- Context inference -------------------------------------------------
-   // URL shape: /environments/<env>/packages/<pkg>/<file>
+   // URL shapes: /environments/<env>/packages/<pkg>/<file> (the in-app viewer)
+   //             /apps/<env>/<pkg>/<file>                   (a hosted embed surface)
    //
    // location.pathname is URL-encoded, so we MUST decode the captured
    // segments here. Without this step, a name with a space (e.g.
    // "demo env") would arrive as "demo%20env" — and the encodeURIComponent
    // we apply when building API URLs (below) would produce "demo%2520env",
    // which Publisher then 404s on.
-   var pathMatch = location.pathname.match(
+   var inAppMatch = location.pathname.match(
       /^\/environments\/([^/]+)\/packages\/([^/]+)\//,
    );
+   var pathMatch =
+      inAppMatch || location.pathname.match(/^\/apps\/([^/]+)\/([^/]+)\//);
    function safeDecode(s) {
       try {
          return decodeURIComponent(s);
@@ -63,6 +70,53 @@
       return bearerToken ? { Authorization: "Bearer " + bearerToken } : {};
    }
 
+   // --- Published-version pinning -----------------------------------------
+   // A page opened at a published version (`?versionId=` in its URL) queries
+   // that version, so it keeps answering from the models it shipped with after
+   // the package's `latest` moves on. Only when that version is one the
+   // package has: a proxy may forward a page's query string unchanged, with a
+   // `versionId` of its own, and such a page queries `latest`, as the server
+   // serves its files. One read of the package at the page's version tells.
+   function pageVersionParam() {
+      // Read by hand, not with URLSearchParams, so the runtime also loads where
+      // that is not defined. `+` in a query string is a space.
+      var match = (location.search || "").match(/[?&]versionId=([^&#]*)/);
+      return match && match[1]
+         ? safeDecode(match[1].replace(/\+/g, " "))
+         : undefined;
+   }
+   var pageVersion = pageVersionParam();
+   var pagePin = null;
+   function pinnedVersion() {
+      if (!pageVersion || !ctx.environment || !ctx.package) {
+         return Promise.resolve(undefined);
+      }
+      if (!pagePin) {
+         pagePin = fetch(
+            apiBase +
+               "/environments/" +
+               encodeURIComponent(ctx.environment) +
+               "/packages/" +
+               encodeURIComponent(ctx.package) +
+               "?versionId=" +
+               encodeURIComponent(pageVersion),
+            { credentials: "include", headers: authHeaders() },
+         )
+            .then(function (res) {
+               return res.ok ? res.json() : null;
+            })
+            .then(function (pkg) {
+               return pkg && pkg.versionId === pageVersion
+                  ? pageVersion
+                  : undefined;
+            })
+            .catch(function () {
+               return undefined;
+            });
+      }
+      return pagePin;
+   }
+
    // --- Query helpers -----------------------------------------------------
    function resolveTarget(opts) {
       var env = (opts && opts.environment) || ctx.environment;
@@ -70,7 +124,8 @@
       if (!env || !pkg) {
          throw new Error(
             "Publisher: no environment/package; either serve the page from " +
-               "/environments/<env>/packages/<pkg>/... or pass { environment, package } in opts.",
+               "/environments/<env>/packages/<pkg>/... or /apps/<env>/<pkg>/..., " +
+               "or pass { environment, package } in opts.",
          );
       }
       return { env: env, pkg: pkg };
@@ -100,6 +155,14 @@
       if (opts.filterParams) body.filterParams = opts.filterParams;
       if (opts.bypassFilters) body.bypassFilters = true;
       if (opts.givens) body.givens = opts.givens;
+      // The page's own version applies only to its own package; a query aimed
+      // elsewhere gets that package's latest unless it names one.
+      var versionId =
+         opts.versionId ||
+         (target.env === ctx.environment && target.pkg === ctx.package
+            ? await pinnedVersion()
+            : undefined);
+      if (versionId) body.versionId = versionId;
 
       var headers = Object.assign(
          { "content-type": "application/json" },
@@ -330,7 +393,13 @@
    }
 
    // --- SSE live reload --------------------------------------------------
+   // In-app viewer only. A hosted embed surface (/apps/...) is a customer's page: a reload
+   // on publish would throw away an end user's state, the events route is not one an embed
+   // session may call (so onerror's auto-reconnect would loop), and the credentialed
+   // cross-origin request is exactly what that surface keeps to a minimum. The resize
+   // postMessage below still runs there; it is what Publisher.embed on the host relies on.
    function setUpLiveReload() {
+      if (!inAppMatch) return;
       if (!ctx.environment || !ctx.package) return;
       if (typeof EventSource === "undefined") return;
       var url =

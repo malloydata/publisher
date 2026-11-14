@@ -15,7 +15,7 @@ The doctrine mandates raw-table goldens: every golden is computed in a
 semantics-free package over the same raw tables, never through the model under
 test, so a model bug cannot certify its own golden. `set.json` has had a
 `truthPackage` field for that since the schema was written -- and nothing built
-one. The VideoAmp author wrote `truth.malloy`, a `publisher.json`, a second
+one. One set's author wrote `truth.malloy`, a `publisher.json`, a second
 server config and an MCP client by hand before authoring case one: an hour of
 plumbing for a structure that is entirely derivable from the package.
 
@@ -96,7 +96,14 @@ def place_ref(package: pathlib.Path, src: pathlib.Path,
         return ref, None
     if "/" not in ref and not DATA_EXT.search(ref):
         return ref, None  # a warehouse table name, not a file
+    # Beside the model file first (what this has always done). If nothing is
+    # there, the ref was written from the package root, as a model in a
+    # subfolder such as `_shared/` does: resolving it against that folder again
+    # doubles the folder name and finds nothing.
     target = (src.parent / ref).resolve()
+    from_root = (package / ref).resolve()
+    if not target.exists() and from_root.exists():
+        target = from_root
     try:
         rel = target.relative_to(package.resolve())
     except ValueError:

@@ -1,0 +1,29 @@
+##! experimental.givens
+
+// DEPRECATED FEATURE COVERAGE — delete together with `#(filter)` /
+// `filterParams` (see RELEASE_NOTES deprecations). A `given:` and a
+// `#(filter)` on one source, so a request can send both.
+
+given: target_region :: string is 'US'
+
+#(filter) dimension=status type=equal
+source: orders is duckdb.sql("""
+   select * from (values
+      (1, 'US', 'active'),
+      (2, 'US', 'active'),
+      (3, 'US', 'cancelled'),
+      (4, 'EU', 'active'),
+      (5, 'EU', 'cancelled'),
+      (6, 'EU', 'active')
+   ) as t(id, region, status)
+""") extend {
+   primary_key: id
+
+   measure:
+      order_count is count()
+
+   view: by_given_region is {
+      where: region = $target_region
+      aggregate: order_count
+   }
+}

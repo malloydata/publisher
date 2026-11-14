@@ -5,9 +5,12 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { initializeMcpServer } from "./server";
-import { RELOAD_FAILURE_IS_SAFE } from "./tools/reload_package_tool";
-import type { EnvironmentStore } from "../service/environment_store";
+import {
+   RELOAD_FAILURE_IS_SAFE,
+   RELOAD_NEEDS_WATCH_MODE,
+} from "./tools/reload_package_tool";
 import packageJson from "../../package.json";
+import { mcpServicesFor } from "../test_helpers/mcp_services";
 
 /**
  * End-to-end coverage of the unified MCP server over the real MCP protocol,
@@ -49,9 +52,9 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
             }
             throw new Error(`Environment not found: ${name}`);
          },
-      } as unknown as EnvironmentStore;
+      };
 
-      const server = initializeMcpServer(stubStore);
+      const server = initializeMcpServer(mcpServicesFor(stubStore));
       const [clientTransport, serverTransport] =
          InMemoryTransport.createLinkedPair();
       await server.connect(serverTransport);
@@ -72,6 +75,11 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       // The retrieval tool and the catalog that supplies its scopes.
       expect(names.has("get_context")).toBe(true);
       expect(names.has("list_packages")).toBe(true);
+      // Guides, including the ones a package ships about itself. Registered as
+      // a tool rather than more prompts because a package's set is per-package
+      // and changes on reload; see registerGetSkillTool.
+      expect(names.has("get_skill")).toBe(true);
+      expect(names.has("get_agent")).toBe(true);
    });
 
    /**
@@ -152,19 +160,18 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          // executeQuery; the sentence that said so was once dropped while
          // the fields were being renamed, and nothing caught it.
          "execute_query",
-         // The LLM steps. An empty answer can now be the model's pruning, a
-         // failed step is named in the error, a rating carries the model's
-         // reason, and a long answer loses whole sources; an agent told none
-         // of this reads an empty or short answer as "the data is not there".
+         // The LLM steps. An empty answer can be the judge picking nothing, a
+         // failed step is named in the error, a pick carries the judge's
+         // reason, and a long answer pages; an agent told none of this reads
+         // an empty or short answer as "the data is not there".
          "llm-stage-failed",
          "retrieval_stage",
          "match_reason",
          "35,000",
-         "pruned",
+         "unresolved_targets",
+         "clusters",
          "ranking",
          "total_available",
-         "below_cutoff_count",
-         "total_entities",
          "retrieval_reason",
          "warnings",
          "data_type",
@@ -182,6 +189,10 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          // rule anyway, since a harness that cannot identify an entity
          // cannot score retrieval at all.
          "entity_id",
+         // Value search: without these an agent never learns that a typed
+         // value can be resolved to the stored string, or where it arrives.
+         "dimensional_value",
+         "values[]",
       ]) {
          expect(description).toContain(term);
       }
@@ -207,41 +218,47 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       // cannot drift, and they have drifted twice. Without this, deleting the
       // interpolation leaves the suite green and the drift comes back.
       expect(instructions).toContain(RELOAD_FAILURE_IS_SAFE);
+      // And which packages a reload reads: only a watched one, so an agent
+      // editing a published version is told up front that it needs a new one.
+      expect(instructions).toContain(RELOAD_NEEDS_WATCH_MODE);
       // The two working rules that keep an agent from trusting a stale or
       // silently empty model (see F1/F7 in the QA field notes): reload after
       // every edit, and never read an empty getContext as an empty package.
       expect(instructions).toContain(
-         "After every model edit, call reload_package before querying",
+         "In a watched environment, after every model edit, call reload_package before querying",
       );
       expect(instructions).toContain("get_status");
+      // Agents are an explicit user choice, so nothing pre-authorization names them.
+      expect(instructions).not.toContain("agent_name");
+      expect(instructions).not.toContain("get_agent");
    });
 
    it("orients a client to the sequence the schemas actually accept", async () => {
       // The tool DESCRIPTION is pinned against the response shape above; the
       // orientation string had no equivalent, and that asymmetry is how it
-      // kept teaching the pre-converged flow (a no-argument get_context to
-      // list environments) after the schema had started rejecting it. An
-      // agent reads this string in the initialize response, before it can
-      // check anything against it, so a wrong flow here fails its first call.
+      // once kept teaching a flow the schema rejected. An agent reads this
+      // string in the initialize response, before it can check anything
+      // against it, so a wrong flow here fails its first call.
       const instructions = client.getInstructions() ?? "";
       const { tools } = await client.listTools();
       const required = (tools.find((t) => t.name === "get_context")?.inputSchema
          ?.required ?? []) as string[];
 
       // Read off the REGISTERED schema rather than restated here: a parameter
-      // that becomes required fails this test until the orientation names it,
-      // which is the drift the assertion exists to catch.
-      expect(required.length).toBeGreaterThan(0);
+      // that becomes required fails this test until the orientation names it.
       for (const parameter of required) {
          expect(instructions).toContain(parameter);
       }
-
-      // Those required scope names come from list_packages, so it has to be
-      // the FIRST step. Naming it somewhere is not enough -- the instruction
-      // being corrected named get_context first and list_packages not at all.
-      expect(instructions).toContain("list_packages");
-      expect(instructions.indexOf("list_packages")).toBeLessThan(
-         instructions.indexOf("get_context"),
+      // A call with no arguments lists the environments, so the orientation
+      // must start there, and must not call it an error.
+      expect(required).toEqual([]);
+      expect(instructions).toContain(
+         "Start with get_context. Called with no arguments it lists the environments",
+      );
+      expect(instructions).not.toContain("validation error");
+      // A search still names exactly one package.
+      expect(instructions).toContain(
+         "scopes naming exactly one environment and package",
       );
    });
 

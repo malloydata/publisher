@@ -1,6 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+// DEPRECATED FEATURE COVERAGE — delete together with `#(filter)`,
+// `filterParams` and `bypassFilters` (see RELEASE_NOTES deprecations).
+// Every test in this file is about that deprecated feature.
+
 import { describe, expect, it } from "bun:test";
 import {
    buildFilterClause,
@@ -457,5 +461,37 @@ describe("service/filter", () => {
             expect(lastLine).toBe(`+ {where: ${clause}}`);
          }
       });
+   });
+});
+
+describe("buildFilterClause quoting", () => {
+   it("quotes the dimension with the Malloy-text module", () => {
+      const clause = buildFilterClause(
+         [
+            {
+               name: "r",
+               dimension: "a`b",
+               type: "equal",
+               required: false,
+            } as never,
+         ],
+         { r: "x" },
+      );
+      expect(clause).toBe("`a\\`b` = 'x'");
+   });
+
+   it("leaves a plain dimension's text unchanged", () => {
+      const clause = buildFilterClause(
+         [
+            {
+               name: "r",
+               dimension: "region",
+               type: "equal",
+               required: false,
+            } as never,
+         ],
+         { r: "x" },
+      );
+      expect(clause).toBe("`region` = 'x'");
    });
 });

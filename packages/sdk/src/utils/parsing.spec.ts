@@ -27,7 +27,7 @@ describe("getEnvironmentDescription", () => {
    it("should return a placeholder description if the README is empty", () => {
       const readme = "";
       expect(getEnvironmentDescription(readme)).toBe(
-         "Explore semantic models, run queries, and build dashboards",
+         "Explore semantic models, run queries, and build reports",
       );
    });
 });

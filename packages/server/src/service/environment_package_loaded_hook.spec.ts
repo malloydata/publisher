@@ -7,6 +7,7 @@ import os from "os";
 import path from "path";
 import { Environment } from "./environment";
 import type { Package } from "./package";
+import { parsePackageName } from "./identity";
 
 // The package-loaded hook fires at the three places a package enters the
 // environment's map: a lazy load from disk (what boot does for each package),
@@ -46,16 +47,16 @@ describe("Environment package-loaded hook", () => {
 
    it("fires once when a package is first loaded from disk, and not on a cached lookup", async () => {
       await writePackage(path.join(envPath, "boot"), "boot");
-      const pkg = await env.getPackage("boot", false);
+      const pkg = await env.getPackage(parsePackageName("boot"), false);
       expect(loaded).toEqual([pkg]);
-      await env.getPackage("boot", false);
+      await env.getPackage(parsePackageName("boot"), false);
       expect(loaded.length).toBe(1);
    });
 
    it("fires again, with the new instance, on a reload", async () => {
       await writePackage(path.join(envPath, "again"), "again");
-      const first = await env.getPackage("again", false);
-      const second = await env.getPackage("again", true);
+      const first = await env.getPackage(parsePackageName("again"), false);
+      const second = await env.getPackage(parsePackageName("again"), true);
       expect(second).not.toBe(first);
       expect(loaded).toEqual([first, second]);
    });
@@ -84,10 +85,10 @@ describe("Environment package-loaded hook", () => {
          throw new Error("hook exploded");
       });
       await writePackage(path.join(envPath, "sturdy"), "sturdy");
-      const pkg = await env.getPackage("sturdy", false);
+      const pkg = await env.getPackage(parsePackageName("sturdy"), false);
       expect(pkg.getPackageName()).toBe("sturdy");
       // Served: a second lookup returns the same instance.
-      expect(await env.getPackage("sturdy", false)).toBe(pkg);
+      expect(await env.getPackage(parsePackageName("sturdy"), false)).toBe(pkg);
    });
 
    it("fires nothing for a package that fails to load", async () => {
@@ -100,7 +101,9 @@ describe("Environment package-loaded hook", () => {
          path.join(envPath, "broken", "model.malloy"),
          "source: s is duckdb.sql(\n",
       );
-      await expect(env.getPackage("broken", false)).rejects.toThrow();
+      await expect(
+         env.getPackage(parsePackageName("broken"), false),
+      ).rejects.toThrow();
       expect(loaded).toEqual([]);
    });
 });

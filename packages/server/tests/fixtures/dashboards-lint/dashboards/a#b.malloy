@@ -4,7 +4,7 @@
 // and gets a 404.
 import { orders } from '../orders.malloy'
 
-# artifact { title="Hash In Name" }
+## artifact { layout=grid title="Hash In Name" tiles=["hash_in_name"] }
 query: hash_in_name is orders -> {
    group_by: brand_name
    aggregate: total_amount

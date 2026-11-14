@@ -80,6 +80,156 @@ export function extractRunTargetSourceNames(query?: string): string[] {
    return [];
 }
 
+/**
+ * A query that starts from a named view, read from its text: `run: ops ->
+ * by_carrier`, refined (`ops -> by_carrier + { limit: 3 }`), or with later
+ * stages (`ops -> by_carrier -> { … }`). The names are as written; whether
+ * `source` is a source and `view` one of its views is the model's to say.
+ */
+export interface RunViewCall {
+   source: string;
+   view: string;
+   /** A `+ { … }` refinement follows the view. */
+   refined: boolean;
+   /** How many `-> …` stages follow the view's own. */
+   laterStages: number;
+}
+
+/**
+ * The view the LAST run statement starts from (Malloy runs the last), or
+ * undefined when its first stage is not a bare view name: a hand-written
+ * stage (`-> { … }`), a source with arguments or a refinement of its own
+ * (`ops extend { … } -> …`), or anything this reader does not follow.
+ *
+ * An exact call (`ops -> by_carrier`, nothing after it) is also recognized
+ * from the compiled result schema (`resultExplore.name`); this reader is the
+ * half the schema cannot give, a query that only starts from the view
+ * (materialization v2 plan, Ownership, P14). Strips its own input.
+ */
+export function extractRunViewCall(query?: string): RunViewCall | undefined {
+   if (!query) return undefined;
+   const tokens = tokenize(stripMalloyCommentsAndLiterals(query));
+   let start = -1;
+   for (let k = 0; k + 1 < tokens.count; k++) {
+      if (isWord(tokens, k, "run") && textIs(tokens, k + 1, ":")) start = k + 2;
+   }
+   if (start < 0) {
+      // The bare form, as extractRunTargetSourceNames reads it.
+      for (let k = 0; k + 2 < tokens.count; k++) {
+         if (
+            isName(tokens, k) &&
+            arrowAt(tokens, k + 1) &&
+            opensLine(tokens, k)
+         ) {
+            start = k;
+            break;
+         }
+      }
+   }
+   if (start < 0 || !isName(tokens, start) || !arrowAt(tokens, start + 1)) {
+      return undefined;
+   }
+   const viewAt = start + 3;
+   if (!isName(tokens, viewAt)) return undefined;
+   let k = viewAt + 1;
+   let refined = false;
+   if (textIs(tokens, k, "+") && tokens.kind[k] === PUNCT) {
+      if (!textIs(tokens, k + 1, "{") || tokens.partner[k + 1] < 0) {
+         return undefined;
+      }
+      refined = true;
+      k = tokens.partner[k + 1] + 1;
+   }
+   let laterStages = 0;
+   while (arrowAt(tokens, k)) {
+      const stage = k + 2;
+      if (textIs(tokens, stage, "{") && tokens.partner[stage] >= 0) {
+         k = tokens.partner[stage] + 1;
+      } else if (isName(tokens, stage)) {
+         k = stage + 1;
+      } else {
+         return undefined;
+      }
+      laterStages++;
+   }
+   // The statement must end here: the next statement, or the text's end.
+   if (k < tokens.count && !(isName(tokens, k) && textIs(tokens, k + 1, ":"))) {
+      return undefined;
+   }
+   return {
+      source: textOf(tokens, start),
+      view: textOf(tokens, viewAt),
+      refined,
+      laterStages,
+   };
+}
+
+/** A compiled object's location in its file: zero-based lines and UTF-16 columns. */
+export interface TextRange {
+   start: { line: number; character: number };
+   end: { line: number; character: number };
+}
+
+/**
+ * The text of the definition `name is …` that `range` spans in `fileText`, as
+ * written, or undefined unless it reads as exactly that: the name (backticked
+ * or not), `is`, then a body whose every bracket pairs inside the span. For a
+ * compiled field whose location is its definition (`view: v is { … }` spans
+ * `v is { … }`), so the definition can be compiled again elsewhere.
+ */
+export function definitionTextAt(
+   fileText: string,
+   range: TextRange,
+   name: string,
+): string | undefined {
+   const offsetOf = (at: { line: number; character: number }) => {
+      let offset = 0;
+      for (let line = 0; line < at.line; line++) {
+         const next = fileText.indexOf("\n", offset);
+         if (next < 0) return -1;
+         offset = next + 1;
+      }
+      return offset + at.character;
+   };
+   const from = offsetOf(range.start);
+   const to = offsetOf(range.end);
+   if (from < 0 || to <= from || to > fileText.length) return undefined;
+   const text = fileText.slice(from, to);
+   const tokens = tokenize(stripMalloyCommentsAndLiterals(text));
+   if (
+      tokens.count < 3 ||
+      !isName(tokens, 0) ||
+      textOf(tokens, 0) !== name ||
+      !isWord(tokens, 1, "is")
+   ) {
+      return undefined;
+   }
+   for (let k = 0; k < tokens.count; k++) {
+      if (tokens.kind[k] !== PUNCT) continue;
+      const code = tokens.source.charCodeAt(tokens.start[k]);
+      const bracket =
+         code === 40 ||
+         code === 41 ||
+         code === 91 ||
+         code === 93 ||
+         code === 123 ||
+         code === 125;
+      if (bracket && tokens.partner[k] < 0) return undefined;
+   }
+   return text;
+}
+
+/** Whether tokens `k` and `k + 1` are an adjacent `->`. */
+function arrowAt(tokens: Tokens, k: number): boolean {
+   return (
+      textIs(tokens, k, "-") &&
+      tokens.kind[k] === PUNCT &&
+      textIs(tokens, k + 1, ">") &&
+      tokens.kind[k + 1] === PUNCT &&
+      tokens.start[k + 1] === tokens.start[k] + 1
+   );
+}
+
 /** Whether token `k` is the first on its line. */
 function opensLine(tokens: Tokens, k: number): boolean {
    if (k === 0) return true;
@@ -106,33 +256,18 @@ export function malloyIdentifiers(text: string): string[] {
  * caller-authored text for filter inheritance -- a filter-protected source
  * carries its filter requirements when read under a derived name.
  *
- * `source:`-only and last-declaration-wins. It reads STRIPPED text, so the two
- * misreads this map used to carry are closed: a declaration spelled inside a
- * string literal is no longer an edge that last-wins could use to REPLACE a
- * real base, and a comment between `is` and the base no longer ERASES one.
- *
- * Those misreads are why the query boundary stopped reading this map: a replaced
- * edge re-pointed a name from the hidden base it really derives from to a
- * curated one and bought admission. That boundary still uses
- * {@link buildDerivationBaseMap}, which is set-valued and refuses on ambiguity;
- * this map stays last-wins and single-valued because
+ * `source:`-only and last-declaration-wins, because
  * {@link Model.resolveFilterSource} needs ONE source name to inject filters
- * from. Prefer that one on any path where an edge grants access.
+ * from. Last-wins means a later edge REPLACES an earlier one, so never use this
+ * on a path where an edge grants access: use the set-valued
+ * {@link buildDerivationBaseMap}, which refuses on ambiguity.
  *
- * Strips its own input rather than trusting the caller to have done it. A
- * documented "pass me stripped text" precondition would hold only until the
- * next caller, and the failure is silent in the unsafe direction -- a missed
- * edge means no filter is injected, on a path with no post-compile backstop.
- * {@link stripMalloyCommentsAndLiterals} blanks to spaces, so it is idempotent
- * and a caller that already stripped pays a second scan and nothing else.
+ * Strips its own input rather than trusting callers: a missed edge is silent in
+ * the unsafe direction (no filter injected, no post-compile backstop), and the
+ * strip is idempotent, so a pre-stripped caller pays only a second scan.
  */
 export function buildSourceAliasMap(query: string): Map<string, string> {
    const aliasOf = new Map<string, string>();
-   // The same statement reader {@link buildDerivationBaseMap} uses, for the
-   // same reason: a missed edge here is silent in the unsafe direction -- no
-   // filter is injected and the caller sees unfiltered rows with no error.
-   // Deliberately still `source:`-only and single-valued: this feeds
-   // `resolveFilterSource`, which needs exactly one base to inject from.
    readDefinitions(query, (keyword, name, base) => {
       if (keyword === "source" && base !== UNREADABLE_BASE) {
          aliasOf.set(name, base);
@@ -149,13 +284,9 @@ export function buildSourceAliasMap(query: string): Map<string, string> {
  *  - **Comments** can HIDE a declaration from a scan that a compiler still
  *    reads around (`source: mine is -- c\n X extend { … }`), or plant a decoy
  *    one that never compiles at all (`-- run: bogus`).
- *  - **String literals** can FORGE a declaration. A scan that reads inside
- *    them lets `where: note = 'source: mine is open_src'` inject an alias
- *    edge, which — if a later edge for a name could overwrite an earlier one —
- *    would let a caller relabel its own derivation's base. (The alias map
- *    below keeps EVERY base per name rather than the last, so forging is
- *    additive and cannot erase a real edge; blanking literals closes it at
- *    the source as well.)
+ *  - **String literals** can FORGE a declaration: a scan reading inside them
+ *    lets `where: note = 'source: mine is open_src'` inject an alias edge
+ *    that could relabel a derivation's base in a last-wins map.
  *
  * One left-to-right pass that follows `MalloyLexer.g4`, so a `--` inside a
  * string is not a comment and a `'` inside a comment does not open a string:
@@ -179,9 +310,8 @@ export function buildSourceAliasMap(query: string): Map<string, string> {
  * Backtick-quoted identifiers are PRESERVED and SKIPPED WHOLE: unlike
  * `'…'`/`"…"` they carry real names (`` source: `my-src` is X ``) that the scan
  * must see, and Malloy lexes the span as a single token, so nothing inside it
- * can open a comment or a literal. Scanning into one was a bypass in its own
- * right — a legal `` dimension: `q'` is 1 `` opened a phantom literal that
- * blanked every declaration after it.
+ * can open a comment or a literal (scanning into `` `q'` `` would open a
+ * phantom literal blanking every declaration after it).
  *
  * Replacement is character-for-character (a space, or `~` where a space would
  * let a second pass read a delimiter differently), so every offset, line, and
@@ -676,20 +806,12 @@ function continuesToken(text: string, i: number): boolean {
  * too. A future caller that reads this map with an ANY-branch ADMISSION
  * quantifier would invert that and turn a forged edge into a bypass.
  *
- * Does NOT replace {@link buildSourceAliasMap}, which survives for
- * `resolveFilterSource`'s filter-inheritance walk.
- *
  * Every item of a statement is read (`source: a is x extend {} b is y`), with
  * an optional parameter list after the name and any number of `(` before the
  * base; a name whose base cannot be read gets {@link UNREADABLE_BASE}, so a
  * decoy elsewhere cannot stand in for the declaration it missed.
  *
- * Strips its own input, for the reason {@link buildSourceAliasMap} gives: a
- * documented precondition holds only until the next caller, and the strip is
- * idempotent, so a caller that already stripped pays a second scan and nothing
- * else. The stakes are lower here than there -- this map is set-valued and its
- * callers refuse on ambiguity rather than picking one -- but the argument for
- * owning the guarantee rather than documenting it is the same.
+ * Strips its own input, for the reason {@link buildSourceAliasMap} gives.
  */
 export function buildDerivationBaseMap(
    query: string,

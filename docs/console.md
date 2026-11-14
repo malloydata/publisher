@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 # The Publisher Console
 
 > What this is: a tour of the **Publisher Console**, the server's built-in web UI — how the core
-> constructs (environments, packages, models, sources, views, notebooks, data apps) surface in it,
+> constructs (environments, packages, models, sources, views, reports, data apps) surface in it,
 > and how to navigate them. Zero code required. It's served at **http://localhost:4000** whenever
 > the server is running.
 
@@ -14,7 +14,7 @@ The Console is the default, no-code way to explore what a Publisher deployment s
 from the [SDK](embedded-data-apps.md) but you don't need to know that — just open it and browse.
 (The Console is Publisher's own UI. It is not an [HTML data app](html-data-apps.md), which is a
 custom page _you_ author inside a package; see [choosing-a-surface.md](choosing-a-surface.md) for
-how the three in-package surfaces relate.)
+how the in-package surfaces relate.)
 
 ## The resource hierarchy
 
@@ -26,23 +26,23 @@ Environment            e.g. "examples"
     ├── Model          a .malloy file: sources, views, measures, dimensions
     │   ├── Source     a queryable entity (a table or a join graph)
     │   └── View       a saved, reusable query on a source
-    ├── Notebook       a notebooks/*.malloy file (a legacy .malloynb is read, not authored): a one-column layout of text and query tiles
-    ├── Dashboard      a dashboards/*.malloy file: filter controls + a tiled grid
-    └── Data Apps      an in-package HTML data app (the package's public/ dir)
+    ├── Report         a .malloy file with an ## artifact tag, anywhere in the package: text and query
+    │                  tiles behind filter controls, in a linear or a grid layout
+    └── Apps           an in-package HTML data app (the package's public/ dir)
 ```
 
 The [REST and MCP APIs](api-overview.md) expose this exact hierarchy; the Console is a view onto it.
 
 ## Navigating
 
-- **Left sidebar** — **Home**, then an **Environments** list, and a **Settings** section
-  (Visualization theme). Pick an environment to see its packages; pick a package to see its models,
-  notebooks, dashboards, and data apps.
-- **Breadcrumbs** across the top track where you are: `environment › package › file`.
-- **Theme toggle** (top-right) switches light/dark when the deployment allows it (see
-  [theming.md](theming.md)).
-- **Footer links** jump to the Malloy docs, these Publisher docs, and the live **Publisher API**
-  explorer (see [api-overview.md](api-overview.md)).
+- **Left sidebar** — **Home**, then an **Environments** list. Pick an environment to see its
+  packages; pick a package to see its reports, data apps, and models.
+- **Breadcrumbs** across the top track where you are: `environment › package › file`. They are the
+  way back up; pages carry no separate "Back to" link.
+- **Sidebar footer** holds the things about the Console rather than the data in it: **Theme** (the
+  visualization theme editor), the light/dark **mode toggle** when the deployment allows it (see
+  [theming.md](theming.md)), and links to the Malloy docs, these Publisher docs, and the live
+  **Publisher API** explorer (see [api-overview.md](api-overview.md)).
 
 ![The Publisher Console showing the storefront package under the examples environment](screenshots/console.png)
 
@@ -52,7 +52,18 @@ You'll see two path styles, and they're not interchangeable:
 
 - **Console routes** are short — `/{environment}/{package}/{file}`, e.g.
   `http://localhost:4000/examples/storefront/storefront.malloy`. Use these to link to something
-  inside the Console (a model, a dashboard, a package).
+  inside the Console (a model, a report, a package). A report's route is its package path without
+  `.malloy`: `sales/q3.malloy` opens at `/{environment}/{package}/sales/q3`, and in the builder at
+  `/{environment}/{package}/sales/q3?edit`. Edit is a query parameter, not a path segment, so a report
+  whose own path ends in `edit` (`sales/edit.malloy`, at `/{environment}/{package}/sales/edit`) opens as
+  itself. An older `…/sales/q3/edit` link still opens the builder, by redirecting to `?edit`, unless a
+  report is at `sales/q3/edit.malloy`. A report under `data-apps/` opens as a report; any other path
+  there opens the package's data app of that name. A package with published versions (see
+  [package-versions.md](package-versions.md)) carries the version as the first segment after the
+  package, `latest` spelled out: `/{environment}/{package}/latest/sales/q3`, or
+  `/{environment}/{package}/1.2.0/sales/q3` pinned to 1.2.0, and a bare `/{environment}/{package}`
+  opens `/latest`. A package with no versions keeps the routes above, so a folder of its own named
+  `latest` or `1.2.0` still opens by its path.
 - **Resource paths** are fully qualified — `/environments/{environment}/packages/{package}/...`.
   This is the canonical form the [REST and MCP APIs](api-overview.md) use, and it's also how an
   in-package HTML data app is served, e.g.
@@ -63,76 +74,105 @@ is a Console convenience.
 
 ## What you can do in the Console
 
-- **Browse a package** — one section each for **Artifacts**, **Data Apps**, **Semantic Models**,
-  **Package Data** and **Materializations**, in that order, plus the package's `README.malloynb`
-  rendered underneath. Artifacts lists dashboards and notebooks together, each row tagged with its
-  kind, and carries the **New** button on its heading row. Data Apps is hidden when the package has
-  none. Artifacts is hidden when empty too, unless creating is offered: then it shows a "No
-  artifacts yet" row with a **New artifact** button. Every kind has its own icon and its own color,
-  so a row's type reads before its name does.
+- **Browse a package** — one section each for **Reports**, **Apps**, **Models**,
+  **Data** and **Materializations**, in that order, plus the package's README rendered
+  underneath (a report at the package root whose basename is `README`). Reports lists every report in
+  the package, whatever directory it sits in, each row marked with its layout (linear or grid) and
+  opened by its path, and carries the **+ Report** button on its heading row. Apps is hidden
+  when the package has none. Reports is hidden when empty too, unless creating is offered: then it
+  shows a "No reports yet" row with an **Add report** button.
   The Materializations section lists the package's build runs and carries the three controls that
   change them: **Scope**, **Schedule** and **Add materialization**.
-  An artifact is listed by its title, or by its file name without folder or extension when it has
-  none; the folder path appears beside it only to tell apart two files with the same name, and a
-  `.malloynb` keeps its path. A notebook's title comes from its opening markdown heading unless a
-  `## title="…"` or a `#" ` doc comment overrides it.
-- **Build a dashboard by dragging** — every dashboard page has an **Edit** button that turns it into
-  a grid you rearrange directly: drag a tile to move it, set its
-  width, view, label and chart from its own menu, add filters from the strip above. Titles, descriptions
-  and text tiles are edited where they are shown: click one and type, with no edit icon to find
-  first. A **text tile** holds markdown (a heading, a paragraph, a list) and is added from the same
-  dialog as a query tile. The classic dashboard-building feel, over a file you can still read and
-  review. **Save** writes the `dashboards/*.malloy` back into the package at once, then offers
-  **View change** (the diff, read-only) and **Undo save**
-  ([dashboards.md](dashboards.md#editing-in-the-console)).
-- **Create a dashboard or notebook** — the package page's **New** menu takes a type (Dashboard or Notebook), a
-  model, a source and its view (one select), and a title, writes the file into the package (it never overwrites an existing one) and opens it in
-  its editor. A host with its own record creates it there instead. It is offered when the server takes
-  writes (the file goes into the package) or when a host keeps the record and can store; a workspace
-  that keeps drafts in the browser beside a writable server still gets it, and writes to the package.
-  It is not offered when neither route exists, on a record that cannot store, or on a pinned version
-  of a package. An empty Dashboards or Notebooks section carries its own **New dashboard** or
-  **New notebook** that opens the same window on that kind. Below 600px wide the Console hides
-  **Edit** and the **New** menu, and an editor opened by URL asks for **Edit anyway** first.
-- **Edit a notebook** — a notebook is a one-column dashboard, and it opens in the same builder as a
-  dashboard (a tagged `notebooks/*.malloy`; a legacy `.malloynb` is read-only). Its prose is text
-  tiles and its queries are query tiles, in file order. Everything is click-to-edit: click the
-  title, the description, a text tile or a tile's heading and type. In a one-line field Enter keeps
-  the edit and Escape puts the old text back; in a text tile, Escape, **Done** or Cmd/Ctrl+Enter
-  keeps it, **Cancel** drops it, and Cmd/Ctrl+S saves from inside the field. Use the **+** on a
-  tile to insert a tile between two tiles, or **Add tile** at the end; each query tile has
-  a **Viz type** picker listing all eight choices (From the view, Table, Line, Bar, Big value,
-  Scatter, Shape map and Segment map). A choice the view cannot render stays in the list, greyed,
-  with its reason beside it: Big value needs a view with only totals (no group by), and a map needs
-  a view that already carries a map chart. The picker is disabled, with the reason, for a tile whose
-  chart line the builder does not model (such as `# bar_chart { size=spark }`), and that line is left
-  alone. Tiles are dragged into a new order.
-  **Settings** holds **Show as** (Dashboard or Notebook, which is a tag edit on the same file, and a
-  notebook has no grid width) and the file's **Sources**: the imports are chips you remove and an
-  **Add a source** picker you add from, and a source a tile reads cannot be removed.
-  A cell-format notebook (the older shape, with `(markdown)` cells) opens already converted to this
-  layout and unsaved: **Save** writes the converted file, and **Undo save** puts the original text
-  back. Nothing is written until you save.
-  **Save** writes at once, with no review step; the caption under the button says where
-  (the package file, this browser, or where the host app keeps it). A notice then offers
-  **View change**, the file's diff read-only, and **Undo save**, which writes the file back as it was
-  before that save. The notice stays until the next edit or save. **Close** leaves, and asks first
-  when edits are unsaved. On a server that does not take writes there is no Save; while the server's answer is still loading, the caption under the button says so. A save whose text
-  declares a real `#(authorize)` or `#(access_filter)` gate outside prose is refused with a 400, so
-  the builder opens such a file but cannot save it from the Console; gates live in the model file.
+  A report is listed by its title, or by its file name without directory or extension when it has
+  none; the path appears beside it only to tell apart two reports with the same name, and a
+  `.malloynb` keeps its path. Without a `title=` in the artifact tag, a report's title comes from its
+  `"` description or its opening markdown heading.
+- **Switch between a package's versions** — a package with published versions shows its version
+  beside its title (`v1.2.0 ▾`). The switch lists every version, highest first, with `latest`
+  marked; archived ones are listed but do not open. Picking one pins the page, and everything opened
+  from it (models, reports, data apps, materialization runs) stays on that version. Each row's
+  **⋯** menu offers **Pin as latest** (after a confirmation), **Archive** (**Unarchive** on an
+  archived version) and **Delete version** (after a confirmation). An action the server would
+  refuse is disabled, with why: `latest` and the last version in service cannot be archived, and
+  while other versions remain they cannot be deleted either. Deleting a package's only version
+  deletes the package and returns to its environment. A published version is immutable, so its
+  pages offer no **+ Report** or **Edit**, and its Materializations section has no **Scope** or
+  **Schedule**.
+- **Build a report by dragging** — every report page has an **Edit** button in the header, beside the
+  breadcrumbs, that opens it in the builder. In the builder that spot holds the builder's bar: the save
+  status, undo and redo, an **Add** menu (a tile, text or a filter), and
+  **Done**, which returns to the report. The page under it stays the report as it reads. On a grid
+  report, drag a tile by its heading or its padding to place it in any cell, or move the selected one
+  with Option/Alt and the arrows (a step into the tile beside it
+  swaps the two), drag any edge or corner to resize it (the cursor turns to a two-headed arrow over an edge and a
+  diagonal one over a corner; a label says what it will snap to; double-click the bottom edge to fit the
+  result again), and set its chart and clickable cells, or duplicate it,
+  from its **⋯** menu; on a linear report, drag tiles into a new order and use the **+** on a tile to
+  insert one between two. **Add → Tile** lists every view in the package, grouped by source and
+  searchable, and runs the picked one as a preview beside its title and chart choices (**Add text
+  instead** puts a text tile there). Add filters from **Add** or with **+ Filter** on the filter row:
+  pick the field (its type is shown), the control from five pictured kinds (a kind the field cannot
+  take is greyed, with why), and, under **Choose tiles**, which tiles it applies to; a preview shows
+  its button. **Clickable cells** is a switch per dimension, with where a click opens and which filter
+  it sets. It applies to table cells: a chart's bars, lines and points do not respond to a click, and
+  the menu says so on a chart tile. Clicks work in the report, not in the builder, where a click
+  selects the tile. Titles,
+  descriptions and text tiles are edited where they are shown: under the pointer they take a faint
+  wash; click one and type. In a one-line field Enter keeps the edit and Escape puts the old text
+  back; in a text tile, leaving it or Cmd/Ctrl+Enter keeps it, Escape drops it, and Cmd/Ctrl+S saves
+  from inside the field. A **text tile** holds markdown (a heading, a paragraph, a list). A query
+  tile's **Chart** choices are Default (as set in the model), Table, Line, Bar, Big value, Scatter, Shape map,
+  Segment map and Bar and line; a choice the view cannot render stays in the list, greyed, with its reason under it.
+  **Color** sets a chart's color from the theme's series, or any other, as a `# theme.palette.series` line.
+  The layout is the file's: the builder draws the report as its `layout=` says and never rewrites
+  it. Adding a tile
+  offers every source the package publishes; when the file cannot already see the chosen source,
+  the builder adds a named import for it. The classic dashboard-building feel, over a file you can
+  still read and review ([reports.md](reports.md#editing-in-the-console)).
+  A file written as `run:` cells, the retired linear form, is not a report and does not open; the
+  package page names it and says how to rewrite it as tiles. A legacy `.malloynb` is read-only.
+  Edits are kept in this browser as they are made, and the status reads **Draft saved**: leaving the
+  builder any other way loses nothing and asks nothing, and opening the report for editing again puts
+  them back, with a note saying so. **Done** writes them into the package at once, with no review step,
+  and shows the report; a write that is refused keeps the builder open with the reason. Cmd/Ctrl+S
+  writes without leaving. **Discard edits**, from the status, puts the saved report back (Undo brings
+  the edits back). Only text still being typed into an open field asks before you leave. On a server
+  that does not take writes there is nothing to write to. A save whose text declares a real `#(authorize)` or `#(access_filter)` gate
+  outside prose is refused with a 400, so the builder opens such a file but cannot save it from the
+  Console; gates live in the model file.
+- **Create a report** — the package page's **+ Report** button takes a model, a source and its
+  view (one select), a title and a layout (linear unless you pick grid), writes `<slug>.malloy` at the
+  **package root** (or at another path you type; it never overwrites an existing file) and opens it in
+  the builder. No directory is created for you. A host with its own record creates it there instead.
+  It is offered when the server takes writes (the file goes into the package) or when a host keeps
+  the record and can store; a workspace that keeps drafts in the browser beside a writable server
+  still gets it, and writes to the package. It is not offered when neither route exists, on a record
+  that cannot store, or on a pinned version of a package. Below 600px wide the Console hides **Edit**
+  and **+ Report**, and an editor opened by URL asks for **Edit anyway** first.
 - **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;
-  every action generates valid Malloy, and you can view the Malloy and SQL behind any result.
-- **Read a notebook** — a `.malloynb` in a package renders its markdown and runs its query cells
-  inline, including `# dashboard` views (KPI tiles + nested charts). The format is deprecated and
-  the bundled examples no longer ship one, but the viewer stays for packages that have them.
+  every action generates Malloy, and you can view the Malloy and SQL behind any result. The
+  Explorer writes a drilled value into that Malloy unescaped, so a value holding a double quote
+  rewrites its query.
+- **Browse a model** — on a server started with `PUBLISHER_MODEL_PAGE=viewer` (see
+  [configuration](configuration.md)), the model page is the model viewer instead, which builds no
+  query: open a `.malloy` file to see one source at a time, picked from its "N sources" pill: the
+  givens it reads, its views and the model's named queries (each runs when you open it), its
+  measures, calculations, dimensions and joins, each opening to its Malloy. A dimension tagged
+  `#(index)` lists its most common values. Nothing runs until you open a row or a given's picker.
+  The source and the given values are in the address (`?source=`, `?REGION=…`), so a link, and Copy
+  link, opens on them.
+- **Read a legacy notebook** — a `.malloynb` in a package renders as a linear report: its markdown,
+  and its query cells run inline, including `# dashboard` views (KPI tiles + nested charts). The
+  format is deprecated and the bundled examples no longer ship one, but the viewer stays for packages
+  that have them.
 
-![The storefront business-overview dashboard rendered inline in a notebook](screenshots/storefront-dashboard.png)
+![The storefront business-overview dashboard view rendered inline in a report](screenshots/storefront-dashboard.png)
 
-- **Tune parameters live** — when a model declares [givens](givens.md), a dashboard over it shows a
-  control row and a notebook a **Filters panel**; change a control and every tile or cell re-runs.
+- **Tune parameters live** — when a report's tiles read [givens](givens.md), the report shows a
+  control row above its tiles; change a control and every tile or cell that reads it re-runs.
   Try `http://localhost:4000/examples/governed-analytics`.
 
-![A notebook's Parameters panel, generated automatically from the model's givens](screenshots/givens-parameters-panel.png)
+![A Parameters panel, generated automatically from the model's givens](screenshots/givens-parameters-panel.png)
 
 - **Open a data app** — a package's [HTML data apps](html-data-apps.md) render inside the Console
   (and can be opened standalone). Try

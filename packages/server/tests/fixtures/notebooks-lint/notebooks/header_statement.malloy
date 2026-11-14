@@ -1,4 +1,4 @@
 source: a is duckdb.sql("select 1 as x")
-## artifact { kind=notebook title="Header statement" }
+## artifact { layout=linear title="Header statement" }
 
 run: a -> { select: x }

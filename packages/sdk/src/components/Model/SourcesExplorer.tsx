@@ -12,7 +12,7 @@ import {
 
 import React, { useEffect, useState } from "react";
 import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
-import { loadQueryBuilder } from "../DashboardBuilder/loadMalloy";
+import { loadQueryBuilder } from "../ReportBuilder/loadMalloy";
 import { parseResourceUri } from "../../utils/formatting";
 // import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { useServer } from "../ServerProvider";

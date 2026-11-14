@@ -1,10 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// Postgres / libpq helper shared between `service/` (user-facing connections)
-// and `storage/` (materialization-storage catalog). Lives at `src/` root so
-// neither layer takes a dependency on the other — see CLAUDE.md's "Two
-// parallel DuckLake/PG attach paths" note for why this matters.
+// Credential redaction shared between `service/` (user-facing connections) and
+// `storage/` (materialization-storage catalog). Lives at `src/` root so neither
+// layer depends on the other.
 
 // Redact Postgres credentials from a string before it goes into a log line
 // or HTTP response body. Covers both libpq forms: keyword `password=...`
@@ -39,14 +38,11 @@
 //      quotes included, since libpq conninfo quoting backslash-escapes `'`.
 //
 // The scheme has no leading `\b`/anchor on purpose: a scheme abutting a
-// word char (`x_postgres://u:pw@h`) should still redact. Over-matching a
-// credential-shaped `scheme://user:pass@` token is the safe direction, and
-// usernames stay visible (they aid debugging, and the keyword pass keeps
-// `user=` too). Some non-secret shapes are over-redacted as a result, which
-// is always preferred to a leak: `?password=a&sslmode=b` loses the
-// `&sslmode=b` tail, and a passwordless `@`-username URI with a raw `@`
-// later in its query/fragment (`postgres://u@srv:5432/db?x=a@b`) has its
-// tail replaced by `***`. Residual gaps (accepted): the pass-2 shape above
+// word char (`x_postgres://u:pw@h`) should still redact. Over-matching is the
+// safe direction; usernames stay visible to aid debugging. Over-redacted
+// non-secret shapes include `?password=a&sslmode=b` (loses `&sslmode=b`) and a
+// passwordless `@`-username URI with a raw `@` later in its query/fragment
+// (`postgres://u@srv:5432/db?x=a@b`, tail replaced by `***`). Residual gaps (accepted): the pass-2 shape above
 // (a raw `@` and then a raw `/` in one password, doubly invalid) keeps its
 // post-`@` tail; and a raw (unencoded) whitespace inside a password ends
 // the match early. A valid URI/libpq string encodes whitespace, and
@@ -54,17 +50,15 @@
 // message text.
 //
 // The two URI passes are scanners rather than regular expressions, because
-// both regex forms are quadratic on input an attacker controls (the message
-// echoes a user-supplied connection string). Pass 1's scheme has no anchor, so
-// a backtracking engine retries it at every position of a long run of letters,
-// rescanning the rest of the run each time. Pass 2's password class crosses
-// `/`, so each of many `postgres://` occurrences with no `@` rescans to the end
-// of the message. Each pass below matches exactly what its regex
+// both regex forms are quadratic on attacker-controlled input (the message
+// echoes a user-supplied connection string). Pass 1's unanchored scheme is
+// retried at every position of a long run of letters; pass 2's password class
+// crosses `/`, so each of many `postgres://` with no `@` rescans to the end.
+// Each scanner matches exactly what its regex
 // (`[a-z][a-z0-9+.-]*://[^:/?#\s]*:[^/\s]+@` and
-// `(?:postgres|postgresql)://[^:/?#\s]*:[^@\s]+@`, case-insensitive) matched,
-// in one left-to-right pass. Measured on 40,000 repeated letters: 1.6s for the
-// pass-1 regex, under 1ms for its scanner. The keyword pass is linear and
-// stays a regex.
+// `(?:postgres|postgresql)://[^:/?#\s]*:[^@\s]+@`, case-insensitive) matches,
+// in one left-to-right pass (40,000 letters: 1.6s for the pass-1 regex, under
+// 1ms for its scanner). The keyword pass is linear and stays a regex.
 export function redactPgSecrets(s: string): string {
    return redactUserinfoPasswords(
       redactUserinfoPasswords(s, ANY_SCHEME_LAST_AT),
@@ -212,10 +206,9 @@ const NAME_ALTERNATION = SECRET_FIELD_NAMES.map((n) =>
 
 // Quoted value after `:` or `=`, e.g. "privateKey": "..." or privateKey='...'.
 //
-// Escape-aware in both quote styles, matching the form redactPgSecrets already
-// uses for single quotes. A naive `"[^"]*"` ends the match at the first escaped
-// quote INSIDE the value, so a credential containing one kept its tail:
-// `"password":"ab\"TAIL"` redacted `ab\` and left `TAIL"` in the message.
+// Escape-aware in both quote styles, as redactPgSecrets is for single quotes. A
+// naive `"[^"]*"` would end at an escaped quote INSIDE the value and leak the
+// tail: `"password":"ab\"TAIL"` would keep `TAIL"`.
 const SECRET_QUOTED_PATTERN = new RegExp(
    String.raw`(["']?(?:${NAME_ALTERNATION})["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')`,
    "gi",
@@ -225,11 +218,10 @@ const SECRET_QUOTED_PATTERN = new RegExp(
 // field in libpq keyword form and in ordinary prose, so a match cannot run past
 // the field it started in.
 //
-// `&` is NOT a terminator. A URL-valued field carries its credential in a query
-// parameter -- an Azure SAS URL's secret IS the `sig=` parameter, which follows
-// one -- so stopping at `&` redacted the harmless prefix and left the signature
-// in place. The cost of including it is that a bare `a=1&b=2` pair following a
-// secret-named field is swallowed whole, which is the safe direction.
+// `&` is NOT a terminator: a URL-valued field carries its credential in a query
+// parameter (an Azure SAS URL's secret IS the `sig=` parameter after an `&`).
+// The cost is that a bare `a=1&b=2` following a secret-named field is swallowed
+// whole, which is the safe direction.
 const SECRET_BARE_PATTERN = new RegExp(
    String.raw`(["']?(?:${NAME_ALTERNATION})["']?\s*=\s*)(?:[^,;\s}"']+)`,
    "gi",
@@ -244,11 +236,9 @@ const SECRET_BARE_PATTERN = new RegExp(
 // branches, which is polynomial on a message carrying many BEGIN markers and is
 // what CodeQL's js/polynomial-redos flags. Applied in order, each is linear.
 //
-// The terminated form forbids a further BEGIN inside its body, so two keys in
-// one message match as two blocks rather than one span -- and the lazy body has
-// no overlapping alternative to backtrack through. Measured on a message of
-// 20,000 repeated BEGIN markers: 3ms, against 404ms for the lazy-body form
-// without the guard.
+// The terminated form forbids a further BEGIN inside its body, so two keys
+// match as two blocks and the lazy body has nothing to backtrack through
+// (20,000 BEGIN markers: 3ms, against 404ms without the guard).
 const PEM_TERMINATED_PATTERN =
    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:(?!-----BEGIN )[\s\S])*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
 
@@ -262,26 +252,19 @@ const PEM_UNTERMINATED_PATTERN =
  * Redact every connection credential this server can be handed, from a string
  * that is about to reach a caller or a log, by the SHAPE the credential takes.
  *
- * <p>Named for the shape rather than the concern because
- * {@code materialization_service.redactConnectionSecrets} is the value-based
- * counterpart: given the config in hand, it removes those exact strings. Prefer
- * that one where the config is available -- it needs no list of field names and
- * cannot miss a field the schema gains. This one is the backstop for what it
- * cannot see: an echo that is base64- or URL-encoded, or a secret that reached
- * the message from somewhere other than the config passed in.
+ * The value-based counterpart is
+ * {@code materialization_service.redactConnectionSecrets}, which removes the
+ * exact strings of the config in hand; prefer it where the config is available,
+ * since it cannot miss a field the schema gains. This is the backstop for an
+ * echo that is base64- or URL-encoded, or a secret that came from elsewhere.
  *
- * A connection test is given the caller's own configuration and reports why it
- * did not work, and drivers build those messages by quoting the configuration
- * back. {@link redactPgSecrets} covers the Postgres shapes -- URI userinfo and
- * `password=` -- which leaves the credential of every other connection type
- * (SSH keys and their passphrases, service-account JSON, bearer tokens, storage
- * secret keys) in the message verbatim. This covers those, then defers to
- * {@link redactPgSecrets} for the shapes it already handles.
+ * Drivers build error messages by quoting the configuration back.
+ * {@link redactPgSecrets} covers the Postgres shapes; this adds every other
+ * connection type's credentials (SSH keys and passphrases, service-account
+ * JSON, bearer tokens, storage secret keys), then defers to it.
  *
- * Shape-based for the same reason that function is: the input is arbitrary
- * error prose that may embed a serialized config, so there is nothing to parse.
- * Over-redaction is the safe direction and is preferred to a leak -- a field
- * merely named `token` is masked whether or not it held a credential.
+ * Over-redaction is preferred to a leak: a field merely named `token` is masked
+ * whether or not it held a credential.
  */
 export function redactConnectionSecretShapes(s: string): string {
    return redactPgSecrets(

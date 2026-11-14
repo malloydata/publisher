@@ -3,11 +3,13 @@
 
 import {
    resolveTheme,
+   type PerModeColorKey,
    type Theme,
    type ThemeMode,
 } from "@malloy-publisher/sdk";
 import { Box, Typography } from "@mui/material";
 import { ColorPickerField } from "../ColorPickerField";
+import { perModeColor, withPerModeColor } from "../perModeColor";
 import { TablePreview } from "../previews/TablePreview";
 
 interface TablesSectionProps {
@@ -17,17 +19,11 @@ interface TablesSectionProps {
    mode: ThemeMode;
 }
 
-type PerModeKey =
-   | "tableHeader"
-   | "tableHeaderBackground"
-   | "tableBody"
-   | "tile"
-   | "tileTitle";
-
 /**
  * Edits the per-mode table tokens: header text, header background, body
- * text, the dashboard tile (padding around the table), and the tile
- * title text. All are stored as { light, dark } variants on the Theme;
+ * text, the dashboard tile (padding around the table), the tile title
+ * text, the gridlines between rows, and the card edge (which also rules
+ * off a pinned header row). All are stored as { light, dark } variants on the Theme;
  * the active variant is chosen by the editor-level Light/Dark toggle.
  *
  * Header background and tile background are separate because the
@@ -43,41 +39,17 @@ export function TablesSection({
 }: TablesSectionProps) {
    const resolved = resolveTheme([theme], mode);
 
-   // Read the active variant from the saved theme if set; otherwise fall
-   // back to the resolved value so the picker shows the colour that will
-   // actually render rather than an empty input.
-   const valueFor = (key: PerModeKey): string => {
-      const fromTheme = theme.palette?.[key]?.[mode];
-      if (typeof fromTheme === "string") return fromTheme;
-      return resolved[key];
-   };
-
-   const setColor = (key: PerModeKey) => (hex: string) => {
-      // Guard the spread against legacy non-object shapes on disk.
-      // A pre-per-mode Publisher persisted these slots as bare strings;
-      // spreading a string in object position produces character-
-      // indexed garbage like {0:'#',1:'2',...,light:hex}. Only spread
-      // when the existing value is already a {light,dark}-shaped
-      // object, otherwise start fresh.
-      const existing = theme.palette?.[key];
-      const base =
-         existing && typeof existing === "object" && !Array.isArray(existing)
-            ? existing
-            : {};
-      onChange({
-         ...theme,
-         palette: {
-            ...theme.palette,
-            [key]: { ...base, [mode]: hex },
-         },
-      });
-   };
+   const valueFor = (key: PerModeColorKey) => perModeColor(theme, key, mode);
+   const setColor = (key: PerModeColorKey) => (hex: string) =>
+      onChange(withPerModeColor(theme, key, mode, hex));
 
    const headerColor = valueFor("tableHeader");
    const headerBackground = valueFor("tableHeaderBackground");
    const bodyColor = valueFor("tableBody");
    const tile = valueFor("tile");
    const tileTitle = valueFor("tileTitle");
+   const border = valueFor("border");
+   const cardBorder = valueFor("cardBorder");
 
    return (
       <Box>
@@ -95,6 +67,8 @@ export function TablesSection({
                headerBackground={headerBackground}
                bodyColor={bodyColor}
                border={resolved.border}
+               cardBorder={resolved.cardBorder}
+               pinnedBorder={resolved.pinnedBorder}
                tileBackground={tile}
                fontFamily={resolved.font.family}
                fontSize={resolved.font.size}
@@ -139,6 +113,18 @@ export function TablesSection({
                label="Tile title color"
                value={tileTitle}
                onChange={setColor("tileTitle")}
+               disabled={disabled}
+            />
+            <ColorPickerField
+               label="Gridline color (between rows)"
+               value={border}
+               onChange={setColor("border")}
+               disabled={disabled}
+            />
+            <ColorPickerField
+               label="Card border (tile and header edge)"
+               value={cardBorder}
+               onChange={setColor("cardBorder")}
                disabled={disabled}
             />
          </Box>

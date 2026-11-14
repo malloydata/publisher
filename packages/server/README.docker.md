@@ -47,6 +47,20 @@ docker run -d \
 
 See the [Docker Hub tags page](https://hub.docker.com/r/ms2data/malloy-publisher/tags) for available versions. Tag-scheme guidance (`:latest`, `:X.Y.Z`) lives in the [deployment guide](../../docs/deployment.md).
 
+### Verifying the image
+
+Released images are signed with [Sigstore cosign](https://docs.sigstore.dev/cosign/verifying/verify/) using GitHub Actions keyless signing, so there is no public key to distribute: the signing certificate names the workflow that built the image, and the signature is recorded in the public Rekor transparency log. To check that an image was published by this repository's release workflow:
+
+```bash
+cosign verify ms2data/malloy-publisher:X.Y.Z \
+  --certificate-identity https://github.com/malloydata/publisher/.github/workflows/docker-image.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Use cosign v3 or later. The image is signed in the Sigstore bundle format and the signature is stored as an OCI referrer of the image, not as a `sha256-<digest>.sig` tag, so an older cosign or a policy engine that only looks for the `.sig` tag reports no signatures on a signed image.
+
+The signature covers the multi-platform manifest list, which references each platform image and its SBOM and SLSA provenance attestations by digest. Those attestations can be read with `docker buildx imagetools inspect ms2data/malloy-publisher:X.Y.Z --format '{{ json .SBOM }}'` (or `.Provenance`). Images released before signing was introduced carry no signature.
+
 ## Runtime layout
 
 | Path inside container | What's there |
@@ -152,7 +166,7 @@ docker run --rm --entrypoint sh -v <mount> ms2data/malloy-publisher \
 
 For a read-only mount, the same with `cat <file> >/dev/null && echo readable`.
 
-When the server cannot make a write it needs, the response names the errno (`EACCES: permission denied, mkdir '…'`) rather than answering a bare `Internal server error.`. A package that cannot be mounted at boot, or added at runtime, is listed under `loadErrors` in `GET /api/v0/status` with that message, until it is added successfully or deleted. If the server cannot start at all, for example on a read-only root filesystem or with a config file it cannot read, `/api/v0/status` stays `initializing` and `initError` says why.
+When the server cannot make a write it needs, the response names the errno (`EACCES: permission denied, mkdir '…'`) rather than answering a bare `Internal server error.`. A package that cannot be mounted at boot, or added at runtime, is listed under `loadErrors` in `GET /api/v0/status` with that message, until it is added successfully or deleted. If the server cannot finish starting, for example on a read-only root filesystem, `/api/v0/status` stays `initializing` and `initError` says why. A config file it cannot read or parse stops it before it listens, with the reason after `PUBLISHER_INIT_FAILED` on stderr.
 
 If you cannot change the ownership yet, `--user 0` runs the server as root, as earlier images did. The image sets `HOME=/home/bun`, so a root run still finds the baked DuckDB extensions.
 
@@ -179,7 +193,7 @@ All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, s
 | `PUBLISHER_MEMORY_LOW_WATER_FRACTION` | — | `0.7` | Fraction at which back-pressure clears. The gap between low and high gives hysteresis so the governor doesn't flap on every GC cycle. |
 | `PUBLISHER_MEMORY_CHECK_INTERVAL_MS` | — | `5000` | How often the governor samples RSS. Minimum `100`. Smaller values catch spikes faster but burn a few extra microseconds per tick. |
 | `PUBLISHER_MEMORY_BACKPRESSURE` | — | `true` | When `false`, the governor still samples RSS and emits metrics but never flips the back-pressure flag. Useful for a monitoring-only rollout before enabling the 503 behaviour. |
-| `EMBEDDING_API_KEY` | — | _unset_ | Enables semantic ranking for `get_context` question retrieval; sent as a bearer token to the embedding endpoint. Unset keeps lexical retrieval, unchanged. Entity names, annotation text, and query strings are sent to the endpoint when enabled; see "Semantic retrieval" in `docs/configuration.md`. |
+| `EMBEDDING_API_KEY` | — | _unset_ | Turns on embedding closeness in `get_context`'s search; sent as a bearer token to the embedding endpoint. Unset: `get_context` ranks by keyword and stored values only. Entity names, annotation text, and query strings are sent to the endpoint when enabled; see "How get_context searches" in `docs/configuration.md`. |
 | `EMBEDDING_MODEL` | — | `text-embedding-3-small` | Embedding model name. |
 | `EMBEDDING_API_BASE` | — | `https://api.openai.com/v1` | Base URL of an OpenAI-compatible embeddings API. |
 | `EMBEDDING_DIMENSIONS` | — | _unset_ | Optional `dimensions` request parameter; omitted when unset. |

@@ -5,7 +5,7 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import {
-   artifactTagText,
+   artifactNoteOfText,
    translateToParse,
    type TokenStreamShape,
 } from "./notebook";
@@ -14,7 +14,7 @@ import { motlyParseErrors, motlyTag } from "./motly";
 // One case table for this reader and the SDK's `artifactTag`, whose spec reads the same file.
 const FIXTURE = path.resolve(
    __dirname,
-   "../../../sdk/src/components/DashboardBuilder/testing/artifactTagParity.json",
+   "../../../sdk/src/components/ReportBuilder/testing/artifactTagParity.json",
 );
 const { cases } = JSON.parse(fs.readFileSync(FIXTURE, "utf8")) as {
    cases: {
@@ -69,7 +69,7 @@ describe("the artifact tag read off raw text agrees with the SDK and the lexer",
    for (const { name, source, tag, server } of cases)
       it(name, () => {
          expect(lexerTag(source)).toEqual(tag);
-         const found = artifactTagText(source);
+         const found = artifactNoteOfText(source);
          expect(found === undefined ? null : lines(found)).toEqual(
             server ?? tag,
          );

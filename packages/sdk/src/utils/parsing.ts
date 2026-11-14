@@ -6,7 +6,7 @@ export const getEnvironmentDescription = (
    readme: string | undefined,
 ): string => {
    if (!readme) {
-      return "Explore semantic models, run queries, and build dashboards";
+      return "Explore semantic models, run queries, and build reports";
    }
 
    // Remove markdown formatting and get first paragraph

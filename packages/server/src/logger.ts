@@ -1,32 +1,21 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { externalEnv, settings } from "./settings";
+import {
+   isSpanContextValid,
+   trace,
+   type SpanContext,
+} from "@opentelemetry/api";
 import { AxiosError } from "axios";
 import { RequestHandler } from "express";
 import winston from "winston";
 
-const isTelemetryEnabled = Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT);
-
-// Determine log level from environment variable
-// Valid levels: error, warn, info, verbose, debug, silly
-// Default: 'debug'
-const VALID_LOG_LEVELS = ["error", "warn", "info", "verbose", "debug", "silly"];
-const getLogLevel = (): string => {
-   if (process.env.LOG_LEVEL) {
-      const logLevel = process.env.LOG_LEVEL.toLowerCase();
-      if (VALID_LOG_LEVELS.includes(logLevel)) {
-         return logLevel;
-      } else {
-         console.error(
-            `Invalid log level: ${process.env.LOG_LEVEL}. Valid log levels are: ${VALID_LOG_LEVELS.join(", ")}. Defaulting to "debug".`,
-         );
-      }
-   }
-   return "debug";
-};
+const isTelemetryEnabled = Boolean(externalEnv("OTEL_EXPORTER_OTLP_ENDPOINT"));
 
 export const logger = winston.createLogger({
-   level: getLogLevel(),
+   // An unknown level is the default, debug, with a startup warning.
+   level: settings.get("logging.level"),
    format: isTelemetryEnabled
       ? winston.format.combine(
            winston.format.uncolorize(),
@@ -41,14 +30,10 @@ export const logger = winston.createLogger({
    transports: [new winston.transports.Console()],
 });
 
-//-
 /**
- * Extracts the trace ID from a W3C traceparent header.
- * Format: version-trace-id-parent-id-trace-flags
- * Example: 00-81f2264f363f1b5596c84ab29e6be171-83ef39df12ab6bab-01
- *
- * @param traceparent The traceparent header value
- * @returns The trace ID (32 hex characters) or undefined if invalid
+ * The 32-hex trace ID from a W3C `traceparent`
+ * (`00-<trace-id>-<parent-id>-<flags>`) or a bare trace ID; undefined if
+ * invalid.
  */
 function extractTraceIdFromTraceparent(
    traceparent: string | undefined,
@@ -57,11 +42,9 @@ function extractTraceIdFromTraceparent(
       return undefined;
    }
 
-   // format of traceparent can either be: version-traceId-parentId-traceFlags or traceId
    const parts = traceparent.split("-");
    const traceId =
       parts.length >= 2 ? parts[1] : parts.length == 1 ? parts[0] : undefined;
-   // Validate that the traceId is 32 hex characters
    if (traceId && traceId.length === 32 && /^[0-9a-fA-F]{32}$/.test(traceId)) {
       return traceId;
    }
@@ -69,17 +52,10 @@ function extractTraceIdFromTraceparent(
    return undefined;
 }
 
-const DISABLE_RESPONSE_LOGGING =
-   process.env.DISABLE_RESPONSE_LOGGING === "true" ||
-   process.env.DISABLE_RESPONSE_LOGGING === "1";
+const DISABLE_RESPONSE_LOGGING = !settings.get("logging.responseBodiesEnabled");
 
-/**
- * Format duration in milliseconds to a human-readable string with unit
- * @param durationMs Duration in milliseconds
- * @returns Formatted string with 2 decimal places and unit (s or ms)
- */
+/** `1234.5` -> `"1.23s"`, `12.3` -> `"12.30ms"`. */
 export function formatDuration(durationMs: number): string {
-   // If duration is >= 1000ms, show in seconds, otherwise show in milliseconds
    if (durationMs >= 1000) {
       const seconds = durationMs / 1000;
       return `${seconds.toFixed(2)}s`;
@@ -87,13 +63,9 @@ export function formatDuration(durationMs: number): string {
    return `${durationMs.toFixed(2)}ms`;
 }
 
-// Connection endpoints carry provider credentials in their request/response
-// bodies (BigQuery serviceAccountKeyJson, Snowflake privateKey/password, Postgres
-// password/connectionString, S3 secretAccessKey/sessionToken, Azure clientSecret/
-// sasUrl, Databricks token, ...), and axios error logs can carry credential HTTP
-// headers (Authorization, Cookie). Those values are masked by key name before
-// they reach a log transport. Matching is case-insensitive so header casing
-// (Authorization vs authorization) does not slip through.
+// Keys whose values are masked before reaching a log transport: connection
+// credentials in request/response bodies, and credential headers in axios
+// error logs. Matched case-insensitively, so header casing cannot slip by.
 export const SENSITIVE_KEY_NAMES = [
    // connection config credentials
    "password",
@@ -125,13 +97,36 @@ const SENSITIVE_KEYS: ReadonlySet<string> = new Set(
 
 const REDACTED = "[REDACTED]";
 
+/** Longest body, as serialized JSON, the access log carries whole. */
+export const MAX_LOGGED_BODY_CHARS = 2048;
+
 /**
- * Deep-copy `value`, replacing any property whose key names a credential
- * (SENSITIVE_KEYS) with a placeholder. The match is by key name (case-
- * insensitive) and recurses through nested objects and arrays, since
- * connections arrive nested under `connections[]`. Primitives and Dates pass
- * through unchanged and the input is never mutated; used to keep secrets out of
- * the request/response and axios-error logs.
+ * A body for the access log: whole when it serializes within
+ * {@link MAX_LOGGED_BODY_CHARS}, otherwise its length and that many leading
+ * characters, so one large compile overlay or result set cannot become a
+ * multi-megabyte log line.
+ */
+export function boundedForLog(value: unknown): unknown {
+   let serialized: string | undefined;
+   try {
+      serialized = JSON.stringify(value);
+   } catch {
+      return "[Unserializable]";
+   }
+   if (serialized === undefined || serialized.length <= MAX_LOGGED_BODY_CHARS) {
+      return value;
+   }
+   return {
+      truncated: true,
+      length: serialized.length,
+      head: serialized.slice(0, MAX_LOGGED_BODY_CHARS),
+   };
+}
+
+/**
+ * Deep-copy `value` with every property whose key names a credential masked,
+ * recursing through objects and arrays (connections arrive nested under
+ * `connections[]`). Never mutates the input.
  */
 export function redactSensitive(
    value: unknown,
@@ -156,67 +151,91 @@ export function redactSensitive(
    return result;
 }
 
+/** The W3C trace id of a request, from its `traceparent` header, when it carries one. */
+export function traceIdOf(req: {
+   headers: Record<string, string | string[] | undefined>;
+}): string | undefined {
+   const traceparent = req.headers["traceparent"];
+   return extractTraceIdFromTraceparent(
+      typeof traceparent === "string" ? traceparent : undefined,
+   );
+}
+
+const PROBE_PATHS: ReadonlySet<string> = new Set([
+   "/health",
+   "/health/liveness",
+   "/health/readiness",
+   "/metrics",
+]);
+
+/** A health probe or metrics scrape: left out of the access log and request metrics, which they would drown. */
+export function isProbePath(path: string): boolean {
+   return PROBE_PATHS.has(path);
+}
+
+/**
+ * The trace a request runs in: its span's (the HTTP instrumentation's, which
+ * continues an incoming `traceparent`), else the header's own.
+ */
+function requestTraceId(
+   req: Parameters<typeof traceIdOf>[0],
+   spanContext: SpanContext | undefined,
+): string | undefined {
+   return spanContext && isSpanContextValid(spanContext)
+      ? spanContext.traceId
+      : traceIdOf(req);
+}
+
 export const loggerMiddleware: RequestHandler = (req, res, next) => {
    const startTime = performance.now();
+   // Read now: the span is active while the request is dispatched, not
+   // necessarily when `finish` fires.
+   const spanContext = trace.getActiveSpan()?.spanContext();
    const resJson = res.json;
    res.json = (body: unknown) => {
       res.locals.body = body;
       return resJson.call(res, body);
    };
    res.on("finish", () => {
-      const endTime = performance.now();
-      const durationMs = endTime - startTime;
-
-      // Extract trace ID from traceparent header if present
-      const traceparent = req.headers["traceparent"] as string | undefined;
-      const traceId = extractTraceIdFromTraceparent(traceparent);
-
+      if (isProbePath(req.path)) return;
+      const durationMs = performance.now() - startTime;
       const logMetadata: Record<string, unknown> = {
          statusCode: res.statusCode,
+         durationMs: Math.round(durationMs * 100) / 100,
+         // The same, formatted; kept for readers of the older field.
          duration: formatDuration(durationMs),
-         payload: redactSensitive(req.body),
          params: req.params,
          query: req.query,
       };
-
-      // Only include response body if response logging is enabled
-      if (!DISABLE_RESPONSE_LOGGING) {
-         logMetadata.response = redactSensitive(res.locals.body);
+      // Redaction is by key name only, so a request's query text and given
+      // values, and a response's result rows, pass through: kept to debug.
+      if (logger.isDebugEnabled()) {
+         logMetadata.payload = boundedForLog(redactSensitive(req.body));
+         if (!DISABLE_RESPONSE_LOGGING) {
+            logMetadata.response = boundedForLog(
+               redactSensitive(res.locals.body),
+            );
+         }
       }
-
-      // Add traceId to log metadata if present
+      const traceId = requestTraceId(req, spanContext);
       if (traceId) {
          logMetadata.traceId = traceId;
       }
-
-      // Skip logging for metrics and health endpoints to reduce log noise
-      if (
-         req.url !== "/metrics" &&
-         req.url !== "/health" &&
-         req.url !== "/health/liveness" &&
-         req.url !== "/health/readiness"
-      ) {
-         logger.info(`${req.method} ${req.url}`, logMetadata);
-      }
+      logger.info(`${req.method} ${req.url}`, logMetadata);
    });
    next();
 };
 
 /**
- * Build the message + metadata logged for an AxiosError, with secrets removed.
- * A failing upstream call can echo a connection config in `response.data` or
- * return credential headers, and the raw `error.request` / `error` objects hold
- * the outgoing Authorization header. Response fields are redacted and the raw
- * request object is reduced to a few safe descriptors, so credentials never
- * reach the log. Split out from `logAxiosError` so it can be unit tested.
+ * The log line for an AxiosError, with secrets removed: response fields are
+ * redacted, and the raw request (which holds the outgoing Authorization
+ * header) is reduced to a few safe descriptors.
  */
 export function buildAxiosErrorLog(error: AxiosError): {
    message: string;
    meta: Record<string, unknown>;
 } {
    if (error.response) {
-      // The request was made and the server responded with a status code
-      // that falls out of the range of 2xx.
       return {
          message: "Axios server-side error",
          meta: {
@@ -228,9 +247,8 @@ export function buildAxiosErrorLog(error: AxiosError): {
       };
    }
    if (error.request) {
-      // The request was made but no response was received. `error.request` is
-      // the raw ClientRequest/XHR and carries the outgoing headers (including
-      // Authorization), so log only safe descriptors from the config.
+      // No response. `error.request` carries the outgoing headers, so only
+      // safe descriptors are logged.
       return {
          message: "Axios client-side error",
          meta: {
@@ -240,8 +258,8 @@ export function buildAxiosErrorLog(error: AxiosError): {
          },
       };
    }
-   // Something happened setting up the request. The AxiosError still holds
-   // `config.headers`, so log only the message.
+   // Failed while setting up; `config.headers` is still on the error, so only
+   // the message is logged.
    return {
       message: "Axios unknown error",
       meta: { message: error.message },

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { settings } from "./settings";
 import { createHash, timingSafeEqual } from "node:crypto";
 
 /**
@@ -50,9 +51,8 @@ const secretsMatch = (presented: string, configured: string): boolean => {
  *
  * FAIL-CLOSED: with {@link BYPASS_AUTHORIZE_SECRET_ENV} unset or blank there is
  * no value a caller could present, so every bypass request is refused. Header
- * presence alone used to be sufficient, which left the author's `#(authorize)`
- * gates disabled by anything that could reach this port and reduced the
- * protection to whatever the deployment's edge happened to strip.
+ * presence alone must never suffice: anything that could reach this port could
+ * then disable the author's `#(authorize)` gates.
  *
  * A non-`string` header also denies, which covers a duplicated header without a
  * special case: for a custom header Node joins duplicates into one
@@ -65,7 +65,7 @@ const secretsMatch = (presented: string, configured: string): boolean => {
  * gate-disabling control.
  */
 export const readBypassAuthorize = (req: HeaderCarrier): true | undefined => {
-   const configured = process.env[BYPASS_AUTHORIZE_SECRET_ENV]?.trim();
+   const configured = settings.get("authorize.bypassSecret");
    if (!configured) {
       return undefined;
    }

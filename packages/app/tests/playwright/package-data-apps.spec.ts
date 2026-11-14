@@ -4,7 +4,6 @@
 import { expect, test } from "@playwright/test";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
-import { getPublisherStatus } from "./helpers/publisherStatus";
 
 /**
  * The only coverage of the data-app click-through. Three things have to agree
@@ -15,48 +14,45 @@ import { getPublisherStatus } from "./helpers/publisherStatus";
  * suite stays green because no other spec opens this package's detail page.
  */
 test.describe("package-data-apps", () => {
-   test("Data Apps section lists the package's HTML apps", async ({ page }) => {
+   test("Apps section lists the package's HTML apps", async ({ page }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.dataApp);
 
       await expect(
-         page.getByRole("heading", { name: "Data Apps" }),
+         page.getByRole("heading", { name: "Apps", exact: true }),
       ).toBeVisible();
       await expect(page.getByText("index.html", { exact: true })).toBeVisible();
    });
 
    test("the renamed section labels are the ones rendered", async ({
       page,
-      baseURL,
    }) => {
-      const { mutable } = await getPublisherStatus(
-         baseURL ?? "http://localhost:4000",
-      );
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.dataApp);
 
       // Anchor on a positive assertion first. toHaveCount(0) is satisfied the
       // instant the page is blank, so a bare absence check here passes before
-      // any section has rendered and pins nothing. "Data Apps" rather than
-      // "Artifacts": an empty section no longer renders, and this package has
-      // no dashboards or notebooks.
+      // any section has rendered and pins nothing. "Apps" rather than
+      // "Reports": an empty section no longer renders, and this package has
+      // no reports.
       await expect(
-         page.getByRole("heading", { name: "Data Apps" }),
+         page.getByRole("heading", { name: "Apps", exact: true }),
       ).toBeVisible();
       await expect(
-         page.getByRole("heading", { name: "Semantic Models" }),
+         page.getByRole("heading", { name: "Models", exact: true }),
       ).toBeVisible();
 
       await expect(
          page.getByRole("heading", { name: "Governed Reports" }),
       ).toHaveCount(0);
-      // The section this package has nothing for is absent rather than empty,
-      // except where the reader can create one: then it carries the action.
+      // The section this package has nothing for is absent rather than empty:
+      // a published version takes no new report, so there is no action to
+      // carry either.
       await expect(
-         page.getByRole("heading", { name: "Artifacts" }),
-      ).toHaveCount(mutable ? 1 : 0);
+         page.getByRole("heading", { name: "Reports", exact: true }),
+      ).toHaveCount(0);
       await expect(page.getByRole("heading", { name: "Pages" })).toHaveCount(0);
    });
 
@@ -98,7 +94,7 @@ test.describe("package-data-apps", () => {
       // because this one alone passed a mutation of the thing it was meant to pin.
       await expect(page).toHaveURL(
          new RegExp(
-            `/${DEFAULT_ENV}/${PACKAGES.dataApp}/data-apps/index\\.html`,
+            `/${DEFAULT_ENV}/${PACKAGES.dataApp}/latest/data-apps/index\\.html`,
          ),
       );
       // Assert what the iframe POINTS AT, not just that one exists. Counting it

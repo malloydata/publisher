@@ -1,0 +1,32 @@
+##! experimental.givens
+##" Order counts from a date the reader picks.
+##| artifact { layout=linear title="Orders in a window" autorun=false
+  tiles=[
+    heading { kind=text },
+    "orders_tiles -> in_window",
+    "orders_tiles -> by_brand_tile",
+    "orders_tiles -> over_minimum"
+  ]
+}
+|##
+
+// A report's controls are the givens its tiles read, so the controls show
+// these and nothing else. `autorun=false` asks for an Apply button: one change
+// re-runs every tile. The explicit title beats the doc comment above the tag.
+import { orders } from "orders.malloy"
+import { BRAND, MIN_AMOUNT, SINCE } from "givens.malloy"
+
+##|(markdown) heading
+# Orders since
+|##
+
+source: orders_tiles is orders extend {
+   # label="Orders in the window"
+   view: in_window is since_totals
+
+   # label="Amount by brand"
+   view: by_brand_tile is by_brand
+
+   # label="Orders over the minimum"
+   view: over_minimum is { where: amount ~ $MIN_AMOUNT; aggregate: order_count }
+}

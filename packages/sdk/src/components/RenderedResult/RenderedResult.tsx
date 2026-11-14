@@ -1,10 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Box, useTheme } from "@mui/material";
+import { Box } from "@mui/material";
 import React, {
    Suspense,
-   useCallback,
    useEffect,
    useLayoutEffect,
    useMemo,
@@ -22,12 +21,16 @@ import {
    contentNodeDepth,
    measureContentHeight,
    remeasuresAfterReady,
+   RESULT_SCROLLER_CLASS,
    resultSizing,
    type ResultSizing,
+   TIGHT_ATTR,
 } from "./resultSizing";
 import { readChartAnnotations } from "../../theme/readChartAnnotations";
-import { resolveTheme } from "../../theme/resolveTheme";
+import { chartThemeLayer, resolveTheme } from "../../theme/resolveTheme";
 import { usePublisherTheme } from "../../theme/ThemeContext";
+import { loadMalloyRenderer } from "./loadRenderer";
+import { chartMinWidth, labelChartFields } from "./chartPresentation";
 import type { ResolvedTheme } from "../../theme/types";
 import {
    DRILL_CELL_CLASS,
@@ -36,8 +39,12 @@ import {
    markDrillableCells,
    type DrillMetadataSource,
 } from "../drill/markDrillableCells";
-import type { DrillClickPayload } from "../drill/resolveDrill";
-import { loadMalloyTag } from "../DashboardBuilder/loadMalloy";
+import {
+   drillClickRelay,
+   reportRowsWithoutFilters,
+   type RendererDrill,
+} from "../drill/drillClickRelay";
+import { loadMalloyTag } from "../ReportBuilder/loadMalloy";
 import type { DrillBinding } from "../drill/useDrill";
 
 type MalloyRenderElement = HTMLElement & Record<string, unknown>;
@@ -98,9 +105,10 @@ interface RenderedResultProps {
    /**
     * Which sizing rule the rendered root follows, as soon as the renderer's
     * metadata says. Lets a caller stop treating its cap as a height for a
-    * result that will never report one.
+    * result that will never report one. `renderAs` is the root's render type,
+    * which tells a caller with a table-only cap whether it applies.
     */
-   onSizing?: (sizing: ResultSizing) => void;
+   onSizing?: (sizing: ResultSizing, renderAs: string | undefined) => void;
    /**
     * Makes `# drill` cells clickable, and makes them look it. From `useDrill`
     * on the host surface, which decides where a click may go; omitted where
@@ -113,18 +121,47 @@ interface RenderedResultProps {
 
 const FILL_ATTR = "data-publisher-fill";
 
+/**
+ * Whether this page may compile code from strings. Vega compiles each chart's
+ * expressions with `new Function`, which a Content-Security-Policy without
+ * `'unsafe-eval'` refuses: an MCP App panel's host is one such page. There the
+ * renderer is told to use Vega's interpreter instead, which evaluates the same
+ * expressions without compiling them. Asked once; elsewhere nothing changes.
+ *
+ * The probe is itself an eval. Under a CSP that refuses it, the browser fires
+ * one `securitypolicyviolation` per page load, and a policy with `report-uri`
+ * or `report-to` sends one violation report for it. That report is expected.
+ */
+let evalAllowed: boolean | undefined;
+export function pageAllowsEval(): boolean {
+   if (evalAllowed === undefined) {
+      try {
+         evalAllowed = new Function("return true")() === true;
+      } catch {
+         evalAllowed = false;
+      }
+   }
+   return evalAllowed;
+}
+
 const createRenderer = async (
    theme: ResolvedTheme,
    onClick?: DrillBinding["onClick"],
+   onDrill?: (data: RendererDrill) => void,
 ): Promise<MalloyVizHandle> => {
    if (typeof window === "undefined") {
       throw new Error("MalloyRenderer can only be used in browser environment");
    }
 
-   const { MalloyRenderer } = await import("@malloydata/render");
+   const { MalloyRenderer } = await loadMalloyRenderer();
    const renderer = new MalloyRenderer({
       onClick,
+      // A table cell's row reaches the host only through the renderer's drill,
+      // which it reports only with `enableDrill` set; see `drillClickRelay`.
+      ...(onDrill ? { onDrill, tableConfig: { enableDrill: true } } : {}),
       vegaConfigOverride: buildVegaThemeOverride(theme),
+      // Charts under a CSP that refuses eval; see `pageAllowsEval`.
+      ...(pageAllowsEval() ? {} : { useVegaInterpreter: true }),
       // Pass the explicit theme so table chrome and dashboard tiles
       // pick up the operator's colours directly. Without this the
       // renderer's own inline style writes `--malloy-render--*` values
@@ -138,12 +175,9 @@ const createRenderer = async (
    return renderer.createViz() as MalloyVizHandle;
 };
 
-// Warm the renderer chunk as soon as this module loads so the first chart
-// paint doesn't have to wait on the dynamic import resolving (the async
-// import is what widened the clear-then-repaint gap into a visible flicker).
-if (typeof window !== "undefined") {
-   void import("@malloydata/render");
-}
+// No module-level warm-up here: evaluating this module must not download the
+// renderer. `ResultPanel` and `ResultContainer` warm it when a result is on its
+// way; see `loadRenderer.ts`.
 
 /**
  * Pull a per-chart Theme override out of a parsed Malloy result by reading
@@ -303,6 +337,35 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
       the border's job, and the border is already doing it. */
    box-shadow: none !important;
 }
+/* The strip of big-value cards as a grid, so cards share a width and the last one does not wrap
+   alone. The renderer's wrapping flex row sizes each card to its own text. The 250px floor is the
+   widest realistic value: it is nowrap at 32px in an overflow:visible card, so a narrower track
+   would spill it onto its neighbour. Embedded (a nested big_value) is left as the renderer draws it. */
+.malloy-render .malloy-big-value:not(.malloy-big-value--embedded) {
+   display: grid;
+   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+}
+.malloy-render .malloy-big-value-card:not(.malloy-big-value-card--embedded) {
+   width: auto;
+   max-width: none;
+}
+/* Compact, in a tile set shorter than its cards (ResultContainer marks it tight): smaller values,
+   tighter cards and a 190px floor, which a 22px value still fits in, so five cards share a row of
+   about a thousand pixels instead of wrapping into rows the tile has no room for. */
+[${TIGHT_ATTR}] .malloy-render .malloy-big-value:not(.malloy-big-value--embedded) {
+   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+   gap: 8px;
+   padding: 8px;
+}
+[${TIGHT_ATTR}] .malloy-render .malloy-big-value-card:not(.malloy-big-value-card--embedded) {
+   padding: 9px 14px;
+}
+[${TIGHT_ATTR}] .malloy-render .malloy-big-value-value {
+   font-size: 22px;
+}
+[${TIGHT_ATTR}] .malloy-render .malloy-big-value-label {
+   font-size: 11px;
+}
 .malloy-render .malloy-dashboard .dashboard-row-header-separator {
    background: var(--malloy-render--table-border) !important;
 }
@@ -361,6 +424,14 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
    color: var(--publisher-drill-link) !important;
    text-decoration: underline;
 }
+/* The renderer's own drill, on so a click can report its row, paints the
+   whole hovered row as a link. Which cells click is the marking above. */
+.malloy-render .malloy-table .td.highlight {
+   color: inherit;
+}
+.malloy-render .malloy-table .td.highlight:not(.${DRILL_CELL_CLASS}) {
+   cursor: inherit;
+}
 `;
 
 /**
@@ -401,9 +472,11 @@ function RenderedResultInner({
    // one safely.
    const drillRef = useRef(drill);
    drillRef.current = drill;
-   const handleDrillClick = useCallback((payload: DrillClickPayload) => {
-      drillRef.current?.onClick(payload);
-   }, []);
+   // The click and the row the renderer reports for it, joined; see the relay.
+   const relay = useMemo(
+      () => drillClickRelay((payload) => drillRef.current?.onClick(payload)),
+      [],
+   );
    // Whether any drill is wired at all, which is what the effect reacts to: a
    // surface that gains or loses the capability has to (re)mark its cells, but
    // a new inline binding with the same capability must not rebuild anything.
@@ -433,18 +506,14 @@ function RenderedResultInner({
    // bails, so overlapping renders can't leave two charts or leak a viz.
    const renderGenRef = useRef(0);
    const { theme: baseTheme, layers, mode } = usePublisherTheme();
-   // The host app's card radius, so a dashboard card reads as a card of the app
-   // it is embedded in rather than as the renderer's 8px on a 4px page. Both
-   // cards take it from here; see DashboardTile, which is the other one.
-   const cardRadius = useTheme().shape.borderRadius;
-   // Memoized because it is a dependency of the render effect below, and a fresh
-   // object each render would re-render the chart on every render.
+   // The report surfaces' tile radius, the one TileCard draws the composite
+   // tile with, so the renderer's own cards and ours are the same shape.
    const cardGeometry = useMemo<DashboardCardGeometry>(
       () => ({
-         radius: `${cardRadius}px`,
+         radius: baseTheme.ui.radius.tile,
          padding: `${DASHBOARD_CARD_PADDING_PX}px`,
       }),
-      [cardRadius],
+      [baseTheme.ui.radius.tile],
    );
 
    // Dispose the last live viz on unmount only. Deliberately NOT done in the
@@ -522,10 +591,22 @@ function RenderedResultInner({
          // A filled table root is as tall as its box, which would read back as its content.
          const stretched = element.hasAttribute(FILL_ATTR);
          if (stretched) element.removeAttribute(FILL_ATTR);
+         // Measured as if the tile's scroller shows no scrollbar. Its scrollbar
+         // narrows the result, a narrower table can wrap its header onto a
+         // second line, and the taller height reported back is what decides
+         // whether the scroller needs that scrollbar. Measured at whichever
+         // width is on screen, a table at the threshold reports two heights
+         // in turn and its tile grows and shrinks on every frame.
+         const scroller = element.closest<HTMLElement>(
+            `.${RESULT_SCROLLER_CLASS}`,
+         );
+         const scrollerOverflow = scroller?.style.overflowY;
+         if (scroller) scroller.style.overflowY = "hidden";
          const renderedHeight = measureContentHeight(
             root,
             contentNodeDepth(renderAs),
          );
+         if (scroller) scroller.style.overflowY = scrollerOverflow ?? "";
          if (stretched) element.setAttribute(FILL_ATTR, "");
 
          if (renderedHeight > 0) {
@@ -559,13 +640,17 @@ function RenderedResultInner({
 
          const perChart = await extractChartThemeOverride(parsed);
          const effectiveTheme = perChart
-            ? resolveTheme([...layers, perChart], mode)
+            ? resolveTheme([...layers, chartThemeLayer(layers, perChart)], mode)
             : baseTheme;
 
          if (!isCurrent()) return;
 
          try {
-            viz = await createRenderer(effectiveTheme, handleDrillClick);
+            viz = await createRenderer(
+               effectiveTheme,
+               relay.onClick,
+               drillable ? relay.onDrill : undefined,
+            );
          } catch (error) {
             console.error("Failed to create renderer:", error);
             return;
@@ -657,13 +742,18 @@ function RenderedResultInner({
          try {
             // The renderer accepts a Malloy Result; we don't import that type
             // in the SDK to avoid pinning to the malloy core types here.
-            viz.setResult(parsed);
+            // A chart's unlabelled fields titled the way a reader says them;
+            // see `chartPresentation`.
+            viz.setResult(labelChartFields(parsed));
             // Read the root's render type before painting, so the first
             // measurement already knows whether it is worth taking. Metadata is
             // complete as soon as the result is set; the DOM is not.
             try {
                const metadata = viz.getMetadata();
                const root = metadata?.getRootField();
+               // A row's clauses are wanted only for its dimensions; see
+               // `reportRowsWithoutFilters`.
+               if (drillable) reportRowsWithoutFilters(root);
                renderAs = root?.renderAs();
                // The plugin's own `sizingStrategy`, which decides this outright
                // where there is one. Read from the PLUGIN; the field entry's
@@ -677,7 +767,7 @@ function RenderedResultInner({
                renderAs = undefined;
                strategy = undefined;
             }
-            onSizing?.(resultSizing(renderAs, strategy));
+            onSizing?.(resultSizing(renderAs, strategy), renderAs);
             // Published on the stage because every sizing decision keys off it
             // and nothing else in the DOM says what it was. A panel at an
             // unexpected height is otherwise a guessing game about which rule
@@ -685,6 +775,17 @@ function RenderedResultInner({
             // — that the rendered markup does not spell out anywhere.
             stage.dataset.malloyRenderAs = renderAs ?? "unknown";
             stage.dataset.malloySizing = resultSizing(renderAs, strategy);
+            // A plotted chart is drawn no narrower than it reads, and its
+            // panel scrolls sideways past that, rather than squeezing it until
+            // the renderer drops bars under "Showing limited results".
+            const minWidth = chartMinWidth(renderAs, parsed);
+            stage.style.minWidth =
+               minWidth === undefined ? "" : `${minWidth}px`;
+            // Only a chart scrolls here, and only sideways: anything taller
+            // than its box is the panel's to scroll, which an overflow set on
+            // this box would take over on both axes.
+            element.style.overflowX = minWidth === undefined ? "" : "auto";
+            element.style.overflowY = minWidth === undefined ? "" : "hidden";
             viz.render(stage);
 
             // Mark the cells a `# drill` makes clickable, so they read as
@@ -932,7 +1033,7 @@ function RenderedResultInner({
       };
    }, [
       result,
-      handleDrillClick,
+      relay,
       drillable,
       onSizeChange,
       onSizing,

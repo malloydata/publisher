@@ -1,0 +1,42 @@
+{
+   "_comment": "One case table for the reader's control row order (server, report_given_order.spec.ts) and the builder's (SDK, preview.spec.ts). `tiles` is each tile's served givenNames; `row` is manifest.givens by name.",
+   "model": "##! experimental.givens\ngiven:\n  MANUFACTURER :: filter<string> is f''\n\nsource: all_recalls is duckdb.sql(\"\"\"select 'a' as maker, 's' as subject, DATE '2020-01-01' as recall_date\"\"\") extend {\n  view: by_year is { group_by: recall_date; aggregate: n is count() }\n  view: by_subject is { group_by: subject; aggregate: n is count() }\n}\n\nsource: recalls is all_recalls extend {\n  where: maker ~ $MANUFACTURER\n}\n",
+   "cases": [
+      {
+         "name": "the model's read first, then each tile's bindings",
+         "report": "##! experimental.givens\nimport \"recalls.malloy\"\n\ngiven:\n  SUBJECT :: filter<string> is f''\n  SINCE :: filter<date> is f''\n\n## artifact { layout=grid tiles=[\"recalls_tiles -> year_tile\", \"recalls_tiles -> subject_tile\"] }\nsource: recalls_tiles is recalls extend {\n  view: year_tile is by_year + { where: subject ~ $SUBJECT; where: recall_date ~ $SINCE }\n  view: subject_tile is by_subject\n}\n",
+         "tiles": {
+            "recalls_tiles -> year_tile": ["MANUFACTURER", "SUBJECT", "SINCE"],
+            "recalls_tiles -> subject_tile": ["MANUFACTURER"]
+         },
+         "row": ["MANUFACTURER", "SUBJECT", "SINCE"]
+      },
+      {
+         "name": "a binding on the second tile follows the first tile's reads",
+         "report": "##! experimental.givens\nimport \"recalls.malloy\"\n\ngiven:\n  SUBJECT :: filter<string> is f''\n  SINCE :: filter<date> is f''\n\n## artifact { layout=grid tiles=[\"recalls_tiles -> year_tile\", \"recalls_tiles -> subject_tile\"] }\nsource: recalls_tiles is recalls extend {\n  view: year_tile is by_year + { where: recall_date ~ $SINCE }\n  view: subject_tile is by_subject + { where: subject ~ $SUBJECT }\n}\n",
+         "tiles": {
+            "recalls_tiles -> year_tile": ["MANUFACTURER", "SINCE"],
+            "recalls_tiles -> subject_tile": ["MANUFACTURER", "SUBJECT"]
+         },
+         "row": ["MANUFACTURER", "SINCE", "SUBJECT"]
+      },
+      {
+         "name": "a tile's bindings in the order it binds them, not declaration order",
+         "report": "##! experimental.givens\nimport \"recalls.malloy\"\n\ngiven:\n  SUBJECT :: filter<string> is f''\n  SINCE :: filter<date> is f''\n\n## artifact { layout=grid tiles=[\"recalls_tiles -> year_tile\", \"recalls_tiles -> subject_tile\"] }\nsource: recalls_tiles is recalls extend {\n  view: year_tile is by_year + { where: recall_date ~ $SINCE; where: subject ~ $SUBJECT }\n  view: subject_tile is by_subject\n}\n",
+         "tiles": {
+            "recalls_tiles -> year_tile": ["MANUFACTURER", "SINCE", "SUBJECT"],
+            "recalls_tiles -> subject_tile": ["MANUFACTURER"]
+         },
+         "row": ["MANUFACTURER", "SINCE", "SUBJECT"]
+      },
+      {
+         "name": "a model given only a later tile reads comes after an earlier tile's binding",
+         "report": "##! experimental.givens\nimport \"recalls.malloy\"\n\ngiven:\n  SUBJECT :: filter<string> is f''\n  SINCE :: filter<date> is f''\n\n## artifact { layout=grid tiles=[\"all_tiles -> year_tile\", \"recalls_tiles -> subject_tile\"] }\nsource: all_tiles is all_recalls extend {\n  view: year_tile is by_year + { where: recall_date ~ $SINCE }\n}\n\nsource: recalls_tiles is recalls extend {\n  view: subject_tile is by_subject + { where: subject ~ $SUBJECT }\n}\n",
+         "tiles": {
+            "all_tiles -> year_tile": ["SINCE"],
+            "recalls_tiles -> subject_tile": ["MANUFACTURER", "SUBJECT"]
+         },
+         "row": ["SINCE", "MANUFACTURER", "SUBJECT"]
+      }
+   ]
+}

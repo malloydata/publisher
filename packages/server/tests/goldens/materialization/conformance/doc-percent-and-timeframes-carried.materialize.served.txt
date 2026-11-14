@@ -1,0 +1,32 @@
+// conformance: doc, percent and timeframes carried [materialize]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: monthly__served is {
+   order_month::date,
+   created_hour::timestamp,
+   order_week::date,
+   region::string,
+   total::number,
+   # percent
+   discount_rate::number
+}
+
+import "raw.malloy"
+
+#(materialize) storage="lake"
+source: monthly is __served_copy_alias_of_lake.virtual('f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988')::monthly__served extend {
+  internal rename:
+    order_month__stored is order_month
+    created_hour__stored is created_hour
+    order_week__stored is order_week
+  dimension:
+    #(doc) "Calendar month of the order"
+    order_month is order_month__stored.month
+    created_hour is created_hour__stored.hour
+    order_week is order_week__stored.week
+  #(doc) "Share of all orders' amount"
+  # percent
+  measure: share is total.sum() / all(total.sum())
+}

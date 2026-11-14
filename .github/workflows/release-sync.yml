@@ -1,0 +1,121 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+# Fails while a published release has not been merged back into main.
+#
+# `release.yml` publishes sdk/app/server from a `release/v<v>` branch that
+# carries the version bump and the stamped RELEASE_NOTES.md headings, and a
+# person merges that branch back as a PR. Until it merges, main's
+# packages/sdk/package.json declares the previous version and its
+# `[Unreleased]` headings still list sections that release already shipped, so
+# the next release would stamp and publish them again. npm `latest` above the
+# declared version is exactly that state, and merging the release PR is the
+# only thing that clears it. The release PR itself passes, because its tree
+# declares the new version.
+#
+# npm rather than the git tags: a release whose npm publish succeeded and whose
+# `gh-release` failed has no tag, but it shipped.
+#
+# It is meant to be a required status check on main. It runs on every PR, so
+# from the moment a release publishes until its release PR merges, every other
+# PR shows it red and, once required, cannot merge. That is deliberate: the
+# release PR is the one thing to merge next. `release.yml` does not consult it,
+# so it gates merges, not a dispatch.
+#
+# It also fails while packages/python-client/pyproject.toml declares a version
+# other than packages/sdk/package.json's. The Python SDK releases in lockstep:
+# prepare stamps both on the release branch and the release PR merges both
+# back, so a difference is a hand edit to one of them, or a branch that
+# predates the lockstep (pyproject.toml sat at 0.10.2 while main moved to
+# 0.10.3). PyPI never sees it, since prepare overwrites both, but main would
+# no longer declare the last release.
+
+name: Release sync
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Right after a release, so main reads red as soon as there is a release PR
+  # to merge, rather than at the next push. A workflow_run run checks out and
+  # reports on the default branch's head.
+  workflow_run:
+    # By the workflow's `name:`, so it must change with release.yml's.
+    workflows: ["Release (NPM + Docker + PyPI)"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per pull request: a new push to a PR cancels that PR's run still in
+# flight, since only its newest commit can merge. Every other event (a push to
+# main, workflow_run, schedule, workflow_dispatch) gets a group of its own
+# keyed on the run id, so it is never cancelled and never replaced while it
+# waits: every merged commit is tested. (Keying those on github.ref with
+# cancel-in-progress off would still drop runs, because a group holds only one
+# pending run and a newer one cancels it.)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  release_sync:
+    name: Release sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # `npm view <pkg> version` is the `latest` dist-tag, NOT the highest
+      # version published: `@malloy-publisher/sdk@1.0.1` is an old off-line
+      # publish above the real line, so comparing against the maximum would
+      # fail this forever. A prerelease publishes under `next` and never moves
+      # `latest`.
+      - name: Compare npm latest with packages/sdk/package.json
+        run: |
+          set -euo pipefail
+          NPM_LOG="$(mktemp)"
+          if ! PUBLISHED="$(npm view @malloy-publisher/sdk version 2>"$NPM_LOG")" || [ -z "$PUBLISHED" ]; then
+            # Prefixed so a line of npm's output starting with `::` is not
+            # read as a workflow command.
+            sed 's/^/[npm view] /' "$NPM_LOG"
+            echo "::error title=Release sync::could not read @malloy-publisher/sdk's latest version from npm (logged above), so this check cannot tell whether the last release merged back. Re-run the job once the registry answers."
+            exit 1
+          fi
+          DECLARED="$(node -p "require('./packages/sdk/package.json').version")"
+          if [ "$PUBLISHED" != "$DECLARED" ] \
+            && [ "$(printf '%s\n%s\n' "$PUBLISHED" "$DECLARED" | sort -V | tail -1)" = "$PUBLISHED" ]; then
+            echo "::error title=Release sync::npm latest is ${PUBLISHED} but packages/sdk/package.json declares ${DECLARED}: release ${PUBLISHED} has not been merged back. Merge the pull request from release/v${PUBLISHED} into main (titled 'chore(release): ${PUBLISHED}'); that is the only fix."
+            exit 1
+          fi
+          echo "npm latest ${PUBLISHED}, packages/sdk/package.json ${DECLARED}: nothing waiting to merge back"
+
+      # The runner's python3 (3.12, so tomllib is stdlib); nothing installed.
+      - name: Compare packages/python-client/pyproject.toml with packages/sdk/package.json
+        run: |
+          set -euo pipefail
+          DECLARED="$(node -p "require('./packages/sdk/package.json').version")"
+          PY_LOG="$(mktemp)"
+          if ! PYPROJECT="$(python3 -c '
+          import sys, tomllib
+          with open(sys.argv[1], "rb") as f:
+              print(tomllib.load(f)["project"]["version"])
+          ' packages/python-client/pyproject.toml 2>"$PY_LOG")" || [ -z "$PYPROJECT" ]; then
+            sed 's/^/[pyproject] /' "$PY_LOG"
+            echo "::error title=Release sync::could not read [project] version from packages/python-client/pyproject.toml (logged above)."
+            exit 1
+          fi
+          # Validated before it reaches an annotation: tomllib decodes `\n`
+          # escapes, so the raw value could carry a line of its own.
+          if [[ ! "$PYPROJECT" =~ ^[0-9A-Za-z.+-]+$ ]]; then
+            printf '%s\n' "$PYPROJECT" | sed 's/^/[pyproject] /'
+            echo "::error title=Release sync::packages/python-client/pyproject.toml's [project] version (logged above) is not a version string."
+            exit 1
+          fi
+          if [ "$PYPROJECT" != "$DECLARED" ]; then
+            echo "::error title=Release sync::packages/python-client/pyproject.toml declares ${PYPROJECT} but packages/sdk/package.json declares ${DECLARED}. The Python SDK releases in lockstep (release.yml's prepare stamps both), so set pyproject.toml's version to ${DECLARED}."
+            exit 1
+          fi
+          echo "packages/python-client/pyproject.toml and packages/sdk/package.json both declare ${DECLARED}"

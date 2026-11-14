@@ -2,6 +2,8 @@
 import { orders } from '../orders.malloy'
 import { BRAND } from '../givens.malloy'
 
+// Only a model-level `## artifact` makes a report, so this query-level tag
+// is not read: the file is an ordinary model, and `explores` lists it.
 # artifact { title="Listed" }
 query: listed is orders -> {
    where: brand_name ~ $BRAND

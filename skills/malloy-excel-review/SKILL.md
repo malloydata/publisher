@@ -70,7 +70,7 @@ These are not preferences. They exist because a workbook can carry credentials a
 
 ## Running the Script
 
-`scripts/classify_workbook.py` is stdlib-only Python 3. It runs where you have a shell; the Credible app's agent has no shell tool and the skills bundle ships markdown only, so the prose stands alone and `reference/limitations.md` says what the script would have told you.
+`scripts/classify_workbook.py` is stdlib-only Python 3. It runs where you have a shell; a regular chat in a client such as Credible has no shell tool (an agent's own computer does) and the skills bundle ships markdown only, so the prose stands alone and `reference/limitations.md` says what the script would have told you.
 
 ```bash
 python3 scripts/classify_workbook.py book.xlsx             # Markdown report (same as `classify`)

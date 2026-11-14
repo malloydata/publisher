@@ -4,69 +4,24 @@
 /**
  * Main-thread half of the package-load worker pool.
  *
- * Why this exists: Malloy compile is pure JavaScript that runs on the
- * V8 main event loop. A large package can hold the loop for many
- * seconds — long enough to time out the Kubernetes `/health/liveness`
- * probe (timeout=5s, see worker/main.tf) and trigger a pod restart in
- * the middle of an otherwise routine package load. This pool moves the
- * CPU-bound bulk of `Package.create` (manifest read, every
- * `.malloy`/`.malloynb` compile) into `worker_threads` workers, leaving
- * the main loop free to serve `/health/liveness` and other API traffic.
+ * Malloy compile is synchronous JavaScript; a large package can hold the event
+ * loop long enough to fail the Kubernetes liveness probe and restart the pod.
+ * This pool runs the CPU-bound bulk of `Package.create` in `worker_threads`
+ * workers instead. The pool is REQUIRED: there is no in-process fallback, and
+ * `PACKAGE_LOAD_WORKERS=0` throws at boot. Pool failures reject `loadPackage()`,
+ * which `Package.loadViaWorker` rewraps as a 503.
  *
- * Public surface
- * --------------
- *   getPackageLoadPool()       — lazy singleton; respects PACKAGE_LOAD_WORKERS
- *   pool.loadPackage({...})    — submit one package for off-thread load
- *   pool.shutdown()            — graceful drain (called from health.ts)
- *
- * The pool is REQUIRED. There is no in-process compile fallback —
- * `PACKAGE_LOAD_WORKERS=0` throws at boot. Running Malloy compile on
- * the main event loop is what tripped the K8s liveness probe in the
- * first place; we don't want a knob that re-enables that. Pool-
- * infrastructure failures (worker crash, job timeout, pool shutting
- * down) reject `loadPackage()`; `Package.loadViaWorker` then rewraps
- * them as `ServiceUnavailableError` so the HTTP layer responds 503.
- *
- * Concurrency model
- * -----------------
- *   - Workers are spawned lazily on first use, up to N (configurable
- *     via PACKAGE_LOAD_WORKERS).
- *   - Each worker emits {type:'ready'} once its module has initialized;
- *     the pool waits for that before dispatching to a newly-spawned
- *     worker.
- *   - **Per-worker active job cap = 1.** Compile is CPU-bound and
- *     doesn't multiplex meaningfully inside a single event loop, so
- *     loading two large packages on the same worker just doubles each
- *     of their latencies rather than overlapping their work. Excess
- *     jobs queue at the pool layer and pick a worker the moment one
- *     becomes idle.
- *   - Schema/URL/connection-metadata RPCs from a worker back to the
- *     main thread (over MessagePort) are not counted against the
- *     active-job cap — they're sub-RPCs of the worker's currently
- *     active load-package job.
- *
- * Failure modes
- * -------------
- *   - **Worker spawn fails.** `pw.ready` rejects on `worker.error`,
- *     `worker.exit`, or after `WORKER_SPAWN_TIMEOUT_MS`. Pending jobs
- *     waiting on that worker get a clean rejection and are re-queued
- *     to whichever worker becomes available next.
- *   - **Worker dies mid-job.** `worker.exit` fails every in-flight job
- *     on that worker; the pool prunes the dead worker, and the next
- *     `loadPackage()` lazily respawns up to `maxWorkers`.
- *   - **Job timeout.** `PACKAGE_LOAD_JOB_TIMEOUT_MS` (default 120s) caps a
- *     single package load. On timeout we **terminate the worker** and
- *     reject the caller — we do not silently fall back, and we do not
- *     leave a zombie compile burning CPU on the worker.
- *
- * Schema-fetch RPC routing
- * ------------------------
- *   When a worker proxies `fetchSchemaForTables` (or other connection
- *   metadata calls) back to the main thread, the message includes a
- *   `jobId`. The pool keeps a `jobId → JobContext` map so it knows
- *   which live `MalloyConfig` to dispatch the request against. The
- *   mapping is installed when the job is submitted and removed when
- *   it resolves.
+ * - Workers spawn lazily, up to `PACKAGE_LOAD_WORKERS`, and take jobs only
+ *   after their `ready` handshake.
+ * - One job per worker: compile does not overlap inside one event loop, so a
+ *   second job only doubles both latencies. Excess jobs queue here. A worker's
+ *   proxy RPCs back to this thread are part of its job, routed by `jobId` to
+ *   that job's live `MalloyConfig`.
+ * - A worker that fails to spawn, or exits mid-job, fails its jobs and is
+ *   pruned; the next dispatch respawns.
+ * - A job past its limit terminates its worker rather than leave a zombie
+ *   compile burning CPU, and the worker is retired so no queued load goes to it
+ *   while it exits.
  */
 import type {
    FetchSchemaOptions,
@@ -83,11 +38,13 @@ import { dirname, join } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
 import { logger } from "../logger";
+import { Settings, settings } from "../settings";
 import type {
    PackageMaterializationConfig,
    PackageScope,
 } from "../service/package_manifest";
-import type { PackageRetrievalSettings } from "../service/package_retrieval";
+import type { PackageRetrievalSettings } from "../service/package_retrieval_settings";
+import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
 import type {
    ConnectionMetadataRequest,
    ConnectionMetadataResponse,
@@ -103,60 +60,53 @@ import type {
    SchemaForTablesRequest,
    SchemaForTablesResponse,
    SerializedModel,
+   WorkerLogMessage,
    WorkerToMainMessage,
 } from "./protocol";
+import { checkLoadPackageResult } from "./protocol_decode";
 
 // ──────────────────────────────────────────────────────────────────────
 // Configuration
 // ──────────────────────────────────────────────────────────────────────
 
 /**
- * Returns the configured worker pool size. The pool is REQUIRED — no
- * in-process fallback exists. Defaults to 1 worker when the env var
- * is unset; throws when set to 0 or to a non-positive / non-numeric
- * value so we fail fast at boot rather than silently degrading.
- *
- * Operators set `PACKAGE_LOAD_WORKERS=N` (N ≥ 1) to tune the pool
- * size for their workload. Setting it to 0 to "disable" the pool is
- * unsupported by design — running Malloy compile on the main event
- * loop is what tripped the K8s liveness probe in the first place
- * and we don't want a config knob that re-enables that footgun.
+ * The configured pool size (`packageLoad.workers`, `PACKAGE_LOAD_WORKERS`,
+ * default 1). There is deliberately no way to turn the pool off: compiling on
+ * the main event loop is what fails the liveness probe.
  */
 export function getPackageLoadWorkerCount(): number {
-   const raw = process.env.PACKAGE_LOAD_WORKERS;
-   if (raw === undefined) return 1;
-   const parsed = Number.parseInt(raw, 10);
-   if (!Number.isFinite(parsed) || parsed < 1) {
-      throw new Error(
-         `PACKAGE_LOAD_WORKERS must be a positive integer (got ${JSON.stringify(raw)}). ` +
-            `Refusing to start without a package-load worker pool.`,
-      );
-   }
-   return parsed;
+   return settings.get("packageLoad.workers");
+}
+
+export { DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES } from "../constants";
+
+/**
+ * Serialized bytes of schema each worker caches across loads
+ * (`packageLoad.schemaCacheBytes`; see `schema_cache.ts`); 0 disables it.
+ */
+export function getPackageLoadSchemaCacheBytes(): number {
+   return settings.get("packageLoad.schemaCacheBytes");
 }
 
 /**
- * Wall-clock cap for a single load-package job. If a worker hangs we
- * don't want to leak a Promise forever. Twice the K8s liveness
- * threshold (5s × 15 fails = 75s) gives comfortable margin against
- * false timeouts during cold starts while still failing fast on real
- * hangs. Overridable via `PACKAGE_LOAD_JOB_TIMEOUT_MS`.
+ * The share of a job's timeout the worker spends on work for the main thread,
+ * render-tag results, pre-aggregation companions and the build plan, before
+ * leaving the rest to it (see LoadPackageRequest.mainThreadWorkBudgetMs).
  */
-const PACKAGE_LOAD_JOB_TIMEOUT_MS = (() => {
-   const raw = process.env.PACKAGE_LOAD_JOB_TIMEOUT_MS;
-   if (raw === undefined) return 120_000;
-   const parsed = Number.parseInt(raw, 10);
-   if (!Number.isFinite(parsed) || parsed <= 0) return 120_000;
-   return parsed;
-})();
+const MAIN_THREAD_WORK_BUDGET_SHARE = 0.75;
 
 /**
- * How long a freshly-spawned worker has to send its `ready` handshake.
- * If the worker can't load its bundle (missing `package_load_worker.mjs`,
- * native module init failure, etc.), this fires and the pool fails
- * the pending jobs on that worker without waiting forever. Distinct
- * from the per-job timeout so a slow-to-start worker doesn't poison
- * the job timeout budget.
+ * How many times `packageLoad.jobTimeoutMs` the pool lets a job run. The
+ * timeout bounds the compile; the main-thread work interleaved with it starts
+ * no new piece past MAIN_THREAD_WORK_BUDGET_SHARE, so a job whose compile fits
+ * the timeout finishes within twice it.
+ */
+const JOB_LIMIT_FACTOR = 2;
+
+/**
+ * How long a freshly-spawned worker has to send its `ready` handshake (e.g.
+ * if its bundle or a native module fails to load). Separate from the job
+ * timeout so a slow start does not eat the job's budget.
  */
 const WORKER_SPAWN_TIMEOUT_MS = 30_000;
 
@@ -174,8 +124,41 @@ interface JobContext {
    timeout: ReturnType<typeof setTimeout>;
 }
 
+/**
+ * How long a background job may wait behind foreground jobs before a free
+ * worker takes it anyway, so sustained user load never starves a connection
+ * edit's re-derivation (whose readers would otherwise answer 503 forever).
+ */
+export const BACKGROUND_JOB_MAX_WAIT_MS = 30_000;
+
+/**
+ * Which queued job a free worker takes: the oldest background job once it has
+ * waited {@link BACKGROUND_JOB_MAX_WAIT_MS}, otherwise the oldest foreground
+ * job, or the oldest background job when no foreground job waits (see
+ * LoadPackageJob.background). A job without `enqueuedAt` never ages.
+ */
+export function nextQueuedJobIndex(
+   queue: readonly {
+      request: { background?: boolean };
+      enqueuedAt?: number;
+   }[],
+   now: number = Date.now(),
+   maxBackgroundWaitMs: number = BACKGROUND_JOB_MAX_WAIT_MS,
+): number {
+   const background = queue.findIndex((q) => q.request.background);
+   const waitedSince =
+      background >= 0 ? queue[background].enqueuedAt : undefined;
+   if (waitedSince !== undefined && now - waitedSince >= maxBackgroundWaitMs) {
+      return background;
+   }
+   const foreground = queue.findIndex((q) => !q.request.background);
+   return foreground >= 0 ? foreground : 0;
+}
+
 interface QueuedJob {
    request: LoadPackageJob;
+   /** When it was queued, for {@link nextQueuedJobIndex}'s aging. */
+   enqueuedAt?: number;
    resolve: (result: LoadPackageOutcome) => void;
    reject: (err: Error) => void;
 }
@@ -184,16 +167,17 @@ interface PoolWorker {
    id: number;
    worker: Worker;
    ready: Promise<void>;
-   inFlight: Set<string>; // job ids — capped at 1 by per-worker active job rule
+   inFlight: Set<string>; // job ids; at most one
    exited: boolean;
+   /**
+    * Stopping and not yet exited: terminated after a job timeout, or failed to
+    * start or errored. It takes no new job, but holds its slot until it exits,
+    * so the pool never runs more than `maxWorkers` threads.
+    */
+   retiring: boolean;
 }
 
-/**
- * Minimal URL-reader shape the pool dispatches to. Intentionally
- * narrower than Malloy's `URLReader` (which can also return
- * `{contents, invalidationKey}`) — the pool only needs the string
- * payload to forward back to the worker.
- */
+/** The URL-reader shape the pool dispatches a worker's `read-url` requests to. */
 export interface PackageLoadUrlReader {
    readURL(
       url: URL,
@@ -203,12 +187,11 @@ export interface PackageLoadUrlReader {
 export interface LoadPackageJob {
    packagePath: string;
    packageName: string;
+   /** See {@link LoadPackageRequest.environmentName}. */
+   environmentName: string;
    /**
-    * The live MalloyConfig. We don't ship it across the worker
-    * boundary; we hold it on the main side and answer the worker's
-    * proxy RPCs (for non-duckdb connections) against
-    * `config.connections`. The worker has its own DuckDB connection
-    * for embedded-database probes.
+    * The live MalloyConfig. It stays on this thread, which answers the
+    * worker's proxy RPCs against `config.connections`.
     */
    malloyConfig: MalloyConfig;
    /** Default connection name (passed verbatim to the worker). */
@@ -219,27 +202,34 @@ export interface LoadPackageJob {
    buildManifest?: unknown;
    /** Optional in-memory model replacement for a package compile dry-run. */
    replacement?: { modelPath: string; source: string };
+   /** More in-memory files for a package compile dry-run (a request's `files` overlay). */
+   overlay?: { modelPath: string; source: string }[];
    /** Return non-fatal compiler diagnostics for dry-run reporting. */
    collectProblems?: boolean;
+   /** See {@link LoadPackageRequest.computeBuildPlan}. */
+   computeBuildPlan?: boolean;
+   /** See {@link LoadPackageRequest.withPreaggregateCompanions}. */
+   withPreaggregateCompanions?: boolean;
+   /** See {@link LoadPackageRequest.withEntities}. */
+   withEntities?: boolean;
+   /**
+    * Background work (a connection edit's build-plan re-derivation): stays on
+    * this thread's queue behind every foreground job, so a publish or reload
+    * waits for at most the background job already running, never a backlog.
+    */
+   background?: boolean;
 }
 
 /**
- * Adapter result the pool surfaces to callers. Same wire shape as
- * `LoadPackageResult` but with the heavy `modelDef` / `sourceInfos`
- * fields restored to their Malloy types so the consumer (currently
- * `Package.createViaWorker`) doesn't need to repeat the cast at
- * every call site. The protocol module uses `unknown` for these so
- * it stays decoupled from the full Malloy type surface; this is
- * where we re-tighten.
- *
- * `filterMap` stays as the wire array; `Model.fromSerialized` will
- * rebuild a `Map` on demand. Keeping it array-shaped here means we
- * don't allocate a Map for models the caller never looks at.
+ * `LoadPackageResult` with `modelDef` / `sourceInfos` restored to their Malloy
+ * types. `filterMap` stays the wire array; `Model.fromSerialized` builds a
+ * `Map` only for models it uses.
  */
 export interface LoadPackageOutcome {
    packageMetadata: {
       name?: string;
       description?: string;
+      location?: string;
       explores?: string[];
       queryableSources?: "declared" | "all";
       manifestLocation?: string | null;
@@ -247,8 +237,12 @@ export interface LoadPackageOutcome {
       scope?: PackageScope;
       /** See {@link LoadPackageResult.packageMetadata.manifestWarnings}. */
       manifestWarnings?: string[];
+      /** Deprecated publisher.json keys the manifest declares, at any value. */
+      deprecatedManifestKeys?: DeprecatedManifestKey[];
       /** See {@link LoadPackageResult.packageMetadata.retrieval}. */
       retrieval?: PackageRetrievalSettings;
+      /** See {@link LoadPackageResult.packageMetadata.agents}. */
+      agents?: unknown;
    };
    replacementMatchedExisting?: boolean;
    models: Array<
@@ -260,6 +254,8 @@ export interface LoadPackageOutcome {
    loadDurationMs: number;
    /** Per-load phase timing breakdown (see {@link LoadPackageResult.timings}). */
    timings: LoadPackageResult["timings"];
+   /** See {@link LoadPackageResult.buildPlan}. */
+   buildPlan?: LoadPackageResult["buildPlan"];
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -267,16 +263,9 @@ export interface LoadPackageOutcome {
 // ──────────────────────────────────────────────────────────────────────
 
 /**
- * Locate the worker entrypoint. In production builds it's bundled to
- * `dist/package_load_worker.mjs` next to `server.mjs`. In dev
- * (bun --watch) the source `.ts` next to this file loads directly —
- * Bun supports `new Worker(<ts-url>)`. The .ts fallback also keeps
- * `bun test` working without a build step.
- *
- * Uses `pathToFileURL` rather than a `file://${path}` template so the
- * URL stays valid on Windows, where absolute paths look like
- * `D:\foo\bar` (template form would yield `file://D:\foo\bar`, which
- * parses as host `D:` rather than a path).
+ * Locate the worker entrypoint: the bundled `package_load_worker.mjs` in a
+ * build, or the `.ts` source under Bun (dev and `bun test`). `pathToFileURL`,
+ * not a `file://` template, so a Windows `D:\` path is not parsed as a host.
  */
 function resolveWorkerScript(): URL {
    const thisFile = fileURLToPath(import.meta.url);
@@ -302,8 +291,22 @@ export class PackageLoadPool {
    private nextJobId = 0;
    private shuttingDown = false;
    private readonly workerScript: URL;
+   private readonly schemaCacheBytes: number;
+   private readonly mainThreadWorkBudgetMs: number;
+   private readonly jobTimeoutMs: number;
+   /** How long a job may run before it is terminated (see JOB_LIMIT_FACTOR). */
+   private readonly jobLimitMs: number;
 
-   constructor(maxWorkers: number, workerScript?: URL) {
+   constructor(
+      maxWorkers: number,
+      workerScript?: URL,
+      options: {
+         /** See LoadPackageRequest.mainThreadWorkBudgetMs. */
+         mainThreadWorkBudgetMs?: number;
+         /** Overrides `packageLoad.jobTimeoutMs`. */
+         jobTimeoutMs?: number;
+      } = {},
+   ) {
       if (!Number.isFinite(maxWorkers) || maxWorkers < 1) {
          throw new Error(
             `PackageLoadPool requires maxWorkers >= 1 (got ${maxWorkers}). ` +
@@ -313,6 +316,15 @@ export class PackageLoadPool {
       }
       this.maxWorkers = maxWorkers;
       this.workerScript = workerScript ?? resolveWorkerScript();
+      this.schemaCacheBytes = getPackageLoadSchemaCacheBytes();
+      // The compile budget of one job, so a hung worker cannot leak a Promise
+      // forever. Generous enough for cold starts.
+      this.jobTimeoutMs =
+         options.jobTimeoutMs ?? settings.get("packageLoad.jobTimeoutMs");
+      this.jobLimitMs = JOB_LIMIT_FACTOR * this.jobTimeoutMs;
+      this.mainThreadWorkBudgetMs =
+         options.mainThreadWorkBudgetMs ??
+         MAIN_THREAD_WORK_BUDGET_SHARE * this.jobTimeoutMs;
    }
 
    get size(): number {
@@ -320,21 +332,16 @@ export class PackageLoadPool {
    }
 
    /**
-    * Submit a package for off-thread load. Returns when the worker
-    * has produced a {@link LoadPackageOutcome}. Per-package compile
-    * failures are surfaced **inside** the outcome (as
-    * `model.compilationError`), not as a rejected Promise — the
-    * Promise only rejects for whole-package errors (manifest missing,
-    * worker crash, RPC timeout, etc.) so the caller can distinguish
-    * "this package is broken; tell the user" from "the worker pool
-    * itself failed and we have a bigger problem".
+    * Submit a package for off-thread load. Per-model compile failures come
+    * back inside the outcome (`model.compilationError`); the Promise rejects
+    * only for whole-package or pool failures.
     */
    async loadPackage(request: LoadPackageJob): Promise<LoadPackageOutcome> {
       if (this.shuttingDown) {
          throw new Error("PackageLoadPool is shutting down");
       }
       return new Promise<LoadPackageOutcome>((resolve, reject) => {
-         this.queue.push({ request, resolve, reject });
+         this.queue.push({ request, resolve, reject, enqueuedAt: Date.now() });
          this.tryDispatch();
       });
    }
@@ -376,31 +383,22 @@ export class PackageLoadPool {
    // Internals: dispatch / queue
    // ────────────────────────────────────────────────────────────────
 
-   /**
-    * Greedy dispatcher: keep draining the queue while there's both
-    * a queued job and an available worker. Called from `loadPackage`
-    * (on submit) and from job completion / worker exit (to give the
-    * next job a worker that just freed up).
-    */
+   /** Drain the queue while there is both a queued job and an available worker. */
    private tryDispatch(): void {
       if (this.shuttingDown) return;
       while (this.queue.length > 0) {
          const worker = this.findIdleOrSpawnable();
          if (!worker) return; // saturated; wait for a job to finish
-         const qj = this.queue.shift();
+         const [qj] = this.queue.splice(nextQueuedJobIndex(this.queue), 1);
          if (!qj) return;
          void this.dispatchToWorker(worker, qj);
       }
    }
 
-   /**
-    * Return an idle worker, or spawn a new one if we're below
-    * `maxWorkers`. With per-worker active=1, "idle" means
-    * `inFlight.size === 0`. Returns null when the pool is saturated.
-    */
+   /** An idle worker, a newly spawned one below `maxWorkers`, or null when saturated. */
    private findIdleOrSpawnable(): PoolWorker | null {
       const alive = this.workers.filter((w) => !w.exited);
-      const idle = alive.find((w) => w.inFlight.size === 0);
+      const idle = alive.find((w) => !w.retiring && w.inFlight.size === 0);
       if (idle) return idle;
       if (alive.length < this.maxWorkers) {
          const pw = this.spawnWorker();
@@ -414,23 +412,27 @@ export class PackageLoadPool {
       pw: PoolWorker,
       qj: QueuedJob,
    ): Promise<void> {
+      // Reserve the worker before waiting for it to become ready. A spawned
+      // worker takes a moment to start, and until the job is in `inFlight`
+      // the dispatcher sees it as idle, so every job of a burst would land on
+      // the first worker spawned and run there concurrently.
+      this.nextJobId += 1;
+      const jobId = `job-${this.nextJobId}`;
+      pw.inFlight.add(jobId);
       try {
          await pw.ready;
       } catch (err) {
-         // Spawn failed; this worker is dead. Reject this job and
-         // try the next queued one — a different worker may already
-         // be alive, or `findIdleOrSpawnable` will lazily spawn one.
+         // Spawn failed: reject this job and let the next one find or spawn
+         // another worker.
+         pw.inFlight.delete(jobId);
          qj.reject(err as Error);
          this.tryDispatch();
          return;
       }
 
-      this.nextJobId += 1;
-      const jobId = `job-${this.nextJobId}`;
-
       const timeout = setTimeout(() => {
          this.handleJobTimeout(pw, jobId, qj.request.packagePath);
-      }, PACKAGE_LOAD_JOB_TIMEOUT_MS);
+      }, this.jobLimitMs);
 
       this.jobs.set(jobId, {
          jobId,
@@ -448,30 +450,28 @@ export class PackageLoadPool {
          timeout,
       });
 
-      // Register inFlight BEFORE postMessage so the next concurrent
-      // dispatcher pass sees this worker as busy (fixes Sha-Bang #1's
-      // 4/1 skew where simultaneous callers all tiebreak to alive[0]).
-      pw.inFlight.add(jobId);
-
       const message: LoadPackageRequest = {
          type: "load-package",
          requestId: jobId,
          packagePath: qj.request.packagePath,
          packageName: qj.request.packageName,
+         environmentName: qj.request.environmentName,
          defaultConnectionName: qj.request.defaultConnectionName,
          buildManifest: qj.request.buildManifest,
          replacement: qj.request.replacement,
+         overlay: qj.request.overlay,
          collectProblems: qj.request.collectProblems,
+         computeBuildPlan: qj.request.computeBuildPlan,
+         withPreaggregateCompanions: qj.request.withPreaggregateCompanions,
+         withEntities: qj.request.withEntities,
+         mainThreadWorkBudgetMs: this.mainThreadWorkBudgetMs,
       };
       pw.worker.postMessage(message);
    }
 
    /**
-    * On job timeout we DON'T silently fall back — that lets the
-    * worker keep burning CPU on the doomed compile while the caller
-    * also re-runs it on the main thread (the exact 2× CPU situation
-    * the pool exists to avoid). Instead: terminate the worker,
-    * reject the caller, and let the next call respawn lazily.
+    * Terminate the worker and reject the caller. Never fall back to compiling
+    * on this thread: the worker would keep burning CPU on the same compile.
     */
    private handleJobTimeout(
       pw: PoolWorker,
@@ -479,17 +479,19 @@ export class PackageLoadPool {
       packagePath: string,
    ): void {
       logger.error(
-         `PackageLoadPool: job ${jobId} (${packagePath}) timed out after ${PACKAGE_LOAD_JOB_TIMEOUT_MS}ms; terminating worker #${pw.id}`,
+         `PackageLoadPool: job ${jobId} (${packagePath}) timed out after ${this.jobLimitMs}ms; terminating worker #${pw.id}`,
       );
+      // Before the caller hears of the timeout: a load it retries must not be
+      // sent to this worker, which is about to exit and would fail it.
+      pw.retiring = true;
       this.failJob(
          jobId,
          new Error(
-            `Package-load worker timed out after ${PACKAGE_LOAD_JOB_TIMEOUT_MS}ms (package=${packagePath})`,
+            `Package-load worker timed out after ${this.jobLimitMs}ms (package=${packagePath})`,
          ),
       );
       void pw.worker.terminate();
-      // The exit handler will mark the worker exited, fail any
-      // residual jobs on it, and trigger tryDispatch.
+      // The exit handler fails any residual jobs and redispatches.
    }
 
    private spawnWorker(): PoolWorker {
@@ -500,6 +502,12 @@ export class PackageLoadPool {
       );
       const worker = new Worker(this.workerScript, {
          name: `malloy-package-load-worker-${id}`,
+         // The worker reads its settings (the logger's, today) from these
+         // rather than from its copy of the environment, which no flag reaches.
+         workerData: {
+            schemaCacheBytes: this.schemaCacheBytes,
+            settings: Settings.current().toWorkerData(),
+         },
       });
 
       let readyResolve!: () => void;
@@ -517,12 +525,13 @@ export class PackageLoadPool {
             reject(err);
          };
       });
-      // Silence unhandled-rejection on `ready` itself — every caller
-      // that consumes it (via dispatchToWorker) handles rejection
-      // explicitly, but Node still tracks the original promise.
+      // Callers handle rejection, but Node still tracks the original promise.
       ready.catch(() => {});
 
       const spawnTimer = setTimeout(() => {
+         // Retired before the rejection reaches a waiting load, so the loads
+         // queued behind it go to a new worker rather than to this one.
+         pw.retiring = true;
          readyReject(
             new Error(
                `Package-load worker #${id} failed to become ready within ${WORKER_SPAWN_TIMEOUT_MS}ms`,
@@ -537,6 +546,7 @@ export class PackageLoadPool {
          ready,
          inFlight: new Set(),
          exited: false,
+         retiring: false,
       };
 
       worker.on("message", (msg: WorkerToMainMessage) => {
@@ -548,6 +558,9 @@ export class PackageLoadPool {
             error: err,
          });
          clearTimeout(spawnTimer);
+         // An uncaught error ends the worker; until its exit event it would
+         // look idle and take every queued load. See spawnTimer above.
+         pw.retiring = true;
          readyReject(err);
       });
 
@@ -562,8 +575,6 @@ export class PackageLoadPool {
          logger.warn(
             `PackageLoadPool: worker #${id} exited (code=${code}, inFlight=${pw.inFlight.size})`,
          );
-         // Fail any jobs that were running on this worker so callers
-         // don't strand waiting for a result that will never come.
          for (const jobId of Array.from(pw.inFlight)) {
             this.failJob(
                jobId,
@@ -573,11 +584,8 @@ export class PackageLoadPool {
             );
          }
          pw.inFlight.clear();
-         // Prune the dead worker so size accounting is honest and
-         // the next dispatch will see a free slot to respawn into.
          const idx = this.workers.indexOf(pw);
          if (idx >= 0) this.workers.splice(idx, 1);
-         // Give queued jobs a chance to dispatch elsewhere.
          this.tryDispatch();
       });
 
@@ -606,16 +614,19 @@ export class PackageLoadPool {
             this.errorJob(pw, msg);
             return;
          case "connection-metadata":
-            void this.handleConnectionMetadata(pw, msg);
+            this.answerWorker(pw, msg, this.handleConnectionMetadata(pw, msg));
             return;
          case "schema-for-tables":
-            void this.handleSchemaForTables(pw, msg);
+            this.answerWorker(pw, msg, this.handleSchemaForTables(pw, msg));
             return;
          case "schema-for-sql":
-            void this.handleSchemaForSql(pw, msg);
+            this.answerWorker(pw, msg, this.handleSchemaForSql(pw, msg));
             return;
          case "read-url":
-            void this.handleReadUrl(pw, msg);
+            this.answerWorker(pw, msg, this.handleReadUrl(pw, msg));
+            return;
+         case "log":
+            handleWorkerLog(msg);
             return;
          default: {
             const exhaustive: never = msg;
@@ -630,8 +641,24 @@ export class PackageLoadPool {
       if (!ctx) return;
       this.jobs.delete(msg.requestId);
       pw.inFlight.delete(msg.requestId);
-      ctx.resolve(msg);
-      // Worker is idle now — give it the next queued job (if any).
+      // The message is structured-clone data typed only by the union; check
+      // its protocol version and envelope before anything casts into it.
+      let checked: LoadPackageResult;
+      try {
+         checked = checkLoadPackageResult(msg);
+      } catch (error) {
+         logger.error(
+            `PackageLoadPool: worker #${pw.id} sent a result this server cannot read`,
+            {
+               requestId: msg.requestId,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+         ctx.reject(error as Error);
+         this.tryDispatch();
+         return;
+      }
+      ctx.resolve(checked);
       this.tryDispatch();
    }
 
@@ -642,6 +669,44 @@ export class PackageLoadPool {
       pw.inFlight.delete(msg.requestId);
       ctx.reject(deserializeError(msg.error));
       this.tryDispatch();
+   }
+
+   /**
+    * Send a worker the answer to one of its requests. The worker may have been
+    * terminated meanwhile, and posting to it throws (`InvalidStateError` under
+    * Bun 1.3); unawaited, that would be an unhandled rejection that ends the
+    * process. So an exited worker is skipped and a throw is logged.
+    */
+   private postToWorker(pw: PoolWorker, message: MainToWorkerMessage): void {
+      if (pw.exited) return;
+      try {
+         pw.worker.postMessage(message);
+      } catch (error) {
+         logger.warn(
+            `PackageLoadPool: dropped an answer to worker #${pw.id}, which has stopped`,
+            { error: error instanceof Error ? error.message : String(error) },
+         );
+      }
+   }
+
+   /**
+    * Run a request handler that nothing awaits, logging a failure instead of
+    * leaving it to end the process as an unhandled rejection.
+    */
+   private answerWorker(
+      pw: PoolWorker,
+      msg: { type: string; requestId: string },
+      handling: Promise<void>,
+   ): void {
+      handling.catch((error: unknown) => {
+         logger.error(
+            `PackageLoadPool: answering worker #${pw.id}'s ${msg.type} request failed`,
+            {
+               requestId: msg.requestId,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+      });
    }
 
    /** Fail a job out-of-band (timeout, worker exit). */
@@ -661,7 +726,7 @@ export class PackageLoadPool {
       const reply = (
          response: ConnectionMetadataResponse | RpcErrorResponse,
       ): void => {
-         pw.worker.postMessage(response as MainToWorkerMessage);
+         this.postToWorker(pw, response as MainToWorkerMessage);
       };
       if (!ctx) {
          reply({
@@ -687,6 +752,7 @@ export class PackageLoadPool {
                   typeof conn.getDigest === "function"
                      ? conn.getDigest()
                      : msg.connectionName,
+               generation: connectionGeneration(conn),
             },
          });
       } catch (error) {
@@ -707,7 +773,7 @@ export class PackageLoadPool {
       const reply = (
          response: SchemaForTablesResponse | RpcErrorResponse,
       ): void => {
-         pw.worker.postMessage(response as MainToWorkerMessage);
+         this.postToWorker(pw, response as MainToWorkerMessage);
       };
       if (!ctx) {
          reply({
@@ -751,7 +817,7 @@ export class PackageLoadPool {
       const reply = (
          response: SchemaForSqlResponse | RpcErrorResponse,
       ): void => {
-         pw.worker.postMessage(response as MainToWorkerMessage);
+         this.postToWorker(pw, response as MainToWorkerMessage);
       };
       if (!ctx) {
          reply({
@@ -803,7 +869,7 @@ export class PackageLoadPool {
    ): Promise<void> {
       const ctx = this.jobs.get(msg.jobId);
       const reply = (response: ReadUrlResponse | RpcErrorResponse): void => {
-         pw.worker.postMessage(response as MainToWorkerMessage);
+         this.postToWorker(pw, response as MainToWorkerMessage);
       };
       if (!ctx) {
          reply({
@@ -844,12 +910,37 @@ function buildFetchOptions(options: {
    return out;
 }
 
+const connectionGenerations = new WeakMap<object, number>();
+let lastConnectionGeneration = 0;
+
+/** A number unique to `conn`'s instance (see ConnectionMetadata.generation). */
+function connectionGeneration(conn: object): number {
+   let generation = connectionGenerations.get(conn);
+   if (generation === undefined) {
+      lastConnectionGeneration += 1;
+      generation = lastConnectionGeneration;
+      connectionGenerations.set(conn, generation);
+   }
+   return generation;
+}
+
 /**
- * Hydrate the wire-typed serialized model fields back into their
- * full Malloy types. Cheap (one pass, no copy); `filterMap` is
- * deliberately left as the wire array — `Model.fromSerialized`
- * rebuilds the `Map` lazily for the models it actually uses.
+ * Log an entry a job wrote in the worker on this thread, whose logger reaches
+ * the OpenTelemetry log pipeline (see WorkerLogMessage), naming the package
+ * the job loads.
  */
+export function handleWorkerLog(msg: WorkerLogMessage): void {
+   // As one entry rather than `log(level, message, meta)`, which reads a `%`
+   // in the message as a format directive and then drops the meta.
+   logger.log({
+      packagePath: msg.packagePath,
+      ...msg.meta,
+      level: msg.level,
+      message: msg.message,
+   });
+}
+
+/** Restore the wire-typed model fields to their Malloy types (no copy). */
 function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
    return {
       packageMetadata: result.packageMetadata,
@@ -861,6 +952,7 @@ function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
       })),
       loadDurationMs: result.loadDurationMs,
       timings: result.timings,
+      buildPlan: result.buildPlan,
    };
 }
 

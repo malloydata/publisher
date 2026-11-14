@@ -2,11 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import { useQueries } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import type { Given } from "../client";
-import { givensToRequest } from "../components/given/paramCodec";
+import { withPreamble } from "../components/Dashboard/textSource";
+import { malloyIdentifier } from "../components/ModelViewer/malloyRunText";
+import {
+   givensToRequest,
+   withHostGivens,
+} from "../components/given/paramCodec";
 import { useServer } from "../components/ServerProvider";
-import type { GivenValue } from "./givenValue";
+import type { GivenValue, HostGivenValue } from "./givenValue";
 
 /**
  * How many options a generated `suggest { source=… dimension=… }` asks for.
@@ -15,11 +20,42 @@ import type { GivenValue } from "./givenValue";
  * is also 1000 but caps silently and in whatever order the warehouse returns.
  * An explicit limit with an explicit order makes a truncated list the same list
  * every time, and makes the cap something a reader of this file can see.
- * A dimension with more distinct values than this needs a hand-written
- * `suggest { query=… }`: a picker over thousands of options is the wrong
- * control anyway.
+ * The query asks for one row more than this, so a list that was cut off is
+ * known to be (`truncated`), not guessed from a count that happens to land on
+ * the limit. Past the limit, typing in the picker searches the whole dimension
+ * on the server instead of filtering the first thousand: see
+ * {@link OptionSearch}.
  */
 export const SUGGEST_OPTION_LIMIT = 1000;
+
+/** How many matches a search of the server returns: enough to scan, and the hint says to keep typing past it. */
+export const SUGGEST_SEARCH_LIMIT = 200;
+
+/** One fetch of options: the values, and whether there were more than it holds. */
+export interface OptionPage {
+   values: string[];
+   /** More rows matched than the page holds, so values past it are not offered. */
+   truncated: boolean;
+}
+
+/**
+ * Search a truncated option list on the server: for a control whose suggest
+ * came back cut off at {@link SUGGEST_OPTION_LIMIT}, so filtering in the
+ * browser would only ever find values in the first thousand.
+ *
+ * `key` identifies the suggest (its report, version, source, dimension, the
+ * givens it carries and a text source's definitions); a caller caches each
+ * search under it plus the text searched for. `run` sends the same suggest with
+ * a case-insensitive "contains" on the dimension.
+ *
+ * Only a suggest over a dimension has one: a named `suggest { query=… }` is a
+ * whole query, with nowhere to add a condition, so its list is filtered in the
+ * browser and says it was cut off.
+ */
+export interface OptionSearch {
+   key: readonly unknown[];
+   run: (text: string, signal?: AbortSignal) => Promise<OptionPage>;
+}
 
 /**
  * The name a `group_by` gives its output column, which is the last segment of a
@@ -29,11 +65,61 @@ export const SUGGEST_OPTION_LIMIT = 1000;
  * products.category` is refused outright ("order_by takes the name of a field in
  * the query output, not a path"), while `group_by: products.category` names its
  * column `category`. A joined dimension is the ordinary case for a `suggest`, so
- * getting this wrong would have failed the option query for most of them.
+ * getting this wrong would have failed the option query for most of them. A
+ * segment the author quoted is the name inside its backticks: `` `a.b` ``
+ * names its column `a.b`.
  */
 function outputFieldName(dimension: string): string {
-   const segments = dimension.split(".");
-   return segments[segments.length - 1];
+   const last = pathSegments(dimension).at(-1) ?? dimension;
+   return /^`.*`$/.test(last)
+      ? last.slice(1, -1).replace(/\\(.)/g, "$1")
+      : last;
+}
+
+/**
+ * A field path's segments, split only on the dots outside backticks. One pass
+ * over the text, not a regular expression: the path is the author's, and an
+ * alternation over quoted runs backtracks without bound on one that never
+ * closes.
+ */
+function pathSegments(path: string): string[] {
+   const segments: string[] = [];
+   let current = "";
+   let quoted = false;
+   for (let i = 0; i < path.length; i++) {
+      const char = path[i];
+      if (quoted && char === "\\" && i + 1 < path.length) {
+         current += char + path[++i];
+         continue;
+      }
+      if (char === "`") quoted = !quoted;
+      if (char === "." && !quoted) {
+         segments.push(current);
+         current = "";
+         continue;
+      }
+      current += char;
+   }
+   segments.push(current);
+   return segments;
+}
+
+/**
+ * A name as the query writes it: backtick-quoted, so a reserved word (`year`,
+ * `source`) or a name with a space is still read as a name. One the author
+ * already quoted is kept as written.
+ */
+function quotedName(name: string): string {
+   return /^`.*`$/.test(name) ? name : malloyIdentifier(name);
+}
+
+/**
+ * A field path with each of its segments quoted ({@link quotedName}). Split
+ * only on the dots outside backticks, so a name the author quoted because it
+ * holds a dot (`` `a.b` ``) stays one segment.
+ */
+function quotedPath(path: string): string {
+   return pathSegments(path).map(quotedName).join(".");
 }
 
 /**
@@ -44,14 +130,76 @@ function outputFieldName(dimension: string): string {
  * itself, and this text has already been wrong once: `order_by` takes an output
  * field name, not a path, so a joined dimension failed the query outright.
  */
-export function buildSuggestQuery(source: string, dimension: string): string {
+export function buildSuggestQuery(
+   source: string,
+   dimension: string,
+   /** Text the values must contain, ignoring case: a search of a truncated list. */
+   search?: string,
+   options: SuggestQueryOptions = {},
+): string {
+   // One row past the limit, so a list that was cut off says so.
+   const limit =
+      (search === undefined ? SUGGEST_OPTION_LIMIT : SUGGEST_SEARCH_LIMIT) + 1;
+   const quoted = options.quoteNames === true;
+   const name = quoted ? quotedName : (text: string) => text;
+   const field = quoted ? quotedPath(dimension) : dimension;
+   const orderBy = quoted
+      ? quotedName(outputFieldName(dimension))
+      : (dimension.split(".").at(-1) ?? dimension);
    return (
-      `run: ${source} -> {\n` +
-      `  group_by: ${dimension}\n` +
-      `  order_by: ${outputFieldName(dimension)} asc\n` +
-      `  limit: ${SUGGEST_OPTION_LIMIT}\n` +
+      `run: ${name(source)} -> {\n` +
+      `  group_by: ${field}\n` +
+      (search === undefined
+         ? ""
+         : `  where: ${containsCondition(field, search)}\n`) +
+      `  order_by: ${orderBy} asc\n` +
+      `  limit: ${limit}\n` +
       `}`
    );
+}
+
+/** How {@link buildSuggestQuery} writes its names. */
+export interface SuggestQueryOptions {
+   /**
+    * Backtick-quote every name (the source, each segment of the dimension's
+    * path, the output column), so a reserved word (`year`, `source`) or a name
+    * with a space is still read as a name. Off, the names are written as the
+    * `suggest` gave them, as before; a keyword then fails the query. On for a
+    * server whose `PUBLISHER_MODEL_PAGE` is `viewer`, and always in the model
+    * viewer.
+    */
+   quoteNames?: boolean;
+}
+
+/**
+ * "The dimension contains this text, ignoring case", in Malloy every dialect
+ * compiles: `strpos` and `lower` are standard functions each dialect maps to
+ * its own SQL (`STRPOS`, `POSITION`, `LOCATE`, `CHARINDEX`). Not a regular
+ * expression, whose inline `(?i)` Snowflake does not read, and not `LIKE`,
+ * whose wildcards (`%`, `_`) a value can contain and whose escape character
+ * differs by database: the text is a plain string literal, matched as written.
+ *
+ * Cast to string so a numeric or date dimension searches its text too. The text
+ * is lowercased here, where it is known, and the column in SQL.
+ */
+function containsCondition(field: string, search: string): string {
+   return `strpos(lower(${field}::string), ${malloyStringLiteral(search.toLowerCase())}) > 0`;
+}
+
+/**
+ * Text as a Malloy string literal, whatever it holds: a backslash and a
+ * single quote escaped, in that order, so neither can end the literal early.
+ * Control characters are dropped: a search box has no use for them, and a raw
+ * newline is not legal inside a literal. Nothing else is special inside
+ * single quotes, so `%`, `_`, `{`, `$` and the rest stay literal text.
+ */
+export function malloyStringLiteral(text: string): string {
+   const escaped = text
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u001f\u007f]/g, "")
+      .replace(/\\/g, "\\\\")
+      .replace(/'/g, "\\'");
+   return `'${escaped}'`;
 }
 
 /**
@@ -92,9 +240,10 @@ export function suggestRequestGivens(
 ): Record<string, unknown> | undefined {
    const names = spec.suggest?.givenNames;
    if (!applied || !names || names.length === 0) return undefined;
-   const request = givensToRequest(
-      applied.values,
-      applied.declaredTypes,
+   const request = withHostGivens(
+      givensToRequest(applied.values, applied.declaredTypes, names),
+      // A control's own value wins, so only what no control declares is added.
+      hostOnly(applied),
       names,
    );
    return Object.keys(request).length > 0 ? request : undefined;
@@ -104,6 +253,19 @@ export function suggestRequestGivens(
 export interface AppliedGivens {
    values: ReadonlyMap<string, GivenValue>;
    declaredTypes: ReadonlyMap<string, string | undefined>;
+   /** Givens the host sets with no control: a gated source's suggest needs them, and they may be lists. */
+   host?: Readonly<Record<string, HostGivenValue>>;
+}
+
+function hostOnly(
+   applied: AppliedGivens,
+): Record<string, HostGivenValue> | undefined {
+   if (!applied.host) return undefined;
+   return Object.fromEntries(
+      Object.entries(applied.host).filter(
+         ([name]) => !applied.declaredTypes.has(name),
+      ),
+   );
 }
 
 export function useSuggestOptions(
@@ -120,6 +282,23 @@ export function useSuggestOptions(
     * caller that omits it gets the pre-gating behaviour.
     */
    applied?: AppliedGivens,
+   /**
+    * Text-source mode: the document's definitions, sent ahead of the suggest as
+    * the viewer's own text. Absent, a suggest runs by name or by view as before.
+    */
+   preamble?: string,
+   /**
+    * Only these givens' options are fetched, for a page that loads a picker's
+    * list when it is opened rather than on render (the model viewer, where
+    * nothing runs until the reader asks). Absent, every picker's list is.
+    */
+   only?: ReadonlySet<string>,
+   /**
+    * Quote every name in a generated suggest query (see
+    * {@link SuggestQueryOptions}). Absent, the server's model page decides:
+    * quoted on a `viewer` server, written as given otherwise.
+    */
+   quoteNames?: boolean,
 ): {
    options: Map<string, string[]>;
    isLoading: boolean;
@@ -132,8 +311,17 @@ export function useSuggestOptions(
     * an empty picker has no way to tell which they are looking at.
     */
    failed: Set<string>;
+   /**
+    * Givens whose list was cut off: more values exist than were fetched. For
+    * a suggest over a dimension, `search` can find the rest; for a named
+    * query it cannot, and the picker says the list is partial.
+    */
+   truncated: Set<string>;
+   /** Server search, per given, for a truncated suggest over a dimension. */
+   search: Map<string, OptionSearch>;
 } {
-   const { apiClients } = useServer();
+   const { apiClients, modelPage } = useServer();
+   const quoteSuggestNames = quoteNames ?? modelPage === "viewer";
 
    // Only a picker needs options; a text box or a slider would just be issuing
    // a query whose answer it never shows.
@@ -150,59 +338,99 @@ export function useSuggestOptions(
       [specs],
    );
 
+   // What identifies each suggest, and how to run it with or without a search:
+   // one definition, so the list and its searches always send the same query
+   // and carry the same givens.
+   const suggests = suggestable.map((spec) => {
+      const givens = suggestRequestGivens(spec, applied);
+      const suggest = spec.suggest ?? {};
+      const identity = [
+         environmentName,
+         packageName,
+         versionId,
+         modelPath,
+         spec.name,
+         suggest.query,
+         suggest.source,
+         suggest.dimension,
+         // Only the givens the suggest carries, so a change to any OTHER
+         // control leaves the cached list alone.
+         givens === undefined ? null : JSON.stringify(givens),
+         // Only a text source keys on its definitions, so no other key changes shape.
+         ...(preamble === undefined ? [] : [preamble]),
+         // Quoted names are a different query: a list fetched before /status
+         // said viewer is asked again, quoted. The default key is unchanged.
+         ...(quoteSuggestNames ? ["quoteNames"] : []),
+      ];
+      const run = async (
+         search: string | undefined,
+         signal?: AbortSignal,
+      ): Promise<OptionPage> => {
+         const named = suggest.query !== undefined;
+         const response = await apiClients.models.executeQueryModel(
+            environmentName,
+            packageName,
+            modelPath as string,
+            named && preamble === undefined
+               ? {
+                    queryName: suggest.query,
+                    compactJson: true,
+                    versionId,
+                    givens,
+                 }
+               : {
+                    query: withPreamble(
+                       preamble ?? "",
+                       named
+                          ? `run: ${suggest.query}`
+                          : buildSuggestQuery(
+                               suggest.source as string,
+                               suggest.dimension as string,
+                               search,
+                               { quoteNames: quoteSuggestNames },
+                            ),
+                    ),
+                    compactJson: true,
+                    versionId,
+                    givens,
+                 },
+            undefined,
+            { signal },
+         );
+         return readOptionPage(
+            response.data.result,
+            suggest.dimension === undefined
+               ? undefined
+               : outputFieldName(suggest.dimension),
+            // A generated query asked for one row past its limit. A named
+            // query's own limit is unknown: a full server cap is the best sign
+            // it was cut off.
+            named
+               ? { limit: SUGGEST_OPTION_LIMIT, cutOffAt: SUGGEST_OPTION_LIMIT }
+               : {
+                    limit:
+                       search === undefined
+                          ? SUGGEST_OPTION_LIMIT
+                          : SUGGEST_SEARCH_LIMIT,
+                 },
+         );
+      };
+      return { spec, identity, run, searchable: suggest.query === undefined };
+   });
+
    const results = useQueries({
-      queries: suggestable.map((spec) => {
-         const givens = suggestRequestGivens(spec, applied);
+      queries: suggests.map(({ spec, identity, run }) => {
          return {
-            queryKey: [
-               "givenSuggest",
-               environmentName,
-               packageName,
-               versionId,
-               modelPath,
-               spec.name,
-               spec.suggest?.query,
-               spec.suggest?.source,
-               spec.suggest?.dimension,
-               // Only the givens the suggest carries, so a change to any OTHER
-               // control leaves the cached list alone.
-               givens === undefined ? null : JSON.stringify(givens),
-            ],
-            enabled: modelPath !== undefined,
+            queryKey: ["givenSuggest", ...identity],
+            enabled:
+               modelPath !== undefined &&
+               (only === undefined || only.has(spec.name as string)),
             // Option lists change with the data, not with the filters, so they
             // are cached well past a single control interaction.
             staleTime: 5 * 60 * 1000,
             refetchOnWindowFocus: false,
-            queryFn: async () => {
-               const suggest = spec.suggest ?? {};
-               const response = await apiClients.models.executeQueryModel(
-                  environmentName,
-                  packageName,
-                  modelPath as string,
-                  suggest.query !== undefined
-                     ? {
-                          queryName: suggest.query,
-                          compactJson: true,
-                          versionId,
-                          givens,
-                       }
-                     : {
-                          query: buildSuggestQuery(
-                             suggest.source as string,
-                             suggest.dimension as string,
-                          ),
-                          compactJson: true,
-                          versionId,
-                          givens,
-                       },
-               );
-               return readOptionValues(
-                  response.data.result,
-                  suggest.dimension === undefined
-                     ? undefined
-                     : outputFieldName(suggest.dimension),
-               );
-            },
+            queryFn: ({ signal }: { signal: AbortSignal }) =>
+               run(undefined, signal),
          };
       }),
    });
@@ -211,7 +439,7 @@ export function useSuggestOptions(
       const byName = new Map<string, string[]>();
       suggestable.forEach((spec, index) => {
          const value = results[index]?.data;
-         if (spec.name && value) byName.set(spec.name, value);
+         if (spec.name && value) byName.set(spec.name, value.values);
       });
       return byName;
       // `results` is a fresh array each render; its data identity is what
@@ -235,10 +463,64 @@ export function useSuggestOptions(
       // eslint-disable-next-line react-hooks/exhaustive-deps
    }, [suggestable, results.map((result) => result.isError).join("|")]);
 
+   // Same reasoning as `options`: compared by what each list says, not by the
+   // fresh wrapper objects.
+   const truncatedKey = results
+      .map((result) => !!result.data?.truncated)
+      .join("|");
+   const truncated = useMemo(() => {
+      const names = new Set<string>();
+      suggestable.forEach((spec, index) => {
+         if (spec.name && results[index]?.data?.truncated) names.add(spec.name);
+      });
+      return names;
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, [suggestable, truncatedKey]);
+
+   // A handle per truncated suggest over a dimension. Rebuilt only when what
+   // identifies a suggest changes, so a picker searching with one does not
+   // start over on every render.
+   const identities = JSON.stringify(suggests.map((s) => s.identity));
+   const latestRuns = useRef(suggests);
+   latestRuns.current = suggests;
+   const search = useMemo(() => {
+      const byName = new Map<string, OptionSearch>();
+      suggests.forEach(({ spec, identity, searchable }, index) => {
+         if (!spec.name || !searchable || !truncated.has(spec.name)) return;
+         byName.set(spec.name, {
+            key: ["givenSuggestSearch", ...identity],
+            run: (text, signal) => latestRuns.current[index].run(text, signal),
+         });
+      });
+      return byName;
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, [identities, truncated]);
+
    return {
       options,
       isLoading: results.some((result) => result.isLoading),
       failed,
+      truncated,
+      search,
+   };
+}
+
+/**
+ * One fetch's options and whether it was cut off. `limit` is what the page
+ * holds; a generated query asked for one row more, so a row past it means
+ * more exist. `cutOffAt` instead marks a page as cut off once it reaches that
+ * many rows, for a named query whose own limit is unknown.
+ */
+export function readOptionPage(
+   result: string | undefined,
+   dimension: string | undefined,
+   { limit, cutOffAt }: { limit: number; cutOffAt?: number },
+): OptionPage {
+   const rows = readRows(result);
+   return {
+      values: optionValues(rows.slice(0, limit), dimension),
+      truncated:
+         cutOffAt === undefined ? rows.length > limit : rows.length >= cutOffAt,
    };
 }
 
@@ -259,6 +541,11 @@ export function readOptionValues(
    result: string | undefined,
    dimension: string | undefined,
 ): string[] {
+   return optionValues(readRows(result), dimension);
+}
+
+/** A compact-JSON result as rows, or a thrown error when it is not one. */
+function readRows(result: string | undefined): unknown[] {
    // Absent is tolerated: `result` is optional in the API contract, so a
    // missing one is a shape the server is allowed to send and "no values" is
    // the honest reading of it.
@@ -282,7 +569,14 @@ export function readOptionValues(
          "Suggest query returned JSON that is not a list of rows.",
       );
    }
+   return rows;
+}
 
+/** The option strings in some rows: see {@link readOptionValues}. */
+function optionValues(
+   rows: unknown[],
+   dimension: string | undefined,
+): string[] {
    const values: string[] = [];
    const seen = new Set<string>();
    for (const row of rows) {

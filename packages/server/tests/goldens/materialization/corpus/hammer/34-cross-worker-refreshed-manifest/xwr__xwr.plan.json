@@ -1,0 +1,118 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/xwr/xwr.malloy": [],
+          "monthly@<hammer>/xwr/xwr.malloy": [
+            "daily@<hammer>/xwr/xwr.malloy"
+          ]
+        },
+        "order": [
+          "daily@<hammer>/xwr/xwr.malloy",
+          "monthly@<hammer>/xwr/xwr.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/xwr/xwr.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "monthly@<hammer>/xwr/xwr.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/xwr/xwr.malloy": "xwr.malloy",
+      "monthly@<hammer>/xwr/xwr.malloy": "xwr.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/xwr/xwr.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/xwr/xwr.malloy"
+              ],
+              "sourceID": "monthly@<hammer>/xwr/xwr.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/xwr/xwr.malloy": {
+        "annotationFields": {
+          "name": "xwr_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "xwr.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "e817bcb8836ad7b5260b6688de97cee4a20dfef0d95184cfe88f139bf7b87660",
+        "sourceID": "daily@<hammer>/xwr/xwr.malloy",
+        "sql": "sha256:b1dba16ebb6f774a"
+      },
+      "monthly@<hammer>/xwr/xwr.malloy": {
+        "annotationFields": {
+          "name": "xwr_monthly",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "grand_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "xwr.malloy",
+        "name": "monthly",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "19dcbac0cc53075f77122e67318fb52df0e92c9284c3c65323aff959e818d9f4",
+        "sourceID": "monthly@<hammer>/xwr/xwr.malloy",
+        "sql": "sha256:4ac968ad7638f980"
+      }
+    }
+  }
+}

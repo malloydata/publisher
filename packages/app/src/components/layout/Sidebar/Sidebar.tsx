@@ -4,8 +4,14 @@
 import {
    useServer,
    useRouterClickHandler,
+   usePublisherTheme,
    DOC_LINKS,
+   type ThemeMode,
 } from "@malloy-publisher/sdk";
+import BrightnessAutoIcon from "@mui/icons-material/BrightnessAuto";
+import DarkModeOutlinedIcon from "@mui/icons-material/DarkModeOutlined";
+import LightModeOutlinedIcon from "@mui/icons-material/LightModeOutlined";
+import PaletteOutlinedIcon from "@mui/icons-material/PaletteOutlined";
 import ArticleOutlinedIcon from "@mui/icons-material/ArticleOutlined";
 import CodeOutlinedIcon from "@mui/icons-material/CodeOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
@@ -239,6 +245,7 @@ function EnvironmentsSection({ isCollapsed }: { isCollapsed: boolean }) {
 }
 
 function DocsFooter({ isCollapsed }: { isCollapsed: boolean }) {
+   const { pathname } = useLocation();
    const links = [
       {
          label: "Malloy Docs",
@@ -262,6 +269,16 @@ function DocsFooter({ isCollapsed }: { isCollapsed: boolean }) {
 
    return (
       <List sx={{ py: 1 }}>
+         {/* How the data is drawn: viewer preferences, kept with the other
+             things that are about the Console rather than the data in it. */}
+         <SidebarItem
+            icon={<PaletteOutlinedIcon fontSize="small" />}
+            label="Theme"
+            to="/settings/theme"
+            selected={pathname.startsWith("/settings/theme")}
+            isCollapsed={isCollapsed}
+         />
+         <ModeItem isCollapsed={isCollapsed} />
          {links.map((link) => (
             <ExternalLinkItem
                key={link.label}
@@ -392,4 +409,81 @@ function ExternalLinkItem({
       );
    }
    return inner;
+}
+
+type ModeChoice = ThemeMode | "auto";
+
+const NEXT_MODE: Record<ModeChoice, ModeChoice> = {
+   light: "dark",
+   dark: "auto",
+   auto: "light",
+};
+
+const MODE_LABEL: Record<ModeChoice, string> = {
+   light: "Light mode",
+   dark: "Dark mode",
+   auto: "Auto mode",
+};
+
+const MODE_HINT: Record<ModeChoice, string> = {
+   light: "Light mode (click for dark)",
+   dark: "Dark mode (click for auto)",
+   auto: "Auto mode (follows OS, click for light)",
+};
+
+/**
+ * Three-state mode toggle as a sidebar row: light → dark → auto → light.
+ *
+ * Reads the viewer's stored choice (which may be "auto") rather than the
+ * resolved mode, so "follow OS" stays distinguishable from an explicit dark.
+ * Absent when the operator has set `allowUserToggle: false`.
+ */
+function ModeItem({ isCollapsed }: { isCollapsed: boolean }) {
+   const { mode, userChoice, setMode, allowUserToggle } = usePublisherTheme();
+   if (!allowUserToggle) return null;
+   const current: ModeChoice = userChoice ?? mode;
+   const Icon =
+      current === "auto"
+         ? BrightnessAutoIcon
+         : current === "dark"
+           ? DarkModeOutlinedIcon
+           : LightModeOutlinedIcon;
+   const inner = (
+      <ListItemButton
+         aria-label={MODE_HINT[current]}
+         onClick={() => setMode(NEXT_MODE[current])}
+         sx={{
+            justifyContent: isCollapsed ? "center" : "flex-start",
+            px: isCollapsed ? 0 : 2,
+         }}
+      >
+         <ListItemIcon
+            sx={{
+               minWidth: isCollapsed ? 0 : 36,
+               justifyContent: "center",
+               color: "text.secondary",
+            }}
+         >
+            <Icon fontSize="small" />
+         </ListItemIcon>
+         {!isCollapsed && (
+            <ListItemText
+               primary={MODE_LABEL[current]}
+               primaryTypographyProps={{
+                  variant: "body2",
+                  sx: { color: "text.secondary", whiteSpace: "nowrap" },
+               }}
+            />
+         )}
+      </ListItemButton>
+   );
+   return (
+      <Tooltip
+         title={MODE_HINT[current]}
+         placement="right"
+         disableHoverListener={!isCollapsed}
+      >
+         <Box>{inner}</Box>
+      </Tooltip>
+   );
 }

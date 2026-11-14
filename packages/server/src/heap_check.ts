@@ -6,30 +6,17 @@ import * as v8 from "v8";
 
 import { logger } from "./logger";
 
-/**
- * Subset of the winston logger surface this module needs. Defined
- * structurally so tests can pass a plain object stub and so we
- * don't take a direct dependency on the concrete winston type.
- */
+/** Structural, so tests can pass a plain stub. */
 interface HeapCheckLogger {
    warn: (...args: unknown[]) => unknown;
    info: (...args: unknown[]) => unknown;
 }
 
 /**
- * Observable gauges for heap configuration so dashboards can render
- * "configured heap ceiling" alongside the RSS / back-pressure
- * timeseries from `PackageMemoryGovernor`. The values are observed
- * on every scrape rather than cached — `v8.getHeapStatistics()` is
- * cheap (a single VM call) and serving the live value avoids stale
- * reads.
- *
- * Lazy init for the same reason as `query_timeout.ts`: instruments
- * captured before `setGlobalMeterProvider` are bound to NoOp. We
- * call `installHeapGauges` from `checkHeapConfiguration` so it
- * runs once at startup, after the OTel SDK is up.
- *
- * Mirrors the governor's `publisher_*` unlabeled style.
+ * Heap gauges, read live on every scrape, so dashboards can show the
+ * configured ceiling beside `PackageMemoryGovernor`'s RSS series. Installed
+ * from `checkHeapConfiguration`, after the OTel SDK is up: instruments
+ * created earlier bind to a NoOp meter.
  */
 let heapGaugesInstalled = false;
 function installHeapGauges(): void {
@@ -56,64 +43,33 @@ function installHeapGauges(): void {
       });
 }
 
-/**
- * Visible for tests; production code never calls this. Resets the
- * lazy guard so a re-installation captures into a fresh
- * MeterProvider.
- */
+/** Test-only: lets a re-installation capture into a fresh MeterProvider. */
 export function resetHeapTelemetryForTesting(): void {
    heapGaugesInstalled = false;
 }
 
 /**
- * Minimum V8 heap ceiling (`--max-old-space-size`) the publisher
- * expects in production. Below this the row/byte caps from earlier
- * steps still apply, but a single buffered model query at the
- * default 50 MB byte cap plus the surrounding `Result` allocation
- * can plausibly chew through the remaining headroom and OOM the
- * process before back-pressure trips.
- *
- * 2 GiB is the smallest value at which the defaults are comfortably
- * survivable. Operators running explicitly tuned-down pods (e.g. a
- * lightweight smoke-test deploy) can ignore the warning.
+ * Smallest V8 heap ceiling at which the default row/byte caps are
+ * comfortably survivable: below it, one buffered query at the 50 MB byte cap
+ * can OOM the process before back-pressure trips.
  */
 const MIN_RECOMMENDED_HEAP_BYTES = 2 * 1024 * 1024 * 1024;
 
-/**
- * Probe `v8.getHeapStatistics().heap_size_limit` at startup and
- * emit a single structured warning when the process is configured
- * with a heap ceiling below {@link MIN_RECOMMENDED_HEAP_BYTES}.
- *
- * Why warn (not exit):
- * - Smaller pods are legitimate (CI, local dev, smoke tests).
- *   Hard-failing them would be hostile to those workflows.
- * - The earlier steps already bound memory growth per request; this
- *   is a "you probably want to know" signal, not a safety
- *   interlock.
- * - A warning at boot is grep-able in pod logs / dashboards and
- *   surfaces faster than waiting for the first OOMKill.
- *
- * Returns the observed heap limit so the caller (server.ts startup)
- * can also surface it in startup metrics if desired.
- */
-/**
- * Test seam: parameters allow injecting a fake heap-stats getter
- * and logger so the bun/sinon "ES modules cannot be stubbed"
- * restriction doesn't force a module-level mock. Production calls
- * (server.ts startup) use the defaults; tests pass in stubs.
- */
+/** Test seam: ES modules cannot be stubbed, so the dependencies are injectable. */
 export interface CheckHeapOptions {
    getHeapStatistics?: () => Pick<v8.HeapInfo, "heap_size_limit">;
    log?: HeapCheckLogger;
 }
 
+/**
+ * Warn once at startup when the heap ceiling is below
+ * {@link MIN_RECOMMENDED_HEAP_BYTES}. A warning, not an exit: small pods (CI,
+ * local dev) are legitimate, and per-request caps already bound memory.
+ */
 export function checkHeapConfiguration(options: CheckHeapOptions = {}): {
    heapSizeLimitBytes: number;
    warned: boolean;
 } {
-   // Install heap-related observable gauges on the same startup
-   // tick. Idempotent — re-calling in tests / warmup paths is
-   // safe and re-uses the same instruments.
    installHeapGauges();
    const getStats = options.getHeapStatistics ?? v8.getHeapStatistics;
    const log = options.log ?? logger;

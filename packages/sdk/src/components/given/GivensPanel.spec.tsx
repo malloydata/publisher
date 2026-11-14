@@ -149,12 +149,20 @@ describe("layout and title", () => {
       expect(screen.queryAllByText("Filters")).toHaveLength(0);
    });
 
-   it("renders the bar layout with its controls and no heading", () => {
+   it("renders the bar layout as filter buttons that open their controls, with no heading", () => {
       render(<GivensPanel {...props} layout="bar" />);
-      // The bar is meant to sit inline above a dashboard, so it carries the
-      // controls but drops the heading the panel layout shows.
+      // The bar sits inline above a report: a button per control, naming it
+      // and its value, and no heading. The control is in its popover.
+      expect(screen.queryByRole("combobox")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: /^BRAND: / }));
       expect(screen.getByRole("combobox")).toBeDefined();
       expect(screen.queryAllByText("Filters")).toHaveLength(0);
+   });
+
+   it("offers no editing outside the builder", () => {
+      render(<GivensPanel {...props} layout="bar" />);
+      expect(screen.queryByLabelText(/^Remove filter/)).toBeNull();
+      expect(screen.queryByLabelText("Add filter")).toBeNull();
    });
 
    it("still offers Reset from the bar layout", () => {
@@ -171,5 +179,83 @@ describe("layout and title", () => {
       );
       fireEvent.click(screen.getByRole("button", { name: "Reset" }));
       expect(reset).toBe(1);
+   });
+
+   it("offers no Reset when the values are already where it would put them", () => {
+      // A value the document starts with is set, but Reset would change
+      // nothing: offered anyway, it was a button that did nothing.
+      render(
+         <GivensPanel
+            {...props}
+            layout="bar"
+            values={new Map([["BRAND", "Nike"]])}
+            canReset={false}
+         />,
+      );
+      expect(screen.queryByRole("button", { name: "Reset" })).toBeNull();
+   });
+
+   it("offers Reset when the values have moved off the start, even to empty", () => {
+      render(<GivensPanel {...props} layout="bar" canReset />);
+      expect(screen.getByRole("button", { name: "Reset" })).toBeDefined();
+   });
+});
+
+describe("GivensPanel: Apply with autorun off", () => {
+   const TEXT: Given = { name: "REGION", type: "string" };
+
+   function ApplyHarness({ onApplied }: { onApplied: () => void }) {
+      const [params, setParams] = useState<Record<string, string>>({});
+      const { draft, setGiven, apply, pending } = useGivensState({
+         declaredTypes: new Map([["REGION", "string"]]),
+         params,
+         onParamsChange: setParams,
+         autorun: false,
+      });
+      return (
+         <GivensPanel
+            givens={[TEXT]}
+            values={draft}
+            onChange={setGiven}
+            onReset={() => {}}
+            apply={{
+               onApply: () => {
+                  onApplied();
+                  apply();
+               },
+               pending,
+            }}
+         />
+      );
+   }
+
+   it("applies a click that lands right after typing, before the draft settles", () => {
+      let applied = 0;
+      render(<ApplyHarness onApplied={() => applied++} />);
+      const field = screen.getByRole("textbox");
+      const button = screen.getByRole("button", { name: "Apply" });
+
+      field.focus();
+      fireEvent.change(field, { target: { value: "CA" } });
+      // The browser's order: mousedown on the button blurs the field, which
+      // flushes the draft, and only then does the click fire.
+      fireEvent.mouseDown(button);
+      fireEvent.blur(field);
+      fireEvent.mouseUp(button);
+      fireEvent.click(button);
+
+      expect(applied).toBe(1);
+      expect(button.getAttribute("aria-disabled")).toBe("true");
+   });
+
+   it("does nothing on a click while nothing is pending", () => {
+      let applied = 0;
+      render(<ApplyHarness onApplied={() => applied++} />);
+      const button = screen.getByRole("button", { name: "Apply" });
+
+      fireEvent.click(button);
+
+      expect(applied).toBe(0);
+      expect(button.getAttribute("aria-disabled")).toBe("true");
    });
 });

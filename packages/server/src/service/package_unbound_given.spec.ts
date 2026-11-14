@@ -9,8 +9,9 @@
  * worker path (`Package.create`) and the in-process path (`Model.create`).
  *
  * One `PackageLoadPool` is shared across the cases for the reason given in
- * `package_worker_path.spec.ts`.
+ * `tests/component/package_worker_path.component.spec.ts`.
  */
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -27,7 +28,6 @@ import {
    it,
 } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import {
    PackageLoadPool,
@@ -35,6 +35,7 @@ import {
 } from "../package_load/package_load_pool";
 import { Model } from "./model";
 import { Package } from "./package";
+import { writeTempPackage } from "../test_helpers/temp_package";
 
 const ROWS = `duckdb.sql("select * from (values (1,1),(2,2),(3,2),(4,1)) as t(id, org_id)")`;
 
@@ -48,11 +49,11 @@ query: for_org is orders -> { where: org_id = $ORG; aggregate: c }
 `;
 
 const LAYOUT_NOTEBOOK = `##! experimental.givens
-## artifact { kind=notebook title="Unbound" }
+## artifact { layout=linear title="Unbound" tiles=["tile"] }
 given: ORG :: number
 source: orders is ${ROWS} extend { measure: c is count() }
 
-run: orders -> { where: org_id = $ORG; aggregate: c }
+query: tile is orders -> { where: org_id = $ORG; aggregate: c }
 `;
 
 const LEGACY_NOTEBOOK = `>>>markdown
@@ -62,14 +63,15 @@ ${GIVEN_AND_SOURCE}
 run: orders -> { where: org_id = $ORG; aggregate: c }`;
 
 const DASHBOARD = `##! experimental.givens
+## artifact { layout=grid title="Unbound" tiles=["tile"] } dashboard {columns=12}
 given: ORG :: number
 source: orders is ${ROWS} extend { measure: c is count() }
 
-# artifact { title="Unbound" } dashboard {columns=12}
 query: tile is orders -> { where: org_id = $ORG; aggregate: c }
 `;
 
 const ACCESS_FILTERED = `##! experimental.givens
+#(secure)
 given: GROUPS :: number[]
 
 #(access_filter) org_id in $GROUPS
@@ -79,6 +81,7 @@ query: all_gated is gated -> { aggregate: c }
 `;
 
 const AUTHORIZED = `##! experimental.givens
+#(secure)
 given: ROLE :: string
 
 #(authorize) 'analyst' = $ROLE
@@ -121,28 +124,25 @@ describe("a query that bakes a default-less given loads", () => {
    let tempDir: string;
    let pool: PackageLoadPool;
    let duckdb: DuckDBConnection;
-   const originalWorkers = process.env.PACKAGE_LOAD_WORKERS;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (originalWorkers === undefined)
-         delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = originalWorkers;
    });
 
    beforeEach(() => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-unbound-"));
+      tempDir = writeTempPackage(
+         {},
+         {
+            prefix: "publisher-unbound-",
+            manifest: { name: "pkg", description: "unbound given" },
+         },
+      ).dir;
       duckdb = new DuckDBConnection("duckdb", ":memory:");
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "unbound given" }),
-      );
    });
 
    afterEach(async () => {
@@ -190,16 +190,33 @@ describe("a query that bakes a default-less given loads", () => {
       });
    }
 
-   it("lists the legacy notebook's cell and runs it with the given", async () => {
-      write(SHAPES[2]);
-      const pkg = await Package.create("env", "pkg", tempDir, malloyConfig());
-      const model = pkg.getModel("nb.malloynb")!;
-      const notebook = await model.getNotebook();
-      expect(notebook.notebookCells?.some((c) => c.type === "code")).toBe(true);
-      const run = await model.executeNotebookCell(1, undefined, false, {
-         ORG: 2,
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("lists the legacy notebook's cell and runs it with the given", async () => {
+         write(SHAPES[2]);
+         const pkg = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig(),
+         );
+         const model = pkg.getModel("nb.malloynb")!;
+         const notebook = await model.getNotebook();
+         expect(notebook.notebookCells?.some((c) => c.type === "code")).toBe(
+            true,
+         );
+         const run = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               ORG: 2,
+            },
+         );
+         expect(count(run.result)).toBe(2);
       });
-      expect(count(run.result)).toBe(2);
    });
 
    it("lists the layout notebook's query cell", async () => {
@@ -215,17 +232,13 @@ describe("a query that bakes a default-less given loads", () => {
       write(SHAPES[0]);
       const pkg = await Package.create("env", "pkg", tempDir, malloyConfig());
       const model = pkg.getModel("m.malloy")!;
-      const withGiven = await model.getQueryResults(
-         undefined,
-         "for_org",
-         undefined,
-         undefined,
-         undefined,
-         { ORG: 1 },
-      );
+      const withGiven = await model.runQuery(unrecordedAudit(), {
+         queryName: "for_org",
+         givens: { ORG: 1 },
+      });
       expect(count(withGiven.result)).toBe(2);
       await expect(
-         model.getQueryResults(undefined, "for_org", undefined),
+         model.runQuery(unrecordedAudit(), { queryName: "for_org" }),
       ).rejects.toThrow();
    });
 
@@ -233,14 +246,10 @@ describe("a query that bakes a default-less given loads", () => {
       write(SHAPES[4]);
       const pkg = await Package.create("env", "pkg", tempDir, malloyConfig());
       const model = pkg.getModel("m.malloy")!;
-      const run = await model.getQueryResults(
-         undefined,
-         "all_gated",
-         undefined,
-         undefined,
-         undefined,
-         { GROUPS: [1] },
-      );
+      const run = await model.runQuery(unrecordedAudit(), {
+         queryName: "all_gated",
+         givens: { GROUPS: [1] },
+      });
       expect(count(run.result)).toBe(2);
    });
 

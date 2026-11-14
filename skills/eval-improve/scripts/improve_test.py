@@ -228,5 +228,188 @@ class TruthEnvironment(unittest.TestCase):
             getattr(ns, "truth_environment", None) or ns.environment, "samples")
 
 
+
+class ServedAsVersions(unittest.TestCase):
+    """The snapshot sync (`rsync --delete` onto the served folder) is safe only
+    over a copy. Over published versions it serves nothing and deletes them,
+    so it is refused."""
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def test_a_folder_of_versions_is_versions(self):
+        served = self.root / "pkg"
+        (served / "1.0.0").mkdir(parents=True)
+        (served / "1.0.0" / "publisher.json").write_text("{}")
+        self.assertTrue(improve.served_as_versions(served))
+
+    def test_a_copy_is_not(self):
+        served = self.root / "pkg"
+        served.mkdir()
+        (served / "publisher.json").write_text("{}")
+        self.assertFalse(improve.served_as_versions(served))
+
+    def test_a_watch_mount_is_not(self):
+        source = self.root / "src"
+        source.mkdir()
+        served = self.root / "pkg"
+        served.symlink_to(source, target_is_directory=True)
+        self.assertFalse(improve.served_as_versions(served))
+
+    def test_a_missing_folder_is_not(self):
+        self.assertFalse(improve.served_as_versions(self.root / "nothing"))
+
+
+class ServedVersion(unittest.TestCase):
+    """The server says whether it serves the package as a published version."""
+
+    def serve(self, body: bytes):
+        import http.server
+        import threading
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_port}"
+
+    def test_a_version_is_named(self):
+        base = self.serve(b'{"name": "ecommerce", "versionId": "1.0.0"}')
+        self.assertEqual(improve.served_version(base, "e", "ecommerce"), "1.0.0")
+
+    def test_a_watch_mounted_package_has_none(self):
+        base = self.serve(b'{"name": "ecommerce"}')
+        self.assertIsNone(improve.served_version(base, "e", "ecommerce"))
+
+    def test_a_server_that_cannot_be_asked_is_none(self):
+        self.assertIsNone(improve.served_version("http://127.0.0.1:9", "e", "p"))
+        self.assertIsNone(improve.served_version(None, "e", "p"))
+
+
+class ClusterMembers(unittest.TestCase):
+    """The improver sees each case's key. A rows golden kept in
+    `golden.path` used to reach it as no key at all."""
+
+    def test_a_path_held_golden_reaches_the_improver_as_its_rows(self):
+        set_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, set_dir, True)
+        (set_dir / "gold").mkdir()
+        (set_dir / "gold" / "q1.csv").write_text("region,n\nWest,3\n")
+        cases = {"q1": {"question": "how many?",
+                        "golden": {"kind": "rows", "path": "gold/q1.csv",
+                                   "rubric": "West has 3."}}}
+        self.assertEqual(
+            improve.cluster_members({"qids": ["q1"]}, cases, set_dir),
+            [{"qid": "q1", "question": "how many?",
+              "golden": [{"region": "West", "n": 3}],
+              "rubric": "West has 3."}])
+
+class CandidateDiff(unittest.TestCase):
+    """A new file is part of the edit, and our own helper is not."""
+
+    def setUp(self):
+        self.repo = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.repo, True)
+        for cmd in (["init", "-q"], ["config", "user.email", "t@t"],
+                    ["config", "user.name", "t"]):
+            subprocess.run(["git", *cmd], cwd=self.repo, check=True)
+        (self.repo / "m.malloy").write_text("source: a is x\n")
+        subprocess.run(["git", "add", "."], cwd=self.repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=self.repo, check=True)
+
+    def test_a_new_skills_file_is_in_the_patch_and_the_helper_is_not(self):
+        (self.repo / "skills" / "s").mkdir(parents=True)
+        (self.repo / "skills" / "s" / "SKILL.md").write_text("NEW GUIDE\n")
+        (self.repo / improve.SYNC_HELPER).write_text("#!/bin/bash\n")
+        (self.repo / "m.malloy").write_text("source: a is y\n")
+        diff = improve.candidate_diff(self.repo)
+        self.assertIn("NEW GUIDE", diff)
+        self.assertIn("source: a is y", diff)
+        self.assertNotIn(improve.SYNC_HELPER, diff)
+        self.assertIn("SKILL.md", improve.candidate_diff(self.repo, ("--stat",)))
+
+    def test_only_the_helper_is_an_empty_diff(self):
+        (self.repo / improve.SYNC_HELPER).write_text("#!/bin/bash\n")
+        self.assertEqual(improve.candidate_diff(self.repo).strip(), "")
+
+
+class Grants(unittest.TestCase):
+    def test_the_tools_the_skill_names_are_granted(self):
+        for t in ("get_skill", "get_status"):
+            self.assertIn(f"mcp__publisher__{t}", improve.IMPROVE_TOOLS)
+
+
+class ReloadReceipt(unittest.TestCase):
+    """The reload helper prints the served sha: from the package's serving
+    state, or from its `/status` entry on a server from before that route.
+    A reload that fails prints its error instead, never the old sha."""
+
+    PKG = "/api/v0/environments/env/packages/pkg"
+
+    def run_reload(self, routes):
+        import http.server
+        import json
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                path = self.path.split("?")[0]
+                body = routes.get(path)
+                code, body = body if isinstance(body, tuple) else (
+                    200 if body is not None else 404, body)
+                self.send_response(code)
+                self.end_headers()
+                self.wfile.write(json.dumps(body or {}).encode())
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            cmd = improve.RELOAD.format(
+                rest_url=f"http://127.0.0.1:{server.server_port}",
+                environment="env", package="pkg")
+            return subprocess.run(["bash", "-c", cmd], capture_output=True,
+                                  text=True, timeout=60).stdout.strip()
+        finally:
+            server.shutdown()
+
+    def test_reads_the_serving_state(self):
+        out = self.run_reload({
+            self.PKG: {"name": "pkg"},
+            "/api/v0/environments/env/packages/pkg/status":
+                {"sourceContentSha": "abc"},
+        })
+        self.assertEqual(out, '"sourceContentSha":"abc"')
+
+    def test_falls_back_to_the_status_entry_on_an_older_server(self):
+        out = self.run_reload({
+            self.PKG: {"name": "pkg"},
+            "/api/v0/status": {"environments": [{"name": "env", "packages": [
+                {"name": "pkg", "sourceContentSha": "old"}]}]},
+        })
+        self.assertEqual(out, '"sourceContentSha":"old"')
+
+    def test_a_failed_reload_prints_its_error_and_no_sha(self):
+        out = self.run_reload({
+            self.PKG: (400, {"message": "bad.malloy: refused"}),
+            "/api/v0/environments/env/packages/pkg/status":
+                {"sourceContentSha": "stale"},
+        })
+        self.assertIn("reload failed (HTTP 400)", out)
+        self.assertIn("bad.malloy: refused", out)
+        self.assertNotIn("stale", out)
+
+
 if __name__ == "__main__":
     unittest.main()

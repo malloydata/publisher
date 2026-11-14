@@ -34,6 +34,30 @@ describe("buildTableCssVars", () => {
       expect(vars["--malloy-render--value-color"]).toBe(t.valueColor);
    });
 
+   it("carries palette.border, cardBorder and value into their vars", () => {
+      const t = resolveTheme(
+         [
+            {
+               palette: {
+                  border: { light: "#aaaaaa" },
+                  cardBorder: { light: "#bbbbbb" },
+                  value: { light: "#cccccc" },
+               },
+            },
+         ],
+         "light",
+      );
+      const vars = buildTableCssVars(t);
+      expect(vars["--malloy-render--table-border"]).toBe("1px solid #aaaaaa");
+      expect(vars["--publisher-dashboard-card-border"]).toBe(
+         "1px solid #bbbbbb",
+      );
+      expect(vars["--malloy-render--table-pinned-border"]).toBe(
+         "1px solid #bbbbbb",
+      );
+      expect(vars["--malloy-render--value-color"]).toBe("#cccccc");
+   });
+
    it("omits the dashboard-root background keys", () => {
       // background and table-background are deliberately not surfaced
       // here; the renderer paints the dashboard chrome with its own

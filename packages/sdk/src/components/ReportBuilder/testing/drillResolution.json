@@ -1,0 +1,279 @@
+{
+   "about": "Where a `# drill { to=… }` lands (docs/reports-design.md §3): `to=` is a package path from the root, with or without `.malloy`, and a bare name is a root file. `reports` is the package's reports; the server resolves against every path, a report `dropped` because it could not be read included, and the SDK's `resolveDrillTarget` against the listing, which omits a dropped one. `server` is the server's answer (`resolveDrillDestination`; it also marks a target that is not a plain package path `malformed`, which the comparison leaves out). The SDK's answer must equal it, compared by `kind` and `path`, except where a case carries `sdk` with a `knownDifference` saying why the two differ by design.",
+   "cases": [
+      {
+         "name": "a path from the package root",
+         "to": "sales/q3",
+         "reports": [
+            {
+               "path": "sales/q3.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "path",
+            "path": "sales/q3.malloy"
+         }
+      },
+      {
+         "name": "a path written with its .malloy",
+         "to": "sales/q3.malloy",
+         "reports": [
+            {
+               "path": "sales/q3.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "path",
+            "path": "sales/q3.malloy"
+         }
+      },
+      {
+         "name": "a .malloynb by its full path",
+         "to": "notes/story.malloynb",
+         "reports": [
+            {
+               "path": "notes/story.malloynb",
+               "layout": "linear"
+            }
+         ],
+         "server": {
+            "kind": "path",
+            "path": "notes/story.malloynb"
+         }
+      },
+      {
+         "name": "a bare name is a root path first, ahead of a grid report elsewhere",
+         "to": "overview",
+         "reports": [
+            {
+               "path": "dashboards/overview.malloy",
+               "layout": "grid"
+            },
+            {
+               "path": "overview.malloy",
+               "layout": "linear"
+            }
+         ],
+         "server": {
+            "kind": "path",
+            "path": "overview.malloy"
+         }
+      },
+      {
+         "name": "a bare name is a root file: a grid report elsewhere with that basename is not looked up",
+         "to": "overview",
+         "reports": [
+            {
+               "path": "dashboards/overview.malloy",
+               "layout": "grid"
+            },
+            {
+               "path": "notebooks/overview.malloy",
+               "layout": "linear"
+            }
+         ],
+         "server": {
+            "kind": "unresolved"
+         }
+      },
+      {
+         "name": "a bare name is a root file: the one report elsewhere with that basename is not looked up",
+         "to": "story",
+         "reports": [
+            {
+               "path": "notebooks/story.malloy",
+               "layout": "linear"
+            }
+         ],
+         "server": {
+            "kind": "unresolved"
+         }
+      },
+      {
+         "name": "a bare name adds .malloy, never .malloynb",
+         "to": "story",
+         "reports": [
+            {
+               "path": "story.malloynb",
+               "layout": "linear"
+            }
+         ],
+         "server": {
+            "kind": "unresolved"
+         }
+      },
+      {
+         "name": "a bare name two grid reports elsewhere have resolves to neither",
+         "to": "overview",
+         "reports": [
+            {
+               "path": "b/overview.malloy",
+               "layout": "grid"
+            },
+            {
+               "path": "a/overview.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "unresolved"
+         }
+      },
+      {
+         "name": "a bare name two linear reports elsewhere have resolves to neither",
+         "to": "story",
+         "reports": [
+            {
+               "path": "a/story.malloy",
+               "layout": "linear"
+            },
+            {
+               "path": "b/story.malloy",
+               "layout": "linear"
+            }
+         ],
+         "server": {
+            "kind": "unresolved"
+         }
+      },
+      {
+         "name": "a bare name nothing has",
+         "to": "absent",
+         "reports": [
+            {
+               "path": "sales/q3.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "unresolved"
+         }
+      },
+      {
+         "name": "a path target that misses is unresolved",
+         "to": "x/q3",
+         "reports": [
+            {
+               "path": "sales/q3.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "unresolved"
+         }
+      },
+      {
+         "name": "self",
+         "to": "self",
+         "reports": [
+            {
+               "path": "self.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "self"
+         },
+         "sdk": {
+            "kind": "path",
+            "path": "self.malloy"
+         },
+         "knownDifference": "The server reads `self` before any path; the SDK's caller handles `self` before it resolves a target (resolveDrill.ts `DRILL_SELF`), so `resolveDrillTarget` reads it as a path like any other."
+      },
+      {
+         "name": "a report dropped because it could not be read is still where a drill points, to the server",
+         "to": "broken",
+         "reports": [
+            {
+               "path": "broken.malloy",
+               "layout": "grid",
+               "dropped": true
+            }
+         ],
+         "server": {
+            "kind": "path",
+            "path": "broken.malloy"
+         },
+         "sdk": {
+            "kind": "unresolved"
+         },
+         "knownDifference": "The server counts a dropped report, so the lint does not also call a correct drill dangling; the listing the SDK resolves against omits it."
+      },
+      {
+         "name": "a bare name a report elsewhere has resolves to none, whether or not another was dropped",
+         "to": "overview",
+         "reports": [
+            {
+               "path": "a/overview.malloy",
+               "layout": "grid"
+            },
+            {
+               "path": "b/overview.malloy",
+               "layout": "grid",
+               "dropped": true
+            }
+         ],
+         "server": {
+            "kind": "unresolved"
+         }
+      },
+      {
+         "name": "a leading ./ is not a package path",
+         "to": "./sales/q3",
+         "reports": [
+            {
+               "path": "sales/q3.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "unresolved",
+            "malformed": true
+         }
+      },
+      {
+         "name": "a leading / is not a package path",
+         "to": "/sales/q3",
+         "reports": [
+            {
+               "path": "sales/q3.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "unresolved",
+            "malformed": true
+         }
+      },
+      {
+         "name": "an empty segment is not a package path",
+         "to": "sales//q3",
+         "reports": [
+            {
+               "path": "sales/q3.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "unresolved",
+            "malformed": true
+         }
+      },
+      {
+         "name": "a .. segment is not a package path",
+         "to": "../sales/q3",
+         "reports": [
+            {
+               "path": "sales/q3.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "unresolved",
+            "malformed": true
+         }
+      }
+   ]
+}

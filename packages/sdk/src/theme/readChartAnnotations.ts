@@ -20,7 +20,7 @@ import type { Theme } from "./types";
  *   # theme.font.family = "Roboto, sans-serif"
  *   # theme.font.size = 13
  *
- * Series and font are shared across modes; only the seven
+ * Series and font are shared across modes; only the
  * {@link PER_MODE_COLOR_KEYS} accept light/dark variants. Annotations
  * with the wrong type are silently ignored. The goal is "worst-case a
  * typo means no styling", not "a typo crashes the renderer."

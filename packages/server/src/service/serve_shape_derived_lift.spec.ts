@@ -25,7 +25,7 @@ import {
    liftDerivedSources,
    type DerivedSourceDef,
    type DerivedSourceLift,
-} from "./materialization_serve_transform";
+} from "./materialization/serve/materialization_serve_transform";
 
 const ROOT = "file:///lift/";
 

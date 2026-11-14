@@ -163,7 +163,7 @@ The route is a priority order, not a verdict: it cannot prove a formula safe.
 
 ## Where it runs
 
-Claude Code and Cursor. The Credible app's agent has no shell tool, and the MCP skills
+Claude Code and Cursor. A regular chat in a client such as Credible has no shell tool (an agent's own computer does), and the MCP skills
 bundle carries the `SKILL.md` body and each `reference/*.md` file (served as a prompt named
 `malloy-excel-review/<name>`, fetched on request) but no `scripts/`.
 **So `SKILL.md` and the reference files have to be usable without the script**, and the script exists to do what

@@ -1,0 +1,5 @@
+{
+   "name": "reports-linear",
+   "version": "1.0.0",
+   "description": "Linear reports written as run: cells: the givens contract, autorun, starting givens and titles"
+}

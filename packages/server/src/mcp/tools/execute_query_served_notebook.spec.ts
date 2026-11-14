@@ -18,13 +18,14 @@ import {
 import type { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
 import { registerExecuteQueryTool } from "./execute_query_tool";
+import { QuerySlots } from "../../query_concurrency";
+import { QueryUseCase } from "../../usecases/query";
 
 const FIXTURE_DIR = path.resolve(
    __dirname,
    "../../../tests/fixtures/notebooks-malloyyo-surface",
 );
 const NOTEBOOK = "notebooks/cells.malloy";
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 
 type Handler = (params: Record<string, unknown>) => Promise<{
    isError?: boolean;
@@ -36,7 +37,6 @@ describe("execute_query on a served notebook", () => {
    let handler: Handler;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       await __setPackageLoadPoolForTests(new PackageLoadPool(1));
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-mcp-nb-"));
       fs.cpSync(FIXTURE_DIR, tempDir, { recursive: true });
@@ -58,17 +58,19 @@ describe("execute_query on a served notebook", () => {
             }) as never,
       };
       const fakeServer = {
-         tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
+         registerTool: (_name: string, _config: unknown, h: Handler) => {
             handler = h;
          },
       };
-      registerExecuteQueryTool(fakeServer as never, store as EnvironmentStore);
+      registerExecuteQueryTool(
+         fakeServer as never,
+         store as EnvironmentStore,
+         new QueryUseCase(store as EnvironmentStore, new QuerySlots()),
+      );
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
       fs.rmSync(tempDir, { recursive: true, force: true });
    });
 

@@ -1,0 +1,161 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "two_stage",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "two_stage:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customers"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "t2"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "c26c01b25e63e9a7",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(customers)",
+            "aggregate:sum(t2)"
+          ],
+          "source": "two_stage",
+          "stages": 1
+        },
+        "source": "two_stage"
+      },
+      "equalToLive": true,
+      "malloy": "run: two_stage -> { group_by: region; aggregate: c is customers.sum(), t is t2.sum() }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "customers",
+            "t2"
+          ],
+          "sourceName": "two_stage"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the second stage's columns",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customers"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "t2"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "c26c01b25e63e9a7",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(customers)",
+            "aggregate:sum(t2)"
+          ],
+          "source": "two_stage",
+          "stages": 1
+        },
+        "source": "two_stage"
+      },
+      "equalToLive": true,
+      "malloy": "run: two_stage -> { group_by: region; aggregate: c is customers.sum(), t is t2.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "2c9a41b07b97b53c525b3357ea2ac18d040c22dc82548fe282a2d81b9ea3a549"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "customers",
+            "t2"
+          ],
+          "sourceName": "two_stage"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "2c9a41b07b97b53c525b3357ea2ac18d040c22dc82548fe282a2d81b9ea3a549",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the second stage's columns",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

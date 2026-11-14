@@ -19,9 +19,12 @@ of this repository (`evals/.gitignore`).
 | (`examples/storefront-tour-truth/`) | the raw tables the goldens are derived from, with no modelling. It lives OUTSIDE the storefront package on purpose: Publisher serves every `.malloy` under a package directory, so a truth package kept in here is served as one of storefront's own models and the answerer can query the raw tables |
 | `eval.toml` | where each step finds its servers: the model package and its ports, the truth package and the truth server's ports |
 
-Every golden is `verified`: derived once as SQL over the raw parquet, once as
-Malloy through the truth package, on axes that differ, and promoted only where
-the two agreed.
+Every golden is `verified`: derived twice in Malloy over the truth package's
+raw tables, by two queries that reach the number by different routes, and
+promoted only where the two agreed. Summer sales, for example, is the season
+window summed directly, and the year's total less every line outside the
+window. Neither derivation is SQL, and neither goes through the model under
+test.
 
 ## Some of these SHOULD fail
 
@@ -38,13 +41,33 @@ expect these cases to flip — that flip is the evidence the edit worked.
 
 | Question | The business means | The model offers | Why it cannot get there |
 |---|---|---|---|
-| What were our summer sales in 2025? | 25 May – 15 Sep, the sales calendar: **$267,423** | a date column and a revenue measure | no field, given, filter or doc expresses a season, so an agent reads "summer" as June–August and lands 25% low |
+| What were our summer sales in 2025? | 25 May – 15 Sep, the sales calendar: **$267,423** | a date column and a revenue measure | no field, given, filter or doc expresses a season, so an agent reads "summer" as June–August and lands 20% low |
 | How many customers do we have? | people the company has **delivered** to: **943** | `customer_count`, which returns 974 through `order_items` and 1,000 on the customers source | nothing expresses delivery. 966 and 960 are the other near misses |
 | What were net sales in 2025, excluding cancelled and returned items? | **$834,216** | `total_sales`, which carries no status filter and returns gross | reachable, because `status` is a dimension — this one tests whether the agent builds the filter rather than trusting the named measure |
 
 The conventions themselves are written down in
 [`as-received/questions.md`](as-received/questions.md), as part of the material
 the questions arrived with. They are deliberately nowhere in the model.
+
+The package's `skills/storefront-conventions` guide does teach the net-sales
+filter, which is the product as shipped, so the default `--package-skills tool`
+arm measures the question with that guidance on. To compare against no guidance,
+serve a copy of the package without `skills/` and run a second arm with
+`--package <that copy> --package-skills off`; `off` refuses while the server
+still serves package skills.
+
+The same guide is why two keys accept a second basis. Asked for the top category
+by revenue, or for the best customers, an agent following the guide may leave
+out cancelled and returned lines and say so. The guide tells it to do exactly
+that when the question does not say ("Decide which one the question wants, and
+say which you used"), so `top-category` also accepts Outerwear at about
+$422,373. "Total spend" does say which, so `top-customer-spend` does not.
+
+`best-customers` is stricter. The model does not define "best", so the key
+wants the agent to say so: ask which definition the business wants, or show who
+leads under more than one measure. Picking one measure, even a stated one, is a
+near match. The key lists who leads under each measure, including customer 395
+on spend without cancelled and returned lines.
 
 ### One wrong doc, left wrong on purpose
 
@@ -57,7 +80,7 @@ fixed, if you decide to fix it.
 
 ### What is expected, and not a defect
 
-- `verify` prints `ok=11  skipped=1`, then 17 "rubric figures to review" and
+- `verify` prints `ok=11  skipped=1`, then 19 "rubric figures to review" and
   2 "other review items" on `best-customers`. Both lists are prompts to read a
   rubric against its rows, not failures; the figures are the tolerance band
   each rubric accepts and the wrong answers it names.
@@ -75,13 +98,14 @@ declaring a field to quiet a checker changes the thing being measured.
 
 ## Run it
 
-You need a clone of this repository with Publisher built (Node 20+, Bun, and
-a Java runtime for the SDK build), and Python 3.11+ for the eval scripts. Bun
-builds and runs Publisher; everything else here is Python. Every command reads
-`eval.toml`, so none of them takes a server flag. From the repository root:
+You need a clone of this repository with Publisher built (Node 20+, Bun for the
+build only, and a Java runtime for the SDK build), and Python 3.11+ for the
+eval scripts. The scripts run Publisher with Node; everything else here is
+Python. Every command reads `eval.toml`, so none of them takes a server flag.
+From the repository root:
 
 ```bash
-bun install && bun run build          # once: builds Publisher
+bun install && bun run build          # once: the repo's build: builds Publisher
 EVAL=skills/eval-loop/scripts/eval.py
 SET=examples/storefront/evals/storefront-tour
 
@@ -149,10 +173,17 @@ the case matrix, and the notebook of aggregate tables.
 python3 $EVAL package --set $SET --label baseline-01
 ```
 
-On the bundled model a run scores about 10 of 12: summer sales and customer
-count fail, as the section above says they should. Then write the run up per
-`skill:eval-report`. It is your report on your run; it does not belong in this
-directory.
+On the bundled model a run scores about 8 of 12, with best customers a near
+match unless the agent says "best" is not modeled. Summer sales and customer
+count fail, as the section above says they should. Top customer by spend failed
+or came close in all three runs so far, and it is not one of the designed gaps:
+the package's conventions guide warns that `total_sales` includes cancelled and
+returned lines, and the agent carries that filter into a question that asks for
+total spend. That is a real finding about the guide, so the key stays strict.
+Answers vary between runs, so run the arm twice before reading a score.
+
+Then write the run up per `skill:eval-report`. It is your report on your run;
+it does not belong in this directory.
 
 ## Running it on your own questions
 

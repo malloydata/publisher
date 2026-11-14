@@ -165,6 +165,24 @@ describe("isMeasureRow", () => {
       expect(isMeasureRow(row)).toBe(false);
    });
 
+   // `calculation` in the drill expression is the group-by's own name, not
+   // the aggregate marker. Read as one, the row was promoted to KPI cards
+   // while the result panel treated the same column as a group-by.
+   it("refuses a row with a group-by named calculation", () => {
+      const row = serverMeasureRow();
+      row.schema.fields.unshift({
+         kind: "dimension",
+         name: "calculation",
+         type: { kind: "string_type", subtype: "text" },
+         annotations: [
+            {
+               value: '#(malloy) reference_id = "5e1f" drill_expression { kind = field_reference name = calculation }\n',
+            },
+         ],
+      });
+      expect(isMeasureRow(row)).toBe(false);
+   });
+
    it("accepts a single record cell as well as a one-element array", () => {
       const row = measureRow();
       expect(isMeasureRow(row)).toBe(true);
@@ -186,6 +204,7 @@ describe("carriesRenderTag", () => {
          carriesRenderTag(['# label="Sales" bar_chart { x=month }\n']),
       ).toBe(true);
       expect(carriesRenderTag(["# bar_chart.stack\n"])).toBe(true);
+      expect(carriesRenderTag(["# combo_chart { y2=revenue }\n"])).toBe(true);
    });
 
    it("ignores documentation lines and formatting-only tags", () => {

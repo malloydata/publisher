@@ -1,7 +1,17 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { ConnectionError, logInternalFailure } from "../errors";
+import {
+   AccessDeniedError,
+   ConnectionError,
+   InvalidQueryRequestError,
+   logInternalFailure,
+} from "../errors";
+import {
+   isRestrictedByMessage,
+   matchMalloyErrorText,
+   type MalloyTextMatch,
+} from "./malloy_error_text";
 
 export interface ErrorDetails {
    message: string;
@@ -9,9 +19,8 @@ export interface ErrorDetails {
 }
 
 /**
- * Generates error details for a resource not found scenario.
- * @param resourceUriOrContext The URI that was not found, or a context string (e.g., "Package 'X'", "Model 'Y' in package 'X'").
- * @returns ErrorDetails object with message and suggestions.
+ * @param resourceUriOrContext The URI that was not found, or a context string
+ *   (e.g., "Model 'Y' in package 'X'").
  */
 export function getNotFoundError(resourceUriOrContext: string): ErrorDetails {
    const baseMessage = `Resource not found: ${resourceUriOrContext}`;
@@ -27,34 +36,39 @@ export function getNotFoundError(resourceUriOrContext: string): ErrorDetails {
 }
 
 /**
- * Generates generic error details for internal server errors.
+ * An unknown environment, named, with the ones that do exist, so an agent that
+ * guessed the name can correct it (getNotFoundError cannot say which part of
+ * "env/package" was wrong).
+ */
+export function getEnvironmentNotFoundError(lookup: {
+   environmentName: string;
+   availableEnvironments: string[];
+}): ErrorDetails {
+   const available =
+      lookup.availableEnvironments.length > 0
+         ? `Available environments: ${lookup.availableEnvironments.join(", ")}.`
+         : "This server has no environments loaded.";
+   return {
+      message: `Environment '${lookup.environmentName}' not found. ${available} Use a name from list_packages.`,
+      suggestions: [
+         "Environment names must match exactly, including case. Retrying with the same name fails the same way.",
+      ],
+   };
+}
+
+/**
+ * Error details for an unexpected internal failure.
  *
- * A `ConnectionError` is withheld from the caller here for the same reason
- * `internalErrorToHttpError` withholds it on the HTTP side: it wraps a driver
- * message that can name an internal host and port, echo the caller's SQL, or
- * distinguish refused from timed-out from auth-failed. Withholding it on only
- * one of the two transports would leave the same text retrievable over the
- * other. The detail is logged server-side instead, and a server-authored
- * `callerSafe` message stays as it is.
+ * A non-`callerSafe` `ConnectionError` is withheld (and logged), as on the HTTP
+ * side: its driver text can name an internal host, echo the caller's SQL, or
+ * distinguish refused from auth-failed, and withholding it on one transport only
+ * would leave it retrievable over the other.
  *
- * Every other error keeps its message, and the line is drawn by CLASS rather
- * than by transport. `ConnectionError` is the one class whose message is always
- * someone else's text -- a driver's -- so it is the one that is always unsafe to
- * echo. Everything else reaching here is operational: a store failure, an
- * unresolved environment, a thrown string. Blanking those returns callers to the
- * generic text `classifyToolError` exists to avoid, and costs an agent the only
- * sentence that tells it what to do next.
- *
- * That is deliberately NOT the same rule the HTTP mapper applies, which
- * generalizes its unrecognized-error branch too. An unrecognized error there can
- * carry a filesystem path (an ENOSPC naming an environment root, say), and it
- * still can here -- so this is a narrower posture, justified by the endpoint
- * being local and unauthenticated-by-design rather than by the text being safe.
- * If this endpoint ever fronts a remote caller, this branch generalizes with it.
- *
- * @param operation The operation that failed (e.g., 'executeQuery').
- * @param error Optional: The underlying error object or message.
- * @returns ErrorDetails object.
+ * Every other error keeps its message, because it is the only sentence telling
+ * an agent what to do next. That is narrower than the HTTP mapper, which also
+ * generalizes unrecognized errors (they can carry a filesystem path); it is
+ * justified by this endpoint being local, and must generalize too if it ever
+ * fronts a remote caller.
  */
 export function getInternalError(
    operation: string,
@@ -66,9 +80,8 @@ export function getInternalError(
       "If the problem persists, check server logs or contact support.",
    ];
    if (error instanceof ConnectionError && !error.callerSafe) {
-      // warn, not error: the same reasoning as the HTTP 502 branch -- this is
-      // the caller's or the warehouse's failure and a caller can drive it in a
-      // loop, so it must not fill the error log or move an error-rate dashboard.
+      // warn, not error: a caller can drive this in a loop, so it must not
+      // fill the error log or move an error-rate dashboard.
       logInternalFailure(
          `Upstream connection error during ${operation}`,
          error,
@@ -87,29 +100,18 @@ export function getInternalError(
 }
 
 /**
- * Every construct restricted mode refuses in ad-hoc query text, in one place
- * because two surfaces state it: the suggestion below, which a caller reads
- * only after tripping the rule, and `execute_query`'s `query` param doc,
- * which it reads before. Two hand-maintained copies drift, and a rule that is
- * missing from the list an agent is handed reads as permission.
+ * Every construct restricted mode refuses in ad-hoc query text, shared by the
+ * suggestion below and `execute_query`'s `query` param doc so they cannot
+ * drift (a rule missing from the list reads as permission).
  *
- * These mirror the compiler's `restricted-construct-forbidden` sites. Two more
- * exist and are deliberately absent: `given:` declarations sit behind the
- * `givens` experiment, whose `##!` flag restricted mode refuses first, so that
- * diagnostic is unreachable here — documenting it would describe a rule no
- * caller can trip. (The `sql_*` family IS listed: its restriction is checked
- * before its experiment gate, so unlike `given:` it is reachable.)
+ * Mirrors the compiler's `restricted-construct-forbidden` sites, except
+ * `given:`, which is unreachable: its experiment's `##!` flag is refused first.
+ * The `sql_*` family is reachable (its restriction precedes its gate).
  */
 export const RESTRICTED_CONSTRUCTS =
    "raw SQL (duckdb.sql(...) / connection.sql(...)), direct SQL function calls (name!type(...)), the sql_* function family (sql_number, sql_string, sql_date, sql_timestamp, sql_boolean), import statements, ##! flags, or new sources from connection.table(...)";
 
-/**
- * Generates detailed error information for Malloy compilation or query execution errors.
- * @param operation The operation that failed (e.g., 'executeQuery (load model)', 'executeQuery').
- * @param modelIdentifier A path or URI identifying the model/notebook involved.
- * @param error The underlying Malloy error object or other error.
- * @returns ErrorDetails object.
- */
+/** Error details for a Malloy compilation or query execution error. */
 export function getMalloyErrorDetails(
    operation: string,
    modelIdentifier: string,
@@ -123,34 +125,23 @@ export function getMalloyErrorDetails(
       "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/",
    ];
 
-   let suggestions: string[] = [...initialSuggestions]; // Clone initial suggestions
-   let refined = false; // Flag to track if specific suggestions were added
+   let suggestions: string[] = [...initialSuggestions];
+   let refined = false;
 
-   // Attempt to extract more specific info if it's a MalloyError or similar
    if (error instanceof Error) {
-      // Restricted-mode rejection: checked FIRST, and it returns early with
-      // ONLY the restricted diagnostics. One forbidden construct (e.g.
-      // `conn.table(...)` in ad-hoc text) cascades into several downstream
-      // diagnostics ("'X' is not defined", "Reference to undefined object")
-      // because the construct was refused, and those read top-down send the
-      // caller hunting for column typos in the warehouse — entirely the wrong
-      // place. The compiler marks the real cause with a structured problem
-      // code ('restricted-construct-forbidden'); a message sniff is the
-      // fallback for re-wrapped errors (see restricted_mode.spec.ts, which
-      // documents both shapes).
+      // Restricted-mode rejection first, returning ONLY the restricted
+      // diagnostics: one refused construct cascades into "'X' is not defined"
+      // fallout that would send the caller hunting for typos. The structured
+      // problem code is primary; the message sniff covers re-wrapped errors.
       const problems = (
          error as { problems?: Array<{ code?: string; message?: string }> }
       ).problems;
       const restrictedProblems = Array.isArray(problems)
          ? problems.filter((p) => (p.code ?? "").includes("restricted"))
          : [];
-      // Deliberately narrower than the spec helper's includes("restricted"):
-      // this one CLASSIFIES (a match suppresses other diagnostics), so a
-      // user's own identifier containing the word must not trip it. The
-      // compiler's phrasing is "… cannot be used in a restricted query".
       const restrictedBySniff =
          restrictedProblems.length === 0 &&
-         /cannot be used in a restricted/i.test(error.message);
+         isRestrictedByMessage(error.message);
       if (restrictedProblems.length > 0 || restrictedBySniff) {
          const causes =
             restrictedProblems.length > 0
@@ -167,117 +158,104 @@ export function getMalloyErrorDetails(
          };
       }
 
-      // Prepend the specific error message
       baseMessage = `Error during ${operation} for resource '${modelIdentifier}': ${error.message}`;
 
-      // --- Add more specific suggestions based on common Malloy error patterns ---
-      // Note: Order matters, check for more specific patterns first.
-
-      const viewNotFoundMatch = error.message.match(
-         /View '([^']+)' not found in source '([^']+)'/i,
-      );
-      const sourceNotFoundMatch = error.message.match(
-         /Source '([^']+)' not found/i,
-      );
-      const queryNotFoundMatch = error.message.match(
-         /Query '([^']+)' not found/i,
-      );
-      const referenceErrorMatch = error.message.match(
-         /Reference to undefined object(?: '([^']+)')?/i,
-      );
-      const syntaxErrorMatch = error.message.match(
-         /no viable alternative at input/i,
-      );
-      const connectionErrorMatch = error.message.match(
-         /Cannot connect to database/i,
-      );
-      const fieldNotFoundMatch = error.message.match(
-         /Field '([^']+)' not found in (source|query|view) '([^']+)'/i,
-      );
-      const invalidRequestMatch = error.message.match(
-         /Invalid query request\\. Query OR queryName must be defined/i,
-      );
-      // `#(authorize)` gate denial. The message names only the source (gate
-      // logic is never leaked), so the suggestion is about satisfying access,
-      // not fixing syntax — otherwise this falls through to generic Malloy
-      // syntax advice that misleads the caller.
-      const accessDeniedMatch = error.message.match(
-         /Access denied for source "([^"]+)"/i,
-      );
-
-      if (accessDeniedMatch) {
+      // What Publisher's own errors say they are, read as data; then what a
+      // Malloy message says, read as text (malloy_error_text.ts).
+      if (error instanceof AccessDeniedError && error.source !== undefined) {
+         // `#(authorize)` denial: the error names only the source (gate logic
+         // is never leaked), and the advice is about access, not syntax.
          refined = true;
-         const [, sourceName] = accessDeniedMatch;
          suggestions = [
-            `Suggestion: Access to source '${sourceName}' is restricted by an authorize gate. Supply the givens its authorize expression requires (e.g. a role/region given) and retry. This is an authorization denial, not a syntax error.`,
+            `Suggestion: Access to source '${error.source}' is restricted by an authorize gate. Supply the givens its authorize expression requires (e.g. a role/region given) and retry. This is an authorization denial, not a syntax error.`,
          ];
-      } else if (viewNotFoundMatch) {
-         refined = true;
-         const [, viewName, sourceName] = viewNotFoundMatch;
-         suggestions.unshift(
-            `Suggestion: View '${viewName}' was not found in source '${sourceName}'. Check the view name spelling, or list that source's views with get_context: pass search_targets [{"target_type": "view"}] and a scopes entry whose source is '${sourceName}'. Views are defined within sources like 'source: ${sourceName} is ... extend { view: ${viewName} is { ... } }'.`,
-         );
-      } else if (sourceNotFoundMatch) {
-         refined = true;
-         const [, sourceName] = sourceNotFoundMatch;
-         suggestions.unshift(
-            `Suggestion: Source '${sourceName}' was not found or could not be accessed. Verify its definition (e.g., \`source: ${sourceName} is table('...')\` or \`duckdb.sql("...")\`) and ensure any associated connections are valid.`,
-            `Suggestion: Check the spelling of '${sourceName}'. List the package's sources with get_context: pass search_targets [{"target_type": "source"}] and a scopes entry naming the environment and package.`,
-         );
-      } else if (queryNotFoundMatch) {
-         refined = true;
-         const [, queryName] = queryNotFoundMatch;
-         suggestions.unshift(
-            `Suggestion: Named query '${queryName}' was not found. Verify its definition (e.g., \`query: ${queryName} is source_name -> { ... }\`) within the model '${modelIdentifier}'.`,
-            `Suggestion: Check the spelling of '${queryName}'. Ensure it's a named query (defined with \`query:\`), not a view. List them with get_context: pass search_targets [{"target_type": "view"}], which covers named queries too.`,
-         );
-      } else if (fieldNotFoundMatch) {
-         refined = true;
-         const [, fieldName, fieldContextType, fieldContextName] =
-            fieldNotFoundMatch;
-         suggestions.unshift(
-            `Suggestion: Field '${fieldName}' was not found in ${fieldContextType} '${fieldContextName}'. Check the spelling of the field name within the definition of '${fieldContextName}'.`,
-            `Suggestion: Ensure the field is defined directly or inherited correctly in the '${fieldContextName}' ${fieldContextType}. Inspect its fields with get_context: pass search_targets [{"target_type": "dimension"}, {"target_type": "measure"}], scoped to the source that holds it.`,
-         );
-      } else if (referenceErrorMatch) {
-         refined = true;
-         const objectName = referenceErrorMatch[1] || "[unknown object]";
-         suggestions.unshift(
-            `Suggestion: Check if the referenced object '${objectName}' (source, query, view, field, dimension, measure) is defined correctly and spelled correctly (e.g., 'source: my_source is ...', 'query: my_query is ...'). Ensure it's defined *before* being used in the model file.`,
-         );
-      } else if (syntaxErrorMatch) {
-         refined = true;
-         suggestions.unshift(
-            "Suggestion: There seems to be a syntax error near the location indicated in the error message. Check for misplaced/missing keywords (like 'is', '->', 'extend', 'where', 'aggregate', 'group_by', 'nest'), commas, brackets '{ }', or parentheses '( )'. See Query Syntax: https://docs.malloydata.dev/documentation/language/query",
-         );
-      } else if (connectionErrorMatch) {
-         refined = true;
-         suggestions.unshift(
-            "Suggestion: Verify the database connection details (credentials, host, database name, connection name in Malloy) associated with this model.",
-         );
-         suggestions.push(
-            "Ensure the database server is running and accessible from the publisher server.",
-         );
-      } else if (invalidRequestMatch) {
+      } else if (error instanceof InvalidQueryRequestError) {
          refined = true;
          suggestions.unshift(
             "Suggestion: This error can occur when specifying a view using 'sourceName' and 'queryName'. Try providing the full query string directly in the 'query' parameter instead (e.g., 'query': 'run: your_source_name->your_view_name').",
             "Suggestion: Also verify you are providing either the 'query' parameter OR the correct combination of 'queryName' (and optionally 'sourceName' for views).",
          );
+      } else {
+         const matched = matchMalloyErrorText(error.message);
+         if (matched) {
+            refined = true;
+            suggestions = refineForMalloyText(
+               matched,
+               modelIdentifier,
+               suggestions,
+            );
+         }
       }
 
-      // If no specific pattern matched, keep the initial suggestions
       if (!refined) {
          suggestions = initialSuggestions;
       }
    } else {
-      // Generic message if it's not a standard Error object
       baseMessage += `: ${String(error)}`;
-      suggestions = initialSuggestions; // Use initial for non-errors too
+      suggestions = initialSuggestions;
    }
 
    return {
       message: baseMessage,
       suggestions: suggestions,
    };
+}
+
+/** The Malloy advice refined by what a Malloy error message said went wrong. */
+function refineForMalloyText(
+   matched: MalloyTextMatch,
+   modelIdentifier: string,
+   generic: readonly string[],
+): string[] {
+   switch (matched.match) {
+      case "view_not_found": {
+         const { view, source } = matched;
+         return [
+            `Suggestion: View '${view}' was not found in source '${source}'. Check the view name spelling, or list that source's views with get_context: pass search_targets [{"target_type": "view"}] and a scopes entry whose source is '${source}'. Views are defined within sources like 'source: ${source} is ... extend { view: ${view} is { ... } }'.`,
+            ...generic,
+         ];
+      }
+      case "source_not_found": {
+         const { source } = matched;
+         return [
+            `Suggestion: Source '${source}' was not found or could not be accessed. Verify its definition (e.g., \`source: ${source} is table('...')\` or \`duckdb.sql("...")\`) and ensure any associated connections are valid.`,
+            `Suggestion: Check the spelling of '${source}'. List the package's sources with get_context: pass search_targets [{"target_type": "source"}] and a scopes entry naming the environment and package.`,
+            ...generic,
+         ];
+      }
+      case "query_not_found": {
+         const { query } = matched;
+         return [
+            `Suggestion: Named query '${query}' was not found. Verify its definition (e.g., \`query: ${query} is source_name -> { ... }\`) within the model '${modelIdentifier}'.`,
+            `Suggestion: Check the spelling of '${query}'. Ensure it's a named query (defined with \`query:\`), not a view. List them with get_context: pass search_targets [{"target_type": "view"}], which covers named queries too.`,
+            ...generic,
+         ];
+      }
+      case "field_not_found": {
+         const { field, contextType, contextName } = matched;
+         return [
+            `Suggestion: Field '${field}' was not found in ${contextType} '${contextName}'. Check the spelling of the field name within the definition of '${contextName}'.`,
+            `Suggestion: Ensure the field is defined directly or inherited correctly in the '${contextName}' ${contextType}. Inspect its fields with get_context: pass search_targets [{"target_type": "dimension"}, {"target_type": "measure"}], scoped to the source that holds it.`,
+            ...generic,
+         ];
+      }
+      case "undefined_reference": {
+         const objectName = matched.object || "[unknown object]";
+         return [
+            `Suggestion: Check if the referenced object '${objectName}' (source, query, view, field, dimension, measure) is defined correctly and spelled correctly (e.g., 'source: my_source is ...', 'query: my_query is ...'). Ensure it's defined *before* being used in the model file.`,
+            ...generic,
+         ];
+      }
+      case "syntax":
+         return [
+            "Suggestion: There seems to be a syntax error near the location indicated in the error message. Check for misplaced/missing keywords (like 'is', '->', 'extend', 'where', 'aggregate', 'group_by', 'nest'), commas, brackets '{ }', or parentheses '( )'. See Query Syntax: https://docs.malloydata.dev/documentation/language/query",
+            ...generic,
+         ];
+      case "cannot_connect":
+         return [
+            "Suggestion: Verify the database connection details (credentials, host, database name, connection name in Malloy) associated with this model.",
+            ...generic,
+            "Ensure the database server is running and accessible from the publisher server.",
+         ];
+   }
 }

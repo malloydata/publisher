@@ -3,6 +3,7 @@
 
 import { useCallback, useMemo } from "react";
 import type { GivenValue } from "../../hooks/givenValue";
+import { useReportEvents } from "../Report/telemetry";
 import { encodeDrillValue } from "./resolveDrill";
 
 export interface UseDrillSelfOptions {
@@ -48,14 +49,17 @@ export interface UseDrillSelfResult {
  *   server knows.
  * - **A refusal is said aloud.** `canSelf` checks only that the name resolves,
  *   so a `given=` naming a type the clicked value cannot become still paints a
- *   whole column clickable and would then drop every click in silence. Both
- *   refusals warn, because each is an authoring mistake with no other symptom.
+ *   whole column clickable and would then drop every click in silence. Inside
+ *   a `Report` every click is a `report.drill` event; a refusal also warns on
+ *   the console when no host listens, because each is an authoring mistake
+ *   with no other symptom.
  */
 export function useDrillSelf({
    declaredTypes,
    setGiven,
    documentName,
 }: UseDrillSelfOptions): UseDrillSelfResult {
+   const events = useReportEvents();
    const givenNamesByFold = useMemo(() => {
       const byFold = new Map<string, string>();
       for (const name of declaredTypes.keys()) {
@@ -85,25 +89,38 @@ export function useDrillSelf({
       (given: string, rawValue: unknown) => {
          const declared = resolveGiven(given);
          if (declared === undefined) {
-            console.warn(
-               `# drill { to=self } tried to set '${given}', which ` +
-                  `'${documentName}' does not declare as a given. Name the ` +
-                  `given with 'given=' on the drill tag.`,
-            );
+            events.emit({
+               type: "report.drill",
+               to: "self",
+               outcome: "unresolved",
+            });
+            if (!events.listening)
+               console.warn(
+                  `# drill { to=self } tried to set '${given}', which ` +
+                     `'${documentName}' does not declare as a given. Name the ` +
+                     `given with 'given=' on the drill tag.`,
+               );
             return;
          }
          const declaredType = declaredTypes.get(declared);
          const value = encodeDrillValue(rawValue, declaredType);
          if (value === undefined) {
-            console.warn(
-               `Drill declined: ${JSON.stringify(rawValue)} cannot be a value for given "${declared}"` +
-                  (declaredType ? ` of type ${declaredType}` : ""),
-            );
+            events.emit({
+               type: "report.drill",
+               to: "self",
+               outcome: "malformed",
+            });
+            if (!events.listening)
+               console.warn(
+                  `Drill declined: ${JSON.stringify(rawValue)} cannot be a value for given "${declared}"` +
+                     (declaredType ? ` of type ${declaredType}` : ""),
+               );
             return;
          }
          setGiven(declared, value);
+         events.emit({ type: "report.drill", to: "self", outcome: "resolved" });
       },
-      [declaredTypes, documentName, resolveGiven, setGiven],
+      [declaredTypes, documentName, resolveGiven, setGiven, events],
    );
 
    return { resolveGiven, canSelf, onSelf };

@@ -798,7 +798,7 @@ class TargetKinds(unittest.TestCase):
         # did, too wide reads a real never-asked as a retrieval failure.
         here = os.path.dirname(os.path.abspath(__file__))
         src = os.path.join(here, "..", "..", "..", "packages", "server", "src",
-                           "mcp", "tools", "get_context_tool.ts")
+                           "mcp", "tools", "get_context_request.ts")
         with open(src, encoding="utf-8") as fh:
             text = fh.read()
         block = text.split("const KINDS_BY_TARGET")[1].split("};")[0]

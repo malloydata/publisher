@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Contract test for where a *source-level* `where:` referencing a given ends up
-// in the compiled model, and for `readDashboardModelFacts` reading it.
+// in the compiled model, and for `readReportModelFacts` reading it.
 //
 // Scoping a source once — `source: scoped is orders extend { where: category ~
 // $CATEGORY }` — is the idiomatic way to apply a given to everything built on
@@ -22,7 +22,7 @@ import {
 import type { ModelDef } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 
-import { readDashboardModelFacts } from "./dashboard";
+import { readReportModelFacts } from "./report_manifest";
 
 const ROOT = "file:///probe/";
 let connections: FixedConnectionMap;
@@ -81,7 +81,7 @@ async function facts() {
       .getModel();
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
    const def = (model as any)._modelDef as ModelDef;
-   return readDashboardModelFacts("m.malloy", def, ["CATEGORY", "BRAND"]);
+   return readReportModelFacts("m.malloy", def, ["CATEGORY", "BRAND"]);
 }
 
 describe("givens applied on a source reach that source's views", () => {

@@ -36,14 +36,14 @@ describe("Prose: links", () => {
             links={{
                environmentName: "env",
                packageName: "pkg",
-               sourcePath: "guides/intro.malloynb",
+               sourcePath: "guides/intro.malloy",
             }}
          >
-            {"[next](../sales.malloynb) [up](../../../etc/passwd)"}
+            {"[next](../sales.malloy) [up](../../../etc/passwd)"}
          </Prose>,
       );
       expect(screen.getByText("next").getAttribute("href")).toBe(
-         "/env/pkg/sales.malloynb",
+         "/env/pkg/sales.malloy",
       );
       // An escape past the package root is clamped at it, never above.
       expect(screen.getByText("up").getAttribute("href")).toBe(
@@ -81,5 +81,42 @@ describe("Prose: variants", () => {
       expect(screen.getByRole("heading", { level: 2 }).textContent).toBe(
          "Section",
       );
+   });
+});
+
+describe("Prose: raw HTML", () => {
+   const hostile: Record<string, string> = {
+      meta: '<meta http-equiv="refresh" content="0;url=https://attacker.example">',
+      iframe: '<iframe src="https://attacker.example"></iframe>',
+      form: '<form action="https://attacker.example"><input name="q"></form>',
+      style: "<style>body{background:url(https://attacker.example/x)}</style>",
+      img: '<img src="https://attacker.example/p.png" onerror="alert(1)">',
+      base: '<base href="https://attacker.example/">',
+      script: "<script>alert(1)</script>",
+   };
+
+   for (const [tag, html] of Object.entries(hostile)) {
+      it(`renders <${tag}> as inert text, not an element`, () => {
+         const { container } = render(
+            <Prose>{`before\n\n${html}\n\nafter`}</Prose>,
+         );
+         expect(container.querySelector(tag)).toBeNull();
+         expect(container.textContent).toContain("before");
+         expect(container.textContent).toContain("after");
+      });
+   }
+
+   it("renders a markdown image as its alt text without an <img>", () => {
+      const { container } = render(
+         <Prose>{"![chart](https://attacker.example/p.png)"}</Prose>,
+      );
+      expect(container.querySelector("img")).toBeNull();
+      expect(container.textContent).toContain("chart");
+   });
+
+   it("still renders ordinary markdown", () => {
+      const { container } = render(<Prose>{"**bold** and `code`"}</Prose>);
+      expect(container.querySelector("strong")?.textContent).toBe("bold");
+      expect(container.querySelector("code")?.textContent).toBe("code");
    });
 });

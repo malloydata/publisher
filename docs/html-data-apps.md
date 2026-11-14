@@ -65,7 +65,7 @@ so `public/index.html` is the package's landing page and any other file under
 `public/` loads at its relative path. Only `public/` is reachable over the web. The models, the data
 files, and `publisher.json` live outside it and are never served; the page
 reaches model data only through the query API, which goes through the same
-governance (filters, access modifiers, authorize annotations) as any other
+governance (filters, `private:` fields, authorize annotations) as any other
 Publisher client.
 
 Note the `/environments/.../packages/...` prefix. The web UI opens a model at the
@@ -198,8 +198,18 @@ The third argument, `opts`, is optional:
 |---|---|---|
 | `sourceName` | string | The source a `queryName` view hangs off. Not valid alone: `sourceName` without `queryName` is a 400 |
 | `queryName` | string | Run a saved query or view by name. Pair with `sourceName` for a view on a source; alone it runs a model-level query |
-| `environment`, `package` | string | Override the environment or package the query targets, for pages not served under `/environments/<env>/packages/<pkg>/` |
+| `environment`, `package` | string | Override the environment or package the query targets, for pages not served under `/environments/<env>/packages/<pkg>/` or `/apps/<env>/<pkg>/` |
 | `givens` | object | A name→value map bound as Malloy [`given:`](./givens.md) runtime parameters for this query. Safe parameterization, not string interpolation |
+| `versionId` | string | Query this published version of the package instead of its `latest` (with [package versioning](./package-versions.md) on). A page opened with `?versionId=` in its URL already queries that version of its own package, when the package has it |
+
+**Versions.** With [package versioning](./package-versions.md) on, a page opened
+at `…/index.html?versionId=1.2.0` pins every query it makes to its own package
+to version 1.2.0, once a read of the package confirms it has that version;
+otherwise the page queries `latest`. A query that sets `opts.package` to
+another package gets that package's `latest`, and `opts.versionId` pins a
+single query. Only the URL pins: the page's own
+relative requests (`./app.js`, a stylesheet's `url()`) carry no query string,
+so they are served from `latest` unless the page adds `?versionId=` to them.
 
 `queryName` (with `sourceName` for a view on a source) is the alternative to
 passing a `run:` string as the second argument; use one path or the other, and
@@ -224,8 +234,8 @@ matter:
 
 Where you must build query text from input, constrain it to a known set and
 escape it, or keep the filtering in model-defined views. The
-`malloy-html-data-app-runtime` skill covers the same ground for an agent writing
-the page.
+`malloy-html-data-apps` skill (its `reference/runtime.md`) covers the same ground for an agent
+writing the page.
 
 `Publisher.queryFull(...)` takes the same arguments but resolves to the full
 Malloy result envelope rather than just the rows. Use it when you want to hand
@@ -239,10 +249,15 @@ filter, a compile error, or a permission failure.
 
 ### Context
 
-`Publisher.context` is `{ environment, package }`, read from the page's own URL
-(`/environments/<env>/packages/<pkg>/...`). `query`, `queryFull`, and the live
-reload use it automatically, so a page served from inside its package does not
-need to name its environment or package anywhere. If you serve the page from
+`Publisher.context` is `{ environment, package }`, read from the page's own URL.
+Two URL shapes are recognised: the in-app viewer's
+`/environments/<env>/packages/<pkg>/...`, and `/apps/<env>/<pkg>/...`, which a
+host that embeds the app on a third-party site may serve it from. Under either,
+`query` and `queryFull` use the context automatically, so a page served from
+inside its package does not need to name its environment or package anywhere.
+The live-reload subscription is in-app only: it starts under the
+`/environments/...` shape and not under `/apps/...`, where the page belongs to
+someone else's site (see [Live reload](#live-reload)). If you serve the page from
 somewhere else (for example a host page on another path that calls the API
 directly), pass `environment` and `package` in `opts`.
 
@@ -258,7 +273,7 @@ hook a host application uses to pass a signed token into an embedded page (see
 [Embedding](#embedding)).
 
 What the Publisher server enforces on these routes is the package's own model
-governance: filter and runtime-parameter (given) rules, access modifiers, and
+governance: filter and runtime-parameter (given) rules, `private:` fields, and
 `#(access_filter)` annotations are applied when the query compiles and runs. The static file, data-app-listing, and
 events routes themselves are open; treat anything you put under `public/` as
 world-readable to anyone who can reach the server, and keep secrets in the models
@@ -322,7 +337,10 @@ Publisher mounts that environment's local-directory packages in place and watche
 them. Editing a `.malloy` file recompiles the package; editing a file under
 `public/` refreshes any open page. The runtime subscribes to a server-sent-events
 stream and reloads the page when the package changes; this is automatic for any
-page that loads `publisher.js` from inside its package.
+page that loads `publisher.js` from inside its package at the in-app URL
+(`/environments/<env>/packages/<pkg>/...`). A page served at `/apps/<env>/<pkg>/...`
+infers the same context but never subscribes: that URL is for embedding on
+someone else's site, where a reload on publish would discard the visitor's state.
 
 The stream is `GET /api/v0/environments/<env>/packages/<pkg>/events`. It emits a
 `hello` event on connection, a `mode` event reporting whether watch mode is on, a
@@ -412,7 +430,7 @@ the manifest field reference is [packages.md](packages.md).
   the Console as well as `public/` files, so setting the variable is the whole
   configuration rather than part of it. All responses carry
   `X-Content-Type-Options: nosniff`.
-- The query API applies the model's governance (filters, access modifiers,
+- The query API applies the model's governance (filters, `private:` fields,
   authorize annotations). The static, data-apps, and events routes do not add
   their own auth, so do not place anything sensitive under `public/`.
 

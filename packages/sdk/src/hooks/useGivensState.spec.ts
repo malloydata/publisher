@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it } from "bun:test";
+import { StrictMode } from "react";
+import { afterEach, describe, expect, it, setSystemTime } from "bun:test";
 import { useGivensState } from "./useGivensState";
 
 const TYPES = new Map<string, string | undefined>([
@@ -290,6 +291,60 @@ describe("useGivensState: Reset", () => {
    });
 });
 
+describe("useGivensState: atStart, whether Reset would change anything", () => {
+   it("is true on a document's own starting value, so Reset is not offered for it", () => {
+      // Was: Reset was offered whenever a value was set, so a report saving
+      // REGION="West" showed Reset beside West, and pressing it set West.
+      const host = renderWithUrlHost({
+         autorun: true,
+         startingValues: { REGION: "West" },
+      });
+      expect(entries(host.current.applied)).toEqual({ REGION: "West" });
+      expect(host.current.atStart).toBe(true);
+   });
+
+   it("is false once a control moves off the start, and true again after Reset", () => {
+      const host = renderWithUrlHost({
+         autorun: true,
+         startingValues: { REGION: "West" },
+      });
+      act(() => host.current.setGiven("REGION", "Northeast"));
+      host.settle();
+      expect(host.current.atStart).toBe(false);
+
+      act(() => host.current.reset());
+      host.settle();
+      expect(host.current.atStart).toBe(true);
+   });
+
+   it("is false when a cleared starting value leaves the control empty", () => {
+      const host = renderWithUrlHost({
+         autorun: true,
+         startingValues: { REGION: "West" },
+      });
+      act(() => host.current.setGiven("REGION", null));
+      host.settle();
+      expect(host.current.atStart).toBe(false);
+   });
+
+   it("is false for a value a link carries over the start", () => {
+      const host = renderWithUrlHost({
+         autorun: true,
+         startingValues: { REGION: "West" },
+         initialUrl: { REGION: "Northeast" },
+      });
+      expect(host.current.atStart).toBe(false);
+   });
+
+   it("is false while a change waits on Apply, since Reset would drop it", () => {
+      const host = renderWithUrlHost({ autorun: false });
+      expect(host.current.atStart).toBe(true);
+      act(() => host.current.setGiven("REGION", "Northeast"));
+      host.settle();
+      expect(host.current.atStart).toBe(false);
+   });
+});
+
 describe("useGivensState: settling", () => {
    it("stops reporting once the host echoes the values back", () => {
       // The hook reports applied values out for the host to put in the URL,
@@ -346,17 +401,17 @@ describe("useGivensState: swapping documents", () => {
                onParamsChange: (next) => reported.push(next),
                autorun: true,
             }),
-         { initialProps: { doc: "a.malloynb", params: {} } },
+         { initialProps: { doc: "a.malloy", params: {} } },
       );
 
       act(() => result.current.setGiven("REGION", "West"));
       expect(entries(result.current.applied)).toEqual({ REGION: "West" });
 
       // The host writes it to the URL and feeds it straight back in.
-      rerender({ doc: "a.malloynb", params: { REGION: "West" } });
+      rerender({ doc: "a.malloy", params: { REGION: "West" } });
       expect(entries(result.current.applied)).toEqual({ REGION: "West" });
 
-      rerender({ doc: "b.malloynb", params: {} });
+      rerender({ doc: "b.malloy", params: {} });
       expect(entries(result.current.applied)).toEqual({});
       expect(reported.at(-1)).toEqual({});
    });
@@ -372,7 +427,7 @@ describe("useGivensState: swapping documents", () => {
             useGivensState({
                declaredTypes: props.types,
                startingValues: { STATUS: "open" },
-               documentKey: "orders.malloynb",
+               documentKey: "orders.malloy",
                autorun: true,
             }),
          {
@@ -408,7 +463,7 @@ describe("useGivensState: swapping documents", () => {
                   ["B", "string"],
                ]),
                params: props.params,
-               documentKey: "orders.malloynb",
+               documentKey: "orders.malloy",
                autorun: true,
             }),
          { initialProps: { params: { A: "1", B: "2" } } },
@@ -433,17 +488,17 @@ describe("useGivensState: swapping documents", () => {
                documentKey: props.doc,
                autorun: true,
             }),
-         { initialProps: { doc: "a.malloynb", params: {} } },
+         { initialProps: { doc: "a.malloy", params: {} } },
       );
 
       act(() => result.current.setGiven("REGION", "East"));
       // The host echoes it into the URL, then the reader navigates away.
-      rerender({ doc: "a.malloynb", params: { REGION: "East" } });
-      rerender({ doc: "b.malloynb", params: {} });
+      rerender({ doc: "a.malloy", params: { REGION: "East" } });
+      rerender({ doc: "b.malloy", params: {} });
       expect(entries(result.current.applied)).toEqual({});
 
       // Back to the first notebook from a link carrying no query string.
-      rerender({ doc: "a.malloynb", params: {} });
+      rerender({ doc: "a.malloy", params: {} });
       expect(entries(result.current.applied)).toEqual({});
    });
 });
@@ -589,6 +644,110 @@ describe("useGivensState: clearing a given that has a starting value", () => {
       // Back button to the URL that carried East: a starting point, not an echo.
       rerender({ params: { REGION: "East" } });
       expect(entries(result.current.applied)).toEqual({ REGION: "East" });
+   });
+
+   it("keeps the newest edit when a URL two reports old arrives late", () => {
+      let url: Record<string, string> = {};
+      const { result, rerender } = renderHook(
+         (props: { params: Record<string, string> }) =>
+            useGivensState({
+               declaredTypes: TYPES,
+               params: props.params,
+               onParamsChange: (next) => {
+                  url = next;
+               },
+               documentKey: "dashboard",
+               autorun: true,
+            }),
+         { initialProps: { params: url } },
+      );
+
+      const reportedUrls: Record<string, string>[] = [];
+      for (const typed of ["F", "Fo", "For"]) {
+         act(() => result.current.setGiven("REGION", typed));
+         reportedUrls.push(url);
+      }
+
+      // The host delivers them late and in order, the oldest first.
+      for (const arriving of reportedUrls) {
+         rerender({ params: arriving });
+         expect(entries(result.current.applied)).toEqual({ REGION: "For" });
+      }
+   });
+
+   it("keeps the newest edit through repeated renders at a stale URL", () => {
+      let url: Record<string, string> = {};
+      const { result, rerender } = renderHook(
+         (props: { params: Record<string, string> }) =>
+            useGivensState({
+               declaredTypes: TYPES,
+               params: props.params,
+               onParamsChange: (next) => {
+                  url = next;
+               },
+               documentKey: "dashboard",
+               autorun: true,
+            }),
+         { initialProps: { params: url }, wrapper: StrictMode },
+      );
+
+      const reportedUrls: Record<string, string>[] = [];
+      for (const typed of ["F", "Fo", "For"]) {
+         act(() => result.current.setGiven("REGION", typed));
+         reportedUrls.push(url);
+      }
+
+      // The first report lands, and the host re-renders for its own reasons
+      // before the next one does.
+      for (let i = 0; i < 3; i++) {
+         rerender({ params: reportedUrls[0] });
+         expect(entries(result.current.applied)).toEqual({ REGION: "For" });
+      }
+      rerender({ params: reportedUrls[1] });
+      rerender({ params: reportedUrls[1] });
+      expect(entries(result.current.applied)).toEqual({ REGION: "For" });
+   });
+
+   describe("a report that was replaced before its URL landed", () => {
+      afterEach(() => setSystemTime());
+
+      const mount = (documentKey = "dashboard") => {
+         let url: Record<string, string> = {};
+         const view = renderHook(
+            (props: { params: Record<string, string>; documentKey: string }) =>
+               useGivensState({
+                  declaredTypes: TYPES,
+                  params: props.params,
+                  onParamsChange: (next) => {
+                     url = next;
+                  },
+                  documentKey: props.documentKey,
+                  autorun: true,
+               }),
+            { initialProps: { params: url, documentKey } },
+         );
+         // Set, then cleared, before the URL for the first lands.
+         act(() => view.result.current.setGiven("REGION", "F"));
+         act(() => view.result.current.setGiven("REGION", null));
+         return view;
+      };
+
+      it("stops reading a later push that repeats it as an echo", () => {
+         setSystemTime(1_000_000);
+         const { result, rerender } = mount();
+         rerender({ params: {}, documentKey: "dashboard" });
+         setSystemTime(1_005_000);
+         rerender({ params: { REGION: "F" }, documentKey: "dashboard" });
+         expect(entries(result.current.applied)).toEqual({ REGION: "F" });
+      });
+
+      it("is forgotten when the document changes", () => {
+         setSystemTime(1_000_000);
+         const { result, rerender } = mount();
+         rerender({ params: {}, documentKey: "other" });
+         rerender({ params: { REGION: "F" }, documentKey: "other" });
+         expect(entries(result.current.applied)).toEqual({ REGION: "F" });
+      });
    });
 
    it("Reset after a clear restores the starting value and runs once", () => {

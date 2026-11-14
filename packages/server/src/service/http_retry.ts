@@ -65,16 +65,14 @@ export function malformedReply(
 }
 
 /**
- * How a bulk call retries. A caller on a latency path passes no policy and
- * fails fast instead.
+ * How a bulk call retries; a caller on a latency path passes no policy and
+ * fails fast.
  *
  * The delay before retry n is `baseDelayMs * 2^(n-1)`, capped at
- * `maxDelayMs`, then spread over its upper half with jitter so that several
- * clients sharing one rate limit do not retry in step. A `Retry-After` longer
- * than that replaces it, but only up to `maxDelayMs`: a longer one is not
- * waited out. Both a single wait (`maxDelayMs`) and the sum of all waits
- * (`maxTotalDelayMs`) are bounded: when the next wait would exceed either, the
- * last error is thrown at once rather than waited out.
+ * `maxDelayMs`, jittered over its upper half so clients sharing one rate limit
+ * do not retry in step. A longer `Retry-After` replaces it. When the next wait
+ * would exceed `maxDelayMs`, or the total would exceed `maxTotalDelayMs`, the
+ * last error is thrown at once.
  */
 export interface RetryPolicy {
    /** Total attempts including the first. */

@@ -11,14 +11,11 @@
  * (see `authorize_grammar.ts`). There is no alias, and no spelling lets one
  * route carry the other's question.
  *
- * Its own module, with ZERO imports, for two reasons. It is read by both
- * `authorize.ts` and `authorize_grammar.ts`, which previously each declared
- * their own copy of the same literals — a latent fail-open, because the grammar
- * module decides a scope refusal against its copy while `authorize.ts`
- * classifies notes against its own, so a value changed in one file alone would
- * move enforcement with every test still green. And `authorize.ts` bundles into
- * the package-load worker, which constrains what it may import (see its module
- * doc) — a constant module that imports nothing cannot violate that.
+ * Its own module, with ZERO imports. `authorize.ts` and `authorize_grammar.ts`
+ * must share one copy of these literals: separate copies are a latent
+ * fail-open, since a value changed in one file alone would move enforcement
+ * with every test still green. And `authorize.ts` bundles into the
+ * package-load worker, which constrains what it may import.
  *
  * `access_filter` is snake_case because Malloy's own multi-word tag names are
  * (`bar_chart`, `shape_map`, `url_template`, every `##!` flag), and because a
@@ -48,12 +45,8 @@ export const ACCESS_FILTER_ROUTE = "access_filter";
  * Every spelling a note may be WRITTEN in. Equal to
  * {@link CANONICAL_AUTHORIZE_ROUTES} because there is no alias; the two exports
  * stay separate because their call sites mean different things, and a future
- * recognized-but-not-canonical spelling would divide them again.
- *
- * The near-miss sweep iterates this. It previously leaned on a deprecated bare
- * `authorize` alias sitting here to refuse `#(AUTHORIZE)` and `# (authorize)`;
- * that refusal is now stated outright in `authorize.ts`'s `nearMissRouteNames`
- * rather than falling out of this list's contents.
+ * recognized-but-not-canonical spelling would divide them again. The near-miss
+ * sweep iterates this.
  */
 export const RECOGNIZED_AUTHORIZE_SPELLINGS: readonly string[] = [
    ACCESS_FILTER_ROUTE,

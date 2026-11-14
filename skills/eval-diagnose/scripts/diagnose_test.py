@@ -12,7 +12,9 @@ belt: it lifts what is present and, deliberately, does not invent `probes`.
 That last part is the one worth a test, because fabricating the record that
 something was checked is how a shape error becomes a false claim."""
 import pathlib
+import shutil
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -628,6 +630,23 @@ class MatchedPair(unittest.TestCase):
     def test_this_arms_query_is_still_there_to_diff_against(self):
         e = self.evidence({"arm": "aa-2", "finalQuery": "run: right -> { y }"})
         self.assertIn("run: wrong -> { x }", e["queriesRun"])
+
+    def test_the_final_givens_reach_the_agent(self):
+        events = [{"kind": "attempt", "qid": "q1",
+                   "final_query": "run: s -> { aggregate: n }",
+                   "final_givens": {"region": "West"}}]
+        e = diagnose.evidence_for("q1", {"question": "how many?"}, events)
+        self.assertEqual(e["finalGivens"], {"region": "West"})
+
+    def test_a_path_held_golden_reaches_the_agent_as_its_rows(self):
+        set_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, set_dir, True)
+        (set_dir / "gold").mkdir()
+        (set_dir / "gold" / "q1.csv").write_text("region,n\nWest,3\n")
+        case = {"question": "how many?",
+                "golden": {"kind": "rows", "path": "gold/q1.csv"}}
+        e = diagnose.evidence_for("q1", case, [], None, set_dir)
+        self.assertEqual(e["golden"]["value"], [{"region": "West", "n": 3}])
 
     def test_the_prompt_tells_the_agent_what_to_do_with_it(self):
         self.assertIn("passedInAnotherArm", diagnose.DIAGNOSE_PROMPT)

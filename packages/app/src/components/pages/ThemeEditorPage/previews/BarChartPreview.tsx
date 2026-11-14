@@ -21,7 +21,7 @@ export function BarChartPreview({ theme }: { theme: ResolvedTheme }) {
       <Box
          sx={{
             backgroundColor: theme.background,
-            color: theme.tableHeader,
+            color: theme.foreground,
             borderRadius: 1,
             p: 1,
             display: "inline-block",
@@ -47,6 +47,15 @@ export function BarChartPreview({ theme }: { theme: ResolvedTheme }) {
                   />
                );
             })}
+            {/* Axis domain under the bars, in the axis colour. */}
+            <line
+               x1={0}
+               y1={height - 4}
+               x2={width}
+               y2={height - 4}
+               stroke={theme.axisFaint}
+               strokeWidth={1}
+            />
          </svg>
       </Box>
    );

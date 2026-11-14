@@ -17,6 +17,7 @@ import {
 export class FakeStorage implements DocumentStorage {
    readonly documents = new Map<string, string>();
    readonly saves: Array<{ locator: DocumentLocator; content: string }> = [];
+   private readonly types = new Map<string, DocumentType>();
 
    constructor(readonly workspace: Workspace) {}
 
@@ -28,21 +29,23 @@ export class FakeStorage implements DocumentStorage {
       _workspace: Workspace,
       type?: DocumentType,
    ): Promise<DocumentLocator[]> {
-      const prefix = type ? `${type}s/` : "";
+      // A document's layout is what its last save recorded; a seeded one,
+      // which has none, answers to either. Never read off the path: a report
+      // lives anywhere in its package.
       return [...this.documents.keys()]
-         .filter((path) =>
-            path.split("/").slice(2).join("/").startsWith(prefix),
-         )
+         .filter((path) => {
+            const saved = this.types.get(path);
+            return !type || !saved || saved === type;
+         })
          .map((path) => ({
             workspace: this.workspace.name,
-            type:
-               type ??
-               (path.includes("/dashboards/") ? "dashboard" : "notebook"),
+            type: this.types.get(path) ?? type ?? "linear",
             path,
          }));
    }
 
    async getDocument(locator: DocumentLocator): Promise<string> {
+      // Keyed by path alone, as the contract says: the layout is metadata.
       const content = this.documents.get(locator.path);
       if (content === undefined)
          throw new DocumentNotFoundError(`No document at ${locator.path}`);
@@ -54,12 +57,14 @@ export class FakeStorage implements DocumentStorage {
       content: string,
    ): Promise<void> {
       this.documents.set(locator.path, content);
+      this.types.set(locator.path, locator.type);
       this.saves.push({ locator, content });
    }
 
    async deleteDocument(locator: DocumentLocator): Promise<void> {
       if (!this.documents.delete(locator.path))
          throw new DocumentNotFoundError(`No document at ${locator.path}`);
+      this.types.delete(locator.path);
    }
 
    async moveDocument(
@@ -68,7 +73,9 @@ export class FakeStorage implements DocumentStorage {
    ): Promise<void> {
       const content = await this.getDocument(from);
       this.documents.delete(from.path);
+      this.types.delete(from.path);
       this.documents.set(to.path, content);
+      this.types.set(to.path, to.type);
    }
 }
 

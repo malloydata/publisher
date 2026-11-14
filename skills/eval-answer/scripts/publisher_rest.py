@@ -105,18 +105,28 @@ def rows_from_result(body: Any) -> list[dict[str, Any]]:
 
 
 def query(base: str, environment: str, package: str, model: str, malloy: str,
-          timeout: int = 180) -> list[dict[str, Any]]:
-    """Run a Malloy query. Raises on transport, HTTP or parse failure."""
+          timeout: int = 180, givens: dict[str, Any] | None = None
+          ) -> list[dict[str, Any]]:
+    """Run a Malloy query. Raises on transport, HTTP or parse failure.
+
+    `givens` are the model's runtime parameters, sent as the request's own
+    `givens` field. A query written against a given and run without it returns
+    unfiltered rows, so a caller re-running someone else's query passes theirs.
+    """
+    body: dict[str, Any] = {"query": malloy, "compactJson": True}
+    if givens:
+        body["givens"] = givens
     req = urllib.request.Request(
         _query_url(base, environment, package, model),
-        data=json.dumps({"query": malloy, "compactJson": True}).encode(),
+        data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return rows_from_result(json.loads(r.read().decode()))
 
 
 def try_query(base: str, environment: str, package: str, model: str,
-              malloy: str, timeout: int = 120
+              malloy: str, timeout: int = 120,
+              givens: dict[str, Any] | None = None
               ) -> tuple[list[dict[str, Any]], str | None]:
     """Run a Malloy query. Returns (rows, error); never raises.
 
@@ -125,7 +135,7 @@ def try_query(base: str, environment: str, package: str, model: str,
     """
     try:
         return query(base, environment, package, model, malloy,
-                     timeout=timeout), None
+                     timeout=timeout, givens=givens), None
     except urllib.error.HTTPError as exc:
         return [], f"HTTP {exc.code}: {exc.read().decode()[:300]}"
     except Exception as exc:                        # noqa: BLE001
@@ -136,6 +146,45 @@ def get_json(base: str, path: str, timeout: int = 30) -> Any:
     with urllib.request.urlopen(f"{base.rstrip('/')}/{path.lstrip('/')}",
                                 timeout=timeout) as resp:
         return json.loads(resp.read())
+
+
+def served_package_dir(base: str, environment: str,
+                       package: str) -> pathlib.Path | None:
+    """The directory the running Publisher serves this package FROM, or None.
+
+    A host commonly serves a copy rather than your working tree, so this is the
+    only path whose bytes are the ones answering queries.
+    """
+    try:
+        for proj in get_json(base, "api/v0/projects"):
+            if proj.get("name") == environment and proj.get("location"):
+                p = pathlib.Path(proj["location"]) / package
+                return p if p.is_dir() else None
+    except (OSError, ValueError):   # unreachable or non-JSON: absence is reported
+        return None
+    return None
+
+
+def package_skill_names(base: str, environment: str, package: str) -> list[str]:
+    """Skills the server says this package ships, or [] if it ships none.
+
+    Read from the server rather than from the working tree, because those are
+    two different questions: a host serves a COPY of the package. What the
+    answerer can actually reach is what this returns.
+
+    An unreachable or older server returns [] rather than raising: the caller
+    decides whether "the server serves none" contradicts what it asked for.
+    """
+    try:
+        rows = get_json(
+            base,
+            f"api/v0/environments/{urllib.parse.quote(environment)}"
+            f"/packages/{urllib.parse.quote(package)}/skills")
+    except (OSError, ValueError):                       # unreachable or non-JSON
+        return []
+    return sorted(r["name"] for r in rows
+                  if isinstance(r, dict) and r.get("origin") == "package"
+                  and isinstance(r.get("name"), str))
 
 
 def served_model_path(base: str, environment: str, package: str,
@@ -156,7 +205,8 @@ def served_model_path(base: str, environment: str, package: str,
 
 
 def package_identity(base: str, environment: str, package: str) -> dict[str, str]:
-    """What the server says it is serving: `sourceContentSha`, `servedRevision`.
+    """What the server says it is serving: `sourceContentSha`, `servedRevision`,
+    read from the package's serving state (`GET …/packages/{pkg}/status`).
 
     Take these rather than computing your own. `sourceContentSha` is a content
     hash over EVERY model path in the package, so it moves when an imported file
@@ -169,10 +219,35 @@ def package_identity(base: str, environment: str, package: str) -> dict[str, str
     directory. So `publisher.json` version pins nothing (nothing reads it) and a
     set of goldens living inside the package needs its own hash.
     """
+    keys = ("sourceContentSha", "servedRevision")
+    pkg_path = (f"api/v0/environments/{urllib.parse.quote(environment)}"
+                f"/packages/{urllib.parse.quote(package)}")
+    # The package's serving state; for a versioned package, its `latest`'s.
     try:
-        d = get_json(base, f"api/v0/environments/{urllib.parse.quote(environment)}"
-                           f"/packages/{urllib.parse.quote(package)}")
+        d = get_json(base, f"{pkg_path}/status")
+        if any(isinstance(d.get(k), str) for k in keys):
+            return {k: d[k] for k in keys if isinstance(d.get(k), str)}
+    except Exception:                                   # noqa: BLE001
+        pass
+    # A server from before that route: the package's `/status` entry carries
+    # them, one entry per version held, and the one serving `latest` answers.
+    try:
+        status = get_json(base, "api/v0/status")
+        for env in status.get("environments") or []:
+            if env.get("name") != environment:
+                continue
+            entries = [p for p in env.get("packages") or []
+                       if p.get("name") == package]
+            entry = next((p for p in entries
+                          if p.get("versionId") in (None, p.get("latestVersion"))),
+                         entries[0] if entries else None)
+            if entry and any(isinstance(entry.get(k), str) for k in keys):
+                return {k: entry[k] for k in keys if isinstance(entry.get(k), str)}
+    except Exception:                                   # noqa: BLE001
+        pass
+    # Older still: on the package resource.
+    try:
+        d = get_json(base, pkg_path)
     except Exception:                                   # noqa: BLE001
         return {}
-    return {k: d[k] for k in ("sourceContentSha", "servedRevision")
-            if isinstance(d.get(k), str)}
+    return {k: d[k] for k in keys if isinstance(d.get(k), str)}

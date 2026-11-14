@@ -60,7 +60,7 @@ trusting a name that looks familiar, and write down the mapping you used in
 |---|---|---|
 | `prompt`, `query`, `input`, `nl_question` | the question | `query` is the trap: in half of these it is the SQL or Malloy they ran, not the question |
 | `answer`, `expected`, `output`, `ground_truth` | a golden value, prose, or both mixed in one string | a paragraph under `answer` is criteria, not a value. Classify it, do not store it as a number |
-| `sql`, `malloy`, `gold_query` | their derivation | run it (`SKILL.md` step 3). This is the field that upgrades a typed number into something checkable |
+| `sql`, `malloy`, `gold_query` | their derivation | Malloy: run it (`SKILL.md` step 3). SQL: keep it as evidence of how they got the number, but do not run it; derive the number in Malloy over the truth package instead. Either way, this is the field that upgrades a typed number into something checkable |
 | `criteria`, `rubric`, `assertions`, `must_include` | prose criteria | apply the query test in `SKILL.md` step 4 to EACH one, not to the field |
 | `id`, `case_id`, `uuid` | their id | keep it, prefixed. Two sets from one customer collide otherwise |
 | `difficulty`, `category`, `tags` | their own labels | keep as-is on the case for slicing. Never let one become `split` |

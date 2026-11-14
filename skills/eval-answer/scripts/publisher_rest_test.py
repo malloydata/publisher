@@ -111,6 +111,26 @@ class CompactJson(unittest.TestCase):
         self.assertIs(payload["compactJson"], True)
         self.assertEqual(payload["query"], "run: x -> { ... }")
 
+    def test_givens_travel_in_the_request_body(self):
+        seen = {}
+
+        class Resp:
+            def read(self_): return b'{"result": "[]"}'
+            def __enter__(self_): return self_
+            def __exit__(self_, *a): return False
+
+        def fake(req, timeout=None):
+            seen["payload"] = json.loads(req.data.decode())
+            return Resp()
+
+        with unittest.mock.patch.object(publisher_rest.urllib.request,
+                                        "urlopen", fake):
+            publisher_rest.query("http://x", "e", "p", "m.malloy", "run: x",
+                                 givens={"region": "West"})
+            self.assertEqual(seen["payload"]["givens"], {"region": "West"})
+            publisher_rest.query("http://x", "e", "p", "m.malloy", "run: x")
+            self.assertNotIn("givens", seen["payload"])
+
     def test_a_nest_keeps_its_field_names(self):
         # What the server returns under compactJson: `result` is a JSON
         # STRING of plain rows, nested names intact.
@@ -128,6 +148,51 @@ class CompactJson(unittest.TestCase):
         _, rows = self.send(body)
         self.assertEqual(rows, [{"n": 7}])
 
+
+
+class PackageIdentityTests(unittest.TestCase):
+    """The served identity comes from the package's serving state, and on older
+    servers from its `/status` entry or the package resource."""
+
+    def identity(self, responses):
+        def get_json(base, path):
+            if path in responses:
+                return responses[path]
+            raise OSError("HTTP Error 404")
+        with unittest.mock.patch.object(publisher_rest, "get_json", get_json):
+            return publisher_rest.package_identity("http://x", "env", "pkg")
+
+    def test_the_serving_state_answers(self):
+        state = {"name": "pkg", "sourceContentSha": "abc", "servedRevision": "r1"}
+        self.assertEqual(
+            self.identity({"api/v0/environments/env/packages/pkg/status": state}),
+            {"sourceContentSha": "abc", "servedRevision": "r1"})
+
+    def test_a_server_without_the_route_answers_from_its_status_entry(self):
+        status = {"environments": [{"name": "env", "packages": [
+            {"name": "other", "sourceContentSha": "zzz"},
+            {"name": "pkg", "sourceContentSha": "abc", "servedRevision": "r1"},
+        ]}]}
+        self.assertEqual(self.identity({"api/v0/status": status}),
+                         {"sourceContentSha": "abc", "servedRevision": "r1"})
+
+    def test_a_versioned_package_answers_from_its_latest_version(self):
+        status = {"environments": [{"name": "env", "packages": [
+            {"name": "pkg", "versionId": "1.0.0", "latestVersion": "1.1.0",
+             "sourceContentSha": "old"},
+            {"name": "pkg", "versionId": "1.1.0", "latestVersion": "1.1.0",
+             "sourceContentSha": "new"},
+        ]}]}
+        self.assertEqual(self.identity({"api/v0/status": status}),
+                         {"sourceContentSha": "new"})
+
+    def test_an_older_server_answers_from_the_package_resource(self):
+        status = {"environments": [{"name": "env", "packages": [{"name": "pkg"}]}]}
+        pkg = {"sourceContentSha": "abc", "servedRevision": "r1"}
+        self.assertEqual(
+            self.identity({"api/v0/status": status,
+                           "api/v0/environments/env/packages/pkg": pkg}),
+            {"sourceContentSha": "abc", "servedRevision": "r1"})
 
 if __name__ == "__main__":
     os.chdir(os.path.dirname(__file__))

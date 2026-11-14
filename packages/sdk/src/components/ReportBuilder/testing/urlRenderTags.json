@@ -1,0 +1,62 @@
+{
+   "about": "Annotation lines the server refuses in a document (renderTagRefusal) and the SDK strips before drawing a result held as text (dropValueUrlTags). Both lists are hand-kept, so each side's spec reads this file: `offends` is true when the line turns a cell value into a URL or markup, or reads the environment.",
+   "cases": [
+      { "name": "a bare image tag", "annotation": "# image", "offends": true },
+      { "name": "a bare link tag", "annotation": "# link", "offends": true },
+      {
+         "name": "an image tag with properties",
+         "annotation": "# image { height=40px }",
+         "offends": true
+      },
+      {
+         "name": "a link tag with a template",
+         "annotation": "# link { url_template=\"https://x.example/{{v}}\" }",
+         "offends": true
+      },
+      {
+         "name": "an image nested under another tag",
+         "annotation": "# column { image }",
+         "offends": true
+      },
+      {
+         "name": "a label with an element",
+         "annotation": "# label=\"<img src=x>\"",
+         "offends": true
+      },
+      {
+         "name": "a label with a comment opener",
+         "annotation": "# label=\"<!-- x\"",
+         "offends": true
+      },
+      {
+         "name": "a property that reads the environment",
+         "annotation": "# image=@env.HOME",
+         "offends": true
+      },
+      {
+         "name": "a label that is plain text",
+         "annotation": "# label=\"Total\"",
+         "offends": false
+      },
+      {
+         "name": "a label with a bare less-than",
+         "annotation": "# label=\"a<b\"",
+         "offends": false
+      },
+      {
+         "name": "an ordinary chart tag",
+         "annotation": "# bar_chart { size=l }",
+         "offends": false
+      },
+      {
+         "name": "a number format",
+         "annotation": "# currency",
+         "offends": false
+      },
+      {
+         "name": "a docs route that names image",
+         "annotation": "#(docs) image",
+         "offends": false
+      }
+   ]
+}

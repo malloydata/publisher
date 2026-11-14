@@ -1,0 +1,5 @@
+{
+   "name": "deprecated-filter-givens",
+   "version": "1.0.0",
+   "description": "DEPRECATED FEATURE COVERAGE: givens composed with #(filter) / filterParams over HTTP; delete with filterParams"
+}

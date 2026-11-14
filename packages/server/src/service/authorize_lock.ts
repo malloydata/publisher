@@ -30,9 +30,8 @@ import type { GivenValue } from "@malloydata/malloy";
  * arrive, with `kids.left`/`kids.right` in the order they were written.
  *
  * Comparison is exact and case-sensitive — deliberately not the warehouse's
- * collation. A source-shaped gate on the pre-flip row route was compared by
- * the warehouse, so a MySQL tenant's case-insensitive default admitted
- * `'Finance'` against `["finance"]`; here it denies.
+ * collation, under which a MySQL tenant's case-insensitive default would admit
+ * `'Finance'` against `["finance"]`.
  */
 export type LockOutcome = "admit" | "deny" | "unresolvable";
 

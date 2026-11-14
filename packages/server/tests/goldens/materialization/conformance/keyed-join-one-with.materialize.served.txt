@@ -1,0 +1,47 @@
+// conformance: keyed join_one with [materialize]: files generated while serving
+
+// ==== <pkg>/live_join.malloy
+##! experimental { persistence }
+import "raw.malloy"
+import "m.malloy"
+
+source: orders_k is orders_raw extend {
+                                      
+}
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: order_facts__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   amount::number
+}
+type: cust__served is {
+   id::number,
+   segment::string,
+   home_region::string
+}
+
+import "raw.malloy"
+
+#(materialize) storage="lake"
+source: cust is __served_copy_alias_of_lake.virtual('bf4286a91b893ea3bbeb2399ae99134474169fa1ea85a6dec9df7b2e2c845f59')::cust__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"HUGEINT"
+  primary_key: id
+}
+
+#(materialize) storage="lake"
+source: order_facts is __served_copy_alias_of_lake.virtual('ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e')::order_facts__served extend {
+  internal rename:
+    id__stored is id
+    customer_id__stored is customer_id
+  dimension:
+    id is id__stored::"HUGEINT"
+    customer_id is customer_id__stored::"HUGEINT"
+  join_one: c is cust with customer_id
+}

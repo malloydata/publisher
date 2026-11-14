@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+   checkS3Endpoint,
    createCloudStorageClient,
+   parseS3Endpoint,
+   resolveCloudStorageCredentials,
    DEFAULT_S3_CREDENTIAL_CHAIN,
    s3ConnectionToCredentials,
    validateS3ProviderShape,
 } from "./gcs_s3_utils";
+import { installSettings } from "../test_helpers/settings_env";
 
 // The SDK's default chain reads the environment first, so seeding it keeps these
 // tests off the network — no IMDS probe, no shared credentials file.
@@ -21,11 +25,107 @@ const seedEnv = () => {
    }
 };
 
+let restoreSettings: (() => void) | undefined;
+
+/** Make `env` the only variables the settings were loaded from. */
+function installEnv(env: Record<string, string>): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({ env }).restore;
+}
+
 afterEach(() => {
    for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
    }
+   restoreSettings?.();
+   restoreSettings = undefined;
+});
+
+describe("parseS3Endpoint", () => {
+   it("reads a bare host as TLS", () => {
+      expect(parseS3Endpoint("minio:9000")).toEqual({
+         hostAndPath: "minio:9000",
+         useSsl: true,
+         url: "https://minio:9000",
+      });
+   });
+
+   it("turns TLS off only for http://, in any case, and drops trailing slashes", () => {
+      expect(parseS3Endpoint("HTTP://minio:9000/")).toEqual({
+         hostAndPath: "minio:9000",
+         useSsl: false,
+         url: "http://minio:9000",
+      });
+      expect(parseS3Endpoint("https://s3.example.com/base").useSsl).toBe(true);
+   });
+
+   // What DuckDB and the SDK read differently, each refused. `https:///foo`
+   // would otherwise write ENDPOINT '/foo'.
+   it.each([
+      ["ftp://minio", "scheme must be http:// or https://, got ftp://"],
+      ["http://", "must include a host"],
+      ["https:///foo", "must include a host before any path"],
+      ["https://user:pw@minio", "must not contain userinfo"],
+      ["minio?x=1", "query string or fragment"],
+      ["minio#frag", "query string or fragment"],
+      ["minio name", "must not contain whitespace"],
+   ])("refuses %p", (endpoint, message) => {
+      expect(() => parseS3Endpoint(endpoint)).toThrow(message);
+   });
+
+   it("handles a long run of slashes without backtracking", () => {
+      expect(parseS3Endpoint(`minio${"/".repeat(100_000)}`).hostAndPath).toBe(
+         "minio",
+      );
+      expect(() => parseS3Endpoint(`https://${"/".repeat(100_000)}`)).toThrow(
+         "must include a host",
+      );
+   });
+
+   it("never repeats an endpoint that carries a credential", () => {
+      for (const endpoint of [
+         "ftp://key:secret@minio",
+         "https://key:secret@minio",
+      ]) {
+         try {
+            parseS3Endpoint(endpoint);
+            throw new Error("expected a refusal");
+         } catch (error) {
+            expect((error as Error).message).not.toContain("secret");
+         }
+      }
+   });
+});
+
+describe("checkS3Endpoint", () => {
+   it("refuses plain http for credential_chain, whose requests carry the host's credentials", () => {
+      expect(() =>
+         checkS3Endpoint("http://minio:9000", "credential_chain"),
+      ).toThrow("must use https:// with provider credential_chain");
+      expect(checkS3Endpoint("http://minio:9000", "config").useSsl).toBe(false);
+      expect(
+         checkS3Endpoint("https://minio:9000", "credential_chain").useSsl,
+      ).toBe(true);
+   });
+});
+
+describe("resolveCloudStorageCredentials endpoint", () => {
+   // A storage destination resolves its credentials when it is configured, so
+   // an unusable endpoint is refused then, not at its first build.
+   it("refuses an unusable endpoint when the credentials are resolved, naming the connection", () => {
+      expect(() =>
+         resolveCloudStorageCredentials({
+            name: "lake",
+            type: "s3",
+            s3Connection: {
+               accessKeyId: "AKIA",
+               secretAccessKey: "s",
+               endpoint: "ftp://minio",
+            },
+         }),
+      ).toThrow("got ftp:// (lake)");
+   });
 });
 
 describe("createCloudStorageClient", () => {
@@ -56,6 +156,22 @@ describe("createCloudStorageClient", () => {
       const resolved = await client.config.credentials();
       expect(resolved.accessKeyId).toBe(CHAIN_ENV.AWS_ACCESS_KEY_ID);
       expect(resolved.accessKeyId).not.toBe("");
+   });
+
+   // The SDK rejects a bare host as `Invalid URL`; DuckDB's form must reach it as a URL.
+   it("gives the SDK a URL for an endpoint written as a bare host", async () => {
+      const client = createCloudStorageClient(
+         s3ConnectionToCredentials({
+            accessKeyId: "AKIA",
+            secretAccessKey: "s",
+            region: "us-east-1",
+            endpoint: "minio:9000",
+         }),
+      );
+      const endpoint = await client.config.endpoint!();
+      expect(
+         `${endpoint.protocol}//${endpoint.hostname}:${endpoint.port}`,
+      ).toBe("https://minio:9000");
    });
 
    it("leaves GCS on its HMAC key pair", async () => {
@@ -105,16 +221,10 @@ describe("DEFAULT_S3_CREDENTIAL_CHAIN", () => {
 });
 
 describe("S3_CREDENTIAL_CHAIN_POLICY", () => {
-   const ORIGINAL = process.env.S3_CREDENTIAL_CHAIN_POLICY;
-   afterEach(() => {
-      if (ORIGINAL === undefined) delete process.env.S3_CREDENTIAL_CHAIN_POLICY;
-      else process.env.S3_CREDENTIAL_CHAIN_POLICY = ORIGINAL;
-   });
-
    const chainConn = () => ({ provider: "credential_chain" }) as never;
 
    it("permits chain auth anywhere when unset, so no deployment changes", () => {
-      delete process.env.S3_CREDENTIAL_CHAIN_POLICY;
+      installEnv({});
       expect(() => validateS3ProviderShape(chainConn(), "c")).not.toThrow();
       expect(() =>
          validateS3ProviderShape(chainConn(), "c", "storage-destination"),
@@ -125,7 +235,7 @@ describe("S3_CREDENTIAL_CHAIN_POLICY", () => {
       // The whole point of the setting: a storage destination is the OPERATOR's
       // configuration, while a connection may be authored by whoever can reach the
       // connection endpoints — and Publisher's take an arbitrary body.
-      process.env.S3_CREDENTIAL_CHAIN_POLICY = "destinations-only";
+      installEnv({ S3_CREDENTIAL_CHAIN_POLICY: "destinations-only" });
       expect(() => validateS3ProviderShape(chainConn(), "c")).toThrow(
          /not permitted.*destinations-only/s,
       );
@@ -135,7 +245,7 @@ describe("S3_CREDENTIAL_CHAIN_POLICY", () => {
    });
 
    it("under off, refuses both", () => {
-      process.env.S3_CREDENTIAL_CHAIN_POLICY = "off";
+      installEnv({ S3_CREDENTIAL_CHAIN_POLICY: "off" });
       expect(() => validateS3ProviderShape(chainConn(), "c")).toThrow(
          /not permitted/,
       );
@@ -148,7 +258,7 @@ describe("S3_CREDENTIAL_CHAIN_POLICY", () => {
       // A caller that does not say which path it is on is treated as the
       // author-supplied one. Failing closed is the only safe default for a
       // parameter whose whole job is to decide whether to lend the host identity.
-      process.env.S3_CREDENTIAL_CHAIN_POLICY = "destinations-only";
+      installEnv({ S3_CREDENTIAL_CHAIN_POLICY: "destinations-only" });
       expect(() => validateS3ProviderShape(chainConn(), "c")).toThrow(
          /not permitted/,
       );
@@ -157,15 +267,15 @@ describe("S3_CREDENTIAL_CHAIN_POLICY", () => {
    it("leaves a key-pair connection alone under every policy", () => {
       const keyed = { accessKeyId: "AKIA", secretAccessKey: "s" } as never;
       for (const p of ["any", "destinations-only", "off"]) {
-         process.env.S3_CREDENTIAL_CHAIN_POLICY = p;
+         installEnv({ S3_CREDENTIAL_CHAIN_POLICY: p });
          expect(() => validateS3ProviderShape(keyed, "c")).not.toThrow();
       }
    });
 
    it("refuses an unrecognized policy value rather than choosing the permissive one", () => {
-      process.env.S3_CREDENTIAL_CHAIN_POLICY = "destinations_only";
+      installEnv({ S3_CREDENTIAL_CHAIN_POLICY: "destinations_only" });
       expect(() => validateS3ProviderShape(chainConn(), "c")).toThrow(
-         /Invalid value for S3_CREDENTIAL_CHAIN_POLICY/,
+         'allow.s3CredentialChain from S3_CREDENTIAL_CHAIN_POLICY: expected one of "any", "destinations-only" or "off", got "destinations_only"',
       );
    });
 });

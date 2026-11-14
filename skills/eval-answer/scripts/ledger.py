@@ -65,6 +65,7 @@ EVENTS: dict[str, dict[str, set[str]]] = {
         "optional": {"question_sha", "servedRevision", "n_get_context",
                      "n_execute", "n_execute_errors", "host_tool_uses",
                      "mcp_tool_uses", "final_query_source",
+                     "final_givens",
                      "reported_calls", "contaminated", "contamination_reasons",
                      "input_tokens", "output_tokens", "cache_read_tokens",
                      "cache_write_tokens", "skills_invoked",
@@ -80,9 +81,11 @@ EVENTS: dict[str, dict[str, set[str]]] = {
         # either. Which retriever answered decides whether two runs are
         # comparable at all, and it is only knowable from the response that
         # answered.
-        # `query`, `modelPath` and `filterParams` are one fact about one
-        # call: the text that ran, the file it was written against, and the
-        # filter values it ran under. Recorded apart they drift, and two of
+        # `query`, `modelPath`, `givens` and `filterParams` are one fact about
+        # one call: the text that ran, the file it was written against, and
+        # the runtime parameter values it ran under (`givens` is what the
+        # harness captures from the answerer's call; `filterParams` is the
+        # legacy `#(filter)` mechanism). Recorded apart they drift, and two of
         # the three drift SILENTLY -- a replay against the wrong file at least
         # errors, while a replay under another report's filter values returns
         # real rows for the wrong population. Keeping all three on the event
@@ -94,7 +97,8 @@ EVENTS: dict[str, dict[str, set[str]]] = {
         # transcripts, and transcripts get pruned.
         "optional": {"targets", "target_shapes", "scopes", "rankedSummary",
                      "error", "traceId",
-                     "query", "modelPath", "filterParams", "retrieval_mode",
+                     "query", "modelPath", "givens", "filterParams",
+                     "retrieval_mode",
                      "at"},
     },
     "score": {
@@ -213,7 +217,11 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 "staleEntityNames",
                 "retrievalMode", "retrievalCalls", "retrievalGate",
                 "reExecution", "coverageReport",
-                "modelRepo"} | RUN_RECOMMENDED
+                "modelRepo",
+                # How the package's own skills reached the answerer, and a hash
+                # of the tree they came from. Two runs can differ ONLY in
+                # guidance, and without these the ledger cannot tell them apart.
+                "packageSkillsMode", "packageSkillsSha"} | RUN_RECOMMENDED
 
 
 def dataset_sha(set_dir: pathlib.Path) -> str | None:

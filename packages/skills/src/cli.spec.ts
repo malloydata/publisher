@@ -237,7 +237,14 @@ describe("install --global", () => {
       expect(result.stderr).toBe("");
       expect(result.status).toBe(0);
       expect(
-         fs.existsSync(path.join(tmp, TARGETS.claude, "malloy", "SKILL.md")),
+         fs.existsSync(
+            path.join(
+               tmp,
+               TARGETS.claude,
+               "malloy-getting-started",
+               "SKILL.md",
+            ),
+         ),
       ).toBe(true);
       expect(fs.existsSync(path.join(tmp, TARGETS.agents))).toBe(false);
    });
@@ -265,7 +272,9 @@ describe("install", () => {
       }
 
       const target = path.join(tmp, TARGETS.claude);
-      expect(fs.existsSync(path.join(target, "malloy", "SKILL.md"))).toBe(true);
+      expect(
+         fs.existsSync(path.join(target, "malloy-getting-started", "SKILL.md")),
+      ).toBe(true);
       expect(lines.join("\n")).toContain(`Installed`);
       expect(exitCode).toBeUndefined();
    });

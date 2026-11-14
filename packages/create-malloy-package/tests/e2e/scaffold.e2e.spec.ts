@@ -447,12 +447,17 @@ describe("generated project serves against a real server", () => {
       expect(tools.map((t) => t.name).sort()).toEqual([
          "compile_model",
          "execute_query",
+         "get_agent",
          "get_context",
+         "get_skill",
          "get_status",
          "list_packages",
+         "list_reports",
          "reload_package",
+         "report_api",
          "search_database_schema",
          "search_malloy_docs",
+         "show_report",
       ]);
    });
 });

@@ -135,7 +135,7 @@ describe("a package whose published surface disappears", () => {
       // exist. Nothing in this package is gated, so the hidden file's 404 says
       // it is off the surface and names the fix (a modeler who just saved it
       // would otherwise read a typo). A gated model keeps the generic 404;
-      // query_boundary.spec.ts pins that half.
+      // tests/component/query_boundary.component.spec.ts pins that half.
       const hidden = await refuse("internal.malloy");
       const missing = await refuse("nope.malloy");
       expect(hidden).toEqual({

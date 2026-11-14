@@ -1,0 +1,296 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "gated@<pkg>/m.malloy": [],
+          "scoped@<pkg>/m.malloy": []
+        },
+        "order": [
+          "gated@<pkg>/m.malloy",
+          "scoped@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "gated@<pkg>/m.malloy": {
+        "buildSourceName": "gated__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "gated",
+          "storage": "lake"
+        },
+        "sourceID": "gated@<pkg>/m.malloy",
+        "sourceName": "gated",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "scoped@<pkg>/m.malloy": {
+        "buildSourceName": "scoped__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          }
+        ],
+        "declaration": {
+          "range": {
+            "end": {
+              "character": 1,
+              "line": 12
+            },
+            "start": {
+              "character": 8,
+              "line": 7
+            }
+          },
+          "url": "<pkg>/m.malloy"
+        },
+        "givenDeclarations": [
+          {
+            "name": "REGION",
+            "url": "<pkg>/m.malloy"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "scoped",
+          "storage": "lake"
+        },
+        "readTimeTerms": [
+          {
+            "at": [
+              {
+                "range": {
+                  "end": {
+                    "character": 15,
+                    "line": 10
+                  },
+                  "start": {
+                    "character": 9,
+                    "line": 10
+                  }
+                },
+                "url": "<pkg>/m.malloy"
+              },
+              {
+                "range": {
+                  "end": {
+                    "character": 25,
+                    "line": 10
+                  },
+                  "start": {
+                    "character": 18,
+                    "line": 10
+                  }
+                },
+                "url": "<pkg>/m.malloy"
+              }
+            ],
+            "code": "region = $REGION",
+            "columns": [
+              "region"
+            ],
+            "givens": [
+              "REGION"
+            ],
+            "kind": "given"
+          }
+        ],
+        "sourceID": "scoped@<pkg>/m.malloy",
+        "sourceName": "scoped",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "gated@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "scoped@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "gated@<pkg>/m.malloy": "m.malloy",
+      "scoped@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [
+    {
+      "code": "persist-source-refused",
+      "message": "Source 'gated' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "gated"
+    }
+  ],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "gated@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "scoped@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {
+      "gated@<pkg>/m.malloy": {
+        "message": "Source 'gated' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
+        "modelPath": "m.malloy",
+        "name": "gated",
+        "reason": "authorize",
+        "sourceID": "gated@<pkg>/m.malloy",
+        "tier": "storage"
+      }
+    },
+    "sources": {
+      "scoped@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "scoped",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "scoped",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e",
+        "sourceID": "scoped@<pkg>/m.malloy",
+        "sql": "sha256:1cc9ebc9265e40b4",
+        "strippedTerms": [
+          {
+            "code": "region = $REGION",
+            "givens": [
+              "REGION"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

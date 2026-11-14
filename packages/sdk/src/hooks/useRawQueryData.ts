@@ -37,7 +37,7 @@ export function useRawQueryData({
          sourceName,
          queryName,
       ],
-      queryFn: () =>
+      queryFn: ({ signal }) =>
          apiClients.models.executeQueryModel(
             environmentName,
             packageName,
@@ -48,6 +48,8 @@ export function useRawQueryData({
                queryName: queryName,
                versionId: versionId,
             },
+            undefined,
+            { signal },
          ),
       enabled,
    });

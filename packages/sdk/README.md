@@ -19,9 +19,10 @@ The Publisher SDK (`@malloy-publisher/sdk`) is a comprehensive React component l
 8. [Hooks](#hooks)
 9. [Utilities](#utilities)
 10.   [Document Storage](#document-storage)
-11.   [Styling](#styling)
-12.   [Building a Custom Data App](#building-a-custom-data-app)
-13.   [API Reference](#api-reference)
+11.   [Telemetry](#telemetry)
+12.   [Styling](#styling)
+13.   [Building a Custom Data App](#building-a-custom-data-app)
+14.   [API Reference](#api-reference)
 
 ---
 
@@ -344,15 +345,32 @@ const resourceUri = encodeResourceUri({
 
 ### Model
 
-The visual query builder and model explorer. This is the primary component for ad-hoc data analysis.
+A model's page. Which page is the server's: its `PUBLISHER_MODEL_PAGE`, which `/status` reports and
+`useServer().modelPage` reads. On the default, `explorer`, it is the visual query builder below; on
+`viewer`, it is the model viewer ([`ModelViewer`](#modelviewer)) with a Copy link action on its
+heading, and builds no query. A server that predates the setting sends no `modelPage`, which reads
+as `explorer`. `Model` shows neither page until `/status` answers (while a retry is paused offline or
+in a hidden tab, too), and shows the viewer when `/status` cannot be read. It takes every
+`ModelViewer` prop, but the Explorer page reads only `resourceUri`, `maxResultSize`, `givens` and
+`onGivensChange`, besides its own `onChange` and `runOnDemand`; the other props are the viewer's, and
+do nothing on an `explorer` server. A host that wants the viewer whatever its server says renders
+`ModelViewer` itself.
+
+The Explorer's own components, [`ModelExplorer`](#modelexplorer), `ModelExplorerDialog` and
+`SourcesExplorer`, ignore the setting: each is the Explorer wherever it is drawn, so a host that
+renders one checks `useServer().modelPage` first.
+
+The Explorer writes the queries it builds back to Malloy text through `@malloydata/malloy-interfaces`,
+which puts a string value in unescaped (`escapeString` is a TODO), so a drilled value holding a double
+quote rewrites its query.
 
 ```tsx
 import { Model, encodeResourceUri } from "@malloy-publisher/sdk";
 
-interface ModelProps {
+interface ModelProps extends ModelViewerProps {
    resourceUri: string;
-   onChange?: (query: QueryExplorerResult) => void;
-   runOnDemand?: boolean; // Default: false
+   onChange?: (query: QueryExplorerResult) => void; // The Explorer page only
+   runOnDemand?: boolean; // The Explorer page only. Default: false
    maxResultSize?: number; // Default: 0 (no limit)
 }
 
@@ -380,7 +398,7 @@ const resourceUri = encodeResourceUri({
 />;
 ```
 
-**Features:**
+**Features (the Explorer page):**
 
 - Source selector (dropdown for models with multiple sources)
 - Visual query builder (Malloy Explorer integration)
@@ -388,11 +406,67 @@ const resourceUri = encodeResourceUri({
 - Full-screen dialog mode
 - Copy link to current view
 
+Copy link copies the page's address. Pass `givens` and `onGivensChange` (`useGivenUrlParams` does both for a react-router host) so the address carries the given values the page is running with, and a link opens with them applied.
+
+### ModelViewer
+
+A Malloy model, read-only, one source at a time:
+
+- a header with the source's name, its docs and access rules, and an "N sources" pill to switch source;
+- the givens the source reads, set once for every run below them (a picker's options are read when it is opened);
+- its views and the model's named queries, each running when opened, with its Malloy one click over;
+- its measures, calculations, dimensions and joins, each opening to its Malloy; a dimension tagged `#(index)` lists its most common values.
+
+```tsx
+import { ModelViewer, useGivenUrlParams } from "@malloy-publisher/sdk";
+
+// Optional: keep the source and the given values in the host's address.
+// Without them the viewer keeps its own.
+const { params, onGivensChange, setParam } = useGivenUrlParams();
+
+<ModelViewer
+   resourceUri={resourceUri}
+   sourceName={params.source}
+   onSourceChange={(source) => setParam("source", source)}
+   givens={params}
+   onGivensChange={onGivensChange}
+/>;
+```
+
+It reads only the Publisher API, and sends nothing until a reader opens a row or a picker. A host with more to say passes it in:
+
+| Prop                                                                      | What it adds                                                                                                    |
+| ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `givens`, `onGivensChange`                                                | The given values from the host's address, and each applied set back for it                                      |
+| `hostGivenNames`                                                          | Givens the host fills on every query (`$GROUPS`), never shown as inputs                                         |
+| `queryMetadata`, `onQueryRun`                                             | Labels on every run, and a callback as each one settles                                                         |
+| `headerActions`, `renderSourceStatus`                                     | Controls beside the heading, chips on the status row                                                            |
+| `includeHiddenFilesAndSources`                                            | Read and run what the package's `index.malloy` hides, for a reader the server lets edit it                      |
+| `entities`, `entitiesLoading`, `entitiesError`, `joinHref` (experimental) | A fuller record of the model's fields: code where the file's text isn't served, inherited columns, join targets |
+| `columnDescriptions` (experimental)                                       | Descriptions of a table's columns, for a dimension with no doc of its own, marked as generated                  |
+| `extensions` (experimental)                                               | What a hosting platform adds to rows, runs and the picker; see below                                            |
+
+`modelQueryKey` and `runQueryKey` are the viewer's cache keys for a model and a run, for a host that refreshes them or reads the same model.
+
+**`extensions` (experimental).** No host has been built on these yet, so they may change in a minor release until one has:
+
+- `renderRunActions`: actions beside an open view or query (a download), given its query, given values and cache key.
+- `fetchSamples`, `samplesGeneration`: a dimension's values from the host's own index, with a count and a reason when there are none; a new generation reads them afresh.
+- `renderFieldStatus`, `renderFieldAction`: chips and one action on a field's line.
+- `renderFieldDetail`: what an open field row shows; it is handed the viewer's own card to keep, add to or replace.
+- `showField`: which views and fields are listed, for a host's narrowed view of a source.
+- `renderSourceDetail`: a card under the source's header.
+- `describePickerSource`: a summary (marked as generated) and chips on a source's line in the picker.
+
+The viewer writes no value into Malloy text: a run is a view or a query by name, every name is quoted (`malloyIdentifier`), and given values travel as the request's `givens`. A run sends, and is cached under, only the values of the givens it reads, so changing another source's given leaves its result current. Which givens those are is read from the model file's text, so a source built on something the file doesn't declare (an imported source, a query) shows and sends every given, and the page says which of them it can't tell the source reads. A run's card names the defaults it ran at as the Givens controls word them (`Ordered since: Jan 1, 2023`).
+
 ---
 
 ### ModelExplorer
 
-A lower-level component for embedding the query builder without the full Model chrome.
+A lower-level component for embedding the query builder without the full Model chrome. It is the
+Explorer whatever the server's `PUBLISHER_MODEL_PAGE` says, so check `useServer().modelPage` before
+drawing it; [`Model`](#model) does.
 
 ```tsx
 import {
@@ -949,8 +1023,8 @@ store; a repo-backed host writes them to the package directory.
 ### DocumentStorage Interface
 
 ```tsx
-/** The kinds of document the SDK authors. */
-type DocumentType = "dashboard" | "notebook";
+/** A report's layout, recorded beside the document: metadata, not identity. */
+type DocumentType = "grid" | "linear";
 
 interface Workspace {
    name: string;
@@ -969,8 +1043,10 @@ interface Workspace {
 
 interface DocumentLocator {
    workspace: string;
+   /** The report's layout: a save records it, a listing reports it. */
    type: DocumentType;
-   path: string; // as the backend spells it, e.g. "dashboards/overview.malloy"
+   /** The identity: "<env>/<pkg>/<package path>", e.g. "env/pkg/sales/overview.malloy". */
+   path: string;
 }
 
 interface DocumentStorage {
@@ -980,13 +1056,32 @@ interface DocumentStorage {
       type?: DocumentType,
    ): Promise<DocumentLocator[]>;
    getDocument(locator: DocumentLocator): Promise<string>;
+   /** Optional: the layout recorded for the one document at locator.path, without listing the workspace. */
+   getDocumentType?(
+      locator: Pick<DocumentLocator, "workspace" | "path">,
+   ): Promise<DocumentType>;
    saveDocument(locator: DocumentLocator, content: string): Promise<void>;
    deleteDocument(locator: DocumentLocator): Promise<void>;
    moveDocument(from: DocumentLocator, to: DocumentLocator): Promise<void>;
+   /** Optional: the package-relative path saveDocument(locator) really writes. */
+   resolveDocumentPath?(locator: DocumentLocator): string | Promise<string>;
 }
 ```
 
-`getDocument`, `deleteDocument` and `moveDocument` reject with `DocumentNotFoundError`
+**Creating a report into your store.** `createDocument` writes a new report at the **package root** by
+default (`sales.malloy`, not `dashboards/sales.malloy`), or in the `directory` or at the `path` the caller
+gives, and always writes `layout=grid` or `layout=linear` in the artifact tag. It asks your store for the
+locator `<env>/<pkg>/<path>` and renders the file's imports relative to `<path>`. A store that files
+documents somewhere else, for example every grid report under `dashboards/<basename>`, implements
+`resolveDocumentPath(locator)` and returns the package-relative path `saveDocument` will really write:
+`createDocument` calls it before rendering, writes the imports for that path, skips a name whose real path
+the package already has, and returns that path as `CreatedDocument.path`. A store without it is assumed to
+write at the path asked for, as before.
+
+`getDocumentType` is optional too: the SDK uses it to learn a draft's layout before opening it, and
+falls back to `listDocuments` (which reads the whole workspace) when a store leaves it out.
+
+`getDocument`, `getDocumentType`, `deleteDocument` and `moveDocument` reject with `DocumentNotFoundError`
 when the document is not there, and with anything else when the backend could not be
 asked. The distinction is load-bearing rather than cosmetic: a failed read reported as
 "there is no document" reads as "the package is the only copy", and saving on that
@@ -994,13 +1089,24 @@ belief overwrites the copy that was actually there. Use `isDocumentNotFound(erro
 rather than `instanceof`, since the `es` and `cjs` builds carry their own copy of the
 class.
 
-A document is a string; the `type` on its locator says what kind so a backend can keep kinds apart
-and a listing can ask for one. Every method rejects when the document is not there, so a caller can
-tell "missing" from "empty".
+A document is a string, and **its path is its identity**: one path is one document. The `type` on
+its locator is the report's layout (`grid` or `linear`), metadata the store keeps beside the
+document. `saveDocument` and `moveDocument` record it (a save under the other layout keeps the same
+path and replaces the document), `listDocuments` reports it and may filter by it, and
+`getDocument` and `deleteDocument` find the document at `locator.path` whatever `type` says. Every
+method rejects when the document is not there, so a caller can tell "missing" from "empty".
+
+A store written against the earlier contract, which keyed a document by `type` and `path` together
+with `type` `"dashboard"` or `"notebook"`, keys by `path` alone and records the layout instead:
+`grid` for what was `dashboard`, `linear` for what was `notebook`.
 
 ### BrowserDocumentStorage
 
-The default: one workspace named `Local`, private to this browser and origin.
+The default: one workspace named `Local`, private to this browser and origin. A document is kept
+under `publisher:report:<path>` with its layout. A draft saved under the earlier type-keyed scheme
+(`publisher:document:<dashboard|notebook>:<path>`) is moved to its path the first time the store is
+used, so it is still found; where a document is already at that path, the older copy is left where
+it was rather than written over it.
 
 ```tsx
 import {
@@ -1017,8 +1123,8 @@ const storage = new BrowserDocumentStorage();
 
 ### A custom backend
 
-Implement the interface over whatever you have. For example, over a document API keyed by workspace,
-type and path:
+Implement the interface over whatever you have. For example, over a document API keyed by workspace
+and path, with the layout stored on the document:
 
 ```tsx
 class ApiDocumentStorage implements DocumentStorage {
@@ -1071,6 +1177,24 @@ class ApiDocumentStorage implements DocumentStorage {
 }
 ```
 
+### Hosts that file reports by layout
+
+The builder (`ReportEditor` / `ReportBuilder` from `@malloy-publisher/sdk/builder`; `DashboardEditor` / `DashboardBuilder` are deprecated aliases) reads a report's
+layout from its text alone, never from where the file lives, in the same order the server uses, first match
+wins:
+
+1. `layout=` in the model-level `## artifact` tag: `grid` or `linear`.
+2. Otherwise grid when the tag lists `tiles` (an empty list counts) or the file carries a model-level `dashboard { … }` grid tag.
+3. Otherwise linear.
+
+A tag that sets the removed `kind=` makes no report, and the builder refuses to open it, naming the
+`layout=` to write. A file that writes `layout=` never depends on steps 2 and 3, and the builder and
+`createDocument` always write it. `readReportTagOfText(text)` from `@malloy-publisher/sdk/builder` gives
+the same answer for any text, for a host that files a document by its layout. The builder never rewrites
+`layout=`: a report keeps the layout its tag declares for as long as it is edited, so a host that ties a
+report's layout to where it keeps the file (every grid report under `dashboards/`, every linear one under
+`notebooks/`) has nothing to guard against.
+
 ### DocumentStorageProvider
 
 ```tsx
@@ -1086,14 +1210,61 @@ import {
 // Inside a component:
 function MyComponent() {
    const { documentStorage } = useDocumentStorage();
-   const dashboards = await documentStorage.listDocuments(
+   const grids = await documentStorage.listDocuments(
       { name: "Local", writeable: true, description: "" },
-      "dashboard",
+      "grid",
    );
 }
 ```
 
 ---
+
+## Telemetry
+
+The report surfaces report what happens on them through an `onEvent` prop, for the host to log or count:
+`Report` (every layout), `ReportEditor` and `ReportBuilder` from `@malloy-publisher/sdk/builder`,
+`NewDocumentDialog`, `Package` (for its New report dialog), and the deprecated `Dashboard`. Every event is a
+`ReportEvent`, named `report.*`, and carries the report's package `path` and its `layout`; the host knows the
+environment and package and adds them when it logs.
+
+| Event                      | Fields                                                                                | Emitted by                                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `report.opened`            | `surface` (`view`/`edit`), `from` (`package`/`draft`/`record`), `tiles`, `durationMs` | `Report` once per report shown; the editor once per open                                         |
+| `report.load_failed`       | `surface`, `category`; `layout` only when known                                       | `Report`, the editor                                                                             |
+| `report.query_failed`      | `tile` (index; absent for the run as a whole), `category`                             | a grid or linear tile, a `run:` cell                                                             |
+| `report.rows_shown`        | `source`, `view`, `field`, `ok`, `durationMs`                                         | the rows behind a value, on a grid or linear report                                              |
+| `report.saved`             | `tiles`, `structural`, `where`, `workspace?`, `converted?`, `durationMs`              | the builder                                                                                      |
+| `report.save_refused`      | `reason`                                                                              | the builder                                                                                      |
+| `report.save_undone`       | `tiles`, `structural`, `where`, `workspace?`, `durationMs`                            | the builder (Undo save)                                                                          |
+| `report.save_undo_refused` | `reason`                                                                              | the builder                                                                                      |
+| `report.created`           | `where` (`package`/`host`), `durationMs`                                              | `createDocument`, so `NewDocumentDialog` and `Package`                                           |
+| `report.create_refused`    | `reason`                                                                              | `createDocument`                                                                                 |
+| `report.drill`             | `to` (`self`/`report`), `outcome` (`resolved`/`unresolved`/`unverified`/`malformed`)  | `Report`: a `to=self` drill, or a drill to another report whose `onNavigate` returned an outcome |
+| `report.explored`          | `tile`                                                                                | reserved: nothing emits it yet                                                                   |
+
+`category` is a `ReportFailure` (`not_found`, `forbidden`, `invalid`, `unsupported`, `server`, `network`,
+`unknown`), never the error's message, which can carry a path or a value. A sink that throws is ignored, so
+telemetry never breaks a report. Inside a `Report`, a failed cell and a refused `to=self` drill are reported
+to `onEvent` instead of the browser console; with no `onEvent` they are still logged.
+
+```tsx
+import { Report, type ReportEvent } from "@malloy-publisher/sdk";
+
+const onEvent = (event: ReportEvent) =>
+   analytics.track(event.type, {
+      environment: "prod",
+      package: "sales",
+      ...event,
+   });
+
+<Report
+   resourceUri="publisher://environments/prod/packages/sales"
+   path="q3.malloy"
+   onEvent={onEvent}
+   // Return what the target resolved to and the drill is reported too.
+   onNavigate={(target) => (openReport(target) ? "resolved" : "unresolved")}
+/>;
+```
 
 ## Styling
 
@@ -1450,8 +1621,8 @@ function EnvironmentList() {
 | `QueryExplorerResult`    | Query builder result             |
 | `SourceAndPath`          | Source info with model path      |
 | `DocumentStorage`        | Document storage interface       |
-| `DocumentLocator`        | Workspace + type + path          |
-| `DocumentType`           | `"dashboard"` or `"notebook"`    |
+| `DocumentLocator`        | Workspace + path, with layout    |
+| `DocumentType`           | `"grid"` or `"linear"`           |
 | `Workspace`              | Workspace metadata               |
 | `ApiError`               | Standardized API error           |
 | `ModelExplorerProps`     | ModelExplorer props              |

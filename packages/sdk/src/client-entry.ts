@@ -18,3 +18,11 @@ export type {
 
 // Export the query client for users who need direct access
 export { globalQueryClient } from "./utils/queryClient";
+
+// The theme hook a host reads at its root, to follow or set the SDK's light or
+// dark mode. It lives beside `ServerProvider`, which mounts its provider, so
+// taking it from here costs nothing the provider has not already loaded; from
+// the main entry it would put the dashboard, explorer and renderer code on the
+// host's critical path.
+export { usePublisherTheme } from "./theme/ThemeContext";
+export type { ResolvedTheme, Theme, ThemeMode } from "./theme/types";

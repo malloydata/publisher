@@ -16,8 +16,8 @@
 import { orders } from '../orders.malloy'
 import { BRAND } from '../givens.malloy'
 
-#" Two cards over two tiles.
-# artifact { title="Grid" } dashboard {columns=12}
+##" Two cards over two tiles.
+## artifact { layout=grid title="Grid" tiles=["grid"] } dashboard {columns=12}
 query: grid is orders -> {
    where: brand_name ~ $BRAND
 

@@ -1,0 +1,113 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "orders__preagg__m_region__3b5ca627@<pkg>/m.malloy.preagg.malloy": []
+        },
+        "order": [
+          "orders__preagg__m_region__3b5ca627@<pkg>/m.malloy.preagg.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {
+      "orders__preagg__m_region__3b5ca627@<pkg>/m.malloy.preagg.malloy": {
+        "baseSourceID": "orders@<pkg>/m.malloy",
+        "baseSourceName": "orders",
+        "grainDimensions": [
+          "m",
+          "region"
+        ],
+        "measures": [
+          {
+            "name": "total",
+            "notes": [],
+            "partialName": "total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupSourceName": "orders__preagg__m_region__3b5ca627"
+      }
+    },
+    "sourceGateOutcomes": {
+      "orders__preagg__m_region__3b5ca627@<pkg>/m.malloy.preagg.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders__preagg__m_region__3b5ca627@<pkg>/m.malloy.preagg.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [
+    {
+      "code": "deprecated-preaggregate-annotation",
+      "message": "Measure total on source orders uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "orders"
+    }
+  ],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders__preagg__m_region__3b5ca627@<pkg>/m.malloy.preagg.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders__preagg__m_region__3b5ca627@<pkg>/m.malloy.preagg.malloy": {
+        "annotationFields": {},
+        "columns": [
+          {
+            "name": "m",
+            "type": "timestamp"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "orders__preagg__m_region__3b5ca627",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "orders",
+          "grainDimensions": [
+            "m",
+            "region"
+          ],
+          "measures": [
+            "total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381",
+        "sourceID": "orders__preagg__m_region__3b5ca627@<pkg>/m.malloy.preagg.malloy",
+        "sql": "sha256:1300923edf6ad14e"
+      }
+    }
+  }
+}

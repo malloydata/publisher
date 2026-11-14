@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
    chmodSync,
    existsSync,
@@ -14,25 +14,10 @@ import {
 import * as path from "path";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError, PackageNotFoundError } from "../errors";
+import { LocalPackageSource, unzipEnvironment } from "./package_sources";
 
 const workDir = path.join(TEMP_DIR_PATH, "unzip-environment-spec");
 const outsideDir = path.join(TEMP_DIR_PATH, "unzip-environment-spec-outside");
-
-mock.module("../storage/StorageManager", () => ({
-   StorageManager: class MockStorageManager {
-      async initialize(): Promise<void> {}
-      getRepository() {
-         return {
-            listEnvironments: async () => [],
-            listPackages: async () => [],
-            listConnections: async () => [],
-         };
-      }
-   },
-   StorageConfig: {} as Record<string, unknown>,
-}));
-
-const { EnvironmentStore } = await import("./environment_store");
 
 // Zips `entries` of `sourceDir` in the order given, with `zip -y`, which stores
 // a symlink as a symlink entry rather than following it.
@@ -75,9 +60,7 @@ describe.skipIf(!hasZip)("unzipEnvironment", () => {
       writeFileSync(path.join(source, "models", "m.malloy"), "source: s is x");
       const archive = path.join(workDir, "pkg.zip");
       zipDir(source, archive);
-
-      const store = new EnvironmentStore(workDir);
-      const extracted = await store.unzipEnvironment(archive);
+      const extracted = await unzipEnvironment(archive);
 
       expect(extracted).toBe(path.join(workDir, "pkg"));
       expect(
@@ -93,9 +76,7 @@ describe.skipIf(!hasZip)("unzipEnvironment", () => {
       const archive = path.join(workDir, "pkg.zip");
       // A regular file first, so the rejection has a partial extract to remove.
       zipDir(source, archive, ["publisher.json", "escape"]);
-
-      const store = new EnvironmentStore(workDir);
-      const attempt = store.unzipEnvironment(archive);
+      const attempt = unzipEnvironment(archive);
 
       await expect(attempt).rejects.toBeInstanceOf(BadRequestError);
       await expect(attempt).rejects.toThrow(/"escape" is a symbolic link/);
@@ -133,13 +114,13 @@ describe.skipIf(!hasZip)("mountLocalDirectory with a zip location", () => {
       const operatorDir = path.join(mountDir, "pkg");
       mkdirSync(operatorDir);
       writeFileSync(path.join(operatorDir, "keep.txt"), "mine");
-
-      const store = new EnvironmentStore(workDir);
-      await store.mountLocalDirectory(
+      await new LocalPackageSource().fetch(
          path.join(mountDir, "pkg.zip"),
          target,
-         "env",
-         "pkg",
+         {
+            environmentName: "env",
+            packageName: "pkg",
+         },
       );
 
       expect(
@@ -155,25 +136,27 @@ describe.skipIf(!hasZip)("mountLocalDirectory with a zip location", () => {
       "mounts an archive whose directory the server cannot write",
       async () => {
          chmodSync(mountDir, 0o555);
-         const store = new EnvironmentStore(workDir);
-         await store.mountLocalDirectory(
+         await new LocalPackageSource().fetch(
             path.join(mountDir, "pkg.zip"),
             target,
-            "env",
-            "pkg",
+            {
+               environmentName: "env",
+               packageName: "pkg",
+            },
          );
          expect(existsSync(path.join(target, "publisher.json"))).toBe(true);
       },
    );
 
    it("reports a missing archive as a package that was not found", async () => {
-      const store = new EnvironmentStore(workDir);
       await expect(
-         store.mountLocalDirectory(
+         new LocalPackageSource().fetch(
             path.join(mountDir, "absent.zip"),
             target,
-            "env",
-            "pkg",
+            {
+               environmentName: "env",
+               packageName: "pkg",
+            },
          ),
       ).rejects.toBeInstanceOf(PackageNotFoundError);
    });

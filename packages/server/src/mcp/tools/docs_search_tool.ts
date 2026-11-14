@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { registerTool } from "../register_tool";
 import { z } from "zod/v3";
 import lunr from "lunr";
-import { EnvironmentStore } from "../../service/environment_store";
+import type { PackageLookup } from "../../service/environment_ports";
 import { buildMalloyUri } from "../handler_utils";
 import { jsonResource } from "../tool_response";
 import { logger } from "../../logger";
 import rawIndex from "./docs_search/malloy_docs_index.json";
+import { sanitizeLunrQuery } from "../../retrieval/shared";
 
 interface DocEntry {
    title: string;
@@ -44,12 +46,6 @@ const searchDocsShape = {
 };
 type SearchDocsParams = z.infer<z.ZodObject<typeof searchDocsShape>>;
 
-// lunr treats several characters as query operators; strip them so a plain-English
-// query never throws and is matched as an OR of its terms.
-export function sanitize(query: string): string {
-   return query.replace(/[~^:*+\-"]/g, " ").trim();
-}
-
 /**
  * Search the bundled docs index and return up to `max` matches. Pure over the
  * module-level index asset, so it is unit-testable without a server. An empty or
@@ -59,7 +55,7 @@ export function searchDocsIndex(
    query: string,
    max: number,
 ): Array<{ title: string; url: string; excerpt: string }> {
-   const sanitized = sanitize(query);
+   const sanitized = sanitizeLunrQuery(query);
    if (!sanitized) return [];
 
    let hits: lunr.Index.Result[] = [];
@@ -89,7 +85,7 @@ export function searchDocsIndex(
 const SEARCH_DOCS_DESCRIPTION = `Search the Malloy documentation by keyword and return the most relevant doc pages, each with a short excerpt and a link. Use this to look up Malloy language or rendering syntax instead of guessing.
 
 ## When to use
-- Before writing unfamiliar Malloy syntax (window functions, autobin, dialect-specific functions, rendering tags) or when a query fails with a syntax error you do not recognize.
+- Before writing unfamiliar Malloy syntax (window functions, dialect-specific functions, rendering tags) or when a query fails with a syntax error you do not recognize.
 - Do NOT use it to look up field or source names in a model; use get_context for that.
 - Do NOT use it for anything about running Publisher itself — server flags, deployment, connection or embedding-provider configuration, publisher.json, packages, watch mode. This index covers the Malloy LANGUAGE docs only. Those answers live in the deployment's own docs/ directory and bundled skills, not here.
 
@@ -114,16 +110,17 @@ A JSON array of matches, each with title, url (a docs.malloydata.dev link), and 
  */
 export function registerDocsSearchTool(
    mcpServer: McpServer,
-   _environmentStore: EnvironmentStore,
+   _environmentStore: PackageLookup,
 ): void {
-   mcpServer.tool(
+   registerTool(
+      mcpServer,
       "search_malloy_docs",
       SEARCH_DOCS_DESCRIPTION,
       searchDocsShape,
       async (params: SearchDocsParams) => {
          const { query, limit } = params;
          const max = limit ?? 8;
-         logger.info("[MCP Tool searchDocs] Searching docs", { query, limit });
+         logger.debug("[MCP Tool searchDocs] Searching docs", { query, limit });
 
          const results = searchDocsIndex(query, max);
 

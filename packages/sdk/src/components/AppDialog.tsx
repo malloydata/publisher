@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { usePublisherTheme } from "../theme/ThemeContext";
 import CloseIcon from "@mui/icons-material/Close";
 import {
    Dialog,
@@ -24,11 +25,10 @@ import { useId } from "react";
  * with the same padding every time — a text Cancel and a filled confirm, the
  * two roles `buttons.tsx` names.
  *
- * Three dialogs stay off it deliberately, and each needs something this does
- * not have: `ModelExplorerDialog` is `fullScreen`, and `RowsDialog` and
- * `MaterializationDetailDialog` title themselves with a node rather than a
- * string. Widening this for three callers would cost more than it saves —
- * but a fourth exception is a reason to widen it, not to hand-roll a fourth.
+ * `ModelExplorerDialog` stays off it deliberately: it is `fullScreen`. The
+ * title takes a node as well as a string, so a dialog that titles itself with
+ * more than text (`RowsDialog`, `MaterializationDetailDialog`) can move onto
+ * this rather than hand-roll its own close button and type.
  */
 export function AppDialog({
    open,
@@ -38,11 +38,14 @@ export function AppDialog({
    maxWidth = "sm",
    showClose = false,
    actions,
+   initialFocus,
+   className,
    children,
 }: {
    open: boolean;
    onClose: () => void;
-   title: string;
+   /** The heading. A string in the common case; a node when it needs more. */
+   title: React.ReactNode;
    /** What the dialog is for, in a line. The page's description, in a box. */
    description?: React.ReactNode;
    maxWidth?: "xs" | "sm" | "md" | "lg" | false;
@@ -50,9 +53,18 @@ export function AppDialog({
    showClose?: boolean;
    /** The buttons, in order. Cancel first, the thing it does last. */
    actions?: React.ReactNode;
+   /**
+    * The control to start in. Focused once the window has opened: a child's
+    * own `autoFocus` loses to the focus trap, which takes focus to the
+    * window's container as it opens, after the child has mounted.
+    */
+   initialFocus?: React.RefObject<HTMLElement | null>;
+   /** Classes on the window's root, for a host to style it by. */
+   className?: string;
    children: React.ReactNode;
 }) {
    const titleId = useId();
+   const ui = usePublisherTheme().theme.ui;
    return (
       <Dialog
          open={open}
@@ -60,6 +72,17 @@ export function AppDialog({
          maxWidth={maxWidth}
          fullWidth
          aria-labelledby={titleId}
+         {...(className ? { className } : {})}
+         // The host's dialog radius (`ui.radius.dialog`), as every other
+         // corner on a report surface takes its token.
+         PaperProps={{ sx: { borderRadius: ui.radius.dialog } }}
+         {...(initialFocus
+            ? {
+                 TransitionProps: {
+                    onEntered: () => initialFocus.current?.focus(),
+                 },
+              }
+            : {})}
       >
          <DialogTitle
             id={titleId}
@@ -74,7 +97,8 @@ export function AppDialog({
                // The page heading's type, so a dialog reads as part of the same
                // application rather than as a system alert.
                fontSize: "1.25rem",
-               fontWeight: 600,
+               // Medium, not bold: a host that bans 600/700 gets its own weight.
+               fontWeight: "fontWeightMedium",
                letterSpacing: "-0.025em",
                lineHeight: 1.2,
             }}

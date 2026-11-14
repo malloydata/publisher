@@ -1,10 +1,38 @@
 ##" One or more scored runs over one evaluation set: the analytical tables.
-## artifact { kind=notebook title="Eval run" }
+##| artifact { layout=linear title="Eval run"
+  tiles=[
+    intro { kind=text },
+    the_headline { kind=text },
+    "run_summary",
+    is_the_headline_trustworthy { kind=text },
+    "attempts_tiles -> run_health",
+    what_it_cost { kind=text },
+    "cost",
+    "effort",
+    where_the_failures_are { kind=text },
+    "failures_by_where_to_fix",
+    pass_rate_by_coverage { kind=text },
+    "pass_by_coverage",
+    retrieval_intro { kind=text },
+    "retrieval_as_used",
+    most_missed_intro { kind=text },
+    "most_missed_entities",
+    what_to_do_next { kind=text },
+    "backlog",
+    coverage_gaps_in_the_set_itself { kind=text },
+    "coverage_gaps",
+    refusal_intro { kind=text },
+    "refusal_behaviour",
+    comparing_arms { kind=text },
+    "flips",
+    cases_every_arm_failed { kind=text },
+    "failed_everywhere"
+  ]
+}
+|##
 import "../eval_run.malloy"
 
-##|(markdown)
-# Eval run
-
+##|(markdown) intro
 One or more scored runs over one evaluation set. Publisher renders this natively,
 so every table below is Malloy reading the same model the app reads -- there is no
 second copy of the logic to drift.
@@ -18,7 +46,7 @@ Read it top to bottom: the headline, then whether the headline is trustworthy,
 then where the failures are, then what to do about them.
 |##
 
-##|(markdown)
+##|(markdown) the_headline
 ## 1. The headline
 
 Pass rate over **decided** verdicts -- `match` against `no_match`. Two things are
@@ -34,9 +62,7 @@ answered the same cases. Read `near_matches` too. It is the leading indicator of
 rubrics going vague, and it moves before the pass rate does.
 |##
 
-run: run_summary
-
-##|(markdown)
+##|(markdown) is_the_headline_trustworthy
 ## 2. Is the headline trustworthy?
 
 A pass rate means nothing if the attempts behind it were contaminated, if the
@@ -47,18 +73,7 @@ not evidence about the model. Harness errors are excluded from the rate rather
 than counted as failures: a timeout is the eval failing, not the answerer.
 |##
 
-run: attempts -> {
-  group_by: arm is runs.label
-  aggregate:
-    attempt_count
-    submitted_count
-    contaminated_count
-    harness_errors
-    judge_version is runs.judge_version.max()
-    set_version is runs.set_version.max()
-}
-
-##|(markdown)
+##|(markdown) what_it_cost
 ## 3. What it cost
 
 The claim a semantic model makes is not only that the agent gets the right
@@ -67,11 +82,7 @@ An arm that wins on accuracy while costing three times as much has not obviously
 won.
 |##
 
-run: cost
-
-run: effort
-
-##|(markdown)
+##|(markdown) where_the_failures_are
 ## 4. Where the failures are
 
 Every failure carries exactly one **where to fix**, so these counts sum to the
@@ -94,9 +105,7 @@ tables below disagree with each other.
   neither.
 |##
 
-run: failures_by_where_to_fix
-
-##|(markdown)
+##|(markdown) pass_rate_by_coverage
 ### Pass rate by coverage
 
 Coverage is the ceiling on what any agent can do. A model-shaped problem shows up
@@ -107,9 +116,7 @@ only by assembling it, and the agent could not.
 declined.
 |##
 
-run: pass_by_coverage
-
-##|(markdown)
+##|(markdown) retrieval_intro
 ## 5. Retrieval
 
 **Per-question entity recall**: of the entities each golden answer depends on, how
@@ -119,18 +126,14 @@ terms the answerer chose, so it moves when the answerer changes; use it to
 attribute a failure *within* one arm, not to compare retrieval across arms.
 |##
 
-run: retrieval_as_used
-
-##|(markdown)
+##|(markdown) most_missed_intro
 ### Entities most often needed and not returned
 
 The ranked retrieval backlog. An entity high on this list is one fix that several
 cases are waiting on.
 |##
 
-run: most_missed_entities
-
-##|(markdown)
+##|(markdown) what_to_do_next
 ## 6. What to do next
 
 Failures grouped by shared root cause, ordered by how many cases one edit would
@@ -142,9 +145,7 @@ that nobody stands behind is worse than a blank, because a reviewer has to
 disprove it.
 |##
 
-run: backlog
-
-##|(markdown)
+##|(markdown) coverage_gaps_in_the_set_itself
 ### Coverage gaps in the set itself
 
 Independent of any run: cases the model cannot answer outright, with the entity
@@ -152,9 +153,7 @@ that would close the gap. This is the model-improvement backlog even before an
 agent has attempted anything, and it is the part a customer can act on directly.
 |##
 
-run: coverage_gaps
-
-##|(markdown)
+##|(markdown) refusal_intro
 ## 7. Refusal behaviour
 
 Refusal is scored in both directions, and getting one right while getting the
@@ -167,9 +166,7 @@ other wrong is a common and misleading result.
   looking well-calibrated on the ones above.
 |##
 
-run: refusal_behaviour
-
-##|(markdown)
+##|(markdown) comparing_arms
 ## 8. Comparing arms
 
 Only meaningful with two or more arms loaded.
@@ -182,13 +179,24 @@ one case. What matters is which cases actually moved, and in which direction.
 verdicts to see who won each one.
 |##
 
-run: flips
-
-##|(markdown)
+##|(markdown) cases_every_arm_failed
 ### Cases every arm failed
 
 Changing the answerer will not move these. They are where model and retrieval
 work pays off, and they are the most durable finding in the whole run.
 |##
 
-run: failed_everywhere
+// The one table the model does not name as a query: the run's health, by arm.
+source: attempts_tiles is attempts extend {
+  # label="Run health"
+  view: run_health is {
+    group_by: arm is runs.label
+    aggregate:
+      attempt_count
+      submitted_count
+      contaminated_count
+      harness_errors
+      judge_version is runs.judge_version.max()
+      set_version is runs.set_version.max()
+  }
+}

@@ -8,7 +8,7 @@
  * run before the hook is imported, and a static import there would hoist above
  * it.
  */
-import { beforeEach, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { renderHook, waitFor } from "@testing-library/react";
 import {
    cacheKeys,
@@ -28,9 +28,12 @@ const executeQueryModel = mock(
    ) => pending(),
 );
 
-mockServerProvider({ models: { executeQueryModel } });
+// What `/status` said: a test sets the model page and clears it again.
+const serverContext: { modelPage?: string } = {};
+mockServerProvider({ models: { executeQueryModel } }, serverContext);
 
-const { useSuggestOptions } = await import("./useSuggestOptions");
+const { buildSuggestQuery, SUGGEST_OPTION_LIMIT, useSuggestOptions } =
+   await import("./useSuggestOptions");
 
 const SPECS: Given[] = [
    {
@@ -89,6 +92,7 @@ const renderGated = (applied = APPLIED) =>
 beforeEach(() => {
    clearCache();
    executeQueryModel.mockClear();
+   delete serverContext.modelPage;
 });
 
 it("sends the version with the suggest query and keys on it", async () => {
@@ -147,4 +151,213 @@ it("sends no givens when the suggest names none, or the caller offers none", asy
    expect(
       (executeQueryModel.mock.calls[0][3] as { givens?: unknown }).givens,
    ).toBeUndefined();
+});
+
+it("runs a suggest as the document's definitions plus one run:, by name or by dimension, when a preamble is given", async () => {
+   const specs: Given[] = [
+      {
+         name: "REGION",
+         control: "select",
+         suggest: { source: "a", dimension: "region" },
+      },
+      { name: "BRAND", control: "select", suggest: { query: "brands" } },
+   ];
+   executeQueryModel.mockClear();
+   renderHook(
+      () =>
+         useSuggestOptions(
+            "env",
+            "pkg",
+            "models/orders.malloy",
+            specs,
+            undefined,
+            undefined,
+            "source: a is orders",
+         ),
+      { wrapper: serverWrapper },
+   );
+
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(2));
+   const requests = executeQueryModel.mock.calls.map(
+      (call) => call[3] as { query?: string; queryName?: string },
+   );
+   expect(requests.every((request) => request.queryName === undefined)).toBe(
+      true,
+   );
+   expect(requests.map((request) => request.query)).toEqual([
+      `source: a is orders\n\n${buildSuggestQuery("a", "region")}`,
+      "source: a is orders\n\nrun: brands",
+   ]);
+});
+
+// A server whose PUBLISHER_MODEL_PAGE is viewer writes every name quoted; the
+// default writes them as the suggest gave them (every other test here).
+it("quotes the suggest's names on a server whose model page is the viewer", async () => {
+   serverContext.modelPage = "viewer";
+   renderHook(
+      () =>
+         useSuggestOptions("env", "pkg", "README.malloy", [
+            {
+               name: "MAKER",
+               control: "select",
+               suggest: { source: "recalls", dimension: "maker.name" },
+            },
+         ]),
+      { wrapper: serverWrapper },
+   );
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+   expect((executeQueryModel.mock.calls[0][3] as { query: string }).query).toBe(
+      buildSuggestQuery("recalls", "maker.name", undefined, {
+         quoteNames: true,
+      }),
+   );
+});
+
+// A list fetched before /status answered went unquoted; once it says viewer
+// the list is a different query, so it is asked again, quoted.
+it("asks again, quoted, when the server's model page turns out to be the viewer", async () => {
+   const specs: Given[] = [
+      {
+         name: "YEAR",
+         control: "select",
+         suggest: { source: "sales", dimension: "year" },
+      },
+   ];
+   const { rerender } = renderHook(
+      () => useSuggestOptions("env", "pkg", "README.malloy", specs),
+      { wrapper: serverWrapper },
+   );
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(1));
+   expect((executeQueryModel.mock.calls[0][3] as { query: string }).query).toBe(
+      buildSuggestQuery("sales", "year"),
+   );
+
+   serverContext.modelPage = "viewer";
+   rerender();
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(2));
+   expect((executeQueryModel.mock.calls[1][3] as { query: string }).query).toBe(
+      buildSuggestQuery("sales", "year", undefined, { quoteNames: true }),
+   );
+});
+
+describe("a list cut off at the limit", () => {
+   /** `n` distinct values for one column, `Value 0001` … in order. */
+   const rows = (column: string, n: number) =>
+      JSON.stringify(
+         Array.from({ length: n }, (_, i) => ({
+            [column]: `Value ${String(i).padStart(4, "0")}`,
+         })),
+      );
+   const answer = (result: string) =>
+      Promise.resolve({ data: { result } }) as never;
+   const MANUFACTURER: Given[] = [
+      {
+         name: "MAKER",
+         control: "select",
+         suggest: { source: "recalls", dimension: "manufacturer" },
+      },
+   ];
+   const render = (specs: Given[], preamble?: string) =>
+      renderHook(
+         () =>
+            useSuggestOptions(
+               "env",
+               "pkg",
+               "README.malloy",
+               specs,
+               undefined,
+               undefined,
+               preamble,
+            ),
+         { wrapper: serverWrapper },
+      );
+
+   it("is flagged, and its search finds a value past the cutoff on the server", async () => {
+      executeQueryModel.mockImplementation((_e, _p, _m, request) => {
+         const query = (request as { query?: string }).query ?? "";
+         return answer(
+            query.includes("where:")
+               ? JSON.stringify([{ manufacturer: "General Motors, LLC" }])
+               : rows("manufacturer", SUGGEST_OPTION_LIMIT + 1),
+         );
+      });
+      const { result } = render(MANUFACTURER);
+      await waitFor(() =>
+         expect(result.current.truncated.has("MAKER")).toBe(true),
+      );
+      // The page holds the limit, not the extra row that proved it was cut off.
+      expect(result.current.options.get("MAKER")).toHaveLength(
+         SUGGEST_OPTION_LIMIT,
+      );
+      const search = result.current.search.get("MAKER");
+      expect(search).toBeDefined();
+
+      const page = await search!.run("General Motors");
+      expect(page.values).toEqual(["General Motors, LLC"]);
+      const sent = (
+         executeQueryModel.mock.calls.at(-1)?.[3] as { query: string }
+      ).query;
+      expect(sent).toBe(
+         buildSuggestQuery("recalls", "manufacturer", "General Motors"),
+      );
+      expect(sent).toContain(
+         "where: strpos(lower(manufacturer::string), 'general motors') > 0",
+      );
+      expect(search!.key[0]).toBe("givenSuggestSearch");
+      executeQueryModel.mockImplementation(() => pending());
+   });
+
+   it("is not, when the list fits: no search, and no request past the first", async () => {
+      executeQueryModel.mockImplementation(() =>
+         answer(rows("manufacturer", 3)),
+      );
+      const { result } = render(MANUFACTURER);
+      await waitFor(() =>
+         expect(result.current.options.get("MAKER")).toHaveLength(3),
+      );
+      expect(result.current.truncated.size).toBe(0);
+      expect(result.current.search.size).toBe(0);
+      expect(executeQueryModel).toHaveBeenCalledTimes(1);
+      executeQueryModel.mockImplementation(() => pending());
+   });
+
+   it("is flagged for a named query at the server's cap, with no search to offer", async () => {
+      executeQueryModel.mockImplementation(() =>
+         answer(rows("brand", SUGGEST_OPTION_LIMIT)),
+      );
+      const { result } = render([
+         { name: "BRAND", control: "select", suggest: { query: "brands" } },
+      ]);
+      await waitFor(() =>
+         expect(result.current.truncated.has("BRAND")).toBe(true),
+      );
+      expect(result.current.search.has("BRAND")).toBe(false);
+      executeQueryModel.mockImplementation(() => pending());
+   });
+
+   it("searches a text-held document as its definitions plus the search", async () => {
+      executeQueryModel.mockImplementation((_e, _p, _m, request) => {
+         const query = (request as { query?: string }).query ?? "";
+         return answer(
+            query.includes("where:")
+               ? JSON.stringify([{ manufacturer: "General Motors, LLC" }])
+               : rows("manufacturer", SUGGEST_OPTION_LIMIT + 1),
+         );
+      });
+      const { result } = render(MANUFACTURER, "source: recalls is t");
+      await waitFor(() =>
+         expect(result.current.search.has("MAKER")).toBe(true),
+      );
+      await result.current.search.get("MAKER")!.run("general");
+      expect(
+         (executeQueryModel.mock.calls.at(-1)?.[3] as { query: string }).query,
+      ).toBe(
+         `source: recalls is t\n\n${buildSuggestQuery("recalls", "manufacturer", "general")}`,
+      );
+      // The definitions are part of what a search is cached under.
+      expect(result.current.search.get("MAKER")!.key).toContain(
+         "source: recalls is t",
+      );
+      executeQueryModel.mockImplementation(() => pending());
+   });
 });

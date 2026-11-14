@@ -1,12 +1,21 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { WriteVerifyError } from "../errors";
+import {
+   BadRequestError,
+   internalErrorToHttpError,
+   InvalidModelPathError,
+   WriteRollbackFailedError,
+   WriteRolledBackError,
+   WriteVerifyError,
+} from "../errors";
+import { logger } from "../logger";
 import { Environment } from "./environment";
+import { linesMentioning } from "../test_helpers/log_lines";
 
 /**
  * `writeModelFileTransactional`: the precondition, the write, the reload and
@@ -17,7 +26,8 @@ import { Environment } from "./environment";
  * both pass their check nor revert each other's text.
  */
 const PKG = "pkg";
-const FILE = "dashboards/overview.malloy";
+/** A path no other spec writes, so this file's log lines are told apart by it. */
+const FILE = "dashboards/write-model-file-probe.malloy";
 
 let root: string;
 let environment: Environment;
@@ -54,6 +64,14 @@ beforeEach(() => {
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
 const ok = async () => undefined;
+
+/**
+ * The log lines a spy saw about this spec's write or its rollback, from this
+ * service or from the error mapping (whose lines carry the error, which names
+ * the file). Other spec files in the process log through the same logger.
+ */
+const writeLines = (spy: { mock: { calls: unknown[][] } }) =>
+   linesMentioning(spy, FILE);
 
 describe("Environment.writeModelFileTransactional", () => {
    it("writes a new file and reports that nothing was there", async () => {
@@ -123,6 +141,43 @@ describe("Environment.writeModelFileTransactional", () => {
       expect(read()).toBe("good");
       // Once for the write, once to put the package back on the old text.
       expect(reloads).toBe(2);
+   });
+
+   /**
+    * One rollback, one line: it is logged where it happened, with the cause,
+    * and nowhere else, so a count of these lines is a count of rollbacks.
+    */
+   it("logs a rollback once, at warn, and the error mapping adds nothing", async () => {
+      fs.writeFileSync(target(), "good");
+      const warn = spyOn(logger, "warn");
+      const error = spyOn(logger, "error");
+      try {
+         const rolledBack = await environment
+            .writeModelFileTransactional(
+               PKG,
+               FILE,
+               "bad",
+               () => undefined,
+               async () => {
+                  throw new Error("did not reload");
+               },
+            )
+            .then(
+               () => undefined,
+               (e: Error) => e,
+            );
+         expect(internalErrorToHttpError(rolledBack!).status).toBe(500);
+         expect(writeLines(warn)).toEqual([
+            [
+               "Report write rolled back",
+               { packageName: PKG, model: FILE, error: "did not reload" },
+            ],
+         ]);
+         expect(writeLines(error)).toEqual([]);
+      } finally {
+         warn.mockRestore();
+         error.mockRestore();
+      }
    });
 
    it("removes the file when verify refuses a newly created one", async () => {
@@ -242,5 +297,289 @@ describe("Environment.writeModelFileTransactional", () => {
       // to reload, and its own write survived the other's restore.
       expect(seen).toEqual(["good"]);
       expect(read()).toBe("next");
+   });
+
+   describe("the directories a create makes", () => {
+      const pkgPath = (...parts: string[]) => path.join(root, PKG, ...parts);
+
+      it("refuses a path through an existing file with a 400, creating nothing", async () => {
+         fs.writeFileSync(pkgPath("plain"), "a file, not a directory");
+         const error = await environment
+            .writeModelFileTransactional(
+               PKG,
+               "plain/deeper/x.malloy",
+               "text",
+               () => undefined,
+               ok,
+            )
+            .then(
+               () => undefined,
+               (e: Error) => e,
+            );
+         expect(error).toBeInstanceOf(BadRequestError);
+         expect(error?.message).toContain("plain");
+         expect(error?.message).toContain("is a file");
+         expect(fs.readFileSync(pkgPath("plain"), "utf8")).toBe(
+            "a file, not a directory",
+         );
+         expect(reloads).toBe(0);
+      });
+
+      it("removes every directory it created when the write itself fails", async () => {
+         (
+            environment as unknown as {
+               _writeModelFileLocked: () => Promise<void>;
+            }
+         )._writeModelFileLocked = async () => {
+            throw new Error("disk full");
+         };
+         await expect(
+            environment.writeModelFileTransactional(
+               PKG,
+               "made/here/x.malloy",
+               "text",
+               () => undefined,
+               ok,
+            ),
+         ).rejects.toThrow("disk full");
+         expect(fs.existsSync(pkgPath("made"))).toBe(false);
+         expect(reloads).toBe(0);
+      });
+
+      it("refuses a directory that resolves into public/, whatever its case", async () => {
+         fs.mkdirSync(pkgPath("public"));
+         // On a case-insensitive file system `Public` IS `public`; a symlink
+         // reaches it on any file system. Either way the write would land in
+         // the directory served as raw static files.
+         fs.symlinkSync(pkgPath("public"), pkgPath("mirror"));
+         for (const modelPath of ["mirror/x.malloy", "mirror/new/x.malloy"]) {
+            const error = await environment
+               .writeModelFileTransactional(
+                  PKG,
+                  modelPath,
+                  "text",
+                  () => undefined,
+                  ok,
+               )
+               .then(
+                  () => undefined,
+                  (e: Error) => e,
+               );
+            expect(error).toBeInstanceOf(BadRequestError);
+            expect(error?.message).toContain("public/");
+         }
+         expect(fs.readdirSync(pkgPath("public"))).toEqual([]);
+      });
+
+      it("refuses a directory that resolves outside the package before reading anything through it", async () => {
+         const outside = fs.mkdtempSync(
+            path.join(os.tmpdir(), "publisher-out-"),
+         );
+         try {
+            fs.writeFileSync(path.join(outside, "x.malloy"), "outside text");
+            fs.symlinkSync(outside, pkgPath("escape"));
+            for (const modelPath of [
+               "escape/x.malloy",
+               "escape/new/x.malloy",
+            ]) {
+               const seen: Array<string | undefined> = [];
+               const error = await environment
+                  .writeModelFileTransactional(
+                     PKG,
+                     modelPath,
+                     "text",
+                     (current) => {
+                        seen.push(current);
+                     },
+                     ok,
+                  )
+                  .then(
+                     () => undefined,
+                     (e: Error) => e,
+                  );
+               // Typed, so the write metric counts it as `invalid_path`.
+               expect(error).toBeInstanceOf(InvalidModelPathError);
+               expect(error?.message).toContain("outside the package");
+               // The check never saw the outside file's text.
+               expect(seen).toEqual([]);
+            }
+            expect(fs.readdirSync(outside)).toEqual(["x.malloy"]);
+            expect(
+               fs.readFileSync(path.join(outside, "x.malloy"), "utf8"),
+            ).toBe("outside text");
+            expect(reloads).toBe(0);
+         } finally {
+            fs.rmSync(outside, { recursive: true, force: true });
+         }
+      });
+
+      it("refuses a file that is a link out of the package before reading it", async () => {
+         const outside = fs.mkdtempSync(
+            path.join(os.tmpdir(), "publisher-out-"),
+         );
+         try {
+            fs.writeFileSync(
+               path.join(outside, "secret.malloy"),
+               "outside text",
+            );
+            fs.symlinkSync(
+               path.join(outside, "secret.malloy"),
+               pkgPath("link.malloy"),
+            );
+            const seen: Array<string | undefined> = [];
+            await expect(
+               environment.writeModelFileTransactional(
+                  PKG,
+                  "link.malloy",
+                  "text",
+                  (current) => {
+                     seen.push(current);
+                  },
+                  ok,
+               ),
+            ).rejects.toBeInstanceOf(BadRequestError);
+            expect(seen).toEqual([]);
+            expect(
+               fs.readFileSync(path.join(outside, "secret.malloy"), "utf8"),
+            ).toBe("outside text");
+         } finally {
+            fs.rmSync(outside, { recursive: true, force: true });
+         }
+      });
+   });
+
+   it.each(["index.malloy", "Index.malloy", "INDEX.malloy", "./index.malloy"])(
+      "refuses the root %s, the surface, whatever its case",
+      async (modelPath) => {
+         await expect(
+            environment.writeModelFileTransactional(
+               PKG,
+               modelPath,
+               "## artifact { layout=linear }\n",
+               () => undefined,
+               ok,
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+         expect(fs.existsSync(path.join(root, PKG, modelPath))).toBe(false);
+      },
+   );
+
+   it("refuses a path that is not a safe relative model path, even from a caller that skipped the check", async () => {
+      for (const modelPath of ["../escape.malloy", "/abs.malloy"]) {
+         await expect(
+            environment.writeModelFileTransactional(
+               PKG,
+               modelPath,
+               "text",
+               () => undefined,
+               ok,
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      }
+      expect(reloads).toBe(0);
+   });
+
+   it("says so, and logs it, when putting the previous text back fails too", async () => {
+      fs.writeFileSync(target(), "good");
+      let writes = 0;
+      const env = environment as unknown as {
+         _writeModelFileLocked: (t: string, s: string) => Promise<void>;
+         _loadOrGetPackageLocked: () => Promise<unknown>;
+      };
+      const write = env._writeModelFileLocked.bind(environment);
+      env._writeModelFileLocked = async (t, s) => {
+         writes += 1;
+         if (writes === 2) throw new Error("restore failed");
+         await write(t, s);
+      };
+      env._loadOrGetPackageLocked = async () => {
+         reloads += 1;
+         throw new Error("reload failed");
+      };
+      const warn = spyOn(logger, "warn");
+      const logError = spyOn(logger, "error");
+      let error: Error | undefined;
+      try {
+         error = await environment
+            .writeModelFileTransactional(PKG, FILE, "bad", () => undefined, ok)
+            .then(
+               () => undefined,
+               (e: Error) => e,
+            );
+         internalErrorToHttpError(error!);
+         // Once, at error, with both causes; never also as a rollback.
+         expect(writeLines(logError)).toEqual([
+            [
+               "Report write rollback failed",
+               {
+                  packageName: PKG,
+                  model: FILE,
+                  error: "reload failed",
+                  restoreError: "restore failed",
+               },
+            ],
+         ]);
+         expect(writeLines(warn)).toEqual([]);
+      } finally {
+         warn.mockRestore();
+         logError.mockRestore();
+      }
+      expect(error).toBeInstanceOf(WriteRollbackFailedError);
+      expect(error?.message).toContain("putting the previous text back failed");
+      // The new text is still on disk: the restore never landed.
+      expect(read()).toBe("bad");
+      expect(reloads).toBe(1);
+   });
+
+   /**
+    * The previous text is back on disk, so the write was rolled back; only the
+    * reload of it failed, which is a different thing to tell an operator than
+    * "the restore failed" — the fix is a reload, not an edit.
+    */
+   it("is a rollback, not a failed one, when the restore landed but its reload failed", async () => {
+      fs.writeFileSync(target(), "good");
+      (
+         environment as unknown as {
+            _loadOrGetPackageLocked: () => Promise<unknown>;
+         }
+      )._loadOrGetPackageLocked = async () => {
+         reloads += 1;
+         throw new Error(
+            reloads === 1 ? "reload failed" : "restore reload failed",
+         );
+      };
+      const warn = spyOn(logger, "warn");
+      const logError = spyOn(logger, "error");
+      let error: Error | undefined;
+      try {
+         error = await environment
+            .writeModelFileTransactional(PKG, FILE, "bad", () => undefined, ok)
+            .then(
+               () => undefined,
+               (e: Error) => e,
+            );
+         expect(internalErrorToHttpError(error!).status).toBe(500);
+         expect(writeLines(warn)).toEqual([
+            [
+               "Report write rolled back",
+               {
+                  packageName: PKG,
+                  model: FILE,
+                  error: "reload failed",
+                  reloadError: "restore reload failed",
+               },
+            ],
+         ]);
+         expect(writeLines(logError)).toEqual([]);
+      } finally {
+         warn.mockRestore();
+         logError.mockRestore();
+      }
+      expect(error).toBeInstanceOf(WriteRolledBackError);
+      expect(error).not.toBeInstanceOf(WriteRollbackFailedError);
+      expect(error?.message).toContain("previous text was put back");
+      expect(error?.message).toContain("may need a reload");
+      expect(read()).toBe("good");
+      expect(reloads).toBe(2);
    });
 });

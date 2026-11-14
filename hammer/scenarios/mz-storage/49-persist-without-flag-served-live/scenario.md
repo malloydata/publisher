@@ -11,11 +11,11 @@ SPDX-License-Identifier: MIT
 # Without `##! experimental.persistence`, a `#@ persist` source is served live and the package still loads
 
 The `#@ persist` machinery is gated behind Malloy's `##! experimental.persistence`
-model flag. Malloy's `getBuildPlan()` THROWS `Model must have ##!
+model flag. Malloy's `getBuildTargets()` THROWS `Model must have ##!
 experimental.persistence` on any model lacking the flag — it does not return an
 empty plan. So `compilePackageBuildPlan` flag-checks each `.malloy` model (the same
 `experimental.persistence` predicate Malloy uses) and **skips** a flagless model
-before ever calling `getBuildPlan()`; without that skip, one flagless model would
+before ever calling `getBuildTargets()`; without that skip, one flagless model would
 throw and abort the whole package's build plan.
 
 A consequence of that skip: a source annotated `#@ persist storage=lake` in a model
@@ -107,7 +107,7 @@ Expect:
 > Open question — should a `#@ persist` annotation on a model that lacks `##!
 > experimental.persistence` be **silently ignored**, or should it **warn**? Today it
 > is silent: `compilePackageBuildPlan` skips the flagless model (it must — Malloy's
-> `getBuildPlan()` throws without the flag, and skipping is what keeps one flagless
+> `getBuildTargets()` throws without the flag, and skipping is what keeps one flagless
 > model from aborting the whole package), and because the skip happens *before* the
 > dropped-persist-source detector runs, an author who simply forgot the header gets
 > no signal — their source is served live with no materialization and no warning.

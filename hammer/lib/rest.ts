@@ -47,6 +47,74 @@ export class Rest {
       return `${this.baseUrl}/api/v0/environments/${this.env}/packages/${pkg}${suffix}`;
    }
 
+   private destinationUrl(dest: string, suffix = ""): string {
+      return `${this.baseUrl}/api/v0/environments/${this.env}/storageDestinations/${dest}${suffix}`;
+   }
+
+   /** `GET …/storageDestinations/{dest}/schemas/{schema}/tables` — table names. */
+   async listDestinationTables(
+      dest: string,
+      schema: string,
+   ): Promise<string[]> {
+      const res = await fetch(
+         this.destinationUrl(dest, `/schemas/${schema}/tables`),
+      );
+      if (!res.ok)
+         throw new Error(
+            `listDestinationTables ${dest}.${schema} ${res.status}: ${await res.text()}`,
+         );
+      const rows = (await res.json()) as { name: string }[];
+      return rows.map((r) => r.name);
+   }
+
+   /** The listing's HTTP status alone, for a listing expected to be refused. */
+   async listDestinationTablesStatus(
+      dest: string,
+      schema: string,
+   ): Promise<{ status: number; body: string }> {
+      const res = await fetch(
+         this.destinationUrl(dest, `/schemas/${schema}/tables`),
+      );
+      return { status: res.status, body: await res.text() };
+   }
+
+   /** `DELETE …/storageDestinations/{dest}/schemas/{schema}/tables/{table}`. */
+   async dropDestinationTable(
+      dest: string,
+      schema: string,
+      table: string,
+   ): Promise<number> {
+      const res = await fetch(
+         this.destinationUrl(dest, `/schemas/${schema}/tables/${table}`),
+         { method: "DELETE" },
+      );
+      if (!res.ok)
+         throw new Error(
+            `dropDestinationTable ${dest}.${schema}.${table} ${res.status}: ${await res.text()}`,
+         );
+      return res.status;
+   }
+
+   /** `POST …/storageDestinations/{dest}/fileCleanups` — what it reclaimed. */
+   async createFileCleanup(
+      dest: string,
+      body: { snapshotsOlderThan: string; filesOlderThan: string },
+   ): Promise<{ expiredSnapshots: number; deletedFiles: number }> {
+      const res = await fetch(this.destinationUrl(dest, "/fileCleanups"), {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify(body),
+      });
+      if (res.status !== 201)
+         throw new Error(
+            `createFileCleanup ${dest} ${res.status}: ${await res.text()}`,
+         );
+      return (await res.json()) as {
+         expiredSnapshots: number;
+         deletedFiles: number;
+      };
+   }
+
    async status(): Promise<{
       operationalState?: string;
       loadErrors?: unknown;
@@ -81,6 +149,136 @@ export class Rest {
       return { ok: false, status: res.status, error: await res.text() };
    }
 
+   /**
+    * Publish a package from a directory on this host (POST /packages with a
+    * `location`): a versioned publish, of the version in the directory's
+    * publisher.json. Returns the
+    * outcome and the body either way, so a scenario can assert a publish or a
+    * refusal and its `reason`.
+    */
+   async publishFrom(
+      pkg: string,
+      location: string,
+   ): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+      const res = await fetch(
+         `${this.baseUrl}/api/v0/environments/${this.env}/packages`,
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: pkg, location }),
+         },
+      );
+      return {
+         ok: res.ok,
+         status: res.status,
+         body: (await res.json()) as Record<string, unknown>,
+      };
+   }
+
+   /**
+    * POST …/packages?dryRun=true with a `location`: what a publish of that tree
+    * would answer (the build plan and the serve verdicts it predicts), with
+    * nothing installed.
+    */
+   async dryRunFrom(
+      pkg: string,
+      location: string,
+   ): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+      const res = await fetch(
+         `${this.baseUrl}/api/v0/environments/${this.env}/packages?dryRun=true`,
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: pkg, location }),
+         },
+      );
+      return {
+         ok: res.ok,
+         status: res.status,
+         body: (await res.json()) as Record<string, unknown>,
+      };
+   }
+
+   /** PUT …/latest: point the package's latest at a version. */
+   async setLatestVersion(
+      pkg: string,
+      version: string,
+   ): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+      const res = await fetch(this.pkgUrl(pkg, "/latest"), {
+         method: "PUT",
+         headers: { "content-type": "application/json" },
+         body: JSON.stringify({ version }),
+      });
+      return {
+         ok: res.ok,
+         status: res.status,
+         body: (await res.json()) as Record<string, unknown>,
+      };
+   }
+
+   /** PATCH …/versions/{v}: archive or unarchive one version. */
+   async setArchiveStatus(
+      pkg: string,
+      versionId: string,
+      archiveStatus: "archive" | "unarchive",
+   ): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+      const res = await fetch(
+         this.pkgUrl(pkg, `/versions/${encodeURIComponent(versionId)}`),
+         {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ archiveStatus }),
+         },
+      );
+      return {
+         ok: res.ok,
+         status: res.status,
+         body: (await res.json()) as Record<string, unknown>,
+      };
+   }
+
+   /** GET …/versions: the package's published versions, highest first. */
+   async listVersions(
+      pkg: string,
+   ): Promise<{ id: string; latest: boolean; archiveStatus: string }[]> {
+      const res = await fetch(this.pkgUrl(pkg, "/versions"));
+      if (!res.ok)
+         throw new Error(
+            `listVersions ${pkg} ${res.status}: ${await res.text()}`,
+         );
+      return (await res.json()) as {
+         id: string;
+         latest: boolean;
+         archiveStatus: string;
+      }[];
+   }
+
+   /**
+    * This package's entries in /status: every version the server holds, each
+    * with whether it is loaded (`loaded: false` for one held but not in
+    * memory; absent on an unversioned package's entry).
+    */
+   async statusEntries(
+      pkg: string,
+   ): Promise<{ versionId?: string | null; loaded?: boolean }[]> {
+      const res = await fetch(`${this.baseUrl}/api/v0/status`);
+      const status = (await res.json()) as {
+         environments?: {
+            name: string;
+            packages?: {
+               name?: string;
+               versionId?: string | null;
+               loaded?: boolean;
+            }[];
+         }[];
+      };
+      return (
+         status.environments
+            ?.find((e) => e.name === this.env)
+            ?.packages?.filter((p) => p.name === pkg) ?? []
+      );
+   }
+
    async listConnections(): Promise<{ name: string }[]> {
       const res = await fetch(
          `${this.baseUrl}/api/v0/environments/${this.env}/connections`,
@@ -92,11 +290,13 @@ export class Rest {
 
    async getPackage(
       pkg: string,
-      opts: { reload?: boolean } = {},
+      opts: { reload?: boolean; versionId?: string } = {},
    ): Promise<Record<string, unknown>> {
-      const res = await fetch(
-         this.pkgUrl(pkg, opts.reload ? "?reload=true" : ""),
-      );
+      const params = new URLSearchParams();
+      if (opts.reload) params.set("reload", "true");
+      if (opts.versionId) params.set("versionId", opts.versionId);
+      const qs = params.toString();
+      const res = await fetch(this.pkgUrl(pkg, qs ? `?${qs}` : ""));
       if (!res.ok)
          throw new Error(
             `getPackage ${pkg} ${res.status}: ${await res.text()}`,
@@ -188,6 +388,38 @@ export class Rest {
       if (!res.ok)
          throw new Error(
             `patchPackage ${pkg} ${res.status}: ${JSON.stringify(json)}`,
+         );
+      return json;
+   }
+
+   /**
+    * Clear a package's manifest binding so it serves live. A package with
+    * published versions clears through its latest version's manifest route
+    * (`PUT …/versions/{version}/manifest` with null): its PATCH reads a null
+    * `manifestLocation` as unset, since a generated client sends a field it
+    * was never given as null. An unversioned package clears with the PATCH.
+    */
+   async clearManifest(pkg: string): Promise<Record<string, unknown>> {
+      const current = await this.getPackage(pkg);
+      const versionId = current.versionId;
+      if (typeof versionId !== "string" || versionId === "") {
+         return this.patchPackage(pkg, { manifestLocation: null });
+      }
+      const res = await fetch(
+         this.pkgUrl(
+            pkg,
+            `/versions/${encodeURIComponent(versionId)}/manifest`,
+         ),
+         {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ manifestLocation: null }),
+         },
+      );
+      const json = (await res.json()) as Record<string, unknown>;
+      if (!res.ok)
+         throw new Error(
+            `clearManifest ${pkg}@${versionId} ${res.status}: ${JSON.stringify(json)}`,
          );
       return json;
    }
@@ -341,6 +573,8 @@ export class Rest {
          sourceName?: string;
          queryName?: string;
          givens?: Record<string, unknown>;
+         /** The published version to query; omitted, the package's latest. */
+         versionId?: string;
       },
    ): Promise<QueryOutcome> {
       const url = this.pkgUrl(pkg, `/models/${modelPath}/query`);
@@ -396,6 +630,7 @@ export class Rest {
          sourceName?: string;
          queryName?: string;
          givens?: Record<string, unknown>;
+         versionId?: string;
       },
    ): Promise<
       { ok: true; outcome: QueryOutcome } | { ok: false; error: string }

@@ -4,13 +4,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
-import { isDashboardModelPath } from "./dashboard";
 import {
    extractPreamble,
    extractPreambleFromSource,
    packageRelativeModelPath,
 } from "./environment";
-import { isNotebookModelPath } from "./notebook";
+import { isReportEligiblePath } from "./report";
 
 describe("extractPreambleFromSource", () => {
    it("should extract pragmas and imports before a source definition", () => {
@@ -206,21 +205,21 @@ describe("extractPreamble (file-based)", () => {
 });
 
 describe("packageRelativeModelPath", () => {
-   it("joins a Windows-separated path with `/` so notebook and dashboard classification recognize it", () => {
+   it("joins a Windows-separated path with `/` so report classification recognizes it", () => {
       const notebook = packageRelativeModelPath(
          "C:\\pkg",
          "C:\\pkg\\notebooks\\refused.malloy",
          path.win32,
       );
       expect(notebook).toBe("notebooks/refused.malloy");
-      expect(isNotebookModelPath(notebook!)).toBe(true);
+      expect(isReportEligiblePath(notebook!)).toBe(true);
       const dashboard = packageRelativeModelPath(
          "C:\\pkg",
          "C:\\pkg\\dashboards\\sales.malloy",
          path.win32,
       );
       expect(dashboard).toBe("dashboards/sales.malloy");
-      expect(isDashboardModelPath(dashboard!)).toBe(true);
+      expect(isReportEligiblePath(dashboard!)).toBe(true);
    });
 
    it("is undefined outside the package", () => {

@@ -1,0 +1,92 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { PointerSensor } from "@dnd-kit/dom";
+import { describe, expect, it } from "bun:test";
+import { builderSensors, NO_DRAG } from "./sortable";
+
+const preventActivation = PointerSensor.defaults.preventActivation as (
+   event: PointerEvent,
+   source: unknown,
+) => boolean;
+
+/** A press on `target` inside a draggable tile `card`. */
+const press = (target: Element, card: Element) =>
+   preventActivation({ target } as unknown as PointerEvent, {
+      element: card,
+      handle: undefined,
+   });
+
+describe("builderSensors", () => {
+   it("never starts a move from a press on the resize edge or inside it", () => {
+      const card = document.createElement("div");
+      const edge = card.appendChild(document.createElement("div"));
+      edge.setAttribute(NO_DRAG, "");
+      const inner = edge.appendChild(document.createElement("span"));
+      const configured = builderSensors[0] as unknown as {
+         options: {
+            preventActivation: (
+               event: PointerEvent,
+               source: unknown,
+            ) => boolean;
+         };
+      };
+      const pressOn = (target: Element) =>
+         configured.options.preventActivation(
+            { target } as unknown as PointerEvent,
+            { element: card, handle: undefined },
+         );
+      expect(pressOn(edge)).toBe(true);
+      expect(pressOn(inner)).toBe(true);
+      // The card itself still drags.
+      expect(pressOn(card)).toBe(false);
+   });
+
+   it("starts a drag from anywhere on the tile", () => {
+      const card = document.createElement("div");
+      const configured = builderSensors[0] as unknown as {
+         options: {
+            activatorElements: (source: { element: Element }) => Element[];
+         };
+      };
+      expect(configured.options.activatorElements({ element: card })).toEqual([
+         card,
+      ]);
+   });
+
+   // Each test builds its own card and leaves it detached: `closest()` needs no
+   // document, and a card attached to <body> outlives this file, so its button,
+   // input and textarea would answer `getByRole` in every spec that runs later.
+   it("never starts a drag from the control that opens an editor", () => {
+      const card = document.createElement("div");
+      // The display of an inline line is a button, the open editor a field.
+      for (const tag of ["button", "input", "textarea"]) {
+         const control = document.createElement(tag);
+         const inner = document.createElement("span");
+         control.append(inner);
+         card.append(control);
+         expect(press(control, card)).toBe(true);
+         expect(press(inner, card)).toBe(true);
+      }
+   });
+
+   it("still drags from the card itself", () => {
+      const card = document.createElement("div");
+      expect(press(card, card)).toBe(false);
+   });
+
+   it("only starts a drag after a hold or some travel, so a click on the markdown display is a click", () => {
+      const defaults = PointerSensor.defaults as unknown as {
+         activationConstraints: (
+            event: PointerEvent,
+            source: unknown,
+         ) => unknown[] | undefined;
+      };
+      const card = document.createElement("div");
+      const constraints = defaults.activationConstraints(
+         { pointerType: "mouse", target: card } as unknown as PointerEvent,
+         { handle: undefined },
+      );
+      expect(constraints?.length).toBeGreaterThan(0);
+   });
+});

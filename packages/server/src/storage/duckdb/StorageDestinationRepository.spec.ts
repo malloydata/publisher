@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { DuckDBConnection } from "./DuckDBConnection";
-import { DuckDBRepository } from "./DuckDBRepository";
+import { createDuckDBRepository } from "./DuckDBRepository";
 import { StorageDestinationRepository } from "./StorageDestinationRepository";
 import { initializeSchema } from "./schema";
 
@@ -145,7 +145,7 @@ describe("StorageDestinationRepository", () => {
       // The rows carry a foreign key to environments(id), so a delete that
       // skipped them would fail the constraint and leave the environment behind.
       const db = await freshDb();
-      const repository = new DuckDBRepository(db);
+      const repository = createDuckDBRepository(db);
 
       await repository.upsertStorageDestination({
          environmentId: ENV_ID,

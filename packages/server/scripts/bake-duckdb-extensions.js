@@ -14,15 +14,28 @@
  * so later INSTALL/LOAD calls are served from disk.
  *
  * Runs as the last step of this package's build (`build` / `build:server-only`),
- * so local dev, CI, and the Docker builder all bake the same set. The Docker
- * final stage copies the baked ~/.duckdb/extensions from the builder rather
- * than re-baking, keeping a single bake mechanism.
+ * so local dev and CI bake the same set. The Docker image runs this same script
+ * in its own `duckdb-extensions` stage, keyed on the production dependencies
+ * rather than the server source, so the baked tree ships as a layer that keeps
+ * its digest from one release to the next; its builder runs
+ * `build:server-only:bundle`, which stops short of the bake.
  *
- * Each extension is baked independently: a failure (offline build, transient
- * CDN error) is logged and skipped, never aborting the others or the build.
+ * Each extension is baked independently, with a few attempts so a transient CDN
+ * error is retried: a failure that outlasts them (an offline build, say) is
+ * logged and skipped, never aborting the others or the build.
+ * With DUCKDB_BAKE_STRICT=1, which the Docker image's stage sets, the script
+ * still tries every extension but exits non-zero if any failed: that stage's
+ * output is cached across builds, so a skipped extension would not come back
+ * on the next one.
  */
 
 import { DuckDBInstance } from "@duckdb/node-api";
+
+const STRICT = process.env.DUCKDB_BAKE_STRICT === "1";
+// Attempts per extension, waiting ATTEMPT_DELAY_MS times the attempt number in
+// between: 5 s, then 10 s.
+const ATTEMPTS = 3;
+const ATTEMPT_DELAY_MS = 5000;
 
 // Every extension the connection layer (packages/server/src/service/connection.ts)
 // and storage manager INSTALL/LOAD at runtime, for cloud attach, the per-package
@@ -59,7 +72,21 @@ async function main() {
          const install = community
             ? `FORCE INSTALL '${name}' FROM community;`
             : `INSTALL ${name};`;
-         await connection.run(`${install} LOAD ${name};`);
+         for (let attempt = 1; ; attempt++) {
+            try {
+               await connection.run(`${install} LOAD ${name};`);
+               break;
+            } catch (err) {
+               if (attempt >= ATTEMPTS) throw err;
+               const message = err instanceof Error ? err.message : String(err);
+               console.warn(
+                  `DuckDB extension "${name}" attempt ${attempt}/${ATTEMPTS} failed, retrying: ${message}`,
+               );
+               await new Promise((r) =>
+                  setTimeout(r, attempt * ATTEMPT_DELAY_MS),
+               );
+            }
+         }
 
          // Verify the extension actually reports as loaded, rather than trusting
          // that INSTALL/LOAD returned without error.
@@ -100,13 +127,24 @@ async function main() {
 
    connection.closeSync();
    instance.closeSync();
+
+   if (STRICT && missing.length) {
+      console.error(
+         `DUCKDB_BAKE_STRICT: failing the bake, ${missing.length} extension(s) not loaded`,
+      );
+      process.exitCode = 1;
+   }
 }
 
 main().catch((err) => {
    // Never fail the build on a bake error -- the extensions are an optimization,
    // not a correctness requirement (the runtime can still fetch on demand where
-   // the network allows).
-   console.warn(
-      `DuckDB extension bake skipped: ${err instanceof Error ? err.message : String(err)}`,
-   );
+   // the network allows). Strict mode is the exception; see the header.
+   const message = err instanceof Error ? err.message : String(err);
+   if (STRICT) {
+      console.error(`DUCKDB_BAKE_STRICT: failing the bake: ${message}`);
+      process.exitCode = 1;
+   } else {
+      console.warn(`DuckDB extension bake skipped: ${message}`);
+   }
 });

@@ -38,6 +38,10 @@ export interface ConnectionDecl {
    env?: string;
    name: string;
    kind: "postgres" | "ducklake" | "duckdb";
+   /** ducklake only: the catalog's `catalog.metadataSchema`, as a per-tenant catalog sets it. */
+   metadataSchema?: string;
+   /** ducklake only: no `storage.bucketUrl`, so the recorded data path is used and no build creates the catalog. */
+   recordedDataPath?: boolean;
 }
 
 /** Controls the server lifecycle a scenario runs against. */
@@ -106,6 +110,11 @@ export interface ScenarioContext extends ServerControl {
       env?: string,
    ): Promise<void>;
    /**
+    * The generated SOURCE package directory on this host, the tree a dry-run
+    * publish (`## Preview`) is pointed at. `env` as for {@link editPackageModel}.
+    */
+   packageDir(pkg: string, env?: string): string;
+   /**
     * Run operator/orchestrator DDL against a destination connection out-of-band.
     * For the DuckLake destination this uses a READ-WRITE attach (the publisher's
     * serve attach is read-only), mirroring how a orchestrator provisions the
@@ -118,6 +127,13 @@ export interface ScenarioContext extends ServerControl {
     * provision what it needs.
     */
    operatorSql(conn: string, sql: string): Promise<Record<string, string>[]>;
+   /**
+    * The tables that still have data files on disk in a DuckLake destination's
+    * storage, read straight from the directory the destination writes to. What
+    * the catalog says is one question; whether the bytes are actually gone is
+    * another, and only this answers it.
+    */
+   storedTables(conn: string, schema: string): string[];
    /**
     * Act as the orchestrator's manifest store: write a build manifest
     * (`{ entries }`) to a local file and return a `file://` URI the publisher can
@@ -159,6 +175,11 @@ export interface Scenario {
    packages: PackageSpec[];
    /** Connections to wire into the config beyond the defaults (see {@link ConnectionDecl}). */
    connections?: ConnectionDecl[];
+   /**
+    * Why the scenario did not load (a parse error, or the state it collides
+    * on), for a scenario tagged `malformed` or `collision`; `--list` prints it.
+    */
+   loadError?: string;
    run(ctx: ScenarioContext, assert: Assert): Promise<void>;
 }
 

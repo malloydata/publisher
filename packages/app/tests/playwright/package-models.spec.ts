@@ -6,13 +6,13 @@ import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 
 // .first() is defensive: the package page yields exactly one exact match for a
-// model path today, in the Semantic Models section.
+// model path today, in the Models section.
 function modelRow(page: Page, name: string) {
    return page.getByText(name, { exact: true }).first();
 }
 
 test.describe("package-models", () => {
-   test("Semantic Models section lists .malloy files", async ({ page }) => {
+   test("Models section lists .malloy files", async ({ page }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
@@ -30,7 +30,7 @@ test.describe("package-models", () => {
       await modelRow(page, "storefront.malloy").click();
       await expect(page).toHaveURL(
          new RegExp(
-            `/${DEFAULT_ENV}/${PACKAGES.storefront}/storefront\\.malloy$`,
+            `/${DEFAULT_ENV}/${PACKAGES.storefront}/latest/storefront\\.malloy$`,
          ),
       );
       await expect(

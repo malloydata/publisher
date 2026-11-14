@@ -1,0 +1,255 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import type { GivenValue } from "@malloydata/malloy";
+import { components } from "../api";
+import { getQueryTimeoutMs } from "../config";
+import { recordDeprecatedUsage } from "../deprecated_usage_metrics";
+import { DashboardNotFoundError, ModelNotFoundError } from "../errors";
+import { logger } from "../logger";
+import { runWithQueryTimeout } from "../query_timeout";
+import {
+   type AccessIdentity,
+   type AccessRecordBase,
+   type QueryAudit,
+   recordRefusal,
+   withAccessRecord,
+} from "../service/access_record";
+import type { PackageLookup } from "../service/environment_ports";
+import type { FilterParams } from "../service/filter";
+import {
+   getDashboard,
+   listDashboards,
+   listNotebooks,
+   withLegacyNotebookKind,
+} from "../service/legacy_report_views";
+import type { NotebookCellRunResult } from "../service/model";
+import { loadedPackage } from "./loaded_package";
+import {
+   parseEnvironmentName,
+   parsePackageName,
+   VersionRef,
+} from "../service/identity";
+
+type ApiDashboard = components["schemas"]["Dashboard"];
+type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
+type ApiNotebook = components["schemas"]["Notebook"];
+type ApiRawNotebook = components["schemas"]["RawNotebook"];
+
+const cellAccessBase = (
+   environmentName: string,
+   packageName: string,
+   notebookPath: string,
+   identity: AccessIdentity,
+): AccessRecordBase => ({
+   environment: environmentName,
+   package: packageName,
+   modelPath: notebookPath,
+   adHoc: false,
+   ...identity,
+});
+
+/**
+ * DEPRECATED: the `…/dashboards*` and `…/notebooks*` routes, answered from the
+ * report API through `service/legacy_report_views.ts`. Each method counts one
+ * deprecated use as it starts, so every route reaching it counts once.
+ */
+export class LegacyReportController {
+   private environmentStore: PackageLookup;
+
+   constructor(environmentStore: PackageLookup) {
+      this.environmentStore = environmentStore;
+   }
+
+   private packageOf(
+      environmentName: string,
+      packageName: string,
+      versionId: VersionRef = VersionRef.LATEST,
+   ) {
+      return loadedPackage(
+         this.environmentStore,
+         environmentName,
+         packageName,
+         versionId,
+      );
+   }
+
+   public async listDashboards(
+      environmentName: string,
+      packageName: string,
+      versionId: VersionRef = VersionRef.LATEST,
+   ): Promise<ApiDashboard[]> {
+      recordDeprecatedUsage("dashboards_list");
+      return listDashboards(
+         await this.packageOf(environmentName, packageName, versionId),
+         environmentName,
+      );
+   }
+
+   public async getDashboard(
+      environmentName: string,
+      packageName: string,
+      dashboardName: string,
+      versionId: VersionRef = VersionRef.LATEST,
+   ): Promise<ApiDashboardManifest> {
+      recordDeprecatedUsage("dashboard_get");
+      // Throws AmbiguousReportNameError (409) when two grid reports share it.
+      const dashboard = await getDashboard(
+         await this.packageOf(environmentName, packageName, versionId),
+         environmentName,
+         dashboardName,
+      );
+      if (!dashboard) {
+         throw new DashboardNotFoundError(
+            `Dashboard ${dashboardName} does not exist in package ${packageName}`,
+         );
+      }
+      return dashboard;
+   }
+
+   public async listNotebooks(
+      environmentName: string,
+      packageName: string,
+      versionId: VersionRef = VersionRef.LATEST,
+   ): Promise<ApiNotebook[]> {
+      recordDeprecatedUsage("notebooks_list");
+      return listNotebooks(
+         await this.packageOf(environmentName, packageName, versionId),
+         environmentName,
+      );
+   }
+
+   public async getNotebook(
+      environmentName: string,
+      packageName: string,
+      notebookPath: string,
+      versionId: VersionRef = VersionRef.LATEST,
+   ): Promise<ApiRawNotebook> {
+      recordDeprecatedUsage("notebook_get");
+      const p = await this.packageOf(environmentName, packageName, versionId);
+      const model = p.getModel(notebookPath);
+      if (!model) {
+         throw new ModelNotFoundError(`${notebookPath} does not exist`);
+      }
+      if (!model.isNotebook()) {
+         throw new ModelNotFoundError(`${notebookPath} is a model`);
+      }
+
+      return withLegacyNotebookKind(await model.getNotebook());
+   }
+
+   public async executeNotebookCell(
+      environmentName: string,
+      packageName: string,
+      notebookPath: string,
+      cellIndex: number,
+      filterParams: FilterParams | undefined,
+      bypassFilters: boolean | undefined,
+      givens: Record<string, GivenValue> | undefined,
+      versionId: VersionRef = VersionRef.LATEST,
+      identity: AccessIdentity,
+   ): Promise<NotebookCellRunResult> {
+      recordDeprecatedUsage("notebook_cell");
+      return withAccessRecord(
+         cellAccessBase(environmentName, packageName, notebookPath, identity),
+         undefined,
+         (audit) =>
+            this.runNotebookCell(
+               audit,
+               environmentName,
+               packageName,
+               notebookPath,
+               cellIndex,
+               filterParams,
+               bypassFilters,
+               givens,
+               versionId,
+            ),
+      );
+   }
+
+   /** Record a cell request a route refused before {@link executeNotebookCell} was called. */
+   public recordCellRefusal(
+      environmentName: string,
+      packageName: string,
+      notebookPath: string,
+      identity: AccessIdentity,
+      error: Error,
+   ): Promise<void> {
+      return recordRefusal(
+         cellAccessBase(environmentName, packageName, notebookPath, identity),
+         error,
+      );
+   }
+
+   private async runNotebookCell(
+      audit: QueryAudit,
+      environmentName: string,
+      packageName: string,
+      notebookPath: string,
+      cellIndex: number,
+      filterParams?: FilterParams,
+      bypassFilters?: boolean,
+      givens?: Record<string, GivenValue>,
+      versionId: VersionRef = VersionRef.LATEST,
+   ): Promise<NotebookCellRunResult> {
+      const environment = await this.environmentStore.getEnvironment(
+         parseEnvironmentName(environmentName),
+         false,
+      );
+      // Shed load before any disk / DB work: loaded packages bypass the
+      // package-load admission gate.
+      environment.assertCanAdmitQuery();
+      const p = await environment.getPackage(
+         parsePackageName(packageName),
+         false,
+         { versionId },
+      );
+      const version = p.getVersionId();
+      if (version) audit.version = version;
+      const model = p.getModel(notebookPath);
+      if (!model) {
+         throw new ModelNotFoundError(`${notebookPath} does not exist`);
+      }
+      if (!model.isNotebook()) {
+         throw new ModelNotFoundError(`${notebookPath} is a model`);
+      }
+
+      return runWithQueryTimeout(
+         (abortSignal) =>
+            model.executeNotebookCell(
+               audit,
+               cellIndex,
+               filterParams,
+               bypassFilters,
+               givens,
+               abortSignal,
+               {
+                  environment: environmentName,
+                  // Read here because the model knows neither its package's
+                  // manifest nor the environment's connection configs.
+                  packageDeclaration: p.getDeclaredQueryMetadata(),
+                  connectionMetadata: (connectionName) => {
+                     try {
+                        const connection =
+                           environment.getApiConnection(connectionName);
+                        return {
+                           default: connection.queryMetadata,
+                           enforced: connection.queryMetadataEnforced,
+                        };
+                     } catch (error) {
+                        // Fails open: an unreadable connection loses its
+                        // enforced layer.
+                        logger.debug(
+                           "No query-metadata layers for connection",
+                           { connectionName, error },
+                        );
+                        return null;
+                     }
+                  },
+               },
+            ),
+         getQueryTimeoutMs(),
+      );
+   }
+}

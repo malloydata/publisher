@@ -12,22 +12,24 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../config";
-import { ChatModelImpl, type RawChat } from "../providers/chat_model";
-import { _setChatModelForTests } from "../providers/active";
-import type { ChatModel, LlmSettings } from "../providers/types";
+import { ChatModelImpl, type RawChat } from "../retrieval/llm/chat_model";
+import type { ChatModel } from "../retrieval/llm/types";
 import {
    EmbeddingProvider,
    _setEmbeddingProviderForTests,
-} from "../service/embedding_provider";
-import type { EnvironmentStore } from "../service/environment_store";
+} from "../retrieval/llm/embedding_provider";
+import type { Environment } from "../service/environment";
+import type { EnvironmentCatalog } from "../service/environment_ports";
+import { RetrievalRegistry } from "../retrieval/registry";
+import { RetrievalService } from "../retrieval/service";
 import type { RetryPolicy } from "../service/http_retry";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
 import {
-   createEntityEmbeddingsTable,
+   createCatalogTables,
    createSourceSummariesTable,
 } from "../storage/duckdb/schema";
-import { _resetEmbeddingIndexStateForTests } from "../mcp/tools/embedding_index";
 import { registerGetContextTool } from "../mcp/tools/get_context_tool";
+import { pollFor } from "./poll";
 
 /** A retry policy that never waits, so a failing call fails at once. */
 export const NO_WAIT_RETRY: RetryPolicy = {
@@ -97,98 +99,8 @@ export function numberedLines(prompt: string): Array<[number, string]> {
    ]);
 }
 
-const STOP = new Set(
-   "a an the of to per one row is are for in on and or by that it its this with from".split(
-      " ",
-   ),
-);
-
-/** Lowercase words, identifiers split on `_`, without filler words. */
-export function contentWords(text: string): Set<string> {
-   return new Set(
-      (
-         text
-            .toLowerCase()
-            .replace(/_/g, " ")
-            .match(/[a-z0-9]+/g) ?? []
-      ).filter((w) => !STOP.has(w)),
-   );
-}
-
-const overlap = (a: Set<string>, b: Set<string>) =>
-   [...a].filter((w) => b.has(w)).length;
-
 /**
- * A deterministic stand-in for an LLM that answers both stages by keyword
- * overlap with the text it is shown.
- *
- * Refine: a candidate sharing 2 or more words with the phrase is HIGH, one
- * word is MEDIUM, none is LOW. Rerank: a source sharing 3 or more words with
- * the question is 3, then 2, 1, 0 by overlap; listed best first.
- */
-export function keywordReply(prompt: string): string {
-   if (prompt.includes("Source name: ") && prompt.includes("<fields>")) {
-      return summaryReply(prompt);
-   }
-   if (prompt.includes("Source search phrase:")) {
-      // Source match: 2 or more shared words is HIGH, one is MEDIUM, none is
-      // left out. Each candidate is two lines, so group them by blank line.
-      const phrase = /Source search phrase:\n(.*)/.exec(prompt)![1];
-      const words = contentWords(JSON.parse(phrase));
-      const body = prompt
-         .split("<candidates>\n")[1]
-         .split("\n</candidates>")[0];
-      return JSON.stringify(
-         body.split("\n\n").flatMap((block) => {
-            const index = Number(/^\[(\d+)\]/.exec(block)![1]);
-            const n = overlap(
-               words,
-               contentWords(block.replace(/^\[\d+\]/, "")),
-            );
-            return n >= 2
-               ? [{ index, score: "HIGH" }]
-               : n === 1
-                 ? [{ index, score: "MEDIUM" }]
-                 : [];
-         }),
-      );
-   }
-   if (prompt.includes("<candidates>")) {
-      const phrase = /Search phrase to rate the candidates against:\n(.*)/.exec(
-         prompt,
-      )![1];
-      const words = contentWords(JSON.parse(phrase));
-      return JSON.stringify(
-         numberedLines(prompt).map(([index, line]) => {
-            const n = overlap(words, contentWords(line));
-            const score = n >= 2 ? "HIGH" : n === 1 ? "MEDIUM" : "LOW";
-            return {
-               index,
-               score,
-               ...(score === "LOW"
-                  ? {}
-                  : {
-                       reason: `Shares ${n} word${n === 1 ? "" : "s"} with the phrase.`,
-                    }),
-            };
-         }),
-      );
-   }
-   const question = /Question the user is asking:\n(.*)/.exec(prompt)![1];
-   const words = contentWords(question);
-   const body = prompt.split("<sources>\n")[1].split("\n</sources>")[0];
-   const scored = body.split("\n\n").map((block, i) => {
-      const text = block.replace(/^\[\d+\] Source: [^\n]*\n/, "");
-      const name = /^\[\d+\] Source: ([^,]+),/.exec(block)![1];
-      const n = overlap(words, contentWords(`${name} ${text}`));
-      return { index: i + 1, score: Math.min(3, n) };
-   });
-   scored.sort((a, b) => b.score - a.score || a.index - b.index);
-   return JSON.stringify(scored);
-}
-
-/**
- * A deterministic stand-in for the source summary stage: the summary lists the
+ * A deterministic stand-in for the source summary step: the summary lists the
  * field names it was shown in backticks, and the one-liner is the first
  * sentence of the documentation, or the exact undocumented line.
  */
@@ -204,14 +116,6 @@ export function summaryReply(prompt: string): string {
       summary: `${doc} Fields: ${fields.map((f) => `\`${f}\``).join(", ")}.`,
       one_line_summary: oneLine,
    });
-}
-
-/** Install `chat` as the process-wide chat model, with settings overrides. */
-export function useChat(
-   chat: ChatModel | null,
-   settings: Partial<LlmSettings> = {},
-): void {
-   _setChatModelForTests(chat, settings);
 }
 
 // ---------------------------------------------------------------------------
@@ -262,23 +166,33 @@ export type Handler = (
 
 export interface SemanticHarness {
    db: DuckDBConnection;
+   /**
+    * The retrieval state every handler of this harness shares: its index
+    * builds, held pages and chat model. A spec sets its seams (the chat
+    * model, the value fetcher, the deadline) here.
+    */
+   registry: RetrievalRegistry;
    /** Reset the index state and install the stub embedding provider. */
    reset(): void;
    close(): Promise<void>;
-   /** A get_context handler over `pkg`. */
-   handlerFor(pkg: unknown): Handler;
+   /** A get_context handler over `pkg`; `stale` maps a package name to its failed reload. */
+   handlerFor(
+      pkg: unknown,
+      stale?: Map<string, { message: string; failedAt: string }>,
+   ): Handler;
 }
 
 export async function semanticHarness(): Promise<SemanticHarness> {
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "get-context-llm-"));
    const db = new DuckDBConnection(path.join(dir, "llm.db"));
    await db.initialize();
-   await createEntityEmbeddingsTable(db);
+   await createCatalogTables(db);
    await createSourceSummariesTable(db);
+   const registry = new RetrievalRegistry();
    return {
       db,
+      registry,
       reset() {
-         _resetEmbeddingIndexStateForTests();
          _setEmbeddingProviderForTests(stubEmbeddingProvider());
       },
       async close() {
@@ -286,22 +200,28 @@ export async function semanticHarness(): Promise<SemanticHarness> {
          await db.close();
          fs.rmSync(dir, { recursive: true, force: true });
       },
-      handlerFor(pkg) {
+      handlerFor(pkg, stale = new Map()) {
          let handler: Handler | undefined;
-         const store = {
-            getEnvironment: async () => ({
-               getPackage: async () => pkg,
-               getStaleCompileErrors: () => new Map(),
-            }),
-            storageManager: { getDuckDbConnection: () => db },
-         } as unknown as EnvironmentStore;
+         const environment = {
+            getPackage: async () => pkg,
+            getStaleCompileErrors: () => stale,
+         } as unknown as Environment;
+         const store: EnvironmentCatalog = {
+            getEnvironment: async () => environment,
+            listEnvironments: async () => [],
+         };
          registerGetContextTool(
             {
-               tool: (name: string, _d: string, _s: unknown, h: Handler) => {
+               registerTool: (name: string, _config: unknown, h: Handler) => {
                   if (name === "get_context") handler = h;
                },
             } as never,
             store,
+            new RetrievalService(
+               store,
+               { getDuckDbConnection: () => db },
+               registry,
+            ),
          );
          return handler as Handler;
       },
@@ -327,10 +247,9 @@ export async function untilSemantic(
    params: Record<string, unknown>,
    extra?: unknown,
 ) {
-   for (let i = 0; i < 1_000; i++) {
-      const out = await callPayload(handler, params, extra);
-      if (out.payload.retrieval === "semantic" || out.isError) return out;
-      await new Promise((resolve) => setTimeout(resolve, 5));
-   }
-   throw new Error("retrieval never became semantic");
+   return pollFor(
+      () => callPayload(handler, params, extra),
+      (out) => out.payload.retrieval === "semantic" || out.isError,
+      5_000,
+   );
 }

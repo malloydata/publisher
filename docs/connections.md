@@ -9,9 +9,65 @@ SPDX-License-Identifier: MIT
 > environment-level connections, naming rules, and the SSH-bastion proxy. For the config file itself,
 > see [configuration.md](configuration.md).
 
-Publisher uses **connections** to reach databases and query engines. Connections are defined per-environment in `publisher.config.json`; each one has a unique `name` and a `type` (`bigquery`, `snowflake`, `postgres`, `mysql`, `duckdb`, `trino`, etc.) plus type-specific configuration under a matching `*Connection` key.
+Publisher uses **connections** to reach databases and query engines. Connections are defined per-environment in `publisher.config.json`; each one has a unique `name` and a `type` (`bigquery`, `snowflake`, `postgres`, `mysql`, `sqlserver`, `duckdb`, `trino`, etc.) plus type-specific configuration under a matching `*Connection` key.
 
 For full setup details per connection type, see [docs.malloydata.dev/documentation/user_guides/publishing/connections](https://docs.malloydata.dev/documentation/user_guides/publishing/connections).
+
+## SQL Server (`type: "sqlserver"`)
+
+A SQL Server login over TCP, through `@malloydata/db-sqlserver`. The fields are the connector's own:
+
+```json
+{
+  "name": "warehouse_mssql",
+  "type": "sqlserver",
+  "sqlserverConnection": {
+    "server": "mssql.example.com",
+    "port": 1433,
+    "database": "analytics",
+    "user": "publisher",
+    "password": "…",
+    "encrypt": true,
+    "trustServerCertificate": false
+  }
+}
+```
+
+- `encrypt` is on when omitted, as the driver defaults it; a server that requires encryption refuses
+  a connection with it off.
+- `trustServerCertificate` accepts a certificate the client cannot verify, such as a self-signed one
+  on a local container. Leave it off for a server you do not control: a certificate that does not
+  verify then fails the connection, as a config fault rather than an unreachable server. It is not
+  a retryable 502; a route answers as for any unclassified driver failure, the server log names the
+  certificate, and `POST /connections/test` returns the driver's message, which names it.
+- `hostNameInCertificate` is the name the certificate is issued to when it is not `server` (a server
+  reached by IP address). `instanceName` locates a named instance through SQL Browser (UDP 1434);
+  `port` is then not used. Either one left empty is read as not set.
+- `port`, when given, must be an integer from 1 to 65535; anything else fails the config at load,
+  naming the value.
+
+A database holds schemas, `dbo` by default, and a table is addressed `schema.table`:
+`warehouse_mssql.table('dbo.orders')`. The schema browser lists the schemas that own a table or a
+view.
+
+A login the server refuses answers as rejected credentials (424, `CONNECTION_AUTH_FAILED`), and a
+server that cannot be reached as unreachable (502, `CONNECTION_FAILED`). Two limits:
+
+- The driver reports every login refusal the same way and drops the server's error number, so a
+  transient refusal also answers 424 once the driver's own retries are spent. On Azure SQL that
+  includes a serverless database that is paused or resuming (errors 40613, 40501, 40197): if
+  credentials that worked before start answering 424, check the database's state before the
+  password.
+- On the single-table lookup (`…/schemas/{schema}/tables/{table}`) the driver returns its failure as
+  text with the code dropped. An unreachable server is still recognized from the text and answers
+  502, and a table that does not exist answers 404, but a refused login answers as a plain driver
+  error rather than 424, as it does for Postgres there.
+
+The dialect is **experimental** upstream. Publisher accepts it on the author's behalf, so a model
+needs no `##! experimental.dialect.sqlserver` pragma. The connection is **read-only**: a colocated
+`#@ persist` on a SQL Server source is refused at load with reason `read_only_dialect` and the
+source serves live. The connector's README lists what the dialect does not translate yet (`nest:`,
+a boolean used as a condition, `all()`/`exclude()`, regular expressions before SQL Server 2025).
 
 ## BigQuery service-account impersonation
 
@@ -63,6 +119,29 @@ Constraints:
   digest already incorporates the impersonation reference precisely so that two environments
   with different identities never share persisted-table ids.
 
+## BigQuery table and column descriptions (`dbmeta`)
+
+Set `dbmeta` to copy BigQuery table and column descriptions onto the schema Malloy reads:
+
+```json
+{
+  "name": "bigquery",
+  "type": "bigquery",
+  "bigqueryConnection": {
+    "defaultProjectId": "my-project",
+    "dbmeta": true
+  }
+}
+```
+
+Malloy annotates each described table and column with `#(dbmeta) description="..."`.
+In `get_context`, a source, join or field with no `#(doc)` or `#"` doc string of its own takes its
+table's or column's description, marked `docs_source` or `description_source` `"dbmeta"` in the
+response. That text is doc text like any other: it is embedded when an embedding provider is
+configured and sent to the LLM under `retrieval.egress.preset` (see [configuration.md](configuration.md)).
+A join to a source locked with `#(authorize) false` carries no doc from that source.
+Off unless set; it never changes query results.
+
 ## Per-package DuckDB sandboxes
 
 Each loaded package automatically gets its own DuckDB connection named `duckdb`. These per-package sandboxes are how the bundled examples (`storefront`, `governed-analytics`, `html-data-app`) query the data files in each package without needing any user-defined connection. DuckDB reads Parquet, CSV, and Excel files in place, so `duckdb.table('data/customers.parquet')`, `duckdb.table('data/regions.csv')`, and `duckdb.table('data/budget.xlsx')` all work with no conversion step (`storefront` uses the first two). To select a sheet or pass other `read_xlsx` options, use a SQL source instead: `duckdb.sql("SELECT * FROM read_xlsx('data/budget.xlsx', sheet = 'Q2')")`.
@@ -72,9 +151,33 @@ package format, see [packages.md](packages.md).
 
 ## Environment-level DuckDB connections
 
-You can also declare a top-level DuckDB connection at the environment level. Publisher intentionally exposes only data-source intent for these — database files, working directories, filesystem/network policy, extension loading, temp directories, and resource knobs are all owned by Publisher. The only configuration available is **attached databases**, where you declare foreign databases (BigQuery, Snowflake, Postgres, GCS, S3, Azure) that the DuckDB instance should `ATTACH` so queries can reference them.
+You can also declare a top-level DuckDB connection at the environment level. Publisher owns the low-level DuckDB settings: the database file, working directory, filesystem and network policy, extension loading, temp directories, and resource limits. A connection declares only what the DuckDB instance should read, in one or both of two ways:
 
-An env-level DuckDB connection must declare at least one attached database. If you don't need to attach any foreign databases, you don't need to declare an env-level DuckDB connection at all — each loaded package already gets a per-package `duckdb` sandbox automatically (see above), which covers the plain in-memory use case.
+- **`attachedDatabases`** declares foreign databases (BigQuery, Snowflake, Postgres, GCS, S3, Azure) for the DuckDB instance to `ATTACH`, so queries can reference them. Publisher writes the `ATTACH` and the secrets for you.
+- **`setupSQL`** is a script of DuckDB statements that runs when the connection is set up, for anything `attachedDatabases` does not cover, such as a DuckLake catalog kept in a local file. It is off by default; see below.
+
+An env-level DuckDB connection must declare at least one of the two. If you need neither, you don't need an env-level DuckDB connection at all: each loaded package already gets a per-package `duckdb` sandbox automatically (see above), which covers the plain in-memory use case.
+
+### `setupSQL`
+
+`setupSQL` runs arbitrary DuckDB statements on the server, which can write files on the host and install and load extensions, so a deployment has to turn it on. Set `PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true` ([configuration.md](configuration.md)) to accept it. Unset, a connection carrying `setupSQL` is refused at config load, on create and update, and by the connection test. Under `EXTENSION_FETCH_POLICY=local-only` it is refused either way.
+
+```json
+{
+  "name": "orca",
+  "type": "duckdb",
+  "duckdbConnection": {
+    "setupSQL": "ATTACH 'ducklake:/srv/lake/orca.ducklake' AS lake (READ_ONLY);\nUSE lake.marts;"
+  }
+}
+```
+
+The script runs whenever the connection is opened, and again after it has been idle, so keep every statement safe to run more than once. A few things trip people up:
+
+- **Put each statement on its own line.** The script is split into statements at a `;` followed by a newline.
+- **Use absolute paths.** A relative path resolves against the directory the server was started from, not the environment directory. A read-write `ATTACH` of a path that does not exist there does not fail: DuckDB creates a new, empty database, and queries then run against no tables. Attach with `READ_ONLY` where you can, so a wrong path fails instead.
+- **Don't name an attachment after the connection.** The connection's own database already has its name, so `ATTACH … AS orca` on a connection named `orca` fails with `database with name "orca" already exists`.
+- **The script is withheld from API responses**, as credentials are, since it may hold them. Reads list it in `withheldFields` as `duckdbConnection.setupSQL`. An update that leaves it out keeps the stored script; to remove it, send `"setupSQL": ""`. See [Credentials in API responses](#credentials-in-api-responses).
 
 ## DuckLake connections (`type: "ducklake"`)
 
@@ -104,6 +207,8 @@ A `ducklake` connection pairs a **catalog** — a metadata database, typically P
 ```
 
 Materialized data always lands as **Parquet** in the storage bucket (Publisher disables DuckLake small-table inlining on the write path, so it never accumulates in the catalog database). The materialization tier is gated by `PERSIST_STORAGE_MODE` — see [configuration.md](configuration.md).
+
+The storage credential reaches only the catalog's data path. Publisher scopes the DuckDB secret it creates to `bucketUrl` (or, when the config leaves it out, to the path the catalog recorded), and on S3 turns off DuckDB's fallback to the host's `AWS_*` keys, so a read of any other object through this connection is unsigned. See [What the storage credential reaches](ducklake.md#what-the-storage-credential-reaches).
 
 ## Storage destinations
 
@@ -298,10 +403,16 @@ A proxy makes the server open an outbound SSH tunnel to a tenant-configured host
 connection configuration is the authorization boundary; host-key pinning is the trust
 control on the tunnel itself, and is required unless the deployment opts out.
 
+A tunnel that drops is detected, logged and rebuilt on the next query. Queries in flight at the
+drop fail with a connection error. A query that was waiting for a free session when the tunnel
+dropped waits out its 30 s and then fails with the "no free database session" error, which
+blames load; the tunnel-closed warning in the log is the real cause, and a retry gets the
+rebuilt tunnel.
+
 ### TLS to the database through the tunnel
 
 A proxied connection sets its TLS mode per-connection via `postgresConnection.sslmode`
-(the non-proxied path keeps using the environment's `PGSSLMODE`). The driver connects to the
+(a direct connection can set it too - see below). The driver connects to the
 local forward endpoint (`127.0.0.1`), not the real database host, so the certificate
 **hostname** can't be checked from the tunnel address alone. The supported modes:
 
@@ -321,11 +432,54 @@ endpoint as `hostaddr` while `host` stays the database's own name, so `verify-fu
 certificate against the real host through the tunnel, with the same trust set the query path
 uses.
 
+### TLS and statement timeout per connection
+
+A direct (non-proxied) Postgres connection, a DuckDB `attachedDatabases` Postgres entry, and a
+federated Postgres source accept the same two per-connection settings. A proxied connection also
+applies `statementTimeoutMilliseconds`, the same way; its `sslmode` is described above.
+
+- `sslmode` - the same four modes as above, applied against the configured host. When unset,
+  the deployment's `PGSSLMODE` applies. When the connection is given as a `connectionString`,
+  the string's own `sslmode` applies and the field is ignored, with a warning logged.
+  A raw string is read by two parsers: node-pg on the query path and libpq on a DuckDB attach.
+  `sslmode=no-verify` (encrypt without verifying; the form Credible's connection docs recommend)
+  is accepted on both, since Publisher hands libpq `require` in its place. `require` itself
+  means encrypt-only on an attach but full verification on queries, so prefer `no-verify` for
+  a server with a private or provider CA.
+  The query driver reads only a URI, so a key=value `connectionString` works for
+  `attachedDatabases` and a DuckLake catalog but not a direct Postgres connection. On an attach,
+  `ssl=true` and `ssl=1` mean encrypt-only, and the node-pg-only `uselibpqcompat` is dropped.
+- `statementTimeoutMilliseconds` - the database cancels any statement that runs longer. An
+  integer from 1 to 2147483647, Postgres's own limit. When unset, the database's own
+  `statement_timeout` applies. The query driver sets it on each session with
+  `SET statement_timeout`; a DuckDB attach passes it to libpq as a server option
+  (`options='-c statement_timeout=N'`). When a `connectionString` already carries `options`, the
+  timeout is merged into them, so its other server settings are kept; a `statement_timeout`
+  already in them is replaced by this field, with a warning logged. A connection pooler in
+  transaction mode may not carry a session setting from one statement to the next. The timeout
+  bounds every statement on the connection, including persisted-source builds: a colocated
+  `#@ persist` build and a federated `storage=` build run on sessions that carry it, so size it
+  for the longest build, not only for interactive queries.
+
+A DuckLake catalog connection given as fields applies `sslmode` (when unset, the deployment
+`PGSSLMODE` applies) but not `statementTimeoutMilliseconds`.
+
+#### Effect on persisted sources
+
+A persisted source's identity includes its connection's identity. A connection that carries a
+`fingerprint` uses it as that identity, so neither setting affects it. A connection without one
+derives its identity from its configuration, and both settings are part of it: setting or
+changing `statementTimeoutMilliseconds`, or an `sslmode` that changes the connection string,
+gives that connection's persisted sources new identities, and they are built again on the next
+build. A connection that sets neither keeps the identity it had before. Together with the build
+bound above, this means raising a timeout that cancelled a build also rebuilds every persisted
+source on a connection without a `fingerprint`.
+
 ## Credentials in API responses
 
 A connection's credentials are write-only. `password`, `connectionString`, `serviceAccountKeyJson`,
 `privateKey`, `privateKeyPass`, `token`, `oauthClientSecret`, `accessToken`, `peakaKey`,
-`secretAccessKey`, `sessionToken`, `secret`, `clientSecret` and `sasUrl` are accepted when you create
+`secretAccessKey`, `sessionToken`, `secret`, `clientSecret`, `sasUrl` and a DuckDB connection's `setupSQL` are accepted when you create
 or update a connection, and no read returns them. The connection, environment and status endpoints
 return the non-secret fields only: host, port, database, user, region, an object store's key ID, a
 bastion's public host key.

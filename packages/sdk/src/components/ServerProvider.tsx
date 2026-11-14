@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
-import axios from "axios";
+import axios, { type AxiosAdapter } from "axios";
 import React, {
    createContext,
    ReactNode,
@@ -22,14 +22,21 @@ import {
    ModelsApi,
    NotebooksApi,
    PackagesApi,
+   AgentsApi,
    PublisherApi,
+   ReportsApi,
+   VersionsApi,
    WatchModeApi,
 } from "../client";
 import { Configuration } from "../client/configuration";
 import { resolveMode } from "../theme/resolveTheme";
 import { ThemeProvider } from "../theme/ThemeContext";
+import type { ReportUiOverrides } from "../theme/ui";
 import type { Theme, ThemeMode } from "../theme/types";
 import { globalQueryClient } from "../utils/queryClient";
+import { modelPageState, type ModelPage } from "./modelPage";
+
+export type { ModelPage };
 
 const THEME_MODE_STORAGE_KEY = "publisher:themeMode";
 
@@ -77,6 +84,10 @@ export interface ServerContextValue {
    apiClients: ApiClients;
    /** `undefined` while `/status` loads (or failed) and the host passed no `mutable`. */
    mutable: boolean | undefined;
+   /**
+    * `/status` has neither answered nor failed yet, including while a retry is
+    * paused (offline, or a hidden tab).
+    */
    isLoadingStatus: boolean;
    /**
     * Instance-wide default theme, pulled from the `/api/v0/status` response.
@@ -84,6 +95,15 @@ export interface ServerContextValue {
     * theme in `publisher.config.json`.
     */
    instanceTheme?: Theme;
+   /**
+    * Which page `Model` shows, the server's `PUBLISHER_MODEL_PAGE` from
+    * `/status`: `explorer`, the Malloy Explorer, unless the server says
+    * `viewer`, and `viewer` when `/status` could not be read (see
+    * `modelPageOf`). `explorer` while `/status` loads and from a server
+    * that predates the setting, so wait on `isLoadingStatus` before showing
+    * anything the Explorer would replace.
+    */
+   modelPage: ModelPage;
 }
 
 const ServerContext = createContext<ServerContextValue | undefined>(undefined);
@@ -115,11 +135,35 @@ export interface ServerProviderProps {
     * single-mode.
     */
    theme?: Theme;
+   /**
+    * The host's design tokens for the report reader's and builder's chrome:
+    * radii, control sizes, the type scale, the mono face, the menu shadow. Any
+    * subset; the rest stay the SDK's. Colour is the host's MUI palette and the
+    * theme above, not this. See `ReportUi`, and `reportClasses` for styling
+    * what tokens do not reach.
+    */
+   ui?: ReportUiOverrides;
+   /**
+    * Carry the SDK's API calls some other way than HTTP to `baseURL`: an
+    * axios adapter that receives each request (method, URL under `baseURL`,
+    * body) and answers it. For a host whose page cannot reach the server
+    * directly, such as an MCP App panel, which sends each call through the
+    * MCP host as a tool call. Omit for plain HTTP.
+    */
+   adapter?: AxiosAdapter;
+   /**
+    * Light or dark, decided by the host. When set, the viewer's own choice
+    * and the operating system's preference are not consulted, and nothing is
+    * stored. For a host with its own theme switch, such as an MCP host that
+    * tells its panels which theme it is in. Omit to let the viewer choose.
+    */
+   mode?: ThemeMode;
 }
 
 const getApiClients = (
    baseURL?: string,
    accessToken?: () => Promise<string>,
+   adapter?: AxiosAdapter,
 ) => {
    const basePath = `${window.location.protocol}//${window.location.host}/api/v0`;
 
@@ -128,6 +172,7 @@ const getApiClients = (
       baseURL: baseURL || basePath,
       withCredentials: true,
       timeout: 600000,
+      ...(adapter ? { adapter } : {}),
    });
 
    axiosInstance.interceptors.request.use(async (config) => {
@@ -143,9 +188,11 @@ const getApiClients = (
       publisher: new PublisherApi(config, basePath, axiosInstance),
       environments: new EnvironmentsApi(config, basePath, axiosInstance),
       packages: new PackagesApi(config, basePath, axiosInstance),
+      agents: new AgentsApi(config, basePath, axiosInstance),
       dashboards: new DashboardsApi(config, basePath, axiosInstance),
       dataApps: new DataAppsApi(config, basePath, axiosInstance),
       notebooks: new NotebooksApi(config, basePath, axiosInstance),
+      reports: new ReportsApi(config, basePath, axiosInstance),
       connections: new ConnectionsApi(config, basePath, axiosInstance),
       databases: new DatabasesApi(config, basePath, axiosInstance),
       materializations: new MaterializationsApi(
@@ -154,6 +201,7 @@ const getApiClients = (
          axiosInstance,
       ),
       watchMode: new WatchModeApi(config, basePath, axiosInstance),
+      versions: new VersionsApi(config, basePath, axiosInstance),
    };
 };
 
@@ -178,10 +226,13 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
    baseURL,
    mutable: mutableProp,
    theme: themeProp,
+   ui,
+   adapter,
+   mode: modeProp,
 }) => {
    const apiClients = useMemo(
-      () => getApiClients(baseURL, getAccessToken),
-      [baseURL, getAccessToken],
+      () => getApiClients(baseURL, getAccessToken, adapter),
+      [baseURL, getAccessToken, adapter],
    );
 
    const server =
@@ -189,14 +240,21 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
 
    // Fetch /status via react-query so callers like the Theme Editor can
    // invalidate the "status" key after a write and pick up the new
-   // instanceTheme without a full page reload.
+   // instanceTheme without a full page reload. Keyed by the server too: the
+   // query client is shared, and two providers on different servers must not
+   // read one server's model page, theme or frozen config.
    const statusQuery = useQuery({
-      queryKey: ["status"],
+      queryKey: ["status", server],
+      // Retried, unlike the client's other reads: the model page depends on
+      // the answer for the whole session, and one dropped request would
+      // otherwise settle it.
+      retry: 3,
       queryFn: async () => {
          const response = await apiClients.publisher.getStatus();
          return response.data as {
             frozenConfig?: boolean;
             theme?: Theme;
+            modelPage?: ModelPage;
          };
       },
    });
@@ -207,7 +265,7 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
 
    const frozenConfig = statusQuery.data?.frozenConfig;
    const instanceTheme = statusQuery.data?.theme;
-   const isLoadingStatus = statusQuery.isLoading;
+   const { modelPage, isLoadingStatus } = modelPageState(statusQuery);
 
    // Preserve original semantics: while loading or on error, mirror the
    // mutableProp the caller passed in (which itself may be undefined).
@@ -261,12 +319,13 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
    const effectiveUserChoice = allowUserToggle ? userChoice : undefined;
    const mode: ThemeMode = useMemo(
       () =>
+         modeProp ??
          resolveMode(
             instanceTheme?.defaultMode,
             effectiveUserChoice,
             prefersDark,
          ),
-      [instanceTheme?.defaultMode, effectiveUserChoice, prefersDark],
+      [modeProp, instanceTheme?.defaultMode, effectiveUserChoice, prefersDark],
    );
 
    const value: ServerContextValue = {
@@ -276,6 +335,7 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
       mutable,
       isLoadingStatus,
       instanceTheme,
+      modelPage,
    };
 
    return (
@@ -285,7 +345,8 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
             mode={mode}
             userChoice={effectiveUserChoice}
             setMode={setMode}
-            allowUserToggle={allowUserToggle}
+            allowUserToggle={allowUserToggle && modeProp === undefined}
+            {...(ui ? { ui } : {})}
          >
             {children}
          </ThemeProvider>

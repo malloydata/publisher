@@ -21,12 +21,19 @@
 //   ## Delete [<pkg>]                    -> unload + DELETE the package from serving
 //   ## Reclaim [<pkg>]                   -> DELETE the latest materialization with dropTables
 //                                        (destination-aware physical-table drop / GC)
+//   ## Destination tables|files|drop <table>|cleanup [(dest=lake, schema=main, snapshots=7d, files=1d)]
+//                                        -> the storage-destination table routes; `tables` and
+//                                        `files` take an Expect: table (`name` / `table`),
+//                                        `cleanup` an optional `deleted: <n>` body key
 //   ## Build refused [<pkg>]             [body: `cites: <substring>`, `excludes: <substring>`;
 //                                        `${pg.password}` / `${pg.user}` / `${pg.host}` are
 //                                        substituted with the throwaway container's values, so a
 //                                        redaction check can name a secret only the harness knows]
 //   ## Compile <label> (pkg=P[, refused]) + ```malloy (appended source) + `cites:` -> /compile
 //   ## Warns [<pkg>]                     [body: `cites: <substring>`]  -> package warning
+//   ## Preview [<pkg>]                   + `- <source>[.<view>]: serves|live|not_built` lines ->
+//                                        POST /packages?dryRun=true on the package's own tree,
+//                                        asserting each source's serve verdict, or one view's
 //   ## Republish [refused] [<pkg>]       [body: `cites: <substring>`]  -> POST /packages (the
 //                                        author-in-the-loop publish gate); `refused` asserts a 4xx
 //   ## Bind [<pkg>] [(empty|clear|bad|from=<publisher>)]  -> orchestrator manifestLocation PATCH
@@ -64,6 +71,8 @@
 // registers the package under that environment.
 // Front matter: `id`, `package`, `title`, `tags: a, b`, `requires: dialect:x`.
 
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import os from "os";
 import path from "path";
 import type { PersistStorageMode } from "./server";
 import { Rest } from "./rest";
@@ -101,6 +110,14 @@ interface ManifestEntrySpec {
    fresh?: number;
 }
 
+/**
+ * How a source that reads a persisted upstream computed its rows, as a scenario
+ * states it and as the entry's `upstreamReuse` reports it: `reused` = read from
+ * the upstream's stored table, `recomputed` = the upstream was recomputed from
+ * its definition and inlined into this build.
+ */
+type UpstreamReuse = "reused" | "recomputed";
+
 // Server-facing steps carry an optional `env` (from `(env=…)`), selecting which
 // environment the step runs against; it defaults to PRIMARY_ENV. A publisher
 // process serves every configured environment, so env is orthogonal to `pub`.
@@ -113,11 +130,15 @@ type Step =
         pkg: string;
         mode: PersistStorageMode;
         bindings: { source: string; conn: string }[];
+        /** `expect upstreams: src -> reused|recomputed`, against the build's manifest. */
+        upstreams: { source: string; mode: UpstreamReuse }[];
         forceRefresh: boolean;
         reseed: boolean;
         sourceNames?: string[];
         async: boolean;
         label?: string;
+        /** `(version=…)`: the published version to build; omitted, latest. */
+        versionId?: string;
      }
    | { kind: "await"; label?: string }
    | {
@@ -128,11 +149,19 @@ type Step =
         mode: PersistStorageMode;
         refused: boolean;
         strict: boolean;
+        /** `(reach=recompute|refuse)`: the body's `warehouseReach`; omitted, absent. */
+        warehouseReach?: string;
         sources: {
            src: string;
            name: string;
            dest: string;
            failed: boolean;
+           /**
+            * `(reused)` / `(recomputed)`: how a source that reads a persisted
+            * upstream computed its rows, asserted against its entry's
+            * `upstreamReuse`.
+            */
+           upstreams?: UpstreamReuse;
         }[];
         references: { src: string; from?: string }[];
         cites?: string;
@@ -153,6 +182,27 @@ type Step =
         mode: PersistStorageMode;
      }
    | {
+        kind: "destination";
+        pub?: string;
+        env: string;
+        mode: PersistStorageMode;
+        action: "tables" | "files" | "drop" | "cleanup";
+        dest: string;
+        schema: string;
+        table?: string;
+        snapshotsAgeMs?: number;
+        filesAgeMs?: number;
+        deleted?: number;
+        /** `tables` only: an expected non-200 status, in place of an `Expect:` table. */
+        status?: number;
+        /**
+         * `tables` only: how long the listing may take to settle. Re-read until
+         * it matches `expect` or the time is up; the last listing is compared.
+         */
+        withinMs?: number;
+        expect?: Table;
+     }
+   | {
         kind: "buildRefused";
         pub?: string;
         env: string;
@@ -160,6 +210,8 @@ type Step =
         mode: PersistStorageMode;
         cites: string;
         excludes?: string;
+        /** `(version=…)`: the published version whose build must be refused. */
+        versionId?: string;
      }
    | {
         kind: "query";
@@ -177,6 +229,8 @@ type Step =
         exactColumns: boolean;
         /** `servedFrom: storage` — assert which tier produced the answer. */
         servedFrom?: string;
+        /** `(version=…)`: the published version to query; omitted, latest. */
+        versionId?: string;
      }
    | {
         kind: "buildRefusals";
@@ -269,6 +323,15 @@ type Step =
         extraEnv?: Record<string, string>;
      }
    | {
+        /** `## Preview <pkg>`: a dry-run publish and the verdicts it predicts. */
+        kind: "preview";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        expects: { source: string; view?: string; verdict: string }[];
+     }
+   | {
         kind: "republish";
         pub?: string;
         env: string;
@@ -278,6 +341,43 @@ type Step =
         cites?: string;
      }
    | { kind: "restart"; mode: PersistStorageMode; init: boolean }
+   | {
+        /** `## Version <pkg>@<x.y.z>`: publish an immutable version. */
+        kind: "version";
+        pub?: string;
+        env: string;
+        pkg: string;
+        version: string;
+        mode: PersistStorageMode;
+        malloy: string;
+        /** `(scope=version|package)`: the package's materialization scope. */
+        scope?: string;
+        refused: boolean;
+        /** `reason:` the refusal's `Error.reason`, asserted exactly. */
+        reason?: string;
+        cites?: string;
+     }
+   | {
+        /** `## Latest` (PUT …/latest) or `## Archive` / `## Unarchive` (PATCH …/versions/{v}). */
+        kind: "versionLifecycle";
+        action: "latest" | "archive" | "unarchive";
+        pub?: string;
+        env: string;
+        pkg: string;
+        version: string;
+        mode: PersistStorageMode;
+        refused: boolean;
+        reason?: string;
+     }
+   | {
+        /** `## Versions [<pkg>]`: assert the published versions, highest first. */
+        kind: "versions";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        expect: Table;
+     }
    | { kind: "hook"; name: string };
 
 interface ParsedMd {
@@ -316,22 +416,31 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    data: {},
    mutate: {},
    model: {},
-   publish: { attrs: ["sources", "forcerefresh", "reseed", "async", "label"] },
+   publish: {
+      attrs: ["sources", "forcerefresh", "reseed", "async", "label", "version"],
+   },
    await: { attrs: ["label"] },
    delete: {},
    reclaim: {},
+   destination: {
+      attrs: ["dest", "schema", "snapshots", "files", "within"],
+      keys: ["deleted", "status"],
+   },
    build: {
-      attrs: ["orchestrated", "strict", "pkg"],
+      attrs: ["orchestrated", "strict", "reach", "pkg", "version"],
       // `reference:` is an orchestrated-build body line, not an assertion key.
       keys: ["cites", "excludes", "reference"],
    },
    query: {
-      attrs: ["again", "refused", "pkg"],
+      attrs: ["again", "refused", "pkg", "version"],
       keys: ["cites", "givens", "columns", "servedfrom"],
    },
    sql: {},
    operator: {},
-   connection: { attrs: ["type", "refused", "rows"], keys: ["cites"] },
+   connection: {
+      attrs: ["type", "refused", "rows", "metadataschema", "datapath"],
+      keys: ["cites"],
+   },
    rejected: { keys: ["cites"] },
    warns: { keys: ["cites"] },
    republish: { attrs: ["refused"], keys: ["cites"] },
@@ -341,6 +450,12 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    },
    manifest: { attrs: ["pkg"] },
    restart: { attrs: ["init"] },
+   // Package versions: publish one, move latest, archive, and assert the list.
+   version: { attrs: ["scope", "refused"], keys: ["reason", "cites"] },
+   latest: { attrs: ["refused"], keys: ["reason"] },
+   archive: { attrs: ["refused"], keys: ["reason"] },
+   unarchive: { attrs: ["refused"], keys: ["reason"] },
+   versions: {},
    hook: {},
 };
 
@@ -588,6 +703,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
          case "publish": {
             const pkg = arg.trim() || defaultPackage;
             const bindings = parseBindings(sec.body);
+            const upstreams = parseUpstreams(sec.body);
             // `(sources=a)` builds ONLY the named persist source(s) — the
             // `sourceNames` build filter. Multiple names are `+`-separated
             // (comma is the attribute delimiter). Omitted = build them all.
@@ -608,11 +724,13 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                pkg,
                mode,
                bindings,
+               upstreams,
                forceRefresh: !!attrs.forcerefresh,
                reseed: !!attrs.reseed,
                sourceNames,
                async: !!attrs.async,
                label: attrs.label as string | undefined,
+               versionId: (attrs.version as string | undefined) || undefined,
             });
             break;
          }
@@ -641,6 +759,73 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                pkg: arg.trim() || defaultPackage,
                mode,
             });
+            break;
+         }
+         case "destination": {
+            const [verb, ...rest] = arg.split(/\s+/).filter(Boolean);
+            const action = (verb ?? "").toLowerCase();
+            const base = {
+               kind: "destination" as const,
+               pub,
+               env,
+               mode,
+               dest: (attrs.dest as string) || "lake",
+               schema: (attrs.schema as string) || "main",
+            };
+            const status = firstKey(sec.body, "status");
+            if (attrs.within !== undefined && action !== "tables")
+               throw new Error(
+                  `## Destination ${action}: (within=) applies only to ## Destination tables`,
+               );
+            if (attrs.within !== undefined && status !== undefined)
+               throw new Error(
+                  `## Destination tables: (within=) waits for an Expect: table, not a status:`,
+               );
+            if (status !== undefined && action !== "tables")
+               throw new Error(
+                  `## Destination ${action}: status: applies only to ## Destination tables`,
+               );
+            if (action === "tables" && status !== undefined) {
+               // A refused listing: the status is the whole assertion, so an
+               // Expect: table beside it would never be compared.
+               if (!/^\d{3}$/.test(status))
+                  throw new Error(
+                     `## Destination tables: status must be an HTTP status code, got ${status}`,
+                  );
+               if (parseExpectTable(sec.body))
+                  throw new Error(
+                     `## Destination tables: give status: or an Expect: table, not both`,
+                  );
+               steps.push({ ...base, action, status: Number(status) });
+            } else if (action === "tables" || action === "files") {
+               steps.push({
+                  ...base,
+                  action,
+                  ...(attrs.within !== undefined
+                     ? { withinMs: parseWithin(attrs.within) }
+                     : {}),
+                  expect: requireExpectTable(sec.body, sec.header),
+               });
+            } else if (action === "drop") {
+               if (rest.length !== 1)
+                  throw new Error(
+                     `## Destination drop: expected one table name`,
+                  );
+               steps.push({ ...base, action, table: rest[0] });
+            } else if (action === "cleanup") {
+               const deleted = firstKey(sec.body, "deleted");
+               steps.push({
+                  ...base,
+                  action,
+                  snapshotsAgeMs: parseAge(attrs.snapshots, "snapshots"),
+                  filesAgeMs: parseAge(attrs.files, "files"),
+                  deleted: deleted === undefined ? undefined : Number(deleted),
+               });
+            } else {
+               throw new Error(
+                  `## Destination ${arg}: expected tables, files, drop <table> or cleanup`,
+               );
+            }
             break;
          }
          case "build": {
@@ -686,6 +871,15 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                (attrs.pkg as string) ??
                (arg.replace(/^refused/i, "").trim() || defaultPackage);
             if (attrs.orchestrated) {
+               // An orchestrated build sends the caller's instructions as they
+               // are; nothing here would carry a version, so one given would
+               // be dropped and the step would build latest without saying so.
+               if (attrs.version !== undefined) {
+                  throw new Error(
+                     `${sec.header}: (version=) is not supported with (orchestrated); ` +
+                        `drop one of them.`,
+                  );
+               }
                const { sources, references } = parseOrchestratedBody(sec.body);
                // `refused` asserts the RUN failed, so it records no per-source
                // outcome to check `(failed)` against. Marking one there asks for
@@ -705,6 +899,9 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   mode,
                   refused,
                   strict: !!attrs.strict,
+                  ...(typeof attrs.reach === "string"
+                     ? { warehouseReach: attrs.reach }
+                     : {}),
                   sources,
                   references,
                   cites: firstKey(sec.body, "cites"),
@@ -720,6 +917,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   mode,
                   cites,
                   excludes: firstKey(sec.body, "excludes"),
+                  versionId: (attrs.version as string | undefined) || undefined,
                });
             }
             break;
@@ -766,6 +964,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   givens,
                   exactColumns,
                   servedFrom,
+                  versionId: (attrs.version as string | undefined) || undefined,
                });
             } else {
                steps.push({
@@ -782,6 +981,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   givens,
                   exactColumns,
                   servedFrom,
+                  versionId: (attrs.version as string | undefined) || undefined,
                });
             }
             break;
@@ -828,7 +1028,41 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                      `## Connection ${arg}: unsupported type="${attrs.type}" (expected postgres | ducklake | duckdb)`,
                   );
                }
-               connectionDecls.push({ env, name: arg.trim(), kind });
+               const metadataSchema =
+                  typeof attrs.metadataschema === "string"
+                     ? attrs.metadataschema
+                     : undefined;
+               if (metadataSchema !== undefined && kind !== "ducklake")
+                  throw new Error(
+                     `## Connection ${arg}: metadataSchema applies only to type=ducklake`,
+                  );
+               if (
+                  metadataSchema !== undefined &&
+                  !/^[A-Za-z_][A-Za-z0-9_]*$/.test(metadataSchema)
+               )
+                  throw new Error(
+                     `## Connection ${arg}: metadataSchema must be a plain identifier, got ${metadataSchema}`,
+                  );
+               const dataPathRaw = attrs.datapath;
+               if (dataPathRaw !== undefined) {
+                  if (kind !== "ducklake")
+                     throw new Error(
+                        `## Connection ${arg}: dataPath applies only to type=ducklake`,
+                     );
+                  if (dataPathRaw !== "recorded")
+                     throw new Error(
+                        `## Connection ${arg}: dataPath must be "recorded" (omit bucketUrl), got ${String(dataPathRaw)}`,
+                     );
+               }
+               connectionDecls.push({
+                  env,
+                  name: arg.trim(),
+                  kind,
+                  ...(metadataSchema ? { metadataSchema } : {}),
+                  ...(dataPathRaw !== undefined
+                     ? { recordedDataPath: true }
+                     : {}),
+               });
                break;
             }
             const sql = extractCode(sec.body, "sql");
@@ -873,6 +1107,42 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                pkg: arg.trim() || defaultPackage,
                mode,
                cites: firstKey(sec.body, "cites") ?? "",
+            });
+            break;
+         }
+         case "preview": {
+            // A dry-run publish of the package's own tree, asserting the serve
+            // verdict it predicts for each source, or for one source's view.
+            const expects: {
+               source: string;
+               view?: string;
+               verdict: string;
+            }[] = [];
+            for (const line of sec.body) {
+               const m =
+                  /^\s*-\s*([A-Za-z_][\w]*)(?:\.([A-Za-z_][\w]*))?\s*:\s*(serves|live|not_built)\s*$/.exec(
+                     line,
+                  );
+               if (m) {
+                  expects.push({
+                     source: m[1],
+                     ...(m[2] ? { view: m[2] } : {}),
+                     verdict: m[3],
+                  });
+               }
+            }
+            if (expects.length === 0) {
+               throw new Error(
+                  `## Preview ${arg}: expected at least one \`- <source>[.<view>]: serves|live|not_built\` line`,
+               );
+            }
+            steps.push({
+               kind: "preview",
+               pub,
+               env,
+               pkg: arg.trim() || defaultPackage,
+               mode,
+               expects,
             });
             break;
          }
@@ -975,10 +1245,110 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             steps.push({ kind: "hook", name: arg.trim() });
             break;
          }
+         case "version": {
+            // `## Version <pkg>@<x.y.z> (scope=…, refused)` + the package's model.
+            const { pkg, version } = splitPkgVersion(arg, sec.header);
+            const malloy = extractCode(sec.body, "malloy");
+            if (!malloy)
+               throw new Error(
+                  `## ${sec.header}: missing a \`\`\`malloy block — the version's model`,
+               );
+            const refused = !!attrs.refused;
+            const reason = firstKey(sec.body, "reason")?.trim();
+            const cites = firstKey(sec.body, "cites");
+            if ((reason || cites) && !refused) {
+               throw new Error(
+                  `## ${sec.header}: "reason:" / "cites:" describe a refusal; add \`refused\`, or drop them`,
+               );
+            }
+            steps.push({
+               kind: "version",
+               pub,
+               env,
+               pkg,
+               version,
+               mode,
+               malloy,
+               scope: attrs.scope as string | undefined,
+               refused,
+               reason,
+               cites,
+            });
+            break;
+         }
+         case "latest":
+         case "archive":
+         case "unarchive": {
+            const { pkg, version } = splitPkgVersion(arg, sec.header);
+            const refused = !!attrs.refused;
+            const reason = firstKey(sec.body, "reason")?.trim();
+            if (reason && !refused) {
+               throw new Error(
+                  `## ${sec.header}: "reason:" describes a refusal; add \`refused\`, or drop it`,
+               );
+            }
+            steps.push({
+               kind: "versionLifecycle",
+               action: kind,
+               pub,
+               env,
+               pkg,
+               version,
+               mode,
+               refused,
+               reason,
+            });
+            break;
+         }
+         case "versions": {
+            const expect = requireExpectTable(sec.body, sec.header);
+            const known = new Set(["version", "latest", "archived", "loaded"]);
+            const unknown = expect.cols.filter((c) => !known.has(c.name));
+            if (
+               !expect.cols.some((c) => c.name === "version") ||
+               unknown.length
+            ) {
+               throw new Error(
+                  `## ${sec.header}: the Expect table needs a "version" column, and ` +
+                     `may add "latest", "archived" and "loaded"` +
+                     (unknown.length
+                        ? `; unknown: ${unknown.map((c) => c.name).join(", ")}`
+                        : ""),
+               );
+            }
+            steps.push({
+               kind: "versions",
+               pub,
+               env,
+               pkg: arg.trim() || defaultPackage,
+               mode,
+               expect,
+            });
+            break;
+         }
          default:
             throw new Error(
                `Unknown section kind "${kind}" in header: ## ${sec.header}`,
             );
+      }
+   }
+
+   // A package is either configured (`## Model`) or published (`## Version`),
+   // never both: their files would compete for which model a query reads.
+   const configured = new Set<string>();
+   for (const step of steps) {
+      if (step.kind === "model") configured.add(`${step.env}:${step.pkg}`);
+   }
+   for (const step of steps) {
+      if (
+         step.kind === "version" &&
+         configured.has(`${step.env}:${step.pkg}`)
+      ) {
+         throw new Error(
+            `## Version ${step.pkg}@${step.version}: package "${step.pkg}" also has ` +
+               `a ## Model, and one package is either configured or published, ` +
+               `not both. Publish it under another name.`,
+         );
       }
    }
 
@@ -1051,10 +1421,52 @@ function parseHeader(header: string): {
    return { kind, arg, attrs };
 }
 
+/** `7d`, `12h`, `30m`, `0s` -> milliseconds. Required: a cleanup with no
+ * stated window would be one that silently picked a default. */
+function parseAge(raw: string | boolean | undefined, what: string): number {
+   const m = typeof raw === "string" ? raw.match(/^(\d+)([smhd])$/) : null;
+   if (!m)
+      throw new Error(
+         `## Destination cleanup: (${what}=<n>s|m|h|d) is required, got ${String(raw)}`,
+      );
+   const unit = { s: 1e3, m: 6e4, h: 36e5, d: 864e5 }[
+      m[2] as "s" | "m" | "h" | "d"
+   ];
+   return Number(m[1]) * unit;
+}
+
+/** `(within=<n>s)` -> milliseconds: a bound of a minute at most, so a listing
+ * that never settles fails in seconds rather than hanging the run. */
+function parseWithin(raw: string | boolean | undefined): number {
+   const m = typeof raw === "string" ? raw.match(/^(\d+)s$/) : null;
+   const ms = m ? Number(m[1]) * 1e3 : NaN;
+   if (!(ms > 0 && ms <= 60_000))
+      throw new Error(
+         `## Destination tables: (within=<n>s) takes 1s to 60s, got ${String(raw)}`,
+      );
+   return ms;
+}
+
 function splitConnTable(arg: string): [string, string] {
    const dot = arg.indexOf(".");
    if (dot < 0) throw new Error(`expected <conn>.<table>, got "${arg}"`);
    return [arg.slice(0, dot).trim(), arg.slice(dot + 1).trim()];
+}
+
+/** `<pkg>@<x.y.z>` — a package and one of its published versions. */
+function splitPkgVersion(
+   arg: string,
+   header: string,
+): { pkg: string; version: string } {
+   const at = arg.indexOf("@");
+   const pkg = at < 0 ? "" : arg.slice(0, at).trim();
+   const version = at < 0 ? "" : arg.slice(at + 1).trim();
+   if (!pkg || !version) {
+      throw new Error(
+         `## ${header}: expected <package>@<version>, got "${arg}"`,
+      );
+   }
+   return { pkg, version };
 }
 
 function splitPkgPath(arg: string, def: string): { pkg: string; rel: string } {
@@ -1183,9 +1595,21 @@ function requireExpectTable(body: string[], header: string): Table {
  * BUILT and absent from `failures`, because a failed source is mirrored into
  * `entries` carrying the physical name it was headed for, and a check reading only
  * that name cannot tell the two apart.
+ *
+ * Per-source `reused` / `recomputed` — how a source that reads a persisted
+ * upstream computed its rows, asserted against its entry's `upstreamReuse`.
+ * Opt-in, because most sources read no persisted upstream and carry no such
+ * field; a chained scenario states which path it expects, since both paths leave
+ * a correct table and the rows alone cannot tell them apart.
  */
 function parseOrchestratedBody(body: string[]): {
-   sources: { src: string; name: string; dest: string; failed: boolean }[];
+   sources: {
+      src: string;
+      name: string;
+      dest: string;
+      failed: boolean;
+      upstreams?: UpstreamReuse;
+   }[];
    references: { src: string; from?: string }[];
 } {
    const sources: {
@@ -1193,6 +1617,7 @@ function parseOrchestratedBody(body: string[]): {
       name: string;
       dest?: string;
       failed: boolean;
+      upstreams?: UpstreamReuse;
    }[] = [];
    const references: { src: string; from?: string }[] = [];
    for (const raw of body) {
@@ -1214,14 +1639,26 @@ function parseOrchestratedBody(body: string[]): {
                  .filter(Boolean)
             : [];
          let failed = false;
+         let upstreams: UpstreamReuse | undefined;
          for (const a of attrs) {
             if (a === "failed") failed = true;
-            else
+            else if (a === "reused" || a === "recomputed") {
+               if (upstreams)
+                  throw new Error(
+                     `## Build (orchestrated): "${a}" and "${upstreams}" on one source on "${line}"`,
+                  );
+               upstreams = a;
+            } else
                throw new Error(
                   `## Build (orchestrated): unknown attribute "${a}" on "${line}"`,
                );
          }
-         sources.push({ src: s[1], name: s[2], dest: s[3], failed });
+         // A failed source built nothing, so it has no build path to assert.
+         if (failed && upstreams)
+            throw new Error(
+               `## Build (orchestrated): "(${upstreams})" on a (failed) source on "${line}"`,
+            );
+         sources.push({ src: s[1], name: s[2], dest: s[3], failed, upstreams });
          continue;
       }
       const r = line.match(
@@ -1293,6 +1730,28 @@ function parseBindings(body: string[]): { source: string; conn: string }[] {
    for (const raw of body) {
       const m = raw.match(/expect\s+binding\s*:\s*(\S+)\s*->\s*(\S+)/i);
       if (m) out.push({ source: m[1], conn: m[2] });
+   }
+   return out;
+}
+
+/**
+ * `expect upstreams: <source> -> reused|recomputed` lines: how a source that
+ * reads a persisted upstream computed its rows, asserted against the build's
+ * manifest entry for it.
+ */
+function parseUpstreams(
+   body: string[],
+): { source: string; mode: UpstreamReuse }[] {
+   const out: { source: string; mode: UpstreamReuse }[] = [];
+   for (const raw of body) {
+      const m = raw.match(/expect\s+upstreams\s*:\s*(\S+)\s*->\s*(\S+)\s*$/i);
+      if (!m) continue;
+      const mode = m[2].toLowerCase();
+      if (mode !== "reused" && mode !== "recomputed")
+         throw new Error(
+            `expect upstreams: unknown mode "${m[2]}" (reused | recomputed) on "${raw.trim()}"`,
+         );
+      out.push({ source: m[1], mode });
    }
    return out;
 }
@@ -1507,28 +1966,39 @@ function compareRows(
    expect: Table,
    actual: Record<string, unknown>[],
 ): void {
+   const mismatch = rowsMismatch(expect, actual);
+   if (mismatch) {
+      assert.fail(`${label}: ${mismatch.check}`, mismatch.detail);
+      return;
+   }
+   assert.ok(`${label}: ${expect.rows.length} row(s) match`, true);
+}
+
+/** The first way `actual` differs from `expect`, or undefined when it matches. */
+function rowsMismatch(
+   expect: Table,
+   actual: Record<string, unknown>[],
+): { check: string; detail: string } | undefined {
    const cols = expect.cols.map((c) => c.name);
    if (expect.rows.length !== actual.length) {
-      assert.fail(
-         `${label}: row count`,
-         `expected ${expect.rows.length} rows, got ${actual.length}: ${JSON.stringify(actual).slice(0, 200)}`,
-      );
-      return;
+      return {
+         check: "row count",
+         detail: `expected ${expect.rows.length} rows, got ${actual.length}: ${JSON.stringify(actual).slice(0, 200)}`,
+      };
    }
    for (let r = 0; r < expect.rows.length; r++) {
       for (let c = 0; c < cols.length; c++) {
          const exp = normalizeCell(expect.rows[r][c]);
          const act = normalizeCell(actual[r]?.[cols[c]]);
          if (JSON.stringify(exp) !== JSON.stringify(act)) {
-            assert.fail(
-               `${label}: row ${r + 1} col ${cols[c]}`,
-               `expected ${JSON.stringify(exp)}, got ${JSON.stringify(act)}`,
-            );
-            return;
+            return {
+               check: `row ${r + 1} col ${cols[c]}`,
+               detail: `expected ${JSON.stringify(exp)}, got ${JSON.stringify(act)}`,
+            };
          }
       }
    }
-   assert.ok(`${label}: ${expect.rows.length} row(s) match`, true);
+   return undefined;
 }
 
 // ─────────────────────────── build helpers ───────────────────────────
@@ -1548,6 +2018,7 @@ interface OrchestratedBody {
          physicalTableName: string;
       }[];
       strictUpstreams: boolean;
+      warehouseReach?: string;
    };
 }
 
@@ -1563,12 +2034,25 @@ async function buildOrchestratedBody(
    step: {
       pkg: string;
       strict: boolean;
-      sources: { src: string; name: string; dest?: string; failed: boolean }[];
+      warehouseReach?: string;
+      sources: {
+         src: string;
+         name: string;
+         dest?: string;
+         failed: boolean;
+         upstreams?: UpstreamReuse;
+      }[];
       references: { src: string; from?: string }[];
    },
-): Promise<{ body: OrchestratedBody; failedEids: Set<string> }> {
+): Promise<{
+   body: OrchestratedBody;
+   failedEids: Set<string>;
+   /** sourceEntityId -> the `upstreamReuse` the scenario expects on its entry. */
+   reuseEids: Map<string, UpstreamReuse>;
+}> {
    const eids = await rest.sourceEntityIds(step.pkg);
    const failedEids = new Set<string>();
+   const reuseEids = new Map<string, UpstreamReuse>();
    const sources = step.sources.map((s) => {
       const eid = eids[s.src];
       if (!eid) {
@@ -1577,6 +2061,7 @@ async function buildOrchestratedBody(
          );
       }
       if (s.failed) failedEids.add(eid);
+      if (s.upstreams) reuseEids.set(eid, s.upstreams);
       return {
          sourceEntityId: eid,
          materializedTableId: `mt-${s.name}`,
@@ -1613,9 +2098,13 @@ async function buildOrchestratedBody(
             sources,
             ...(referenceManifest.length ? { referenceManifest } : {}),
             strictUpstreams: step.strict,
+            ...(step.warehouseReach
+               ? { warehouseReach: step.warehouseReach }
+               : {}),
          },
       },
       failedEids,
+      reuseEids,
    };
 }
 
@@ -1747,6 +2236,13 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             entry.models.set(step.path, step.malloy);
          if (!primaryModel.has(k)) primaryModel.set(k, step.path);
       }
+      // A published version is not in the config: its `## Version` step writes
+      // the model as `<pkg>.malloy` and publishes it at runtime, so queries of
+      // the package name that file.
+      if (step.kind === "version") {
+         const k = pkgKey(step.env, step.pkg);
+         if (!primaryModel.has(k)) primaryModel.set(k, `${step.pkg}.malloy`);
+      }
    }
    const packages: PackageSpec[] = [...pkgModels.values()].map((e) => ({
       name: e.name,
@@ -1824,6 +2320,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   ...(step.sourceNames
                      ? { sourceNames: step.sourceNames }
                      : {}),
+                  ...(step.versionId ? { versionId: step.versionId } : {}),
                };
                if (step.async) {
                   // Fire and DON'T await — a following step observes it in flight.
@@ -1835,7 +2332,29 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   pendingBuilds.set(key, { rest, pkg: step.pkg, id });
                   break;
                }
-               await rest.build(step.pkg, buildBody);
+               const built = await rest.build(step.pkg, buildBody);
+               if (step.upstreams.length) {
+                  const entries = Object.values(
+                     (
+                        built.manifest as {
+                           entries?: Record<
+                              string,
+                              { sourceName?: string; upstreamReuse?: string }
+                           >;
+                        } | null
+                     )?.entries ?? {},
+                  );
+                  for (const u of step.upstreams) {
+                     const entry = entries.find(
+                        (e) => e.sourceName === u.source,
+                     );
+                     assert.eq(
+                        `built ${u.source}: upstreams ${u.mode}`,
+                        entry?.upstreamReuse ?? "(absent)",
+                        u.mode,
+                     );
+                  }
+               }
                if (step.bindings.length) {
                   // The build returns at MANIFEST_FILE_READY, but the serve
                   // binding is re-established by an async package reload that
@@ -1857,7 +2376,9 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      );
                   let bindings: Binding[] = [];
                   for (let attempt = 0; attempt < 40; attempt++) {
-                     const pkg = (await rest.getPackage(step.pkg)) as {
+                     const pkg = (await rest.getPackage(step.pkg, {
+                        versionId: step.versionId,
+                     })) as {
                         storageServeBindings?: Binding[];
                      };
                      bindings = pkg.storageServeBindings ?? [];
@@ -1900,7 +2421,11 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             }
             case "buildRefused": {
                const rest = await serverFor(step.pub, step.env);
-               const outcome = await refusedOutcome(rest, step.pkg);
+               const outcome = await refusedOutcome(
+                  rest,
+                  step.pkg,
+                  step.versionId ? { versionId: step.versionId } : undefined,
+               );
                assert.ok(
                   `build refused (${step.pkg})`,
                   outcome.refused,
@@ -1924,11 +2449,8 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             }
             case "orchestratedBuild": {
                const rest = await serverFor(step.pub, step.env);
-               const { body, failedEids } = await buildOrchestratedBody(
-                  ctx,
-                  rest,
-                  step,
-               );
+               const { body, failedEids, reuseEids } =
+                  await buildOrchestratedBody(ctx, rest, step);
                const wire = body as unknown as Record<string, unknown>;
                if (step.refused) {
                   const outcome = await refusedOutcome(rest, step.pkg, wire);
@@ -1954,10 +2476,40 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                } else {
                   const rec = await rest.build(step.pkg, wire);
                   const manifest = rec.manifest as {
-                     entries?: Record<string, { physicalTableName?: string }>;
+                     entries?: Record<
+                        string,
+                        {
+                           physicalTableName?: string;
+                           upstreamReuse?: string;
+                           upstreamRecomputeReason?: string;
+                        }
+                     >;
                      failures?: Record<string, { reason?: string }>;
                   } | null;
                   const entries = manifest?.entries ?? {};
+                  // On a build that succeeded, `cites:` reads the reasons the
+                  // build recorded for recomputing a persisted upstream rather
+                  // than reading its table — the one prose a successful run
+                  // carries.
+                  if (step.cites) {
+                     // The sources the scenario marked `(recomputed)`, when it
+                     // marked any; otherwise every entry.
+                     const marked = [...reuseEids.entries()]
+                        .filter(([, mode]) => mode === "recomputed")
+                        .map(([eid]) => eid);
+                     const reasons = (
+                        marked.length
+                           ? marked.map((eid) => entries[eid])
+                           : Object.values(entries)
+                     )
+                        .map((e) => e?.upstreamRecomputeReason ?? "")
+                        .join("\n");
+                     assert.includes(
+                        `recompute reason cites "${step.cites}"`,
+                        reasons.toLowerCase(),
+                        step.cites.toLowerCase(),
+                     );
+                  }
                   // A part-way failure still commits a manifest, and a failed
                   // source is MIRRORED into `entries` carrying the physical name
                   // it was headed for — a table that does not exist. The
@@ -1983,6 +2535,19 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                         !failures[s.sourceEntityId],
                         failures[s.sourceEntityId]?.reason,
                      );
+                     const reuse = reuseEids.get(s.sourceEntityId);
+                     if (reuse) {
+                        // Asserted positively against the declared value, never
+                        // by absence: an entry with no `upstreamReuse` is a
+                        // source that read no persisted upstream, and "nothing"
+                        // must not read as "recomputed".
+                        assert.eq(
+                           `built ${s.physicalTableName}: upstreams ${reuse}`,
+                           entries[s.sourceEntityId]?.upstreamReuse ??
+                              "(absent)",
+                           reuse,
+                        );
+                     }
                   }
                }
                break;
@@ -2001,7 +2566,11 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   const res = await rest.tryQuery(
                      step.pkg,
                      modelPath(step.pkg, step.env),
-                     { query: malloy, givens: step.givens },
+                     {
+                        query: malloy,
+                        givens: step.givens,
+                        versionId: step.versionId,
+                     },
                   );
                   assert.ok(
                      `${step.label}: refused`,
@@ -2020,7 +2589,11 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   const out = await rest.query(
                      step.pkg,
                      modelPath(step.pkg, step.env),
-                     { query: malloy, givens: step.givens },
+                     {
+                        query: malloy,
+                        givens: step.givens,
+                        versionId: step.versionId,
+                     },
                   );
                   compareRows(assert, step.label, step.expect!, out.rows);
                   if (step.servedFrom) {
@@ -2424,7 +2997,9 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                if (step.variant === "clear") {
                   // manifestLocation:null → drop the orchestrator binding; the publisher
                   // reverts to its own local-store rebind (from the latest build).
-                  await rest.patchPackage(step.pkg, { manifestLocation: null });
+                  // A versioned package clears through its version's manifest
+                  // route (see RestClient.clearManifest).
+                  await rest.clearManifest(step.pkg);
                } else if (step.variant === "bad") {
                   // Bind an unreachable manifestLocation (a file:// URI that does
                   // not exist). The publisher must fetch-fail and fall back to
@@ -2461,6 +3036,92 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      entries,
                   );
                   await rest.patchPackage(step.pkg, { manifestLocation: uri });
+               }
+               break;
+            }
+            case "destination": {
+               // The storage-destination routes, as an orchestrator that owns
+               // table lifecycle calls them. `files` alone bypasses the
+               // publisher: it reads the destination's storage directory, which
+               // is the only way to tell whether bytes are really gone.
+               const label = `destination ${step.dest} ${step.action}`;
+               if (step.action === "files") {
+                  await active();
+                  compareRows(
+                     assert,
+                     label,
+                     step.expect!,
+                     ctx
+                        .storedTables(step.dest, step.schema)
+                        .map((table) => ({ table })),
+                  );
+                  break;
+               }
+               const rest = await serverFor(step.pub, step.env);
+               if (step.action === "tables" && step.status !== undefined) {
+                  const { status, body } =
+                     await rest.listDestinationTablesStatus(
+                        step.dest,
+                        step.schema,
+                     );
+                  assert.eq(`${label} status`, status, step.status);
+                  // A refusal names what is missing in the server's own words;
+                  // it must never echo the catalog's connection string.
+                  assert.ok(
+                     `${label} body names no credential`,
+                     !/password=|:\/\/[^/\s]*:[^@\s]*@/i.test(body),
+                     body,
+                  );
+               } else if (step.action === "tables") {
+                  const list = async () =>
+                     (
+                        await rest.listDestinationTables(step.dest, step.schema)
+                     ).map((name) => ({ name }));
+                  let names = await list();
+                  // A bounded wait for work the server finishes just after it
+                  // reports a run terminal: re-read until the listing matches
+                  // or the time is up, then compare the last one, so a listing
+                  // that never settles still fails with what it held.
+                  if (step.withinMs !== undefined) {
+                     const deadline = Date.now() + step.withinMs;
+                     while (
+                        rowsMismatch(step.expect!, names) &&
+                        Date.now() < deadline
+                     ) {
+                        await sleep(100);
+                        names = await list();
+                     }
+                  }
+                  compareRows(assert, label, step.expect!, names);
+               } else if (step.action === "drop") {
+                  const status = await rest.dropDestinationTable(
+                     step.dest,
+                     step.schema,
+                     step.table!,
+                  );
+                  assert.eq(`${label} ${step.table}`, status, 204);
+               } else {
+                  const now = Date.now();
+                  const result = await rest.createFileCleanup(step.dest, {
+                     snapshotsOlderThan: new Date(
+                        now - step.snapshotsAgeMs!,
+                     ).toISOString(),
+                     filesOlderThan: new Date(
+                        now - step.filesAgeMs!,
+                     ).toISOString(),
+                  });
+                  if (step.deleted !== undefined)
+                     assert.eq(
+                        `${label} deletedFiles`,
+                        result.deletedFiles,
+                        step.deleted,
+                     );
+                  else
+                     assert.ok(
+                        label,
+                        typeof result.deletedFiles === "number",
+                        `deleted ${result.deletedFiles} file(s)`,
+                     );
                }
                break;
             }
@@ -2506,6 +3167,50 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                });
                break;
             }
+            case "preview": {
+               // POST /packages?dryRun=true on the package's own tree: what a
+               // publish would build and serve, with nothing installed.
+               const rest = await serverFor(step.pub, step.env);
+               const location = ctx.packageDir(step.pkg, step.env);
+               const res = await rest.dryRunFrom(step.pkg, location);
+               assert.ok(
+                  `preview ${step.pkg}: answered`,
+                  res.ok,
+                  res.ok
+                     ? undefined
+                     : `expected the dry run to answer 200, got ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`,
+               );
+               const verdicts = (res.body.serveVerdicts ?? []) as {
+                  sourceName?: string;
+                  verdict?: string;
+                  reason?: string;
+                  views?: { view: string; verdict: string; detail?: string }[];
+               }[];
+               for (const want of step.expects) {
+                  const source = verdicts.find(
+                     (v) => v.sourceName === want.source,
+                  );
+                  if (want.view === undefined) {
+                     assert.ok(
+                        `preview ${want.source}: ${want.verdict}`,
+                        source?.verdict === want.verdict,
+                        source?.verdict === want.verdict
+                           ? undefined
+                           : `got ${source ? `${source.verdict}${source.reason ? ` (${source.reason})` : ""}` : "no verdict"}`,
+                     );
+                     continue;
+                  }
+                  const view = source?.views?.find((v) => v.view === want.view);
+                  assert.ok(
+                     `preview ${want.source}.${want.view}: ${want.verdict}`,
+                     view?.verdict === want.verdict,
+                     view?.verdict === want.verdict
+                        ? undefined
+                        : `got ${view ? `${view.verdict}${view.detail ? `: ${view.detail}` : ""}` : "no view verdict"}`,
+                  );
+               }
+               break;
+            }
             case "republish": {
                // POST /packages to re-publish through the author-in-the-loop gate
                // (addPackage), which — unlike startup/reload — is strict: under
@@ -2547,6 +3252,126 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   mode: activeMode,
                   init: step.init,
                });
+               break;
+            }
+            case "version": {
+               // The version's package, written to a directory of its own and
+               // published from it: publisher.json names the version, the way
+               // an author releases one. The publisher copies the tree in, so
+               // the directory goes once the publish has answered.
+               const rest = await serverFor(step.pub, step.env);
+               const dir = mkdtempSync(
+                  path.join(os.tmpdir(), `hammer-${step.pkg}-`),
+               );
+               try {
+                  writeFileSync(
+                     path.join(dir, "publisher.json"),
+                     JSON.stringify({
+                        name: step.pkg,
+                        version: step.version,
+                        ...(step.scope
+                           ? { materialization: { scope: step.scope } }
+                           : {}),
+                     }),
+                  );
+                  writeFileSync(
+                     path.join(dir, `${step.pkg}.malloy`),
+                     step.malloy,
+                  );
+                  const res = await rest.publishFrom(step.pkg, dir);
+                  const label = `version ${step.pkg}@${step.version}`;
+                  if (step.refused) {
+                     assert.ok(
+                        `${label}: refused`,
+                        !res.ok,
+                        res.ok
+                           ? "expected a refusal, but it published"
+                           : undefined,
+                     );
+                     if (step.reason)
+                        assert.eq(
+                           `${label}: reason`,
+                           (res.body.reason as string | undefined) ??
+                              "(absent)",
+                           step.reason,
+                        );
+                     if (step.cites)
+                        assert.includes(
+                           `${label}: cites`,
+                           String(res.body.message ?? "").toLowerCase(),
+                           step.cites.toLowerCase(),
+                        );
+                  } else {
+                     assert.ok(
+                        `${label}: published`,
+                        res.ok,
+                        res.ok
+                           ? undefined
+                           : JSON.stringify(res.body).slice(0, 300),
+                     );
+                  }
+               } finally {
+                  rmSync(dir, { recursive: true, force: true });
+               }
+               break;
+            }
+            case "versionLifecycle": {
+               const rest = await serverFor(step.pub, step.env);
+               const res =
+                  step.action === "latest"
+                     ? await rest.setLatestVersion(step.pkg, step.version)
+                     : await rest.setArchiveStatus(
+                          step.pkg,
+                          step.version,
+                          step.action,
+                       );
+               const label = `${step.action} ${step.pkg}@${step.version}`;
+               if (step.refused) {
+                  assert.ok(
+                     `${label}: refused`,
+                     !res.ok,
+                     res.ok
+                        ? "expected a refusal, but it was applied"
+                        : undefined,
+                  );
+                  if (step.reason)
+                     assert.eq(
+                        `${label}: reason`,
+                        (res.body.reason as string | undefined) ?? "(absent)",
+                        step.reason,
+                     );
+               } else {
+                  assert.ok(
+                     `${label}: applied`,
+                     res.ok,
+                     res.ok
+                        ? undefined
+                        : JSON.stringify(res.body).slice(0, 300),
+                  );
+               }
+               break;
+            }
+            case "versions": {
+               // The published versions (highest first), with what /status says
+               // is loaded. Only the columns the Expect table names are compared.
+               const rest = await serverFor(step.pub, step.env);
+               const versions = await rest.listVersions(step.pkg);
+               const loaded = new Set(
+                  (await rest.statusEntries(step.pkg))
+                     .filter((e) => e.versionId && e.loaded !== false)
+                     .map((e) => e.versionId as string),
+               );
+               compareRows(
+                  assert,
+                  `versions ${step.pkg}`,
+                  step.expect,
+                  versions.map((v) => ({
+                     version: v.id,
+                     latest: v.latest,
+                     archived: v.archiveStatus === "archive",
+                     loaded: loaded.has(v.id),
+                  })),
+               );
                break;
             }
             case "hook": {

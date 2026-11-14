@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import path from "path";
 import { fileURLToPath } from "url";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { waitUntilOk } from "./polling";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,12 +47,7 @@ describe("Editable materialization schedule (PATCH)", () => {
          );
       }
 
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline) {
-         const res = await fetch(`${baseUrl}${API}`);
-         if (res.ok) break;
-         await new Promise((r) => setTimeout(r, 500));
-      }
+      await waitUntilOk(`${baseUrl}${API}`, "Test package");
    });
 
    afterAll(async () => {

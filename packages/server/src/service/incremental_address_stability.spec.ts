@@ -23,12 +23,15 @@
 // DuckDB is the compile target only; the delta is never run here).
 import type { FixedConnectionMap, PersistSource } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { computeSourceEntityId } from "./build_plan";
-import { deltaSelect, type WatermarkBound } from "./incremental_apply";
+import { computeSourceEntityId } from "./materialization/plan/build_plan";
+import {
+   deltaSelect,
+   type WatermarkBound,
+} from "./materialization/run/incremental_apply";
 import {
    compilePersistSources,
    duckdbTestConnections,
-} from "./incremental_test_harness";
+} from "../test_helpers/incremental_test_harness";
 
 const DIGESTS = { duckdb: "digest-1" };
 let connections: FixedConnectionMap;

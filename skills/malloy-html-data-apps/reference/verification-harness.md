@@ -37,7 +37,7 @@ Serve a stand-in at the same root-relative path the page loads (`/sdk/publisher.
     query: resolve,
     // Placeholder shape ONLY. The real queryFull returns a Malloy result
     // *envelope* handed to `<malloy-render>` el.result (see
-    // skill:malloy-html-data-app-runtime), NOT { data: rows }. If any tile renders
+    // reference/runtime.md), NOT { data: rows }. If any tile renders
     // via <malloy-render>, make this fixture a real envelope or that tile breaks.
     queryFull: (m, q) => resolve(m, q).then((rows) => ({ data: rows })),
     setToken() {},
@@ -58,7 +58,7 @@ trap 'kill "$server" 2>/dev/null; rm -rf "$webroot"' EXIT   # always tear the se
 
 ## 2. Drive it in a REAL browser and assert on the rendered DOM
 
-**It must be a real browser engine. jsdom cannot verify this app, and it fails in the most dangerous possible way.** jsdom does not execute `<script type="module">` at all, and it reports no error for it - so a run comes back with no console errors, no error tiles and no stuck skeletons, which looks like a clean pass while *none of your code ran*. That is exactly the false green this document exists to prevent, and it is worse because `skill:malloy-html-data-app-runtime` requires the ES-module entry point that breaks it. jsdom also lacks `fetch` (the query promise rejects and boot hangs), `ResizeObserver` (chart libraries throw, and it surfaces as your own error state), and a 2D canvas.
+**It must be a real browser engine. jsdom cannot verify this app, and it fails in the most dangerous possible way.** jsdom does not execute `<script type="module">` at all, and it reports no error for it - so a run comes back with no console errors, no error tiles and no stuck skeletons, which looks like a clean pass while *none of your code ran*. That is exactly the false green this document exists to prevent, and it is worse because `reference/runtime.md` requires the ES-module entry point that breaks it. jsdom also lacks `fetch` (the query promise rejects and boot hangs), `ResizeObserver` (chart libraries throw, and it surfaces as your own error state), and a 2D canvas.
 
 Playwright is the example below. If it is not installed and cannot be fetched - which is common in agent sandboxes - use the CDP harness at the end of this file instead. It needs nothing but a browser you already have and a WebSocket.
 
@@ -241,6 +241,59 @@ Three things bite on this path, and each makes a correct page look broken:
 - **`captureBeyondViewport: true` rasterises canvases at the wrong scale.** A full-page capture squashes every chart into a corner and you will "fix" a bug that does not exist. Use viewport-only `Page.captureScreenshot` and scroll between shots.
 - **Switch themes by clicking the app's own control**, not by setting an attribute on the root. Setting the attribute skips whatever re-resolves chart colours, so the charts keep their construction-time palette and you get a screenshot that looks like a real theming bug.
 - **Kill the browser when you finish** and use a port nobody else is on. A stray headless Chrome holding a profile directory is a confusing thing to debug later.
+
+## 4. Embedded, layout stability, and drawers
+
+Sections 2 and 3 prove the tiles render. They do not prove the app is polished, and every check below caught a real bug on a build that passed them. These need a live Publisher (the layout and timing are the point), a real browser, and real wheel events.
+
+**Load it embedded, not only standalone.** Two hosts, in order of effort:
+
+- **The Publisher console**, at `http://localhost:4000/<env>/<package>/data-apps/<path>` (for example `.../data-apps/index.html`). Same origin, no setup, and it sizes the frame through the same resize contract a host does.
+- **A test host page** that calls `Publisher.embed` inside a fixed header and a *scrolling container*, which is how real hosts lay out. Serve it from another origin (`python3 -m http.server 4100 --bind 127.0.0.1`) and start Publisher with `PUBLISHER_FRAME_ANCESTORS="'self' http://127.0.0.1:4100"`, or the browser refuses to frame the app.
+
+Then, per page, embedded and standalone:
+
+```js
+// Layout shift: install before navigation, applies to every frame.
+await context.addInitScript(() => {
+  window.__cls = 0;
+  new PerformanceObserver((l) => l.getEntries().forEach((e) => { if (!e.hadRecentInput) window.__cls += e.value; }))
+    .observe({ type: "layout-shift", buffered: true });
+});
+// Read __cls from the APP's frame after the page settles, on a first visit and
+// again after page.reload() in the same context (the repeat visit). Target:
+// under 0.1 first, 0 repeat. Embedded, every shift on the page counts.
+
+// An auto-sized frame (the console, Publisher.embed without a height) must never
+// scroll: the document is exactly as tall as its frame. Skip this for a
+// fixed-height embed, which is meant to scroll inside its frame.
+const innerScroll = await appFrame.evaluate(() => document.documentElement.scrollHeight - innerHeight);
+if (innerScroll > 0) problems.push(`app scrolls ${innerScroll}px inside its frame`);
+
+// Ask once: identical (model, query) pairs on one page.
+const seen = new Set(); let dup = 0;
+page.on("request", (r) => { if (r.url().includes("/query")) { const k = r.url() + r.postData(); dup += seen.has(k); seen.add(k); } });
+```
+
+**Drawer checks**, at two or three window sizes (1280×720, 1512×857 at 2×, 1920×1080). Scroll the host with `page.mouse.wheel` (not `scrollTo`: a real wheel is what exposes inner-frame scrolling), click a drill row that sits well down the page, and assert in **screen** coordinates (an element's rect inside the frame plus the iframe's rect in the host):
+
+| Check | Pass |
+|---|---|
+| The clicked row's screen position, sampled every frame while the drawer opens | moves 0px |
+| Host scroll position during the open | unchanged |
+| Drawer header top | equals the top of the host's visible area (below the host's own header) |
+| Drawer bottom | equals the bottom of the visible area, within a few pixels (the band moves in steps of the observer's thresholds) |
+| Drawer body `scrollTop` on open, and after drilling into a second subject from inside it | 0 |
+| 12 wheel turns over the drawer | the body scrolls; the host and the app move 0px |
+| 4 wheel turns over the scrim | the host and the app move 0px |
+| Host scrolled by other means (`scrollBy` on the host container) while open | drawer still spans the visible area |
+| Escape | drawer gone, host where it was, focus back on the clicked row |
+
+Compare screen coordinates against the host's *visible* area, not against the window: a host header or breadcrumb bar sits over the top of it. And sample the open as frames, not as one before/after pair: the page jump this catches can return to its starting point by the time a single later sample is taken.
+
+**Charts draw, everywhere they appear.** Read pixels (section 3) on every page *and inside every kind of drawer*. Run it against the full chart library first, then again after any change to how the library is built or loaded: a series type missing from a trimmed bundle mounts its canvas and draws nothing, with no error.
+
+**Wait for the warehouse, not a fixed time.** Locally a tile can take seconds; a fixed sleep then measures loading, not the app. Count `/query` requests in flight and treat the page as settled after about 1.5s with none, and attach those listeners *before* `goto`, or the first wave of queries is missed and the page "settles" at once.
 
 ## Gotchas (each cost a real debugging cycle)
 
