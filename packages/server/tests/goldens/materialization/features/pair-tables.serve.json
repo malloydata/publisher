@@ -708,8 +708,10 @@
       "path": {
         "considered": [
           {
+            "detail": "The table stores an inlined join_many flat, which cannot answer this query exactly (a count through the inlined join, which live takes over the join's own rows and the pair table's row for a parent with none would add to), so it is answered without this table.",
             "kind": "materialized",
-            "outcome": "used",
+            "outcome": "skipped",
+            "reason": "COUNT_SEMANTICS",
             "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016"
           }
         ],
@@ -728,15 +730,13 @@
           "sourceName": "orders_pair"
         },
         "servedBy": {
-          "kind": "materialized",
-          "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016",
-          "via": "served_copy"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "one hop: child measures by a parent dimension",
-      "servedBy": "materialized",
-      "servedFrom": "storage",
+      "servedBy": "live",
+      "servedFrom": null,
       "switch": "on"
     },
     {
@@ -1002,7 +1002,7 @@
       "path": {
         "considered": [
           {
-            "detail": "The table stores an inlined join_many flat, which cannot answer this query exactly (an aggregate above the inlined path's last join beside fields below it, which live aggregates by that join's key), so it is answered without this table.",
+            "detail": "The table stores an inlined join_many flat, which cannot answer this query exactly (a count through the inlined join, which live takes over the join's own rows and the pair table's row for a parent with none would add to), so it is answered without this table.",
             "kind": "materialized",
             "outcome": "skipped",
             "reason": "COUNT_SEMANTICS",
@@ -1159,8 +1159,10 @@
       "path": {
         "considered": [
           {
+            "detail": "The table stores an inlined join_many flat, which cannot answer this query exactly (a count through the inlined join, which live takes over the join's own rows and the pair table's row for a parent with none would add to), so it is answered without this table.",
             "kind": "materialized",
-            "outcome": "used",
+            "outcome": "skipped",
+            "reason": "COUNT_SEMANTICS",
             "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
           }
         ],
@@ -1184,15 +1186,13 @@
           "sourceName": "customers_blocks"
         },
         "servedBy": {
-          "kind": "materialized",
-          "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9",
-          "via": "served_copy"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "blocks: the second block",
-      "servedBy": "materialized",
-      "servedFrom": "storage",
+      "servedBy": "live",
+      "servedFrom": null,
       "switch": "on"
     },
     {

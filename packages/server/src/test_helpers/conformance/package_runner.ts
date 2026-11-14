@@ -27,7 +27,13 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../service/access_record";
-import { __setPackageLoadPoolForTests } from "../../package_load/package_load_pool";
+import {
+   __setPackageLoadPoolFactoryForTests,
+   __setPackageLoadPoolForTests,
+   getPackageLoadWorkerCount,
+   PackageLoadPool,
+} from "../../package_load/package_load_pool";
+import { Settings } from "../../settings/settings";
 import { Environment } from "../../service/environment";
 import { parsePackageName } from "../../service/identity";
 import { QueryPrivileges } from "../../service/model_query_request";
@@ -103,13 +109,39 @@ export function withSwitch(materialize: Switch): () => void {
 }
 
 /**
- * Drop the package-load worker pool, so the next load spawns workers with the
- * settings installed then. A worker reads its settings once, at spawn, and the
- * build plan (with `#(materialize)` in it or not) is computed in the worker:
- * a pool another spec file spawned would plan with that file's settings.
+ * Pools kept for the rest of the run, one per set of settings a pool was made
+ * under. Reusing them, rather than spawning a worker per case, keeps a run's
+ * worker count down: Bun 1.3 keeps most of a stopped worker's memory, which
+ * ran Windows CI out of memory.
+ */
+const poolsBySettings = new Map<string, PackageLoadPool>();
+
+/**
+ * The pool for the settings in force now. Called at the first load after
+ * {@link freshLoadPool}, so a caller may switch settings before or after it.
+ * A pool's worker count, timeouts and cache size are fixed when it is made,
+ * and its worker reads the rest at spawn, so the whole settings snapshot is
+ * the key.
+ */
+function poolForCurrentSettings(): PackageLoadPool {
+   const key = JSON.stringify(Settings.current().toWorkerData());
+   const kept = poolsBySettings.get(key);
+   // Another spec may have shut it down through __setPackageLoadPoolForTests.
+   if (kept && !kept.isShutDownForTests) return kept;
+   const pool = new PackageLoadPool(getPackageLoadWorkerCount());
+   poolsBySettings.set(key, pool);
+   return pool;
+}
+
+/**
+ * Drop the current package-load pool, so the next load runs in a pool made
+ * under the settings installed then. A worker reads its settings once, at
+ * spawn, and the build plan (with `#(materialize)` in it or not) is computed
+ * in the worker: a pool made under other settings would plan with those.
  */
 export async function freshLoadPool(): Promise<void> {
-   await __setPackageLoadPoolForTests(null);
+   __setPackageLoadPoolFactoryForTests(poolForCurrentSettings);
+   await __setPackageLoadPoolForTests(null, new Set(poolsBySettings.values()));
 }
 
 /** A package loaded, built and bound; queries run against it. */

@@ -47,7 +47,11 @@ import {
    rowDifference,
    type R4Fixture,
    type Row,
+   expectPairServedVia,
 } from "./harness";
+
+/** Measures that count through the inlined path (see {@link expectPairServedVia}). */
+const PATH_COUNTS = ["seg_n", "long_legs", "stop_n", "crew_n"];
 
 const B = "2026-11-10 00:00:00"; // the full build
 const R1 = "2026-11-11 00:00:00"; // first refresh
@@ -338,7 +342,7 @@ describe("R4: an incremental pair table refreshed in place equals a full rebuild
          "run: flights -> { group_by: carrier; aggregate: long_legs, miles_per_flight }",
       ],
       [
-         "per flight, childless flights' live count of one included (malloydata/malloy#1762)",
+         "per flight, childless flights' count of none included (answered live, malloydata/malloy#3208)",
          "run: flights -> { group_by: id; aggregate: seg_n, seg_total }",
       ],
       [
@@ -370,10 +374,7 @@ describe("R4: an incremental pair table refreshed in place equals a full rebuild
       state.fixture.setClock(now);
       for (const [name, malloy] of served) {
          const run = await state.fixture.run({ name, malloy });
-         expect({ name, via: run.servedVia }).toEqual({
-            name,
-            via: "served_copy",
-         });
+         expectPairServedVia(run, PATH_COUNTS);
          expect(run.live.length).toBeGreaterThan(0);
          expect({ name, diff: rowDifference(run.live, run.served) }).toEqual({
             name,
@@ -526,7 +527,7 @@ describe("R4: an incremental pair table refreshed in place equals a full rebuild
       const run = await state.fixture.run({
          name: "parent measures beside child ones",
          malloy:
-            "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, seg_n }",
+            "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, seg_total }",
       });
       expect(rowDifference(run.live, run.served)).toBeDefined();
    });
@@ -560,7 +561,7 @@ describe("R4: an incremental pair table's edges: a watermark ahead of the clock,
          malloy:
             "run: flights -> { group_by: id, carrier; aggregate: total_distance, seg_n, seg_total }",
       });
-      expect(run.servedVia).toBe("served_copy");
+      expectPairServedVia(run, PATH_COUNTS);
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    }
 
@@ -794,10 +795,7 @@ describe("R4: an incremental pair table of a path of join_manys refreshes in pla
       fixture.setClock(now);
       for (const malloy of served) {
          const run = await fixture.run({ name: malloy, malloy });
-         expect({ malloy, via: run.servedVia }).toEqual({
-            malloy,
-            via: "served_copy",
-         });
+         expectPairServedVia(run, PATH_COUNTS);
          expect({ malloy, diff: rowDifference(run.live, run.served) }).toEqual({
             malloy,
             diff: undefined,
@@ -1050,10 +1048,7 @@ describe("R4: an incremental pair table of several blocks refreshes in place, re
       fixture.setClock(now);
       for (const malloy of served) {
          const run = await fixture.run({ name: malloy, malloy });
-         expect({ malloy, via: run.servedVia }).toEqual({
-            malloy,
-            via: "served_copy",
-         });
+         expectPairServedVia(run, PATH_COUNTS);
          expect({ malloy, diff: rowDifference(run.live, run.served) }).toEqual({
             malloy,
             diff: undefined,

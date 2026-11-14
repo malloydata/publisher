@@ -2,19 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import malloyPackage from "@malloydata/malloy/package.json";
 import type { SourceJoin } from "../plan/source_map";
 import type { RollupVariantPlan } from "../plan/rollup_plan";
 import type { QueryLevelFacts } from "../../governance/ir/prepared_query";
 import {
    checkJoinCoverage,
+   joinedKeyProblem,
    joinRollupLegs,
-   malloyCountsChildlessParentsAsZero,
-   MALLOY_SKIPS_UNMATCHED_JOIN_ROWS_SINCE,
    parentKeyProblem,
-   relationshipChangeProblem,
    unmatchedRowProblem,
-   versionAtLeast,
 } from "./join_rollup";
 
 const CHILD = "segments@file:///p/m.malloy";
@@ -106,26 +102,6 @@ function plan(over: Partial<RollupVariantPlan> = {}): RollupVariantPlan {
       ...over,
    } as RollupVariantPlan;
 }
-
-describe("versionAtLeast", () => {
-   it("compares dotted versions numerically and fails closed", () => {
-      expect(versionAtLeast("0.0.438", "0.0.438")).toBe(true);
-      expect(versionAtLeast("0.0.440", "0.0.438")).toBe(true);
-      expect(versionAtLeast("0.1.0", "0.0.438")).toBe(true);
-      expect(versionAtLeast("0.0.436", "0.0.438")).toBe(false);
-      expect(versionAtLeast("0.0.99", "0.0.438")).toBe(false);
-      expect(versionAtLeast("0.0.438-dev", "0.0.438")).toBe(true);
-      expect(versionAtLeast(undefined, "0.0.438")).toBe(false);
-      expect(versionAtLeast("x.y", "0.0.438")).toBe(false);
-   });
-
-   it("the switch follows the pinned Malloy", () => {
-      const pinned = malloyPackage.version;
-      expect(malloyCountsChildlessParentsAsZero()).toBe(
-         versionAtLeast(pinned, MALLOY_SKIPS_UNMATCHED_JOIN_ROWS_SINCE),
-      );
-   });
-});
 
 describe("joinRollupLegs", () => {
    const legsOf = (j: SourceJoin, p = plan(), filters = new Set<string>()) =>
@@ -254,69 +230,6 @@ describe("parentKeyProblem", () => {
    });
 });
 
-describe("relationshipChangeProblem", () => {
-   const legOf = (relationship: "one" | "many", declared: "one" | "many") => ({
-      join: join({ relationship: declared }) as never,
-      plan: plan(),
-      relationship,
-   });
-   const fansOut = (path: readonly string[]) => path[0] !== "crew";
-
-   it("before malloydata/malloy#3208: a count, sum or average through another join_many beside a re-pointed join", () => {
-      for (const leg of [legOf("one", "many"), legOf("many", "one")]) {
-         expect(
-            relationshipChangeProblem(
-               leg,
-               [{ path: ["certs"], isCount: true }],
-               fansOut,
-               false,
-            ),
-         ).toContain("count through the join_many `certs`");
-         expect(
-            relationshipChangeProblem(
-               leg,
-               [{ path: ["certs"], isCount: false }],
-               fansOut,
-               false,
-            ),
-         ).toContain("sum or average");
-         expect(
-            relationshipChangeProblem(leg, undefined, fansOut, false),
-         ).toContain("could not be traced");
-      }
-   });
-
-   it("leaves the source's own grain, the leg's join, a join_one path and an unchanged relationship alone", () => {
-      const keyed = [
-         { path: [], isCount: true },
-         { path: ["segments"], isCount: false },
-         { path: ["crew"], isCount: true },
-      ];
-      expect(
-         relationshipChangeProblem(legOf("one", "many"), keyed, fansOut, false),
-      ).toBeUndefined();
-      expect(
-         relationshipChangeProblem(
-            legOf("many", "many"),
-            [{ path: ["certs"], isCount: true }],
-            fansOut,
-            false,
-         ),
-      ).toBeUndefined();
-   });
-
-   it("after malloydata/malloy#3208: nothing is declined", () => {
-      expect(
-         relationshipChangeProblem(
-            legOf("one", "many"),
-            [{ path: ["certs"], isCount: true }],
-            fansOut,
-            true,
-         ),
-      ).toBeUndefined();
-   });
-});
-
 describe("unmatchedRowProblem", () => {
    const isColumn = (p: readonly string[]) =>
       p.length === 1 && p[0] === "miles";
@@ -333,53 +246,100 @@ describe("unmatchedRowProblem", () => {
       "id",
    )[0]!.leg;
 
-   it("before malloydata/malloy#3208: a join_many count and a non-column operand are declined", () => {
-      const problem = (leg: typeof many, m: string) =>
-         unmatchedRowProblem(leg, new Set([m]), isColumn, false);
-      expect(problem(many, "seg_miles")).toBeUndefined();
-      expect(problem(many, "p_miles")).toBeUndefined();
-      expect(problem(many, "seg_count")).toContain("join_many");
-      expect(problem(many, "padded")).toContain("not NULL");
-      // A join_one's count counts the joined key: right live already.
-      expect(problem(one, "seg_count")).toBeUndefined();
-      expect(problem(one, "padded")).toContain("not NULL");
+   const noJoin = () => false;
+
+   it("serves the joined source's own counts and sums, whatever their operand (malloydata/malloy#3208)", () => {
+      for (const leg of [many, one]) {
+         for (const m of ["seg_miles", "seg_count", "padded", "p_miles"]) {
+            expect(
+               unmatchedRowProblem(leg, new Set([m]), isColumn, noJoin),
+            ).toBeUndefined();
+         }
+      }
+   });
+
+   const withPartials = (
+      partials: ReturnType<typeof leaf>[],
+   ): Parameters<typeof unmatchedRowProblem>[0] => {
+      const p = plan();
+      p.rollupMeasures[0]!.partials =
+         partials as RollupVariantPlan["rollupMeasures"][number]["partials"];
+      return joinRollupLegs(
+         [join()],
+         new Map([[CHILD, [p]]]),
+         new Set(),
+         "id",
+      )[0]!.leg;
+   };
+   const read = new Set(["seg_miles"]);
+
+   it("declines a min or max of a value that is not NULL on an unmatched parent", () => {
+      const constant = withPartials([
+         leaf("max", {
+            kind: "call",
+            name: "max",
+            args: [{ kind: "number", text: "1" }],
+         }),
+      ]);
+      expect(unmatchedRowProblem(constant, read, isColumn, noJoin)).toContain(
+         "max of a value that is not NULL",
+      );
+      const column = withPartials([leaf("min", method("miles", "min"))]);
+      expect(
+         unmatchedRowProblem(column, read, isColumn, noJoin),
+      ).toBeUndefined();
       // Only what the query reads is held to it.
       expect(
-         unmatchedRowProblem(many, new Set(["seg_miles"]), isColumn, false),
+         unmatchedRowProblem(
+            constant,
+            new Set(["seg_count"]),
+            isColumn,
+            noJoin,
+         ),
       ).toBeUndefined();
    });
 
    it("reads a column of the joined source's own keyed join as NULL on an unmatched parent", () => {
-      const p = plan();
-      p.rollupMeasures[0]!.partials = [
+      const leg = withPartials([
          leaf("max", {
             kind: "method",
             path: ["kinds", "weight"],
             fn: "max",
             args: [],
          }),
-      ] as RollupVariantPlan["rollupMeasures"][number]["partials"];
-      const [{ leg }] = joinRollupLegs(
-         [join()],
-         new Map([[CHILD, [p]]]),
-         new Set(),
-         "id",
-      ) as [{ leg: Parameters<typeof unmatchedRowProblem>[0] }];
-      const read = new Set(["seg_miles"]);
+      ]);
       const seen: (readonly string[])[] = [];
       const yes = (path: readonly string[]) => (seen.push(path), true);
-      expect(unmatchedRowProblem(leg, read, yes, false)).toBeUndefined();
+      expect(unmatchedRowProblem(leg, read, yes, noJoin)).toBeUndefined();
       expect(seen).toEqual([["kinds", "weight"]]);
-      expect(unmatchedRowProblem(leg, read, () => false, false)).toContain(
+      expect(unmatchedRowProblem(leg, read, () => false, noJoin)).toContain(
          "not NULL",
       );
    });
 
-   it("after malloydata/malloy#3208: nothing is declined for unmatched parents", () => {
-      for (const m of ["seg_miles", "seg_count", "padded", "p_miles"]) {
+   it("declines a sum or count at a join of the joined source that can match an unmatched parent's row", () => {
+      const at = (aggregate: "sum" | "count") => {
+         const l = leaf(aggregate, {
+            kind: "method",
+            path: aggregate === "sum" ? ["kinds", "weight"] : ["kinds"],
+            fn: aggregate,
+            args: [],
+         });
+         l.leaf.joinPath = ["kinds"] as never;
+         return withPartials([l]);
+      };
+      for (const aggregate of ["sum", "count"] as const) {
          expect(
-            unmatchedRowProblem(many, new Set([m]), isColumn, true),
+            unmatchedRowProblem(at(aggregate), read, isColumn, noJoin),
+         ).toContain("is not keyed on a column of `segments`");
+         const asked: string[] = [];
+         expect(
+            unmatchedRowProblem(at(aggregate), read, isColumn, (j) => {
+               asked.push(j);
+               return true;
+            }),
          ).toBeUndefined();
+         expect(asked).toEqual(["kinds"]);
       }
    });
 });
@@ -562,6 +522,57 @@ describe("checkJoinCoverage (row 27)", () => {
    it("asks nothing of a rollup with no fan-out", () => {
       expect(
          checkJoinCoverage(legOf(plan()), level([miles]), () => "aggregate"),
+      ).toBeUndefined();
+   });
+});
+
+describe("joinedKeyProblem", () => {
+   const legOf = (p: RollupVariantPlan = plan()) =>
+      joinRollupLegs([join()], new Map([[CHILD, [p]]]), new Set(), "id")[0]!
+         .leg;
+
+   it("declines a count or sum of the joined source's own rows unless its key was checked unique and never NULL", () => {
+      for (const m of ["seg_miles", "seg_count"]) {
+         const read = new Set([m]);
+         expect(joinedKeyProblem(legOf(), read, "seg_id", false)).toContain(
+            "more than once or NULL",
+         );
+         expect(joinedKeyProblem(legOf(), read, "seg_id", undefined)).toContain(
+            "was not checked unique and never NULL",
+         );
+         expect(
+            joinedKeyProblem(legOf(), read, "seg_id", true),
+         ).toBeUndefined();
+      }
+   });
+
+   it("asks nothing of a join keyed on the joined source's primary key, or of one with none", () => {
+      const read = new Set(["seg_miles"]);
+      expect(
+         joinedKeyProblem(legOf(), read, "flight_id", undefined),
+      ).toBeUndefined();
+      expect(
+         joinedKeyProblem(legOf(), read, undefined, undefined),
+      ).toBeUndefined();
+   });
+
+   it("asks nothing of a min, a max, or a partial taken at a join of the joined source", () => {
+      const p = plan();
+      p.rollupMeasures[0]!.partials = [
+         leaf("max", method("miles", "max")),
+         leaf("min", method("miles", "min")),
+         {
+            column: "q__partial",
+            leaf: {
+               aggregate: "sum",
+               expr: method("qty", "sum"),
+               reads: [],
+               joinPath: ["lines"],
+            },
+         },
+      ] as RollupVariantPlan["rollupMeasures"][number]["partials"];
+      expect(
+         joinedKeyProblem(legOf(p), new Set(["seg_miles"]), "seg_id", false),
       ).toBeUndefined();
    });
 });

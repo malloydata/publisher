@@ -27,7 +27,11 @@ import {
    type R4Fixture,
    type R4Scenario,
    type Row,
+   expectPairServedVia,
 } from "./harness";
+
+/** Measures that count through the inlined path (see {@link expectPairServedVia}). */
+const PATH_COUNTS = ["seg_n"];
 
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
 const PG_SCHEMA = "r4_colocated";
@@ -303,7 +307,9 @@ for (const tier of tiers) {
                expect(run.servedVia).toBeUndefined();
                return;
             }
-            expect(run.servedVia).toBe("served_copy");
+            expectPairServedVia(run, PATH_COUNTS);
+            // A count through the pair table's join is answered live.
+            if (run.servedVia === undefined) return;
             // The source's own warehouse: not a storage hit.
             expect(run.servedFrom).toBeNull();
             expect(run.servedBy?.kind).toBe("materialized");
@@ -500,6 +506,7 @@ source: v1 is orders_raw -> {
 }
 `,
       });
+
       const query = "run: v1 -> { aggregate: t is total.sum() }";
       const live = await loader.run("m.malloy", query);
       const fixture = await loader.bind();

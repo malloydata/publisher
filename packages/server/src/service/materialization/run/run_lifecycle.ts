@@ -146,8 +146,9 @@ export class RunLifecycle {
             if (runFailureReported(err)) {
                // Logged once already, by the run.
             } else if (cancelled) {
-               // An abort racing a genuine failure records "Cancelled"; this log
-               // is then the only place the real error's code appears.
+               // An abort racing a genuine failure records "Cancelled", with the
+               // real message in the record's `errorAtCancel`; this log has its
+               // code.
                logger.info("Materialization run cancelled", {
                   materializationId: id,
                   code,
@@ -167,21 +168,30 @@ export class RunLifecycle {
                const retryable = cancelled
                   ? undefined
                   : classifyRunFailure(err);
+               const extra: Record<string, unknown> = {
+                  ...(retryable !== undefined
+                     ? { errorRetryable: retryable }
+                     : {}),
+                  // A cancel that raced a genuine failure records "Cancelled"
+                  // as the run's error, and the logs carry only its code: the
+                  // real message is kept here, on the record.
+                  ...(cancelled && !isOwnCancellation(err)
+                     ? { errorAtCancel: message }
+                     : {}),
+               };
                let metadata: Record<string, unknown> | undefined;
-               if (retryable !== undefined) {
+               if (Object.keys(extra).length > 0) {
                   // Its own try: a failed read must never cost the status
                   // transition, which would leave the run active and block
                   // the package's next one.
                   try {
                      const current =
                         await this.repository().getMaterializationById(id);
-                     metadata = {
-                        ...(current?.metadata ?? {}),
-                        errorRetryable: retryable,
-                     };
+                     metadata = { ...(current?.metadata ?? {}), ...extra };
                   } catch (readErr) {
                      logger.warn(
-                        "Could not read a failed run's metadata; recording its status without errorRetryable",
+                        "Could not read a run's metadata; recording its status without " +
+                           Object.keys(extra).join(" or "),
                         { materializationId: id, error: errMessage(readErr) },
                      );
                   }
@@ -205,6 +215,14 @@ export class RunLifecycle {
             onSettled?.();
          });
    }
+}
+
+/**
+ * Whether `err` is the build loop's own answer to the cancel (it checks the
+ * signal between sources), rather than a failure the cancel raced.
+ */
+function isOwnCancellation(err: unknown): boolean {
+   return err instanceof Error && err.message === "Build cancelled";
 }
 
 /**
