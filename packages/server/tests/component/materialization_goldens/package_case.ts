@@ -105,7 +105,8 @@ export async function runCase(c: GoldenCase): Promise<CaseGoldens> {
    normalizer.addAlias(servedCopyAlias(LAKE), LAKE);
    let restore = settingsFor(c, "on");
    // A load worker reads its settings at spawn: a case with settings of its
-   // own plans in a fresh pool, and leaves a fresh one for the next case.
+   // own plans in a pool made under them, and the next case's first load
+   // picks a pool made under its own.
    if (c.env) await freshLoadPool();
    let loader: Awaited<ReturnType<typeof loadFixture>> | undefined;
    try {
