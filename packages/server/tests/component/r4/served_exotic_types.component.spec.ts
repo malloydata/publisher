@@ -37,6 +37,8 @@ interface ExoticType {
     * reading it is served; else left out, and that query is answered live.
     */
    declared: boolean;
+   /** More queries reading the column, each served or live as `declared`. */
+   reads?: string[];
 }
 
 const TYPES: ExoticType[] = [
@@ -44,17 +46,72 @@ const TYPES: ExoticType[] = [
       label: "INTEGER[]",
       value: (i) => `[${i}, ${i * 10}]::INTEGER[]`,
       declared: true,
+      reads: [
+         "run: s -> { group_by: g; aggregate: t is x.each.sum(), n is x.count(), c is count(); order_by: g }",
+         "run: s -> { where: x.each > 15; select: id; order_by: id }",
+      ],
    },
    {
       label: "STRUCT",
       value: (i) => `{'a': ${i}, 'b': 'v${i}'}`,
       declared: true,
+      reads: [
+         "run: s -> { where: x.a = 2; select: id, b is x.b; order_by: id }",
+      ],
    },
    {
       label: "a list of structs holding a list",
       value: (i) =>
          `[{'k': 'k${i}', 'v': [${i}, ${i + 1}]}, {'k': 'z', 'v': []::INTEGER[]}]`,
       declared: true,
+      reads: [
+         // Sums and counts through the repeated record (known limitation
+         // 41's shape, over a table rather than a nest of a query).
+         "run: s -> { group_by: x.k; aggregate: n is x.count(), t is x.v.each.sum(), c is count(), a is amount.sum(); order_by: k }",
+         "run: s -> { group_by: g; nest: by_k is { group_by: x.k; aggregate: c is count() }; order_by: g }",
+      ],
+   },
+   {
+      // NULL lists, NULL elements, empty lists, a NULL struct, and field
+      // names that need quoting or are reserved words.
+      label: "a struct with quoted and reserved field names, NULLs and empty lists",
+      value: (i) =>
+         i === 2
+            ? 'NULL::STRUCT("select" INTEGER, "my field" VARCHAR, xs INTEGER[])'
+            : `{'select': ${i === 3 ? "NULL" : i}, 'my field': ${i === 3 ? "NULL" : "'f'"}, 'xs': ${i === 3 ? "[]::INTEGER[]" : "[1, NULL]::INTEGER[]"}}`,
+      declared: true,
+      reads: [
+         "run: s -> { where: x.`select` = 1; select: id, f is x.`my field`; order_by: id }",
+         // (An aggregate through `x.xs` fails live on DuckDB in Malloy
+         // 0.0.438: "Could not find key __distinct_key in struct".)
+         "run: s -> { select: id, xs is x.xs; order_by: id }",
+      ],
+   },
+   {
+      // A zoned timestamp live types as `timestamptz`, in a list: declared
+      // as one, so the field reads back as live's.
+      label: "TIMESTAMPTZ[]",
+      value: (i) =>
+         `[TIMESTAMPTZ '2024-0${i}-02 03:04:05+00', NULL]::TIMESTAMPTZ[]`,
+      declared: true,
+      reads: [
+         "run: s -> { timezone: 'America/Los_Angeles'; group_by: d is x.each.day; order_by: d }",
+      ],
+   },
+   {
+      // Integers past 2^53 in a list, or in a struct: live (DuckDB) keeps
+      // every digit and a declared `number` would round them, and no cast
+      // reads a nested value exactly, so each is left out.
+      label: "BIGINT[] past 2^53",
+      value: (i) => `[9007199254740992::BIGINT + ${i}, NULL]::BIGINT[]`,
+      declared: false,
+      reads: ["run: s -> { aggregate: m is x.each.max() }"],
+   },
+   {
+      label: "STRUCT with a BIGINT past 2^53",
+      value: (i) => `{'n': 9007199254740992::BIGINT + ${i}, 's': 'v'}`,
+      declared: false,
+      reads: ["run: s -> { select: id, n is x.n; order_by: id }"],
    },
    {
       label: "MAP",
@@ -97,6 +154,18 @@ function withoutNumberSubtype(fields: { name: string; type: unknown }[]) {
    return JSON.parse(
       JSON.stringify(fields, (key, value) =>
          key === "subtype" ? undefined : value,
+      ),
+   );
+}
+
+/**
+ * {@link withoutNumberSubtype}, and without a nest's per-compile field
+ * annotations (each run's own `reference_id`).
+ */
+function comparableFields(fields: { name: string; type: unknown }[]) {
+   return JSON.parse(
+      JSON.stringify(fields, (key, value) =>
+         key === "subtype" || key === "annotations" ? undefined : value,
       ),
    );
 }
@@ -189,6 +258,27 @@ for (const t of TYPES) {
             }
          },
       );
+
+      for (const malloy of [
+         "run: s -> { select: *; order_by: id }",
+         ...(t.reads ?? []),
+      ]) {
+         it(`${t.declared ? "serves" : "answers live"}, equal to live: ${malloy}`, async () => {
+            const run = await fixture.run({
+               name: malloy,
+               malloy,
+               expectLive: !t.declared,
+            });
+            expect(run.live.length).toBeGreaterThan(0);
+            expect(rowDifference(run.live, run.served)).toBeUndefined();
+            expect(comparableFields(run.servedFields)).toEqual(
+               comparableFields(run.liveFields),
+            );
+            expect(run.servedVia).toBe(
+               t.declared ? "served_copy" : (undefined as unknown as string),
+            );
+         });
+      }
    });
 }
 
@@ -215,6 +305,59 @@ describe("R4: a stored list or struct whose field live types as sql native is le
       for (const b of fixture.bindings) {
          b.schema = b.schema.map((c) =>
             c.name === "x" ? { ...c, type: "STRUCT(a INTEGER)" } : c,
+         );
+      }
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("answers a query reading it live, and equal", async () => {
+      const run = await fixture.run({
+         name: "reading it",
+         malloy: "run: s -> { select: id, x; order_by: id }",
+         expectLive: true,
+      });
+      expect(run.live.length).toBe(3);
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+      expect(run.servedVia).toBeUndefined();
+   });
+
+   it("still serves a query that does not read it", async () => {
+      const run = await fixture.run({
+         name: "not reading it",
+         malloy:
+            "run: s -> { group_by: g; aggregate: n is count(), total is amount.sum(); order_by: g }",
+      });
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+      expect(run.servedVia).toBe("served_copy");
+   });
+});
+
+/**
+ * The same guard one level down: a struct whose field live types as `sql
+ * native` (here a BLOB, captured as what a destination storing it as text
+ * would report) is left out, though the struct itself is a record live.
+ */
+describe("R4: a stored struct holding a field live types as sql native is left out per query", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": MODEL },
+         seedSql: seed({
+            label: "STRUCT holding a BLOB",
+            value: (i) => `{'a': ${i}, 'b': '\\x0${i}'::BLOB}`,
+            declared: false,
+         }),
+      });
+      for (const b of fixture.bindings) {
+         b.schema = b.schema.map((c) =>
+            c.name === "x" ? { ...c, type: "STRUCT(a INTEGER, b VARCHAR)" } : c,
          );
       }
    });

@@ -37,6 +37,7 @@ import {
    planSourceIds,
    declarableColumns,
    storedMalloyType,
+   storedMalloyTypeFor,
    groupAliasesByName,
    extractJoins,
    extractRefinements,
@@ -92,6 +93,74 @@ describe("storedMalloyType", () => {
       "NOT_A_REAL_TYPE",
    ])("declares no type for %s", (duck) => {
       expect(storedMalloyType(duck)).toBeUndefined();
+   });
+});
+
+describe("storedMalloyTypeFor", () => {
+   const n = (numberType: string) => ({ type: "number", numberType });
+   const list = (element: unknown) => ({
+      type: "array",
+      elementTypeDef: element,
+   });
+   const records = (fields: unknown[]) => ({
+      type: "array",
+      elementTypeDef: { type: "record_element" },
+      fields,
+   });
+
+   it("declares a list or struct in live's shape", () => {
+      expect(storedMalloyTypeFor("INTEGER[]", list(n("integer")), true)).toBe(
+         "number[]",
+      );
+      expect(
+         storedMalloyTypeFor(
+            'STRUCT(k VARCHAR, "my field" INTEGER[])[]',
+            records([
+               { name: "k", type: "string" },
+               { name: "my field", ...list(n("integer")) },
+            ]),
+            true,
+         ),
+      ).toBe("{ k::string, `my field`::number[] }[]");
+      // A zoned timestamp live types as `timestamptz` is declared as one.
+      expect(
+         storedMalloyTypeFor(
+            "TIMESTAMP WITH TIME ZONE[]",
+            list({ type: "timestamptz" }),
+            true,
+         ),
+      ).toBe("timestamptz[]");
+      // Where live rounds a bigint too, a `number` reads it as live does.
+      expect(storedMalloyTypeFor("BIGINT[]", list(n("bigint")), false)).toBe(
+         "number[]",
+      );
+   });
+
+   it.each([
+      ["a bigint live keeps every digit of", "BIGINT[]", list(n("bigint"))],
+      [
+         "a bigint in a struct",
+         "STRUCT(a BIGINT)",
+         { type: "record", fields: [{ name: "a", ...n("bigint") }] },
+      ],
+      [
+         "a leaf live types as sql native",
+         "STRUCT(a VARCHAR)",
+         { type: "record", fields: [{ name: "a", type: "sql native" }] },
+      ],
+      [
+         "a field live types as sql native",
+         "STRUCT(a INTEGER)",
+         { type: "sql native" },
+      ],
+      [
+         "a struct whose fields are not live's",
+         "STRUCT(a INTEGER)",
+         { type: "record", fields: [{ name: "b", ...n("integer") }] },
+      ],
+      ["a list live types as a scalar", "VARCHAR[]", { type: "string" }],
+   ])("declares nothing for %s", (_label, stored, field) => {
+      expect(storedMalloyTypeFor(stored, field, true)).toBeUndefined();
    });
 });
 

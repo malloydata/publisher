@@ -479,10 +479,13 @@ example `amount_text::"double"`: a cast to a type Malloy already believes the fi
 **Columns with no Malloy basic type.** A stored list or struct column is declared as Malloy's array
 or record type, so it reads back as it does live, when the source's field is one; a column Malloy has
 no faithful declaration for (a MAP, UNION, ENUM, BLOB, INTERVAL or JSON column, a list or struct
-holding one, or a list or struct whose field live types as a warehouse-native type) is left out of its
-source, so a query reading it is answered live and every other query reads the table. The build no
+holding one, a list or struct whose field live types as a warehouse-native type or that holds one, or
+a list or struct holding an integer live keeps exact past 2^53, such as a DuckDB `BIGINT[]`) is left out
+of its source, so a query reading it is answered live and every other query reads the table. A list or
+struct of zoned timestamps is declared `timestamptz`, as live types it. The build no
 longer refuses such a table; it refuses (reason `not_duckdb_portable`) only one with no column left
-to declare. Each left-out column is counted in `publisher_storage_serve_shape_type_fallback_total`.
+to declare. Each column the build-time check leaves out is counted in
+`publisher_storage_serve_shape_type_fallback_total`.
 
 **Integers past 2^53.** A stored table's columns are declared to Malloy as plain numbers, which it
 reads through a JavaScript number, so 9007199254740993 would come back as 9007199254740992. A

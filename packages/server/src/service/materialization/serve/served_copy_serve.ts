@@ -63,6 +63,7 @@ import {
    type BigIntegerReadOptions,
    nativeTypeLookup,
    declaredColumnsOf,
+   liveKeepsBigIntegers,
    queryTimezoneOf,
    serveTypePlan,
    storedColumnTypeMismatches,
@@ -89,6 +90,7 @@ import {
    buildVirtualMap,
    narrowSchemaToPublic,
    optsOutOfPersist,
+   storedMalloyTypeFor,
    type DerivedSourceDef,
    type ServeBinding,
 } from "./materialization_serve_transform";
@@ -1531,9 +1533,27 @@ export class ServedCopyServe {
       // a list or struct whose field live types as something else, say), so
       // only a query that reads it answers live, as the serve shape kept it
       // local; otherwise the source is left to its fallback.
+      // A stored list or struct is declared in live's shape, or left out
+      // when no declaration reads it back as live does
+      // (`storedMalloyTypeFor`).
+      const keepsBigIntegers = liveKeepsBigIntegers(
+         (def as { dialect?: unknown }).dialect,
+      );
+      const nestedDeclaration = (c: ServedColumn) =>
+         nestedDeclarationOf(
+            c.type,
+            fieldsByName.get(c.name),
+            keepsBigIntegers,
+         );
+      columns = columns.map((c) => {
+         const declared = nestedDeclaration(c);
+         return declared && declared !== storedMalloyType(c.type)
+            ? { ...c, declaredType: declared }
+            : c;
+      });
       const undeclarableColumn = (c: ServedColumn) =>
          storedMalloyType(c.type) === undefined ||
-         (!plan && readsAsOtherShape(c.type, fieldsByName.get(c.name)));
+         nestedDeclaration(c) === undefined;
       if (!plan) {
          const undeclarable = columns
             .filter(undeclarableColumn)
@@ -3297,17 +3317,21 @@ export function resultShapeOf(prepared: { resultExplore: unknown }): string {
 }
 
 /**
- * Whether a stored list or struct column would be declared as an array or
- * record (`storedMalloyType`) for a field live types as something else: a
- * warehouse type Malloy reads as `sql native` (a Postgres composite type,
- * stored by DuckDB as a STRUCT), whose values live returns in another shape.
- * Such a column is left out, so a query reading it is answered live.
+ * A stored list or struct column's declaration in the shape live answers its
+ * field in (`storedMalloyTypeFor`), or undefined when none reads it back as
+ * live does: a field live types as `sql native` (a Postgres composite type,
+ * stored by DuckDB as a STRUCT), or one holding such a leaf or a `bigint`
+ * number live keeps every digit of. Any other column, or one whose field is
+ * not known here, keeps the stored type's own declaration.
  */
-function readsAsOtherShape(storedType: string, field: unknown): boolean {
+function nestedDeclarationOf(
+   storedType: string,
+   field: unknown,
+   keepsBigIntegers: boolean,
+): string | undefined {
    const declared = storedMalloyType(storedType);
-   if (declared === undefined) return false;
+   if (declared === undefined) return undefined;
    const nested = declared.startsWith("{") || declared.endsWith("[]");
-   if (!nested || field === undefined) return false;
-   const type = (field as { type?: unknown }).type;
-   return type !== "array" && type !== "record";
+   if (!nested || field === undefined) return declared;
+   return storedMalloyTypeFor(storedType, field, keepsBigIntegers);
 }

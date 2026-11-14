@@ -411,6 +411,12 @@ export interface ServedColumn {
     * so the field reads back as one (the v1 cutover).
     */
    timestamptz?: true;
+   /**
+    * A stored list or struct declared in live's shape where it differs from
+    * the stored type's own (`{ at::timestamptz }[]` for a list of zoned
+    * timestamps whose field live types as `timestamptz`).
+    */
+   declaredType?: string;
 }
 
 /** A timeframe in {@link TIMEFRAMES}, as Malloy text. */
@@ -1402,7 +1408,7 @@ export function typeDeclaration(
             )
                .map((note) => noteSource(note, "   "))
                .join("") +
-            `   ${identifier(c.name)}::${c.timestamptz ? "timestamptz" : storedTypeText(c.type)}`,
+            `   ${identifier(c.name)}::${c.timestamptz ? "timestamptz" : (c.declaredType ?? storedTypeText(c.type))}`,
       )
       .join(",\n");
    return `type: ${identifier(r.typeName)} is {\n${fields}\n}`;

@@ -731,8 +731,9 @@ A third check runs **after** the build, once the table's authoritative schema is
 captured: the served shape must **compile in DuckDB** (the served table lives
 there, even for a warehouse-authored source). A source whose materialized shape
 isn't DuckDB-portable is refused the same way — a serve-time error turned into a
-build-time refusal, with reason `not_duckdb_portable` on the run record and a
-message naming the columns by name and type. In practice it rarely fires,
+build-time refusal: the failure on the run record names the columns by name
+and type, and the build's `materialization.build.failed` log event carries code
+`not_duckdb_portable`. In practice it rarely fires,
 because the served shape is just the stored columns; it's the floor that
 guarantees the captured schema forms a valid DuckDB source. A list or struct
 column is declared as Malloy's array or record type. A column Malloy has no

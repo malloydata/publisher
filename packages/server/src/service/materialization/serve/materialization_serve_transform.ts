@@ -497,9 +497,117 @@ export function duckdbTypeToMalloyType(
  * chained build's parents, and the served copy.
  */
 export function storedMalloyType(stored: string): string | undefined {
+   const parsed = parseStoredType(stored);
+   return parsed && renderStoredType(parsed);
+}
+
+/**
+ * {@link storedMalloyType} for a stored list or struct, fitted to the field
+ * live answers it as, or undefined when no declaration reads it back as live
+ * does, so it is left out and a query reading it is answered live. Every
+ * level must be live's shape: an array where live has one, a record with
+ * live's fields by name, and each leaf live's type. A leaf live types as a
+ * `timestamptz` stored with its zone is declared `timestamptz`, as a top-level
+ * column is. A leaf that differs otherwise is refused: a warehouse type Malloy
+ * reads as `sql native` (a Postgres composite stored as a STRUCT), and a
+ * `bigint` number where live keeps every digit (`keepsBigIntegers`), which
+ * Malloy reads through a declared `number` as a JavaScript number, rounding it
+ * past 2^53. A nested value has no cast that reads it exactly, as a top-level
+ * BIGINT has (known limitation 12).
+ */
+export function storedMalloyTypeFor(
+   stored: string,
+   field: unknown,
+   keepsBigIntegers: boolean,
+): string | undefined {
+   const parsed = parseStoredType(stored);
+   return parsed && fitStoredType(parsed, field, keepsBigIntegers);
+}
+
+/** A stored DuckDB type: a scalar with its Malloy type, a struct or a list. */
+type StoredType =
+   | { kind: "scalar"; raw: string; malloyType: string }
+   | { kind: "record"; fields: { name: string; type: StoredType }[] }
+   | { kind: "array"; element: StoredType };
+
+function parseStoredType(stored: string): StoredType | undefined {
    const parsed = parseNestedType(stored.trim());
    if (parsed === undefined || parsed.rest.trim() !== "") return undefined;
-   return parsed.text;
+   return parsed.type;
+}
+
+/** A stored type as Malloy type text, from the stored type alone. */
+function renderStoredType(t: StoredType): string {
+   switch (t.kind) {
+      case "scalar":
+         return t.malloyType;
+      case "array":
+         return `${renderStoredType(t.element)}[]`;
+      case "record":
+         return `{ ${t.fields
+            .map((f) => `${identifier(f.name)}::${renderStoredType(f.type)}`)
+            .join(", ")} }`;
+   }
+}
+
+/** {@link storedMalloyTypeFor}'s walk of a stored type beside live's field. */
+function fitStoredType(
+   t: StoredType,
+   field: unknown,
+   keepsBigIntegers: boolean,
+): string | undefined {
+   const live = (field ?? {}) as {
+      type?: unknown;
+      numberType?: unknown;
+      fields?: unknown;
+      elementTypeDef?: unknown;
+   };
+   switch (t.kind) {
+      case "array": {
+         if (live.type !== "array") return undefined;
+         const element = live.elementTypeDef as { type?: unknown } | undefined;
+         // An array of records keeps its records' fields on the array.
+         const inner = fitStoredType(
+            t.element,
+            element?.type === "record_element"
+               ? { type: "record", fields: live.fields }
+               : element,
+            keepsBigIntegers,
+         );
+         return inner && `${inner}[]`;
+      }
+      case "record": {
+         if (live.type !== "record" || !Array.isArray(live.fields)) {
+            return undefined;
+         }
+         const liveFields = live.fields as { name?: unknown; as?: unknown }[];
+         if (liveFields.length !== t.fields.length) return undefined;
+         const parts: string[] = [];
+         for (const f of t.fields) {
+            const match = liveFields.find((l) => (l.as ?? l.name) === f.name);
+            const inner =
+               match && fitStoredType(f.type, match, keepsBigIntegers);
+            if (!inner) return undefined;
+            parts.push(`${identifier(f.name)}::${inner}`);
+         }
+         return `{ ${parts.join(", ")} }`;
+      }
+      case "scalar":
+         if (live.type === "number") {
+            return t.malloyType === "number" &&
+               !(keepsBigIntegers && live.numberType === "bigint")
+               ? "number"
+               : undefined;
+         }
+         if (
+            live.type === "timestamptz" &&
+            t.malloyType === "timestamp" &&
+            /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/i.test(t.raw.trim())
+         ) {
+            return "timestamptz";
+         }
+         return live.type === t.malloyType ? t.malloyType : undefined;
+   }
 }
 
 /**
@@ -509,14 +617,14 @@ export function storedMalloyType(stored: string): string | undefined {
 function parseNestedType(
    s: string,
    depth = 0,
-): { text: string; rest: string } | undefined {
+): { type: StoredType; rest: string } | undefined {
    if (depth > 16) return undefined;
-   let text: string;
+   let type: StoredType;
    let rest: string;
    const struct = /^STRUCT\s*\(/i.exec(s);
    if (struct) {
       rest = s.slice(struct[0].length);
-      const fields: string[] = [];
+      const fields: { name: string; type: StoredType }[] = [];
       for (;;) {
          const name = /^\s*("(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*)\s+/.exec(
             rest,
@@ -527,7 +635,7 @@ function parseNestedType(
             : name[1];
          const inner = parseNestedType(rest.slice(name[0].length), depth + 1);
          if (!inner) return undefined;
-         fields.push(`${identifier(fieldName)}::${inner.text}`);
+         fields.push({ name: fieldName, type: inner.type });
          rest = inner.rest.trimStart();
          if (rest.startsWith(",")) {
             rest = rest.slice(1);
@@ -537,7 +645,7 @@ function parseNestedType(
          rest = rest.slice(1);
          break;
       }
-      text = `{ ${fields.join(", ")} }`;
+      type = { kind: "record", fields };
    } else {
       // A scalar, with its own parenthesised arguments (`DECIMAL(18,2)`).
       const scalar =
@@ -545,16 +653,16 @@ function parseNestedType(
       if (!scalar) return undefined;
       const mapped = duckdbTypeToMalloyType(scalar[0]);
       if (!("type" in mapped)) return undefined;
-      text = mapped.type;
+      type = { kind: "scalar", raw: scalar[0], malloyType: mapped.type };
       rest = s.slice(scalar[0].length);
    }
    for (;;) {
       const list = /^\s*\[\s*\]/.exec(rest);
       if (!list) break;
-      text = `${text}[]`;
+      type = { kind: "array", element: type };
       rest = rest.slice(list[0].length);
    }
-   return { text, rest };
+   return { type, rest };
 }
 
 /** A stored column, by name and DuckDB type, that no `type:` can declare. */
