@@ -65,7 +65,7 @@ Question-level retrieval matches by keyword and stored values, and, on a server 
 
 ### Query tool
 
-- `execute_query`: run a Malloy query and return the results as JSON. Accepts `givens` for supplying values to model-declared [runtime parameters](givens.md).
+- `execute_query`: run a Malloy query and return the results as JSON. Accepts `givens` for supplying values to model-declared [runtime parameters](givens.md). Next to the flat `rows`, `_columns` says what each column is, in order: its `type` (`string`, `number`, `date`, `timestamp`, `array`, `record`, ...), and when they apply its `subtype` (`integer`, `decimal`, `bigint`), `timeframe` (the grain of a truncated date, such as `month`), `label`, `measure: true` for an aggregate, `format` (the display format the model declares, as its tag spells it: `currency`, `currency = usd0k`, `percent`, `duration = minutes`), `timezone` (the zone a timestamp's wall clock reads in; absent means UTC) and a nest's own `fields`. It is read from the result's schema, so an agent does not have to decode `_meta.schema` and its tag strings to present a value: a column with `format: "currency"` is money, and `timezone` says how to read a UTC instant in `rows`. `_columns` is Publisher's own: Credible's `execute_query` does not send it yet, so an agent or skill that must also work against Credible reads `_meta.schema` instead.
 
 ### Authoring tools
 

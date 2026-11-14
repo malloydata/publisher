@@ -104,14 +104,15 @@ const EXECUTE_QUERY_DESCRIPTION = `Run a Malloy query against a model and return
 - query is RESTRICTED: no raw SQL/import/##! (see its param doc).
 
 ## Response
-A JSON object, the same shape Credible's execute_query and an in-package data app receive:
+A JSON object in Credible's execute_query shape, plus _columns:
 - rows: flat objects keyed by column name.
-- _meta: the Malloy metadata flat rows drop (schema with field types and render tags, annotations, connection_name, query_timezone).
+- _columns: each column's type and, where set, subtype, timeframe, label, measure, format (currency, percent...), timezone (absent: UTC), nest fields.
+- _meta: the raw Malloy schema and annotations.
 - _query_row_limit: the cap pushed into the SQL, from the query's own limit: or the server default.
 - _limit_source: "query" when the cap came from the query's own limit:/top:, "server_default" otherwise.
 - _limit_hit: the row count equals that cap AND the cap was the server default, so a query carrying its own limit:/top: never sets it and exactly that many rows is a complete answer.
 - _rows_truncated / _total_rows / _returned_rows: present only when the payload cap dropped rows.
-- _query_id: this query's id in the warehouse's own query history. Present only where enabled.
+- _query_id: the warehouse's id for this query, where enabled.
 - warning, renderLogErrors: present only when they apply.
 
 Values above 2^53 are returned as JSON strings so their digits survive.`;

@@ -634,6 +634,12 @@ A rebuild of a materialized table in the source's own warehouse no longer drops 
 
 **Deprecated: `GET /environments/{env}?reload=true`.** It re-reads the environment's block of `publisher.config.json`; no first-party client calls it, and the v1 API has no environment reload. A response to it now carries `Deprecation: true`, and each use is counted in `publisher_deprecated_usage_total{feature="environment_reload"}`. It is removed once that count reads zero ([#1540](https://github.com/malloydata/publisher/issues/1540)). It still works, and under `frozenConfig` it is still refused like any change to an environment. To pick up a package's changed files, reload the package.
 
+## [Unreleased] — `execute_query` says what each column is: `_columns`
+
+An `execute_query` answer now carries `_columns` beside `rows`: one entry per column, in output order, with its `type`, and when they apply its numeric `subtype` (`integer`, `decimal`, `bigint`), `timeframe` (the grain of a truncated date: `month`), `label`, `measure: true` for an aggregate, `format` (the display format the model or query declares, as its tag spells it: `currency`, `currency = usd0k`, `percent`, `number = "#,##0.0"`, `duration = minutes`), `timezone` (the zone a timestamp's wall clock reads in, from the query's `timezone:` or a nest's own; absent means UTC) and a nest's or record's own `fields`.
+
+Flat rows lose all of it: a date is a string, a bigint past 2^53 is a string, a revenue is a bare number, and a timestamp is UTC text with nothing saying which zone it reads in. The facts were already in `_meta.schema`, but as Malloy's schema and raw tag strings an agent had to decode. `_columns` is read from that schema, adds no query, and `_meta` is unchanged. A column whose schema cannot be read is listed by name with `type: "unknown"` rather than failing the answer. Credible's `execute_query` does not carry `_columns` yet; everything else in the envelope keeps Credible's shape.
+
 ## [0.12.5] — `--help` and the configuration reference come from the settings registry, and startup logs the settings given
 
 Every setting is described once, in the settings registry 0.12.2 added, and three things are now generated from it:
