@@ -193,6 +193,52 @@ source: bad is orders_raw extend { measure: n is count() }`,
    const SOUND = `#(materialize) storage="lake"
 source: good is orders_raw extend { measure: n is count() }`;
 
+   for (const [label, storage] of [
+      ["empty", '""'],
+      ["not a name", '["lake"]'],
+   ] as const) {
+      it(`#@ persist, storage ${label}: refused as empty_storage, not built`, async () => {
+         const { plan, served } = await run(
+            `persist-${label}`,
+            `#@ persist storage=${storage}
+source: bad is orders_raw -> { group_by: region; aggregate: n is count() }
+
+${SOUND}`,
+            [
+               {
+                  name: "bad",
+                  malloy: "run: bad -> { select: * }",
+               },
+               {
+                  name: "good",
+                  malloy: "run: good -> { group_by: region; aggregate: n }",
+               },
+            ],
+         );
+         expect(plan.loadError).toBeUndefined();
+         const refused = Object.values(
+            (plan.wirePlan?.refusedSources ?? {}) as Record<
+               string,
+               { name?: string; reason?: string }
+            >,
+         );
+         expect(refused.map((r) => [r.name, r.reason])).toEqual([
+            ["bad", "empty_storage"],
+         ]);
+         const ids = Object.keys(plan.wirePlan?.sources ?? {});
+         expect(ids.some((id) => id.startsWith("bad@"))).toBe(false);
+         const byName = new Map(served.map((q) => [q.query, q]));
+         expect(byName.get("bad")).toMatchObject({
+            servedBy: "live",
+            equalToLive: true,
+         });
+         expect(byName.get("good")).toMatchObject({
+            servedFrom: "storage",
+            equalToLive: true,
+         });
+      }, 120_000);
+   }
+
    for (const e of EMPTY) {
       for (const [label, storage] of [
          ["empty", '""'],

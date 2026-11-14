@@ -12,6 +12,7 @@ import { recordEligibilityRefused } from "../../../materialization_metrics";
 import type { AnnotationNote } from "../../annotations";
 import { parseAuthorizeAnnotation } from "../../authorize";
 import {
+   declaresEmptyStorage,
    deriveAnnotationFields,
    deriveColumns,
    type PersistSourceGateOutcome,
@@ -23,6 +24,7 @@ import {
    type DynamicTerm,
 } from "./persist_dynamic_terms";
 import { routeReadsEnv } from "../../motly";
+import { EMPTY_STORAGE_REASON } from "./declaration";
 import { resolvePartitionColumns } from "./persist_partition";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
 
@@ -796,6 +798,15 @@ export function assertTierEligible(
             `of its '#@' directives (name=, storage=, queryMetadata) and serves ` +
             `it live rather than build a table where its author did not say. ` +
             `Move the value out of the model.`,
+      });
+   }
+   // A destination left blank names no place to build: refused, never
+   // built in the source's own warehouse instead (declaration.ts).
+   if (declaresEmptyStorage(source)) {
+      recordEligibilityRefused("empty_storage");
+      throw new MaterializationEligibilityError({
+         reason: "empty_storage",
+         message: `'${source.name}' cannot be materialized: ${EMPTY_STORAGE_REASON}.`,
       });
    }
    assertRollupNameUnshared(source, plan);

@@ -14,6 +14,7 @@ import type { AtomicField, PersistSource } from "@malloydata/malloy";
 import {
    destinationOf,
    persistAnnotationFields,
+   placementOf,
    readRouteIfAny,
 } from "./declaration";
 import { components } from "../../../api";
@@ -90,4 +91,10 @@ export function declaredStorage(
 ): string | undefined {
    const tag = readRouteIfAny(persistSource.annotations, "@");
    return tag ? destinationOf(tag, "persist") : undefined;
+}
+
+/** Whether a persist source's `storage=` names nothing, which refuses it. */
+export function declaresEmptyStorage(persistSource: PersistSource): boolean {
+   const tag = readRouteIfAny(persistSource.annotations, "@");
+   return tag !== undefined && "refused" in placementOf(tag, "persist");
 }

@@ -55,6 +55,8 @@ A persist source's identity is its **`sourceEntityId`**: a content address of it
 | `#@ -persist` (on a reader) | opt a reader out of the table | above |
 | `#@ preaggregate grain="..."` (on a measure) | store a derived rollup | `reference/storage.md` |
 
+`storage=` and `name=` may be written beside the route's key or inside it: `#@ persist storage="lake"` and `#@ persist { storage="lake" }` place the table the same way, on every route (`#@ persist`, a persisted view, `#@ preaggregate`, `#(materialize)`, `#(preaggregate)`). A `storage=""`, or a `storage=` that is not a name, refuses that source alone with a warning, and it is answered live: name the destination, or drop the key to build in the source's own warehouse.
+
 On a server with `PUBLISHER_MATERIALIZE` on, the v2 spelling `#(materialize)` takes the same keys but `realization`, plus `inline=[...]`, as a closed set (an unknown key refuses the publish), and `#(preaggregate) grain=["a", "b"]` replaces `#@ preaggregate`. The main skill's "v1 or v2" section says when to write which.
 
 An unrecognized key on the tag is a warning on the package. The retired per-source `sharing=` and `schedule=` are rejected at publish: scope and schedule are declared once for the package (`reference/policy.md`).

@@ -1,16 +1,17 @@
 {
   "bind": {
     "buildErrors": {},
-    "built": [
-      {
-        "name": "p_empty",
-        "tier": "colocated"
-      }
-    ],
+    "built": [],
     "verdicts": [
-      "p_empty:serves"
+      "p_empty:live:refused"
     ],
-    "warnings": []
+    "warnings": [
+      {
+        "code": "persist-source-refused",
+        "message": "'p_empty' cannot be materialized: its `storage=` names no destination: name the storage destination to build it into, or remove the key to build it in its own warehouse.",
+        "subject": "p_empty"
+      }
+    ]
   },
   "queries": []
 }
