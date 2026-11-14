@@ -703,6 +703,7 @@ export function getLlmSettings(file?: RetrievalLlmConfig): LlmSettings | null {
       projectId: file.projectId,
       location: file.location,
       apiKey,
+      maxOutputTokens: file.maxOutputTokens,
       timeoutMs: file.timeoutMs,
       concurrency: file.concurrency,
       maxCallsPerSync: file.maxCallsPerSync,

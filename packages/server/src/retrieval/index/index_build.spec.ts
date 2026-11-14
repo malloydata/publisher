@@ -32,6 +32,7 @@ import { buildFcjIndex } from "./index_build";
 import { KeywordIndex, stem, terms } from "./keyword";
 import { VectorSyncError, type VectorProgress } from "./vectors";
 import { SyncRequestBudget } from "../llm/llm_calls";
+import { sha256 } from "../llm/llm_cache";
 
 describe("doc parts by rules", () => {
    it("keeps a one-sentence doc whole", () => {
@@ -161,6 +162,108 @@ describe("doc parts by the model", () => {
       expect(out.byRules).toBe(1);
       expect(out.run?.failure).toBeDefined();
       expect(out.run?.missing).toBe(1);
+   });
+
+   // Copies every sentence of every doc, as the prompt asks, and stops at its
+   // allowance: 250 tokens of 4 characters, room for two of these docs.
+   const copyingChat = (options: { delayMs?: number } = {}) =>
+      scriptedChat(
+         (prompt) =>
+            JSON.stringify({
+               results: numberedLines(prompt).map(([index, line]) => {
+                  const [what, ...rules] = line.split(/(?<=\.) /);
+                  return { index, what, values: [], rules, examples: [] };
+               }),
+            }),
+         { maxOutputTokens: 250, charsPerToken: 4, ...options },
+      );
+   const docOf = (name: string, sentences: number) =>
+      [
+         `${name} amount in dollars.`,
+         ...Array.from(
+            { length: sentences },
+            (_, i) => `Exclude orders with status ${i + 1} when summing.`,
+         ),
+      ].join(" ");
+   const resolveWith = (
+      chat: ReturnType<typeof scriptedChat>,
+      docs: string[],
+      { concurrency = 1, budget = new SyncRequestBudget(20) } = {},
+   ) =>
+      resolveDocParts({
+         docs,
+         llm: {
+            db,
+            environmentName: "env",
+            packageName: "p",
+            chat: chat.model,
+            instructions: "split",
+            concurrency,
+            budget,
+         },
+      });
+   const docsPerRequest = (chat: ReturnType<typeof scriptedChat>) =>
+      chat.prompts.map((p) => numberedLines(p).length);
+
+   it("sends a batch whose reply was cut off again in halves, each with the whole limit", async () => {
+      const chat = copyingChat();
+      const docs = Array.from({ length: 6 }, (_, i) => docOf(`Doc ${i}`, 6));
+      const out = await resolveWith(chat, docs);
+      expect(out.run?.failure).toBeUndefined();
+      expect(out.byModel).toBe(6);
+      expect(docs.map((d) => out.parts.get(sha256(d))?.what)).toEqual(
+         docs.map((_, i) => `Doc ${i} amount in dollars.`),
+      );
+      // 6 and 3 do not fit; 2 and 1 do. A cut-off reply is not re-asked.
+      expect(docsPerRequest(chat)).toEqual([6, 3, 2, 1, 3, 2, 1]);
+      expect(new Set(chat.maxTokens)).toEqual(new Set([250]));
+      const again = await resolveWith(chat, docs);
+      expect(again.run).toMatchObject({ reused: 6, generated: 0 });
+      expect(chat.prompts).toHaveLength(7);
+   });
+
+   it("spends the sync budget on split requests too, at most `concurrency` at a time", async () => {
+      const chat = copyingChat({ delayMs: 5 });
+      const out = await resolveWith(
+         chat,
+         Array.from({ length: 12 }, (_, i) => docOf(`Doc ${i}`, 6)),
+         { concurrency: 2, budget: new SyncRequestBudget(4) },
+      );
+      expect(chat.prompts).toHaveLength(4);
+      expect(chat.maxInFlight()).toBe(2);
+      expect(out.run).toMatchObject({ capped: true, missing: 10 });
+   });
+
+   it("leaves a doc whose reply does not fit on its own to the rules, and goes on", async () => {
+      const chat = copyingChat();
+      const out = await resolveWith(chat, [
+         docOf("Short", 1),
+         docOf("Long", 30),
+         docOf("Other", 1),
+      ]);
+      expect(docsPerRequest(chat)).toEqual([3, 2, 1, 1, 1]);
+      expect(out.byModel).toBe(2);
+      expect(out.byRules).toBe(1);
+      expect(out.run?.failure).toContain("stopped at a token limit");
+   });
+
+   it("splits a batch whose reply is not usable JSON after the repair", async () => {
+      const chat = scriptedChat((prompt) => {
+         const lines = numberedLines(prompt);
+         if (lines.length > 2) return '{"results": [';
+         return JSON.stringify({
+            results: lines.map(([index, line]) => ({ index, what: line })),
+         });
+      });
+      const out = await resolveWith(
+         chat,
+         Array.from({ length: 4 }, (_, i) => docOf(`Doc ${i}`, 1)),
+      );
+      expect(out.byModel).toBe(4);
+      // The batch of 4 and its repair, then 2 and 2.
+      expect(docsPerRequest(chat)).toEqual([4, 4, 2, 2]);
+      // A model whose maximum is not declared is asked for 4,096.
+      expect(new Set(chat.maxTokens)).toEqual(new Set([4_096]));
    });
 });
 

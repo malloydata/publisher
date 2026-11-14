@@ -221,7 +221,6 @@ export async function resolveDocParts(args: {
          render: renderDocPartsPrompt,
          validate: validateDocParts,
          batchSize: DOC_PARTS_BATCH_SIZE,
-         maxTokensPerItem: 300,
       });
       const { output, ...rest } = result;
       run = rest;

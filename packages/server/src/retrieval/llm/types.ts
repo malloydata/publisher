@@ -56,6 +56,8 @@ export interface ChatRequest {
 export interface ChatResult {
    text: string;
    usage: ChatUsage;
+   /** The reply stopped at its output limit rather than ending on its own. */
+   truncated?: boolean;
 }
 
 export interface JsonChatRequest<T> extends ChatRequest {
@@ -73,6 +75,11 @@ export interface JsonChatResult<T> {
 export interface ChatModel {
    readonly provider: ProviderName;
    readonly model: string;
+   /**
+    * The most output tokens one request may ask for, thinking included, when
+    * the operator declares it (`retrieval.llm.maxOutputTokens`).
+    */
+   readonly maxOutputTokens?: number;
    complete(req: ChatRequest): Promise<ChatResult>;
    completeJson<T>(req: JsonChatRequest<T>): Promise<JsonChatResult<T>>;
 }
@@ -111,6 +118,7 @@ export interface LlmSettings {
    projectId?: string;
    location?: string;
    apiKey?: string;
+   maxOutputTokens?: number;
    timeoutMs: number;
    concurrency: number;
    maxCallsPerSync: number;

@@ -115,8 +115,26 @@ describe("retrieval.llm validation", () => {
             llm: { provider: "ollama", model: "m", maxCalls: 5 },
          }),
       ).toThrow(
-         "Invalid retrieval.llm: unknown key 'maxCalls'. Valid keys: provider, model, baseUrl, projectId, location, timeoutMs, concurrency, maxCallsPerSync, maxCallsPerRequest",
+         "Invalid retrieval.llm: unknown key 'maxCalls'. Valid keys: provider, model, baseUrl, projectId, location, maxOutputTokens, timeoutMs, concurrency, maxCallsPerSync, maxCallsPerRequest",
       );
+   });
+
+   it("maxOutputTokens is optional and must be a positive integer", () => {
+      const llm = { provider: "ollama", model: "m" };
+      expect(
+         parseRetrievalConfig({ llm })?.llm?.maxOutputTokens,
+      ).toBeUndefined();
+      expect(
+         parseRetrievalConfig({ llm: { ...llm, maxOutputTokens: "16384" } })
+            ?.llm?.maxOutputTokens,
+      ).toBe(16_384);
+      for (const bad of [0, -1, 2.5, "many"]) {
+         expect(() =>
+            parseRetrievalConfig({ llm: { ...llm, maxOutputTokens: bad } }),
+         ).toThrow(
+            `Invalid retrieval.llm.maxOutputTokens: expected a positive integer, got ${JSON.stringify(bad)}.`,
+         );
+      }
    });
 
    it("maxCallsPerRequest defaults to 20 and must be a positive integer", () => {

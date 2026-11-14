@@ -15,7 +15,7 @@ const OLLAMA_BASE_URL = "http://localhost:11434/v1";
  * count their hidden reasoning against that limit, so a budget sized for the
  * visible reply alone comes back empty (`finish_reason: "length"`). The limit
  * is a ceiling, not a target, so the headroom costs nothing on models that do
- * not reason.
+ * not reason. It never takes a request past a declared `maxOutputTokens`.
  */
 export const OPENAI_REASONING_HEADROOM = 4000;
 
@@ -43,7 +43,7 @@ function rejectsTemperature(provider: ProviderName, model: string): boolean {
 }
 
 interface OpenAiChatReply {
-   choices?: { message?: { content?: unknown } }[];
+   choices?: { message?: { content?: unknown }; finish_reason?: unknown }[];
    usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
 }
 
@@ -78,8 +78,10 @@ export class OpenAiCompatibleChat implements RawChat {
       if (req.maxTokens !== undefined) {
          // OpenAI renamed the field; other servers still read max_tokens.
          if (this.provider === "openai") {
-            body.max_completion_tokens =
-               req.maxTokens + OPENAI_REASONING_HEADROOM;
+            body.max_completion_tokens = Math.min(
+               req.maxTokens + OPENAI_REASONING_HEADROOM,
+               req.maxOutputTokens ?? Infinity,
+            );
          } else {
             body.max_tokens = req.maxTokens;
          }
@@ -98,8 +100,11 @@ export class OpenAiCompatibleChat implements RawChat {
          what: "Chat request",
       })) as OpenAiChatReply;
 
-      const content = reply?.choices?.[0]?.message?.content;
-      if (typeof content !== "string") {
+      const choice = reply?.choices?.[0];
+      const content = choice?.message?.content;
+      // A reasoning model can spend the whole limit before writing anything.
+      const truncated = choice?.finish_reason === "length";
+      if (typeof content !== "string" && !truncated) {
          throw malformedReply(
             "Chat response",
             url,
@@ -107,11 +112,12 @@ export class OpenAiCompatibleChat implements RawChat {
          );
       }
       return {
-         text: content,
+         text: typeof content === "string" ? content : "",
          usage: {
             inputTokens: tokenCount(reply.usage?.prompt_tokens),
             outputTokens: tokenCount(reply.usage?.completion_tokens),
          },
+         ...(truncated ? { truncated } : {}),
       };
    }
 }

@@ -360,6 +360,7 @@ credentials, what may leave the machine and the spend ceilings are all in the op
     "llm": {
       "provider": "anthropic",
       "model": "<a model your provider serves>",
+      "maxOutputTokens": 4096,
       "timeoutMs": 30000,
       "concurrency": 4,
       "maxCallsPerSync": 300,
@@ -383,6 +384,7 @@ credentials, what may leave the machine and the spend ceilings are all in the op
 | `llm.model`                                                         | The chat model name your provider serves. Required.                                                                                                                                                                                    |
 | `llm.baseUrl`                                                       | Required for `openai-compatible`. Defaults: `openai` `https://api.openai.com/v1`, `ollama` `http://localhost:11434/v1`, `anthropic` `https://api.anthropic.com`, `google` `https://generativelanguage.googleapis.com`.                 |
 | `llm.projectId`, `llm.location`                                     | Required for `vertex` (for example `us-central1`, or `global`).                                                                                                                                                                        |
+| `llm.maxOutputTokens`                                               | Optional. Most output tokens one request may ask for, thinking included. Unset, index-time doc-part and question batches ask for `4096`, plus OpenAI's reasoning headroom. A batch cut off at it is sent again in halves.              |
 | `llm.timeoutMs` / `concurrency`                                     | Per-attempt timeout (default `30000`) and how many calls run at once (default `4`).                                                                                                                                                    |
 | `llm.maxCallsPerSync`                                               | Spend ceiling. At most this many chat requests in one index build, across source summaries and the index-time question and doc-part steps (default `300`). A retry and the re-ask that repairs a JSON reply each count. A package cannot raise it. |
 | `llm.maxCallsPerRequest`                                            | Spend ceiling. At most this many chat calls in one `get_context` request (default `20`; a positive integer). A package cannot raise it. See "The judge".                                                                              |

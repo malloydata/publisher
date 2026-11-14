@@ -38,7 +38,10 @@ export function geminiGenerateBody(req: RawChatRequest) {
 }
 
 interface GeminiReply {
-   candidates?: { content?: { parts?: { text?: unknown }[] } }[];
+   candidates?: {
+      content?: { parts?: { text?: unknown }[] };
+      finishReason?: unknown;
+   }[];
    usageMetadata?: {
       promptTokenCount?: unknown;
       candidatesTokenCount?: unknown;
@@ -63,11 +66,18 @@ function geminiOutputTokens(
 /** Text and usage out of a `generateContent` reply. */
 export function parseGeminiReply(reply: unknown, url: string): ChatResult {
    const r = reply as GeminiReply;
-   const parts = r?.candidates?.[0]?.content?.parts;
+   const candidate = r?.candidates?.[0];
+   const parts = candidate?.content?.parts;
    const text = Array.isArray(parts)
       ? parts.map((p) => (typeof p?.text === "string" ? p.text : "")).join("")
       : "";
-   if (text === "") {
+   // Cut off at maxOutputTokens, or at the per-request limit (CONTINUATION).
+   // Thinking counts against maxOutputTokens and can spend all of it,
+   // leaving no text part.
+   const truncated =
+      candidate?.finishReason === "MAX_TOKENS" ||
+      candidate?.finishReason === "CONTINUATION";
+   if (text === "" && !truncated) {
       throw malformedReply(
          "Chat response",
          url,
@@ -80,6 +90,7 @@ export function parseGeminiReply(reply: unknown, url: string): ChatResult {
          inputTokens: tokenCount(r.usageMetadata?.promptTokenCount),
          outputTokens: geminiOutputTokens(r.usageMetadata),
       },
+      ...(truncated ? { truncated } : {}),
    };
 }
 
