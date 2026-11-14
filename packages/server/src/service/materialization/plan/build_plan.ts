@@ -47,7 +47,10 @@ import {
    type TierGateInputs,
 } from "./materialization_eligibility";
 
-import { type SynthesizedRuntimeFactory } from "./preaggregation_compile";
+import {
+   companionOmissions,
+   type SynthesizedRuntimeFactory,
+} from "../text/generated_files";
 import type { RollupPlan } from "./preaggregation_synthesis";
 import {
    materializeRefusalFinding,
@@ -1044,10 +1047,9 @@ export async function collectModelBuildPlan(
                { modelPath, error: errMessage(error) },
             );
             parts.omittedSources.push(
-               ...omittedByID(
-                  declaredPersistSourceIDs(malloyModel),
-                  "v1_build_companion_failed",
-               ),
+               ...companionOmissions("v1_build", {
+                  sourceIDs: declaredPersistSourceIDs(malloyModel),
+               }),
             );
          },
       });

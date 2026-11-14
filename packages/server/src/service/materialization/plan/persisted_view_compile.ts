@@ -45,7 +45,6 @@ import { collectEntryPointGates } from "../../gate_classification";
 import { readPreparedQuery } from "../../governance/ir/prepared_query";
 import { identifier } from "../../malloy_text";
 import { overlayKey } from "../../overlay_key";
-import { persistBlankedFiles } from "../text/persist_blanking";
 import { currentTimeFields, readsCurrentTime } from "./persist_dynamic_terms";
 import {
    generatePersistedViewFile,
@@ -54,9 +53,13 @@ import {
    type PersistedViewPlan,
    type PersistedViewRefusal,
 } from "./persisted_view";
-import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
+import {
+   companionOmissions,
+   GeneratedFiles,
+   type SynthesizedRuntimeFactory,
+} from "../text/generated_files";
 import { SourceMap } from "../text/source_map";
-import { omittedFromFile, type Omission } from "../domain/omitted_sources";
+import type { Omission } from "../domain/omitted_sources";
 
 export interface GeneratedPersistedViews {
    /** The views the companion declares. Never empty. */
@@ -268,15 +271,8 @@ export async function tryCompilePersistedViewCompanion(args: {
          path.basename(args.modelPath),
       );
       if (!text) return { refused };
-      const { runtime: reader } = await args.getRuntime(new Map());
-      const overlay = await persistBlankedFiles(args.modelDef, async (url) => {
-         try {
-            const read = await reader.urlReader.readURL(new URL(url));
-            return typeof read === "string" ? read : read.contents;
-         } catch {
-            return undefined;
-         }
-      });
+      const files = GeneratedFiles.over(args.getRuntime);
+      const overlay = await files.blanked(args.modelDef);
       if (!overlay) {
          // A stored base must never stand in for the rows a view reads.
          for (const plan of plans) {
@@ -290,9 +286,10 @@ export async function tryCompilePersistedViewCompanion(args: {
       }
       const url = new URL(companionHref);
       overlay.set(overlayKey(url), text);
-      const { runtime, importBaseURL } = await args.getRuntime(overlay);
-      const materializer = runtime.loadModel(url, { importBaseURL });
-      const model = await materializer.getModel();
+      const { runtime, materializer, model } = await files.compile(
+         url,
+         overlay,
+      );
       return {
          generated: { plans, model, materializer, runtime, text },
          refused,
@@ -307,11 +304,10 @@ export async function tryCompilePersistedViewCompanion(args: {
       );
       return {
          refused,
-         omitted: omittedFromFile(
-            companionHref,
-            plannedNames,
-            "persisted_view_companion_failed",
-         ),
+         omitted: companionOmissions("persisted_view", {
+            file: companionHref,
+            names: plannedNames,
+         }),
       };
    }
 }

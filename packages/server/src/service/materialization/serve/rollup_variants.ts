@@ -89,10 +89,7 @@ import * as path from "path";
 import { logger } from "../../../logger";
 import { fileURLToPath, pathToFileURL } from "url";
 import { Annotations, EMPTY_BUILD_MANIFEST } from "@malloydata/malloy";
-import {
-   createModelRuntime,
-   type ModelConnectionInput,
-} from "../../model_runtime";
+import type { ModelConnectionInput } from "../../model_runtime";
 import { overlayKey } from "../../overlay_key";
 import { quoteManifestTablePath } from "../../quoting";
 import { ownModelNoteObjects } from "../../annotations";
@@ -130,7 +127,7 @@ import {
 } from "../../governance/ir/prepared_query";
 import type { BuildManifest } from "../domain/types";
 import { evaluateManifestFreshness } from "../domain/freshness";
-import { persistBlankedFiles } from "../text/persist_blanking";
+import { packageFiles } from "../text/package_files";
 import {
    packageRelativeSourceID,
    rollupCompanionURLOf,
@@ -1515,22 +1512,8 @@ export class RollupVariantServe {
          });
       }
       const { localName } = use;
-      // The package's own reader, made once and only when a file is read.
-      let reader: ReturnType<typeof createModelRuntime> | undefined;
-      const readText = async (url: string) => {
-         try {
-            reader ??= createModelRuntime(
-               packagePath,
-               modelPath,
-               packageConfig,
-            );
-            const { runtime } = await reader;
-            const read = await runtime.urlReader.readURL(new URL(url));
-            return typeof read === "string" ? read : read.contents;
-         } catch {
-            return undefined;
-         }
-      };
+      // The package's own files, read only when a file is read.
+      const authorFiles = packageFiles(packagePath, modelPath, packageConfig);
       const overlay = new Map<string, string>();
       // The rollup with its merged measures, then the author's source with
       // the join re-pointed at it (A7).
@@ -1555,7 +1538,7 @@ export class RollupVariantServe {
       overlay.set(overlayKey(companion.href), text);
       // The shared, checked blanking (persist_blanking.ts), read through
       // the package's own reader, as the build companion reads them.
-      const blanked = await persistBlankedFiles(this.host.modelDef(), readText);
+      const blanked = await authorFiles.blanked(this.host.modelDef());
       if (!blanked) return { error: "a `#@` line could not be left out" };
       for (const [url, file] of blanked) overlay.set(url, file);
       const built = `${plan.rollupSourceName}__built`;
@@ -1571,14 +1554,11 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
          declaration,
       );
       overlay.set(overlayKey(queryModelURL.href), modelText);
-      const { runtime, importBaseURL } = await createModelRuntime(
+      const { materializer } = await packageFiles(
          packagePath,
          modelPath,
          config,
-         { overlay },
-      );
-      const materializer = runtime.loadModel(queryModelURL, { importBaseURL });
-      await materializer.getModel();
+      ).compile(queryModelURL, overlay);
       return { materializer };
    }
 
@@ -1627,16 +1607,11 @@ ${imports}
 ${declaration}
 `,
       );
-      const { runtime, importBaseURL } = await createModelRuntime(
+      const { materializer } = await packageFiles(
          ctx.packagePath,
          ctx.modelPath,
          basis.config,
-         { overlay },
-      );
-      const materializer = runtime.loadModel(ctx.queryModelURL, {
-         importBaseURL,
-      });
-      await materializer.getModel();
+      ).compile(ctx.queryModelURL, overlay);
       return { materializer };
    }
 
@@ -1771,13 +1746,11 @@ ${gates}${over}`;
       url: string,
    ): Promise<string | undefined> {
       try {
-         const { runtime } = await createModelRuntime(
+         return await packageFiles(
             ctx.packagePath,
             ctx.modelPath,
             ctx.packageConfig,
-         );
-         const read = await runtime.urlReader.readURL(new URL(url));
-         return typeof read === "string" ? read : read.contents;
+         ).read(url);
       } catch {
          return undefined;
       }

@@ -33,14 +33,12 @@ import { fileURLToPath, pathToFileURL } from "url";
 import type { GraftRuntime } from "../../gate_classification";
 import { collectEntryPointGates } from "../../gate_classification";
 import { doubleQuotedString, identifier } from "../../malloy_text";
-import {
-   createModelRuntime,
-   type ModelConnectionInput,
-} from "../../model_runtime";
+import type { ModelConnectionInput } from "../../model_runtime";
 import { overlayKey } from "../../overlay_key";
 import { splitSourceID } from "../plan/persisted_view";
 import { SourceMap } from "../text/source_map";
-import { persistBlankedFiles } from "../text/persist_blanking";
+import type { GeneratedFiles } from "../text/generated_files";
+import { packageFiles } from "../text/package_files";
 import { authorNameImports } from "./author_imports";
 
 /** A variant compiled over the author's declaring file. */
@@ -114,22 +112,10 @@ export async function compileDeclaringFileVariant(args: {
    const declaringURL = pathToFileURL(declaringFile);
    const copyURL = pathToFileURL(`${declaringFile}${args.copySuffix}`);
    const copyName = path.basename(fileURLToPath(copyURL));
-   const { runtime: reader } = await createModelRuntime(
-      packagePath,
-      modelPath,
-      packageConfig,
-   );
-   const readText = async (url: string) => {
-      try {
-         const read = await reader.urlReader.readURL(new URL(url));
-         return typeof read === "string" ? read : read.contents;
-      } catch {
-         return undefined;
-      }
-   };
+   const authorFiles = packageFiles(packagePath, modelPath, packageConfig);
    // The author's files with source-level `#@` lines blanked, the declaring
    // file's under the copy.
-   const blanked = await persistBlankedFiles(modelDef, readText);
+   const blanked = await authorFiles.blanked(modelDef);
    if (!blanked) return { error: "a source-level #@ line not set aside" };
    const overlay = new Map<string, string>();
    for (const [url, text] of blanked) {
@@ -137,17 +123,11 @@ export async function compileDeclaringFileVariant(args: {
    }
    const declaringText =
       blanked.get(overlayKey(declaringURL)) ??
-      (await readText(declaringURL.href));
+      (await authorFiles.readIfAny(declaringURL.href));
    if (declaringText === undefined) return { error: "unreadable source" };
    overlay.set(overlayKey(copyURL), declaringText);
    // The copy's own names, to import into the declaring file's overlay.
-   const copyNames = await namesDeclaredIn(
-      packagePath,
-      modelPath,
-      packageConfig,
-      overlay,
-      copyURL,
-   );
+   const copyNames = await namesDeclaredIn(authorFiles, overlay, copyURL);
    let gates: string;
    try {
       gates = gateLines(modelDef, args.sourceID);
@@ -204,16 +184,11 @@ ${exportAll}`,
 ${imports}
 `,
    );
-   const { runtime, importBaseURL } = await createModelRuntime(
+   const { runtime, materializer, model } = await packageFiles(
       packagePath,
       modelPath,
       args.config,
-      { overlay },
-   );
-   const materializer = runtime.loadModel(args.queryModelURL, {
-      importBaseURL,
-   });
-   const model = await materializer.getModel();
+   ).compile(args.queryModelURL, overlay);
    return {
       materializer,
       modelDef: (model as unknown as { _modelDef: ModelDef })._modelDef,
@@ -226,19 +201,11 @@ ${imports}
  * its own, with which of them are givens.
  */
 async function namesDeclaredIn(
-   packagePath: string,
-   modelPath: string,
-   config: ModelConnectionInput,
+   files: GeneratedFiles,
    overlay: ReadonlyMap<string, string>,
    url: URL,
 ): Promise<{ names: string[]; givens: ReadonlySet<string> }> {
-   const { runtime, importBaseURL } = await createModelRuntime(
-      packagePath,
-      modelPath,
-      config,
-      { overlay },
-   );
-   const model = await runtime.loadModel(url, { importBaseURL }).getModel();
+   const { model } = await files.compile(url, overlay);
    const def = (model as unknown as { _modelDef: ModelDef })._modelDef;
    const names = new Set<string>();
    for (const [name, entry] of Object.entries(def.contents ?? {})) {

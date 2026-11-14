@@ -4,12 +4,12 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
-   InMemoryURLReader,
-   Runtime,
+   type Runtime,
    type PersistSource,
    MalloyError,
 } from "@malloydata/malloy";
 import { leaveOutDefinitionAt } from "../text/declarations_kept";
+import { inMemoryRuntime } from "../text/generated_files";
 import {
    existsSync,
    mkdirSync,
@@ -1186,10 +1186,7 @@ export async function planChainedDownstream(params: {
    // reads then fails in the downstream's own text, which is never left out.
    let model;
    for (let pass = 0; ; pass++) {
-      runtime = new Runtime({
-         urlReader: new InMemoryURLReader(files),
-         connections: params.connections,
-      });
+      runtime = inMemoryRuntime(files, params.connections);
       try {
          model = await runtime
             .loadModel(new URL(build.entry), {

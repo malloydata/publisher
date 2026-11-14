@@ -37,7 +37,6 @@ runs: on the package-load worker its connection refuses SQL.
 | `preaggregation_namespace.ts`          | Which rollup namespaces may be spliced into a table name                                                                 | the v1 rollup planner, the rollup plan                                                                         |
 | `preaggregation_synthesis.ts`          | The v1 `#@ preaggregate` planner                                                                                         | the build plan, eligibility, the rollup plan                                                                   |
 | `preaggregation_validation.ts`         | Publish-time validation of `#@ preaggregate`                                                                             | `model.ts`, the facade                                                                                         |
-| `preaggregation_compile.ts`            | The runtime factory a generated companion compiles in                                                                    | the companion compilers, the load worker                                                                       |
 
 ## Dependency rule
 

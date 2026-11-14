@@ -11,7 +11,6 @@
 /** Import-direction pairs (R5 to R10, H5), "<importer> -> <module>": step. */
 export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    // R7: plan/ never imports run/, serve/ or service/model.ts.
-   "service/materialization/plan/build_plan_compile.ts -> service/model": "2b",
    "service/materialization/plan/incremental_policy.ts -> service/materialization/run/incremental_apply":
       "2l",
    "service/materialization/plan/materialize_compile.ts -> service/materialization/run/inline_uniqueness":
@@ -123,8 +122,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "package_load/package_load_worker.ts -> service/materialization/plan/build_plan":
       "2g.3",
    "package_load/package_load_worker.ts -> service/materialization/plan/cross_connection_joins":
-      "2g.3",
-   "package_load/package_load_worker.ts -> service/materialization/plan/preaggregation_compile":
       "2g.3",
    "package_load/protocol.ts -> service/materialization/plan/build_plan":
       "2g.3",
@@ -329,8 +326,6 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
 };
 /** H4: exports no other file imports, "<file>#<name>": step. */
 export const MATERIALIZATION_UNIMPORTED_EXPORTS = {
-   "service/materialization/domain/omitted_sources.ts#OmittedFile": "2b",
-   "service/materialization/domain/omitted_sources.ts#OmittedSource": "2b",
    "service/materialization/plan/build_plan.ts#PersistSourceGateOutcome":
       "2g.3",
    "service/materialization/plan/build_plan.ts#collidingRollups": "2g.3",

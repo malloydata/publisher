@@ -43,10 +43,8 @@ import {
    liftProbeFilterCondition,
 } from "../../authorize";
 import { keyedOverlay, overlayKey } from "../../overlay_key";
-import {
-   createModelRuntime,
-   type ModelConnectionInput,
-} from "../../model_runtime";
+import type { ModelConnectionInput } from "../../model_runtime";
+import { packageFiles } from "../text/package_files";
 import { reachPersisted, SourceMap } from "../text/source_map";
 import { keepDeclarations } from "../text/declarations_kept";
 import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
@@ -2108,15 +2106,14 @@ export class ServedCopyServe {
                   .map((b) => b.destinationName),
             ),
          );
+         const compiler = packageFiles(
+            packagePath,
+            this.host.modelPath(),
+            config,
+         );
          const load = async (files: ReadonlyMap<string, string>) => {
-            const { runtime, modelURL, importBaseURL } =
-               await createModelRuntime(
-                  packagePath,
-                  this.host.modelPath(),
-                  config,
-                  { overlay: files },
-               );
-            const m = runtime.loadModel(modelURL, { importBaseURL });
+            const { runtime, materializer: m } =
+               await compiler.loadModel(files);
             const model = await m.getModel();
             return {
                materializer: m,
