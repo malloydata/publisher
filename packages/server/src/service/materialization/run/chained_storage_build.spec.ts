@@ -108,11 +108,20 @@ function reader(): URLReader {
    return { readURL: async (url: URL) => fs.readFileSync(url, "utf8") };
 }
 
-/** Plan one model file as a package load would, and the chained facts a run derives. */
-async function planChain(text: string): Promise<Chain> {
+/**
+ * Plan one model file as a package load would, and the chained facts a run
+ * derives. `others` are more files beside `m.malloy`, which it may import.
+ */
+async function planChain(
+   text: string,
+   others: Record<string, string> = {},
+): Promise<Chain> {
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chained-build-"));
    dirs.push(dir);
    fs.writeFileSync(path.join(dir, "m.malloy"), text);
+   for (const [name, other] of Object.entries(others)) {
+      fs.writeFileSync(path.join(dir, name), other);
+   }
    const base = pathToFileURL(dir + "/");
    const runtime = new Runtime({ urlReader: reader(), connections });
    const materializer = runtime.loadModel(new URL("m.malloy", base), {
@@ -381,6 +390,125 @@ source: by_cat is day_rows -> {
          ).toEqual([{ loud_cat: "A", total: 17 }]);
       });
 
+      it("re-roots a parent in the file that declares it, under an intermediate the downstream reads it through", async () => {
+         const chain = await planChain(
+            `##! experimental.persistence
+import 'base.malloy'
+
+source: january is daily extend { where: d < @2026-02-01 }
+
+#@ persist storage="lake"
+source: jan_by_cat is january -> {
+  group_by: cat
+  aggregate: total is total.sum()
+}
+`,
+            {
+               "base.malloy": `${RAW}
+#@ persist storage="lake"
+source: daily is raw -> {
+  group_by: d, cat
+  aggregate: total is amt.sum()
+}
+`,
+            },
+         );
+         // The stored rows differ from the warehouse's, so an answer read
+         // from the warehouse would show.
+         await writeLake(
+            chain.dir,
+            `${DAILY_ROWS}; UPDATE daily_t SET total = total * 100`,
+         );
+         const { result, error, models } = await stack(
+            chain,
+            "jan_by_cat",
+            parentEntry(chain, "daily"),
+         );
+         expect(error).toBeUndefined();
+         // The entry file, with the parent's own file re-rooted beside it.
+         expect(models.map(trimmed)).toEqual([
+            `##! experimental.persistence
+import 'base.malloy'
+
+source: january is daily extend { where: d < @2026-02-01 }
+
+#@ persist storage="lake"
+source: jan_by_cat is january -> {
+  group_by: cat
+  aggregate: total is total.sum()
+}
+`,
+         ]);
+         expect(result?.upstreamReuse).toBe("reused");
+         expect(
+            await readLake(
+               chain.dir,
+               "SELECT cat, total FROM jan_by_cat_t ORDER BY cat",
+            ),
+         ).toEqual([
+            { cat: "a", total: 1000 },
+            { cat: "b", total: 500 },
+         ]);
+      });
+
+      it("leaves out a parent's definition that reads the warehouse, and stacks only a downstream that does not read it", async () => {
+         const chain = await planChain(`${RAW}
+#@ persist storage="lake"
+source: daily is raw -> {
+  group_by: d, cat
+  aggregate: total is amt.sum()
+} extend {
+  join_one: r is raw on r.d = d
+  measure: raw_rows is r.count()
+  dimension: loud_cat is upper(cat)
+}
+
+#@ persist storage="lake"
+source: by_loud is daily -> {
+  group_by: loud_cat
+  aggregate: total is total.sum()
+}
+
+#@ persist storage="lake"
+source: by_raw is daily -> {
+  group_by: cat
+  aggregate: raw_rows
+}
+`);
+         await writeLake(
+            chain.dir,
+            `${DAILY_ROWS}; UPDATE daily_t SET total = total * 100`,
+         );
+         const loud = await stack(
+            chain,
+            "by_loud",
+            parentEntry(chain, "daily"),
+         );
+         expect(loud.error).toBeUndefined();
+         expect(loud.result?.upstreamReuse).toBe("reused");
+         expect(
+            await readLake(
+               chain.dir,
+               "SELECT loud_cat, total FROM by_loud_t ORDER BY loud_cat",
+            ),
+         ).toEqual([
+            { loud_cat: "A", total: 1700 },
+            { loud_cat: "B", total: 500 },
+         ]);
+         // The measure reading the left-out join is gone too, so a downstream
+         // that reads it does not compile over the stored parent, and is a
+         // shape the build could not carry (the caller recomputes it), never a
+         // table built without it.
+         const raw = await stack(chain, "by_raw", parentEntry(chain, "daily"));
+         expect(raw.error).toBeInstanceOf(ChainedShapeNotCarriedError);
+         expect(
+            await readLake(
+               chain.dir,
+               "SELECT count(*)::INTEGER AS n FROM information_schema.tables WHERE table_name = 'by_raw_t'",
+            ),
+         ).toEqual([{ n: 0 }]);
+      });
+
       it("names a parent with no table in this destination, before compiling anything", async () => {
          const chain = await planChain(CHAIN);
          const { error, models } = await stack(chain, "monthly", {});
@@ -470,8 +598,7 @@ source: weird is daily -> {
             "'weird' reaches only stored upstreams ('daily'), but the build " +
                "could not express it over them",
          );
-         // A parent with no refinements gives every tier the same model, so
-         // it is compiled once.
+         // Nothing in the parent can be left out, so it is compiled once.
          expect(models.length).toBe(1);
       });
 

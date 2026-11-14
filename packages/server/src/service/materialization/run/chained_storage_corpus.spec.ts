@@ -7,7 +7,8 @@
  * parents' stored tables in a plain-DuckDB destination, pinned against a
  * golden: its content address, which stored upstreams it reaches, how the
  * chained build ends (stacked, or which refusal), and the schema the table it
- * writes has.
+ * writes has. Every table it stacks must also hold the rows a recompute from
+ * the warehouse writes.
  *
  * A chained source is a `#@ persist storage=` source whose definition reaches
  * another persisted source (other than its own table). Its parents are built
@@ -60,6 +61,9 @@ import {
 import { StorageBuildStrategy } from "./storage_build_strategy";
 
 const GOLDEN = path.join(__dirname, "chained_storage_corpus.golden.json");
+
+/** Each stacked source whose rows are not the recompute's. */
+const mismatches: string[] = [];
 
 /** One chained source, as the golden records it. */
 interface ChainedRow {
@@ -152,6 +156,40 @@ async function writeFromWarehouse(
          }));
    });
    return schema;
+}
+
+/**
+ * How many rows of a stacked table differ from what a recompute from the
+ * warehouse writes, each value compared as text after casting the
+ * recompute's column to the stacked table's type, so a type the build
+ * declares (a DATE for a TIMESTAMP truncation) does not count.
+ */
+async function rowsDifferFromRecompute(
+   model: CorpusModel,
+   source: PersistSource,
+   envDir: string,
+   destination: string,
+   table: string,
+   schema: { name: string; type: string }[],
+): Promise<number> {
+   const recomputed = `${table}__recompute`;
+   await writeFromWarehouse(model, source, envDir, destination, recomputed);
+   const quote = (name: string) => `"${name.replace(/"/g, '""')}"`;
+   const stacked = schema.map((c) => `${quote(c.name)}::VARCHAR`).join(", ");
+   const recompute = schema
+      .map((c) => `CAST(${quote(c.name)} AS ${c.type})::VARCHAR`)
+      .join(", ");
+   const one = `SELECT ${stacked} FROM ${quote(table)}`;
+   const other = `SELECT ${recompute} FROM ${quote(recomputed)}`;
+   let n = 0;
+   await lake(envDir, destination, async (c) => {
+      const rows = await c.runAndReadAll(
+         `SELECT count(*)::INTEGER AS n FROM ((${one} EXCEPT ALL ${other}) ` +
+            `UNION ALL (${other} EXCEPT ALL ${one}))`,
+      );
+      n = Number(rows.getRowObjectsJson()[0].n);
+   });
+   return n;
 }
 
 /** An error as the golden records it: its class and message, with no scratch path. */
@@ -279,6 +317,19 @@ async function chainedRows(model: CorpusModel): Promise<ChainedRow[]> {
                   name: String(c.name),
                   type: String(c.type),
                }));
+               const differs = await rowsDifferFromRecompute(
+                  model,
+                  s.source,
+                  envDir,
+                  s.destination,
+                  table,
+                  schema,
+               );
+               if (differs > 0) {
+                  mismatches.push(
+                     `${model.label} ${s.source.name}: ${differs} rows`,
+                  );
+               }
             } catch (err) {
                outcome = errorOutcome(err);
             }
@@ -372,6 +423,8 @@ describe.skipIf(process.platform === "win32")(
                }
                const golden = JSON.parse(fs.readFileSync(GOLDEN, "utf8"));
                expect(actual).toEqual(golden);
+               // Stacking on a parent's table answers as a recompute does.
+               expect(mismatches).toEqual([]);
                // The corpus holds chained sources at all, and most stack.
                expect(actual.rows.length).toBeGreaterThan(5);
             } finally {
