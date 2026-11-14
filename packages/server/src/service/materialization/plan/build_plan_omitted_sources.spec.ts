@@ -64,7 +64,11 @@ async function plan(
    text: string,
    env: Record<string, string>,
    companionsFail: boolean | "unreadable" | "overlay",
-): Promise<{ parts: BuildPlanParts; dir: string }> {
+): Promise<{
+   parts: BuildPlanParts;
+   /** The package directory, spelled as a file URL's path. */
+   dir: string;
+}> {
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omitted-sources-"));
    fs.writeFileSync(path.join(dir, "m.malloy"), text);
    const { restore } = installSettings({ env });
@@ -115,7 +119,9 @@ async function plan(
             };
          },
       });
-      return { parts, dir };
+      // As the package appears inside a source ID's file URL, so a test can
+      // replace it: on Windows the path is D:\..., the URL /D:/....
+      return { parts, dir: pathToFileURL(dir).pathname };
    } finally {
       restore();
    }

@@ -28,6 +28,12 @@ on:
       - "packages/server/src/service/materialization/run/storage_table_load.ts"
       - "packages/server/src/service/statement_usage.ts"
       - "packages/server/tests/integration/admin_catalogs/**"
+      # A colocated table's warehouse column types, read from each dialect's
+      # catalog, and the cast a big-integer column is served through
+      # (tests run against this job's Postgres, MySQL and Trino).
+      - "packages/server/src/service/materialization/run/colocated_native_types.ts"
+      - "packages/server/src/service/materialization/run/colocated_native_types.spec.ts"
+      - "packages/server/src/service/materialization/stored_column_types.ts"
       # The passthrough surfaces this job exists to catch are provided by the
       # DuckDB extensions, which move with a dependency bump rather than with any
       # file above.
@@ -58,6 +64,12 @@ on:
       - "packages/server/src/service/materialization/run/storage_table_load.ts"
       - "packages/server/src/service/statement_usage.ts"
       - "packages/server/tests/integration/admin_catalogs/**"
+      # A colocated table's warehouse column types, read from each dialect's
+      # catalog, and the cast a big-integer column is served through
+      # (tests run against this job's Postgres, MySQL and Trino).
+      - "packages/server/src/service/materialization/run/colocated_native_types.ts"
+      - "packages/server/src/service/materialization/run/colocated_native_types.spec.ts"
+      - "packages/server/src/service/materialization/stored_column_types.ts"
       # The passthrough surfaces this job exists to catch are provided by the
       # DuckDB extensions, which move with a dependency bump rather than with any
       # file above.
@@ -115,6 +127,30 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: mysql
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pmysql"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 24
+        ports:
+          - 3306:3306
+      # Trino's coordinator takes tens of seconds to accept queries; its image
+      # ships the health check. Bounded: about three minutes, then the job
+      # fails rather than waits.
+      trino:
+        image: trinodb/trino:476
+        options: >-
+          --health-cmd /usr/lib/trino/bin/health-check
+          --health-interval 5s
+          --health-timeout 5s
+          --health-start-period 10s
+          --health-retries 36
+        ports:
+          - 8080:8080
 
     steps:
       - name: Checkout code
@@ -214,6 +250,18 @@ jobs:
         run: |
           cd packages/server
           bun test --timeout 120000 ./tests/integration/admin_catalogs
+
+      # Each dialect's catalog read of a colocated table's column types, and the
+      # big-integer cast it feeds, served against live on real Postgres, MySQL
+      # and Trino (a memory catalog). Skipped where these variables are unset.
+      - name: Run colocated native-type integration tests
+        env:
+          PUBLISHER_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/malloy_test
+          PUBLISHER_TEST_MYSQL_URL: mysql://root:mysql@127.0.0.1:3306
+          PUBLISHER_TEST_TRINO_URL: http://localhost:8080
+        run: |
+          cd packages/server
+          bun test --timeout 100000 ./src/service/materialization/run/colocated_native_types.spec.ts
 
       # The storage= build's warehouse read reaches BigQuery job records the unit
       # suite cannot: bigquery_execute's returned job id, the child job a

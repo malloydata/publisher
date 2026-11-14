@@ -28,16 +28,16 @@
  * keep does not compile against it (`GRAIN_TOO_COARSE` / `MISSING_FIELD`).
  *
  * **Unmatched parents (malloydata/malloy#1762).** Live, a parent with no
- * joined row meets one row of NULLs. Until malloydata/malloy#3208 (merged,
- * not yet released), Malloy aggregated that row as a row of the joined
- * source: a join_many's `count()` counts it as one child, and a sum, min or
- * max whose operand is not NULL there (a constant, `??`, a computed value)
- * reads it. The rollup holds no such row, so for those measures it would
- * disagree with live. {@link malloyCountsChildlessParentsAsZero} says which
- * Malloy is pinned; until it is true the leg declines (`COUNT_SEMANTICS`) a
- * count through a join_many and any partial whose operand is not a bare
- * column of the joined source. Through a join_one, a count already skips the
- * unmatched row (it counts the joined key), so it is served.
+ * joined row meets one row of NULLs. Since malloydata/malloy#3208 (Malloy
+ * 0.0.438), a `count()`, `sum` or `avg` taken at a joined source skips the
+ * rows where that source's key is NULL, so the joined source's own counts
+ * and sums agree with its rollup, which holds no such row, whatever their
+ * operand. Two aggregates still read that row ({@link unmatchedRowProblem}):
+ * a `min` or `max`, which Malloy does not guard, whose operand is not NULL
+ * there (a constant, `??`, a computed value); and a sum or count taken at a
+ * join of the joined source that can match the row of NULLs (keyed on a
+ * computed dimension such as `coalesce(kind, 'p')`), whose own key is then
+ * not NULL. The leg declines both (`COUNT_SEMANTICS`).
  *
  * A rollup in a `storage=` destination is joined there, so only for a query
  * source the served copy reads from the same destination: the variant is
@@ -61,7 +61,6 @@
  * (`CONTRACT`), since the rollup carries none.
  */
 
-import { createRequire } from "module";
 import type { SourceJoin } from "../plan/source_map";
 import type { RollupVariantPlan } from "../plan/rollup_plan";
 import type { MeasureExpr } from "../plan/rollup_measure_grammar";
@@ -69,59 +68,6 @@ import type {
    QueryLevelFacts,
    QueryLevelField,
 } from "../../governance/ir/prepared_query";
-
-/** The first Malloy release carrying malloydata/malloy#3208. */
-export const MALLOY_SKIPS_UNMATCHED_JOIN_ROWS_SINCE = "0.0.438";
-
-function installedMalloyVersion(): string | undefined {
-   try {
-      return (
-         createRequire(import.meta.url)("@malloydata/malloy/package.json") as {
-            version?: string;
-         }
-      ).version;
-   } catch {
-      return undefined;
-   }
-}
-
-/** `a >= b` for dotted numeric versions; false when either is unreadable. */
-export function versionAtLeast(a: string | undefined, b: string): boolean {
-   const parse = (v: string) => {
-      const core = v.split(/[-+]/)[0] ?? "";
-      const parts = core.split(".").map((p) => Number(p));
-      return parts.every((p) => Number.isInteger(p) && p >= 0)
-         ? parts
-         : undefined;
-   };
-   const x = a === undefined ? undefined : parse(a);
-   const y = parse(b);
-   if (!x || !y) return false;
-   for (let i = 0; i < Math.max(x.length, y.length); i++) {
-      const d = (x[i] ?? 0) - (y[i] ?? 0);
-      if (d !== 0) return d > 0;
-   }
-   return true;
-}
-
-const SKIPS_UNMATCHED = versionAtLeast(
-   installedMalloyVersion(),
-   MALLOY_SKIPS_UNMATCHED_JOIN_ROWS_SINCE,
-);
-
-/**
- * Whether the pinned Malloy aggregates a joined source over its own rows only
- * (malloydata/malloy#3208, fixing #1762): a childless parent counts as zero
- * children through a join_many, and the row of NULLs a LEFT JOIN writes for
- * an unmatched parent never reaches a sum, min or max. The one switch the
- * join-to-rollup leg's count and operand rules read; it turns on by itself
- * when Publisher's Malloy pin reaches the release that carries the fix, and
- * `join_rollup_semantics.component.spec.ts` checks it against what the
- * pinned Malloy actually answers.
- */
-export function malloyCountsChildlessParentsAsZero(): boolean {
-   return SKIPS_UNMATCHED;
-}
 
 /** One join of the query's source that a rollup of its joined source can answer through. */
 export interface JoinRollupLeg {
@@ -274,35 +220,77 @@ function refusalOf(
 
 /**
  * Why the stored measures `read` (by name) cannot be read through the leg's
- * join while unmatched parents still reach an aggregate
- * ({@link malloyCountsChildlessParentsAsZero} false), or undefined. `isColumn`
- * says whether a path of the joined source is a bare column there (NULL on
- * the row a LEFT JOIN writes for an unmatched parent): its own column
- * (`["miles"]`), or a column of one of its joins keyed on one of its own
- * columns (`["lines", "qty"]`, a join-level operand), which meets no row
- * when that column is NULL.
+ * join, because Malloy still aggregates the row of NULLs a LEFT JOIN writes
+ * for an unmatched parent, or undefined. Since malloydata/malloy#3208 a
+ * `count()` or `sum` at the joined source skips that row, so only two leaves
+ * can read it: a sum or count at a join of the joined source, which skips the
+ * row only when that join meets no row there (`joinMeetsNoRow`: keyed on a
+ * column of the joined source, NULL on the row); and a `min` or `max`, which
+ * Malloy does not guard, whose operand is not NULL there. `isColumn` says
+ * whether a path of the joined source is NULL on that row: its own column
+ * (`["miles"]`), or a column of one of its joins that meets no row
+ * (`["lines", "qty"]`, a join-level operand).
  */
 export function unmatchedRowProblem(
    leg: JoinRollupLeg,
    read: ReadonlySet<string>,
    isColumn: (path: readonly string[]) => boolean,
-   skipsUnmatched = malloyCountsChildlessParentsAsZero(),
+   joinMeetsNoRow: (name: string) => boolean,
 ): string | undefined {
-   if (skipsUnmatched) return undefined;
    for (const m of leg.plan.rollupMeasures) {
       if (!read.has(m.name)) continue;
       for (const { leaf } of m.partials) {
-         if (leaf.aggregate === "count") {
-            // A join_one's count counts the joined key, NULL when unmatched.
-            if (leg.join.relationship === "many") {
-               return `\`${leg.join.name}.${m.name}\` counts through a join_many, where Malloy counts a parent with no rows as one (malloydata/malloy#1762)`;
+         if (leaf.aggregate === "min" || leaf.aggregate === "max") {
+            const operand = bareOperand(leaf.expr);
+            if (operand === undefined || !isColumn(operand)) {
+               return `\`${leg.join.name}.${m.name}\` takes a ${leaf.aggregate} of a value that is not NULL on a parent with no rows, which Malloy reads live (malloydata/malloy#1762)`;
             }
             continue;
          }
-         const operand = bareOperand(leaf.expr);
-         if (operand === undefined || !isColumn(operand)) {
-            return `\`${leg.join.name}.${m.name}\` aggregates a value that is not NULL on a parent with no rows, which Malloy aggregates live (malloydata/malloy#1762)`;
+         const at = leaf.joinPath[0];
+         if (at !== undefined && !joinMeetsNoRow(at)) {
+            return `\`${leg.join.name}.${m.name}\` aggregates at \`${at}\`, which is not keyed on a column of \`${leg.join.name}\` and so matches a row for a parent with no rows live (malloydata/malloy#1762)`;
          }
+      }
+   }
+   return undefined;
+}
+
+/**
+ * Why the stored measures `read` (by name) cannot be read through the leg's
+ * join while the joined source's own primary key is not known unique and
+ * never NULL, or undefined. Since malloydata/malloy#3208 live takes a
+ * `count()`, `sum` or `avg` at the joined source over the rows whose key is
+ * not NULL, and where the rows fan out, once per distinct key; its rollup,
+ * built at the joined source's own grain, counts and sums every row. A
+ * join keyed on that primary key (`joinedKey` the leg's key column) meets no
+ * row whose key is NULL; a `min` or `max` reads every row live too; and a
+ * partial taken at a join of the joined source tests that join's key, which
+ * the rollup's build tests the same way. `joinedKeyUnique` is what the
+ * rollup's build found of the key: true, false (repeated or NULL), or
+ * undefined (not checked).
+ */
+export function joinedKeyProblem(
+   leg: JoinRollupLeg,
+   read: ReadonlySet<string>,
+   joinedKey: string | undefined,
+   joinedKeyUnique: boolean | undefined,
+): string | undefined {
+   if (
+      joinedKey === undefined ||
+      joinedKey === leg.join.keyColumn ||
+      joinedKeyUnique === true
+   ) {
+      return undefined;
+   }
+   for (const m of leg.plan.rollupMeasures) {
+      if (!read.has(m.name)) continue;
+      for (const { leaf } of m.partials) {
+         if (leaf.aggregate === "min" || leaf.aggregate === "max") continue;
+         if (leaf.joinPath.length > 0) continue;
+         return joinedKeyUnique === false
+            ? `\`${leg.join.name}\` holds a value of its primary key \`${joinedKey}\` more than once or NULL, and live counts and sums \`${leg.join.name}.${m.name}\` once per non-NULL key where its rollup reads every row`
+            : `\`${leg.join.name}\`'s primary key \`${joinedKey}\` was not checked unique and never NULL when its rollup was built, and live counts and sums \`${leg.join.name}.${m.name}\` once per non-NULL key where its rollup reads every row`;
       }
    }
    return undefined;
@@ -330,39 +318,6 @@ export function parentKeyProblem(
    return parentKeyUnique === false
       ? `the query source holds a value of its primary key \`${key}\` more than once or NULL, so a row of the rollup of \`${leg.join.name}\` would be read once per row that shares it`
       : `the query source's primary key \`${key}\` was not checked unique and never NULL when the rollup of \`${leg.join.name}\` was built, so a row of it could be read once per row that shares it`;
-}
-
-/**
- * Why a leg that re-points its join with another relationship (a join_many
- * as a join_one at its key, or a join_one as a join_many at a finer grain)
- * cannot answer a query that takes a `count()`, `sum` or `avg` through
- * another join_many, or undefined. Re-pointing changes which joins Malloy
- * sees fan out, so it changes how it writes those aggregates (`COUNT(1)`
- * against `COUNT(DISTINCT key)`), and until malloydata/malloy#3208
- * ({@link malloyCountsChildlessParentsAsZero}) the two count the row a LEFT
- * JOIN writes for a parent with no rows differently. `keyed` is every
- * aggregate Malloy needs a key for, by the join path it is taken at
- * (`uniqueKeyAggregatePaths`); `fansOut` says whether a path passes through
- * a join_many (or cannot be traced).
- */
-export function relationshipChangeProblem(
-   leg: JoinRollupLeg,
-   keyed: readonly { path: readonly string[]; isCount: boolean }[] | undefined,
-   fansOut: (path: readonly string[]) => boolean,
-   skipsUnmatched = malloyCountsChildlessParentsAsZero(),
-): string | undefined {
-   if (skipsUnmatched || leg.relationship === leg.join.relationship) {
-      return undefined;
-   }
-   if (keyed === undefined) {
-      return "the query's aggregates could not be traced";
-   }
-   for (const { path, isCount } of keyed) {
-      if (path.length === 0 || path[0] === leg.join.name) continue;
-      if (!fansOut(path)) continue;
-      return `the query takes a ${isCount ? "count" : "sum or average"} through the join_many \`${path.join(".")}\`, which Malloy writes another way once \`${leg.join.name}\` is read as a join_${leg.relationship}, counting a parent with no rows differently (malloydata/malloy#1762)`;
-   }
-   return undefined;
 }
 
 /**

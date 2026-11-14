@@ -124,6 +124,11 @@ export interface InstructedRun {
    // table CONTAINS, the coordinate says which table it IS, and only the latter
    // answers "have I written this already".
    writtenTargets: Map<string, { sourceEntityId: string; sourceName: string }>;
+   /**
+    * Tables whose build failed this run, by the same key, with the error: a
+    * second route to one takes that failure instead of building it again.
+    */
+   failedTargets?: Map<string, { sourceEntityId: string; err: unknown }>;
    /** The `name=` views the sources this run built call for (name_view.ts). */
    nameViewIntents?: NameViewIntent[];
    /**

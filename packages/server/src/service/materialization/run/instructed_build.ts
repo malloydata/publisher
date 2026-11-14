@@ -309,6 +309,7 @@ export class InstructedBuild {
          builtAddresses: new Set(),
          builtSources: [],
          writtenTargets: new Map(),
+         failedTargets: new Map(),
          nameViewIntents: [],
          nameViewOwnTables: new Map(),
          replacedNameViews: [],
@@ -654,6 +655,25 @@ export class InstructedBuild {
          });
          return;
       }
+      // Another route to a table whose build failed this run: the same
+      // content fails the same way, so the source takes that failure (its
+      // reason and code) without running the build again.
+      const failedHere = run.failedTargets?.get(target);
+      if (failedHere && failedHere.sourceEntityId === sourceEntityId) {
+         recordInstructedBuildFailure(
+            run,
+            persistSource,
+            instruction,
+            sourceEntityId,
+            failedHere.err,
+            {
+               kind: buildKindOf(compiled, persistSource.sourceID),
+               tier: buildTierOf(instruction),
+               method: "full",
+            },
+         );
+         return;
+      }
 
       const nameView = nameViewIntentFor(
          compiled,
@@ -846,6 +866,11 @@ export class InstructedBuild {
             );
          }
       } catch (buildErr) {
+         // Only a build that ran: a check before it (ownership, uniqueness,
+         // a name preflight) is cheap to run again for the next source.
+         if (buildStartedAt !== undefined) {
+            run.failedTargets?.set(target, { sourceEntityId, err: buildErr });
+         }
          recordInstructedBuildFailure(
             run,
             persistSource,
@@ -905,6 +930,20 @@ export class InstructedBuild {
          );
          // The query sources that read it through a join_many keyed on
          // their primary key: that key unique and never NULL.
+         await checkParentKeys(
+            run.uniqueness,
+            rollupParentKeyChecksOf(run.compiled, persistSource.sourceID),
+            connection,
+            graphConnectionName,
+            persistSource.name,
+            sourceEntityId,
+            writtenTableIdentity(instruction, graphConnectionName),
+         );
+      }
+      // A rollup in a destination whose base a join reaches on a column
+      // other than its primary key: that key unique and never NULL, checked
+      // over the base's rows on its own connection.
+      if (!orchestrated && run.uniqueness && entry.storageDestinationName) {
          await checkParentKeys(
             run.uniqueness,
             rollupParentKeyChecksOf(run.compiled, persistSource.sourceID),
@@ -1626,19 +1665,20 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
          compiled.targets?.[sourceID],
       );
       const entry = run.entries[address];
-      if (
-         !entry?.physicalTableName ||
-         entry.storageDestinationName ||
-         run.builtAddresses.has(address)
-      ) {
+      if (!entry?.physicalTableName || run.builtAddresses.has(address)) {
          continue;
       }
-      const table = tableIdentityKey(
-         "connection",
-         source.connectionName,
-         entry.physicalTableName,
-      );
-      if (check) {
+      // A rollup in a destination carries only its base's own key check
+      // (`compileParentKeyChecks`), recorded against its table there.
+      const stored = entry.storageDestinationName;
+      const table = stored
+         ? tableIdentityKey("destination", stored, entry.physicalTableName)
+         : tableIdentityKey(
+              "connection",
+              source.connectionName,
+              entry.physicalTableName,
+           );
+      if (check && !stored) {
          ledger.carryRollupKey(address, table, checkDigest(table, check.sql));
       }
       for (const parent of parentChecks) {
