@@ -1309,6 +1309,68 @@ export function parentKeyNeedsOf(map: SourceMap): ParentKeyNeed[] {
 }
 
 /**
+ * A joined source whose declared primary key is not the column a join to it
+ * is keyed on: the join-to-rollup leg needs that key checked never NULL and
+ * unique before it serves a count, sum or average of the source's own rows
+ * through the join. Since malloydata/malloy#3208 live takes those at a joined
+ * source over the rows whose key is not NULL (`CASE WHEN key IS NOT NULL`,
+ * `COUNT(DISTINCT key)` where the rows fan out), while the rollup, built at
+ * the source's own grain, counts and sums every row.
+ */
+export interface JoinedKeyNeed {
+   /** The joined source, the base of its rollups. */
+   sourceID: string;
+   /** Its name in the model it was found in. */
+   name: string;
+   /** Its declared primary key. */
+   keyColumn: string;
+   connectionName: string | undefined;
+}
+
+/**
+ * Every named source in `map` that a join reaches on a column other than its
+ * declared primary key (see {@link JoinedKeyNeed}). A join keyed on the
+ * joined source's primary key (`join_one: crew with id`) meets no row whose
+ * key is NULL, so it needs no check.
+ */
+export function joinedKeyNeedsOf(map: SourceMap): JoinedKeyNeed[] {
+   const out = new Map<string, JoinedKeyNeed>();
+   for (const node of map.nodes()) {
+      for (const join of map.joinsOf(node.sourceID)) {
+         if (
+            join.relationship === "cross" ||
+            join.sourceID === undefined ||
+            join.keyColumn === undefined ||
+            out.has(join.sourceID)
+         ) {
+            continue;
+         }
+         const joined = map.node(join.sourceID);
+         const def = joined?.def as
+            | { primaryKey?: unknown; connection?: unknown }
+            | undefined;
+         const keyColumn =
+            typeof def?.primaryKey === "string" ? def.primaryKey : undefined;
+         if (
+            joined?.name === undefined ||
+            keyColumn === undefined ||
+            keyColumn === join.keyColumn
+         ) {
+            continue;
+         }
+         out.set(join.sourceID, {
+            sourceID: join.sourceID,
+            name: joined.name,
+            keyColumn,
+            connectionName:
+               typeof def?.connection === "string" ? def.connection : undefined,
+         });
+      }
+   }
+   return [...out.values()];
+}
+
+/**
  * Whether the join-to-rollup leg reads rollup `plan` through `need`'s join as
  * a join_many: the join is declared one, or the rollup's grain is finer than
  * the join's key, so the leg re-points it as one (`joinRollupLegs`).

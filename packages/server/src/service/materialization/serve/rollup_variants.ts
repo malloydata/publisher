@@ -126,7 +126,6 @@ import {
    resolveStructRefSource,
    setsTimezone,
    sourceFieldJoinReads,
-   uniqueKeyAggregatePaths,
    type QueryLevelFacts,
 } from "../../governance/ir/prepared_query";
 import type { BuildManifest } from "../types";
@@ -152,9 +151,9 @@ import {
 } from "./author_imports";
 import {
    checkJoinCoverage,
+   joinedKeyProblem,
    joinRollupLegs,
    parentKeyProblem,
-   relationshipChangeProblem,
    unmatchedRowProblem,
    type JoinRollupLeg,
 } from "./join_rollup";
@@ -828,16 +827,6 @@ export class RollupVariantServe {
       if (keyProblem !== undefined) {
          throw new RollupSkip("rollup_count_semantics", keyProblem);
       }
-      // Re-pointed with another relationship, the join changes how Malloy
-      // writes a count, sum or average through another join_many.
-      const fanOutProblem = relationshipChangeProblem(
-         leg,
-         uniqueKeyAggregatePaths(q.prepared),
-         (path) => this.pathFansOut(q.struct, path),
-      );
-      if (fanOutProblem !== undefined) {
-         throw new RollupSkip("rollup_count_semantics", fanOutProblem);
-      }
       // Another join_one the query reads, known not to keep its key unique:
       // live's rows repeat through it, and re-pointing this join changes how
       // Malloy aggregates over those repeats, so the answers part (known
@@ -856,38 +845,64 @@ export class RollupVariantServe {
          f: { e?: unknown; join?: unknown } | undefined,
       ): boolean =>
          f !== undefined && f.e === undefined && f.join === undefined;
-      const problem = unmatchedRowProblem(leg, read, (operand) => {
-         if (operand.length === 1) {
-            return isBareColumn(childFields.get(operand[0] as string));
-         }
-         // A column of the joined source's own join, keyed on one of its own
-         // columns: NULL on an unmatched parent's row, which meets no row.
-         const inner = SourceMap.of(this.host.modelDef())
-            .joinsOf(plan.baseSourceID)
-            .find((j) => j.name === operand[0]);
-         if (
-            !inner ||
-            inner.relationship === "cross" ||
-            inner.baseKey === undefined ||
-            !inner.condition ||
-            inner.condition.nested ||
-            [...inner.condition.joins].some((j) => j !== inner.name) ||
-            !isBareColumn(childFields.get(inner.baseKey))
-         ) {
-            return false;
-         }
-         const innerFields = inner.fields as {
-            name?: unknown;
-            as?: unknown;
-            e?: unknown;
-            join?: unknown;
-         }[];
-         return isBareColumn(
-            innerFields.find((f) => String(f.as ?? f.name) === operand[1]),
+      // A join of the joined source keyed on one of its own columns: that
+      // column is NULL on an unmatched parent's row, which meets no row.
+      const childJoins = SourceMap.of(this.host.modelDef()).joinsOf(
+         plan.baseSourceID,
+      );
+      const innerMeetingNoRow = (joinName: string) =>
+         childJoins.find(
+            (j) =>
+               j.name === joinName &&
+               j.relationship !== "cross" &&
+               j.baseKey !== undefined &&
+               !!j.condition &&
+               !j.condition.nested &&
+               [...j.condition.joins].every((c) => c === j.name) &&
+               isBareColumn(childFields.get(j.baseKey)),
          );
-      });
+      const problem = unmatchedRowProblem(
+         leg,
+         read,
+         (operand) => {
+            if (operand.length === 1) {
+               return isBareColumn(childFields.get(operand[0] as string));
+            }
+            const inner = innerMeetingNoRow(operand[0] as string);
+            const innerFields = (inner?.fields ?? []) as {
+               name?: unknown;
+               as?: unknown;
+               e?: unknown;
+               join?: unknown;
+            }[];
+            return (
+               inner !== undefined &&
+               isBareColumn(
+                  innerFields.find(
+                     (f) => String(f.as ?? f.name) === operand[1],
+                  ),
+               )
+            );
+         },
+         (joinName) => innerMeetingNoRow(joinName) !== undefined,
+      );
       if (problem !== undefined) {
          throw new RollupSkip("rollup_count_semantics", problem);
+      }
+      // The joined source's own key, when the join is keyed on another
+      // column: live counts and sums its rows once per non-NULL key.
+      const joinedKey = (childDef as { primaryKey?: unknown } | undefined)
+         ?.primaryKey;
+      const joinedProblem = joinedKeyProblem(
+         leg,
+         read,
+         typeof joinedKey === "string" ? joinedKey : undefined,
+         plan.storage !== undefined
+            ? this.tableOf(plan)?.binding?.primaryKeys?.[plan.baseSourceID]
+            : this.parentKeyUniqueness(plan, { sourceID: plan.baseSourceID }),
+      );
+      if (joinedProblem !== undefined) {
+         throw new RollupSkip("rollup_count_semantics", joinedProblem);
       }
       const table = this.tableOf(plan);
       if (!table) {
@@ -1349,24 +1364,6 @@ export class RollupVariantServe {
          found = true;
       }
       return found;
-   }
-
-   /**
-    * Whether a join path of the query's source passes through a join_many or
-    * join_cross; true when a hop cannot be traced (a join defined in place).
-    */
-   private pathFansOut(struct: unknown, path: readonly string[]): boolean {
-      let sourceID: unknown = (struct as { sourceID?: unknown } | undefined)
-         ?.sourceID;
-      const map = SourceMap.of(this.host.modelDef());
-      for (const name of path) {
-         if (typeof sourceID !== "string") return true;
-         const join = map.joinsOf(sourceID).find((j) => j.name === name);
-         if (!join) return true;
-         if (join.relationship !== "one") return true;
-         sourceID = join.sourceID;
-      }
-      return false;
    }
 
    /**

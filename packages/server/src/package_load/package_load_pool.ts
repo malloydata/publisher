@@ -331,6 +331,11 @@ export class PackageLoadPool {
       return this.workers.filter((w) => !w.exited).length;
    }
 
+   /** Test-only: whether shutdown() has been called. */
+   get isShutDownForTests(): boolean {
+      return this.shuttingDown;
+   }
+
    /**
     * Submit a package for off-thread load. Per-model compile failures come
     * back inside the outcome (`model.compilationError`); the Promise rejects
@@ -975,7 +980,13 @@ const defaultUrlReader = {
 
 let singleton: PackageLoadPool | null = null;
 
+/** Test-only: what makes the pool when there is none; see the setter below. */
+let poolFactoryForTests: (() => PackageLoadPool) | undefined;
+
 export function getPackageLoadPool(): PackageLoadPool {
+   if (singleton === null && poolFactoryForTests) {
+      singleton = poolFactoryForTests();
+   }
    if (singleton === null) {
       const n = getPackageLoadWorkerCount();
       singleton = new PackageLoadPool(n);
@@ -987,12 +998,27 @@ export function getPackageLoadPool(): PackageLoadPool {
    return singleton;
 }
 
-/** Test-only: replace the singleton (and shut down the previous one). */
+/**
+ * Test-only: replace the singleton, and shut down the previous one unless
+ * `keep` holds it (a test helper that reuses pools; see freshLoadPool).
+ */
 export async function __setPackageLoadPoolForTests(
    pool: PackageLoadPool | null,
+   keep?: ReadonlySet<PackageLoadPool>,
 ): Promise<void> {
-   if (singleton && singleton !== pool) {
+   if (singleton && singleton !== pool && !keep?.has(singleton)) {
       await singleton.shutdown();
    }
    singleton = pool;
+}
+
+/**
+ * Test-only: make the pool, when there is none, with `factory` rather than a
+ * new one. It runs at the first load after the pool was cleared, so it sees
+ * the settings that load runs under.
+ */
+export function __setPackageLoadPoolFactoryForTests(
+   factory: (() => PackageLoadPool) | undefined,
+): void {
+   poolFactoryForTests = factory;
 }

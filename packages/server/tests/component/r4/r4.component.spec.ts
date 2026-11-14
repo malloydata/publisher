@@ -7,7 +7,7 @@ import {
    InMemoryURLReader,
    Runtime,
 } from "@malloydata/malloy";
-import { afterAll, beforeAll, describe, expect, it, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import { shadowRowDifference } from "../../../src/service/materialization/serve/v1_shadow";
 import {
@@ -203,43 +203,30 @@ source: flights is duckdb.table('flights') -> { select: * } extend {
             ).toBeUndefined();
          });
 
-         // The served copy compiles the author's own join, so it counts as live
-         // does (malloydata/malloy#1762): equal to live, as R4 requires, and short
-         // of the truth until Malloy's fix; the serve shape is the other way round.
-         (servedCopy ? test.failing : it)(
-            "serves the right child count from storage",
-            async () => {
-               const run = await fixture.run(byCarrier);
-               expect(
-                  rowDifference(counts(run.truth ?? []), counts(run.served)),
-               ).toBeUndefined();
-            },
-         );
+         // Since Malloy 0.0.438 (malloydata/malloy#3208, fixing #1762) live
+         // counts a childless flight as no segments, so live, the served copy
+         // (which compiles the author's own join) and the serve shape all
+         // answer the truth.
+         it("serves the right child count from storage", async () => {
+            const run = await fixture.run(byCarrier);
+            expect(
+               rowDifference(counts(run.truth ?? []), counts(run.served)),
+            ).toBeUndefined();
+         });
 
-         // Live counts each childless flight as one segment: Malloy compiles the
-         // leafiest join_many count as COUNT(1) over the LEFT JOIN
-         // (malloydata/malloy#1762). The storage serve shape does not, so served and
-         // live disagree, and served is right. Both tests pass once Publisher's
-         // Malloy pin carries malloydata/malloy#3207; then drop `.failing`.
-         test.failing(
-            "live child count matches the truth (malloydata/malloy#1762)",
-            async () => {
-               const run = await fixture.run(byCarrier);
-               expect(
-                  rowDifference(counts(run.truth ?? []), counts(run.live)),
-               ).toBeUndefined();
-            },
-         );
+         it("live child count matches the truth (malloydata/malloy#1762)", async () => {
+            const run = await fixture.run(byCarrier);
+            expect(
+               rowDifference(counts(run.truth ?? []), counts(run.live)),
+            ).toBeUndefined();
+         });
 
-         (servedCopy ? it : test.failing)(
-            "served child count equals live (malloydata/malloy#1762)",
-            async () => {
-               const run = await fixture.run(byCarrier);
-               expect(
-                  rowDifference(counts(run.live), counts(run.served)),
-               ).toBeUndefined();
-            },
-         );
+         it("served child count equals live (malloydata/malloy#1762)", async () => {
+            const run = await fixture.run(byCarrier);
+            expect(
+               rowDifference(counts(run.live), counts(run.served)),
+            ).toBeUndefined();
+         });
       });
 
       // ms2data/service#6982, the phase 0 probe: two sources from different origin
@@ -314,9 +301,8 @@ source: account_usage is accounts extend { join_many: u is usage on u.account_id
                query,
             );
             const rows = (await q.run()).data.toObject() as Row[];
-            // initech has no usage: Malloy's sum of no rows is 0. Its count reads 1
-            // until malloy#3207 ships, so only the sum is compared here; the count
-            // case is above.
+            // initech has no usage: Malloy's sum of no rows is 0. Only the sum is
+            // compared here; the count case is above.
             expect(
                rowDifference(
                   [

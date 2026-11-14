@@ -45,8 +45,8 @@ ORDER BY 1 desc NULLS LAST
 -- sourceID: rollup@<hammer>/ctp/ctp.malloy
 -- connection: orders_pg
 -- reads: daily@<hammer>/ctp/ctp.malloy, joined@<hammer>/ctp/ctp.malloy
--- sourceEntityId: 067cf1c1dccc96f12d0ae683b02e2b48aa69cc9447e166f65f25b5d6ea66216b
--- compiler key: 067cf1c1dccc96f12d0ae683b02e2b48aa69cc9447e166f65f25b5d6ea66216b (the sourceEntityId)
+-- sourceEntityId: 7e7d5b77f7d7730214932db51cbdb586c5c191831cb5f069207bfbf174bb74b2
+-- compiler key: 7e7d5b77f7d7730214932db51cbdb586c5c191831cb5f069207bfbf174bb74b2 (the sourceEntityId)
 -- build SQL:
 WITH __stage0 AS (
   SELECT 
@@ -68,7 +68,7 @@ SELECT
    COALESCE((
         SELECT SUM(a.val) as value
         FROM (
-          SELECT UNNEST(list(distinct {key:c_0."order_date", val: c_0."order_count"})) a
+          SELECT UNNEST(list(distinct {key:c_0."order_date", val: CASE WHEN c_0."order_date" IS NOT NULL THEN c_0."order_count" END})) a
         )
       ),0) as "orders"
 FROM __stage0 as base
@@ -80,7 +80,7 @@ SELECT
    COALESCE((
         SELECT SUM(a.val) as value
         FROM (
-          SELECT UNNEST(list(distinct {key:c_0."order_date", val: c_0."order_count"})) a
+          SELECT UNNEST(list(distinct {key:c_0."order_date", val: CASE WHEN c_0."order_date" IS NOT NULL THEN c_0."order_count" END})) a
         )
       ),0) as "orders"
 FROM built.joined as base

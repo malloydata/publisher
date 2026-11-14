@@ -683,6 +683,16 @@ describe("a table past its freshness window, bound by a host's reload", () => {
             dailyId,
             "built_daily_sentinel",
          );
+         // Not over-corrected: the fresh rollup still answers its own query.
+         const rolled = await run(
+            pkg,
+            "run: orders -> { group_by: region; aggregate: amount_total }",
+         );
+         expect(rolled.path?.servedBy).toMatchObject({
+            kind: "rollup",
+            tableId: rollupId,
+         });
+         expect(rolled.result.sql).toContain("built_rollup");
       }, 60_000);
 
       it(`answers live when the only fresh table is a persisted view's [${mode}]`, async () => {
@@ -711,6 +721,126 @@ describe("a table past its freshness window, bound by a host's reload", () => {
             dailyId,
             "built_daily_sentinel",
          );
+         // Not over-corrected: the fresh view still answers a call of it.
+         const called = await run(pkg, "run: orders -> by_region");
+         expect(called.path?.servedBy).toMatchObject({
+            kind: "view",
+            tableId: viewId,
+         });
+         expect(called.result.sql).toContain("built_view");
+      }, 60_000);
+   }
+
+   // A notebook runs each cell against the cell's own model, which carries
+   // `##! experimental.persistence` only through what it imports. Malloy
+   // refuses a non-empty manifest on a model without the flag, so a table
+   // bound for another model must not reach such a cell.
+   for (const mode of ["off", "on"] as const) {
+      it(`runs a notebook cell whose model has no persistence flag, beside a bound table [${mode}]`, async () => {
+         await underMode(mode);
+         const pkg = await loadPackage(MODEL, {
+            "flagless.malloy": `source: plain is duckdb.sql("SELECT 1 AS x")`,
+            "persisting.malloynb": `>>>malloy\nimport "model.malloy"\n${DAILY_QUERY}\n`,
+            "flagless.malloynb": `>>>malloy\nimport "flagless.malloy"\nrun: plain -> { aggregate: c is count() }\n`,
+            // Decided per cell, not per file: the file's last cell imports
+            // the flagged model, its first does not.
+            "mixed.malloynb": `>>>malloy\nimport "flagless.malloy"\nrun: plain -> { aggregate: c is count() }\n>>>malloy\nimport "model.malloy"\n${DAILY_QUERY}\n`,
+         });
+         const dailyId = entityIdOf(pkg, "daily");
+         await bindThroughReload(pkg, [
+            {
+               entityId: dailyId,
+               table: "built_daily_sentinel",
+               sql: DAILY_SENTINEL,
+               extra: {
+                  dataAsOf: new Date().toISOString(),
+                  freshnessWindowSeconds: 3600,
+                  freshnessFallback: "live",
+               },
+            },
+         ]);
+         const flagless = pkg.getModel("flagless.malloynb");
+         const persisting = pkg.getModel("persisting.malloynb");
+         if (!flagless || !persisting)
+            throw new Error("notebooks did not load");
+         // Before the fix: "A non-empty `buildManifest` was supplied, but the
+         // model is missing `##! experimental.persistence`".
+         const plain = await flagless.executeNotebookCell(unrecordedAudit(), 0);
+         expect(plain.result).toContain('"number_value":1');
+         // A cell that imports the persisting model still reads its table.
+         const read = await persisting.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+         );
+         expect(read.result).toContain("built_daily_sentinel");
+         const mixed = pkg.getModel("mixed.malloynb");
+         if (!mixed) throw new Error("mixed.malloynb did not load");
+         const first = await mixed.executeNotebookCell(unrecordedAudit(), 0);
+         expect(first.result).toContain('"number_value":1');
+         const second = await mixed.executeNotebookCell(unrecordedAudit(), 1);
+         expect(second.result).toContain("built_daily_sentinel");
+         // Still freshness-filtered: past its window, a cell reads live.
+         await bindThroughReload(pkg, [
+            {
+               entityId: dailyId,
+               table: "built_daily_sentinel",
+               sql: DAILY_SENTINEL,
+               extra: STALE("live"),
+            },
+         ]);
+         const reloaded = pkg.getModel("persisting.malloynb");
+         if (!reloaded) throw new Error("persisting.malloynb did not reload");
+         const live = await reloaded.executeNotebookCell(unrecordedAudit(), 0);
+         expect(live.result).not.toContain("built_daily_sentinel");
+         expect(live.result).toContain("107.5");
+      }, 60_000);
+   }
+
+   // `/compile`'s SQL preview (and `compile_model`, which goes through it)
+   // shows what execution reads: a table its window dropped is not named.
+   for (const mode of ["off", "on"] as const) {
+      it(`previews no stale table in /compile's SQL, and still a fresh one [${mode}]`, async () => {
+         await underMode(mode);
+         writePackageFiles(
+            path.join(envPath, "pkg"),
+            { "model.malloy": MODEL },
+            { manifest: { name: "pkg", description: "fixture" } },
+         );
+         const env = await Environment.create("testEnv", envPath, []);
+         await env.addPackage("pkg");
+         const pkg = await env.getPackage(parsePackageName("pkg"), false);
+         const byRegion = Object.values(pkg.getBuildPlan()?.sources ?? {}).find(
+            (s) => s.name === "by_region",
+         );
+         if (!byRegion) throw new Error("by_region is not in the build plan");
+         await bindThroughReload(pkg, [
+            {
+               entityId: entityIdOf(pkg, "daily"),
+               table: "built_daily_sentinel",
+               sql: DAILY_SENTINEL,
+               extra: STALE("live"),
+            },
+            {
+               entityId: byRegion.sourceEntityId,
+               table: "built_by_region",
+               sql: byRegion.sql,
+               extra: {
+                  dataAsOf: new Date().toISOString(),
+                  freshnessWindowSeconds: 3600,
+                  freshnessFallback: "live",
+               },
+            },
+         ]);
+         const preview = async (query: string) =>
+            (await env.compileSource("pkg", "model.malloy", query, true)).sql;
+         // Before: the preview read the bound manifest, freshness and all.
+         const stale = await preview(DAILY_QUERY);
+         expect(stale).toBeDefined();
+         expect(stale).not.toContain("built_daily_sentinel");
+         // Not over-corrected: a table within its window is still previewed.
+         expect(
+            await preview("run: by_region -> { group_by: region }"),
+         ).toContain("built_by_region");
       }, 60_000);
    }
 });
