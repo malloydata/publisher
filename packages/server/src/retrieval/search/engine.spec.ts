@@ -802,15 +802,15 @@ describe("fcj paging", () => {
       expect(stageNames(same)).toEqual(["page"]);
    });
 
-   it("pages a field listing with offset, past the cap a caller cannot raise", async () => {
+   it("pages a field listing with entity_offset, past the cap a caller cannot raise", async () => {
       await ready();
       const { pkg } = await compileFcjFixture();
-      const listing = (offset: number) =>
+      const listing = (limit: number, entity_offset?: number) =>
          callPayload(harness.handlerFor(pkg), {
             search_targets: [{ target_type: "dimension" }],
             scopes,
-            limit: 3,
-            offset,
+            limit,
+            ...(entity_offset === undefined ? {} : { entity_offset }),
          });
       // Two sources can each hold a field of the same name, so key by both.
       const names = (p: {
@@ -824,13 +824,26 @@ describe("fcj paging", () => {
                (e) => `${s.source_info.resource_id.source}.${e.name}`,
             ),
          );
-      const { payload: first } = await listing(0);
-      expect(first.error).toBeUndefined();
-      expect(first.next_offset).toBe(3);
-      const { payload: second } = await listing(3);
-      expect(second.error).toBeUndefined();
-      expect(names(second)).toHaveLength(3);
-      expect(names(second).some((n) => names(first).includes(n))).toBe(false);
+      // The whole listing in one page, to compare the paged walk against.
+      const { payload: whole } = await listing(150);
+      expect(whole.next_entity_offset).toBeUndefined();
+      const everything = names(whole);
+      expect(everything.length).toBeGreaterThan(6);
+
+      const walked: string[] = [];
+      let next: number | undefined;
+      let pages = 0;
+      do {
+         const { payload } = await listing(3, next);
+         expect(payload.error).toBeUndefined();
+         expect(payload).not.toHaveProperty("next_offset");
+         walked.push(...names(payload));
+         next = payload.next_entity_offset;
+         pages += 1;
+      } while (next !== undefined && pages < 100);
+      // Every field once, in the same order, and the walk ended.
+      expect(walked).toEqual(everything);
+      expect(pages).toBe(Math.ceil(everything.length / 3));
    });
 });
 

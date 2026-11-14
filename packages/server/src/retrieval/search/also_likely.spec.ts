@@ -236,6 +236,7 @@ describe("also likely: in the response", () => {
          unsupported: [],
          limit: 20,
          offset: 0,
+         entityOffset: 0,
       };
       const out = await respond({
          index: f.index,

@@ -123,7 +123,7 @@ export const convergedContextShape = {
       .max(MAX_LIMIT)
       .nullish()
       .describe(
-         `Sources per page (max ${MAX_LIMIT}), or fields per page when a listing enumerates fields. PREFER OMITTING: ranked search defaults to ${DEFAULT_RANKED_LIMIT}, a pure listing to ${MAX_LIMIT}. Where a ranked response carries next_offset, a page also ends before 35,000 characters, and the sources past it are on the next page, not dropped.`,
+         `Sources per page (max ${MAX_LIMIT}), or fields per page in a field listing. PREFER OMITTING: ranked search defaults to ${DEFAULT_RANKED_LIMIT}, a pure listing to ${MAX_LIMIT}. Where a ranked response carries next_offset, a page also ends before 35,000 characters, and the sources past it are on the next page, not dropped.`,
       ),
    offset: z
       .number()
@@ -131,7 +131,15 @@ export const convergedContextShape = {
       .min(0)
       .nullish()
       .describe(
-         "Rows to skip: a previous response's next_offset, sent with every other argument unchanged, returns the next page. Works on any listing (sources, or a source's fields), and on a ranked result whose response carried next_offset: that result is held for 10 minutes, so its pages are one result. Later, the search runs again and a warning says so. Other ranked results cannot be resumed.",
+         "Sources to skip: a previous response's next_offset, sent with every other argument unchanged, returns the next page. Works on a pure listing, and on a ranked result whose response carried next_offset: that result is held for 10 minutes, so its pages are one result. Later, the search runs again and a warning says so. Other ranked results cannot be resumed.",
+      ),
+   entity_offset: z
+      .number()
+      .int()
+      .min(0)
+      .nullish()
+      .describe(
+         "Fields to skip in a field listing (dimension, measure, view or join targets with no search_text): a previous response's next_entity_offset, sent with every other argument unchanged, returns the next page. Not for a search or a source listing, which page with offset.",
       ),
 };
 
@@ -210,6 +218,7 @@ export function resolveRequest(params: ScopedParams): ResolvedRequest {
       unsupported,
       limit: params.limit ?? (listingOnly ? MAX_LIMIT : DEFAULT_RANKED_LIMIT),
       offset: params.offset ?? 0,
+      entityOffset: params.entity_offset ?? 0,
       ...(params.givens && Object.keys(params.givens).length > 0
          ? { givens: params.givens as Record<string, GivenValue> }
          : {}),

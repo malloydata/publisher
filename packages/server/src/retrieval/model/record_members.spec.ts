@@ -955,6 +955,7 @@ source: orders is duckdb.sql("""select 7 as customer_id""") extend {
                unsupported: [],
                limit: 20,
                offset: 0,
+               entityOffset: 0,
             },
             pkgIndex: f.pkgIndex,
             connected,

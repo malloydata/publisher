@@ -2192,16 +2192,20 @@ describe("get_context truncation reporting", () => {
       );
       // The limit is capped, so raising it cannot reach field 151 of a wide
       // source; paging can.
-      expect(payload.warnings.join(" ")).toContain("next_offset");
+      expect(payload.warnings.join(" ")).toContain(
+         "Pass next_entity_offset back as entity_offset",
+      );
       expect(payload.warnings.join(" ")).not.toContain("Raise limit");
-      expect(payload.next_offset).toBe(4);
+      expect(payload.next_entity_offset).toBe(4);
+      // offset counts sources, so a field listing never sends next_offset.
+      expect(payload).not.toHaveProperty("next_offset");
    });
 
-   it("pages a source's fields with offset until every field is listed once", async () => {
+   it("pages a source's fields with entity_offset until every field is listed once", async () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => widePackage),
       });
-      const call = async (offset?: number) =>
+      const call = async (entityOffset?: number) =>
          parse(
             await handler({
                search_targets: everyKind(),
@@ -2209,14 +2213,20 @@ describe("get_context truncation reporting", () => {
                   { environment: "specs", package: "wide", source: "orders" },
                ],
                limit: 5,
-               ...(offset === undefined ? {} : { offset }),
+               ...(entityOffset === undefined
+                  ? {}
+                  : { entity_offset: entityOffset }),
             }),
          );
       const pages = [await call()];
-      while (pages[pages.length - 1].next_offset !== undefined) {
-         pages.push(await call(pages[pages.length - 1].next_offset));
+      while (pages[pages.length - 1].next_entity_offset !== undefined) {
+         pages.push(await call(pages[pages.length - 1].next_entity_offset));
       }
-      expect(pages.map((p) => p.next_offset)).toEqual([5, 10, undefined]);
+      expect(pages.map((p) => p.next_entity_offset)).toEqual([
+         5,
+         10,
+         undefined,
+      ]);
       const names = pages.flatMap((p) =>
          p.sources[0].entities.map((e: { name: string }) => e.name),
       );
@@ -2247,6 +2257,78 @@ describe("get_context truncation reporting", () => {
          }),
       );
       expect("warnings" in payload).toBe(false);
+   });
+});
+
+describe("get_context field listing paging controls", () => {
+   const wideModel = {
+      getSourceInfos: () => [
+         {
+            name: "orders",
+            annotations: [],
+            schema: {
+               fields: Array.from({ length: 12 }, (_, i) => ({
+                  kind: "measure",
+                  name: `revenue_${i}`,
+                  annotations: [],
+               })),
+            },
+         },
+      ],
+      getQueries: () => [],
+   };
+   const handler = () =>
+      captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "wide.malloy" }],
+               getModel: () => wideModel,
+            })),
+      });
+   const scoped = [{ environment: "specs", package: "wide", source: "orders" }];
+
+   it("says an entity_offset past the end is past the end, not that the source is empty", async () => {
+      const payload = parse(
+         await handler()({
+            search_targets: everyKind(),
+            scopes: scoped,
+            entity_offset: 20,
+         }),
+      );
+      expect(payload.sources[0].entities ?? []).toHaveLength(0);
+      expect(payload.warnings).toEqual([
+         "entity_offset 20 is past the end: there are 12 entities in scope. Start again without entity_offset.",
+      ]);
+   });
+
+   it("refuses offset on a field listing, naming entity_offset", async () => {
+      // offset counts sources everywhere; on a field listing it would be a
+      // different unit, so it is refused rather than reinterpreted.
+      const payload = parse(
+         await handler()({
+            search_targets: everyKind(),
+            scopes: scoped,
+            offset: 5,
+         }),
+      );
+      expect(payload.error).toContain("Invalid offset");
+      expect(payload.error).toContain("entity_offset");
+   });
+
+   it("refuses entity_offset on a search and on a source listing", async () => {
+      for (const search_targets of [
+         [{ target_type: "measure", search_text: "revenue" }],
+         [{ target_type: "source" }],
+      ]) {
+         const payload = parse(
+            await handler()({
+               search_targets,
+               scopes: [{ environment: "specs", package: "wide" }],
+               entity_offset: 5,
+            }),
+         );
+         expect(payload.error).toContain("Invalid entity_offset");
+      }
    });
 });
 

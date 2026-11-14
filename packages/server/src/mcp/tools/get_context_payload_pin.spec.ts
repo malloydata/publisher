@@ -403,10 +403,13 @@ describe("get_context payload pin: ranked answers", () => {
       const { pkg } = await compileFcjFixture();
       const { payload, isError } = await callPayload(harness.handlerFor(pkg), {
          search_targets: [target("dimension")],
-         environment: "elsewhere",
+         offset: 3,
          scopes: [{ ...scopes[0], source: "flights" }],
       });
       expect(isError).toBe(true);
-      pin("ranked/environment contradicting the scope is refused", payload);
+      pin(
+         "ranked/offset refused on a listing that is not a source browse",
+         payload,
+      );
    });
 });

@@ -243,7 +243,7 @@
                 "type": "null"
               }
             ],
-            "description": "Sources per page (max 150), or fields per page when a listing enumerates fields. PREFER OMITTING: ranked search defaults to 20, a pure listing to 150. Where a ranked response carries next_offset, a page also ends before 35,000 characters, and the sources past it are on the next page, not dropped."
+            "description": "Sources per page (max 150), or fields per page in a field listing. PREFER OMITTING: ranked search defaults to 20, a pure listing to 150. Where a ranked response carries next_offset, a page also ends before 35,000 characters, and the sources past it are on the next page, not dropped."
           },
           "offset": {
             "anyOf": [
@@ -255,7 +255,19 @@
                 "type": "null"
               }
             ],
-            "description": "Rows to skip: a previous response's next_offset, sent with every other argument unchanged, returns the next page. Works on any listing (sources, or a source's fields), and on a ranked result whose response carried next_offset: that result is held for 10 minutes, so its pages are one result. Later, the search runs again and a warning says so. Other ranked results cannot be resumed."
+            "description": "Sources to skip: a previous response's next_offset, sent with every other argument unchanged, returns the next page. Works on a pure listing, and on a ranked result whose response carried next_offset: that result is held for 10 minutes, so its pages are one result. Later, the search runs again and a warning says so. Other ranked results cannot be resumed."
+          },
+          "entity_offset": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Fields to skip in a field listing (dimension, measure, view or join targets with no search_text): a previous response's next_entity_offset, sent with every other argument unchanged, returns the next page. Not for a search or a source listing, which page with offset."
           }
         },
         "additionalProperties": false,

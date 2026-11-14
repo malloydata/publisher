@@ -250,14 +250,6 @@
     ],
     "unresolved_targets": []
   },
-  "ranked/environment contradicting the scope is refused": {
-    "error": "Invalid environment: \"elsewhere\" contradicts scopes[0].environment \"pin\". Fix: drop `environment`, or make the two the same.",
-    "suggestions": [
-      "This is not transient. The same arguments will fail the same way, so change them rather than retrying.",
-      "The message above names what was wrong. If it names an expected format, use that format exactly."
-    ],
-    "sources": []
-  },
   "ranked/indexing": {
     "sources": [],
     "ranking": "relevance",
@@ -267,6 +259,14 @@
     "warnings": [
       "This package's search index is still being built, so there are no results yet. Nothing is wrong: ask the same question again in a few seconds. A request with no search_text (a listing) works now."
     ]
+  },
+  "ranked/offset refused on a listing that is not a source browse": {
+    "error": "Invalid offset: offset counts sources, and this is a field listing (entity targets with no search_text). Fix: send the previous response's next_entity_offset as entity_offset instead.",
+    "suggestions": [
+      "This is not transient. The same arguments will fail the same way, so change them rather than retrying.",
+      "The message above names what was wrong. If it names an expected format, use that format exactly."
+    ],
+    "sources": []
   },
   "ranked/scoped to a source": {
     "sources": [
@@ -585,7 +585,7 @@
       }
     ],
     "ranking": "prominence",
-    "total_available": 3,
+    "total_available": 2,
     "returned": 2
   },
   "unconfigured/listing: non-source kinds, capped by limit": {
@@ -618,11 +618,11 @@
       }
     ],
     "ranking": "prominence",
-    "total_available": 5,
+    "total_available": 2,
     "returned": 1,
-    "next_offset": 2,
+    "next_entity_offset": 2,
     "warnings": [
-      "Returned 2 of 5 entities in scope. Pass next_offset back as offset, with every other argument unchanged, for the next page, or narrow with search_text or more targeted scopes."
+      "Returned 2 of 5 entities in scope. Pass next_entity_offset back as entity_offset, with every other argument unchanged, for the next page, or narrow with search_text or more targeted scopes."
     ]
   },
   "unconfigured/listing: offset beyond the results": {
@@ -631,7 +631,7 @@
     "total_available": 2,
     "returned": 0,
     "warnings": [
-      "This package loaded but exposes no sources. That is a curation gap, not an empty database: check what the package's index.malloy exports (its export { ... }), and call get_status for load errors and stale packages."
+      "offset 50 is past the end: there are 2 sources in scope. Start again without offset."
     ]
   },
   "unconfigured/listing: second page via offset": {

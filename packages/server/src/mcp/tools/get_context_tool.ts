@@ -4,6 +4,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerTool } from "../register_tool";
 import type { EnvironmentCatalog } from "../../service/environment_ports";
+import { InvalidArgumentError } from "../../errors";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import {
    type AccessIdentity,
@@ -148,6 +149,22 @@ async function lockedSourceKeys(
    return keys;
 }
 
+/**
+ * Why the request's paging control is the wrong one for it, or undefined when
+ * it is right. A field listing has no source order to resume, and a search or
+ * a source browse has no field rows.
+ */
+function misusedOffset(request: ResolvedRequest): string | undefined {
+   const fieldListing = request.listingOnly && !request.pureSourceListing;
+   if (fieldListing && request.offset > 0) {
+      return "Invalid offset: offset counts sources, and this is a field listing (entity targets with no search_text). Fix: send the previous response's next_entity_offset as entity_offset instead.";
+   }
+   if (!fieldListing && request.entityOffset > 0) {
+      return "Invalid entity_offset: entity_offset pages a field listing (dimension, measure, view or join targets with no search_text). Fix: drop entity_offset; a search or a source listing pages with offset.";
+   }
+   return undefined;
+}
+
 /** Tier 3: nothing to rank, so enumerate what the targets name. */
 function runListing(
    ctx: ListingContext,
@@ -179,18 +196,19 @@ function runListing(
       ...matching.filter((e) => !e.recordPath),
       ...matching.filter((e) => e.recordPath),
    ];
-   // The limit and `offset` count the rows a page is cut from. A drill-down's
-   // source row becomes the card on every page, so it is not one of them.
-   // A listing is catalog order, stable for a loaded package, so every
-   // listing pages: a source browse by source, a field listing by field.
+   // A listing is catalog order, so it pages: a source browse by `offset`
+   // (sources), a field listing by `entity_offset` (rows). The order holds for
+   // a loaded package; a reload between pages can shift it. A drill-down's
+   // source row becomes the card on every page, so it is not a row to page.
    const isCard = (e: (typeof inScope)[number]) =>
       Boolean(sourceName) && e.kind === "source";
    const pageable = inScope.filter((e) => !isCard(e));
-   const page = new Set(
-      pageable.slice(request.offset, request.offset + request.limit),
-   );
+   const skip = request.pureSourceListing
+      ? request.offset
+      : request.entityOffset;
+   const page = new Set(pageable.slice(skip, skip + request.limit));
    const capped = inScope.filter((e) => isCard(e) || page.has(e));
-   const nextOffset = request.offset + page.size;
+   const next = skip + page.size;
    const sources = toSourceResults(
       capped.map((e) => projectEntity(e, environmentName, packageName)),
       sourceContext,
@@ -202,26 +220,29 @@ function runListing(
    );
    // A listing is catalog order, not a ranking: it names the ordering and
    // omits a score rather than inventing one. Both counts are in cards (one
-   // per model path resolving a source), the unit the payload is made of;
-   // next_offset is in rows, the unit `offset` reads.
-   // Distinct (model path, source) pairings, so the count stays right even
-   // for an entity whose own source row was filtered out.
-   const cardsInScope = sourceName
-      ? new Set(
-           inScope.map((e) => sourceContextKey(e.modelPath, e.source ?? "")),
-        ).size
-      : inScope.length;
+   // per model path resolving a source), the unit the payload is made of.
+   // Distinct (model path, source) pairings, so the count stays right for a
+   // field listing, whose rows are fields, and for an entity whose own
+   // source row was filtered out.
+   const cardsInScope = new Set(
+      inScope.map((e) => sourceContextKey(e.modelPath, e.source ?? "")),
+   ).size;
    const listingEnvelope = {
       ranking: "prominence" as const,
       total_available: cardsInScope,
       returned: sources.length,
-      ...(nextOffset < pageable.length ? { next_offset: nextOffset } : {}),
+      ...(next < pageable.length
+         ? request.pureSourceListing
+            ? { next_offset: next }
+            : { next_entity_offset: next }
+         : {}),
    };
    // The package loaded (a failed load throws from packageIndex), so an
    // empty listing is a curation gap, not an empty database; say so. Not when
    // `kinds` is empty: then every target named an unindexed type and
-   // unsupportedTargetWarnings has already explained it.
-   if (sources.length === 0 && !sourceName && request.kinds.size > 0) {
+   // unsupportedTargetWarnings has already explained it. Counted before
+   // paging, so an offset past the end is not mistaken for one.
+   if (inScope.length === 0 && !sourceName && request.kinds.size > 0) {
       return jsonResource(uri, {
          sources,
          ...listingEnvelope,
@@ -239,8 +260,9 @@ function runListing(
       ...skillsFor(ctx),
       ...warningsFor(
          listingPageWarning({
+            param: request.pureSourceListing ? "offset" : "entity_offset",
             unit: request.pureSourceListing ? "sources" : "entities",
-            offset: request.offset,
+            skipped: skip,
             returned: page.size,
             total: pageable.length,
          }),
@@ -296,6 +318,21 @@ async function runContextQuery(
       { environment: environmentName, package: packageName },
       "get-context",
    );
+
+   // Each listing pages by one control, in one unit: a source browse and a
+   // held ranked result by `offset` (sources), a field listing by
+   // `entity_offset` (rows). The other is refused rather than ignored:
+   // ignoring it would hand back page 1 as if it were page 2.
+   const pagingError = misusedOffset(resolved);
+   if (pagingError) {
+      return contextError(
+         uri,
+         `${environmentName}/${packageName}`,
+         // InvalidArgumentError, not a bare Error: an unclassified throw is
+         // reported by classifyToolError as an internal fault.
+         new InvalidArgumentError(pagingError),
+      );
+   }
 
    const staleNote = await staleNoteFor(
       environmentStore,
