@@ -147,7 +147,8 @@ describe("assertStorageServeShapeCompiles (build-time servability gate)", () => 
          "not_duckdb_portable",
       );
       expect((error as Error).message).toContain(
-         "'attrs' (MAP(VARCHAR, INTEGER)), 'raw' (BLOB)",
+         "no stored column has a Malloy type that reads it back faithfully " +
+            "('attrs' (MAP(VARCHAR, INTEGER)), 'raw' (BLOB))",
       );
    });
 
