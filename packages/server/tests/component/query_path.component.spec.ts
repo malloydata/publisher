@@ -707,6 +707,43 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          );
       }, 60_000);
    }
+
+   // A notebook runs each cell against the cell's own model, which carries
+   // `##! experimental.persistence` only through what it imports. Malloy
+   // refuses a non-empty manifest on a model without the flag, so a table
+   // bound for another model must not reach such a cell (#1731, ported onto
+   // the v1 cutover, where the query path takes no manifest at all).
+   it("runs a notebook cell whose model has no persistence flag, beside a bound table", async () => {
+      await underMode("on");
+      const pkg = await loadPackage(MODEL, {
+         "flagless.malloy": `source: plain is duckdb.sql("SELECT 1 AS x")`,
+         "persisting.malloynb": `>>>malloy\nimport "model.malloy"\n${DAILY_QUERY}\n`,
+         "flagless.malloynb": `>>>malloy\nimport "flagless.malloy"\nrun: plain -> { aggregate: c is count() }\n`,
+      });
+      const dailyId = entityIdOf(pkg, "daily");
+      await bindThroughReload(pkg, [
+         {
+            entityId: dailyId,
+            table: "built_daily_sentinel",
+            sql: DAILY_SENTINEL,
+            extra: {
+               dataAsOf: new Date().toISOString(),
+               freshnessWindowSeconds: 3600,
+               freshnessFallback: "live",
+            },
+         },
+      ]);
+      const flagless = pkg.getModel("flagless.malloynb");
+      const persisting = pkg.getModel("persisting.malloynb");
+      if (!flagless || !persisting) throw new Error("notebooks did not load");
+      // Without the check: "A non-empty `buildManifest` was supplied, but the
+      // model is missing `##! experimental.persistence`".
+      const plain = await flagless.executeNotebookCell(unrecordedAudit(), 0);
+      expect(plain.result).toContain('"number_value":1');
+      // A cell that imports the persisting model still reads its table.
+      const read = await persisting.executeNotebookCell(unrecordedAudit(), 0);
+      expect(read.result).toContain("built_daily_sentinel");
+   }, 60_000);
 });
 
 const ORDERS_SQL = `duckdb.sql("""

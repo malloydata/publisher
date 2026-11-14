@@ -1,8 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// 6b / G5: a v1 `storage=` table an older build typed, under PUBLISHER_V1_SERVED_COPY=on. Every answer must equal
-// live by both the R4 rule and the shadow's exact rule, with the same wire
+// 6b / G5: a v1 `storage=` table an older build typed, under the v1 cutover. Every answer must equal
+// live by both the R4 rule and the strict rule (answer_difference.ts), with the same wire
 // types, and a query reading a left-out column must answer live.
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";

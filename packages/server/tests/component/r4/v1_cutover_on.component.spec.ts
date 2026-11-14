@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// v1 colocated tables under PUBLISHER_V1_SERVED_COPY=on. Each query is
+// v1 colocated tables under the v1 cutover. Each query is
 // answered live before any table is bound, then under the cutover; the served
 // answer must equal live per caller, and a refusal must stay a refusal.
 

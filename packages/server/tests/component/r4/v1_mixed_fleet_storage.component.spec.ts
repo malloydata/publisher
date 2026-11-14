@@ -7,8 +7,9 @@
  * rollout of the v1 cutover's retirement (6g), an older worker built a v1
  * `#@ preaggregate storage=` rollup as `__preagg__`, and this one builds it as
  * `__rollup__`, at another address. Handed the older worker's storage entry,
- * this worker must not read that table, though the storage tier falls back
- * to matching an entry by name: the two names are never equal. (The older
+ * this worker must not read that table: its address is not this worker's
+ * (the storage tier matches an entry by name AND address), nor is its
+ * name. (The older
  * worker's half was pinned while the switch existed; it ships in that
  * worker.)
  *
@@ -145,6 +146,12 @@ describe("a host storage manifest from an older worker of the v1 cutover (mixed 
 
       // Handed only the older entry: live.
       await bindStored(fixture, olderEntries);
+      expect(await ask()).toEqual({ rows: LIVE, servedBy: "live" });
+      // Live too when the older entry carries this worker's name: an entry
+      // is matched by its address, never by its name alone.
+      await bindStored(fixture, {
+         [olderID]: { ...olderEntries[olderID], sourceName: own.sourceName },
+      });
       expect(await ask()).toEqual({ rows: LIVE, servedBy: "live" });
       // Both: its own table, never the older one.
       await bindStored(fixture, { ...olderEntries, ...ownEntries });

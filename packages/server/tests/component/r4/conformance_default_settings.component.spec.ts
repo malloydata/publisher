@@ -6,8 +6,8 @@
  * other spec runs. The conformance spec's `cutover` switch also sets
  * `PUBLISHER_MATERIALIZE`; the default leaves it off, and 6f found one defect
  * only that combination reaches (the cutover read `#(preaggregate)` with it
- * off). Here only `PERSIST_STORAGE_MODE=on` is set, so `PUBLISHER_V1_SERVED_COPY`
- * takes its default (`on`): each v1 query is answered live before any table is
+ * off). Here only `PERSIST_STORAGE_MODE=on` is set: each v1 query is answered
+ * live before any table is
  * bound, then after the bind, and the two must agree on rows and on each
  * column's type (number subtype aside) and annotations.
  */

@@ -82,6 +82,7 @@ import type { SerializedModel } from "../package_load/protocol";
 import { decodeSerializedModel } from "../package_load/protocol_decode";
 import { BuildManifest } from "./materialization/types";
 import {
+   modelAnnotations,
    ownModelAnnotations,
    ownModelNoteObjects,
    ownModelNotes,
@@ -136,6 +137,7 @@ import {
    parseRouteTag,
    readAutorun,
    readStartingGivens,
+   routeHasKey,
    tagText,
 } from "./motly";
 import {
@@ -1334,6 +1336,38 @@ export class Model {
          ? { ...manifest, entries }
          : undefined;
    }
+
+   /**
+    * `manifest`, or nothing when `modelDef` lacks `##! experimental.persistence`.
+    * For a legacy `.malloynb` cell, the one run left that compiles the
+    * author's own model with the build manifest: each cell's imports decide
+    * its flag, and Malloy refuses a non-empty manifest on a model without it,
+    * so a table bound for another model would fail every such cell. A model
+    * without the flag has no persisted source for Malloy to substitute, so
+    * nothing it reads is lost. Presence only, decided as Malloy decides it.
+    * (The query path's form of this, guard 2, retired with 6g: its live
+    * compile takes no manifest.)
+    */
+   private manifestIfPersistent(
+      manifest: BuildManifest | undefined,
+      modelDef: ModelDef | undefined,
+   ): BuildManifest | undefined {
+      if (!manifest || !modelDef) return undefined;
+      let persistent = this.persistenceFlagMemo.get(modelDef);
+      if (persistent === undefined) {
+         persistent = routeHasKey(
+            new Annotations(modelAnnotations(modelDef)),
+            "!",
+            "experimental",
+            "persistence",
+         );
+         this.persistenceFlagMemo.set(modelDef, persistent);
+      }
+      return persistent ? manifest : undefined;
+   }
+
+   /** {@link manifestIfPersistent}'s answer for each model it was read from. */
+   private readonly persistenceFlagMemo = new WeakMap<ModelDef, boolean>();
 
    /** `includeHidden` lists sources the file does not export, which `queryableSources: "all"` still serves. */
    public getSources(includeHidden = false): ApiSource[] | undefined {
@@ -4629,9 +4663,13 @@ export class Model {
             const cellMaxRows = getMaxQueryRows();
             const cellMaxBytes = getMaxResponseBytes();
             // The freshness-filtered manifest minus rollups (a notebook has no
-            // companion).
-            const buildManifest = this.withoutPreaggregateEntries(
-               this.resolveFreshBuildManifest(),
+            // companion), and none for a cell whose model lacks the
+            // persistence flag (see manifestIfPersistent).
+            const buildManifest = this.manifestIfPersistent(
+               this.withoutPreaggregateEntries(
+                  this.resolveFreshBuildManifest(),
+               ),
+               cell.modelDef ?? this.modelDef,
             );
             // See filterGivensToModelSurface.
             const cellSurfaceGivens = this.governor.filterGivensToModelSurface(

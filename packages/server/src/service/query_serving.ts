@@ -108,11 +108,7 @@ export type RoutedExtra =
      }
    | {
         kind: "rollup";
-        /**
-         * The composite member the compiled query resolved to: the rollup that
-         * answered, or the base when no rollup's grain covers the query. For a
-         * `#(preaggregate)` rollup, the rollup that answered.
-         */
+        /** The rollup that answered. */
         resolvedMember?: string;
         /** A `#(preaggregate) storage=` rollup: how its table resolves. */
         virtualMap?: VirtualMap;
@@ -132,8 +128,6 @@ export type RoutedExtra =
          * entry point reaches.
          */
         graftScope?: GraftScope;
-        /** Set when the v1 `#@ preaggregate` composite answered. */
-        v1Composite?: true;
      };
 
 /**
@@ -180,14 +174,12 @@ export interface Answer {
     * the contracts (R3): `govern()` must find and enforce that gate on it.
     */
    readonly pastEntryPointGate: boolean;
-   /** For a rollup answer: the composite member the compile resolved to. */
+   /** For a rollup answer: the rollup that answered. */
    readonly rollupMember: string | undefined;
    /** A storage read failed at run time and the query was answered live. */
    readonly runFailed: boolean;
    /** The colocated manifest entries the answering run read. */
    readonly colocatedRead: ReadonlySet<string>;
-   /** A rollup answer from the v1 `#@ preaggregate` composite. */
-   readonly v1Composite: boolean;
 }
 
 /** The answer before routing, and when nothing could route. */
@@ -205,7 +197,6 @@ export const LIVE_ANSWER: Answer = Object.freeze({
    viewTable: undefined,
    runFailed: false,
    colocatedRead: new Set<string>(),
-   v1Composite: false,
 });
 
 /** The answer the router's decision describes, before anything runs. */
@@ -250,7 +241,6 @@ export function routedAnswer(route: RouteDecision<RoutedExtra>): Answer {
       tier: "rollup",
       routedRunnable: route.runnable,
       rollupMember: route.extra.resolvedMember,
-      v1Composite: route.extra.v1Composite === true,
       graftScope: route.extra.graftScope,
       // A stored rollup reads through `virtual()`; a run failure on it may
       // degrade to live, since a rollup only accelerates (its binding's
@@ -264,21 +254,6 @@ export function routedAnswer(route: RouteDecision<RoutedExtra>): Answer {
            }
          : {}),
    });
-}
-
-/**
- * Whether a path the v1 cutover retires answered: the storage serve shape,
- * the v1 `#@ preaggregate` composite, or Malloy's build manifest on the live
- * compile (a colocated `#@ persist` table). Under `shadow`, these answers are
- * compared with the cutover's.
- */
-export function answeredByV1Path(answer: Answer): boolean {
-   if (answer.runFailed) return false;
-   return (
-      (answer.tier === "storage" && answer.via === undefined) ||
-      answer.v1Composite ||
-      answer.colocatedRead.size > 0
-   );
 }
 
 /** The same answer after its storage run failed and the live retry ran. */

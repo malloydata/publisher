@@ -1859,14 +1859,12 @@ describe("serve binding source identity", () => {
       expect(ids("nope", "addr_a")).toEqual([]);
    });
 
-   it("planSourceIds trusts the name when no address matches only if one plan source has it", () => {
-      // An instructed build stamps the caller's address.
-      expect(planSourceIds(plan)("daily_ext", "caller_addr")).toEqual([
-         "daily_ext@file:///p/a.malloy",
-      ]);
-      // Two `daily`s are two tables' sources: naming both would serve one from
-      // the other's table, so neither is named.
-      expect(planSourceIds(plan)("daily", "caller_addr")).toEqual([]);
+   it("planSourceIds names no plan source when no address matches, however few share the name", () => {
+      // An entry at another address was built from another definition of a
+      // same-named source (an edit, a restored manifest, an older release):
+      // its table holds that definition's rows.
+      expect(planSourceIds(plan)("daily_ext", "other_addr")).toEqual([]);
+      expect(planSourceIds(plan)("daily", "other_addr")).toEqual([]);
    });
 
    it("an empty sourceIDs list serves no model's source of that name", () => {

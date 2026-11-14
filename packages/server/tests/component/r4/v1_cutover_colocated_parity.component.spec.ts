@@ -1,8 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// v1 colocated tables under PUBLISHER_V1_SERVED_COPY=on (and today's `off`
-// for comparison). Each query is answered live before any table is bound,
+// v1 colocated tables under the v1 cutover. Each query is answered live before any table is bound,
 // then served, callers interleaved and repeated; the served answer must equal
 // live per caller by the strict comparison, and a refusal must stay a
 // refusal. Wide column types keep their table and live's result types.
