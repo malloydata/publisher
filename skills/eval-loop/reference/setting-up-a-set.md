@@ -185,7 +185,7 @@ is the day-to-day loop.
 
 ## 8. Two agents to run it on a schedule
 
-A package can declare agents in its `publisher.json` (`skill:malloy-define-agent`).
+A package can declare agents in its `publisher.json` (the `malloy-define-agent` skill has the format).
 `examples/storefront` ships two that run this loop, each with one task per
 mode:
 
