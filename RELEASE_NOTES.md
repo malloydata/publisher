@@ -27,6 +27,8 @@ Behind `PUBLISHER_MATERIALIZE`, once a run creates or repoints a `#(materialize)
 
 Two more paths that dropped a view without a fresh check now make one. When a view that replaced this package's own table does not read back, the table is put back only if the name is empty or still holds this package's view; otherwise both are left, the table under its aside name. And on Postgres, a repoint that has to drop the view and make it again (the new table's columns no longer extend the old ones) first checks, in the same transaction, that the name still holds the view it probed, and fails rather than drop another one. Nothing changes when the read-back succeeds.
 
+A build that replaces or carries this package's view also checks it again at the moment it acts, since the probe that found it ran before the build. A table built at `name=` that replaces the package's view, and a Postgres rebuild of the table the view reads, now confirm in the swap's own transaction (on DuckDB and Postgres, colocated or in a `storage=` destination) that the name still holds this package's view of the expected table. On other dialects the name is probed again immediately before the view is dropped; a short window between that probe and the drop remains, since their DDL is not transactional. When the view has changed hands, the build fails, and the view is neither dropped nor replaced.
+
 ## [Unreleased] — Bun 1.4.4: a respawned package-load worker no longer leaks its memory
 
 Publisher now builds, tests and ships on Bun 1.4.4, up from 1.3.13. The Docker image's base is `oven/bun:1.4.4-slim`, and building from a clone needs Bun 1.4.4 or newer (`engines.bun` is now `>=1.4.4`). Running the published package with `npx` still needs only Node.js 20 or newer.

@@ -33,7 +33,7 @@ import {
    type NameViewIntent,
    type NameViewRecord,
 } from "./name_view";
-import { nameViewComment } from "./name_view_sql";
+import { nameViewComment, nameViewGuardSql } from "./name_view_sql";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -159,6 +159,13 @@ describe("a Postgres swap of the table the view reads", () => {
 
    it("repoints the view at staging first, and drops and remakes it only when that is refused", () => {
       const comment = `COMMENT ON VIEW "mz"."flights_all" IS '${mark("mz.flights_all_v1")}'`;
+      // Each attempt first confirms, in its own transaction, the view the
+      // preflight probe found.
+      const guard = nameViewGuardSql(
+         ["mz", "flights_all"],
+         { target: "mz.flights_all_v1", owner: OWNER },
+         "postgres",
+      );
       expect(
          swapDependentsFor(
             intent,
@@ -168,13 +175,14 @@ describe("a Postgres swap of the table the view reads", () => {
       ).toEqual([
          {
             before: [
+               guard,
                `CREATE OR REPLACE VIEW "mz"."flights_all" AS SELECT * FROM "mz"."flights_all_v1_s"`,
                comment,
             ],
             after: [],
          },
          {
-            before: [`DROP VIEW "mz"."flights_all"`],
+            before: [guard, `DROP VIEW "mz"."flights_all"`],
             after: [
                `CREATE VIEW "mz"."flights_all" AS SELECT * FROM "mz"."flights_all_v1"`,
                comment,

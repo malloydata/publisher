@@ -39,6 +39,7 @@ import {
 } from "./name_view";
 import { ownedTableComment } from "./table_ownership";
 import {
+   NameViewChangedError,
    nameViewComment,
    nameViewReplaceTableDdl,
    renameTableSql,
@@ -685,7 +686,7 @@ describe("in a DuckLake catalog", () => {
          '"lake"."main"."summary"',
          "SELECT 3 AS x",
          [],
-         { replacesView: true },
+         { replacesView: { target: "summary_g1", owner: OWNER } },
       );
       expect(await probeNameView(site, "summary")).toEqual({
          state: "taken",
@@ -712,7 +713,7 @@ describe("in a DuckLake catalog", () => {
             '"lake"."main"."summary"',
             "SELECT * FROM lake.main.no_such_table",
             [],
-            { replacesView: true },
+            { replacesView: { target: "summary_g1", owner: OWNER } },
          ),
       ).rejects.toThrow();
       expect(await probeNameView(site, "summary")).toEqual({
@@ -726,7 +727,7 @@ describe("in a DuckLake catalog", () => {
          '"lake"."main"."summary"',
          "SELECT 4 AS x",
          ["x"],
-         { replacesView: true },
+         { replacesView: { target: "summary_g1", owner: OWNER } },
       );
       expect(await rows("SELECT x FROM lake.main.summary")).toEqual([{ x: 4 }]);
    });
@@ -965,6 +966,39 @@ describe("where DDL is not transactional", () => {
       );
       expect(records[0].outcome).toBe("failed");
       expect(held.get("mz.summary")).toEqual({ kind: "BASE TABLE" });
+   });
+
+   it("a table's swap re-probes the name just before the drop, and never drops a view another package put there", async () => {
+      const { connection, held, statements } = warehouse();
+      held.set("mz.summary_s", { kind: "BASE TABLE" });
+      // Preflight found this package's view of the generation; another
+      // package's view has taken the name since.
+      held.set("mz.summary", {
+         kind: "VIEW",
+         comment: nameViewComment({
+            target: "elsewhere.t",
+            owner: "env/other",
+         }),
+      });
+      const swap = viewToTableSwap(
+         { ...intent, physicalTableName: "mz.summary" },
+         "mz.summary_g1",
+         "snowflake",
+      );
+      await expect(
+         swapIntoPlace({
+            connection: connection as never,
+            runOptions: {},
+            dialect: "snowflake",
+            physicalTableName: "mz.summary",
+            stagingTableName: "mz.summary_s",
+            backupTableName: "mz.summary_o",
+            connectionName: "wh",
+            swapDependents: swap,
+         }),
+      ).rejects.toBeInstanceOf(NameViewChangedError);
+      expect(held.get("mz.summary")?.comment).toContain("env%2Fother");
+      expect(statements.some((s) => s.startsWith("DROP VIEW"))).toBe(false);
    });
 
    it("a table's swap over the package's view drops it first, and remakes it if the swap fails", async () => {

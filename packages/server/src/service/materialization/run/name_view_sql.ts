@@ -380,6 +380,105 @@ function postgresExpectedViewGuard(
    );
 }
 
+/** The message every check that a view is still as probed fails with. */
+function viewChangedMessage(segments: string[], dialect: string): string {
+   return `the name= view ${quotedPath(segments, dialect)} is not as this package left it`;
+}
+
+/**
+ * Thrown when the name a statement is about to drop or replace no longer
+ * holds the view this package's probe found there: another package's view,
+ * an author's, or nothing. Nothing is dropped.
+ */
+export class NameViewChangedError extends Error {}
+
+/** Whether a probed slot is exactly the view `expected` marks (or empty). */
+export function nameViewSlotHolds(
+   slot: NameViewSlot,
+   expected: NameViewMark | undefined,
+): boolean {
+   if (!expected) return slot.state === "empty";
+   return (
+      slot.state === "ours" &&
+      slot.owner === expected.owner &&
+      slot.target === expected.target
+   );
+}
+
+/**
+ * Check, at the moment of a destructive statement, that the name still holds
+ * what was probed before: throw {@link NameViewChangedError} otherwise. For
+ * a caller that runs each statement of its transaction on its own (a DuckDB
+ * storage session), or one that has no transaction at all, where it narrows
+ * the window to the statement that follows.
+ */
+export async function assertNameViewHolds(
+   run: (sql: string) => Promise<unknown>,
+   segments: string[],
+   expected: NameViewMark | undefined,
+   dialect: string,
+): Promise<void> {
+   const result = await run(nameViewProbeSql(segments, dialect));
+   const rows = (result as { rows?: unknown } | null)?.rows;
+   const slot = nameViewSlotOf(
+      Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [],
+   );
+   if (!nameViewSlotHolds(slot, expected)) {
+      throw new NameViewChangedError(viewChangedMessage(segments, dialect));
+   }
+}
+
+/**
+ * A statement that fails, inside the transaction it opens, unless the name
+ * `segments` names holds exactly the view `expected` marks (or nothing, when
+ * `expected` is undefined): run first in a transaction that drops or
+ * replaces the view, so the mark is confirmed at the moment of the
+ * destructive statement rather than at an earlier probe. Postgres and DuckDB
+ * only, the dialects whose DDL is transactional in one call.
+ */
+export function nameViewGuardSql(
+   segments: string[],
+   expected: NameViewMark | undefined,
+   dialect: string,
+): string {
+   switch (dialect) {
+      case "postgres":
+         return postgresExpectedViewGuard(segments, expected);
+      case "duckdb": {
+         const lit = (v: string) => sqlString(v, dialect);
+         const changed = expected
+            ? `count(*) FILTER (WHERE kind = 'VIEW' AND comment = ` +
+              `${lit(nameViewComment(expected))}) = 0 ` +
+              `OR count(*) FILTER (WHERE kind <> 'VIEW') > 0`
+            : "count(*) > 0";
+         return (
+            `SELECT error(${lit(viewChangedMessage(segments, dialect))}) ` +
+            `FROM (SELECT 1 FROM (${nameViewProbeSql(segments, dialect)}) p ` +
+            `HAVING ${changed}) g`
+         );
+      }
+      default:
+         throw unsupportedDialect(dialect);
+   }
+}
+
+/**
+ * The unquoted segments of a table path as {@link quoteTablePath} quotes it
+ * (each segment double-quoted, a quote inside doubled); an unquoted path is
+ * split on its dots.
+ */
+export function segmentsOfQuotedPath(path: string): string[] {
+   if (!path.includes('"')) return pathSegments(path);
+   const segments: string[] = [];
+   const re = /"((?:[^"]|"")*)"(?:\.|$)/gy;
+   let m: RegExpExecArray | null;
+   while ((m = re.exec(path)) !== null) {
+      segments.push(m[1].replace(/""/g, '"'));
+      if (re.lastIndex >= path.length) return segments;
+   }
+   throw new NameViewUnsupportedError(`cannot read the table path ${path}`);
+}
+
 /**
  * The DDL that points the view `segments` names at `targetSql` (an already
  * quoted table reference), carrying `mark`. `expected` is what the caller's

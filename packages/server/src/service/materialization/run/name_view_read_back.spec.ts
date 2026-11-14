@@ -8,17 +8,23 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { swapIntoPlace } from "./colocated_build_strategy";
+import { createTableAndDescribe } from "./materialization_build_session";
 import {
    colocatedNameViewSite,
    nameViewKey,
+   ownViewAtTable,
    pointNameView,
+   preflightNameView,
    probeNameView,
    publishNameViews,
+   swapDependentsFor,
+   viewToTableSwap,
    type NameViewContext,
    type NameViewIntent,
 } from "./name_view";
 import { backupSuffix } from "./materialization_run_support";
-import { nameViewComment } from "./name_view_sql";
+import { NameViewChangedError, nameViewComment } from "./name_view_sql";
 
 /**
  * After Publisher writes or repoints a `name=` view it reads the view's mark
@@ -304,6 +310,156 @@ for (const engine of engines) {
             const aside = `${VIEW}${backupSuffix(own.sourceEntityId)}`;
             expect(await xs(aside)).toEqual([0]);
          });
+
+         /**
+          * A colocated swap as a build runs it: the preflight probe, then
+          * the build's CTAS into staging, then the swap. The seam runs
+          * `act` right after the CTAS, before the swap.
+          */
+         const buildAndSwap = async (
+            dependents: Parameters<typeof swapIntoPlace>[0]["swapDependents"],
+            physicalTableName: string,
+            act: () => Promise<void>,
+         ) => {
+            const staging = `${physicalTableName}_s`;
+            const { wrapped, statements } = seam(conn, /CREATE TABLE .*_s/, {
+               act,
+            });
+            await wrapped.runSQL(`CREATE TABLE ${staging} AS SELECT 10 AS x`);
+            const swap = swapIntoPlace({
+               connection: wrapped as never,
+               runOptions: {},
+               dialect: engine.dialect,
+               physicalTableName,
+               stagingTableName: staging,
+               backupTableName: `${physicalTableName}_o`,
+               connectionName: "wh",
+               swapDependents: dependents,
+            });
+            return { swap, statements };
+         };
+
+         it("a build's table never replaces a view another package put at its name after preflight", async () => {
+            // This package's view at the name, reading the table an earlier
+            // generation-named build wrote.
+            await publishNameViews([intentFor(G1)], contextFor(conn));
+            const atName = { ...intentFor(VIEW), physicalTableName: VIEW };
+            const own = await ownViewAtTable(atName, contextFor(conn));
+            expect(own).toEqual({ target: G1, dialect: engine.dialect });
+            const { swap } = await buildAndSwap(
+               viewToTableSwap(atName, own!.target, own!.dialect),
+               VIEW,
+               () => replaceView(OTHER),
+            );
+            await expect(swap).rejects.toThrow(/not as this package left it/);
+            expect(await probe()).toMatchObject({ owner: OTHER });
+            expect(await xs(VIEW)).toEqual([42]);
+         });
+
+         it("a build's table replaces this package's view when nothing changed since preflight", async () => {
+            await publishNameViews([intentFor(G1)], contextFor(conn));
+            const atName = { ...intentFor(VIEW), physicalTableName: VIEW };
+            const own = await ownViewAtTable(atName, contextFor(conn));
+            const { swap } = await buildAndSwap(
+               viewToTableSwap(atName, own!.target, own!.dialect),
+               VIEW,
+               async () => undefined,
+            );
+            await swap;
+            expect(await probe()).toEqual({ state: "taken", kind: "TABLE" });
+            expect(await xs(VIEW)).toEqual([10]);
+         });
+
+         if (engine.dialect === "duckdb") {
+            const path = '"wh"."nv_read_back"."flights_all"';
+            it("a storage build never drops a view another package put at its name after preflight", async () => {
+               await publishNameViews([intentFor(G1)], contextFor(conn));
+               // Preflight found this package's view of G1; then another
+               // package's view took the name.
+               await replaceView(OTHER);
+               await expect(
+                  createTableAndDescribe(
+                     conn as unknown as DuckDBConnection,
+                     path,
+                     "SELECT 3 AS x",
+                     [],
+                     { replacesView: { target: G1, owner: OWNER } },
+                  ),
+               ).rejects.toBeInstanceOf(NameViewChangedError);
+               expect(await probe()).toMatchObject({ owner: OTHER });
+               // Partitioned: the same, through the create-empty path.
+               await expect(
+                  createTableAndDescribe(
+                     conn as unknown as DuckDBConnection,
+                     path,
+                     "SELECT 3 AS x",
+                     ["x"],
+                     { replacesView: { target: G1, owner: OWNER } },
+                  ),
+               ).rejects.toBeInstanceOf(NameViewChangedError);
+               expect(await probe()).toMatchObject({ owner: OTHER });
+               // Unchanged since preflight: the table replaces the view.
+               await run(`DROP VIEW ${VIEW}`);
+               await publishNameViews([intentFor(G1)], contextFor(conn));
+               await createTableAndDescribe(
+                  conn as unknown as DuckDBConnection,
+                  path,
+                  "SELECT 3 AS x",
+                  [],
+                  { replacesView: { target: G1, owner: OWNER } },
+               );
+               expect(await xs(VIEW)).toEqual([3]);
+            });
+         }
+
+         if (engine.dialect === "postgres") {
+            it("a rebuild of the table the view reads never replaces a view another package put at the name after preflight", async () => {
+               await publishNameViews([intentFor(G1)], contextFor(conn));
+               const probed = await preflightNameView(
+                  intentFor(G1),
+                  contextFor(conn),
+               );
+               const dependents = swapDependentsFor(
+                  intentFor(G1),
+                  probed!.slot,
+                  probed!.dialect,
+               );
+               expect(dependents).toBeDefined();
+               const { swap } = await buildAndSwap(dependents, G1, () =>
+                  replaceView(OTHER),
+               );
+               await expect(swap).rejects.toThrow(
+                  /not as this package left it/,
+               );
+               expect(await probe()).toMatchObject({ owner: OTHER });
+               expect(await xs(VIEW)).toEqual([42]);
+               expect(await xs(G1)).toEqual([1]);
+            });
+
+            it("a rebuild of the table the view reads carries this package's view when nothing changed", async () => {
+               await publishNameViews([intentFor(G1)], contextFor(conn));
+               const probed = await preflightNameView(
+                  intentFor(G1),
+                  contextFor(conn),
+               );
+               const { swap } = await buildAndSwap(
+                  swapDependentsFor(
+                     intentFor(G1),
+                     probed!.slot,
+                     probed!.dialect,
+                  ),
+                  G1,
+                  async () => undefined,
+               );
+               await swap;
+               expect(await xs(VIEW)).toEqual([10]);
+               expect(await probe()).toEqual({
+                  state: "ours",
+                  target: G1,
+                  owner: OWNER,
+               });
+            });
+         }
 
          if (engine.dialect === "postgres") {
             it("a repoint that must drop and remake the view never drops another package's", async () => {

@@ -313,6 +313,10 @@ export async function swapIntoPlace(args: SwapArgs): Promise<void> {
    }
    const run = (sql: string) => args.connection.runSQL(sql, args.runOptions);
    try {
+      // The view `before` drops was found before the build: re-probed here,
+      // just before the drop. Nothing closes the window between the two on
+      // a dialect without transactional DDL.
+      await aside.check?.(run);
       for (const sql of aside.before) await run(sql);
    } catch (err) {
       await dropStagingAfterFailure(args);

@@ -29,7 +29,9 @@ import {
    withStorageDestinationSession,
 } from "./materialization_build_session";
 import {
+   assertNameViewHolds,
    nameViewComment,
+   nameViewGuardSql,
    nameViewDialectSupported,
    nameViewDropSql,
    nameViewProbeSql,
@@ -799,6 +801,12 @@ export async function heldByOwnNameView(
  *    dropped and made again, mark and all, after the rename. A reader's own
  *    view over it refuses that drop, and the build fails with both intact.
  *
+ * Each attempt first checks, in its own transaction, that the name still
+ * holds this package's view of the table ({@link nameViewGuardSql}): the
+ * probe that found it ran before the build, and another package or the
+ * author may have replaced it since. When it does not, every attempt fails,
+ * the build fails, and nothing at the name is replaced or dropped.
+ *
  * Undefined on every other dialect, whose views do not bind to a table: the
  * swap leaves them reading the name, which the new table takes.
  */
@@ -806,16 +814,23 @@ export interface SwapDependents {
    attempts(stagingTableName: string): { before: string[]; after: string[] }[];
    /**
     * For a swap that is not one transaction (it renames the served table
-    * aside): `before` runs first, and `restore` (best-effort) when the swap
-    * then fails. Only {@link viewToTableSwap} sets it.
+    * aside): `check` runs first and throws when the name no longer holds the
+    * view probed before the build, then `before`, and `restore`
+    * (best-effort) when the swap then fails. Only {@link viewToTableSwap}
+    * sets it.
     */
-   aside?: { before: string[]; restore: string[] };
+   aside?: {
+      check?: (run: (sql: string) => Promise<unknown>) => Promise<void>;
+      before: string[];
+      restore: string[];
+   };
    /**
-    * The name holds this package's own `name=` view, which the build's table
-    * replaces: a storage build drops the view in the transaction that
-    * creates its table ({@link viewToTableSwap}).
+    * The name holds this package's own `name=` view, carrying this mark,
+    * which the build's table replaces: a storage build checks the mark again
+    * and drops the view in the transaction that creates its table
+    * ({@link viewToTableSwap}).
     */
-   replacesView?: boolean;
+   replacesView?: NameViewMark;
 }
 
 export function swapDependentsFor(
@@ -837,14 +852,23 @@ export function swapDependentsFor(
    )}`;
    const select = (table: string) =>
       `VIEW ${view} AS SELECT * FROM ${quoteTablePath(table, dialect)}`;
+   const guard = nameViewGuardSql(
+      pathSegments(intent.viewName),
+      { target: intent.physicalTableName, owner: intent.owner },
+      dialect,
+   );
    return {
       attempts: (stagingTableName) => [
          {
-            before: [`CREATE OR REPLACE ${select(stagingTableName)}`, comment],
+            before: [
+               guard,
+               `CREATE OR REPLACE ${select(stagingTableName)}`,
+               comment,
+            ],
             after: [],
          },
          {
-            before: [`DROP VIEW ${view}`],
+            before: [guard, `DROP VIEW ${view}`],
             after: [`CREATE ${select(intent.physicalTableName)}`, comment],
          },
       ],
@@ -1002,6 +1026,15 @@ export async function preflightColocatedTableAtName(
  *   and all, reading `previousTarget`, when the swap fails;
  * - a storage build drops it in the transaction that creates the table.
  * The generation the view read is left to the records that name it.
+ *
+ * The view was found at preflight, before the build; another package or the
+ * author may have replaced it since. So the mark is checked again where the
+ * view is dropped: in the same transaction on DuckDB and Postgres (colocated,
+ * {@link nameViewGuardSql}; storage, a probe on the build's session), and
+ * elsewhere by a probe immediately before the drop. That last leaves a
+ * window between the probe and the drop, which a dialect without
+ * transactional DDL cannot close. A name that no longer holds the view fails
+ * the build, and nothing there is dropped.
  */
 export function viewToTableSwap(
    intent: NameViewIntent,
@@ -1010,10 +1043,20 @@ export function viewToTableSwap(
 ): SwapDependents {
    const segments = pathSegments(intent.viewName);
    const drop = nameViewDropSql(segments, dialect);
+   const expected = { target: previousTarget, owner: intent.owner };
+   const transactional = dialect === "duckdb" || dialect === "postgres";
    return {
-      replacesView: true,
-      attempts: () => [{ before: [drop], after: [] }],
+      replacesView: expected,
+      attempts: () => [
+         {
+            before: transactional
+               ? [nameViewGuardSql(segments, expected, dialect), drop]
+               : [drop],
+            after: [],
+         },
+      ],
       aside: {
+         check: (run) => assertNameViewHolds(run, segments, expected, dialect),
          before: [drop],
          restore: [
             nameViewReplaceDdl(
