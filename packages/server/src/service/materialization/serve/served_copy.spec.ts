@@ -1189,6 +1189,170 @@ describe("rerootDeclaration (pair tables, P5)", () => {
    });
 });
 
+describe("rerootDeclaration (counts through a pair table, known limitation 40)", () => {
+   const childColumns = [
+      {
+         name: "seg_id",
+         column: "segments__seg_id",
+         internalName: "segments__seg_id__pair",
+         type: "BIGINT",
+      },
+      {
+         name: "miles",
+         column: "segments__miles",
+         internalName: "segments__miles__pair",
+         type: "DOUBLE",
+      },
+   ];
+   it("declares each level's presence in the record's block, and re-declares a count at the leaf under it", () => {
+      const text = `flights is duckdb.table('flights') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  measure:
+    flight_count is count()
+    seg_n is segments.count()
+    seg_miles is segments.miles.sum()
+}`;
+      const out = rerootDeclaration(text, {
+         sourceName: "flights",
+         connectionAlias: "a",
+         virtualHandle: "h",
+         typeName: "flights__served",
+         columns: [{ name: "id", type: "BIGINT" }],
+         pair: {
+            join: "segments",
+            parentRowColumn: { name: "__parent_row", type: "BOOLEAN" },
+            parentRowField: "__parent_row__pair",
+            childColumns,
+            parentMeasures: [
+               { name: "flight_count", internalName: "flight_count__pair" },
+               {
+                  name: "seg_n",
+                  internalName: "seg_n__pair",
+                  level: 1,
+                  present: true,
+               },
+            ],
+            childStoredDimensions: [],
+            levelPresent: [
+               {
+                  field: "__segments__present__pair",
+                  keyPath: ["segments", "seg_id"],
+               },
+            ],
+            leafKeyChecked: true,
+         },
+      });
+      expect(out).toBe(`flights is a.virtual('h')::flights__served extend {
+  internal rename:
+    __parent_row__pair is __parent_row
+    segments__seg_id__pair is segments__seg_id
+    segments__miles__pair is segments__miles
+} extend {
+  primary_key: id
+  dimension: segments is {
+    seg_id is segments__seg_id__pair,
+    miles is segments__miles__pair
+  }
+  internal dimension:
+    __segments__present__pair is segments.seg_id is not null
+  measure:
+    flight_count is count()
+    seg_n is segments.count()
+    seg_miles is segments.miles.sum()
+} extend {
+  internal rename:
+    flight_count__pair is flight_count
+    seg_n__pair is seg_n
+  measure:
+    flight_count is flight_count__pair { where: __parent_row__pair }
+    seg_n is seg_n__pair { where: __segments__present__pair }
+}`);
+   });
+
+   it("re-declares a middle level's count under its row flag and its presence, and a private join's presence beside its renames", () => {
+      const text = `flights is duckdb.table('flights') extend {
+  primary_key: id
+  private join_many: segments is legs on segments.flight_id = id
+  measure:
+    seg_n is segments.count()
+    seg_miles is segments.miles.sum()
+}`;
+      const out = rerootDeclaration(text, {
+         sourceName: "flights",
+         connectionAlias: "a",
+         virtualHandle: "h",
+         typeName: "flights__served",
+         columns: [{ name: "id", type: "BIGINT" }],
+         pair: {
+            join: "segments",
+            parentRowColumn: { name: "__parent_row", type: "BOOLEAN" },
+            parentRowField: "__parent_row__pair",
+            childColumns,
+            hops: [
+               {
+                  join: "stops",
+                  columns: [
+                     {
+                        name: "stop_id",
+                        column: "segments__stops__stop_id",
+                        internalName: "segments__stops__stop_id__pair",
+                        type: "BIGINT",
+                     },
+                  ],
+               },
+            ],
+            levelRows: [
+               {
+                  column: { name: "__child_row", type: "BOOLEAN" },
+                  field: "__child_row__pair",
+               },
+            ],
+            parentMeasures: [
+               {
+                  name: "seg_n",
+                  internalName: "seg_n__pair",
+                  level: 1,
+                  present: true,
+               },
+               {
+                  name: "seg_miles",
+                  internalName: "seg_miles__pair",
+                  level: 1,
+               },
+            ],
+            childStoredDimensions: [],
+            levelPresent: [
+               {
+                  field: "__segments__present__pair",
+                  keyPath: ["segments", "seg_id"],
+               },
+               undefined,
+            ],
+            access: "private",
+         },
+      });
+      expect(out).toContain(`  private dimension: segments is {
+    seg_id is segments__seg_id__pair,
+    miles is segments__miles__pair,
+    stops is {
+      stop_id is segments__stops__stop_id__pair
+    }
+  }
+  private rename:
+    segments__seg_id__pair is segments__seg_id
+    segments__miles__pair is segments__miles
+    segments__stops__stop_id__pair is segments__stops__stop_id
+  internal dimension:
+    __segments__present__pair is segments.seg_id is not null
+`);
+      expect(out).toContain(`  measure:
+    seg_n is seg_n__pair { where: __child_row__pair, __segments__present__pair }
+    seg_miles is seg_miles__pair { where: __child_row__pair }
+}`);
+   });
+});
+
 describe("rerootDeclaration (a hidden join_many, known limitation 24)", () => {
    const child = (name: string, column: string) => ({
       name,

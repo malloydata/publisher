@@ -73,7 +73,7 @@ export interface StoredColumnTypeMismatch {
  *   would rewrite every table's column type for nothing.
  * - `json`, `sql native`, arrays and records: no faithful scalar target.
  */
-export const BUILD_CAST_TARGETS: Readonly<Record<string, string>> = {
+const BUILD_CAST_TARGETS: Readonly<Record<string, string>> = {
    string: "VARCHAR",
    boolean: "BOOLEAN",
    date: "DATE",
@@ -227,6 +227,28 @@ export function castToDeclaredTypes(
    return `SELECT * REPLACE (${casts.join(", ")}) ${fromSubselect(selectSQL, "__declared_types")}`;
 }
 
+/**
+ * Whether the build keeps a column's warehouse type rather than casting it to
+ * its declared `string`: a binary or an interval value. Postgres's dialect
+ * declares `bytea` and `interval` as `string`, and live answers them in
+ * Postgres's own text (`\x0102`, `3 mons`), which DuckDB's cast to VARCHAR does
+ * not write (`\x01\x02`, `3 months`). Stored as BLOB or INTERVAL, the column
+ * has no faithful declaration ({@link storedTypeServesAs}), so it is left out
+ * and a query reading it is answered live. Decided from the type the
+ * destination's session reports for the source's column, never from a value.
+ */
+export function keepsWarehouseType(
+   warehouseType: string,
+   declaredType: string,
+): boolean {
+   if (declaredType !== "string") return false;
+   const base = warehouseType
+      .replace(/\(.*\)/, "")
+      .trim()
+      .toUpperCase();
+   return base === "BLOB" || base === "BYTEA" || base === "INTERVAL";
+}
+
 /** What decides a build cast beyond the declared type. */
 export interface BuildCastOptions {
    /**
@@ -239,7 +261,7 @@ export interface BuildCastOptions {
 }
 
 /** The DuckDB type a declared Malloy type is cast to at build, or undefined. */
-export function buildCastTarget(
+function buildCastTarget(
    declaredType: string,
    options: BuildCastOptions = {},
 ): string | undefined {
@@ -381,7 +403,10 @@ export function rebuildWouldRecast(
    options: BuildCastOptions = {},
 ): StoredColumnTypeMismatch[] {
    const recast = storedColumnTypeMismatches(schema, declared).filter(
-      (m) => buildCastTarget(m.declaredType, options) !== undefined,
+      (m) =>
+         buildCastTarget(m.declaredType, options) !== undefined &&
+         // Stored as the warehouse typed it on purpose: a rebuild keeps it.
+         !keepsWarehouseType(m.storedType, m.declaredType),
    );
    const sure = recast.every(
       (m) =>
@@ -741,7 +766,7 @@ export function nativeTypeLookup(
 }
 
 /** Whether a compiled field is a number Malloy types with the `bigint` subtype. */
-export function isBigIntegerField(field: unknown): boolean {
+function isBigIntegerField(field: unknown): boolean {
    const f = (field ?? {}) as { type?: unknown; numberType?: unknown };
    return f.type === "number" && f.numberType === "bigint";
 }

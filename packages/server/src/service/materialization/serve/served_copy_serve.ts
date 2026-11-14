@@ -63,6 +63,7 @@ import {
    type BigIntegerReadOptions,
    nativeTypeLookup,
    declaredColumnsOf,
+   liveKeepsBigIntegers,
    queryTimezoneOf,
    serveTypePlan,
    storedColumnTypeMismatches,
@@ -79,6 +80,7 @@ import {
    flatPairQueryVerdict,
    pairConditionReads,
    pairMeasureLevels,
+   pairMeasurePresence,
    pairQueryReadLevel,
    type FlatPair,
 } from "../../governance/ir/pair_flat_query";
@@ -89,6 +91,7 @@ import {
    buildVirtualMap,
    narrowSchemaToPublic,
    optsOutOfPersist,
+   storedMalloyTypeFor,
    type DerivedSourceDef,
    type ServeBinding,
 } from "./materialization_serve_transform";
@@ -128,6 +131,7 @@ import {
    leaveOutCrossConnectionJoins,
    type LeftOutDefinition,
 } from "../plan/cross_connection_joins";
+import { LegDecline, type ServedCopyDeclineCode } from "./leg_decline";
 
 type VirtualMap = Map<string, Map<string, string>>;
 
@@ -144,44 +148,6 @@ function servedConnectionOf(b: ServeBinding): string {
 /** No storage destination: a served copy of colocated tables alone. */
 const NO_DESTINATIONS = (): MalloyConfig =>
    new MalloyConfig({ connections: {} });
-
-/**
- * Why the served copy declined a query, for the path report: `time_zone`, the
- * query sets a timezone over a stored computed dimension; `cross_connection`,
- * the copy waits on a join across connections, or the query reads a join it
- * leaves out across connections; `not_served`, the copy (or the
- * queried source in it) carries a `served-copy-not-served` warning;
- * `opt_out`, the queried source opts out with `#@ -persist`;
- * `count_semantics`, the query aggregates at the grain of a join the copy
- * answers from stored columns (an inlined join_one), which only live's join
- * computes; `joined_annotations`, the query returns a field of such a join
- * that the author annotated, whose notes its record cannot carry;
- * `pair_shape`, the query aggregates a pair table (an inlined join_many,
- * served flat) in a way that table does not reproduce exactly;
- * `pair_parent_only`, the query reads nothing through the inlined join, so
- * the pair table (one row per child) is the costly way to answer it.
- */
-export type ServedCopyDeclineCode =
-   | "time_zone"
-   | "cross_connection"
-   | "not_served"
-   | "opt_out"
-   | "count_semantics"
-   | "joined_annotations"
-   | "pair_shape"
-   | "pair_parent_only";
-
-/** A query the served copy declines, with why. */
-export class ServedCopyDecline extends Error {
-   constructor(
-      message: string,
-      readonly code: ServedCopyDeclineCode,
-      /** What the path report may tell the caller; the message stays in logs. */
-      readonly callerDetail?: string,
-   ) {
-      super(message);
-   }
-}
 
 /** The caller's detail for a join-grain aggregate through an inlined join. */
 const JOIN_GRAIN_DETAIL =
@@ -293,7 +259,7 @@ const staleBindingsWithheld = lazyCounter(
    "Storage serve bindings withheld from a routed query because the freshness gate found them stale; each one is read live instead. Until now staleness was visible only as a later live read.",
 );
 
-export interface ServedCopyHost {
+interface ServedCopyHost {
    modelPath(): string;
    modelDef(): unknown;
    /**
@@ -399,7 +365,7 @@ interface Compiled {
     * this compile, so a repeat is declined without compiling it again
     * (decision 6). Dropped with the compile: a rebind or reload starts empty.
     */
-   declined?: Map<string, ServedCopyDecline>;
+   declined?: Map<string, LegDecline>;
    /**
     * The pair tables (inlined join_many, P5) the copy reads flat: a query that
     * reads one is checked against it (governance/ir/pair_flat_query.ts).
@@ -487,7 +453,7 @@ export interface ServedCopyJoinBasis {
    aliased: readonly ServeBinding[];
    /** The definitions the copy left out because a join they read crosses connections. */
    leftOut: readonly LeftOutDefinition[];
-   /** The copy's checks on a query a variant over it answers; throws a {@link ServedCopyDecline}. */
+   /** The copy's checks on a query a variant over it answers; throws a {@link LegDecline}. */
    check(args: {
       /** The query source's author `sourceID`. */
       sourceID: string;
@@ -751,14 +717,18 @@ export class ServedCopyServe {
       givens?: Record<string, unknown>,
    ): Promise<Awaited<ReturnType<ServedCopyServe["loadQuery"]>>> {
       if (!compiled.materializer || compiled.rerooted.length === 0) {
-         throw new ServedCopyDecline(
-            compiled.problems[0]?.detail ??
-               "no stored table is re-rooted in this model's served copy",
+         throw new LegDecline(
             compiled.problems.some(
                (p) => p.reason === "cross_connection_unbuilt",
             )
-               ? "cross_connection"
-               : "not_served",
+               ? "served_copy_cross_connection"
+               : "served_copy_not_served",
+            undefined,
+            {
+               message:
+                  compiled.problems[0]?.detail ??
+                  "no stored table is re-rooted in this model's served copy",
+            },
          );
       }
       const declined = compiled.declined?.get(queryString);
@@ -770,7 +740,7 @@ export class ServedCopyServe {
       ): never => {
          const memo = (compiled.declined ??= new Map());
          if (memo.size >= DECLINED_LIMIT) memo.clear();
-         const error = new ServedCopyDecline(reason, code, callerDetail);
+         const error = new LegDecline(code, callerDetail, { message: reason });
          memo.set(queryString, error);
          throw error;
       };
@@ -784,7 +754,7 @@ export class ServedCopyServe {
             if (readsLeftOutDefinition(compiled, error, queryString)) {
                decline(
                   "the query reads a join the served copy leaves out across connections",
-                  "cross_connection",
+                  "served_copy_cross_connection",
                   LEFT_OUT_JOIN_DETAIL,
                );
             }
@@ -814,7 +784,7 @@ export class ServedCopyServe {
          if (name !== undefined && this.gateCannotGraft(compiled, name)) {
             decline(
                "a row-level gate on the queried source was declared on a source the served copy re-roots, so it cannot be grafted here",
-               "not_served",
+               "served_copy_not_served",
             );
          }
       }
@@ -837,13 +807,13 @@ export class ServedCopyServe {
          if (chain.some((id) => compiled.unsafeIDs?.has(id))) {
             decline(
                "the query reads a source whose served copy exposes a field the compile of record does not classify or carry",
-               "not_served",
+               "served_copy_not_served",
             );
          }
          if (chain.some((id) => compiled.optOutIDs?.has(id))) {
             decline(
                "the query reads a source that opts out of persist",
-               "opt_out",
+               "served_copy_opt_out",
             );
          }
       }
@@ -863,7 +833,10 @@ export class ServedCopyServe {
          // work over live. Let the next candidate answer.
          // A table on the queried source's chain that is not re-rooted was
          // left unserved, with a package warning saying why.
-         decline("the query reads no re-rooted table", "not_served");
+         decline(
+            "the query reads no re-rooted table",
+            "served_copy_not_served",
+         );
       }
       // A table whose re-root leaves a stored column out answers a query
       // naming that column live (it does not compile here), but a wildcard
@@ -886,7 +859,7 @@ export class ServedCopyServe {
          if (live === undefined || live !== served) {
             decline(
                "the query's result includes a column the served copy leaves out of a stored table's type",
-               "not_served",
+               "served_copy_not_served",
             );
          }
       }
@@ -928,7 +901,7 @@ export class ServedCopyServe {
          if (levels.some((l) => l === undefined)) {
             decline(
                "the query could not be read to tell which inlined join_many it reads",
-               "pair_shape",
+               "served_copy_pair_shape",
                PAIR_BLOCKS_DETAIL,
             );
          }
@@ -936,7 +909,7 @@ export class ServedCopyServe {
          if (read.length > 1) {
             decline(
                "the query reads more than one inlined join_many of a pair table",
-               "pair_shape",
+               "served_copy_pair_shape",
                PAIR_BLOCKS_DETAIL,
             );
          }
@@ -1006,13 +979,13 @@ export class ServedCopyServe {
             if (verdict.kind === "parent_only") {
                decline(
                   "the query reads nothing through the inlined join_many, so its pair table is not read for it",
-                  "pair_parent_only",
+                  "served_copy_pair_parent_only",
                   "The table stores this source once per child of its inlined join_many and the query reads no child field, so it is answered without this table, which would read every child row to count each parent once.",
                );
             } else {
                decline(
                   `the pair table cannot answer this query exactly: ${verdict.reason}`,
-                  "pair_shape",
+                  "served_copy_pair_shape",
                   `The table stores an inlined join_many flat, which cannot answer this query exactly (${verdict.reason}), so it is answered without this table.`,
                );
             }
@@ -1035,7 +1008,7 @@ export class ServedCopyServe {
             computed
                ? "the query sets a timezone over a table built in the default zone (a stored computed dimension or a row filter that depends on it)"
                : "the query sets a timezone, which moves a rolling window's cut-off past what its table stores",
-            "time_zone",
+            "served_copy_time_zone",
          );
       }
       return {
@@ -1098,7 +1071,7 @@ export class ServedCopyServe {
     * keeps its grain and annotation rules. The copy's time-zone rule needs
     * no check here: the join leg declines every query that sets a
     * `timezone:` (`TIME_ZONE`) before it compiles one. Throws a
-    * {@link ServedCopyDecline}.
+    * {@link LegDecline}.
     */
    private async checkJoinVariant(
       compiled: Compiled,
@@ -1114,7 +1087,7 @@ export class ServedCopyServe {
          code: ServedCopyDeclineCode,
          callerDetail?: string,
       ): never => {
-         throw new ServedCopyDecline(reason, code, callerDetail);
+         throw new LegDecline(code, callerDetail, { message: reason });
       };
       const map = SourceMap.of(compiled.modelDef);
       const node = map.node(args.sourceID);
@@ -1122,13 +1095,13 @@ export class ServedCopyServe {
       if (chain.some((id) => compiled.unsafeIDs?.has(id))) {
          decline(
             "the query reads a source whose served copy exposes a field the compile of record does not classify or carry",
-            "not_served",
+            "served_copy_not_served",
          );
       }
       if (chain.some((id) => compiled.optOutIDs?.has(id))) {
          decline(
             "the query reads a source that opts out of persist",
-            "opt_out",
+            "served_copy_opt_out",
          );
       }
       const { tablesRead } = args;
@@ -1139,7 +1112,7 @@ export class ServedCopyServe {
       ) {
          decline(
             "the query reads a pair table, which holds its source once per child of its inlined join_many",
-            "pair_shape",
+            "served_copy_pair_shape",
          );
       }
       let preparedRead: ReturnType<typeof readPreparedQuery> | undefined;
@@ -1350,6 +1323,13 @@ export class ServedCopyServe {
                ...(notes.length > 0 ? { notes } : {}),
                ...timeframeOf(c.dimension),
                ...(c.access ? { access: c.access } : {}),
+               // A zoned timestamp whose field live types `timestamptz` is
+               // declared as one, as a v1 table's is.
+               ...((fieldsByName.get(c.dimension) as { type?: unknown })
+                  ?.type === "timestamptz" &&
+               /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/i.test(type.trim())
+                  ? { timestamptz: true as const }
+                  : {}),
             });
          }
          const joined = inlinedJoinsOf(plan, def.fields, stored, lineage);
@@ -1382,7 +1362,18 @@ export class ServedCopyServe {
             }
             return reads;
          });
-         if (joinedReads.some((reads) => [...reads.values()].some((r) => !r))) {
+         // A joined field live types as a warehouse-native type has no
+         // stored declaration that reads back as live's either.
+         const joinedNative = joined.some((j) => {
+            const fields = joinedFieldsAt(def.fields, [j.join]);
+            return j.columns.some((c) =>
+               liveTypesAsNative(fields.find((f) => fieldNameOf(f) === c.name)),
+            );
+         });
+         if (
+            joinedNative ||
+            joinedReads.some((reads) => [...reads.values()].some((r) => !r))
+         ) {
             problems.push({
                sourceName,
                sourceID: node.sourceID,
@@ -1517,6 +1508,21 @@ export class ServedCopyServe {
          columnsLeftOut.push(c.name);
          return [];
       });
+      // A stored scalar whose field live types as a warehouse-native type
+      // (`sql native`: a UUID, a Postgres `jsonb` or composite stored as
+      // text) would be declared a `string`: another type than live's and,
+      // for some, other text. Left out, so only a query reading it answers
+      // live. Decided from live's field type, never from a value.
+      columns = columns.flatMap((c) => {
+         if (
+            !liveTypesAsNative(fieldsByName.get(c.name)) ||
+            storedMalloyType(c.type) === undefined
+         ) {
+            return [c];
+         }
+         columnsLeftOut.push(c.name);
+         return [];
+      });
       if (columns.length === 0) {
          problems.push({
             sourceName,
@@ -1526,20 +1532,40 @@ export class ServedCopyServe {
          return undefined;
       }
       // A column the `type:` cannot declare faithfully would fail the whole
-      // model's copy, not just this source. For a v1 table it is left out
-      // (a nest a destination stores as a type Malloy cannot read back,
-      // say), so only a query that reads it answers live, as the serve
-      // shape kept it local; otherwise the source is left to its fallback.
-      if (!plan) {
-         const undeclarable = columns
-            .filter((c) => storedMalloyType(c.type) === undefined)
-            .map((c) => c.name);
-         if (undeclarable.length > 0 && undeclarable.length < columns.length) {
-            columns = columns.filter((c) => !undeclarable.includes(c.name));
-            columnsLeftOut = [...columnsLeftOut, ...undeclarable];
-         }
+      // model's copy, not just this source. It is left out (a nest a
+      // destination stores as a type Malloy cannot read back, a list or
+      // struct whose field live types as something else, or a Postgres
+      // `bytea` the build kept as a BLOB, say), so only a query that reads
+      // it answers live; a source with no column left goes to its fallback.
+      // A stored list or struct is declared in live's shape, or left out
+      // when no declaration reads it back as live does
+      // (`storedMalloyTypeFor`).
+      const keepsBigIntegers = liveKeepsBigIntegers(
+         (def as { dialect?: unknown }).dialect,
+      );
+      const nestedDeclaration = (c: ServedColumn) =>
+         nestedDeclarationOf(
+            c.type,
+            fieldsByName.get(c.name),
+            keepsBigIntegers,
+         );
+      columns = columns.map((c) => {
+         const declared = nestedDeclaration(c);
+         return declared && declared !== storedMalloyType(c.type)
+            ? { ...c, declaredType: declared }
+            : c;
+      });
+      const undeclarableColumn = (c: ServedColumn) =>
+         storedMalloyType(c.type) === undefined ||
+         nestedDeclaration(c) === undefined;
+      const undeclarable = columns
+         .filter(undeclarableColumn)
+         .map((c) => c.name);
+      if (undeclarable.length > 0 && undeclarable.length < columns.length) {
+         columns = columns.filter((c) => !undeclarable.includes(c.name));
+         columnsLeftOut = [...columnsLeftOut, ...undeclarable];
       }
-      if (columns.some((c) => storedMalloyType(c.type) === undefined)) {
+      if (columns.some(undeclarableColumn)) {
          problems.push({
             sourceName,
             sourceID: node.sourceID,
@@ -1564,6 +1590,9 @@ export class ServedCopyServe {
                   column,
                   bigIntegerOptionsOf(def, binding),
                ),
+            // The leaf's key check, as the run that wrote the table recorded
+            // it beside the table (`pairLeafKeyChecks`).
+            (sourceID) => binding.primaryKeys?.[sourceID] === true,
          );
          if (!pair) {
             problems.push({
@@ -2392,7 +2421,7 @@ async function checkRecordJoins(args: {
       ) {
          decline(
             "the query aggregates at the grain of a join the served copy answers from stored columns",
-            "count_semantics",
+            "served_copy_count_semantics",
             JOIN_GRAIN_DETAIL,
          );
       }
@@ -2414,7 +2443,7 @@ async function checkRecordJoins(args: {
             out.output
                ? `the query returns ${out.output.path.join(".")}, whose annotations the served copy's record of stored columns cannot carry`
                : "the query's output columns cannot be read",
-            "joined_annotations",
+            "served_copy_joined_annotations",
             JOINED_ANNOTATIONS_DETAIL,
          );
       }
@@ -2499,13 +2528,22 @@ function flatPairOf(pair: PairReroot): FlatPair {
          ? { levelRowFields: pair.levelRows.map((l) => l.field) }
          : {}),
       ...(pair.oneParentLevels
+         ? { oneParentLevels: pair.oneParentLevels }
+         : {}),
+      // A stored computed child field need not be null on a childless
+      // parent's null-extended row, so a sum of one reads that row: at the
+      // leaf as above it.
+      ...(pair.childStoredDimensions.length > 0
          ? {
-              oneParentLevels: pair.oneParentLevels,
               computedFields: pair.childStoredDimensions.map(
                  (d) => `${pair.join}.${d}`,
               ),
            }
          : {}),
+      ...(pair.levelPresent?.some((p) => p !== undefined)
+         ? { levelPresentFields: pair.levelPresent.map((p) => p?.field) }
+         : {}),
+      ...(pair.leafKeyChecked ? { leafKeyChecked: true } : {}),
       ...(pair.block
          ? { otherRecords: pair.block.others.map((o) => o.join) }
          : {}),
@@ -2530,6 +2568,8 @@ function blockPaths(
  * leaf re-declared over that level's rows. `lane` picks the block a table of
  * several inlined paths is read for (its first, otherwise). Undefined when
  * the table does not store what the plan says (a column missing).
+ * `leafKeyChecked` says whether the run that wrote the table recorded the
+ * leaf's key unique and never null, for the leaf source's sourceID.
  */
 function pairRerootOf(
    plan: MaterializePlan,
@@ -2544,6 +2584,7 @@ function pairRerootOf(
       field: unknown,
       column: { name: string; type: string },
    ) => BigIntegerRead | undefined = () => undefined,
+   leafKeyChecked: (sourceID: string) => boolean = () => false,
 ): PairReroot | undefined {
    const blocks = plan.pairBlocks;
    const block = blocks
@@ -2595,7 +2636,9 @@ function pairRerootOf(
          // record (known limitation 12); one no cast reads exactly leaves
          // the table to its fallback.
          const big = bigRead(field, { name: c.column, type });
-         if (big && !big.castTo) {
+         // So does one live types as a warehouse-native type, which no
+         // stored declaration reads back as.
+         if ((big && !big.castTo) || liveTypesAsNative(field)) {
             missing = true;
             continue;
          }
@@ -2689,16 +2732,48 @@ function pairRerootOf(
          others,
       };
    }
-   // A measure over one level above the leaf is re-declared over that
-   // level's rows; one at the leaf reads every row as it stands, and one
-   // reading several levels (or anything else) is left as it is, so a query
-   // that reads it is answered live (pair_flat_query.ts).
+   // Each level of the path has a row where its primary key, read through
+   // the record, is not null: the test Malloy makes of a joined source's own
+   // rows (malloydata/malloy#3208). Declared only where the build checked
+   // that key unique and never null, so the test fails on a childless row's
+   // null-extended row alone: a level above the leaf on every build (its
+   // check fails the build), the leaf only where its recorded check passed.
    const path = {
       join: block.join,
       hops: (block.hops ?? []).map((h) => h.join),
    };
    const leaf = 1 + path.hops.length;
+   const levelKeys = [
+      { key: block.childKey, sourceID: block.childSourceID },
+      ...(block.hops ?? []).map((h) => ({ key: h.key, sourceID: h.sourceID })),
+   ];
+   const leafChecked = leafKeyChecked(levelKeys[leaf - 1].sourceID);
+   const levelPresent: ({ field: string; keyPath: string[] } | undefined)[] =
+      levelKeys.map(({ key }, i) => {
+         const level = i + 1;
+         const columns =
+            level === 1 ? own.childColumns : (own.hops ?? [])[i - 1]?.columns;
+         if (!columns?.some((c) => c.name === key)) return undefined;
+         if (level === leaf && !leafChecked) return undefined;
+         const names = [path.join, ...path.hops.slice(0, i)];
+         return {
+            field: fresh(`__${names.join("__")}__present`),
+            keyPath: [...names, key],
+         };
+      });
+   // A measure over one level is re-declared over that level's rows: above
+   // the leaf under its flag, and at any level of the path under its
+   // presence field where it needs one (it counts, or sums a value not null
+   // on a childless row's null-extended row). One at the leaf that needs
+   // none reads every row as it stands. One reading several levels, one that
+   // needs a presence field it cannot have (none declared, or a `min` or
+   // `max` beside the count), or anything else, is left as it is, so a query
+   // that reads it is answered live (pair_flat_query.ts).
    const levels = pairMeasureLevels(sourceFields, path);
+   const presence = pairMeasurePresence(sourceFields, {
+      ...path,
+      computedFields: childStoredDimensions.map((d) => `${block.join}.${d}`),
+   });
    const parentMeasures: PairMeasure[] = [];
    for (const f of sourceFields as {
       name?: unknown;
@@ -2709,7 +2784,11 @@ function pairRerootOf(
       const level = levels.get(name);
       if (!level || level.size !== 1) continue;
       const only = [...level][0];
-      if (only >= leaf) continue;
+      const present =
+         only > 0 &&
+         presence.get(name) === "needed" &&
+         levelPresent[only - 1] !== undefined;
+      if (only === leaf && !present) continue;
       // A private measure cannot be renamed by an extension; a public one
       // that reads it carries the flag to it.
       if (f.accessModifier === "private") continue;
@@ -2722,8 +2801,16 @@ function pairRerootOf(
             ? { access: "internal" as const }
             : {}),
          ...(only > 0 ? { level: only } : {}),
+         ...(present ? { present: true as const } : {}),
       });
    }
+   // Only a level a re-declared measure reads its presence field at
+   // declares one: no query can name it.
+   const presentUsed = levelPresent.map((p, i) =>
+      parentMeasures.some((m) => m.present && m.level === i + 1)
+         ? p
+         : undefined,
+   );
    return {
       join: block.join,
       parentRowColumn: { name: block.parentRowColumn, type: parentRow },
@@ -2737,6 +2824,10 @@ function pairRerootOf(
       ...(block.oneParentLevels && block.oneParentLevels.length > 0
          ? { oneParentLevels: block.oneParentLevels }
          : {}),
+      ...(presentUsed.some((p) => p !== undefined)
+         ? { levelPresent: presentUsed }
+         : {}),
+      ...(leafChecked ? { leafKeyChecked: true as const } : {}),
       ...(blockReroot ? { block: blockReroot } : {}),
       ...(own.access ? { access: own.access } : {}),
    };
@@ -3229,7 +3320,7 @@ function declaresBlocks(def: unknown): boolean {
  * case-fold (see {@link storedColumnsWithAccess}): what the source's own text
  * drops or renames away after the build.
  */
-export function unnamedStoredColumns(
+function unnamedStoredColumns(
    schema: readonly { name: string; type: string }[],
    fields: readonly unknown[] | undefined,
 ): { name: string; type: string }[] {
@@ -3290,4 +3381,34 @@ export function resultShapeOf(prepared: { resultExplore: unknown }): string {
    return JSON.stringify(
       shape((prepared.resultExplore as { allFields: Field[] }).allFields),
    );
+}
+
+/**
+ * Whether live types a field as a warehouse-native type Malloy has no type
+ * of its own for (`sql native`, or `json`): no `type:` declaration of a
+ * stored scalar reads back as that.
+ */
+function liveTypesAsNative(field: unknown): boolean {
+   const type = (field as { type?: unknown } | undefined)?.type;
+   return type === "sql native" || type === "json";
+}
+
+/**
+ * A stored list or struct column's declaration in the shape live answers its
+ * field in (`storedMalloyTypeFor`), or undefined when none reads it back as
+ * live does: a field live types as `sql native` (a Postgres composite type,
+ * stored by DuckDB as a STRUCT), or one holding such a leaf or a `bigint`
+ * number live keeps every digit of. Any other column, or one whose field is
+ * not known here, keeps the stored type's own declaration.
+ */
+function nestedDeclarationOf(
+   storedType: string,
+   field: unknown,
+   keepsBigIntegers: boolean,
+): string | undefined {
+   const declared = storedMalloyType(storedType);
+   if (declared === undefined) return undefined;
+   const nested = declared.startsWith("{") || declared.endsWith("[]");
+   if (!nested || field === undefined) return declared;
+   return storedMalloyTypeFor(storedType, field, keepsBigIntegers);
 }

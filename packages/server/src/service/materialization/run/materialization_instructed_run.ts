@@ -185,7 +185,7 @@ export interface PendingRefusal {
 }
 
 /** A run's instructions, indexed both ways a source can find its own. */
-export interface InstructionIndex {
+interface InstructionIndex {
    bySourceID: Map<string, BuildInstruction>;
    bySourceEntityId: Map<string, BuildInstruction>;
 }

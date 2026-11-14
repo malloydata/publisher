@@ -5,6 +5,7 @@ import { Annotations, type PersistSource } from "@malloydata/malloy";
 import { parseRouteTag } from "../../motly";
 import { collectGivenRefs } from "../../given";
 import { readsAGiven } from "../../probe_compiler";
+import { forEachFieldPath } from "../../governance/ir/array_query";
 import {
    NOW_OFFSET_UNITS,
    type NowComparisonOp,
@@ -633,7 +634,7 @@ export interface RollingWindow {
 }
 
 /** What one `where:` term of a compiled source depends on. */
-export type WhereTermDependency =
+type WhereTermDependency =
    /** Neither a given nor the current time: built once, never re-applied. */
    | { kind: "fixed" }
    /**
@@ -828,9 +829,7 @@ export function readRollingWindow(entry: unknown): RollingWindow | undefined {
  * not, or Malloy's range `ts ? now - 60 days to now - 30 days`, which compiles
  * to the same `and`), or undefined for any other shape.
  */
-export function readRollingWindows(
-   entry: unknown,
-): RollingWindow[] | undefined {
+function readRollingWindows(entry: unknown): RollingWindow[] | undefined {
    const e = (entry as { e?: NowExpr } | null)?.e;
    const out: RollingWindow[] = [];
    const walk = (node: NowExpr | undefined, depth: number): boolean => {
@@ -852,29 +851,21 @@ export function readRollingWindows(
    return walk(e, 0) ? out : undefined;
 }
 
-/** The dotted field paths an expression reads. */
-function fieldPaths(node: unknown, out: Set<string>, depth = 0): void {
-   if (depth > MAX_WALK_DEPTH || node === null || typeof node !== "object") {
-      return;
-   }
-   if (Array.isArray(node)) {
-      for (const item of node) fieldPaths(item, out, depth + 1);
-      return;
-   }
-   const record = node as Record<string, unknown>;
-   if (
-      record.node === "field" &&
-      Array.isArray(record.path) &&
-      record.path.length > 0 &&
-      record.path.every((p) => typeof p === "string")
-   ) {
-      out.add((record.path as string[]).join("."));
-   }
-   for (const [key, value] of Object.entries(record)) {
-      if (key === "at" || key === "location" || key === "annotations") continue;
-      fieldPaths(value, out, depth + 1);
-   }
+/**
+ * The dotted field paths an expression reads; one inside an array query is
+ * re-rooted under its array.
+ */
+function fieldPaths(node: unknown, out: Set<string>): void {
+   forEachFieldPath(
+      node,
+      (path) => {
+         if (path.length > 0) out.add(path.join("."));
+      },
+      { skipKeys: FIELD_PATH_SKIPPED_KEYS, maxDepth: MAX_WALK_DEPTH },
+   );
 }
+
+const FIELD_PATH_SKIPPED_KEYS = new Set(["at", "location", "annotations"]);
 
 /**
  * Whether a dotted path names a field in `timeFields`, or reads through a join

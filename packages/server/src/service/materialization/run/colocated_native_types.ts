@@ -28,7 +28,7 @@ import { errMessage } from "../../../utils";
 import { quoteTablePath } from "../../quoting";
 
 /** A column and its warehouse type. */
-export interface NativeColumn {
+interface NativeColumn {
    name: string;
    type: string;
 }

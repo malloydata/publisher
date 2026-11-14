@@ -123,6 +123,11 @@ import {
    recordDeprecatedFormatUsage,
 } from "./deprecated/lints";
 import {
+   arrayQueryJoinRefusal,
+   arrayQueryJoins,
+   governsAccess,
+} from "./governance/ir/array_query";
+import {
    carriesCeilingLeaks,
    classificationLeaks,
    classificationWarnings,
@@ -2223,6 +2228,24 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return classificationLeaks(this.models, isListed, includeHidden).join(
          "\n",
       );
+   }
+
+   /**
+    * REJECTION messages, one per model, for a join written inside a query on
+    * an array in a model that governs access ({@link governsAccess}): no
+    * check of Publisher's can follow what that join reads. Every model is
+    * read, listed or not, since a published source can import a hidden one.
+    */
+   public formatArrayQueryJoins(): string {
+      const messages: string[] = [];
+      for (const [modelPath, model] of this.models) {
+         const modelDef = model.getModelDef();
+         const joins = arrayQueryJoins(modelDef);
+         if (joins.length === 0 || !governsAccess(modelDef)) continue;
+         const refusal = arrayQueryJoinRefusal(`Model ${modelPath}`, joins);
+         if (refusal) messages.push(refusal);
+      }
+      return messages.join("\n");
    }
 
    /** The async input of {@link formatCarriesCeilingLeaks}, prepared before a listing is judged. */

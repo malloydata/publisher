@@ -6,7 +6,6 @@ import {
    decomposeMeasure,
    emitMeasureExpr,
    isMeasureRefusal,
-   parseMeasureExpression,
 } from "./rollup_measure_grammar";
 
 /** A scope over a fixed set of measures. */
@@ -140,20 +139,14 @@ describe("the #(preaggregate) measure grammar", () => {
    });
 
    it("re-emits names through malloy_text, quoting a keyword", () => {
-      const parsed = parseMeasureExpression(
-         "`count`.sum() { where: `date` = 'x' }",
-      );
-      expect(parsed && emitMeasureExpr(parsed)).toBe(
-         "`count`.sum() { where: `date` = 'x' }",
-      );
       expect(
-         parseMeasureExpression("x.sum() { where: s = 'o\\'brien' }") &&
-            emitMeasureExpr(
-               parseMeasureExpression(
-                  "x.sum() { where: s = 'o\\'brien' }",
-               ) as never,
-            ),
-      ).toBe("x.sum() { where: s = 'o\\'brien' }");
+         render({ m: "`count`.sum() { where: `date` = 'x' }" }),
+      ).toMatchObject({
+         partials: ["sum: `count`.sum() { where: `date` = 'x' }"],
+      });
+      expect(render({ m: "x.sum() { where: s = 'o\\'brien' }" })).toMatchObject(
+         { partials: ["sum: x.sum() { where: s = 'o\\'brien' }"] },
+      );
    });
 
    it("never emits two minus signs together, which Malloy reads as a comment", () => {

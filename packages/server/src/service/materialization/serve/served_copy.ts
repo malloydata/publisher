@@ -42,10 +42,9 @@ import {
 } from "../../malloy_text";
 import { noteSource } from "../field_notes";
 import type { MaterializeReadTimeTerm } from "../plan/build_file_generator";
-import {
-   duckdbTypeToMalloy,
-   duckdbTypeToMalloyType,
-} from "./materialization_serve_transform";
+import { storedMalloyType } from "./materialization_serve_transform";
+
+export { storedMalloyType };
 import {
    declarationSpans,
    declaredBaseName,
@@ -198,7 +197,11 @@ export interface Reroot {
  * `<join>.<field>` reads the column on the same row; the join_many statement
  * is replaced by that record. Each measure over the source's own fields is
  * re-declared to aggregate only the rows the parent-row flag marks (one per
- * parent), and an aggregate through the join reads every row, as live's does.
+ * parent), and an aggregate through the join reads every row. Live reads
+ * every row for a `min` or `max`, but since malloydata/malloy#3208 skips a
+ * childless parent's null-extended row for a `count()`, `sum` or `avg`, so a
+ * measure through the join that would read that row is re-declared under the
+ * level's presence field ({@link PairReroot.levelPresent}).
  * The stored flag and child columns are renamed internally, so no query reads
  * them. What the record cannot carry (the joined source's measures and views,
  * its fields' annotations) is not in the served source; a query that needs it
@@ -249,6 +252,28 @@ export interface PairReroot {
     * of whose rows has one row of every level above it.
     */
    oneParentLevels?: readonly number[];
+   /**
+    * For each level of the path (level 1 first, the leaf last): an internal
+    * dimension, `field`, true where that level has a row: its primary key,
+    * read through the record (`keyPath`, `["items", "item_id"]`), is not
+    * null. Undefined at a level whose key the build did not check unique and
+    * never null (the leaf, unless its recorded check passed): there the
+    * test cannot tell a row of the level from a childless row's
+    * null-extended row. Since malloydata/malloy#3208 live takes a `count()`,
+    * `sum` or `avg` at a join over the rows whose key is not null; a measure
+    * re-declared under the field ({@link PairMeasure.present}) skips the
+    * null-extended row as live does. Declared in the record's own block,
+    * where a hidden join's record is readable, and internal, so no query
+    * reads it.
+    */
+   levelPresent?: readonly ({ field: string; keyPath: string[] } | undefined)[];
+   /**
+    * The leaf's key check, recorded beside the table by the run that wrote
+    * it, passed: the key is unique and never null on a row of the leaf
+    * source. Without it the copy declines every count, sum or average at the
+    * leaf (governance/ir/pair_flat_query.ts, `FlatPair.leafKeyChecked`).
+    */
+   leafKeyChecked?: true;
    /**
     * For a table that stores more than one inlined path: which block this
     * served source reads, and the other blocks' records.
@@ -348,11 +373,19 @@ export interface PairMeasure {
    /** The author's access modifier; absent for a public measure. */
    access?: "internal";
    /**
-    * The level it aggregates at, when it is a level between the source and
-    * the leaf of a path of more than one hop: re-declared under that level's
-    * row flag. Absent: the source's own fields, under the parent-row flag.
+    * The level it aggregates at, when it is a level of the inlined path: one
+    * between the source and the leaf is re-declared under that level's row
+    * flag, the leaf under no flag. Absent: the source's own fields, under
+    * the parent-row flag.
     */
    level?: number;
+   /**
+    * Re-declared under its level's presence field as well
+    * ({@link PairReroot.levelPresent}): it counts that level's rows, or sums
+    * or averages a value that is not null on a childless row's null-extended
+    * row, which live skips.
+    */
+   present?: true;
 }
 
 /** One stored column of a re-rooted source. */
@@ -412,6 +445,12 @@ export interface ServedColumn {
     * so the field reads back as one (the v1 cutover).
     */
    timestamptz?: true;
+   /**
+    * A stored list or struct declared in live's shape where it differs from
+    * the stored type's own (`{ at::timestamptz }[]` for a list of zoned
+    * timestamps whose field live types as `timestamptz`).
+    */
+   declaredType?: string;
 }
 
 /** A timeframe in {@link TIMEFRAMES}, as Malloy text. */
@@ -471,7 +510,7 @@ export function timeframeRestatements(
 }
 
 /** Why a declaration could not be re-rooted; the source then serves live. */
-export interface RerootRefusal {
+interface RerootRefusal {
    sourceName: string;
    url: string;
    /**
@@ -512,7 +551,7 @@ export interface ServedCopySpan {
 }
 
 /** The served copy of the files that declare re-rooted sources. */
-export interface ServedCopy {
+interface ServedCopy {
    /** File URL → its served text. Files with nothing re-rooted are absent. */
    files: Map<string, string>;
    /** Re-roots that did not apply. */
@@ -887,7 +926,7 @@ export function rerootDeclaration(
       let replaced: string | undefined = replacePairJoin(
          extend,
          r.pair.join,
-         pairRecord(r.pair),
+         pairRecord(r.pair, r.pair.levelPresent),
          r.pair.access !== undefined,
       );
       for (const other of r.pair.block?.others ?? []) {
@@ -1054,13 +1093,27 @@ function pairRenames(pair: PairReroot, withRenames = true): string {
  * block, by a `private rename:` of every stored column it reads: a private
  * name is readable only in the block that defines it, which is the record's.
  */
-function pairRecord(record: {
-   join: string;
-   childColumns: readonly (JoinedColumn & { internalName: string })[];
-   hops?: readonly PairHopColumns[];
-   access?: "private" | "internal";
-}): string {
+function pairRecord(
+   record: {
+      join: string;
+      childColumns: readonly (JoinedColumn & { internalName: string })[];
+      hops?: readonly PairHopColumns[];
+      access?: "private" | "internal";
+   },
+   levelPresent?: PairReroot["levelPresent"],
+): string {
    const { join, childColumns, hops, access } = record;
+   const present = (levelPresent ?? []).flatMap((p) =>
+      p === undefined
+         ? []
+         : [
+              `    ${identifier(p.field)} is ${p.keyPath.map((n) => identifier(n)).join(".")} is not null`,
+           ],
+   );
+   const presence =
+      present.length > 0
+         ? `\n  internal dimension:\n${present.join("\n")}`
+         : "";
    const field = (c: JoinedColumn & { internalName: string }, pad: string) =>
       // malloy-text: names through identifier, a timeframe from TIMEFRAMES and a cast through doubleQuotedString
       `${pad}${identifier(c.name)} is ${identifier(c.internalName)}` +
@@ -1081,32 +1134,43 @@ function pairRecord(record: {
       return items.join(",\n");
    };
    const dimension = `${accessPrefix(access)}dimension: ${identifier(join)} is {\n${level(0, "    ")}\n  }`;
-   if (access === undefined) return dimension;
+   if (access === undefined) return `${dimension}${presence}`;
    const renames = [...childColumns, ...(hops ?? []).flatMap((h) => h.columns)]
       .map(
          (c) => `    ${identifier(c.internalName)} is ${identifier(c.column)}`,
       )
       .join("\n");
-   return `${dimension}\n  private rename:\n${renames}`;
+   return `${dimension}\n  private rename:\n${renames}${presence}`;
 }
 
 /**
  * The extend block that closes a pair table's served source: each measure
- * over one level above the leaf (the source's own fields, or a level between
- * it and the leaf of a longer path) renamed internally and declared again,
- * under its own name, annotations and access, over the rows that level's
- * flag marks. A measure that reads it by name (a ratio of two, a view) reads
- * the re-declared one. Empty when there is none.
+ * over one level (the source's own fields, or a level of the inlined path)
+ * renamed internally and declared again, under its own name, annotations and
+ * access, over that level's rows: above the leaf the rows its flag marks,
+ * and, for a measure that needs it ({@link PairMeasure.present}), only where
+ * the level has a row. A measure that reads it by name (a ratio of two, a
+ * view) reads the re-declared one. Empty when there is none.
  */
 function pairMeasures(pair: PairReroot): string {
    if (pair.parentMeasures.length === 0) return "";
-   const flagOf = (m: PairMeasure) => {
+   const leaf = 1 + (pair.hops?.length ?? 0);
+   const conditionsOf = (m: PairMeasure) => {
       const level = m.level ?? 0;
-      return identifier(
-         level === 0
-            ? pair.parentRowField
-            : ((pair.levelRows ?? [])[level - 1]?.field ?? pair.parentRowField),
-      );
+      if (level === 0) return identifier(pair.parentRowField);
+      const out: string[] = [];
+      if (level < leaf) {
+         out.push(
+            identifier(
+               (pair.levelRows ?? [])[level - 1]?.field ?? pair.parentRowField,
+            ),
+         );
+      }
+      const present = m.present
+         ? (pair.levelPresent ?? [])[level - 1]
+         : undefined;
+      if (present !== undefined) out.push(identifier(present.field));
+      return out.join(", ");
    };
    const renames = pair.parentMeasures
       .map((m) => `    ${identifier(m.internalName)} is ${identifier(m.name)}`)
@@ -1119,7 +1183,7 @@ function pairMeasures(pair: PairReroot): string {
          .map(
             (m) =>
                notes(m) +
-               `    ${identifier(m.name)} is ${identifier(m.internalName)} { where: ${flagOf(m)} }`,
+               `    ${identifier(m.name)} is ${identifier(m.internalName)} { where: ${conditionsOf(m)} }`,
          )
          .join("\n");
    const visible = pair.parentMeasures.filter((m) => m.access === undefined);
@@ -1362,83 +1426,14 @@ function timeframeStatements(
 }
 
 /**
- * The Malloy type a stored column is declared as in the `type:`. A scalar is
- * the serve shape's mapping; a list and a struct (what a persisted `nest:`
- * stores, `STRUCT(status VARCHAR, n BIGINT)[]`) are written as Malloy's array
- * and record types (`{ status::string, n::number }[]`), so the nest's rows read
- * back through it as they do live. A nested type that does not read as one
- * (a MAP, a union) is the serve shape's `json`, which does not compile.
+ * The Malloy type a stored column is declared as in the `type:`: the one rule
+ * every stored table's declaration follows ({@link storedMalloyType}). A
+ * column it cannot declare is left out before a declaration is written, so
+ * the `json` here is never reached by one that compiles: Malloy refuses it in
+ * a `type:`, which fails that copy and leaves the source to its fallback.
  */
 export function storedTypeText(stored: string): string {
-   return storedMalloyType(stored) ?? duckdbTypeToMalloy(stored);
-}
-
-/**
- * {@link storedTypeText} when the stored type reads back faithfully, else
- * undefined: a type the `type:` could only declare as `json`, which Malloy
- * refuses there, so one such column would fail the whole model's copy. A
- * nest built from a warehouse whose nests are JSON (Postgres, Snowflake) is
- * stored as `JSON`, for one.
- */
-export function storedMalloyType(stored: string): string | undefined {
-   const parsed = parseNestedType(stored.trim());
-   if (parsed === undefined || parsed.rest.trim() !== "") return undefined;
-   return parsed.text;
-}
-
-/**
- * One DuckDB type at the start of `s`: a scalar, `STRUCT(<name> <type>, …)`,
- * or either followed by `[]`. Undefined when it is no such type.
- */
-function parseNestedType(
-   s: string,
-   depth = 0,
-): { text: string; rest: string } | undefined {
-   if (depth > 16) return undefined;
-   let text: string;
-   let rest: string;
-   const struct = /^STRUCT\s*\(/i.exec(s);
-   if (struct) {
-      rest = s.slice(struct[0].length);
-      const fields: string[] = [];
-      for (;;) {
-         const name = /^\s*("(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*)\s+/.exec(
-            rest,
-         );
-         if (!name) return undefined;
-         const fieldName = name[1].startsWith('"')
-            ? name[1].slice(1, -1).replace(/""/g, '"')
-            : name[1];
-         const inner = parseNestedType(rest.slice(name[0].length), depth + 1);
-         if (!inner) return undefined;
-         fields.push(`${identifier(fieldName)}::${inner.text}`);
-         rest = inner.rest.trimStart();
-         if (rest.startsWith(",")) {
-            rest = rest.slice(1);
-            continue;
-         }
-         if (!rest.startsWith(")")) return undefined;
-         rest = rest.slice(1);
-         break;
-      }
-      text = `{ ${fields.join(", ")} }`;
-   } else {
-      // A scalar, with its own parenthesised arguments (`DECIMAL(18,2)`).
-      const scalar =
-         /^[A-Za-z_][A-Za-z0-9_ ]*?(\([0-9,\s]*\))?(?=\s*(\[|,|\)|$))/.exec(s);
-      if (!scalar) return undefined;
-      const mapped = duckdbTypeToMalloyType(scalar[0]);
-      if (!("type" in mapped)) return undefined;
-      text = mapped.type;
-      rest = s.slice(scalar[0].length);
-   }
-   for (;;) {
-      const list = /^\s*\[\s*\]/.exec(rest);
-      if (!list) break;
-      text = `${text}[]`;
-      rest = rest.slice(list[0].length);
-   }
-   return { text, rest };
+   return storedMalloyType(stored) ?? "json";
 }
 
 /** The emitted `type:` declaration for one re-rooted source. */
@@ -1472,7 +1467,7 @@ export function typeDeclaration(
             )
                .map((note) => noteSource(note, "   "))
                .join("") +
-            `   ${identifier(c.name)}::${c.timestamptz ? "timestamptz" : storedTypeText(c.type)}`,
+            `   ${identifier(c.name)}::${c.timestamptz ? "timestamptz" : (c.declaredType ?? storedTypeText(c.type))}`,
       )
       .join(",\n");
    return `type: ${identifier(r.typeName)} is {\n${fields}\n}`;

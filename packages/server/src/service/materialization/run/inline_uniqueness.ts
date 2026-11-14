@@ -109,7 +109,7 @@ export const INLINE_UNIQUENESS_KEY = "inlineUniquenessChecks";
  * Recorded only for a check that read a persisted joined table (a
  * {@link StoredJoin}); a check over anything read live is never relied on.
  */
-export interface UniquenessPass {
+interface UniquenessPass {
    /** The joined source's content address (its sourceEntityId). */
    joinedAddress: string;
    /** The table the check read: its connection and physical name. */
@@ -119,7 +119,7 @@ export interface UniquenessPass {
 }
 
 /** What became of one check in a run, for the run's metadata. */
-export interface UniquenessCheckOutcome {
+interface UniquenessCheckOutcome {
    sourceName: string;
    join: string;
    /** `ran`: the check ran (and passed). `skipped`: a recorded pass held. */
@@ -454,7 +454,7 @@ export function withoutUniquenessPasses(
  * companion's materializer is (materialize_compile.ts); a check without one
  * (a plan from elsewhere) is never compiled over a stored table.
  */
-export type UniquenessCheckCompiler = (
+type UniquenessCheckCompiler = (
    buildManifest: BuildManifest,
    connectionDigests: Record<string, string>,
 ) => Promise<string>;
@@ -496,6 +496,9 @@ export async function assertInlinedJoinsUnique(
    ) => Promise<StoredJoin | undefined>,
 ): Promise<void> {
    for (const check of plan?.uniquenessChecks ?? []) {
+      // A pair table's leaf key check never fails the build: an auto-run
+      // runs it once the table is written ({@link pairLeafKeyChecksOf}).
+      if (check.recordOnly) continue;
       // A plan from a Publisher that did not compile the check: refuse rather
       // than build unchecked.
       if (!check.sql) {
@@ -548,6 +551,29 @@ export async function assertInlinedJoinsUnique(
          });
       }
    }
+}
+
+/**
+ * A `#(materialize)` plan's pair-table leaf key checks
+ * (`InlineUniquenessCheck.recordOnly`), each as a key check a run records
+ * beside the table it wrote: the leaf source's sourceID, its key, and the
+ * compiled SQL (one row when a value repeats or is NULL). A check that was not
+ * compiled is left out, so the leaf's key stays unknown.
+ */
+export function pairLeafKeyChecksOf(
+   plan: MaterializePlan | undefined,
+): { sourceID: string; keyColumn: string; sql: string }[] {
+   return (plan?.uniquenessChecks ?? []).flatMap((check) =>
+      check.recordOnly && check.sql
+         ? [
+              {
+                 sourceID: check.joinedSourceID,
+                 keyColumn: check.keyColumn,
+                 sql: check.sql,
+              },
+           ]
+         : [],
+   );
 }
 
 /**

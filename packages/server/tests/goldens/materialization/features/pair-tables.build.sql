@@ -211,11 +211,15 @@ ORDER BY 1 ASC NULLS LAST
 import { customers_blocks__mat__base is customers_blocks } from 'm.malloy'
 import { customers_blocks__mat__pair_key__source is customers_blocks } from 'm.malloy'
 import { customers_blocks__mat__pair_key__orders__source is orders_with_lines } from 'm.malloy'
+import { customers_blocks__mat__pair_leaf_key__orders__lines__source is lines } from 'm.malloy'
+import { customers_blocks__mat__pair_leaf_key__big_orders__source is orders_raw } from 'raw.malloy'
 import { customers_path__mat__base is customers_path } from 'm.malloy'
 import { customers_path__mat__pair_key__source is customers_path } from 'm.malloy'
 import { customers_path__mat__pair_key__orders__source is orders_with_lines } from 'm.malloy'
+import { customers_path__mat__pair_leaf_key__orders__lines__source is lines } from 'm.malloy'
 import { orders_pair__mat__base is orders_pair } from 'm.malloy'
 import { orders_pair__mat__pair_key__source is orders_pair } from 'm.malloy'
+import { orders_pair__mat__pair_leaf_key__lines__source is lines } from 'm.malloy'
 
 #@ persist name="customers_blocks" storage="lake"
 source: customers_blocks__mat is duckdb.sql("""
@@ -310,6 +314,24 @@ query: customers_blocks__mat__pair_key__orders is customers_blocks__mat__pair_ke
   limit: 1
 }
 
+query: customers_blocks__mat__pair_leaf_key__orders__lines is customers_blocks__mat__pair_leaf_key__orders__lines__source -> {
+  group_by: line_id
+  aggregate: matches is count()
+} -> {
+  where: matches > 1 or line_id is null
+  select: line_id
+  limit: 1
+}
+
+query: customers_blocks__mat__pair_leaf_key__big_orders is customers_blocks__mat__pair_leaf_key__big_orders__source -> {
+  group_by: id
+  aggregate: matches is count()
+} -> {
+  where: matches > 1 or id is null
+  select: id
+  limit: 1
+}
+
 #@ persist name="customers_path" storage="lake"
 source: customers_path__mat is customers_path__mat__base -> {
   group_by:
@@ -355,6 +377,15 @@ query: customers_path__mat__pair_key__orders is customers_path__mat__pair_key__o
   limit: 1
 }
 
+query: customers_path__mat__pair_leaf_key__orders__lines is customers_path__mat__pair_leaf_key__orders__lines__source -> {
+  group_by: line_id
+  aggregate: matches is count()
+} -> {
+  where: matches > 1 or line_id is null
+  select: line_id
+  limit: 1
+}
+
 #@ persist name="orders_pair" storage="lake"
 source: orders_pair__mat is orders_pair__mat__base -> {
   group_by:
@@ -382,5 +413,14 @@ query: orders_pair__mat__pair_key is orders_pair__mat__pair_key__source -> {
 } -> {
   where: matches > 1 or id is null
   select: id
+  limit: 1
+}
+
+query: orders_pair__mat__pair_leaf_key__lines is orders_pair__mat__pair_leaf_key__lines__source -> {
+  group_by: line_id
+  aggregate: matches is count()
+} -> {
+  where: matches > 1 or line_id is null
+  select: line_id
   limit: 1
 }

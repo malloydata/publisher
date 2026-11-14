@@ -42,7 +42,7 @@ export type {
 } from "../../governance/ir/source_graph";
 
 /** The compiled source shape the map reads: compiler-set IR fields only. */
-export interface MappedSourceDef {
+interface MappedSourceDef {
    type?: unknown;
    sourceID?: unknown;
    referenceID?: unknown;
@@ -64,10 +64,10 @@ export interface MappedSourceDef {
  * base; its members are on {@link SourceNode.members}. A query over a
  * composite reaches the composite through `query.structRef`, like any query.
  */
-export type BaseHop = "extends" | "rename" | "query";
+type BaseHop = "extends" | "rename" | "query";
 
 /** A source's base edge: the hop, the id it names, and the definition when it resolves. */
-export interface BaseEdge {
+interface BaseEdge {
    hop: BaseHop;
    /** The base's sourceID, when the hop names one. */
    sourceID: string | undefined;
@@ -76,7 +76,7 @@ export interface BaseEdge {
 }
 
 /** What kind of source a node is. */
-export type SourceKind = "table" | "extend" | "rename" | "query" | "composite";
+type SourceKind = "table" | "extend" | "rename" | "query" | "composite";
 
 /** One declaration in the map. */
 export interface SourceNode {
@@ -136,7 +136,7 @@ function byId(
  * query-shaped source starts a new segment. A composite has members, not a
  * base (see {@link compositeMemberIds}).
  */
-export function baseEdgeOf(
+function baseEdgeOf(
    def: MappedSourceDef,
    modelDef: unknown,
 ): BaseEdge | undefined {
@@ -151,7 +151,7 @@ export function baseEdgeOf(
 }
 
 /** A composite source's members' sourceIDs, in order. */
-export function compositeMemberIds(def: MappedSourceDef): string[] {
+function compositeMemberIds(def: MappedSourceDef): string[] {
    if (def.type !== "composite" || !Array.isArray(def.sources)) return [];
    return def.sources.flatMap((member) => {
       const id = structRefSourceId(member);
@@ -322,7 +322,7 @@ export function sourceChain(struct: unknown, modelDef: unknown): string[] {
 // ---------------------------------------------------------------------------
 
 /** A pipeline nested deeper than this is treated as reaching an unknown source. */
-export const MAX_PIPELINE_DEPTH = 200;
+const MAX_PIPELINE_DEPTH = 200;
 
 /**
  * One reference a query pipeline makes. `sourceID` is the referenced source's
@@ -330,7 +330,7 @@ export const MAX_PIPELINE_DEPTH = 200;
  * join, else the join or stage `structRef` as written (an id or an embedded
  * definition).
  */
-export interface PipelineReference {
+interface PipelineReference {
    sourceID: string | undefined;
    ref: unknown;
 }
@@ -499,7 +499,7 @@ export function reachableSourceIDs(
 // ---------------------------------------------------------------------------
 
 /** A model's sources by name, and the name of each sourceID, as a build walk reads them. */
-export interface ReachContext {
+interface ReachContext {
    /** The model's `contents`, by source name. */
    contents: Record<string, MappedSourceDef>;
    /** sourceID -> author source name. */
@@ -507,7 +507,7 @@ export interface ReachContext {
 }
 
 /** What {@link reachPersisted} found on the paths out of a source. */
-export interface ReachedSources {
+interface ReachedSources {
    /**
     * The persist sources the walk stopped at. Names are neither tables (several
     * share one) nor package-unique, so the caller resolves each to its content

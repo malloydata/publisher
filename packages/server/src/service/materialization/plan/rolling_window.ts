@@ -79,7 +79,7 @@ export interface CurrentTimeReadTerm {
 }
 
 /** Why a source's current-time terms cannot be materialized. */
-export interface RollingWindowRefusal {
+interface RollingWindowRefusal {
    reason:
       | "current_time_shape"
       | "current_time_unplaced"
@@ -88,14 +88,14 @@ export interface RollingWindowRefusal {
    detail: string;
 }
 
-export type RollingWindowClassification =
+type RollingWindowClassification =
    | { ok: true; terms: CurrentTimeReadTerm[] }
    | ({ ok: false } & RollingWindowRefusal);
 
 const TIME_TYPES: ReadonlySet<string> = new Set(["timestamp", "timestamptz"]);
 
 /** Whether the term keeps rows newer than its cut-off ("the last 30 days"). */
-export function isLowerBound(window: Pick<RollingWindow, "op">): boolean {
+function isLowerBound(window: Pick<RollingWindow, "op">): boolean {
    return window.op === ">=" || window.op === ">";
 }
 

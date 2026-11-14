@@ -718,7 +718,6 @@ jobs:
             sed 's/^/[release-notes] /' "$EXTRACT_LOG"
           fi
           if [ -n "$NARRATIVE" ]; then
-            printf '\n%s\n' "$NARRATIVE" >> "$NOTES_FILE"
             echo "::notice title=Release notes::attached $(grep -c '^## ' <<< "$NARRATIVE") narrative section(s) from RELEASE_NOTES.md"
           elif [ "$EXTRACT_OK" = 1 ]; then
             # Only when the file was actually read. Saying "no sections" after a
@@ -750,19 +749,85 @@ jobs:
           PREV_TAG="$(git tag -l 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | grep -vx "$TAG" | tail -1)"
 
           NOTES_START_ARGS=()
+          PREV_TAG_ARGS=()
           if [ -n "$PREV_TAG" ]; then
             echo "::notice title=Changelog::Generating notes from ${PREV_TAG} to ${TAG}"
             NOTES_START_ARGS=(--notes-start-tag "$PREV_TAG")
+            PREV_TAG_ARGS=(-f "previous_tag_name=${PREV_TAG}")
           else
             echo "::notice title=Changelog::No previous tag found; using default note generation"
+          fi
+
+          # Fit the body to the page. GitHub refuses a release body over
+          # 125,000 characters with a 422, here, after npm, Docker and PyPI have
+          # published: 0.13.0's 75 sections came to 136k and its page was made
+          # by hand. So the generated PR list is fetched first, the same list
+          # --generate-notes would append, and `release-notes.mjs fit` composes
+          # the whole body under a budget: the narrative in full when it fits,
+          # otherwise an index of its section titles linking RELEASE_NOTES.md at
+          # the tag, then the PR list truncated, then only its compare link.
+          # It always produces something that fits, so length cannot fail this
+          # step again.
+          #
+          # Either half failing falls back rather than failing the step. No
+          # generated list: `fit` puts the compare link in its place. `fit`
+          # itself failing: the header goes up alone with --generate-notes, the
+          # earlier behaviour minus the narrative, which a PR list alone has
+          # never come near the limit with.
+          GENERATED_FILE="$(mktemp)"
+          GENERATED_ARGS=()
+          if gh api "repos/${{ github.repository }}/releases/generate-notes" \
+              -f "tag_name=${TAG}" -f "target_commitish=${BRANCH}" \
+              "${PREV_TAG_ARGS[@]}" --jq .body > "$GENERATED_FILE"; then
+            GENERATED_ARGS=(--generated "$GENERATED_FILE")
+          else
+            echo "::warning title=Release notes::could not fetch the generated PR list; the page links the compare view instead"
+          fi
+
+          FIT_ARGS=()
+          if [ -n "$PREV_TAG" ]; then
+            FIT_ARGS=(--prev-tag "$PREV_TAG")
+          fi
+          if [ "$EXTRACT_OK" = 0 ]; then
+            FIT_ARGS+=(--no-narrative)
+          fi
+          BODY_FILE="$(mktemp)"
+          FIT_LOG="$(mktemp)"
+          GENERATE_ARGS=()
+          if FIT="$(node scripts/release-notes.mjs fit "$VERSION" \
+              --header "$NOTES_FILE" --out "$BODY_FILE" \
+              --repo-url "${{ github.server_url }}/${{ github.repository }}" \
+              "${GENERATED_ARGS[@]}" "${FIT_ARGS[@]}" 2>"$FIT_LOG")"; then
+            echo "[release-notes] fit: ${FIT}"
+            case "$FIT" in
+              *narrative=index*)
+                echo "::notice title=Release notes::the narrative is too long for a GitHub release page; the page lists its section titles and links RELEASE_NOTES.md at ${TAG} (${FIT})"
+                echo "- release notes: narrative too long for the page — listed as an index of section titles linking \`RELEASE_NOTES.md\` at \`${TAG}\` (${FIT})" >> "$GITHUB_STEP_SUMMARY"
+                ;;
+            esac
+            case "$FIT" in
+              *generated=truncated* | *generated=cut*)
+                echo "::notice title=Release notes::the generated PR list was truncated to fit the page; the compare link carries the rest (${FIT})"
+                ;;
+              *generated=link*)
+                if [ "${#GENERATED_ARGS[@]}" -gt 0 ]; then
+                  echo "::notice title=Release notes::the generated PR list did not fit the page; it links the compare view instead (${FIT})"
+                fi
+                ;;
+            esac
+          else
+            sed 's/^/[release-notes] /' "$FIT_LOG"
+            echo "::warning title=Release notes::could not fit the release body (logged above); the page carries the header and the generated PR list only. Paste the narrative onto the release page by hand."
+            echo "- release notes: narrative NOT attached — \`release-notes.mjs fit ${VERSION}\` failed" >> "$GITHUB_STEP_SUMMARY"
+            cp "$NOTES_FILE" "$BODY_FILE"
+            GENERATE_ARGS=(--generate-notes "${NOTES_START_ARGS[@]}")
           fi
 
           gh release create "$TAG" \
             --target "$BRANCH" \
             --title "v${VERSION}" \
-            --notes-file "$NOTES_FILE" \
-            --generate-notes \
-            "${NOTES_START_ARGS[@]}"
+            --notes-file "$BODY_FILE" \
+            "${GENERATE_ARGS[@]}"
 
           echo "## 🏷️ GitHub Release" >> $GITHUB_STEP_SUMMARY
           echo "Created release [\`${TAG}\`](https://github.com/${{ github.repository }}/releases/tag/${TAG})" >> $GITHUB_STEP_SUMMARY

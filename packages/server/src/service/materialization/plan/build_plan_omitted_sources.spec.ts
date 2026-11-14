@@ -478,3 +478,112 @@ describe("BuildPlan.omittedSources: projection failures", () => {
       });
    });
 });
+
+describe("BuildPlan.omittedSources: every companion kind under every failure", () => {
+   /** One model per companion kind, as the cases above write them. */
+   const KINDS = {
+      rollup: { text: V1_ROLLUP, env: {} },
+      v1_build_copy: {
+         text: `source: base is duckdb.sql("select 1 as a, 'x' as b")
+#@ persist
+source: p is base extend { measure: n is count() } -> { group_by: a, b; aggregate: n }
+`,
+         env: {},
+      },
+      materialize: {
+         text: `#(materialize) name="plain_t"
+source: plain is duckdb.sql("select 1 as a") extend {
+  measure: n is count()
+}
+`,
+         env: { PUBLISHER_MATERIALIZE: "true" },
+      },
+      persisted_view: {
+         text: `source: ops is duckdb.sql("select 1 as id, 'aa' as carrier") extend {
+  measure: n is count()
+  #@ persist name="ops_by_carrier"
+  view: by_carrier is { group_by: carrier; aggregate: n }
+}
+`,
+         env: { PUBLISHER_MATERIALIZE: "true" },
+      },
+   } as const;
+   const FAILURES = [true, "overlay", "unreadable"] as const;
+
+   /** What each failure leaves: planned names, then each omission as `id reason`. */
+   const EXPECTED: Record<string, { planned: string[]; omitted: string[] }> = {
+      "rollup true": {
+         planned: [],
+         omitted: [
+            "orders__rollup__category__4bc36c1b@file://<pkg>/m.malloy.preaggregate.malloy rollup_companion_failed",
+         ],
+      },
+      "rollup overlay": {
+         planned: [],
+         omitted: [
+            "orders__rollup__category__4bc36c1b@file://<pkg>/m.malloy.preaggregate.malloy rollup_companion_failed",
+         ],
+      },
+      // No `#@` line to set aside, so an unreadable author file costs nothing.
+      "rollup unreadable": {
+         planned: ["orders__rollup__category__4bc36c1b"],
+         omitted: [],
+      },
+      "v1_build_copy true": {
+         planned: [],
+         omitted: ["p@file://<pkg>/m.malloy v1_build_companion_failed"],
+      },
+      "v1_build_copy overlay": {
+         planned: [],
+         omitted: ["p@file://<pkg>/m.malloy v1_build_companion_failed"],
+      },
+      "v1_build_copy unreadable": {
+         planned: [],
+         omitted: ["p@file://<pkg>/m.malloy v1_build_companion_failed"],
+      },
+      "materialize true": {
+         planned: [],
+         omitted: ["plain@file://<pkg>/m.malloy materialize_companion_failed"],
+      },
+      "materialize overlay": {
+         planned: [],
+         omitted: ["plain@file://<pkg>/m.malloy materialize_companion_failed"],
+      },
+      "materialize unreadable": { planned: ["plain"], omitted: [] },
+      "persisted_view true": {
+         planned: [],
+         omitted: [
+            "ops__by_carrier__view@file://<pkg>/m.malloy.persist-view.malloy persisted_view_companion_failed",
+         ],
+      },
+      "persisted_view overlay": {
+         planned: [],
+         omitted: [
+            "ops__by_carrier__view@file://<pkg>/m.malloy.persist-view.malloy persisted_view_companion_failed",
+         ],
+      },
+      "persisted_view unreadable": {
+         planned: ["ops__by_carrier__view"],
+         omitted: [],
+      },
+   };
+
+   it("omits exactly these sources, refuses none, and never omits a file", async () => {
+      const seen: typeof EXPECTED = {};
+      for (const [kind, { text, env }] of Object.entries(KINDS)) {
+         for (const fails of FAILURES) {
+            const { parts, dir } = await plan(text, env, fails);
+            const wire = wirePlan(parts);
+            expect(wire?.refusedSources ?? {}).toEqual({});
+            expect(wire?.omittedFiles).toEqual([]);
+            seen[`${kind} ${fails}`] = {
+               planned: Object.values(wire?.sources ?? {}).map((s) => s.name),
+               omitted: (wire?.omittedSources ?? []).map(
+                  (o) => `${o.sourceID.replace(dir, "<pkg>")} ${o.reason}`,
+               ),
+            };
+         }
+      }
+      expect(seen).toEqual(EXPECTED);
+   });
+});

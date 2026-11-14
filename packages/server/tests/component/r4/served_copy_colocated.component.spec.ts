@@ -31,7 +31,7 @@ import {
 } from "./harness";
 
 /** Measures that count through the inlined path (see {@link expectPairServedVia}). */
-const PATH_COUNTS = ["seg_n"];
+const PATH_COUNTS: string[] = [];
 
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
 const PG_SCHEMA = "r4_colocated";

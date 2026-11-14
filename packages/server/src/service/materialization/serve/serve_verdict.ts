@@ -31,7 +31,7 @@ export const MATERIALIZATION_UNREACHABLE_CODE = "materialization-unreachable";
  * the environment does not configure (P13): every build into it fails, so the
  * source serves live.
  */
-export const MATERIALIZATION_DESTINATION_MISSING_CODE =
+const MATERIALIZATION_DESTINATION_MISSING_CODE =
    "materialization-destination-missing";
 
 /**
@@ -39,7 +39,7 @@ export const MATERIALIZATION_DESTINATION_MISSING_CODE =
  * cannot hold a table (P13): a colocated build writes into that connection, so
  * the source serves live.
  */
-export const MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE =
+const MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE =
    "materialization-connection-cannot-hold-table";
 
 /**
@@ -57,7 +57,7 @@ export const VERDICT_WARNING_CODES: Readonly<
 };
 
 /** Why a materialized source's table answers no query. Open: see the module doc. */
-export type ServeVerdictReason =
+type ServeVerdictReason =
    /** The plan refused to build it (the eligibility gate). */
    | "refused"
    /** `storage=` while PERSIST_STORAGE_MODE is not `on`. */
@@ -208,7 +208,7 @@ export interface ServeVerdictFacts {
 }
 
 /** The tier a plan source's table lives in. */
-export function planTier(source: PersistSourcePlan): "colocated" | "storage" {
+function planTier(source: PersistSourcePlan): "colocated" | "storage" {
    return source.annotationFields?.storage?.trim() ? "storage" : "colocated";
 }
 

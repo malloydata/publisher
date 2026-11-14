@@ -36,7 +36,7 @@ import {
  * The slice of a compiled build plan eligibility reads; `CompiledBuildPlan`
  * satisfies it. Declared here so this module is not typed against its caller.
  */
-export interface EligibilityPlan {
+interface EligibilityPlan {
    sources: Record<string, PersistSource>;
    targets?: Record<string, BuildTarget>;
    connectionDigests: Record<string, string>;

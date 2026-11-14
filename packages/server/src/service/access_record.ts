@@ -68,7 +68,7 @@ export function accessIdentityOf(
 }
 
 /** A field the compiled query read, with its classes as the model declares or infers them. */
-export interface FieldRead {
+interface FieldRead {
    path: string;
    classifications: string[];
    /** Classes its inputs carry that it declares below; present only when some. */
@@ -79,7 +79,7 @@ export interface FieldRead {
  * What the query service knows about one admitted query's access, built
  * once the gates have run and the query has returned.
  */
-export interface QueryAccessSummary {
+interface QueryAccessSummary {
    /** The source the query entered, when it could be resolved. */
    source?: string;
    /** The gates in force on that source, as the model declares them. */
@@ -284,7 +284,7 @@ export async function summarizeQueryAccess(args: {
 }
 
 /** How the route answered, from the gate's point of view. */
-export type AccessOutcome =
+type AccessOutcome =
    | "ok"
    | "denied_lock"
    | "refused_surface"
@@ -305,7 +305,7 @@ export function outcomeOf(error: unknown, status: number): AccessOutcome {
 }
 
 /** A table the router considered for a query, as the access record keeps it. */
-export interface AccessPathCandidate {
+interface AccessPathCandidate {
    tableId: string;
    kind: string;
    outcome: string;
@@ -315,7 +315,7 @@ export interface AccessPathCandidate {
 }
 
 /** The access record's copy of a query's path report: see `AccessRecord.path`. */
-export interface AccessPath {
+interface AccessPath {
    /**
     * `via: "served_copy"` when the served copy answered, which is how a query
     * through a row-level gate is answered from a stored table (R3).

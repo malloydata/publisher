@@ -23,8 +23,6 @@ import type { BuildInstruction, BuildPlan, ManifestEntry } from "../types";
 import type { BuildRetryable } from "./build_failure_class";
 import { BilledReadNotCapturedError } from "./materialization_build_session";
 
-export { errorCodeOf };
-
 /**
  * The run and build events of materialization (plan section 5, "Step 4
  * specification"): `materialization.run.started` and `.run.finished` around a
@@ -47,7 +45,7 @@ export const RUN_TRIGGERS = [
    "auto",
    "orchestrator",
 ] as const;
-export type RunTrigger = (typeof RUN_TRIGGERS)[number];
+type RunTrigger = (typeof RUN_TRIGGERS)[number];
 
 /**
  * A run's trigger: the scheduler's fire, else a host's instructed run, else a

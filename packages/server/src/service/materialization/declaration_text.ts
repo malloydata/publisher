@@ -122,7 +122,7 @@ export function declarationSpans(
  * block as an "open" token at its `{` and a "close" token at its `}` (the
  * block's inside is skipped). Undefined when the text does not lex.
  */
-export function topLevelTokens(s: string): Token[] | undefined {
+function topLevelTokens(s: string): Token[] | undefined {
    const all = lexAll(s);
    if (!all) return undefined;
    return all.filter(
@@ -391,7 +391,7 @@ export function declaredBaseName(
 }
 
 /** One definition of a `rename:` statement: `<name> is <from>`. */
-export interface RenameDefinition {
+interface RenameDefinition {
    /** The name the field has after the statement. */
    name: string;
    /** The name it had before. */
@@ -404,7 +404,7 @@ export interface RenameDefinition {
  * carries an access modifier or a definition that is not `<name> is <name>`:
  * a reader that cannot place every rename must not guess.
  */
-export function renamesIn(text: string): RenameDefinition[] | undefined {
+function renamesIn(text: string): RenameDefinition[] | undefined {
    const tokens = lexAll(text);
    if (!tokens) return undefined;
    const level = tokens.filter((t) => t.depth === 1 && t.kind !== "close");

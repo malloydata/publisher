@@ -164,7 +164,7 @@ export interface PackageMaterializationOwner {
  * enough for an ordinary package's recompile, short enough that a caller's
  * own timeout never fires first.
  */
-export const BUILD_PLAN_REFRESH_WAIT_MS = 10_000;
+const BUILD_PLAN_REFRESH_WAIT_MS = 10_000;
 
 /**
  * The code on the warning for a `#@ persist` source a compile-time gate
@@ -178,7 +178,7 @@ export const PERSIST_SOURCE_REFUSED_CODE = "persist-source-refused";
  * The code on the warning for a rollup whose build found its join_one key
  * repeated ({@link PackageMaterialization.repeatedJoinOneKeyWarnings}).
  */
-export const PREAGGREGATE_JOIN_ONE_KEY_REPEATED_CODE =
+const PREAGGREGATE_JOIN_ONE_KEY_REPEATED_CODE =
    "preaggregate-join-one-key-repeated";
 
 /** The live serve verdicts the path report reads, by table and by source. */
@@ -750,6 +750,9 @@ export class PackageMaterialization {
       if (!next) return;
       this.freshnessEntries = next;
       this.tableCatalogCache = undefined;
+      // A colocated pair table's leaf key check rides on its serve binding
+      // (`primaryKeys`, known limitation 40): push the bindings without it.
+      this.refreshColocatedServeBindings();
    }
 
    /**
@@ -2479,11 +2482,19 @@ function servedCopyProblemMessage(
 }
 
 /** The colocated bindings' identity, to push only when they change. */
+/** A binding's recorded key checks, in a stable order. */
+function primaryKeysSignature(keys: ServeBinding["primaryKeys"]): string {
+   return Object.entries(keys ?? {})
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([id, unique]) => `${id}=${unique}`)
+      .join(",");
+}
+
 function colocatedSignature(bindings: readonly ServeBinding[]): string {
    return bindings
       .map(
          (b) =>
-            `${b.sourceIDs?.join(",")}@${b.destinationName}/${b.virtualHandle}/${b.tablePath}/${b.freshAsOf ?? ""}/${b.freshnessWindowSeconds ?? ""}/${b.freshnessFallback ?? ""}`,
+            `${b.sourceIDs?.join(",")}@${b.destinationName}/${b.virtualHandle}/${b.tablePath}/${b.freshAsOf ?? ""}/${b.freshnessWindowSeconds ?? ""}/${b.freshnessFallback ?? ""}/${primaryKeysSignature(b.primaryKeys)}`,
       )
       .sort()
       .join("|");

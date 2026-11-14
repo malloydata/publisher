@@ -51,8 +51,10 @@ ORDER BY 1 ASC NULLS LAST
 ##! experimental.persistence
 import { flights__mat__base is flights } from 'pfx.malloy'
 import { flights__mat__pair_key__source is flights } from 'pfx.malloy'
+import { flights__mat__pair_leaf_key__segments__source is segments } from 'pfx.malloy'
 import { flights_full__mat__base is flights_full } from 'pfx.malloy'
 import { flights_full__mat__pair_key__source is flights_full } from 'pfx.malloy'
+import { flights_full__mat__pair_leaf_key__segments__source is segments } from 'pfx.malloy'
 
 #@ persist name="flights" storage="lake" refresh="incremental" watermark="__pair_watermark" merge_key="id"
 source: flights__mat is flights__mat__base -> {
@@ -79,6 +81,15 @@ query: flights__mat__pair_key is flights__mat__pair_key__source -> {
   limit: 1
 }
 
+query: flights__mat__pair_leaf_key__segments is flights__mat__pair_leaf_key__segments__source -> {
+  group_by: seg_id
+  aggregate: matches is count()
+} -> {
+  where: matches > 1 or seg_id is null
+  select: seg_id
+  limit: 1
+}
+
 #@ persist name="pfx_flights_full" storage="lake"
 source: flights_full__mat is flights_full__mat__base -> {
   group_by:
@@ -100,5 +111,14 @@ query: flights_full__mat__pair_key is flights_full__mat__pair_key__source -> {
 } -> {
   where: matches > 1 or id is null
   select: id
+  limit: 1
+}
+
+query: flights_full__mat__pair_leaf_key__segments is flights_full__mat__pair_leaf_key__segments__source -> {
+  group_by: seg_id
+  aggregate: matches is count()
+} -> {
+  where: matches > 1 or seg_id is null
+  select: seg_id
   limit: 1
 }

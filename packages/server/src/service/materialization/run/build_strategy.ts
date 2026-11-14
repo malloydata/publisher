@@ -12,7 +12,7 @@ import type { sourceIncrementalRefresh } from "./incremental_build";
 import type { SwapDependents } from "./name_view";
 
 /** A source's incremental refresh the run can act on: its context and lineage. */
-export type IncrementalRefreshTarget = NonNullable<
+type IncrementalRefreshTarget = NonNullable<
    ReturnType<typeof sourceIncrementalRefresh>
 >;
 

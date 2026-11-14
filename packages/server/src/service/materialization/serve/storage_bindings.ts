@@ -52,7 +52,7 @@ interface BindingTypePlan {
 }
 
 /** What the bindings read from the model they are bound to. */
-export interface StorageBindingsHost {
+interface StorageBindingsHost {
    modelPath(): string;
    modelDef(): ModelDef | undefined;
    /**

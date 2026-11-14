@@ -3,7 +3,7 @@
 
 /**
  * Compiles the generated `#(materialize)` build companion (see
- * build_file_generator.ts), as preaggregation_compile.ts compiles the rollup
+ * build_file_generator.ts), as rollup_compile.ts compiles the rollup
  * companion: the text is served from an overlay at a URL beside the author's
  * model, so its `import` resolves while it never shows up in
  * `getModelPaths()`, the API or the package's own compile, and cannot go stale
@@ -55,7 +55,7 @@ import {
    type ProbeCompiler,
 } from "../../probe_compiler";
 
-export interface GeneratedMaterialize {
+interface GeneratedMaterialize {
    /** The sources the generator planned. Never empty. */
    plans: MaterializePlan[];
    /** The compiled companion: its build targets are the generated sources. */
@@ -79,10 +79,7 @@ export interface GeneratedMaterialize {
 }
 
 /** Where the generated companion for `modelPath` lives, as an absolute URL. */
-export function materializeCompanionURL(
-   packagePath: string,
-   modelPath: string,
-): URL {
+function materializeCompanionURL(packagePath: string, modelPath: string): URL {
    // pathToFileURL, not `file://${path}`: on Windows the path is `D:\…`, and
    // the overlay key must match the URL Malloy normalizes to.
    return pathToFileURL(

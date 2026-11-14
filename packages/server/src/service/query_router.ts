@@ -38,7 +38,7 @@ export type VariantKind = "view" | "served" | "storage" | "rollup";
  * Why a candidate did not answer. Internal for now; the path report maps
  * these onto its public `SkipReason` values.
  */
-export type RouterSkipReason =
+type RouterSkipReason =
    /** The entry point carries a row-level gate the variant cannot keep. */
    | "row_level_gate"
    /** The candidate does not apply to this model or request at all. */
@@ -47,7 +47,7 @@ export type RouterSkipReason =
    | "does_not_answer";
 
 /** One candidate's attempt at the query: its runnable, and what it needs to run. */
-export interface VariantAnswer<Extra> {
+interface VariantAnswer<Extra> {
    runnable: QueryMaterializer;
    extra: Extra;
 }
@@ -121,7 +121,7 @@ export interface ConsideredVariant {
  * (only the run target's own chain is gated) skips every candidate but one
  * that {@link Variant.keepsContracts}; `false` skips none.
  */
-export type RowLevelVeto = boolean | "entry_point";
+type RowLevelVeto = boolean | "entry_point";
 
 /** The router's decision for one query. */
 export type RouteDecision<Extra> =

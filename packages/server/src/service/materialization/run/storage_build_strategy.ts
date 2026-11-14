@@ -26,11 +26,12 @@ import {
    buildVirtualMap,
    bindingServesModelSource,
    deriveServeBindings,
-   duckdbTypeToMalloy,
+   declarableColumns,
    documentFlagsForLifts,
    liftDerivedSources,
    missingPersistedTables,
    REFINEMENT_TIER_KINDS,
+   reportLeftOutColumns,
    type ServeBinding,
    type SourceLocation,
 } from "../serve/materialization_serve_transform";
@@ -900,6 +901,11 @@ export class StorageBuildStrategy
             .filter((c) => c.name && c.type)
             .map((c) => ({ name: c.name as string, type: c.type as string })),
       };
+      // A parent column no `type:` declares faithfully is left out: the
+      // extension's build selects its columns by name, so one reading it does
+      // not compile and is recomputed, as for any chain it cannot carry.
+      const { declared, leftOut } = declarableColumns(binding.schema);
+      reportLeftOutColumns(parent.sourceName, leftOut);
       try {
          return await buildDownstreamIntoStorage({
             destinationName,
@@ -909,9 +915,9 @@ export class StorageBuildStrategy
                chain,
                connectionName: destinationName,
                virtualHandle: address,
-               columns: binding.schema.map((c) => ({
+               columns: declared.map((c) => ({
                   name: c.name,
-                  type: duckdbTypeToMalloy(c.type),
+                  type: c.malloyType,
                })),
             }),
             downstreamName: plan.buildSourceName,

@@ -39,8 +39,11 @@ import {
    expectPairServedVia,
 } from "./harness";
 
-/** Measures that count through the inlined path (see {@link expectPairServedVia}). */
-const PATH_COUNTS = ["seg_n", "long_legs", "note_n", "by_carrier", "by_leg"];
+/**
+ * Views that count through the inlined path in an aggregate of their own,
+ * which the served copy cannot re-declare (see {@link expectPairServedVia}).
+ */
+const PATH_COUNTS = ["by_leg"];
 
 // Flights 1–12 with 0 to 12 segments each: four childless (4, 5, 9, 11), fan-out
 // up to 5 on most, and 12 on flight 7. Segment 99 pairs with no flight.
@@ -261,7 +264,7 @@ describe("R4: an inlined join_many, served flat from its pair table, answers equ
       });
    }
 
-   it("answers a childless parent's count (none, since malloydata/malloy#3208) live", async () => {
+   it("serves a childless parent's count (none, since malloydata/malloy#3208)", async () => {
       const run = await fixture.run({
          name: "count",
          malloy:
@@ -269,8 +272,9 @@ describe("R4: an inlined join_many, served flat from its pair table, answers equ
       });
       expectPairServedVia(run, PATH_COUNTS);
       // Live counts childless flight 4 as no segments; the pair table's row
-      // for it would count one, so the count is answered live.
-      expect(run.servedVia).toBeUndefined();
+      // for it would count one as written, so the served copy counts the
+      // rows whose stored segment key is not null.
+      expect(run.servedVia).toBe("served_copy");
       expect(
          run.live
             .map((r) => [Number(r.id), Number(r.seg_n)])
@@ -768,9 +772,22 @@ describe("R4: an inherited, render-tagged or inferred-class joined field", () =>
       const run = await fixture.run({
          name: "aggregate and filter",
          malloy:
-            "run: flights -> { where: segments.leg > 2; group_by: carrier; aggregate: m is segments.doubled.sum() }",
+            "run: flights -> { where: segments.leg > 2; group_by: carrier; aggregate: m is segments.miles.sum() }",
       });
       expectPairServedVia(run, PATH_COUNTS);
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+
+   // A stored computed field need not be null on a childless parent's
+   // null-extended row, which live's sum skips: a sum of one written in the
+   // query is answered live.
+   it("answers a sum of a stored computed field written in the query live", async () => {
+      const run = await fixture.run({
+         name: "computed aggregate and filter",
+         malloy:
+            "run: flights -> { where: segments.leg > 2; group_by: carrier; aggregate: m is segments.doubled.sum() }",
+      });
+      expect(run.servedVia).toBeUndefined();
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 });

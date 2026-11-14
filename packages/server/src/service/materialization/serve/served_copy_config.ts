@@ -45,11 +45,6 @@ export function namesServedCopyAlias(text: string): boolean {
    return text.includes(`__publisher_storage_${TOKEN}_`);
 }
 
-/** Whether `name` is a served-copy alias (never an author's connection). */
-export function isServedCopyAlias(name: string): boolean {
-   return destinationsByAlias.has(name);
-}
-
 /**
  * The package's connections, plus `destinations` (those in `allowed`) under
  * their aliases. The default connection is the package's.

@@ -45,7 +45,7 @@ import type { RunLifecycle } from "./run_lifecycle";
  * The `name=` views a sweep must settle before it drops their tables: those
  * the runs being dropped recorded, and where each could point instead.
  */
-export interface NameViewsToSettle {
+interface NameViewsToSettle {
    recorded: NameViewRecord[];
    successorFor: (view: NameViewRecord) => NameViewRecord | undefined;
 }
@@ -145,7 +145,7 @@ function dropRunSQLOptions(
 }
 
 /** A drop of a run's manifest entries; see {@link Reclaimer.dropManifestEntries}. */
-export type DropManifestEntries = Reclaimer["dropManifestEntries"];
+type DropManifestEntries = Reclaimer["dropManifestEntries"];
 
 /**
  * Giving back what materializations built: the tables of a deleted run, of a

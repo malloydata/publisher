@@ -213,6 +213,128 @@ describe("buildQueryPath", () => {
       }
    });
 
+   it("maps every leg's decline code to one public reason, warning code and caller detail", () => {
+      type Candidate = ReturnType<typeof buildQueryPath>["considered"][number];
+      const pick = (c: Candidate | undefined) =>
+         c && {
+            reason: c.reason,
+            ...(c.code ? { code: c.code } : {}),
+            ...(c.detail ? { detail: c.detail } : {}),
+         };
+      const declined = (
+         kind: "served" | "rollup" | "view",
+         code: string | undefined,
+      ) => ({
+         kind,
+         outcome: "skipped" as const,
+         reason: "does_not_answer" as const,
+         ...(code ? { code, callerDetail: "why, in the caller's terms" } : {}),
+      });
+      const daily = storageOf("daily");
+      const served = (code: string | undefined) =>
+         pick(
+            buildQueryPath(
+               input({
+                  catalog: catalog([planned("daily")]),
+                  storage: { all: [daily], fresh: [daily] },
+                  servedCopyTables: new Set([daily.tablePath]),
+                  considered: [declined("served", code)],
+               }),
+            ).considered[0],
+         );
+      const rollup = (code: string | undefined) =>
+         pick(
+            buildQueryPath(
+               input({
+                  catalog: catalog([planned("orders_rollup", "preaggregate")], {
+                     id_orders_rollup: "rollup_t",
+                  }),
+                  rollups: [
+                     {
+                        rollupSourceName: "orders_rollup",
+                        baseSourceName: "orders",
+                        baseSourceID: "orders@file:///m.malloy",
+                     },
+                  ],
+                  considered: [declined("rollup", code)],
+               }),
+            ).considered[0],
+         );
+      const view = (code: string | undefined) =>
+         pick(
+            buildQueryPath(
+               input({
+                  view: {
+                     tableId: "id_view",
+                     tier: "colocated",
+                     built: true,
+                     stale: false,
+                  },
+                  considered: [declined("view", code)],
+               }),
+            ).considered[0],
+         );
+      const detail = "why, in the caller's terms";
+      const seen: Record<string, unknown> = {
+         served_copy_time_zone: served("served_copy_time_zone"),
+         served_copy_cross_connection: served("served_copy_cross_connection"),
+         served_copy_not_served: served("served_copy_not_served"),
+         served_copy_opt_out: served("served_copy_opt_out"),
+         served_copy_count_semantics: served("served_copy_count_semantics"),
+         served_copy_joined_annotations: served(
+            "served_copy_joined_annotations",
+         ),
+         served_copy_pair_shape: served("served_copy_pair_shape"),
+         served_copy_pair_parent_only: served("served_copy_pair_parent_only"),
+         served_unknown: served("served_copy_something_new"),
+         served_unexplained: served(undefined),
+         rollup_grain_too_coarse: rollup("rollup_grain_too_coarse"),
+         rollup_missing_field: rollup("rollup_missing_field"),
+         rollup_count_semantics: rollup("rollup_count_semantics"),
+         rollup_time_zone: rollup("rollup_time_zone"),
+         rollup_not_built: rollup("rollup_not_built"),
+         rollup_contract: rollup("rollup_contract"),
+         rollup_cross_connection: rollup("rollup_cross_connection"),
+         rollup_unexplained: rollup(undefined),
+         view_missing_field: view("view_missing_field"),
+         view_not_built: view("view_not_built"),
+         view_stale: view("view_stale"),
+         view_unexplained: view(undefined),
+      };
+      expect(seen).toEqual({
+         served_copy_time_zone: { reason: "TIME_ZONE", detail },
+         served_copy_cross_connection: { reason: "CROSS_CONNECTION", detail },
+         served_copy_not_served: {
+            reason: "WARNED",
+            code: "served-copy-not-served",
+            detail,
+         },
+         served_copy_opt_out: {
+            reason: "WARNED",
+            code: "persist-opt-out",
+            detail,
+         },
+         served_copy_count_semantics: { reason: "COUNT_SEMANTICS", detail },
+         served_copy_joined_annotations: { reason: "MISSING_FIELD", detail },
+         served_copy_pair_shape: { reason: "COUNT_SEMANTICS", detail },
+         served_copy_pair_parent_only: { reason: "COUNT_SEMANTICS", detail },
+         served_unknown: { reason: "MISSING_FIELD", detail },
+         served_unexplained: { reason: "MISSING_FIELD" },
+         rollup_grain_too_coarse: { reason: "GRAIN_TOO_COARSE", detail },
+         rollup_missing_field: { reason: "MISSING_FIELD", detail },
+         rollup_count_semantics: { reason: "COUNT_SEMANTICS", detail },
+         rollup_time_zone: { reason: "TIME_ZONE", detail },
+         rollup_not_built: { reason: "NOT_BUILT", detail },
+         rollup_contract: { reason: "CONTRACT", detail },
+         rollup_cross_connection: { reason: "CROSS_CONNECTION", detail },
+         rollup_unexplained: { reason: "MISSING_FIELD" },
+         view_missing_field: { reason: "MISSING_FIELD", detail },
+         view_not_built: { reason: "NOT_BUILT", detail },
+         view_stale: { reason: "STALE", detail },
+         view_unexplained: { reason: "MISSING_FIELD" },
+      });
+   });
+
    it("names a storage answer's table even when the chain does not place it", () => {
       const other = storageOf("other");
       const report = buildQueryPath(

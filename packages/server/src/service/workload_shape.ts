@@ -19,6 +19,7 @@
 
 import { createHash } from "crypto";
 import type { ModelDef } from "@malloydata/malloy";
+import { forEachFieldPath } from "./governance/ir/array_query";
 import { resolveStructRef } from "./governance/ir/prepared_query";
 
 /** One query's shape. */
@@ -154,30 +155,24 @@ export function canonicalExpression(e: unknown): string {
    return render(e);
 }
 
-/** Every field path an expression reads, in order of first appearance. */
+/**
+ * Every field path an expression reads, in order of first appearance; one
+ * inside an array query is re-rooted under its array.
+ */
 function fieldPaths(e: unknown): string[] {
    const out: string[] = [];
-   const seen = new Set<object>();
-   const visit = (n: unknown): void => {
-      if (!n || typeof n !== "object" || seen.has(n)) return;
-      seen.add(n);
-      if (Array.isArray(n)) {
-         for (const item of n) visit(item);
-         return;
-      }
-      const obj = n as Record<string, unknown>;
-      if (obj.node === "field" && Array.isArray(obj.path)) {
-         const path = obj.path.map(String).join(".");
+   forEachFieldPath(
+      e,
+      (parts) => {
+         const path = parts.join(".");
          if (path && !out.includes(path)) out.push(path);
-      }
-      for (const [k, v] of Object.entries(obj)) {
-         if (k === "at" || k === "location") continue;
-         visit(v);
-      }
-   };
-   visit(e);
+      },
+      { skipKeys: FIELD_PATH_SKIPPED_KEYS },
+   );
    return out;
 }
+
+const FIELD_PATH_SKIPPED_KEYS = new Set(["at", "location"]);
 
 interface FieldLike {
    name?: string;

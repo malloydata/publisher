@@ -254,6 +254,10 @@ source research carries [none, phi.clinical]; this query reads x, which is class
   is held to the list like the first stage's, against what the stage before it returned. A
   `compose(…)` source is held to the ceiling of the member Malloy resolved for the query as well as
   its own.
+- A query on an array (`items -> { aggregate: t is price.sum() }`) reads the array, with its
+  class, and the fields of its elements under it (`items.price`). A join written inside one reads
+  a source no check here can follow, so a model that declares `#(carries)` or `#(classification)`
+  refuses it, at load and per query.
 - What counts as a read: every field the query selects, aggregates, groups, filters, nests or
   indexes on, a field a caller's `extend:` adds with the classes of what it reads, and each
   reference in the `on` of a join the caller writes. An `internal:` field is not exempt here; it
@@ -301,7 +305,11 @@ Both follow what a caller can reach, not what a file declares:
   fields it reads. A join names a relationship and is not classified.
 - A record or array dimension is a field. One built by an expression (`{ v is ssn }`, `[ssn]`)
   carries what the expression reads, and each of its parts carries the same. A struct column is
-  charged the union of its parts. A part that cannot be resolved fails closed.
+  charged the union of its parts, and a part of a classified record or array column
+  (`purchases.ssn`, under `#(classification) "phi.direct_identifier" rename: purchases is items`)
+  carries the classes of the nearest column around it that declares some, read directly or inside
+  a query on the array (`purchases -> { select: ssn }`). A read of the whole column lists only the
+  column. A part that cannot be resolved fails closed.
 
 ## Known gaps
 

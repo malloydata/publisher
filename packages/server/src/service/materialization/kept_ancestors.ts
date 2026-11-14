@@ -26,7 +26,7 @@ import { offsetOf } from "./malloy_lexer";
 import type { SourceMap } from "./plan/source_map";
 
 /** A zero-based Malloy range, as a compiled source's `location.range` carries. */
-export interface KeptRange {
+interface KeptRange {
    start: { line: number; character: number };
    end: { line: number; character: number };
 }
@@ -47,13 +47,13 @@ export interface KeptAncestor {
 }
 
 /** A plain rename on the kept walk ({@link KeptAncestor.aliases}). */
-export interface KeptAlias {
+interface KeptAlias {
    sourceID: string;
    range: KeptRange;
 }
 
 /** A {@link KeptAncestor} the file's text confirms, with its kept run. */
-export interface ConfirmedAncestor extends KeptAncestor {
+interface ConfirmedAncestor extends KeptAncestor {
    /**
     * Its trailing `extend { … }` run's offsets in the file, end exclusive;
     * absent when the declaration has none.

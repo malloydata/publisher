@@ -133,11 +133,6 @@ export function parseNameViewComment(
       : undefined;
 }
 
-/** Whether a relation's comment is a Publisher `name=` view's mark. */
-export function isNameViewComment(comment: unknown): boolean {
-   return parseNameViewComment(comment) !== undefined;
-}
-
 /**
  * The prefix of the ownership mark on a table an auto-run built at the
  * author's `name=` (table_ownership.ts).
@@ -355,7 +350,7 @@ function field(row: Record<string, unknown>, name: string): unknown {
  * together, so a reader never sees the view reading one table while marked
  * for another.
  */
-export interface NameViewDdl {
+interface NameViewDdl {
    primary: string;
    rollback?: string;
    fallback?: string;
@@ -463,7 +458,7 @@ const TRANSACTIONAL_REPLACE_DIALECTS: ReadonlySet<string> = new Set([
 ]);
 
 /** Whether a table at a name can be replaced by a view as one transaction. */
-export function nameViewReplaceIsTransactional(dialect: string): boolean {
+function nameViewReplaceIsTransactional(dialect: string): boolean {
    return TRANSACTIONAL_REPLACE_DIALECTS.has(dialect);
 }
 

@@ -636,6 +636,79 @@ source: orders is orders_raw extend {
          },
       ],
    },
+   {
+      name: "time zones",
+      files: {
+         "m.malloy": `import "raw.malloy"
+
+source: orders is orders_raw extend {
+  dimension: m is created_at.month
+  #(preaggregate) grain=["region", "m"]
+  measure: total is amount.sum()
+}
+
+source: zoned is orders_raw extend {
+  timezone: 'America/Los_Angeles'
+  dimension: m is created_at.month
+  #(preaggregate) grain=["region", "m"]
+  measure: total is amount.sum()
+}
+
+source: rezoned is orders extend { timezone: 'America/New_York' }
+
+#(materialize) storage="lake"
+source: mat is orders_raw extend {
+  dimension: created_day is created_at.day
+  measure: n is count()
+}
+
+#(materialize) storage="lake" inline=["customers"]
+source: wide is orders_raw extend {
+  join_one: customers is customers_raw with customer_id
+  measure: n is count()
+}
+`,
+         ...raw,
+      },
+      queries: [
+         {
+            name: "a rollup, no zone",
+            malloy: "run: orders -> { group_by: m; aggregate: total }",
+         },
+         {
+            name: "a rollup under a query time zone",
+            malloy:
+               "run: orders -> { timezone: 'America/Los_Angeles'; group_by: m; aggregate: total }",
+         },
+         {
+            name: "a rollup under a nest's time zone",
+            malloy:
+               "run: orders -> { group_by: region; nest: n is { timezone: 'America/Los_Angeles'; group_by: m; aggregate: total } }",
+         },
+         {
+            name: "a zoned source's rollup",
+            malloy: "run: zoned -> { group_by: m; aggregate: total }",
+         },
+         {
+            name: "an extension that sets its own zone",
+            malloy: "run: rezoned -> { group_by: m; aggregate: total }",
+         },
+         {
+            name: "a materialized source's stored day, no zone",
+            malloy: "run: mat -> { group_by: created_day; aggregate: n }",
+         },
+         {
+            name: "a materialized source's stored day under a query time zone",
+            malloy:
+               "run: mat -> { timezone: 'America/Los_Angeles'; group_by: created_day; aggregate: n }",
+         },
+         {
+            name: "an inlined join under a query time zone",
+            malloy:
+               "run: wide -> { timezone: 'America/Los_Angeles'; group_by: customers.segment; aggregate: n }",
+         },
+      ],
+   },
    { name: "gated sources", ...GATED },
    { name: "gated sources, gated switch on", env: GATED_ON, ...GATED },
 ];

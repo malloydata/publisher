@@ -14,7 +14,11 @@ import { compilePackageBuildPlan } from "./build_plan_compile";
 import { collectIncrementalDeclarations } from "./build_plan";
 import { incrementalLineage } from "../run/incremental_build";
 import { incrementalPolicyRejections } from "./incremental_policy";
-import { assertInlinedJoinsUnique } from "../run/inline_uniqueness";
+import {
+   assertInlinedJoinsUnique,
+   pairLeafKeyChecksOf,
+   runRollupKeyCheck,
+} from "../run/inline_uniqueness";
 import { rollingWindowsOf } from "./rolling_window";
 import {
    buildCopyText,
@@ -964,10 +968,18 @@ source: orders is orders_raw extend {
             ["lines__big_line", "lines"],
          ]);
          // No join_one to check; the parent key is checked, since the
-         // parent-row flag marks one row per key.
+         // parent-row flag marks one row per key, and the leaf's key, which
+         // never fails the build (a count through the join needs it).
          expect(
-            plan.uniquenessChecks?.map((x) => [x.pairLevel, x.keyColumn]),
-         ).toEqual([[0, "id"]]);
+            plan.uniquenessChecks?.map((x) => [
+               x.pairLevel,
+               x.keyColumn,
+               x.recordOnly ?? false,
+            ]),
+         ).toEqual([
+            [0, "id", false],
+            [1, "line_id", true],
+         ]);
          expect(plan.pair).toEqual({
             join: "lines",
             parentKey: "id",
@@ -1311,40 +1323,35 @@ source: orders_one is ${orders} extend {
          const clean = await plansOf(
             model("(1, 1, 2.0), (2, 1, 3.0), (3, 2, 4.0)"),
          );
-         // The path checks the source's key and the middle level's; the
-         // leaf needs none. The block table checks the source's key (each
-         // block's child is its leaf). A one-hop table checks the source's
-         // key too: its parent-row flag marks one row per key.
-         expect(
+         // The path checks the source's key and the middle level's, which
+         // fail the build; the leaf's is checked too, never failing it (a
+         // count through the path is served only where it passed). The block
+         // table checks the source's key, and each block's leaf. A one-hop
+         // table checks the source's key too: its parent-row flag marks one
+         // row per key.
+         const checksOf = (name: string) =>
             clean.byName
-               .get("orders_hop")
+               .get(name)
                ?.uniquenessChecks?.map((x) => [
                   x.pairLevel,
                   x.join,
                   x.keyColumn,
-               ]),
-         ).toEqual([
-            [0, "", "id"],
-            [1, "lp", "line_id"],
+                  x.recordOnly ?? false,
+               ]);
+         expect(checksOf("orders_hop")).toEqual([
+            [0, "", "id", false],
+            [1, "lp", "line_id", false],
+            [2, "lp.picks", "pick_id", true],
          ]);
-         expect(
-            clean.byName
-               .get("orders_blocks")
-               ?.uniquenessChecks?.map((x) => [
-                  x.pairLevel,
-                  x.join,
-                  x.keyColumn,
-               ]),
-         ).toEqual([[0, "", "id"]]);
-         expect(
-            clean.byName
-               .get("orders_one")
-               ?.uniquenessChecks?.map((x) => [
-                  x.pairLevel,
-                  x.join,
-                  x.keyColumn,
-               ]),
-         ).toEqual([[0, "", "id"]]);
+         expect(checksOf("orders_blocks")).toEqual([
+            [0, "", "id", false],
+            [1, "lines", "line_id", true],
+            [1, "notes", "note_id", true],
+         ]);
+         expect(checksOf("orders_one")).toEqual([
+            [0, "", "id", false],
+            [1, "lines", "line_id", true],
+         ]);
          for (const name of ["orders_hop", "orders_blocks", "orders_one"]) {
             await assertInlinedJoinsUnique(
                clean.byName.get(name),
@@ -1365,8 +1372,26 @@ source: orders_one is ${orders} extend {
             ).rejects.toThrow(
                /keys one row flag on 'line_id' of the source 'lp'/,
             );
+            // There `lines` is the leaf: its key check never fails the build,
+            // and finds the key held twice, or null.
             for (const name of ["orders_blocks", "orders_one"]) {
                await assertInlinedJoinsUnique(bad.byName.get(name), bad.duckdb);
+               const [leaf] = pairLeafKeyChecksOf(bad.byName.get(name));
+               expect(leaf).toMatchObject({
+                  keyColumn: "line_id",
+                  sourceID: expect.stringMatching(/^lines@/),
+               });
+               expect(
+                  (await runRollupKeyCheck(leaf, bad.duckdb, "t"))?.unique,
+               ).toBe(false);
+            }
+         }
+         // A clean leaf passes its check.
+         for (const name of ["orders_hop", "orders_blocks", "orders_one"]) {
+            for (const leaf of pairLeafKeyChecksOf(clean.byName.get(name))) {
+               expect(
+                  (await runRollupKeyCheck(leaf, clean.duckdb, "t"))?.unique,
+               ).toBe(true);
             }
          }
          // A null source key fails all three.
@@ -1430,7 +1455,7 @@ source: orders is raw extend {
             ),
          );
          expect(clean.plan?.uniquenessChecks?.map((x) => x.pairLevel)).toEqual([
-            0,
+            0, 1,
          ]);
          await assertInlinedJoinsUnique(clean.plan, clean.duckdb);
          // A key unique within the default tenant but held by two tenants:
@@ -1696,10 +1721,17 @@ source: orders is orders_raw extend {
          });
          // The parent key check runs before each build, a refresh included:
          // a delta that brings a repeated or null key fails as a full build
-         // would, and the plan stays incremental.
+         // would, and the plan stays incremental. The leaf's never fails it.
          expect(
-            plan.uniquenessChecks?.map((x) => [x.pairLevel, x.keyColumn]),
-         ).toEqual([[0, "id"]]);
+            plan.uniquenessChecks?.map((x) => [
+               x.pairLevel,
+               x.keyColumn,
+               x.recordOnly ?? false,
+            ]),
+         ).toEqual([
+            [0, "id", false],
+            [1, "line_id", true],
+         ]);
          expect(
             (c.annotationFindings ?? []).filter((f) =>
                f.code.startsWith("materialize-"),

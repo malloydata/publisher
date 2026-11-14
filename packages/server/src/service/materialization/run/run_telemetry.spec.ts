@@ -17,11 +17,11 @@ import {
    type MetricsHarness,
 } from "../../../test_helpers/metrics_harness";
 import type { BuildInstruction, ManifestEntry } from "../types";
+import { errorCodeOf } from "./error_code";
 import { BilledReadNotCapturedError } from "./materialization_build_session";
 import {
    buildKindOf,
    buildKindsByAddress,
-   errorCodeOf,
    failureClassOf,
    RUN_TRIGGERS,
    RunTelemetry,

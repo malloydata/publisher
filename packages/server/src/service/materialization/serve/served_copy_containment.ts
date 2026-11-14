@@ -48,7 +48,7 @@ import type { ServedCopySpan } from "./served_copy";
 export type TraceMode = "precise" | "last_resort";
 
 /** A re-root a compile failure is traced to, by file and source name. */
-export interface FailingReroot {
+interface FailingReroot {
    url: string;
    sourceName: string;
    /** The first traced problem's message, for the log and the warning. */

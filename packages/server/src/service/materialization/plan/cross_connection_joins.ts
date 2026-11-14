@@ -140,7 +140,7 @@ function problemKey(p: ProblemLike): string {
    return `${p.at?.url}\u0000${start?.line}:${start?.character}\u0000${p.code}`;
 }
 
-export interface ProblemLike {
+interface ProblemLike {
    code?: string;
    severity?: string;
    at?: {

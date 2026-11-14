@@ -383,8 +383,11 @@ const COPY_SOURCE_ALIAS = "__copy_source";
  * is thrown in place of the original (the load passes {@link readerRefusal}).
  * It never sees the flush, count or describe that follow, which fail against the
  * catalog after the table is committed, so a retry would meet the table.
+ *
+ * Exported as a test seam: its callers reach it only after a DuckLake attach,
+ * which needs a Postgres catalog, so a spec drives it on a file catalog.
  */
-async function writeTableAs(
+export async function writeTableAs(
    session: DuckDBConnection,
    params: {
       destinationName: string;

@@ -1569,7 +1569,7 @@ function pairDeclaration(
  * of several blocks checks every flag within each block, over that block's
  * own keys (a flag past a block's own leaf partitions on every key it has).
  */
-export function pairDelta(
+function pairDelta(
    pair: NonNullable<MaterializePlan["pair"]>,
    blocks: MaterializePlan["pairBlocks"],
 ): PairDelta {

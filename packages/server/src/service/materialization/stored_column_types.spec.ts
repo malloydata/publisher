@@ -17,6 +17,7 @@ import {
    persistSourceDeclaredColumns,
    isCastConversionError,
    queryTimezoneOf,
+   keepsWarehouseType,
    rebuildWouldRecast,
    serveTypePlan,
    storedColumnsOfOutput,
@@ -320,6 +321,23 @@ describe("the build cast under a query time zone", () => {
    });
 });
 
+describe("keepsWarehouseType", () => {
+   it.each([
+      ["BLOB", "string", true],
+      ["INTERVAL", "string", true],
+      [" interval ", "string", true],
+      ["VARCHAR", "string", false],
+      ["UUID", "string", false],
+      ["INTEGER", "string", false],
+      ["TIME", "string", false],
+      // Only a declared `string` is cast to text in the first place.
+      ["BLOB", "sql native", false],
+      ["INTERVAL", "number", false],
+   ])("%s declared %s: %p", (stored, declared, kept) => {
+      expect(keepsWarehouseType(stored, declared)).toBe(kept);
+   });
+});
+
 describe("rebuildWouldRecast", () => {
    it("names only what a rebuild would cast", () => {
       expect(
@@ -343,6 +361,23 @@ describe("rebuildWouldRecast", () => {
             [{ name: "code", type: "string" }],
          ).map((x) => x.column),
       ).toEqual(["code"]);
+   });
+
+   // A Postgres `bytea` or `interval` the build keeps as the warehouse typed
+   // it: a rebuild stores the same type, so re-seeding would never end.
+   it("does not re-seed for a string the build keeps as a BLOB or an INTERVAL", () => {
+      expect(
+         rebuildWouldRecast(
+            [
+               { name: "bin", type: "BLOB" },
+               { name: "iv", type: "INTERVAL" },
+            ],
+            [
+               { name: "bin", type: "string" },
+               { name: "iv", type: "string" },
+            ],
+         ),
+      ).toEqual([]);
    });
 
    // The table a build leaves when its cast could not convert a value: every

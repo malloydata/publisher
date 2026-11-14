@@ -57,7 +57,7 @@ import {
 } from "../../malloy_text";
 
 /** The aggregates whose partials merge. */
-export type MergeableAggregate = "sum" | "count" | "min" | "max";
+type MergeableAggregate = "sum" | "count" | "min" | "max";
 
 /** The aggregate applied to a stored partial to merge it. */
 export type Reaggregate = "sum" | "min" | "max";
@@ -450,16 +450,6 @@ function parse(text: string): MeasureExpr {
    return new Parser(tokenize(text)).parseAll();
 }
 
-/** Parse `text` as a measure expression; undefined when it is outside the grammar. */
-export function parseMeasureExpression(text: string): MeasureExpr | undefined {
-   try {
-      return parse(text);
-   } catch (error) {
-      if (error instanceof Unreadable) return undefined;
-      throw error;
-   }
-}
-
 // ---------------------------------------------------------------------------
 // Decomposition
 // ---------------------------------------------------------------------------
@@ -485,7 +475,7 @@ const REAGGREGATE: Record<MergeableAggregate, Reaggregate> = {
 };
 
 /** What a measure's text resolves against: the source's own measures. */
-export interface MeasureScope {
+interface MeasureScope {
    /** The source's measures, by name, with their text (the compiler's `code`). */
    measureCode(name: string): string | undefined;
    /** Whether a name is one of the source's joins. */
