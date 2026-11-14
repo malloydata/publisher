@@ -35,7 +35,8 @@ import {
    sqlReadsTable,
    deriveServeBindings,
    planSourceIds,
-   duckdbTypeToMalloy,
+   declarableColumns,
+   storedMalloyType,
    groupAliasesByName,
    extractJoins,
    extractRefinements,
@@ -45,7 +46,7 @@ import {
    type ServeBinding,
 } from "./materialization_serve_transform";
 
-describe("duckdbTypeToMalloy", () => {
+describe("storedMalloyType", () => {
    it.each([
       ["BIGINT", "number"],
       ["INTEGER", "number"],
@@ -65,11 +66,50 @@ describe("duckdbTypeToMalloy", () => {
       ["TIMESTAMP WITH TIME ZONE", "timestamp"],
       ["TIMESTAMPTZ", "timestamp"],
       ["timestamp", "timestamp"],
-      ["INTEGER[]", "json"],
-      ["STRUCT(a INTEGER)", "json"],
-      ["BLOB", "json"],
-   ])("maps %s -> %s", (duck, malloy) => {
-      expect(duckdbTypeToMalloy(duck)).toBe(malloy);
+      // A list and a struct, as Malloy's array and record types.
+      ["INTEGER[]", "number[]"],
+      ["INTEGER[][]", "number[][]"],
+      ["STRUCT(a INTEGER)", "{ a::number }"],
+      [
+         "STRUCT(k VARCHAR, v STRUCT(x DOUBLE)[])[]",
+         "{ k::string, v::{ x::number }[] }[]",
+      ],
+   ])("declares %s as %s", (duck, malloy) => {
+      expect(storedMalloyType(duck)).toBe(malloy);
+   });
+
+   // No declaration reads these back as live does: Malloy refuses `json` in
+   // a `type:`, and a quoted native type changes how values come back.
+   it.each([
+      "BLOB",
+      "INTERVAL",
+      "JSON",
+      "MAP(VARCHAR, INTEGER)",
+      "UNION(n INTEGER, s VARCHAR)",
+      "ENUM('a', 'b')",
+      "STRUCT(m MAP(VARCHAR, INTEGER))",
+      "BLOB[]",
+      "NOT_A_REAL_TYPE",
+   ])("declares no type for %s", (duck) => {
+      expect(storedMalloyType(duck)).toBeUndefined();
+   });
+});
+
+describe("declarableColumns", () => {
+   it("declares what reads back faithfully and leaves the rest out, by name and type", () => {
+      expect(
+         declarableColumns([
+            { name: "id", type: "BIGINT" },
+            { name: "tags", type: "VARCHAR[]" },
+            { name: "attrs", type: " MAP(VARCHAR, INTEGER) " },
+         ]),
+      ).toEqual({
+         declared: [
+            { name: "id", type: "BIGINT", malloyType: "number" },
+            { name: "tags", type: "VARCHAR[]", malloyType: "string[]" },
+         ],
+         leftOut: [{ name: "attrs", type: "MAP(VARCHAR, INTEGER)" }],
+      });
    });
 });
 

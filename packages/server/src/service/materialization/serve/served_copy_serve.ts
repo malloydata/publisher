@@ -1527,19 +1527,23 @@ export class ServedCopyServe {
       }
       // A column the `type:` cannot declare faithfully would fail the whole
       // model's copy, not just this source. For a v1 table it is left out
-      // (a nest a destination stores as a type Malloy cannot read back,
-      // say), so only a query that reads it answers live, as the serve
-      // shape kept it local; otherwise the source is left to its fallback.
+      // (a nest a destination stores as a type Malloy cannot read back, or
+      // a list or struct whose field live types as something else, say), so
+      // only a query that reads it answers live, as the serve shape kept it
+      // local; otherwise the source is left to its fallback.
+      const undeclarableColumn = (c: ServedColumn) =>
+         storedMalloyType(c.type) === undefined ||
+         (!plan && readsAsOtherShape(c.type, fieldsByName.get(c.name)));
       if (!plan) {
          const undeclarable = columns
-            .filter((c) => storedMalloyType(c.type) === undefined)
+            .filter(undeclarableColumn)
             .map((c) => c.name);
          if (undeclarable.length > 0 && undeclarable.length < columns.length) {
             columns = columns.filter((c) => !undeclarable.includes(c.name));
             columnsLeftOut = [...columnsLeftOut, ...undeclarable];
          }
       }
-      if (columns.some((c) => storedMalloyType(c.type) === undefined)) {
+      if (columns.some(undeclarableColumn)) {
          problems.push({
             sourceName,
             sourceID: node.sourceID,
@@ -3290,4 +3294,20 @@ export function resultShapeOf(prepared: { resultExplore: unknown }): string {
    return JSON.stringify(
       shape((prepared.resultExplore as { allFields: Field[] }).allFields),
    );
+}
+
+/**
+ * Whether a stored list or struct column would be declared as an array or
+ * record (`storedMalloyType`) for a field live types as something else: a
+ * warehouse type Malloy reads as `sql native` (a Postgres composite type,
+ * stored by DuckDB as a STRUCT), whose values live returns in another shape.
+ * Such a column is left out, so a query reading it is answered live.
+ */
+function readsAsOtherShape(storedType: string, field: unknown): boolean {
+   const declared = storedMalloyType(storedType);
+   if (declared === undefined) return false;
+   const nested = declared.startsWith("{") || declared.endsWith("[]");
+   if (!nested || field === undefined) return false;
+   const type = (field as { type?: unknown }).type;
+   return type !== "array" && type !== "record";
 }

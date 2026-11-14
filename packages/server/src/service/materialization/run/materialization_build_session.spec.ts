@@ -87,6 +87,86 @@ describe("assertStorageServeShapeCompiles (build-time servability gate)", () => 
          }),
       ).resolves.toBeUndefined();
    });
+
+   // Each used to be declared `json`, which Malloy refuses in a `type:`, so
+   // the whole table was refused. A list or struct is now declared as
+   // Malloy's array or record type; anything else is left out of the shape.
+   it.each([
+      "INTEGER[]",
+      "STRUCT(a INTEGER, b VARCHAR)",
+      "STRUCT(k VARCHAR, v INTEGER[])[]",
+      "MAP(VARCHAR, INTEGER)",
+      "BLOB",
+      "INTERVAL",
+      "ENUM('calm', 'busy')",
+      "UNION(n INTEGER, s VARCHAR)",
+      "JSON",
+   ])("passes a table with a %s column", async (type) => {
+      await expect(
+         assertStorageServeShapeCompiles({
+            destinationName: "lake",
+            sourceName: "s",
+            virtualHandle: "h",
+            physicalTableName: "p",
+            schema: [
+               { name: "id", type: "BIGINT" },
+               { name: "c", type },
+            ],
+         }),
+      ).resolves.toBeUndefined();
+   });
+
+   it("passes a table whose only column is a list", async () => {
+      await expect(
+         assertStorageServeShapeCompiles({
+            destinationName: "lake",
+            sourceName: "s",
+            virtualHandle: "h",
+            physicalTableName: "p",
+            schema: [{ name: "c", type: "INTEGER[]" }],
+         }),
+      ).resolves.toBeUndefined();
+   });
+
+   it("refuses a table with no column left to declare, with its reason and the columns by name and type", async () => {
+      const error = await assertStorageServeShapeCompiles({
+         destinationName: "lake",
+         sourceName: "s",
+         virtualHandle: "h",
+         physicalTableName: "p",
+         schema: [
+            { name: "attrs", type: "MAP(VARCHAR, INTEGER)" },
+            { name: "raw", type: "BLOB" },
+         ],
+      }).then(
+         () => undefined,
+         (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(MaterializationEligibilityError);
+      expect((error as MaterializationEligibilityError).reason).toBe(
+         "not_duckdb_portable",
+      );
+      expect((error as Error).message).toContain(
+         "'attrs' (MAP(VARCHAR, INTEGER)), 'raw' (BLOB)",
+      );
+   });
+
+   it("carries its reason when the shape does not compile", async () => {
+      const error = await assertStorageServeShapeCompiles({
+         destinationName: "lake",
+         sourceName: "s",
+         virtualHandle: "h",
+         physicalTableName: "p",
+         schema: [],
+      }).then(
+         () => undefined,
+         (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(MaterializationEligibilityError);
+      expect((error as MaterializationEligibilityError).reason).toBe(
+         "not_duckdb_portable",
+      );
+   });
 });
 
 describe("serve-shape gate shares one session across builds", () => {
@@ -817,6 +897,119 @@ describe.skipIf(process.platform === "win32")(
          } finally {
             rmSync(dir, { recursive: true, force: true });
          }
+      });
+
+      // The parents' `type:` follows the served copy's declaration rule: a
+      // list or struct is declared as Malloy's array or record type, and a
+      // column nothing declares faithfully (a MAP here) is left out. Before,
+      // every such column was declared `json`, which Malloy refuses in a
+      // `type:`, so no chained build over such a parent could lift.
+      describe("over a parent with list, struct and MAP columns", () => {
+         const exotic: ServeBinding = {
+            ...parent,
+            sourceName: "tagged_orders",
+            virtualHandle: "tagged_h",
+            tablePath: "lake.tagged_orders__mabc",
+            schema: [
+               { name: "order_date", type: "DATE" },
+               { name: "total", type: "DOUBLE" },
+               { name: "tags", type: "INTEGER[]" },
+               { name: "who", type: "STRUCT(a INTEGER, b VARCHAR)" },
+               { name: "attrs", type: "MAP(VARCHAR, INTEGER)" },
+            ],
+         };
+
+         function seedExotic(dir: string): Promise<void> {
+            return writeLake(
+               dir,
+               'CREATE TABLE "tagged_orders__mabc" AS ' +
+                  "SELECT CAST('2026-01-01' AS DATE) AS order_date, 150.0 AS total, " +
+                  "[1, 2]::INTEGER[] AS tags, {'a': 1, 'b': 'x'} AS who, " +
+                  "MAP {'k': 1} AS attrs " +
+                  "UNION ALL SELECT CAST('2026-02-01' AS DATE), 99.0, " +
+                  "[3]::INTEGER[], {'a': 2, 'b': 'y'}, MAP {'k': 2}",
+            );
+         }
+
+         const build = (dir: string, name: string, defText: string) =>
+            buildDownstreamIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+               } as ApiConnection,
+               transientModel: buildChainedStorageBuildModel({
+                  upstreams: [exotic],
+                  downstreamName: name,
+                  downstreamDefText: defText,
+                  destinationName: "lake",
+               }),
+               downstreamName: name,
+               virtualMap: buildVirtualMap([exotic]),
+               physicalTableName: `${name}__m1`,
+               environmentPath: dir,
+            });
+
+         it("lifts a downstream over the parent's scalar columns", async () => {
+            const dir = mkdtempSync(join(tmpdir(), "t3-exotic-"));
+            try {
+               await seedExotic(dir);
+               const result = await build(
+                  dir,
+                  "monthly_tagged",
+                  "monthly_tagged is tagged_orders -> {\n" +
+                     "  group_by: order_month is order_date.month\n" +
+                     "  aggregate: monthly_total is total.sum()\n}",
+               );
+               expect(result.upstreamReuse).toBe("reused");
+               expect(result.schema.map((c) => c.name).sort()).toEqual([
+                  "monthly_total",
+                  "order_month",
+               ]);
+            } finally {
+               rmSync(dir, { recursive: true, force: true });
+            }
+         });
+
+         it("lifts a downstream reading the list and struct columns", async () => {
+            const dir = mkdtempSync(join(tmpdir(), "t3-exotic-nested-"));
+            try {
+               await seedExotic(dir);
+               const result = await build(
+                  dir,
+                  "tag_totals",
+                  "tag_totals is tagged_orders -> {\n" +
+                     "  group_by: order_date, wa is who.a\n" +
+                     "  aggregate: tag_total is tags.each.sum()\n}",
+               );
+               expect(result.upstreamReuse).toBe("reused");
+               expect(result.schema.map((c) => c.name).sort()).toEqual([
+                  "order_date",
+                  "tag_total",
+                  "wa",
+               ]);
+            } finally {
+               rmSync(dir, { recursive: true, force: true });
+            }
+         });
+
+         it("refuses, as a shape failure the caller recomputes, a downstream reading the left-out column", async () => {
+            const dir = mkdtempSync(join(tmpdir(), "t3-exotic-map-"));
+            try {
+               await seedExotic(dir);
+               const error = await build(
+                  dir,
+                  "attr_rows",
+                  "attr_rows is tagged_orders -> { select: order_date, attrs }",
+               ).then(
+                  () => undefined,
+                  (e: unknown) => e,
+               );
+               expect(error).toBeInstanceOf(MaterializationEligibilityError);
+            } finally {
+               rmSync(dir, { recursive: true, force: true });
+            }
+         });
       });
    },
 );
