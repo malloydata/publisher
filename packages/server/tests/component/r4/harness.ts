@@ -35,6 +35,7 @@ import {
 } from "../../../src/service/materialization/plan/rollup_plan";
 import { SourceMap } from "../../../src/service/materialization/text/source_map";
 import {
+   pairLeafKeyChecksOf,
    runRollupKeyCheck,
    storedKeyCheckSql,
 } from "../../../src/service/materialization/run/inline_uniqueness";
@@ -176,6 +177,14 @@ export interface R4Scenario {
     * running the check, as a check over earlier rows would have left it.
     */
    rollupKeyChecks?: boolean | "unique";
+   /**
+    * With {@link materialize}: run each pair table's leaf key check (known
+    * limitation 40) once its table is built, on the source's connection, as
+    * an auto-run does, and bind what it found. `false` binds no check, as
+    * for a table a host's manifest binds or a build that could not check.
+    * Default true.
+    */
+   pairLeafKeyChecks?: boolean;
    /**
     * Also build the generated `#@ persist` view sources (`<src>__<view>__view`,
     * in the persisted-view companion), as a package with PUBLISHER_MATERIALIZE
@@ -759,8 +768,28 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const storedBuildSQL: Record<string, string> = {};
    const colocatedMaterializeEntries: Record<
       string,
-      { tableName: string; nativeSchema?: { name: string; type: string }[] }
+      {
+         tableName: string;
+         nativeSchema?: { name: string; type: string }[];
+         keyUniqueness?: KeyUniqueness;
+      }
    > = {};
+   // A pair table's leaf key checks, run on the source's own connection once
+   // its table is built, as an auto-run runs them: by the leaf's sourceID.
+   const pairLeafKeys = async (
+      source: (typeof sources)[number],
+   ): Promise<Record<string, boolean> | undefined> => {
+      if (scenario.pairLeafKeyChecks === false) return undefined;
+      const checks = pairLeafKeyChecksOf(materializePlans[source.sourceID]);
+      if (checks.length === 0) return undefined;
+      const on = connections.get(source.connectionName) ?? duckdb;
+      const out: Record<string, boolean> = {};
+      for (const check of checks) {
+         const record = await runRollupKeyCheck(check, on, "pair");
+         if (record) out[check.sourceID] = record.unique;
+      }
+      return out;
+   };
    const builtSQL: Record<string, string> = {};
    const checkFailures: Record<string, string> = {};
    // The stored-table key checks a package's build plan asks for.
@@ -813,9 +842,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             dialect: builder.dialectName,
             sourceName: source.name,
          });
+         const leafKeys = await pairLeafKeys(source);
          colocatedMaterializeEntries[entityIdOf(source, i)] = {
             tableName: table,
             ...(nativeSchema ? { nativeSchema } : {}),
+            ...(leafKeys ? { keyUniqueness: { parentKeys: leafKeys } } : {}),
          };
          continue;
       }
@@ -918,6 +949,14 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             ? { origin: "preaggregate" }
             : {}),
       } as ManifestEntry;
+      const leafKeys = await pairLeafKeys(source);
+      if (leafKeys) {
+         (
+            entries[`h${i}`] as ManifestEntry & {
+               keyUniqueness?: KeyUniqueness;
+            }
+         ).keyUniqueness = { parentKeys: leafKeys };
+      }
       // A stored source's primary key, checked over its table as its build
       // checks it, when a storage rollup is read through a join on it.
       const storedKey = storedKeyChecks[source.sourceID];
@@ -942,12 +981,14 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                     table,
                  );
          if (record) {
-            (
-               entries[`h${i}`] as ManifestEntry & {
-                  keyUniqueness?: KeyUniqueness;
-               }
-            ).keyUniqueness = {
-               parentKeys: { [source.sourceID]: record.unique },
+            const entry = entries[`h${i}`] as ManifestEntry & {
+               keyUniqueness?: KeyUniqueness;
+            };
+            entry.keyUniqueness = {
+               parentKeys: {
+                  ...entry.keyUniqueness?.parentKeys,
+                  [source.sourceID]: record.unique,
+               },
             };
          }
       }
@@ -1244,22 +1285,25 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
 
 /**
  * Whether a run over a pair table (`inline=` on a join_many) was served by the
- * served copy, as it should be: since Malloy 0.0.438 (malloydata/malloy#3208)
+ * served copy, as it should be. Since Malloy 0.0.438 (malloydata/malloy#3208)
  * live counts a parent with no joined row as none, which the pair table's
- * null-extended row for that parent cannot be told apart from, so a query
- * that counts through the inlined path (`segments.count()`, or one of the
- * fixture's measures that does, named in `counts`) is answered live. Rows are
- * compared by the caller.
+ * null-extended row for that parent cannot be told apart from by the record
+ * alone. The served copy re-declares a measure that counts through the path
+ * over the rows where the leaf's stored key is not null, so such a measure is
+ * served (known limitation 40, narrowed); a count written in the query
+ * (`segments.count()`), or in a view or measure the served copy cannot
+ * re-declare (named in `live`), is answered live. Rows are compared by the
+ * caller.
  */
 export function expectPairServedVia(
    run: R4Run,
-   counts: readonly string[],
+   live: readonly string[],
    servedHere = true,
 ): void {
    const malloy = run.malloy ?? "";
    const countsThroughPath =
       /\.count\(\)/.test(malloy) ||
-      counts.some((n) => new RegExp(`\\b${n}\\b`).test(malloy));
+      live.some((n) => new RegExp(`\\b${n}\\b`).test(malloy));
    expect(run.servedVia).toBe(
       servedHere && !countsThroughPath ? "served_copy" : undefined,
    );

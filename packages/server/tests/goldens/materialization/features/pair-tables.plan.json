@@ -420,6 +420,26 @@
             "pairLevel": 1,
             "queryName": "customers_blocks__mat__pair_key__orders",
             "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"id\",\n     COUNT(1) as \"matches\"\n  FROM (\n    SELECT CAST(id AS BIGINT) AS id, CAST(customer_id AS BIGINT) AS customer_id,\n           region, status,\n           CAST(amount AS DOUBLE) AS amount, CAST(discount AS DOUBLE) AS discount,\n           CAST(order_date AS DATE) AS order_date,\n           CAST(created_at AS TIMESTAMP) AS created_at,\n           CAST(\"order\" AS BIGINT) AS \"order\"\n    FROM read_csv('data/orders.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"id\" as \"id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"id\" IS NULL\nLIMIT 1\n"
+          },
+          {
+            "connectionName": "duckdb",
+            "join": "orders.lines",
+            "joinedSourceID": "lines@<pkg>/m.malloy",
+            "keyColumn": "line_id",
+            "pairLevel": 2,
+            "queryName": "customers_blocks__mat__pair_leaf_key__orders__lines",
+            "recordOnly": true,
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"line_id\" as \"line_id\",\n     COUNT(1) as \"matches\"\n  FROM (\n    SELECT CAST(line_id AS BIGINT) AS line_id, CAST(order_id AS BIGINT) AS order_id,\n           sku, CAST(qty AS BIGINT) AS qty\n    FROM read_csv('data/lines.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"line_id\" as \"line_id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"line_id\" IS NULL\nLIMIT 1\n"
+          },
+          {
+            "connectionName": "duckdb",
+            "join": "big_orders",
+            "joinedSourceID": "orders_raw@<pkg>/raw.malloy",
+            "keyColumn": "id",
+            "pairLevel": 1,
+            "queryName": "customers_blocks__mat__pair_leaf_key__big_orders",
+            "recordOnly": true,
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"id\",\n     COUNT(1) as \"matches\"\n  FROM (\n    SELECT CAST(id AS BIGINT) AS id, CAST(customer_id AS BIGINT) AS customer_id,\n           region, status,\n           CAST(amount AS DOUBLE) AS amount, CAST(discount AS DOUBLE) AS discount,\n           CAST(order_date AS DATE) AS order_date,\n           CAST(created_at AS TIMESTAMP) AS created_at,\n           CAST(\"order\" AS BIGINT) AS \"order\"\n    FROM read_csv('data/orders.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"id\" as \"id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"id\" IS NULL\nLIMIT 1\n"
           }
         ],
         "zoneFreeRows": true
@@ -676,6 +696,16 @@
             "pairLevel": 1,
             "queryName": "customers_path__mat__pair_key__orders",
             "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"id\",\n     COUNT(1) as \"matches\"\n  FROM (\n    SELECT CAST(id AS BIGINT) AS id, CAST(customer_id AS BIGINT) AS customer_id,\n           region, status,\n           CAST(amount AS DOUBLE) AS amount, CAST(discount AS DOUBLE) AS discount,\n           CAST(order_date AS DATE) AS order_date,\n           CAST(created_at AS TIMESTAMP) AS created_at,\n           CAST(\"order\" AS BIGINT) AS \"order\"\n    FROM read_csv('data/orders.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"id\" as \"id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"id\" IS NULL\nLIMIT 1\n"
+          },
+          {
+            "connectionName": "duckdb",
+            "join": "orders.lines",
+            "joinedSourceID": "lines@<pkg>/m.malloy",
+            "keyColumn": "line_id",
+            "pairLevel": 2,
+            "queryName": "customers_path__mat__pair_leaf_key__orders__lines",
+            "recordOnly": true,
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"line_id\" as \"line_id\",\n     COUNT(1) as \"matches\"\n  FROM (\n    SELECT CAST(line_id AS BIGINT) AS line_id, CAST(order_id AS BIGINT) AS order_id,\n           sku, CAST(qty AS BIGINT) AS qty\n    FROM read_csv('data/lines.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"line_id\" as \"line_id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"line_id\" IS NULL\nLIMIT 1\n"
           }
         ],
         "zoneFreeRows": true
@@ -837,6 +867,16 @@
             "pairLevel": 0,
             "queryName": "orders_pair__mat__pair_key",
             "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"id\",\n     COUNT(1) as \"matches\"\n  FROM (\n    SELECT CAST(id AS BIGINT) AS id, CAST(customer_id AS BIGINT) AS customer_id,\n           region, status,\n           CAST(amount AS DOUBLE) AS amount, CAST(discount AS DOUBLE) AS discount,\n           CAST(order_date AS DATE) AS order_date,\n           CAST(created_at AS TIMESTAMP) AS created_at,\n           CAST(\"order\" AS BIGINT) AS \"order\"\n    FROM read_csv('data/orders.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"id\" as \"id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"id\" IS NULL\nLIMIT 1\n"
+          },
+          {
+            "connectionName": "duckdb",
+            "join": "lines",
+            "joinedSourceID": "lines@<pkg>/m.malloy",
+            "keyColumn": "line_id",
+            "pairLevel": 1,
+            "queryName": "orders_pair__mat__pair_leaf_key__lines",
+            "recordOnly": true,
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"line_id\" as \"line_id\",\n     COUNT(1) as \"matches\"\n  FROM (\n    SELECT CAST(line_id AS BIGINT) AS line_id, CAST(order_id AS BIGINT) AS order_id,\n           sku, CAST(qty AS BIGINT) AS qty\n    FROM read_csv('data/lines.csv', header=true, all_varchar=true)\n  ) as base\n  GROUP BY 1\n)\nSELECT \n   base.\"line_id\" as \"line_id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"line_id\" IS NULL\nLIMIT 1\n"
           }
         ],
         "zoneFreeRows": true

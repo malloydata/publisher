@@ -80,10 +80,8 @@
       "path": {
         "considered": [
           {
-            "detail": "The table stores an inlined join_many flat, which cannot answer this query exactly (a count through the inlined join, which live takes over the join's own rows and the pair table's row for a parent with none would add to), so it is answered without this table.",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "COUNT_SEMANTICS",
+            "outcome": "used",
             "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016"
           }
         ],
@@ -102,13 +100,15 @@
           "sourceName": "orders_pair"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "one hop: child measures by a parent dimension",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -374,10 +374,8 @@
       "path": {
         "considered": [
           {
-            "detail": "The table stores an inlined join_many flat, which cannot answer this query exactly (a count through the inlined join, which live takes over the join's own rows and the pair table's row for a parent with none would add to), so it is answered without this table.",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "COUNT_SEMANTICS",
+            "outcome": "used",
             "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
           }
         ],
@@ -402,13 +400,15 @@
           "sourceName": "customers_path"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a path: the middle level beside the leaf",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -531,10 +531,8 @@
       "path": {
         "considered": [
           {
-            "detail": "The table stores an inlined join_many flat, which cannot answer this query exactly (a count through the inlined join, which live takes over the join's own rows and the pair table's row for a parent with none would add to), so it is answered without this table.",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "COUNT_SEMANTICS",
+            "outcome": "used",
             "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
           }
         ],
@@ -558,13 +556,15 @@
           "sourceName": "customers_blocks"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "blocks: the second block",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -708,10 +708,8 @@
       "path": {
         "considered": [
           {
-            "detail": "The table stores an inlined join_many flat, which cannot answer this query exactly (a count through the inlined join, which live takes over the join's own rows and the pair table's row for a parent with none would add to), so it is answered without this table.",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "COUNT_SEMANTICS",
+            "outcome": "used",
             "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016"
           }
         ],
@@ -730,13 +728,15 @@
           "sourceName": "orders_pair"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "one hop: child measures by a parent dimension",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -1002,10 +1002,8 @@
       "path": {
         "considered": [
           {
-            "detail": "The table stores an inlined join_many flat, which cannot answer this query exactly (a count through the inlined join, which live takes over the join's own rows and the pair table's row for a parent with none would add to), so it is answered without this table.",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "COUNT_SEMANTICS",
+            "outcome": "used",
             "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
           }
         ],
@@ -1030,13 +1028,15 @@
           "sourceName": "customers_path"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a path: the middle level beside the leaf",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -1159,10 +1159,8 @@
       "path": {
         "considered": [
           {
-            "detail": "The table stores an inlined join_many flat, which cannot answer this query exactly (a count through the inlined join, which live takes over the join's own rows and the pair table's row for a parent with none would add to), so it is answered without this table.",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "COUNT_SEMANTICS",
+            "outcome": "used",
             "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
           }
         ],
@@ -1186,13 +1184,15 @@
           "sourceName": "customers_blocks"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "blocks: the second block",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
