@@ -38,6 +38,15 @@ Behind `PUBLISHER_MATERIALIZE`, **a pair table answers fewer counts from storage
 
 When a rollup's build SQL changes with Malloy's (a symmetric sum now reads `CASE WHEN key IS NOT NULL`), its content address changes, so such tables are rebuilt on the next run after the upgrade. The `@malloydata/render` tooltip patch is carried forward to 0.0.438, regenerated against its bundle. No API change. See docs/preaggregation.md, "Through a join", and docs/materialization.md, "The served copy".
 
+## [Unreleased] — A cancelled run keeps the error it raced, and a failed shared table is built once
+
+- A materialization run that was cancelled while a real failure was in flight still records `error:
+  "Cancelled"`, and now also keeps that failure's message in its metadata as `errorAtCancel`, on the
+  record only; the logs carry its code.
+- When a base and its `extend` share one table and its build fails, the second source takes the
+  same failure (reason and `retryable`) without running the build again. The run's `failures` keep
+  one entry per table, as before.
+
 ## [Unreleased] — The build plan says when it is incomplete: `omittedSources`
 
 A build plan (`GET …/packages/{pkg}/build-plan`, the dry run, and the deprecated `Package.buildPlan`) now carries `omittedSources`, a list of `{ sourceID, reason }`: each source the plan would have held but left out because planning it failed, where before such a source vanished from the plan with only a log line. Failures it reports: a generated companion (the `#@ preaggregate` composite, the `#(preaggregate)` rollup companion, `#(materialize)`, persisted views, the v1 cutover's build copy) that did not compile, a `#@` annotation none of whose lines parse, and a source whose plan entry could not be projected. A companion whose planner failed before it could name its sources is listed in a second field, `omittedFiles` (`{ file, reason }`): retire nothing declared in that file. `reason` is an open string, a code such as `rollup_companion_failed`, never the failure's message. Both empty means every source the package plans is in `sources` or `refusedSources`, so a host can retire a table whose source is absent from both; otherwise keep the tables the entries name. A plan whose only sources were lost this way is now returned rather than read as no plan. A plan from an older Publisher has neither field; read that as completeness unknown. See [docs/materialization.md](docs/materialization.md#retiring-tables-the-plan-no-longer-lists). No enum is added.

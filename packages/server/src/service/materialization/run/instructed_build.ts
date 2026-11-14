@@ -309,6 +309,7 @@ export class InstructedBuild {
          builtAddresses: new Set(),
          builtSources: [],
          writtenTargets: new Map(),
+         failedTargets: new Map(),
          nameViewIntents: [],
          nameViewOwnTables: new Map(),
          replacedNameViews: [],
@@ -654,6 +655,25 @@ export class InstructedBuild {
          });
          return;
       }
+      // Another route to a table whose build failed this run: the same
+      // content fails the same way, so the source takes that failure (its
+      // reason and code) without running the build again.
+      const failedHere = run.failedTargets?.get(target);
+      if (failedHere && failedHere.sourceEntityId === sourceEntityId) {
+         recordInstructedBuildFailure(
+            run,
+            persistSource,
+            instruction,
+            sourceEntityId,
+            failedHere.err,
+            {
+               kind: buildKindOf(compiled, persistSource.sourceID),
+               tier: buildTierOf(instruction),
+               method: "full",
+            },
+         );
+         return;
+      }
 
       const nameView = nameViewIntentFor(
          compiled,
@@ -846,6 +866,11 @@ export class InstructedBuild {
             );
          }
       } catch (buildErr) {
+         // Only a build that ran: a check before it (ownership, uniqueness,
+         // a name preflight) is cheap to run again for the next source.
+         if (buildStartedAt !== undefined) {
+            run.failedTargets?.set(target, { sourceEntityId, err: buildErr });
+         }
          recordInstructedBuildFailure(
             run,
             persistSource,

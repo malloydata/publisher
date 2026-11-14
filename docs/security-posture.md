@@ -49,6 +49,12 @@ stands in front of Publisher and does all of the following:
      model (`PUT …/models/{path}`), and managing connections. A caller who can write a package can
      publish an ungated source over the same connection. Block them at the gateway, or set
      `"frozenConfig": true` so the server refuses them.
+   - the materialization routes (`…/packages/{packageName}/materializations` and everything under
+     them). A run's record carries its build manifest, and each entry names the physical table a
+     source was built into. A colocated entry also lists `nativeSchema`: every column of the table,
+     including ones the model marks private or internal, with its warehouse type. No row value is
+     returned, but the names and types describe your warehouse, so restrict these routes to
+     operators.
 5. Forwards who is asking in the caller header (`x-publisher-caller`, renamed with
    `PUBLISHER_CALLER_HEADER`) and a `traceparent`, so
    the [access record](access-record.md) names the caller.

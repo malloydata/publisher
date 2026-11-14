@@ -501,6 +501,13 @@ which table it wrote). Served never exceeds live: on a source whose live answer 
 which rounds the same way, and a colocated one reads it through Postgres's own `bigint` type, on
 live's own path ([known limitation 12](materialization-v2-plan.md#known-limitations-to-revisit)).
 
+A run's record (`GET …/packages/{packageName}/materializations/{materializationId}`, and the
+listing) returns its build manifest. Each entry names the physical table it built, and a colocated
+entry's `nativeSchema` lists every column of that table with its warehouse type, including columns
+the model marks private or internal. No row value is returned. Publisher does not authenticate
+callers, so the gateway in front of it must restrict the materialization routes to operators (see
+[the operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)).
+
 ## Will it serve? The serve verdict
 
 Every source a package materializes (each `#@ persist` source, and each rollup a `#@ preaggregate`

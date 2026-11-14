@@ -691,10 +691,32 @@ describe("run telemetry review findings", () => {
             new AbortController().signal,
             false,
          ),
-      )) as { failures: Record<string, unknown> };
+      )) as {
+         failures: Record<
+            string,
+            { sourceName: string; reason: string; retryable?: boolean }
+         >;
+      };
 
-      // The run's record holds one failure for the address ...
+      // The shared table's build ran once: the extend took the base's
+      // failure rather than running the same build again.
+      expect(
+         build
+            .getCalls()
+            .filter(
+               (c) =>
+                  (c.args[1] as BuildInstruction).sourceEntityId ===
+                  "a1aaaaaaaaaaaaaa",
+            ),
+      ).toHaveLength(1);
+      // The run's record holds one failure for the address, named for the
+      // last source on it as before, with the build's own reason ...
       expect(Object.keys(result.failures)).toEqual(["a1aaaaaaaaaaaaaa"]);
+      expect(result.failures["a1aaaaaaaaaaaaaa"]).toMatchObject({
+         sourceName: "ext",
+         reason: "Permission denied",
+         retryable: false,
+      });
       // ... and the counter, the tally and the log agree with it.
       expect(
          await harness.collectCounter("publisher_materialization_build_total", {
