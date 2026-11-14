@@ -33,6 +33,7 @@ import {
    type BuildCastOptions,
    castToDeclaredTypes,
    isCastConversionError,
+   keepsWarehouseType,
    STORED_COLUMN_TYPE_MISMATCH_CODE,
    storageBuildCasts,
    type DeclaredColumn,
@@ -1732,7 +1733,13 @@ export async function createTableWithDeclaredTypes(
    partitionColumns: readonly string[],
    options: Parameters<typeof createTableAndDescribe>[4] = {},
 ): Promise<WireColumn[]> {
-   const cast = castToDeclaredTypes(selectSQL, declared.columns, declared);
+   const columns = await columnsToCast(
+      session,
+      selectSQL,
+      declared.columns,
+      options.sourceType,
+   );
+   const cast = castToDeclaredTypes(selectSQL, columns, declared);
    if (cast === selectSQL) {
       return createTableAndDescribe(
          session,
@@ -1770,6 +1777,51 @@ export async function createTableWithDeclaredTypes(
          options,
       );
    }
+}
+
+/**
+ * The declared columns a build casts: all of them, less the ones whose
+ * warehouse type the build keeps ({@link keepsWarehouseType}: a Postgres
+ * `bytea` or `interval`, which the dialect declares `string`).
+ *
+ * The warehouse's types are read by describing the SELECT in the destination's
+ * session, for a Postgres source only: there the describe prepares the
+ * statement and runs nothing, and only Postgres's dialect declares such a
+ * column `string`. No other passthrough is described: whether it runs (and
+ * bills) the query is not known. A describe that fails changes nothing: every
+ * column is cast, as before, and the build itself reports the error.
+ */
+async function columnsToCast(
+   session: DuckDBConnection,
+   selectSQL: string,
+   declared: readonly DeclaredColumn[],
+   sourceType: FederatedSourceType | undefined,
+): Promise<readonly DeclaredColumn[]> {
+   if (sourceType !== "postgres") return declared;
+   if (!declared.some((d) => d.type === "string")) return declared;
+   let described: WireColumn[];
+   try {
+      described = await describeTable(session, `(${selectSQL})`);
+   } catch (err) {
+      logger.warn(
+         "Could not describe a storage build's source columns; casting every declared column",
+         { errorCode: errorCodeOf(err) },
+      );
+      return declared;
+   }
+   const kept = new Set(
+      described.flatMap((c) => {
+         const d = declared.find(
+            (x) => x.name.toLowerCase() === c.name?.toLowerCase(),
+         );
+         return d && c.type && keepsWarehouseType(c.type, d.type)
+            ? [d.name]
+            : [];
+      }),
+   );
+   return kept.size === 0
+      ? declared
+      : declared.filter((d) => !kept.has(d.name));
 }
 
 /**

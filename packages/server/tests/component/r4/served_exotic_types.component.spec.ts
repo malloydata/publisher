@@ -143,6 +143,18 @@ const TYPES: ExoticType[] = [
       declared: false,
    },
    {
+      // A scalar live types as `sql native` that the destination stores as
+      // a type the `type:` could only declare `string`: left out, decided
+      // from live's field type.
+      label: "UUID",
+      value: (i) => `'${i}1111111-2222-3333-4444-555555555555'::UUID`,
+      declared: false,
+      reads: [
+         "run: s -> { group_by: x; aggregate: n is count(); order_by: x }",
+         "run: s -> { where: x != null; aggregate: n is count() }",
+      ],
+   },
+   {
       label: "JSON",
       value: (i) => `'{"n": ${i}}'::JSON`,
       declared: false,
@@ -387,3 +399,143 @@ describe("R4: a stored struct holding a field live types as sql native is left o
       expect(run.servedVia).toBe("served_copy");
    });
 });
+
+/**
+ * The same rules for a `#(materialize) storage=` table, whose served copy
+ * declares the plan's columns: a UUID live types as `sql native` is left out
+ * per query, and a zoned timestamp is declared `timestamptz`, as live types
+ * it.
+ */
+describe("R4: a #(materialize) storage= table with a UUID and a zoned timestamp", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `#(materialize) storage="lake"
+source: s is duckdb.table('ex') extend { primary_key: id }
+`,
+         },
+         seedSql: [
+            `CREATE TABLE ex AS SELECT * FROM (VALUES
+               (1, 'a', 1.5, '11111111-2222-3333-4444-555555555555'::UUID, TIMESTAMPTZ '2024-01-02 03:04:05+00'),
+               (2, 'b', 2.5, NULL, NULL),
+               (3, 'a', 3.5, '31111111-2222-3333-4444-555555555555'::UUID, TIMESTAMPTZ '2024-06-30 23:00:00+00')
+             ) AS t(id, g, amount, x, seen)`,
+         ],
+         materialize: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("compiles the served copy with no problem", async () => {
+      expect(await fixture.servedCopyProblems()).toEqual([]);
+   });
+
+   it.each([
+      "run: s -> { select: id, x; order_by: id }",
+      "run: s -> { select: *; order_by: id }",
+      "run: s -> { group_by: x; aggregate: n is count(); order_by: x }",
+   ])("answers live, equal to live: %s", async (malloy) => {
+      const run = await fixture.run({ name: malloy, malloy, expectLive: true });
+      expect(run.live.length).toBe(3);
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+      expect(comparableFields(run.servedFields)).toEqual(
+         comparableFields(run.liveFields),
+      );
+      expect(run.servedVia).toBeUndefined();
+   });
+
+   it.each([
+      "run: s -> { group_by: g; aggregate: n is count(), total is amount.sum(); order_by: g }",
+      "run: s -> { select: id, seen; order_by: id }",
+      "run: s -> { timezone: 'America/Los_Angeles'; group_by: d is seen.day; aggregate: n is count(); order_by: d }",
+   ])("serves, equal to live: %s", async (malloy) => {
+      const run = await fixture.run({ name: malloy, malloy });
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+      expect(comparableFields(run.servedFields)).toEqual(
+         comparableFields(run.liveFields),
+      );
+      expect(run.servedVia).toBe("served_copy");
+   });
+});
+
+/**
+ * A field live types as `sql native` reached through an inlined join: a
+ * join_one's record, or a pair table's (`inline=` on a join_many). No stored
+ * declaration reads it back as live does, so the source is left to its
+ * fallback and every query answers live, equal to live.
+ */
+describe.each([
+   {
+      label: "an inlined join_one",
+      model: `source: par is duckdb.table('par') extend { primary_key: pid }
+
+#(materialize) storage="lake" inline=["par"]
+source: s is duckdb.table('ex') extend {
+  primary_key: id
+  join_one: par with pid
+}
+`,
+   },
+   {
+      label: "a pair table",
+      model: `source: par is duckdb.table('par') extend { primary_key: pid }
+
+#(materialize) storage="lake" inline=["par"]
+source: s is duckdb.table('ex') extend {
+  primary_key: id
+  join_many: par on par.pid = pid
+}
+`,
+   },
+])(
+   "R4: a UUID reached through $label of a #(materialize) storage= table",
+   ({ model }) => {
+      let restore: () => void;
+      let fixture: R4Fixture;
+      beforeAll(async () => {
+         restore = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+         }).restore;
+         fixture = await buildScenario({
+            files: { "m.malloy": model },
+            seedSql: [
+               `CREATE TABLE ex AS SELECT * FROM (VALUES
+                  (1, 'a', 10), (2, 'b', 20), (3, 'a', 10)) AS t(id, g, pid)`,
+               `CREATE TABLE par AS SELECT * FROM (VALUES
+                  (10, '11111111-2222-3333-4444-555555555555'::UUID),
+                  (20, '21111111-2222-3333-4444-555555555555'::UUID)) AS t(pid, u)`,
+            ],
+            materialize: true,
+         });
+      });
+      afterAll(async () => {
+         restore();
+         await disposeScenarios();
+      });
+
+      it.each([
+         "run: s -> { group_by: id, u is par.u; order_by: id }",
+         "run: s -> { group_by: par.u; aggregate: n is count(); order_by: u }",
+      ])("answers live, equal to live: %s", async (malloy) => {
+         const run = await fixture.run({
+            name: malloy,
+            malloy,
+            expectLive: true,
+         });
+         expect(run.live.length).toBeGreaterThan(0);
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         expect(comparableFields(run.servedFields)).toEqual(
+            comparableFields(run.liveFields),
+         );
+         expect(run.servedVia).toBeUndefined();
+      });
+   },
+);
