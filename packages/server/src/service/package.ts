@@ -1996,6 +1996,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.materialization.getBuildManifestEntries();
    }
 
+   /** See {@link PackageMaterialization.getFreshBuildManifest}. */
+   public getFreshBuildManifest(): BuildManifest["entries"] | undefined {
+      return this.materialization.getFreshBuildManifest();
+   }
+
    /** See {@link PackageMaterialization.hasBoundTableNameManifest}. */
    public hasBoundTableNameManifest(): boolean {
       return this.materialization.hasBoundTableNameManifest();
