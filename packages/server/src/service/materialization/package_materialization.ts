@@ -64,10 +64,9 @@ import {
 } from "./serve/query_path";
 import {
    deriveServeBindings,
-   groupAliasesByName,
-   planSourceIds,
    type ServeBinding,
 } from "./serve/materialization_serve_transform";
+import { groupAliasesByName, planSourceIds } from "./domain/source_aliases";
 import {
    SERVED_COPY_WARNING_CODE,
    type ServedCopyProblem,

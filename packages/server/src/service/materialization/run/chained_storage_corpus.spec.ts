@@ -49,7 +49,7 @@ import {
 } from "../plan/build_plan";
 import { declaredStorage } from "../plan/persist_source_fields";
 import { reachPersisted } from "../text/source_map";
-import { authorModelLiftContext } from "../serve/materialization_serve_transform";
+import { authorModelLiftContext } from "../text/author_model";
 import type { ManifestEntry } from "../domain/types";
 import {
    chainedPlanFacts,

@@ -71,8 +71,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.3",
    "service/materialization/run/source_build.ts -> service/materialization/plan/build_plan":
       "2g.3",
-   "service/materialization/run/source_build.ts -> service/materialization/serve/materialization_serve_transform":
-      "R",
    "service/materialization/run/storage_build_strategy.ts -> service/materialization/plan/build_file_generator":
       "2g.3",
    "service/materialization/run/storage_build_strategy.ts -> service/materialization/serve/materialization_serve_transform":
@@ -117,8 +115,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.2",
    "service/materialization/serve/view_variants.ts -> service/materialization/plan/persisted_view_compile":
       "2g.2",
-   "service/materialization/stored_column_types.ts -> service/materialization/serve/materialization_serve_transform":
-      "R",
    // R10: outside the module, only index.ts and domain/.
    "controller/materialization.controller.ts -> service/materialization/run/materialization_run_support":
       "2g.3",
@@ -382,10 +378,6 @@ export const MATERIALIZATION_UNIMPORTED_EXPORTS = {
    "service/materialization/run/incremental_build.ts#planSourceRefresh": "2g.4",
    "service/materialization/run/table_ownership.ts#OWNED_TABLE_MARK": "2g.4",
    "service/materialization/serve/declaring_file_variant.ts#gateLines": "2g.2",
-   "service/materialization/serve/materialization_serve_transform.ts#UndeclarableColumn":
-      "R",
-   "service/materialization/serve/materialization_serve_transform.ts#describeColumns":
-      "R",
    "service/materialization/serve/rollup_variants.ts#checkCoverage": "2g.2",
    "service/materialization/stored_column_types.ts#faithfulCastTarget": "2j",
 };

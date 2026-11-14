@@ -23,9 +23,9 @@ import {
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
    liftDerivedSources,
-   type DerivedSourceDef,
    type DerivedSourceLift,
 } from "./materialization/serve/materialization_serve_transform";
+import { type DerivedSourceDef } from "./materialization/text/author_model";
 
 const ROOT = "file:///lift/";
 

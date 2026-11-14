@@ -31,9 +31,9 @@
  */
 
 import { getDialect } from "@malloydata/malloy";
+import { identifier } from "../malloy_text";
 import { quoteIdentifier } from "../quoting";
 import { fromSubselect } from "./subselect";
-import { duckdbTypeToMalloyType } from "./serve/materialization_serve_transform";
 
 /**
  * The `code` of the package warning, and of the build and serve log lines, for
@@ -776,4 +776,294 @@ function duckdbBigIntegerCast(storedType: string): string | undefined {
    const base = storedType.trim().toUpperCase();
    if (base === "UHUGEINT") return "UHUGEINT";
    return HUGEINT_EXACT.test(base) ? "HUGEINT" : undefined;
+}
+
+/**
+ * The Malloy basic type a DuckDB column type (as reported by `DESCRIBE`) maps
+ * onto, or `undefined` for a type with no faithful mapping: a collection
+ * (`array`) or anything unrecognized (nested, struct, enum, blob). Pure; see
+ * {@link storedMalloyType} for how a stored column is declared.
+ */
+export function duckdbTypeToMalloyType(
+   duckdbType: string,
+): { type: string } | { unmapped: "array" | "unrecognized" } {
+   const raw = duckdbType.trim();
+   if (/\[\s*\]/.test(raw)) return { unmapped: "array" };
+   // DECIMAL(18,2) -> DECIMAL
+   const base = raw
+      .replace(/\(.*\)/, "")
+      .trim()
+      .toUpperCase();
+
+   if (base === "DATE") return { type: "date" };
+   if (
+      base.startsWith("TIMESTAMP") ||
+      base === "DATETIME" ||
+      base === "TIMESTAMPTZ"
+   ) {
+      return { type: "timestamp" };
+   }
+   if (base === "TIME") {
+      // Malloy has no time-of-day scalar; carry as string to preserve the value.
+      return { type: "string" };
+   }
+
+   switch (base) {
+      case "TINYINT":
+      case "SMALLINT":
+      case "INTEGER":
+      case "INT":
+      case "INT4":
+      case "BIGINT":
+      case "INT8":
+      case "HUGEINT":
+      case "UTINYINT":
+      case "USMALLINT":
+      case "UINTEGER":
+      case "UBIGINT":
+      case "UHUGEINT":
+      case "DOUBLE":
+      case "FLOAT":
+      case "FLOAT4":
+      case "FLOAT8":
+      case "REAL":
+      case "DECIMAL":
+      case "NUMERIC":
+         return { type: "number" };
+      case "VARCHAR":
+      case "TEXT":
+      case "CHAR":
+      case "BPCHAR":
+      case "STRING":
+      case "UUID":
+         return { type: "string" };
+      case "BOOLEAN":
+      case "BOOL":
+         return { type: "boolean" };
+      default:
+         return { unmapped: "unrecognized" };
+   }
+}
+
+/**
+ * The Malloy type a stored DuckDB column (as `DESCRIBE` reports it) is
+ * declared as in a `type:`, or undefined when no declaration reads its values
+ * back as live would. A scalar is {@link duckdbTypeToMalloyType}'s mapping; a
+ * list and a struct (what a persisted `nest:` stores, `STRUCT(status VARCHAR,
+ * n BIGINT)[]`, or a table's own `INTEGER[]`) are written as Malloy's array
+ * and record types (`{ status::string, n::number }[]`), so their rows read
+ * back as they do live. Anything else (a MAP, a UNION, an ENUM, BLOB,
+ * INTERVAL, JSON, or a list or struct holding one) has no faithful
+ * declaration: Malloy refuses `json` in a `type:`, and a quoted native type
+ * would change how its values come back. Such a column is left out of the
+ * declaration ({@link declarableColumns}), so a query reading it is answered
+ * live.
+ *
+ * The one rule for every stored table's `type:`: the serve shape, the
+ * chained build's parents, and the served copy.
+ */
+export function storedMalloyType(stored: string): string | undefined {
+   const parsed = parseStoredType(stored);
+   return parsed && renderStoredType(parsed);
+}
+
+/**
+ * {@link storedMalloyType} for a stored list or struct, fitted to the field
+ * live answers it as, or undefined when no declaration reads it back as live
+ * does, so it is left out and a query reading it is answered live. Every
+ * level must be live's shape: an array where live has one, a record with
+ * live's fields by name, and each leaf live's type. A leaf live types as a
+ * `timestamptz` stored with its zone is declared `timestamptz`, as a top-level
+ * column is. A leaf that differs otherwise is refused: a warehouse type Malloy
+ * reads as `sql native` (a Postgres composite stored as a STRUCT), and a
+ * `bigint` number where live keeps every digit (`keepsBigIntegers`), which
+ * Malloy reads through a declared `number` as a JavaScript number, rounding it
+ * past 2^53. A nested value has no cast that reads it exactly, as a top-level
+ * BIGINT has (known limitation 12).
+ */
+export function storedMalloyTypeFor(
+   stored: string,
+   field: unknown,
+   keepsBigIntegers: boolean,
+): string | undefined {
+   const parsed = parseStoredType(stored);
+   return parsed && fitStoredType(parsed, field, keepsBigIntegers);
+}
+
+/** A stored DuckDB type: a scalar with its Malloy type, a struct or a list. */
+type StoredType =
+   | { kind: "scalar"; raw: string; malloyType: string }
+   | { kind: "record"; fields: { name: string; type: StoredType }[] }
+   | { kind: "array"; element: StoredType };
+
+function parseStoredType(stored: string): StoredType | undefined {
+   const parsed = parseNestedType(stored.trim());
+   if (parsed === undefined || parsed.rest.trim() !== "") return undefined;
+   return parsed.type;
+}
+
+/** A stored type as Malloy type text, from the stored type alone. */
+function renderStoredType(t: StoredType): string {
+   switch (t.kind) {
+      case "scalar":
+         return t.malloyType;
+      case "array":
+         return `${renderStoredType(t.element)}[]`;
+      case "record":
+         return `{ ${t.fields
+            .map((f) => `${identifier(f.name)}::${renderStoredType(f.type)}`)
+            .join(", ")} }`;
+   }
+}
+
+/** {@link storedMalloyTypeFor}'s walk of a stored type beside live's field. */
+function fitStoredType(
+   t: StoredType,
+   field: unknown,
+   keepsBigIntegers: boolean,
+): string | undefined {
+   const live = (field ?? {}) as {
+      type?: unknown;
+      numberType?: unknown;
+      fields?: unknown;
+      elementTypeDef?: unknown;
+   };
+   switch (t.kind) {
+      case "array": {
+         if (live.type !== "array") return undefined;
+         const element = live.elementTypeDef as { type?: unknown } | undefined;
+         // An array of records keeps its records' fields on the array.
+         const inner = fitStoredType(
+            t.element,
+            element?.type === "record_element"
+               ? { type: "record", fields: live.fields }
+               : element,
+            keepsBigIntegers,
+         );
+         return inner && `${inner}[]`;
+      }
+      case "record": {
+         if (live.type !== "record" || !Array.isArray(live.fields)) {
+            return undefined;
+         }
+         const liveFields = live.fields as { name?: unknown; as?: unknown }[];
+         if (liveFields.length !== t.fields.length) return undefined;
+         const parts: string[] = [];
+         for (const f of t.fields) {
+            const match = liveFields.find((l) => (l.as ?? l.name) === f.name);
+            const inner =
+               match && fitStoredType(f.type, match, keepsBigIntegers);
+            if (!inner) return undefined;
+            parts.push(`${identifier(f.name)}::${inner}`);
+         }
+         return `{ ${parts.join(", ")} }`;
+      }
+      case "scalar":
+         if (live.type === "number") {
+            return t.malloyType === "number" &&
+               !(keepsBigIntegers && live.numberType === "bigint")
+               ? "number"
+               : undefined;
+         }
+         if (
+            live.type === "timestamptz" &&
+            t.malloyType === "timestamp" &&
+            /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/i.test(t.raw.trim())
+         ) {
+            return "timestamptz";
+         }
+         return live.type === t.malloyType ? t.malloyType : undefined;
+   }
+}
+
+/**
+ * One DuckDB type at the start of `s`: a scalar, `STRUCT(<name> <type>, …)`,
+ * or either followed by `[]`. Undefined when it is no such type.
+ */
+function parseNestedType(
+   s: string,
+   depth = 0,
+): { type: StoredType; rest: string } | undefined {
+   if (depth > 16) return undefined;
+   let type: StoredType;
+   let rest: string;
+   const struct = /^STRUCT\s*\(/i.exec(s);
+   if (struct) {
+      rest = s.slice(struct[0].length);
+      const fields: { name: string; type: StoredType }[] = [];
+      for (;;) {
+         const name = /^\s*("(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*)\s+/.exec(
+            rest,
+         );
+         if (!name) return undefined;
+         const fieldName = name[1].startsWith('"')
+            ? name[1].slice(1, -1).replace(/""/g, '"')
+            : name[1];
+         const inner = parseNestedType(rest.slice(name[0].length), depth + 1);
+         if (!inner) return undefined;
+         fields.push({ name: fieldName, type: inner.type });
+         rest = inner.rest.trimStart();
+         if (rest.startsWith(",")) {
+            rest = rest.slice(1);
+            continue;
+         }
+         if (!rest.startsWith(")")) return undefined;
+         rest = rest.slice(1);
+         break;
+      }
+      type = { kind: "record", fields };
+   } else {
+      // A scalar, with its own parenthesised arguments (`DECIMAL(18,2)`).
+      const scalar =
+         /^[A-Za-z_][A-Za-z0-9_ ]*?(\([0-9,\s]*\))?(?=\s*(\[|,|\)|$))/.exec(s);
+      if (!scalar) return undefined;
+      const mapped = duckdbTypeToMalloyType(scalar[0]);
+      if (!("type" in mapped)) return undefined;
+      type = { kind: "scalar", raw: scalar[0], malloyType: mapped.type };
+      rest = s.slice(scalar[0].length);
+   }
+   for (;;) {
+      const list = /^\s*\[\s*\]/.exec(rest);
+      if (!list) break;
+      type = { kind: "array", element: type };
+      rest = rest.slice(list[0].length);
+   }
+   return { type, rest };
+}
+
+/** A stored column, by name and DuckDB type, that no `type:` can declare. */
+export interface UndeclarableColumn {
+   name: string;
+   type: string;
+}
+
+/**
+ * Split a stored table's schema into the columns a `type:` declares, each
+ * with its Malloy type ({@link storedMalloyType}), and the ones it leaves out.
+ * A left-out column is never declared as a type that would change its values:
+ * a query reading it fails to compile against the shape and is answered live,
+ * and every other query still reads the table. Pure; a caller emitting a
+ * shape reports what it left out ({@link reportLeftOutColumns}).
+ */
+export function declarableColumns(
+   schema: readonly { name: string; type: string }[],
+): {
+   declared: { name: string; type: string; malloyType: string }[];
+   leftOut: UndeclarableColumn[];
+} {
+   const declared: { name: string; type: string; malloyType: string }[] = [];
+   const leftOut: UndeclarableColumn[] = [];
+   for (const c of schema) {
+      const malloyType = storedMalloyType(c.type);
+      if (malloyType !== undefined) declared.push({ ...c, malloyType });
+      else leftOut.push({ name: c.name, type: c.type.trim() });
+   }
+   return { declared, leftOut };
+}
+
+/** `name TYPE, …` for an error or log line: names and types, never values. */
+export function describeColumns(
+   columns: readonly UndeclarableColumn[],
+): string {
+   return columns.map((c) => `'${c.name}' (${c.type})`).join(", ");
 }

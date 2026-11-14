@@ -19,22 +19,24 @@ import type { ApiConnection } from "../../model";
 import type { QueryMetadata } from "../../query_metadata";
 import { withStatementUsage } from "../../statement_usage";
 import {
-   authorModelLiftContext,
    authorRefinementsFor,
    buildChainedStorageBuildModel,
    buildOverTiers,
    buildVirtualMap,
    bindingServesModelSource,
    deriveServeBindings,
-   declarableColumns,
    documentFlagsForLifts,
    liftDerivedSources,
    missingPersistedTables,
    REFINEMENT_TIER_KINDS,
    reportLeftOutColumns,
    type ServeBinding,
-   type SourceLocation,
 } from "../serve/materialization_serve_transform";
+import {
+   authorModelLiftContext,
+   type SourceLocation,
+} from "../text/author_model";
+import { declarableColumns } from "../stored_column_types";
 import { reachPersisted } from "../text/source_map";
 import {
    extensionOverStoredModel,

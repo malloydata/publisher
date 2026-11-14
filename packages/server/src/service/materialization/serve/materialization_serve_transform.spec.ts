@@ -25,7 +25,6 @@ import {
    type SourceRefinement,
    REFINEMENT_TIER_KINDS,
    buildOverTiers,
-   authorModelLiftContext,
    documentFlagsForLifts,
    type DerivedSourceLift,
    buildServeShapeModel,
@@ -34,18 +33,19 @@ import {
    buildVirtualMap,
    sqlReadsTable,
    deriveServeBindings,
-   planSourceIds,
-   declarableColumns,
-   storedMalloyType,
-   storedMalloyTypeFor,
-   groupAliasesByName,
    extractJoins,
    extractRefinements,
    extractViews,
    narrowSchemaToPublic,
-   sliceSourceRange,
    type ServeBinding,
 } from "./materialization_serve_transform";
+import { authorModelLiftContext, sliceSourceRange } from "../text/author_model";
+import { planSourceIds, groupAliasesByName } from "../domain/source_aliases";
+import {
+   declarableColumns,
+   storedMalloyType,
+   storedMalloyTypeFor,
+} from "../stored_column_types";
 
 describe("storedMalloyType", () => {
    it.each([

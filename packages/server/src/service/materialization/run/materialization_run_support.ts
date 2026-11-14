@@ -35,11 +35,8 @@ import type { components } from "../../../api";
 import { getPersistStorageMode } from "../../../config";
 import { resolvePartitionColumns } from "../plan/persist_partition";
 import { escapeSQL } from "../../connection";
-import {
-   groupAliasesByName,
-   planSourceIds,
-   type ServeShapeGiven,
-} from "../serve/materialization_serve_transform";
+import { type ServeShapeGiven } from "../serve/materialization_serve_transform";
+import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
 
 import type { ApiConnection } from "../../model";
 import { readFileSync } from "fs";

@@ -16,7 +16,7 @@ import {
    projectToPublicColumns,
    resolveQueryMetadata,
 } from "../plan/build_plan";
-import { authorModelLiftContext } from "../serve/materialization_serve_transform";
+import { authorModelLiftContext } from "../text/author_model";
 import { reachPersisted } from "../text/source_map";
 import { BuildInstruction, ManifestEntry } from "../domain/types";
 import type { BuildStrategy, ColocatedBuildRequest } from "./build_strategy";

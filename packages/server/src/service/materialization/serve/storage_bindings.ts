@@ -19,12 +19,14 @@ import { logger } from "../../../logger";
 import { recordStoredColumnTypeMismatch } from "../../../materialization_metrics";
 import { evaluateManifestFreshness } from "../domain/freshness";
 import {
-   authorModelLiftContext,
    bindingServesModelSource,
    narrowSchemaToPublic,
-   type DerivedSourceDef,
    type ServeBinding,
 } from "./materialization_serve_transform";
+import {
+   authorModelLiftContext,
+   type DerivedSourceDef,
+} from "../text/author_model";
 import {
    declaredColumnsOf,
    queryTimezoneOf,

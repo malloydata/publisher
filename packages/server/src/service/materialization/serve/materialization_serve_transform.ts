@@ -24,6 +24,17 @@ import {
 import { storageTablePath } from "../domain/storage_table_path";
 import { pipelineReferences, structRefSourceId } from "../text/source_map";
 import { documentFlagLines } from "../text/declaration_text";
+import {
+   type DerivedSourceDef,
+   type SourceLocation,
+} from "../text/author_model";
+import {
+   declarableColumns,
+   describeColumns,
+   duckdbTypeToMalloyType,
+   storedMalloyType,
+   type UndeclarableColumn,
+} from "../stored_column_types";
 
 export { documentFlagLines };
 
@@ -210,44 +221,6 @@ export interface ServeBinding {
 }
 
 /**
- * The package's own sourceIDs for a source name at a content address, read from
- * the build plan's sources (keyed by sourceID).
- *
- * Both sides of the comparison come from this server's compile: the plan's
- * sourceIDs here, and each model's `contents[name].sourceID` in
- * {@link bindingServesModelSource}. A sourceID embeds an absolute model URL, so
- * one from another process would not compare; matching the manifest entry to
- * the plan by name and content address is what lets a binding the host supplied
- * carry this server's identity.
- *
- * Only an exact match counts: a plan source of that name AT that content
- * address. Every manifest entry carries the content address this server
- * computes (an instructed build keys its entry by it, whatever identity the
- * instruction used), so an entry at another address was built from another
- * definition: a source edited under its old name in an unversioned package, a
- * manifest restored from before the edit, or one from a release that addressed
- * the source differently. Its table holds that definition's rows, and its
- * columns may well be the same, so it serves nothing and the source answers
- * live until its own table is built. An empty list matches no model's source.
- */
-export function planSourceIds(
-   planSources: Record<string, { name?: string; sourceEntityId?: string }>,
-): (sourceName: string, sourceEntityId: string) => string[] {
-   const byName = new Map<string, { sourceID: string; address?: string }[]>();
-   for (const [sourceID, source] of Object.entries(planSources)) {
-      if (!source.name) continue;
-      const named = byName.get(source.name) ?? [];
-      named.push({ sourceID, address: source.sourceEntityId });
-      byName.set(source.name, named);
-   }
-   return (sourceName, sourceEntityId) => {
-      return (byName.get(sourceName) ?? [])
-         .filter((s) => s.address === sourceEntityId)
-         .map((s) => s.sourceID);
-   };
-}
-
-/**
  * Whether a model may serve `binding`: false only when the model's own source of
  * that name carries a sourceID the binding does not name, which is an unrelated
  * source that happens to share the name. A binding with no `sourceIDs`, a
@@ -262,49 +235,6 @@ export function bindingServesModelSource(
    const sourceID = contents?.[binding.sourceName]?.sourceID;
    if (typeof sourceID !== "string" || sourceID.length === 0) return true;
    return binding.sourceIDs.includes(sourceID);
-}
-
-/**
- * For each persist source in a build plan, the sources that materialize into its
- * table — the `aliasesBySourceName` argument {@link deriveServeBindings} takes.
- *
- * Grouped by content address (which decides who shares a table), then keyed by
- * name, the only identifier a manifest entry carries that means the same thing
- * whoever built it (an instructed build stamps the caller's `sourceEntityId`).
- *
- * A name declared at more than one address is dropped from aliasing: names are
- * not unique in a package, and binding one name to two tables puts two `source:`
- * declarations in the package-wide serve shape, which fails to compile and
- * silently takes the storage tier out for every model. Dropping costs only that
- * source its routing. The source that OWNS the name still binds it (see
- * {@link deriveServeBindings}).
- */
-export function groupAliasesByName(
-   planSources: { name?: string; sourceEntityId?: string }[],
-): Record<string, string[]> {
-   const namesByAddress = new Map<string, string[]>();
-   for (const source of planSources) {
-      if (!source.sourceEntityId || !source.name) continue;
-      const group = namesByAddress.get(source.sourceEntityId);
-      if (!group) namesByAddress.set(source.sourceEntityId, [source.name]);
-      else if (!group.includes(source.name)) group.push(source.name);
-   }
-
-   const addressesPerName = new Map<string, number>();
-   for (const group of namesByAddress.values()) {
-      for (const name of group) {
-         addressesPerName.set(name, (addressesPerName.get(name) ?? 0) + 1);
-      }
-   }
-
-   const byName: Record<string, string[]> = {};
-   for (const group of namesByAddress.values()) {
-      const unambiguous = group.filter(
-         (name) => addressesPerName.get(name) === 1,
-      );
-      for (const name of unambiguous) byName[name] = unambiguous;
-   }
-   return byName;
 }
 
 /**
@@ -412,289 +342,6 @@ export function deriveServeBindings(
    return bindings;
 }
 
-/**
- * The Malloy basic type a DuckDB column type (as reported by `DESCRIBE`) maps
- * onto, or `undefined` for a type with no faithful mapping: a collection
- * (`array`) or anything unrecognized (nested, struct, enum, blob). Pure; see
- * {@link storedMalloyType} for how a stored column is declared.
- */
-export function duckdbTypeToMalloyType(
-   duckdbType: string,
-): { type: string } | { unmapped: "array" | "unrecognized" } {
-   const raw = duckdbType.trim();
-   if (/\[\s*\]/.test(raw)) return { unmapped: "array" };
-   // DECIMAL(18,2) -> DECIMAL
-   const base = raw
-      .replace(/\(.*\)/, "")
-      .trim()
-      .toUpperCase();
-
-   if (base === "DATE") return { type: "date" };
-   if (
-      base.startsWith("TIMESTAMP") ||
-      base === "DATETIME" ||
-      base === "TIMESTAMPTZ"
-   ) {
-      return { type: "timestamp" };
-   }
-   if (base === "TIME") {
-      // Malloy has no time-of-day scalar; carry as string to preserve the value.
-      return { type: "string" };
-   }
-
-   switch (base) {
-      case "TINYINT":
-      case "SMALLINT":
-      case "INTEGER":
-      case "INT":
-      case "INT4":
-      case "BIGINT":
-      case "INT8":
-      case "HUGEINT":
-      case "UTINYINT":
-      case "USMALLINT":
-      case "UINTEGER":
-      case "UBIGINT":
-      case "UHUGEINT":
-      case "DOUBLE":
-      case "FLOAT":
-      case "FLOAT4":
-      case "FLOAT8":
-      case "REAL":
-      case "DECIMAL":
-      case "NUMERIC":
-         return { type: "number" };
-      case "VARCHAR":
-      case "TEXT":
-      case "CHAR":
-      case "BPCHAR":
-      case "STRING":
-      case "UUID":
-         return { type: "string" };
-      case "BOOLEAN":
-      case "BOOL":
-         return { type: "boolean" };
-      default:
-         return { unmapped: "unrecognized" };
-   }
-}
-
-/**
- * The Malloy type a stored DuckDB column (as `DESCRIBE` reports it) is
- * declared as in a `type:`, or undefined when no declaration reads its values
- * back as live would. A scalar is {@link duckdbTypeToMalloyType}'s mapping; a
- * list and a struct (what a persisted `nest:` stores, `STRUCT(status VARCHAR,
- * n BIGINT)[]`, or a table's own `INTEGER[]`) are written as Malloy's array
- * and record types (`{ status::string, n::number }[]`), so their rows read
- * back as they do live. Anything else (a MAP, a UNION, an ENUM, BLOB,
- * INTERVAL, JSON, or a list or struct holding one) has no faithful
- * declaration: Malloy refuses `json` in a `type:`, and a quoted native type
- * would change how its values come back. Such a column is left out of the
- * declaration ({@link declarableColumns}), so a query reading it is answered
- * live.
- *
- * The one rule for every stored table's `type:`: the serve shape, the
- * chained build's parents, and the served copy.
- */
-export function storedMalloyType(stored: string): string | undefined {
-   const parsed = parseStoredType(stored);
-   return parsed && renderStoredType(parsed);
-}
-
-/**
- * {@link storedMalloyType} for a stored list or struct, fitted to the field
- * live answers it as, or undefined when no declaration reads it back as live
- * does, so it is left out and a query reading it is answered live. Every
- * level must be live's shape: an array where live has one, a record with
- * live's fields by name, and each leaf live's type. A leaf live types as a
- * `timestamptz` stored with its zone is declared `timestamptz`, as a top-level
- * column is. A leaf that differs otherwise is refused: a warehouse type Malloy
- * reads as `sql native` (a Postgres composite stored as a STRUCT), and a
- * `bigint` number where live keeps every digit (`keepsBigIntegers`), which
- * Malloy reads through a declared `number` as a JavaScript number, rounding it
- * past 2^53. A nested value has no cast that reads it exactly, as a top-level
- * BIGINT has (known limitation 12).
- */
-export function storedMalloyTypeFor(
-   stored: string,
-   field: unknown,
-   keepsBigIntegers: boolean,
-): string | undefined {
-   const parsed = parseStoredType(stored);
-   return parsed && fitStoredType(parsed, field, keepsBigIntegers);
-}
-
-/** A stored DuckDB type: a scalar with its Malloy type, a struct or a list. */
-type StoredType =
-   | { kind: "scalar"; raw: string; malloyType: string }
-   | { kind: "record"; fields: { name: string; type: StoredType }[] }
-   | { kind: "array"; element: StoredType };
-
-function parseStoredType(stored: string): StoredType | undefined {
-   const parsed = parseNestedType(stored.trim());
-   if (parsed === undefined || parsed.rest.trim() !== "") return undefined;
-   return parsed.type;
-}
-
-/** A stored type as Malloy type text, from the stored type alone. */
-function renderStoredType(t: StoredType): string {
-   switch (t.kind) {
-      case "scalar":
-         return t.malloyType;
-      case "array":
-         return `${renderStoredType(t.element)}[]`;
-      case "record":
-         return `{ ${t.fields
-            .map((f) => `${identifier(f.name)}::${renderStoredType(f.type)}`)
-            .join(", ")} }`;
-   }
-}
-
-/** {@link storedMalloyTypeFor}'s walk of a stored type beside live's field. */
-function fitStoredType(
-   t: StoredType,
-   field: unknown,
-   keepsBigIntegers: boolean,
-): string | undefined {
-   const live = (field ?? {}) as {
-      type?: unknown;
-      numberType?: unknown;
-      fields?: unknown;
-      elementTypeDef?: unknown;
-   };
-   switch (t.kind) {
-      case "array": {
-         if (live.type !== "array") return undefined;
-         const element = live.elementTypeDef as { type?: unknown } | undefined;
-         // An array of records keeps its records' fields on the array.
-         const inner = fitStoredType(
-            t.element,
-            element?.type === "record_element"
-               ? { type: "record", fields: live.fields }
-               : element,
-            keepsBigIntegers,
-         );
-         return inner && `${inner}[]`;
-      }
-      case "record": {
-         if (live.type !== "record" || !Array.isArray(live.fields)) {
-            return undefined;
-         }
-         const liveFields = live.fields as { name?: unknown; as?: unknown }[];
-         if (liveFields.length !== t.fields.length) return undefined;
-         const parts: string[] = [];
-         for (const f of t.fields) {
-            const match = liveFields.find((l) => (l.as ?? l.name) === f.name);
-            const inner =
-               match && fitStoredType(f.type, match, keepsBigIntegers);
-            if (!inner) return undefined;
-            parts.push(`${identifier(f.name)}::${inner}`);
-         }
-         return `{ ${parts.join(", ")} }`;
-      }
-      case "scalar":
-         if (live.type === "number") {
-            return t.malloyType === "number" &&
-               !(keepsBigIntegers && live.numberType === "bigint")
-               ? "number"
-               : undefined;
-         }
-         if (
-            live.type === "timestamptz" &&
-            t.malloyType === "timestamp" &&
-            /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/i.test(t.raw.trim())
-         ) {
-            return "timestamptz";
-         }
-         return live.type === t.malloyType ? t.malloyType : undefined;
-   }
-}
-
-/**
- * One DuckDB type at the start of `s`: a scalar, `STRUCT(<name> <type>, …)`,
- * or either followed by `[]`. Undefined when it is no such type.
- */
-function parseNestedType(
-   s: string,
-   depth = 0,
-): { type: StoredType; rest: string } | undefined {
-   if (depth > 16) return undefined;
-   let type: StoredType;
-   let rest: string;
-   const struct = /^STRUCT\s*\(/i.exec(s);
-   if (struct) {
-      rest = s.slice(struct[0].length);
-      const fields: { name: string; type: StoredType }[] = [];
-      for (;;) {
-         const name = /^\s*("(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*)\s+/.exec(
-            rest,
-         );
-         if (!name) return undefined;
-         const fieldName = name[1].startsWith('"')
-            ? name[1].slice(1, -1).replace(/""/g, '"')
-            : name[1];
-         const inner = parseNestedType(rest.slice(name[0].length), depth + 1);
-         if (!inner) return undefined;
-         fields.push({ name: fieldName, type: inner.type });
-         rest = inner.rest.trimStart();
-         if (rest.startsWith(",")) {
-            rest = rest.slice(1);
-            continue;
-         }
-         if (!rest.startsWith(")")) return undefined;
-         rest = rest.slice(1);
-         break;
-      }
-      type = { kind: "record", fields };
-   } else {
-      // A scalar, with its own parenthesised arguments (`DECIMAL(18,2)`).
-      const scalar =
-         /^[A-Za-z_][A-Za-z0-9_ ]*?(\([0-9,\s]*\))?(?=\s*(\[|,|\)|$))/.exec(s);
-      if (!scalar) return undefined;
-      const mapped = duckdbTypeToMalloyType(scalar[0]);
-      if (!("type" in mapped)) return undefined;
-      type = { kind: "scalar", raw: scalar[0], malloyType: mapped.type };
-      rest = s.slice(scalar[0].length);
-   }
-   for (;;) {
-      const list = /^\s*\[\s*\]/.exec(rest);
-      if (!list) break;
-      type = { kind: "array", element: type };
-      rest = rest.slice(list[0].length);
-   }
-   return { type, rest };
-}
-
-/** A stored column, by name and DuckDB type, that no `type:` can declare. */
-export interface UndeclarableColumn {
-   name: string;
-   type: string;
-}
-
-/**
- * Split a stored table's schema into the columns a `type:` declares, each
- * with its Malloy type ({@link storedMalloyType}), and the ones it leaves out.
- * A left-out column is never declared as a type that would change its values:
- * a query reading it fails to compile against the shape and is answered live,
- * and every other query still reads the table. Pure; a caller emitting a
- * shape reports what it left out ({@link reportLeftOutColumns}).
- */
-export function declarableColumns(
-   schema: readonly { name: string; type: string }[],
-): {
-   declared: { name: string; type: string; malloyType: string }[];
-   leftOut: UndeclarableColumn[];
-} {
-   const declared: { name: string; type: string; malloyType: string }[] = [];
-   const leftOut: UndeclarableColumn[] = [];
-   for (const c of schema) {
-      const malloyType = storedMalloyType(c.type);
-      if (malloyType !== undefined) declared.push({ ...c, malloyType });
-      else leftOut.push({ name: c.name, type: c.type.trim() });
-   }
-   return { declared, leftOut };
-}
-
 /** Count and log the columns a shape left out: names and types, never values. */
 export function reportLeftOutColumns(
    sourceName: string,
@@ -711,13 +358,6 @@ export function reportLeftOutColumns(
       "Stored columns no Malloy type declaration reads faithfully were left out of the serve shape; queries reading them answer live",
       { sourceName, columns: leftOut.map((c) => `${c.name} ${c.type}`) },
    );
-}
-
-/** `name TYPE, …` for an error or log line: names and types, never values. */
-export function describeColumns(
-   columns: readonly UndeclarableColumn[],
-): string {
-   return columns.map((c) => `'${c.name}' (${c.type})`).join(", ");
 }
 
 /**
@@ -911,24 +551,6 @@ interface DerivedLiftContext {
 }
 
 /** The subset of a compiled source definition this reads. */
-export interface DerivedSourceDef {
-   type?: unknown;
-   /** The sourceID of the source this one extends, when it extends one. */
-   extends?: unknown;
-   /**
-    * A query-derived source's query. Malloy sets no `extends` on one, so
-    * `structRef` is the only link to the source it reads.
-    */
-   query?: { structRef?: unknown; pipeline?: unknown };
-   /** Where the author declared the source, for lifting its text verbatim. */
-   location?: SourceLocation;
-   fields?: unknown[];
-   filterList?: unknown[];
-   /** The compiled model's own annotation record, read for `#@ -persist`. */
-   annotations?: unknown;
-   /** Malloy's own flag: this source carries `#@ persist`, inherited or not. */
-   persistent?: unknown;
-}
 
 /**
  * Whether a source opts out of the pre-built table with `#@ -persist`.
@@ -1371,86 +993,6 @@ export function documentFlagsForLifts(
 }
 
 /**
- * The compiled-model facts a lift reads: `contents` by source name, a sourceID
- * index, and readers for a declaration's verbatim text or a whole file. Shared
- * by the serve path and the chained build so both read ONE view of the model.
- */
-type AuthorModelLiftContext = {
-   contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>;
-   sourceNameById: Map<string, string>;
-   liftText: (location: SourceLocation) => string | undefined;
-   fileText: (url: string) => string | undefined;
-};
-
-/**
- * One context per compiled model, which is immutable (a republish compiles a
- * new one), so author files are read once rather than per persist source.
- */
-const liftContextByModel = new WeakMap<object, AuthorModelLiftContext>();
-
-export function authorModelLiftContext(
-   modelDef: unknown,
-   readFile: (url: string) => string | undefined,
-): AuthorModelLiftContext {
-   const cacheable = modelDef !== null && typeof modelDef === "object";
-   if (cacheable) {
-      const cached = liftContextByModel.get(modelDef);
-      if (cached) return cached;
-   }
-   const built = buildAuthorModelLiftContext(modelDef, readFile);
-   if (cacheable) liftContextByModel.set(modelDef, built);
-   return built;
-}
-
-function buildAuthorModelLiftContext(
-   modelDef: unknown,
-   readFile: (url: string) => string | undefined,
-): AuthorModelLiftContext {
-   type Def = DerivedSourceDef & { sourceID?: unknown };
-   const md = modelDef as
-      | {
-           contents?: Record<string, Def>;
-           sourceRegistry?: Record<
-              string,
-              { entry?: (Def & { type?: unknown; as?: unknown }) | undefined }
-           >;
-        }
-      | undefined;
-   const namespace = md?.contents ?? {};
-   // The namespace plus hidden dependencies from `sourceRegistry`:
-   // `import { weekly } from "orders.malloy"` leaves `daily`, which `weekly` is
-   // built from, out of `contents`. Including them lets a stored parent reached
-   // only through an import be found. The namespace wins a name clash.
-   const contents: Record<string, Def> = {};
-   for (const value of Object.values(md?.sourceRegistry ?? {})) {
-      const entry = value?.entry;
-      if (!entry || entry.type === "source_registry_reference") continue;
-      const name = typeof entry.as === "string" ? entry.as : undefined;
-      if (!name || name in namespace || name in contents) continue;
-      contents[name] = entry;
-   }
-   Object.assign(contents, namespace);
-   const sourceNameById = new Map<string, string>();
-   for (const [name, def] of Object.entries(contents)) {
-      if (typeof def?.sourceID === "string") {
-         sourceNameById.set(def.sourceID, name);
-      }
-   }
-   const fileCache = new Map<string, string | null>();
-   const fileText = (url: string): string | undefined => {
-      if (!url.startsWith("file:")) return undefined;
-      if (!fileCache.has(url)) fileCache.set(url, readFile(url) ?? null);
-      return fileCache.get(url) ?? undefined;
-   };
-   const liftText = (location: SourceLocation): string | undefined => {
-      if (!location?.url) return undefined;
-      const text = fileText(location.url);
-      return text ? sliceSourceRange(text, location.range) : undefined;
-   };
-   return { contents, sourceNameById, liftText, fileText };
-}
-
-/**
  * Order bindings so a joined source is declared before the source joining it
  * (Malloy resolves `source:` top-to-bottom). Stable. On a cycle the rest are
  * appended in original order; the shape then fails to compile and the caller
@@ -1655,41 +1197,8 @@ export function extractRefinements(
 }
 
 /** A zero-based Malloy source range (as carried on a compiled field's `location`). */
-interface SourceRange {
-   start: { line: number; character: number };
-   end: { line: number; character: number };
-}
 
 /** A compiled field's source location: the file URL plus the range it spans. */
-export interface SourceLocation {
-   url: string;
-   range: SourceRange;
-}
-
-/**
- * Slice the text covered by a zero-based Malloy `location.range`. Undefined
- * when out of bounds (stale or mismatched source), so the caller skips the
- * refinement rather than emitting garbage.
- */
-export function sliceSourceRange(
-   text: string,
-   range: SourceRange,
-): string | undefined {
-   const lines = text.split("\n");
-   const { start, end } = range;
-   if (start.line < 0 || start.line > end.line || end.line >= lines.length) {
-      return undefined;
-   }
-   if (start.line === end.line) {
-      return lines[start.line].slice(start.character, end.character);
-   }
-   let out = lines[start.line].slice(start.character);
-   for (let i = start.line + 1; i < end.line; i++) {
-      out += "\n" + lines[i];
-   }
-   out += "\n" + lines[end.line].slice(0, end.character);
-   return out;
-}
 
 /** What {@link extractJoins} needs beyond the compiled field list. */
 interface JoinExtractionContext {

@@ -56,15 +56,17 @@ const ALLOWED: Record<string, Record<string, string>> = {
       "if (include && !include.has(persistSource.name)) continue;":
          "a scoped run's sourceNames filter is a caller request by name",
    },
-   "serve/materialization_serve_transform.ts": {
+   "domain/source_aliases.ts": {
       "const named = byName.get(source.name) ?? [];":
          "planSourceIds resolves a manifest entry's name to plan sourceIDs (name → id index)",
       "byName.set(source.name, named);":
          "planSourceIds resolves a manifest entry's name to plan sourceIDs (name → id index)",
-      "const sourceID = contents?.[binding.sourceName]?.sourceID;":
-         "the model's own namespace, resolving a name to its sourceID",
       "else if (!group.includes(source.name)) group.push(source.name);":
          "aliases grouped per address for rebinding by name in Malloy text",
+   },
+   "serve/materialization_serve_transform.ts": {
+      "const sourceID = contents?.[binding.sourceName]?.sourceID;":
+         "the model's own namespace, resolving a name to its sourceID",
       "...(aliasesBySourceName[entry.sourceName] ?? []).filter(":
          "aliases grouped per address for rebinding by name in Malloy text",
       "const url = ctx.contents[lift.sourceName]?.location?.url;":

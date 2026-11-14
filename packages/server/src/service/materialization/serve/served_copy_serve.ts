@@ -85,16 +85,18 @@ import {
    type FlatPair,
 } from "../../governance/ir/pair_flat_query";
 import {
-   authorModelLiftContext,
    boundTablePath,
    sqlReadsTable,
    buildVirtualMap,
    narrowSchemaToPublic,
    optsOutOfPersist,
-   storedMalloyTypeFor,
-   type DerivedSourceDef,
    type ServeBinding,
 } from "./materialization_serve_transform";
+import {
+   authorModelLiftContext,
+   type DerivedSourceDef,
+} from "../text/author_model";
+import { storedMalloyTypeFor } from "../stored_column_types";
 import { fieldNotes } from "../text/field_notes";
 import {
    buildServedCopy,

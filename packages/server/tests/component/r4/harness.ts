@@ -78,11 +78,13 @@ import {
 import {
    buildVirtualMap,
    deriveServeBindings,
-   declarableColumns,
-   groupAliasesByName,
-   planSourceIds,
    type ServeBinding,
 } from "../../../src/service/materialization/serve/materialization_serve_transform";
+import {
+   groupAliasesByName,
+   planSourceIds,
+} from "../../../src/service/materialization/domain/source_aliases";
+import { declarableColumns } from "../../../src/service/materialization/stored_column_types";
 import {
    castToDeclaredTypes,
    persistSourceDeclaredColumns,
