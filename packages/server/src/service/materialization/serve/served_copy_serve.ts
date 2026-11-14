@@ -63,6 +63,7 @@ import {
    type BigIntegerReadOptions,
    nativeTypeLookup,
    declaredColumnsOf,
+   liveKeepsBigIntegers,
    queryTimezoneOf,
    serveTypePlan,
    storedColumnTypeMismatches,
@@ -89,6 +90,7 @@ import {
    buildVirtualMap,
    narrowSchemaToPublic,
    optsOutOfPersist,
+   storedMalloyTypeFor,
    type DerivedSourceDef,
    type ServeBinding,
 } from "./materialization_serve_transform";
@@ -1350,6 +1352,13 @@ export class ServedCopyServe {
                ...(notes.length > 0 ? { notes } : {}),
                ...timeframeOf(c.dimension),
                ...(c.access ? { access: c.access } : {}),
+               // A zoned timestamp whose field live types `timestamptz` is
+               // declared as one, as a v1 table's is.
+               ...((fieldsByName.get(c.dimension) as { type?: unknown })
+                  ?.type === "timestamptz" &&
+               /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/i.test(type.trim())
+                  ? { timestamptz: true as const }
+                  : {}),
             });
          }
          const joined = inlinedJoinsOf(plan, def.fields, stored, lineage);
@@ -1382,7 +1391,18 @@ export class ServedCopyServe {
             }
             return reads;
          });
-         if (joinedReads.some((reads) => [...reads.values()].some((r) => !r))) {
+         // A joined field live types as a warehouse-native type has no
+         // stored declaration that reads back as live's either.
+         const joinedNative = joined.some((j) => {
+            const fields = joinedFieldsAt(def.fields, [j.join]);
+            return j.columns.some((c) =>
+               liveTypesAsNative(fields.find((f) => fieldNameOf(f) === c.name)),
+            );
+         });
+         if (
+            joinedNative ||
+            joinedReads.some((reads) => [...reads.values()].some((r) => !r))
+         ) {
             problems.push({
                sourceName,
                sourceID: node.sourceID,
@@ -1517,6 +1537,21 @@ export class ServedCopyServe {
          columnsLeftOut.push(c.name);
          return [];
       });
+      // A stored scalar whose field live types as a warehouse-native type
+      // (`sql native`: a UUID, a Postgres `jsonb` or composite stored as
+      // text) would be declared a `string`: another type than live's and,
+      // for some, other text. Left out, so only a query reading it answers
+      // live. Decided from live's field type, never from a value.
+      columns = columns.flatMap((c) => {
+         if (
+            !liveTypesAsNative(fieldsByName.get(c.name)) ||
+            storedMalloyType(c.type) === undefined
+         ) {
+            return [c];
+         }
+         columnsLeftOut.push(c.name);
+         return [];
+      });
       if (columns.length === 0) {
          problems.push({
             sourceName,
@@ -1526,20 +1561,40 @@ export class ServedCopyServe {
          return undefined;
       }
       // A column the `type:` cannot declare faithfully would fail the whole
-      // model's copy, not just this source. For a v1 table it is left out
-      // (a nest a destination stores as a type Malloy cannot read back,
-      // say), so only a query that reads it answers live, as the serve
-      // shape kept it local; otherwise the source is left to its fallback.
-      if (!plan) {
-         const undeclarable = columns
-            .filter((c) => storedMalloyType(c.type) === undefined)
-            .map((c) => c.name);
-         if (undeclarable.length > 0 && undeclarable.length < columns.length) {
-            columns = columns.filter((c) => !undeclarable.includes(c.name));
-            columnsLeftOut = [...columnsLeftOut, ...undeclarable];
-         }
+      // model's copy, not just this source. It is left out (a nest a
+      // destination stores as a type Malloy cannot read back, a list or
+      // struct whose field live types as something else, or a Postgres
+      // `bytea` the build kept as a BLOB, say), so only a query that reads
+      // it answers live; a source with no column left goes to its fallback.
+      // A stored list or struct is declared in live's shape, or left out
+      // when no declaration reads it back as live does
+      // (`storedMalloyTypeFor`).
+      const keepsBigIntegers = liveKeepsBigIntegers(
+         (def as { dialect?: unknown }).dialect,
+      );
+      const nestedDeclaration = (c: ServedColumn) =>
+         nestedDeclarationOf(
+            c.type,
+            fieldsByName.get(c.name),
+            keepsBigIntegers,
+         );
+      columns = columns.map((c) => {
+         const declared = nestedDeclaration(c);
+         return declared && declared !== storedMalloyType(c.type)
+            ? { ...c, declaredType: declared }
+            : c;
+      });
+      const undeclarableColumn = (c: ServedColumn) =>
+         storedMalloyType(c.type) === undefined ||
+         nestedDeclaration(c) === undefined;
+      const undeclarable = columns
+         .filter(undeclarableColumn)
+         .map((c) => c.name);
+      if (undeclarable.length > 0 && undeclarable.length < columns.length) {
+         columns = columns.filter((c) => !undeclarable.includes(c.name));
+         columnsLeftOut = [...columnsLeftOut, ...undeclarable];
       }
-      if (columns.some((c) => storedMalloyType(c.type) === undefined)) {
+      if (columns.some(undeclarableColumn)) {
          problems.push({
             sourceName,
             sourceID: node.sourceID,
@@ -2595,7 +2650,9 @@ function pairRerootOf(
          // record (known limitation 12); one no cast reads exactly leaves
          // the table to its fallback.
          const big = bigRead(field, { name: c.column, type });
-         if (big && !big.castTo) {
+         // So does one live types as a warehouse-native type, which no
+         // stored declaration reads back as.
+         if ((big && !big.castTo) || liveTypesAsNative(field)) {
             missing = true;
             continue;
          }
@@ -3290,4 +3347,34 @@ export function resultShapeOf(prepared: { resultExplore: unknown }): string {
    return JSON.stringify(
       shape((prepared.resultExplore as { allFields: Field[] }).allFields),
    );
+}
+
+/**
+ * Whether live types a field as a warehouse-native type Malloy has no type
+ * of its own for (`sql native`, or `json`): no `type:` declaration of a
+ * stored scalar reads back as that.
+ */
+function liveTypesAsNative(field: unknown): boolean {
+   const type = (field as { type?: unknown } | undefined)?.type;
+   return type === "sql native" || type === "json";
+}
+
+/**
+ * A stored list or struct column's declaration in the shape live answers its
+ * field in (`storedMalloyTypeFor`), or undefined when none reads it back as
+ * live does: a field live types as `sql native` (a Postgres composite type,
+ * stored by DuckDB as a STRUCT), or one holding such a leaf or a `bigint`
+ * number live keeps every digit of. Any other column, or one whose field is
+ * not known here, keeps the stored type's own declaration.
+ */
+function nestedDeclarationOf(
+   storedType: string,
+   field: unknown,
+   keepsBigIntegers: boolean,
+): string | undefined {
+   const declared = storedMalloyType(storedType);
+   if (declared === undefined) return undefined;
+   const nested = declared.startsWith("{") || declared.endsWith("[]");
+   if (!nested || field === undefined) return declared;
+   return storedMalloyTypeFor(storedType, field, keepsBigIntegers);
 }
