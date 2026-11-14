@@ -2074,9 +2074,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.materialization.setServeDestinationConfig(provider);
    }
 
-   /** See {@link PackageMaterialization.invalidateServeShapes}. */
-   public invalidateServeShapes(): void {
-      this.materialization.invalidateServeShapes();
+   /** See {@link PackageMaterialization.invalidateCompiledLegs}. */
+   public invalidateCompiledLegs(): void {
+      this.materialization.invalidateCompiledLegs();
    }
 
    /** See {@link PackageMaterialization.markBuildPlanStale}. */

@@ -45,16 +45,15 @@ const manifest = (keys: string[]): BuildManifest =>
 function storageRoute(bindings: ServeBinding[]): RouteDecision<RoutedExtra> {
    return {
       served: "variant",
-      kind: "storage",
+      kind: "served",
       runnable,
       extra: {
-         kind: "storage",
+         kind: "served",
          virtualMap,
          bindings,
-         origin: "persist",
          tablesRead: bindings,
       },
-      considered: [{ kind: "storage", outcome: "used" }],
+      considered: [{ kind: "served", outcome: "used" }],
    };
 }
 
@@ -64,7 +63,7 @@ const rollupRoute: RouteDecision<RoutedExtra> = {
    runnable,
    extra: { kind: "rollup", resolvedMember: "orders__by_day" },
    considered: [
-      { kind: "storage", outcome: "skipped", reason: "does_not_answer" },
+      { kind: "served", outcome: "skipped", reason: "does_not_answer" },
       { kind: "rollup", outcome: "used" },
    ],
 };
@@ -86,7 +85,7 @@ describe("Answer", () => {
    it("reads a storage route as a storage hit with its tables", () => {
       const bindings = [binding("daily")];
       const answer = routedAnswer(storageRoute(bindings));
-      expect(answer.tier).toBe("storage");
+      expect(answer.tier).toBe("served");
       expect(answer.routedRunnable).toBe(runnable);
       expect(answer.virtualMap).toBe(virtualMap);
       expect(answer.serveShapeBindings).toEqual(bindings);

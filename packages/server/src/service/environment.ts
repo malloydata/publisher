@@ -929,7 +929,7 @@ export class Environment {
          // Memoized serve shapes hold the retired generation's connections but
          // are keyed on the binding set, which this does not change; left in
          // place, every routed query would quietly fall back to live.
-         this.invalidateServeShapes();
+         this.invalidateCompiledLegs();
       }
    }
 
@@ -1099,14 +1099,14 @@ export class Environment {
    }
 
    /** Drop every loaded model's memoized serve shape; the next query recompiles. */
-   private invalidateServeShapes(): void {
+   private invalidateCompiledLegs(): void {
       for (const _package of this.packages.values()) {
-         _package.invalidateServeShapes();
+         _package.invalidateCompiledLegs();
       }
       // Loaded versions too: they compiled against the destinations that just
       // changed.
       for (const [, , version] of this.versionService?.cache.entries() ?? []) {
-         version.invalidateServeShapes();
+         version.invalidateCompiledLegs();
       }
    }
 

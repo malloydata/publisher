@@ -1113,10 +1113,10 @@ export class PackageMaterialization {
       }
    }
 
-   /** Drop every model's memoized serve shape, when its destinations are replaced. */
-   invalidateServeShapes(): void {
+   /** Drop every model's compiled serving legs, when its destinations are replaced. */
+   invalidateCompiledLegs(): void {
       for (const model of this.owner.models().values()) {
-         model.invalidateServeShapeCache();
+         model.invalidateCompiledLegs();
       }
    }
 

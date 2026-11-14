@@ -307,7 +307,7 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
    "service/materialization/run/run_instructions.ts": { count: 1, step: "5" },
    "service/materialization/run/source_build.ts": { count: 4, step: "5" },
    "service/materialization/run/storage_build_strategy.ts": {
-      count: 7,
+      count: 6,
       step: "5",
    },
    "service/materialization/serve/author_imports.ts": { count: 1, step: "5" },

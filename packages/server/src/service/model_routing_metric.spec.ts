@@ -42,7 +42,7 @@ describe("recordRoutingDecision", () => {
       const both: RouteDecision<RoutedExtra> = {
          served: "live",
          considered: [
-            { kind: "storage", outcome: "skipped", reason: "row_level_gate" },
+            { kind: "served", outcome: "skipped", reason: "row_level_gate" },
             { kind: "rollup", outcome: "skipped", reason: "row_level_gate" },
          ],
       };
@@ -63,32 +63,33 @@ describe("recordRoutingDecision", () => {
       expect(await harness.collectCounter(METRIC)).toBe(0);
    });
 
-   it("records a storage hit with its origin, and a miss as live_fallback", async () => {
+   it("records a served-copy answer as a storage hit, and nothing for its miss", async () => {
       recordRoutingDecision({
          served: "variant",
-         kind: "storage",
+         kind: "served",
          runnable: {} as QueryMaterializer,
          extra: {
-            kind: "storage",
+            kind: "served",
             virtualMap: new Map(),
             bindings: [],
-            origin: "preaggregate",
             tablesRead: [],
          },
-         considered: [{ kind: "storage", outcome: "used" }],
+         considered: [{ kind: "served", outcome: "used" }],
       });
       recordRoutingDecision({
          served: "live",
          considered: [
-            { kind: "storage", outcome: "skipped", reason: "does_not_answer" },
+            { kind: "served", outcome: "skipped", reason: "does_not_answer" },
          ],
       });
       expect(
          await harness.collectCounter(METRIC, {
             outcome: "storage",
-            origin: "preaggregate",
+            origin: "persist",
          }),
       ).toBe(1);
-      expect(await count("live_fallback")).toBe(1);
+      // A served copy that declined counts nothing: only the retired serve
+      // shape's candidate reported a miss, and no candidate has that kind.
+      expect(await count("live_fallback")).toBe(0);
    });
 });

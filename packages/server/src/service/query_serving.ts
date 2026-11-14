@@ -79,13 +79,10 @@ export type ServedFrom = "storage" | "live_fallback";
  */
 export type RoutedExtra =
    | {
-        kind: "storage";
+        kind: "served";
         virtualMap: VirtualMap;
         bindings: ServeBinding[];
-        origin: "persist" | "preaggregate";
         tablesRead: ServeBinding[];
-        /** Set when the served copy on `virtual` answered, not the serve shape. */
-        via?: "served_copy";
         /** The served copy's graft scope, for `govern()` (see ServedCopyServe.loadQuery). */
         graftScope?: GraftScope;
      }
@@ -132,8 +129,7 @@ export type RoutedExtra =
  */
 function readsOnlyColocatedTables(extra: RoutedExtra): boolean {
    return (
-      extra.kind === "storage" &&
-      extra.via === "served_copy" &&
+      extra.kind === "served" &&
       extra.tablesRead.length > 0 &&
       extra.tablesRead.every((b) => b.colocated === true)
    );
@@ -148,7 +144,7 @@ export interface Answer {
    /** Each candidate the router considered, and what it decided. */
    readonly considered: readonly ConsideredVariant[];
    /** The tier the router chose: a persisted view, a stored table, a rollup, or live. */
-   readonly tier: "view" | "storage" | "rollup" | "live";
+   readonly tier: "view" | "served" | "rollup" | "live";
    /** For a view answer: the persisted view's table. */
    readonly viewTable: ViewTable | undefined;
    /** The routed runnable, or undefined when live answers (the caller's own compile runs). */
@@ -159,8 +155,6 @@ export interface Answer {
    readonly serveShapeBindings: readonly ServeBinding[];
    /** For a storage answer: the stored tables the query reads. */
    readonly storageTablesRead: readonly ServeBinding[] | undefined;
-   /** For a storage answer: `served_copy` when the served copy on `virtual` answered rather than the serve shape. */
-   readonly via: "served_copy" | undefined;
    /** For a served-copy, persisted-view or rollup answer: where `govern()` grafts a row-level gate (R3). */
    readonly graftScope: GraftScope | undefined;
    /**
@@ -184,7 +178,6 @@ export const LIVE_ANSWER: Answer = Object.freeze({
    virtualMap: undefined,
    serveShapeBindings: [],
    storageTablesRead: undefined,
-   via: undefined,
    graftScope: undefined,
    pastEntryPointGate: false,
    rollupMember: undefined,
@@ -214,16 +207,15 @@ export function routedAnswer(route: RouteDecision<RoutedExtra>): Answer {
          viewTable: route.extra.table,
       });
    }
-   if (route.extra.kind === "storage") {
+   if (route.extra.kind === "served") {
       return Object.freeze({
          ...LIVE_ANSWER,
          considered: route.considered,
-         tier: "storage",
+         tier: "served",
          routedRunnable: route.runnable,
          virtualMap: route.extra.virtualMap,
          serveShapeBindings: route.extra.bindings,
          storageTablesRead: route.extra.tablesRead,
-         via: route.extra.via,
          graftScope: route.extra.graftScope,
          pastEntryPointGate: route.pastEntryPointGate === true,
       });
@@ -274,7 +266,7 @@ export function servedFromOf(answer: Answer): ServedFrom | undefined {
    // read the source's own warehouse, as a colocated `#@ persist` answer
    // does, which reports no storage hit; its path report names the table.
    if (
-      answer.tier === "storage" &&
+      answer.tier === "served" &&
       answer.storageTablesRead !== undefined &&
       answer.storageTablesRead.length > 0 &&
       answer.storageTablesRead.every((b) => b.colocated)
@@ -283,7 +275,7 @@ export function servedFromOf(answer: Answer): ServedFrom | undefined {
    }
    // A `storage=` persisted view or `#(preaggregate)` rollup reads the
    // storage tier too, through `virtual()`.
-   return answer.tier === "storage" ||
+   return answer.tier === "served" ||
       ((answer.tier === "view" || answer.tier === "rollup") &&
          answer.virtualMap !== undefined)
       ? "storage"
@@ -357,13 +349,12 @@ export function recordRoutingDecision(route: RouteDecision<RoutedExtra>): void {
       return;
    }
    // The served copy reads the same stored tables, so it counts as the tier.
-   const storage =
-      route.considered.find(
-         (c) => c.kind === "served" && c.outcome === "used",
-      ) ?? route.considered.find((c) => c.kind === "storage");
+   const storage = route.considered.find(
+      (c) => c.kind === "served" && c.outcome === "used",
+   );
    if (!storage) return;
-   if (route.served === "variant" && route.extra.kind === "storage") {
-      recordStorageServeRouting("storage", route.extra.origin);
+   if (route.served === "variant" && route.extra.kind === "served") {
+      recordStorageServeRouting("storage", "persist");
    } else if (storage.reason === "does_not_answer") {
       recordStorageServeRouting("live_fallback");
    }
@@ -609,12 +600,10 @@ export function routeCandidates(
             return {
                runnable: served.runnable,
                extra: {
-                  kind: "storage",
+                  kind: "served",
                   virtualMap: served.virtualMap,
                   bindings: served.bindings,
-                  origin: "persist",
                   tablesRead: served.tablesRead,
-                  via: "served_copy",
                   graftScope: served.graftScope,
                },
             };
@@ -744,7 +733,7 @@ export async function queryPathFor(
                     .map(toTable),
               }
             : {}),
-         ...(answer.via ? { via: answer.via } : {}),
+         ...(answer.tier === "served" ? { via: "served_copy" as const } : {}),
          servedCopyTables: new Set(
             host.servedCopy.materializeBindings().map((b) => b.tablePath),
          ),

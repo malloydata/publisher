@@ -2855,7 +2855,7 @@ export class Model {
    }
 
    /** Drop every compiled leg (the destinations or the model changed). */
-   public invalidateServeShapeCache(): void {
+   public invalidateCompiledLegs(): void {
       this.servedCopy.invalidate();
       this.rollupVariants.invalidate();
       this.persistedViews.invalidate();
@@ -3520,9 +3520,7 @@ export class Model {
             // author's text with its classifications kept (the load's checks
             // decline a copy that does not keep them), and the only compile
             // that has a join a cross-connection build view leaves out.
-            ...(answer.tier === "storage" &&
-            answer.via === "served_copy" &&
-            answer.routedRunnable
+            ...(answer.tier === "served" && answer.routedRunnable
                ? { answeredBy: "served_copy" as const }
                : {}),
          },

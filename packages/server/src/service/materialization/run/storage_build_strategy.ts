@@ -487,7 +487,7 @@ export class StorageBuildStrategy
 
       // What the cast could not make faithful (a number the warehouse returned
       // as text), or a delta applied to a table an older build typed. Not a
-      // refusal: the serve shape leaves such a column off, so only queries
+      // refusal: the served copy leaves such a column off, so only queries
       // that read it are answered live, and the package reports it.
       const mistyped = storedColumnTypeMismatches(
          result.schema.flatMap((c) =>
@@ -580,14 +580,14 @@ export class StorageBuildStrategy
 
    /**
     * Stack on the parent: build a chained storage source over its upstreams'
-    * tables in the SAME destination. Rebinds each to a virtual source with its
-    * captured schema, re-declares the downstream over them (text lifted from the
-    * author's model), and hands the transient model to
-    * {@link buildDownstreamIntoStorage}.
+    * tables in the SAME destination, from the text the host port's
+    * `chainBuildText` writes (the author's files, each upstream re-rooted on
+    * its table as the served copy re-roots it, compiled on the destination
+    * alone), through {@link buildDownstreamIntoStorage}.
     *
-    * Throws (the caller then recomputes or refuses) when there is no
-    * same-destination upstream, the definition text can't be lifted, or the
-    * transient model doesn't compile.
+    * Throws (the caller then recomputes or refuses) when an upstream it
+    * reads has no table in this destination, it reads the warehouse, the
+    * package writes no text, or the text does not compile.
     */
    async buildDownstreamViaParents(
       persistSource: PersistSource,
@@ -603,11 +603,11 @@ export class StorageBuildStrategy
       /** See StorageBuildRequest.replacesNameView. */
       replacesNameView?: boolean,
    ): Promise<StorageBuildResult> {
-      // Rebind every upstream in THIS destination under every name for its
-      // table: a rename (`source: x is daily`) binds to the same handle, as on
-      // the serve path. An EXTENSION adds refinements the table lacks, so it is
-      // lifted below over its base instead. A parent in another destination is
-      // reported missing below.
+      // Every upstream in THIS destination, under every name for its table: a
+      // rename (`source: x is daily`) reads the same table, as on the serve
+      // path. An EXTENSION adds refinements the table lacks, so it stays as
+      // written over its base. A parent in another destination is reported
+      // missing below.
       const aliasesForBinding: Record<string, string[]> = {};
       for (const [name, aliases] of Object.entries(
          planFacts.aliasesBySourceName,
@@ -634,11 +634,10 @@ export class StorageBuildStrategy
          planFacts.sourceIDsFor,
       )
          .filter((b) => b.destinationName === destinationName)
-         // A binding names the source by NAME, and the lift below skips any
-         // candidate whose name is bound. So an upstream materializing another
-         // model's same-named source would stand in for this model's own and be
-         // built into the table (malloydata/publisher#1001). Kept only where the
-         // downstream's model means that source.
+         // A binding names the source by NAME, so an upstream materializing
+         // another model's same-named source would stand in for this model's
+         // own and be built into the table. Kept only where the downstream's
+         // model means that source.
          .filter((b) => bindingServesModelSource(b, lift.contents))
          // A rollup is never an upstream (its synthesized name is in no model
          // file). Filtering it also keeps the legible "no materialized upstream"
@@ -962,7 +961,7 @@ function reportLeftOutColumns(
       );
    }
    logger.warn(
-      "Stored columns no Malloy type declaration reads faithfully were left out of the serve shape; queries reading them answer live",
+      "Stored columns no Malloy type declaration reads faithfully are left out of their source's declaration; queries reading them answer live",
       { sourceName, columns: leftOut.map((c) => `${c.name} ${c.type}`) },
    );
 }
