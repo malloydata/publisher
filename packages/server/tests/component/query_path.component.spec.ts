@@ -15,9 +15,7 @@ import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 import type { Package } from "../../src/service/package";
-import type { V1ServedCopyMode } from "../../src/config";
 import { __setPackageLoadPoolForTests } from "../../src/package_load/package_load_pool";
-import type { Model } from "../../src/service/model";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
 
@@ -165,8 +163,13 @@ describe("the access record's copy of the path report", () => {
          pkg,
          "run: daily -> { group_by: region; aggregate: t is total.sum() }",
       );
+      // The served copy answers a v1 colocated table (the v1 cutover).
       expect(audit.path).toEqual({
-         servedBy: { kind: "materialized", tableId: entityIdOf(pkg, "daily") },
+         servedBy: {
+            kind: "materialized",
+            tableId: entityIdOf(pkg, "daily"),
+            via: "served_copy",
+         },
          considered: [
             {
                tableId: entityIdOf(pkg, "daily"),
@@ -228,6 +231,7 @@ describe("the path report over colocated #@ persist", () => {
          kind: "materialized",
          tableId: entityIdOf(pkg, "daily"),
          dataAsOf: "2026-11-01T00:00:00.000Z",
+         via: "served_copy",
       });
       expect(report.considered).toEqual([
          {
@@ -450,7 +454,8 @@ describe("the path report over a colocated rollup", () => {
             kind: "rollup",
             outcome: "skipped",
             reason: "COUNT_SEMANTICS",
-            detail: expect.stringContaining("count"),
+            // The rollup leg's reason: the count reads the rollup's rows.
+            detail: expect.stringContaining("aggregates the rollup's rows"),
          },
       ]);
    });
@@ -462,13 +467,14 @@ describe("the path report over a colocated rollup", () => {
          "run: orders -> { group_by: amount; aggregate: total }",
       );
       expect(report.servedBy).toEqual({ kind: "live" });
-      // The companion compiles, and Malloy's composite answers from the base.
+      // The rollup leg names the field its grain does not keep.
       expect(report.considered).toEqual([
          {
             tableId: rollupId,
             kind: "rollup",
             outcome: "skipped",
             reason: "GRAIN_TOO_COARSE",
+            detail: expect.stringContaining("`amount`"),
          },
       ]);
    });
@@ -489,12 +495,14 @@ describe("a table past its freshness window, bound by a host's reload", () => {
       await __setPackageLoadPoolForTests(null);
    });
 
-   async function underMode(mode: V1ServedCopyMode): Promise<void> {
+   // One mode since the v1 cutover's switch retired (6g); the name stays in
+   // the test titles.
+   type Mode = "on";
+   async function underMode(_mode: Mode): Promise<void> {
       restore = installSettings({
          env: {
             PERSIST_STORAGE_MODE: "on",
             PUBLISHER_MATERIALIZE: "true",
-            PUBLISHER_V1_SERVED_COPY: mode,
          },
       }).restore;
       // A worker reads its settings at spawn, and the plan is made there.
@@ -547,19 +555,6 @@ describe("a table past its freshness window, bound by a host's reload", () => {
       );
    }
 
-   /** The answer the shadow computes for `on`, as its comparison runs it. */
-   async function shadowsOnAnswer(pkg: Package, query: string) {
-      const model = pkg.getModel("model.malloy") as unknown as {
-         runQueryResults: (...args: unknown[]) => ReturnType<Model["runQuery"]>;
-      };
-      return model.runQueryResults(
-         unrecordedAudit(),
-         { query },
-         QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
-         { v1Mode: "on", shadowRun: true },
-      );
-   }
-
    const DAILY_QUERY =
       "run: daily -> { group_by: region; aggregate: t is total.sum(); order_by: region }";
    const DAILY_LIVE = [
@@ -575,14 +570,13 @@ describe("a table past its freshness window, bound by a host's reload", () => {
    /** Every assertion a stale table's query owes, in every mode. */
    async function expectAnsweredLive(
       pkg: Package,
-      mode: V1ServedCopyMode,
+      _mode: Mode,
       query: string,
       live: unknown[],
       staleId: string,
       staleTable: string,
    ): Promise<void> {
       const answers = [await run(pkg, query)];
-      if (mode === "shadow") answers.push(await shadowsOnAnswer(pkg, query));
       for (const res of answers) {
          expect(res.compactResult).toEqual(live as never);
          expect(res.result.sql).not.toContain(staleTable);
@@ -596,7 +590,7 @@ describe("a table past its freshness window, bound by a host's reload", () => {
       }
    }
 
-   for (const mode of ["off", "shadow", "on"] as const) {
+   for (const mode of ["on"] as const) {
       for (const fallback of ["live", "fail"] as const) {
          it(`answers live, not from the table [${mode}, fallback ${fallback}]`, async () => {
             await underMode(mode);
@@ -735,7 +729,7 @@ describe("a table past its freshness window, bound by a host's reload", () => {
    // `##! experimental.persistence` only through what it imports. Malloy
    // refuses a non-empty manifest on a model without the flag, so a table
    // bound for another model must not reach such a cell.
-   for (const mode of ["off", "on"] as const) {
+   for (const mode of ["on"] as const) {
       it(`runs a notebook cell whose model has no persistence flag, beside a bound table [${mode}]`, async () => {
          await underMode(mode);
          const pkg = await loadPackage(MODEL, {
@@ -798,7 +792,7 @@ describe("a table past its freshness window, bound by a host's reload", () => {
 
    // `/compile`'s SQL preview (and `compile_model`, which goes through it)
    // shows what execution reads: a table its window dropped is not named.
-   for (const mode of ["off", "on"] as const) {
+   for (const mode of ["on"] as const) {
       it(`previews no stale table in /compile's SQL, and still a fresh one [${mode}]`, async () => {
          await underMode(mode);
          writePackageFiles(

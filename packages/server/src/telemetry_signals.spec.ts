@@ -5,10 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type * as Malloy from "@malloydata/malloy-interfaces";
 import { buildQueryEnvelope } from "./mcp/query_envelope";
 import type { ServeBinding } from "./service/materialization/serve/materialization_serve_transform";
-import {
-   StorageServeShape,
-   type ServeShapeHost,
-} from "./service/materialization/serve/model_serve_shape";
+import { ServedCopyServe } from "./service/materialization/serve/served_copy_serve";
 import { resetInstrumentsForTesting } from "./telemetry";
 import {
    startMetricsHarness,
@@ -41,7 +38,13 @@ describe("silent-degradation counters", () => {
    });
 
    it("counts each stale binding the freshness gate withholds", async () => {
-      const shape = new StorageServeShape({} as ServeShapeHost);
+      // The served copy reads storage tables only with destinations; it needs
+      // nothing else to decide which bindings are stale.
+      const copy = new ServedCopyServe({
+         modelPath: () => "m.malloy",
+         modelDef: () => undefined,
+         serveDestinationConfig: () => () => ({}) as never,
+      });
       const stale = (sourceName: string): ServeBinding =>
          ({
             sourceName,
@@ -50,10 +53,8 @@ describe("silent-degradation counters", () => {
             freshnessWindowSeconds: 60,
             freshnessFallback: "live",
          }) as ServeBinding;
-      shape.setServeBindings([stale("a"), stale("b")]);
-      await expect(shape.loadServeShapeQuery("run: a -> x")).rejects.toThrow(
-         "no fresh storage serve bindings",
-      );
+      copy.setBindings([stale("a"), stale("b")]);
+      await expect(copy.loadQuery("run: a -> x")).rejects.toThrow();
       expect(
          await harness.collectCounter(
             "publisher_storage_bindings_withheld_total",

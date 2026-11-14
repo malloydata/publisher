@@ -119,6 +119,7 @@ async function buildModel(): Promise<Model> {
    const serveConfig = new MalloyConfig({ connections: {} });
    serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
    model.setServeDestinationConfig(() => serveConfig);
+   model.setServedCopyContext(dir, connMap);
    model.setServeBindings([BINDING]);
    return model;
 }

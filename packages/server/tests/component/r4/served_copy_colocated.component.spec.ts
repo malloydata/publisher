@@ -488,7 +488,7 @@ source: gated is orders_raw extend {
       }
    });
 
-   it("leaves a v1 colocated #@ persist on Malloy's build manifest, not the served copy", async () => {
+   it("binds a v1 colocated #@ persist on the served copy, which answers it (the v1 cutover, G1)", async () => {
       const restore = installSettings({
          env: { PERSIST_STORAGE_MODE: "off", PUBLISHER_MATERIALIZE: "true" },
       }).restore;
@@ -515,15 +515,15 @@ source: v1 is orders_raw -> {
          const served = await fixture.run("m.malloy", query);
          if ("error" in served) throw new Error(served.error);
          expect(served.answer.servedBy).toBe("materialized");
-         expect(served.answer.via).toBeUndefined();
+         expect(served.answer.via).toBe("served_copy");
          expect(
             rowDifference(live.answer.rows, served.answer.rows),
          ).toBeUndefined();
-         // No served-copy binding for it: the copy reads only #(materialize).
+         // Bound on the served copy, not left to Malloy's build manifest.
          const model = fixture.pkg.getModel("m.malloy") as unknown as {
             servedCopy: { hasBindings(): boolean };
          };
-         expect(model.servedCopy.hasBindings()).toBe(false);
+         expect(model.servedCopy.hasBindings()).toBe(true);
       } finally {
          await fixture.dispose();
          restore();

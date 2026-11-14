@@ -354,7 +354,7 @@ source: X is duckdb.sql("SELECT 'org1' AS org_id, 1 AS id UNION ALL SELECT 'org2
    );
 
    it(
-      "builds the storage serve shape's QueryModel once, not per query",
+      "builds the served copy's QueryModel once, not per query",
       async () => {
          setStorageMode("on");
          const text = `source: qm_orders is duckdb.sql("SELECT 10 AS amount") extend {
@@ -397,6 +397,7 @@ source: X is duckdb.sql("SELECT 'org1' AS org_id, 1 AS id UNION ALL SELECT 'org2
                () => new FixedConnectionMap(connMap, "duckdb"),
             );
             model.setServeDestinationConfig(() => serveConfig);
+            model.setServedCopyContext(dir, connMap);
             model.setServeBindings([
                {
                   sourceName: "qm_orders",
@@ -408,7 +409,7 @@ source: X is duckdb.sql("SELECT 'org1' AS org_id, 1 AS id UNION ALL SELECT 'org2
             ]);
 
             const q = "run: qm_orders -> { aggregate: total }";
-            // 99: served from the stored table, so the serve shape compiled it.
+            // 99: served from the stored table, so the served copy compiled it.
             expect(await run(model, q)).toEqual([{ total: 99 }]);
             const afterFirst = builds;
             expect(await run(model, q)).toEqual([{ total: 99 }]);

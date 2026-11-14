@@ -152,7 +152,7 @@ source: base is duckdb.sql("select 1 as a")
 #@ persist
 source: p is base -> { group_by: a }
 `,
-         { PUBLISHER_V1_SERVED_COPY: "off" },
+         {},
          false,
       );
       const wire = wirePlan(parts);
@@ -163,36 +163,8 @@ source: p is base -> { group_by: a }
       expect(wire?.omittedFiles).toEqual([]);
    });
 
-   it("off: a synthesized #@ preaggregate companion that fails reports its rollups as preaggregate_companion_failed", async () => {
-      const env = { PUBLISHER_V1_SERVED_COPY: "off" };
-      const good = await plan(V1_ROLLUP, env, false);
-      const planned = Object.keys(good.parts.preaggregatePlans).map((id) =>
-         id.replace(good.dir, "<pkg>"),
-      );
-      expect(planned).toHaveLength(1);
-      expect(planned[0]).toMatch(/__preagg__.*@file:.*\.preagg\.malloy$/);
-
-      const bad = await plan(V1_ROLLUP, env, true);
-      expect(Object.keys(bad.parts.sources)).toEqual([]);
-      const wire = wirePlan(bad.parts);
-      // Kept, not null: a plan that lost sources is not "no plan".
-      expect(wire).not.toBeNull();
-      expect(
-         wire?.omittedSources?.map((o) => ({
-            ...o,
-            sourceID: o.sourceID.replace(bad.dir, "<pkg>"),
-         })),
-      ).toEqual(
-         planned.map((sourceID) => ({
-            sourceID,
-            reason: "preaggregate_companion_failed",
-         })),
-      );
-      expect(JSON.stringify(wire)).not.toContain("secret-value");
-   });
-
-   it("on: a rollup companion that fails reports the v1 rollups as rollup_companion_failed", async () => {
-      const env = { PUBLISHER_V1_SERVED_COPY: "on" };
+   it("a rollup companion that fails reports the v1 rollups as rollup_companion_failed", async () => {
+      const env = {};
       const good = await plan(V1_ROLLUP, env, false);
       const planned = Object.keys(good.parts.preaggregatePlans).map((id) =>
          id.replace(good.dir, "<pkg>"),
@@ -214,13 +186,13 @@ source: p is base -> { group_by: a }
       );
    });
 
-   it("on: a rollup companion whose author file cannot be set aside reports its rollups as rollup_companion_blanking_failed", async () => {
+   it("a rollup companion whose author file cannot be set aside reports its rollups as rollup_companion_blanking_failed", async () => {
       // A `#@ persist` line is what the companion must set aside.
       const text = `${V1_ROLLUP}
 #@ persist
 source: by_category is orders -> { group_by: category }
 `;
-      const env = { PUBLISHER_V1_SERVED_COPY: "on" };
+      const env = {};
       const good = await plan(text, env, false);
       const planned = Object.keys(good.parts.preaggregatePlans).map((id) =>
          id.replace(good.dir, "<pkg>"),
@@ -240,12 +212,12 @@ source: by_category is orders -> { group_by: category }
       );
    });
 
-   it("on: a v1 build copy that fails reports the file's #@ persist sources as v1_build_companion_failed", async () => {
+   it("a v1 build copy that fails reports the file's #@ persist sources as v1_build_companion_failed", async () => {
       const text = `source: base is duckdb.sql("select 1 as a, 'x' as b")
 #@ persist
 source: p is base extend { measure: n is count() } -> { group_by: a, b; aggregate: n }
 `;
-      const env = { PUBLISHER_V1_SERVED_COPY: "on" };
+      const env = {};
       const good = await plan(text, env, false);
       const planned = Object.keys(good.parts.sources).map((id) =>
          id.replace(good.dir, "<pkg>"),
@@ -336,16 +308,12 @@ source: p is base -> { group_by: a }
 #@ persist
 source: q is base -> { group_by: a }
 `;
-   for (const [mode, text] of [
-      ["off", `##! experimental.persistence\n${BROKEN}`],
-      ["on", BROKEN],
+   for (const [file, text] of [
+      ["a flagged file", `##! experimental.persistence\n${BROKEN}`],
+      ["an unflagged file", BROKEN],
    ] as const) {
-      it(`${mode}: reports the source as persist_annotation_unparseable, and only it`, async () => {
-         const { parts, dir } = await plan(
-            text,
-            { PUBLISHER_V1_SERVED_COPY: mode },
-            false,
-         );
+      it(`${file}: reports the source as persist_annotation_unparseable, and only it`, async () => {
+         const { parts, dir } = await plan(text, {}, false);
          const wire = wirePlan(parts);
          expect(Object.values(wire?.sources ?? {}).map((s) => s.name)).toEqual([
             "q",
@@ -372,7 +340,7 @@ source: base is duckdb.sql("select 1 as a")
 #@ refresh="unterminated
 source: p is base -> { group_by: a }
 `,
-         { PUBLISHER_V1_SERVED_COPY: "off" },
+         {},
          false,
       );
       const wire = wirePlan(parts);

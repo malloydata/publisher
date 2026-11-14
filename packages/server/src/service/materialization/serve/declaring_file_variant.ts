@@ -164,17 +164,25 @@ export async function compileDeclaringFileVariant(args: {
       addFile: (url, text) => overlay.set(overlayKey(url), text),
    });
    if (typeof declaration !== "string") return declaration;
-   const others = copyNames.filter((n) => n !== source);
+   const others = copyNames.names.filter((n) => n !== source);
    const importOthers =
       others.length > 0
          ? `import { ${others.map((n) => identifier(n)).join(", ")} } from ${doubleQuotedString(copyName)}\n`
+         : "";
+   // Exported again, so a file that imports the declaring file whole (an
+   // `index.malloy` re-exporting its sources) still sees every source and
+   // query the author's file declares, not only the redeclared one.
+   const reexported = others.filter((n) => !copyNames.givens.has(n));
+   const exportAll =
+      reexported.length > 0
+         ? `export { ${[source, ...reexported].map((n) => identifier(n)).join(", ")} }\n`
          : "";
    overlay.set(
       overlayKey(declaringURL),
       `${args.flags}
 ${importOthers}
 ${declaration}
-`,
+${exportAll}`,
    );
    // The query model: the author's model's names, each from the file that
    // declares it (the redeclared source from its declaring file's overlay).
@@ -213,14 +221,17 @@ ${imports}
    };
 }
 
-/** The names a file declares (its sources, queries and givens), compiled on its own. */
+/**
+ * The names a file declares (its sources, queries and givens), compiled on
+ * its own, with which of them are givens.
+ */
 async function namesDeclaredIn(
    packagePath: string,
    modelPath: string,
    config: ModelConnectionInput,
    overlay: ReadonlyMap<string, string>,
    url: URL,
-): Promise<string[]> {
+): Promise<{ names: string[]; givens: ReadonlySet<string> }> {
    const { runtime, importBaseURL } = await createModelRuntime(
       packagePath,
       modelPath,
@@ -235,13 +246,15 @@ async function namesDeclaredIn(
       // Declared in the file itself, not imported into it.
       if (located.location?.url === url.href) names.add(name);
    }
+   const givens = new Set<string>();
    for (const given of Object.values(def.givens ?? {})) {
       const g = given as { name?: unknown; location?: { url?: unknown } };
       if (typeof g.name === "string" && g.location?.url === url.href) {
          names.add(g.name);
+         givens.add(g.name);
       }
    }
-   return [...names].sort();
+   return { names: [...names].sort(), givens };
 }
 
 /** The routes a row-level gate is written on. */

@@ -85,6 +85,7 @@ source: by_column__rollup__region_status__5f704d70__served is by_column__rollup_
 }
 #(access_filter) region = $REGION
 source: by_column is by_column__rollup__region_status__5f704d70__served include { internal: total__partial public: * }
+export { by_column, by_lock, gated_mat, locked_mat }
 
 // ==== <pkg>/m.malloy (text 3 of 3)
 ##! experimental { access_modifiers givens persistence virtual_source }
@@ -98,6 +99,7 @@ source: by_lock__rollup__status__eb4380b4__served is by_lock__rollup__status__eb
 }
 #(authorize) 'admin' = $ROLE
 source: by_lock is by_lock__rollup__status__eb4380b4__served include { internal: total__partial public: * }
+export { by_lock, by_column, gated_mat, locked_mat }
 
 // ==== <pkg>/m.malloy.preaggregate.malloy (text 1 of 2)
 ##! experimental.persistence

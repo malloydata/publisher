@@ -93,7 +93,7 @@ source: orders is _orders_fact -> { select: * }
 source: totals is _orders_fact -> { group_by: org_id; aggregate: n is count() }
 ```
 
-On a storage destination the wrapper is carried onto the serve shape verbatim, over the rebound fact, when everything it reads is itself on the shape. A wrapper whose query or joins reach a source that is not materialized there — a warehouse table, or a persisted source whose table is stale past its window — is served live instead.
+On a storage destination the wrapper is read by the served copy as written, over the re-rooted fact, when everything it reads is itself stored there. A wrapper whose query or joins reach a source that is not materialized there — a warehouse table, or a persisted source whose table is stale past its window — is served live instead.
 
 ### `#(access_filter)`-gated sources and materialization
 
@@ -199,7 +199,7 @@ value is substituted just the same.
 Two positions carry a given that is refused even though the build leaves them out: a declared
 `dimension:` or `measure:` that reads a given itself (`dynamic_projection`), and a join's `on:`
 condition (`dynamic_join`). Neither is in the artifact, so neither is a leak; they are refused
-because the serve shape has nothing that binds the given per caller in that position.
+because the served copy has nothing that binds the given per caller in that position.
 
 #### Per-user visibility through a joined grant table
 
@@ -225,8 +225,8 @@ source: opps is raw_opps -> { select: * } extend {
 ```
 
 Neither artifact is filtered by user: a persisted source's joins and dimensions are not in its
-build, and `grants` leaves its `where:` out like any other. At read, the serve shape re-emits
-`grants` with its terms bound to the caller's values and re-emits the join against that binding,
+build, and `grants` leaves its `where:` out like any other. At read, the served copy reads
+`grants` with its terms bound to the caller's values and the join against that binding,
 so `visible` is evaluated over exactly the grant rows the live query would join. The build plan
 reports the join under `joinedTerms`, beside the source's own `strippedTerms`, naming the joined
 source whose binding the per-caller answer depends on. The rule is transitive: a grant table that
@@ -481,7 +481,7 @@ reads through a JavaScript number, so 9007199254740993 would come back as 900719
 column whose field Malloy types as a big integer (a DuckDB `BIGINT`, `HUGEINT` or `UBIGINT`, a
 BigQuery `INT64`, a Snowflake `NUMBER(p,0)`, or a sum or max over one) is therefore read through a
 native cast: `::"HUGEINT"` in a `storage=` table, and, in a colocated one (a colocated
-`#(materialize)` table, or a v1 `#@ persist` one under `PUBLISHER_V1_SERVED_COPY=on`), the
+`#(materialize)` table, or a v1 `#@ persist` one), the
 column's own warehouse type, which each colocated build reads from the warehouse's catalog and
 records on its manifest entry (`nativeSchema`). Malloy types the cast as a big integer, so the
 value comes back with every digit and the field keeps live's `bigint` subtype; selecting,
@@ -547,18 +547,17 @@ warning with no reload. The other `live` reasons already carry warnings of their
 
 **Preview before publishing.** `POST …/packages?dryRun=true` answers the same verdicts, plus the
 `buildPlan`, for a package that is not published. For a source stored with `storage=` it also
-compiles each named view against a serve shape declared from the plan's output columns, which needs
-no built table, and lists it under `views` as `serves` or `live` with the compile error. Use it to
-learn what a change builds and serves without a publish and a build per attempt.
+compiles each named view against the model's served copy, with the source re-rooted on a table
+declared from the plan's output columns, which needs no built table, and lists it under `views` as
+`serves` or `live` with the compile error. Use it to learn what a change builds and serves without
+a publish and a build per attempt.
 
 A view that does not compile against the stored columns (it reaches through a join to a source
-that is not materialized, or reads a field the table does not hold) is answered live on its own:
-the serve shape drops just that view, and the source's other views, and every other source's, keep
-serving from storage. Its `views` entry is `live` with that view's compile error. The shape finds
-such views by halving when it is built for a set of bindings, never per query, and spends at most 64
-compiles on it; a view it never reached says so and is answered live. An entry that
-says the shape left the source's views off means the shape could not single out a view at fault, so
-every view of the source is answered live.
+that is not materialized, or reads a field the table does not hold) is answered live on its own,
+and the source's other views, and every other source's, keep serving from storage. Its `views`
+entry is `live` with that view's compile error. When the served copy cannot re-root the source at
+all (the table lacks a column the source needs, say), every view of the source is `live`, each
+with the reason.
 
 ## The persistence policy (the publish gate)
 
@@ -682,17 +681,16 @@ In both lists `reason` is a code, never the failure's message (which could quote
 | `unkeyable` | Malloy could not key the source's build (an unbound parameter, a given with no value) and no eligibility gate refused it first. |
 | `eligibility_check_failed` | An eligibility gate failed with an error rather than a refusal. |
 | `projection_failed` | The source's plan entry could not otherwise be computed. |
-| `preaggregate_companion_failed` | The synthesized `#@ preaggregate` companion (`<model>.preagg.malloy`) did not compile, so its `__preagg__` rollups were not planned. |
-| `rollup_companion_failed` | The rollup companion (`<model>.preaggregate.malloy`: `#(preaggregate)`, and v1 `#@ preaggregate` under the cutover) did not plan or compile. |
+| `rollup_companion_failed` | The rollup companion (`<model>.preaggregate.malloy`: `#(preaggregate)`, and v1 `#@ preaggregate`) did not plan or compile. |
 | `rollup_companion_blanking_failed` | That companion was not built because a `#@` line of the author's files could not be set aside. |
 | `materialize_companion_failed` | The generated `#(materialize)` companion did not plan or compile. |
 | `persisted_view_companion_failed` | The persisted-view companion did not plan or compile. |
-| `v1_build_companion_failed` | Under the cutover, the build copy of a model file without `##! experimental.persistence` could not be read or did not compile, so none of its `#@ persist` sources were planned. |
+| `v1_build_companion_failed` | The build copy of a model file without `##! experimental.persistence` could not be read or did not compile, so none of its `#@ persist` sources were planned. |
 | `persist_annotation_unparseable` | None of the source's `#@` lines parse, so Malloy planned nothing for it. The package warning (`persist-unparseable`) names the line; this entry names the source. |
 
 So: retire an anchor whose source is absent from `sources` and `refusedSources` only when no `omittedSources` entry names the source and no `omittedFiles` entry names the file it is declared in. A plan from a Publisher that predates the fields carries neither; read their absence as "completeness unknown", not as empty. Both fields are on every surface that returns a build plan, `[]` when nothing was lost: `GET …/packages/{pkg}/build-plan`, the dry run (`POST …/packages?dryRun=true`) and the deprecated `Package.buildPlan`. A plan that could not be derived at all (a model that does not compile, an import cycle) still answers 409 `BUILD_PLAN_UNAVAILABLE` rather than a partial plan.
 
-**A mixed fleet mid-rollout** (some workers with `PUBLISHER_V1_SERVED_COPY=on`, some off) is safe to bind one manifest to: each worker matches a manifest entry only against its own plan, by `sourceEntityId` (and, for a `storage=` entry with no matching id, by a source name its plan holds exactly once, which the two sides' `__preagg__` and `__rollup__` names never share). An entry built on the other side matches nothing and is ignored, so its source answers live until this side builds its own table: it costs a rebuild, never an answer from the other side's table.
+**A mixed fleet mid-rollout** (some workers on a release where the v1 cutover is the only path, some on an earlier one with `PUBLISHER_V1_SERVED_COPY` off) is safe to bind one manifest to: each worker matches a manifest entry only against its own plan, by `sourceEntityId` (a current worker matches a `storage=` entry by source name and `sourceEntityId` together, never by name alone). An entry built on the other side matches nothing and is ignored, so its source answers live until this side builds its own table: it costs a rebuild, never an answer from the other side's table.
 
 ### Supplying the ledger yourself
 
@@ -798,7 +796,7 @@ The report is assembled after the query runs and never changes which table answe
 
 ### The served copy (in development, `PUBLISHER_MATERIALIZE`)
 
-With `PUBLISHER_MATERIALIZE=true`, a query on a built colocated `#(materialize)` source, or (with `PERSIST_STORAGE_MODE=on` as well) a built `storage=` source, may be answered from the model's **served copy**: your own files, held in memory, with the source's definition replaced by its stored table under the same name. Its trailing `extend { … }` blocks, its annotations and every other line are your text, so an extension, a join to it, a view, a named query or a source in a file that imports it reads the stored table with no change to how it is written. The served copy compiles when the package binds its stored tables; a query it cannot answer falls through to the serve shape, then live. When it answers, the path report's `servedBy` carries `via: "served_copy"`.
+With `PUBLISHER_MATERIALIZE=true`, a query on a built colocated `#(materialize)` source, or (with `PERSIST_STORAGE_MODE=on` as well) a built `storage=` source, may be answered from the model's **served copy**: your own files, held in memory, with the source's definition replaced by its stored table under the same name. Its trailing `extend { … }` blocks, its annotations and every other line are your text, so an extension, a join to it, a view, a named query or a source in a file that imports it reads the stored table with no change to how it is written. The served copy compiles when the package binds its stored tables; a query it cannot answer is answered live. When it answers, the path report's `servedBy` carries `via: "served_copy"`.
 
 - **`#(materialize)`**: the table is the one the source's generated build source builds, which stores the source's rows with its `where:` applied, so a source of any shape re-roots. A computed dimension is stored under its own name, so the served copy drops its definition and the stored column is the field; the dimension's annotations (`#(doc)`, `#(classification)` and the rest) are written on that field, so they read back as before. A timeframe truncation (`order_date.month`) keeps its timeframe: its definition is rewritten in place to truncate the stored column again, so results, charts and filters see a `month` field as they do live. A dimension the source inherits from its base is simply its stored column. A query that sets its own `timezone:` over a table that stores a time-zone-dependent dimension (one declared on a base in another file; see below) is answered live, since the build computed it in the default timezone. A source whose base declares a measure, view or join it inherits is left as written (its table does not carry them) and warned about.
 - **`#@ persist storage=`**: only a query-shaped source (`x -> { … }`) is re-rooted, since its table is exactly its query's output; a timeframe column in that output keeps its timeframe too. A source declared by refinement alone stores its root's rows and is left as written; it still reads a re-rooted base by name.
@@ -823,7 +821,7 @@ With `PUBLISHER_MATERIALIZE=true`, a query on a built colocated `#(materialize)`
 - **A join the destination cannot reach.** A stored source keeps its joins, but a joined source that is not stored in the same destination reads another connection, which Malloy cannot join. The served copy leaves that join out (with what reads it), so the queries that do not use it still read the table; a query that does is answered live, and its path report skips the table with `CROSS_CONNECTION`. The package warning names the join and the three fixes: inline it, materialize the joined source into the same destination, or keep the source colocated.
 - **Sources from different connections, joined.** A file whose join crosses two origin connections does not compile live. With the switch on it loads with that join left out (and what reads it, each named in a `served-copy-not-served` package warning), its sources build from that, and once both sides are stored in one destination the served copy answers the join there. Until both sides are built, only the queries that reach the join are refused. The join may sit in an imported file. Only what follows from the join is left out: a file with any other compile error fails to load as before. Once both sides are built, the served copy reaches fields the loaded model does not, so the load's `#(carries)` leak and classification-coverage checks run on the served copy's compile too: a source they flag there is not answered from the stored tables (path report `WARNED`), and a `served-copy-not-served` package warning names each field and why (an unclassified one also as `classification-coverage`). Discovery does not list the left-out join or what reads it, and `compile_model` at `file` or `append` scope still reports the join as an error. The per-request `#(carries)` ceiling reads the compile that answers: a query the served copy answers is checked on the served copy's compile (and on live too, when live compiles), so a clean query through the join is served once both sides are built, and one reading a class past the ceiling is refused, served or live ([classification](classification.md#the-ceiling-is-checked-per-query)).
 
-**Gated sources (`PUBLISHER_MATERIALIZE_GATED_SOURCES`, off by default).** Today a query whose entry point carries a row-level gate (`#(access_filter)`, or an `#(authorize)` that filters rows) is never answered from a stored table, because today's serve shape carries no annotations. The served copy keeps them: with this switch on as well, such a query may be answered from the served copy, the gate grafted and proven on the served compile exactly as on live, so the caller gets live's rows read from the stored table; today's serve shape and v1 `#@ preaggregate` rollups stay blocked; a colocated `#(preaggregate)` rollup is read past the gate the same way when every gate reads its grain dimensions ([preaggregation.md](preaggregation.md#preaggregate-materialization-v2-behind-publisher_materialize)); and a query whose own join reaches a gated source stays blocked too (that gate is never grafted on a routed compile), which is answered live. The switch also decides what is stored: on, a `#(materialize)` source, `storage=` or colocated, whose gate is its own and compiles to a row filter or a lock (the bar a colocated `#@ persist` meets) is built, bound and served; off, a gated colocated `#(materialize)` is refused too (its table is read only through the served copy, so it would be built and never read); a gated `#@ persist storage=` source, a gate reached only through a join, and every gated source with the switch off are refused as before (`persist-source-refused`, reason `authorize`), so the managed tier never holds a gated source's columns unless the switch is on. The verdict for a stored table reached only through gated entry points reads `serves` rather than `WARNED` `row_level_gate` while the switch is on. Since a `#(materialize)` source stores its private and internal fields, turning the switch on puts a gated source's hidden columns (its `org_id`, say) in the destination as well; off, a gated source is never built. A gate is grafted as a caller-level `extend`, which reads an `internal` field and never a `private` one, so a gate over a private column denies every caller, live and served alike: give the gate's column `internal`. `internal` keeps it out of a plain `select:`, but a caller's own `extend` or `include { public: org_id }` still reads it, live and served alike, only in the rows the gate admits; hide a value no caller may see behind `private`, in a field the gate does not read. A served-copy answer to a gated query is denied (`403`) if governing it on the served copy finds no gate there, and its access record's `path.servedBy` carries `via: "served_copy"`. Publisher does not authenticate callers: the gate holds only behind the gateway that sets the givens from a verified identity ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)). It is off until a security review of storing gated sources' columns in the managed tier.
+**Gated sources (`PUBLISHER_MATERIALIZE_GATED_SOURCES`, off by default).** Without this switch, a query whose entry point carries a row-level gate (`#(access_filter)`, or an `#(authorize)` that filters rows) is answered from a stored table only when that table is colocated. The served copy keeps the gate's annotations: with this switch on as well, such a query may be answered from the served copy, the gate grafted and proven on the served compile exactly as on live, so the caller gets live's rows read from the stored table; a v1 `#@ preaggregate` rollup stays blocked; a colocated `#(preaggregate)` rollup is read past the gate the same way when every gate reads its grain dimensions ([preaggregation.md](preaggregation.md#preaggregate-materialization-v2-behind-publisher_materialize)); and a query whose own join reaches a gated source stays blocked too (that gate is never grafted on a routed compile), which is answered live. The switch also decides what is stored: on, a `#(materialize)` source, `storage=` or colocated, whose gate is its own and compiles to a row filter or a lock (the bar a colocated `#@ persist` meets) is built, bound and served; off, a gated colocated `#(materialize)` is refused too (its table is read only through the served copy, so it would be built and never read); a gated v1 `#@ persist storage=` source (switch on or off: it stays live), a gate reached only through a join, and every gated source with the switch off are refused as before (`persist-source-refused`, reason `authorize`), so the managed tier never holds a gated source's columns unless the switch is on. The verdict for a stored table reached only through gated entry points reads `serves` rather than `WARNED` `row_level_gate` while the switch is on. Since a `#(materialize)` source stores its private and internal fields, turning the switch on puts a gated source's hidden columns (its `org_id`, say) in the destination as well; off, a gated source is never built. A gate is grafted as a caller-level `extend`, which reads an `internal` field and never a `private` one, so a gate over a private column denies every caller, live and served alike: give the gate's column `internal`. `internal` keeps it out of a plain `select:`, but a caller's own `extend` or `include { public: org_id }` still reads it, live and served alike, only in the rows the gate admits; hide a value no caller may see behind `private`, in a field the gate does not read. A served-copy answer to a gated query is denied (`403`) if governing it on the served copy finds no gate there, and its access record's `path.servedBy` carries `via: "served_copy"`. Publisher does not authenticate callers: the gate holds only behind the gateway that sets the givens from a verified identity ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)). It is off until a security review of storing gated sources' columns in the managed tier.
 
 A served copy that does not compile, or a source it cannot re-root, is a `served-copy-not-served` package warning, and those sources serve as they did without it. The served copy is compiled once per model, so a failure is traced to the source whose re-root it is in, and that source alone steps back (`reroot_not_compiled`: it answers live, after first keeping its inlined join_ones as written, or, for an extension table, its own blocks only); the model's other sources keep their tables. Only a failure outside every re-root costs the whole copy. A model that joins sources on different connections compiles once both sides are built into one destination, and reports that wait under the same code until then. Off (the default), nothing here runs.
 

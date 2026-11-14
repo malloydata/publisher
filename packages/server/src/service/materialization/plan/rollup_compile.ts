@@ -24,6 +24,7 @@ import type {
    Runtime,
 } from "@malloydata/malloy";
 import * as path from "path";
+import { getMaterializeEnabled } from "../../../config";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import { queryGivenUsageIds } from "../../governance/ir/prepared_query";
@@ -135,6 +136,8 @@ export async function tryCompileRollupCompanion(args: {
          {
             packageRelativeSourceID: (id) =>
                packageRelativeSourceID(args.packagePath, id),
+            // Planned under the v1 cutover too: v2's route only with its switch.
+            readsV2: getMaterializeEnabled(),
          },
          (declaringURL) => {
             try {

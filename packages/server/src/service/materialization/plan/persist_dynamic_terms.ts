@@ -439,32 +439,6 @@ function declaresStorage(annotations: unknown): boolean {
 }
 
 /**
- * The `sourceID`s of the given-scoped sources a field list joins. A join that
- * can never be re-emitted is `undefined`: an inline refinement (no `sourceID`)
- * or a non-public join, which `extractJoins` never re-emits while a public
- * field may still read through it.
- */
-export function givenScopedJoinTargets(
-   fields: unknown,
-): (string | undefined)[] {
-   if (!Array.isArray(fields)) return [];
-   const out: (string | undefined)[] = [];
-   for (const field of fields) {
-      if (field === null || typeof field !== "object") continue;
-      const f = field as Record<string, unknown>;
-      if (f.join === undefined || !readsAGiven(f, new WeakSet())) continue;
-      const restricted =
-         f.accessModifier != null && f.accessModifier !== "public";
-      out.push(
-         !restricted && typeof f.sourceID === "string" && f.sourceID.length > 0
-            ? f.sourceID
-            : undefined,
-      );
-   }
-   return out;
-}
-
-/**
  * The single-segment field paths a filter entry reads, from its `refSummary`.
  * Any joined path (`["vis","user_id"]`, not a stored column) yields `[]`:
  * scoping a merge by a subset of a term's columns would match rows the term

@@ -1,0 +1,27 @@
+// conformance: same-named sources in two models [colocated]: files generated while serving
+
+// ==== <pkg>/a.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: placed__served is {
+   region::string,
+   total::number
+}
+
+import "raw.malloy"
+
+#@ persist name="summary_placed"
+source: summary is duckdb.virtual('29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3')::placed__served
+
+// ==== <pkg>/b.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: shipped__served is {
+   region::string,
+   total::number
+}
+
+import "raw.malloy"
+
+#@ persist name="summary_shipped"
+source: summary is duckdb.virtual('16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7')::shipped__served

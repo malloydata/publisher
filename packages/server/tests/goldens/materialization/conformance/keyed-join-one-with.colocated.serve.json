@@ -84,7 +84,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
+          "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -133,7 +134,13 @@
       "equalToLive": true,
       "malloy": "run: orders_k -> { group_by: c.segment; aggregate: t is amount.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -154,12 +161,14 @@
           "sourceName": "orders_k"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a warehouse source joining it with `with`",
-      "servedBy": "live",
+      "servedBy": "materialized",
       "servedFrom": null,
       "switch": "off"
     },
@@ -229,7 +238,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
+          "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -278,7 +288,13 @@
       "equalToLive": true,
       "malloy": "run: orders_k -> { group_by: c.segment; aggregate: t is amount.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -299,12 +315,14 @@
           "sourceName": "orders_k"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a warehouse source joining it with `with`",
-      "servedBy": "live",
+      "servedBy": "materialized",
       "servedFrom": null,
       "switch": "on"
     }

@@ -33,7 +33,6 @@ export type OmittedSourceReason =
    | "unkeyable"
    | "eligibility_check_failed"
    | "projection_failed"
-   | "preaggregate_companion_failed"
    | "rollup_companion_failed"
    | "rollup_companion_blanking_failed"
    | "materialize_companion_failed"

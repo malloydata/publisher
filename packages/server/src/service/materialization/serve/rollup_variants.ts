@@ -169,6 +169,10 @@ import { fieldNotes, noteSource } from "../field_notes";
 import { timeframeRestatements, typeDeclaration } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import {
+   getMaterializeEnabled,
+   getMaterializeGatedSources,
+} from "../../../config";
+import {
    boundTablePath,
    buildVirtualMap,
    sqlReadsTable,
@@ -342,6 +346,11 @@ export class RollupVariantServe {
    private compiled = new Map<string, Promise<CompiledVariant>>();
    private planMemo?: {
       modelDef: unknown;
+      /**
+       * The switches the plans were read under ({@link planSwitches}): a
+       * plan read with one is not the plan with the other.
+       */
+      switches: string;
       byBase: Map<string, RollupVariantPlan[]>;
       /** A7: each source's join legs, by its `sourceID`. */
       joinLegs?: Map<string, ReturnType<typeof joinRollupLegs>>;
@@ -388,8 +397,11 @@ export class RollupVariantServe {
    /** Every rollup a source this model can see declares, by base `sourceID`. */
    private plansByBase(): Map<string, RollupVariantPlan[]> {
       const modelDef = this.host.modelDef();
+      const switches = planSwitches();
       const memo = this.planMemo;
-      if (memo && memo.modelDef === modelDef) return memo.byBase;
+      if (memo && memo.modelDef === modelDef && memo.switches === switches) {
+         return memo.byBase;
+      }
       const byBase = new Map<string, RollupVariantPlan[]>();
       const packagePath = this.packagePath;
       if (modelDef && packagePath) {
@@ -398,11 +410,14 @@ export class RollupVariantServe {
             const { plans } = planSourceRollups(map, node, {
                packageRelativeSourceID: (id) =>
                   packageRelativeSourceID(packagePath, id),
+               // Routed under the v1 cutover too: v2's route only with its
+               // switch.
+               readsV2: getMaterializeEnabled(),
             });
             if (plans.length > 0) byBase.set(node.sourceID, plans);
          }
       }
-      this.planMemo = { modelDef, byBase };
+      this.planMemo = { modelDef, switches, byBase };
       return byBase;
    }
 
@@ -455,7 +470,10 @@ export class RollupVariantServe {
       const localName =
          typeof prepared.structRef === "string"
             ? prepared.structRef
-            : undefined;
+            : importedSourceName(
+                 prepared.structRef,
+                 prepared.modelDef ?? (modelDef as never),
+              );
       const struct = resolveStructRefSource<{ sourceID?: unknown }>(
          prepared.structRef,
          prepared.modelDef ?? (modelDef as never),
@@ -2508,4 +2526,45 @@ export function checkCoverage(
       }
    };
    visit(levels, new Set());
+}
+
+/**
+ * The switches {@link planSourceRollups} reads, as a memo key: `#(preaggregate)`
+ * with `PUBLISHER_MATERIALIZE` (`readsV2`), and whether a gated base's rollup
+ * is read.
+ */
+function planSwitches(): string {
+   return [getMaterializeEnabled(), getMaterializeGatedSources()].join("/");
+}
+
+/**
+ * The name a model gives the source `structRef` holds inline, when it is that
+ * named source unchanged: Malloy inlines a source a model imports without
+ * exporting it (#6646), so the query's struct is an object, not a name. It is
+ * the named source only when the model's entry of the struct's `as` has the
+ * same `sourceID`, fields and filters; an inline extension (`orders extend {
+ * … } -> …`) changes one of them and stays unnamed.
+ */
+export function importedSourceName(
+   structRef: unknown,
+   modelDef: { contents?: Record<string, unknown> } | undefined,
+): string | undefined {
+   if (structRef === null || typeof structRef !== "object") return undefined;
+   const struct = structRef as {
+      as?: unknown;
+      sourceID?: unknown;
+      fields?: unknown;
+      filterList?: unknown;
+   };
+   if (typeof struct.as !== "string" || typeof struct.sourceID !== "string") {
+      return undefined;
+   }
+   const named = modelDef?.contents?.[struct.as] as typeof struct | undefined;
+   if (!named || named.sourceID !== struct.sourceID) return undefined;
+   const same = (a: unknown, b: unknown) =>
+      JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+   return same(named.fields, struct.fields) &&
+      same(named.filterList, struct.filterList)
+      ? struct.as
+      : undefined;
 }

@@ -94,6 +94,8 @@ async function buildModel(
       serveConfig.wrapConnections(() => connections);
       model.setServeDestinationConfig(() => serveConfig);
    }
+   // The preview compiles a served copy of the author's own files.
+   model.setServedCopyContext(DIR, new Map([["duckdb", duckdb]]));
    return model;
 }
 
@@ -113,17 +115,19 @@ describe("previewing a stored source's views", () => {
       expect(model.servedStorageSourceNames()).toEqual([]);
    });
 
-   // One view the stored columns cannot answer goes live alone, named with
-   // its own compile error; the source's other views still serve.
-   it("names the one view that cannot compile against the stored columns, and serves the rest", async () => {
+   // A table that lacks a column the source declares (`region`) leaves the
+   // source as written in the served copy, so every view of it answers live,
+   // each with the reason. (The retired serve shape dropped only the view
+   // that read the column; the preview reports what the served copy will
+   // actually do.)
+   it("reports every view live, with the column the table lacks, when the source cannot be re-rooted", async () => {
       const model = await buildModel(true);
       const views = (await model.previewStorageViews([BINDING])).get("X");
       expect(views?.map((v) => [v.view, v.verdict])).toEqual([
-         ["totals", "serves"],
+         ["totals", "live"],
          ["by_region", "live"],
       ]);
-      // The column the table lacks, not the unknown view the query then hits.
-      expect(views?.[1].detail).toBe("'region' is not defined");
+      expect(views?.[1].detail).toContain("region");
    });
 
    // A DuckLake destination is looked up by attaching its catalog, which
@@ -193,13 +197,13 @@ describe("previewing a stored source's views", () => {
       const info = spyOn(logger, "info");
       try {
          const model = await buildModel(true);
-         // BINDING lacks `region`, so the shape drops a tier compiling it.
+         // BINDING lacks `region`, so the served copy cannot re-root X.
          await model.previewStorageViews([BINDING]);
          expect(warn).not.toHaveBeenCalled();
          expect(info).not.toHaveBeenCalled();
          expect(
             await harness.collectCounter(
-               "publisher_storage_serve_shape_tier_drop_total",
+               "publisher_storage_bindings_withheld_total",
                {},
             ),
          ).toBe(0);

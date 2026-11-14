@@ -27,7 +27,7 @@ import {
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
 import { Model, ModelType } from "./model";
-import { StorageServeShape } from "./materialization/serve/model_serve_shape";
+import { ServedCopyServe } from "./materialization/serve/served_copy_serve";
 import { installSettings } from "../test_helpers/settings_env";
 
 /**
@@ -425,7 +425,8 @@ describe("service/model", () => {
             ).rejects.toThrow(MalloyError);
 
             expect(preparedResultStub.calledOnce).toBe(true);
-            // Never an undefined manifest: Malloy would read the Runtime's.
+            // Under the v1 cutover the live run reads no table: an explicit
+            // empty manifest, never the runtime's.
             expect(preparedResultStub.firstCall.args[0]).toEqual({
                givens: givensArg,
                buildManifest: EMPTY_BUILD_MANIFEST,
@@ -1157,10 +1158,10 @@ describe("service/model", () => {
 
       /**
        * A Model routed to storage, where the storage runnable fails and the live
-       * one succeeds. The `StorageServeShape` collaborator's
-       * `loadServeShapeQuery` is stubbed because the real one compiles a
-       * transient model — the logic under test is the catch, and the
-       * SHAPE'S bindings (not the package's) are what it must consult.
+       * one succeeds. The `ServedCopyServe` collaborator's `loadQuery` is
+       * stubbed because the real one compiles the author's files — the logic
+       * under test is the catch, and the ANSWER'S bindings (not the
+       * package's) are what it must consult.
        */
       /**
        * A malloy `Note`. The `at` location is required, not decoration: without
@@ -1230,7 +1231,12 @@ describe("service/model", () => {
          // what these tests are actually about.
          const preparedQueryStub = () => sinon.stub().resolves({ _query: {} });
          const storageRunnable = {
-            getPreparedQuery: preparedQueryStub(),
+            // The served copy's compile carries its own model, which the
+            // access checks read in place of the author's.
+            getPreparedQuery: sinon.stub().resolves({
+               _query: {},
+               _modelDef: { contents: {}, exports: [], queryList: [] },
+            }),
             getPreparedResult:
                opts.storageFailsAt === "prepare"
                   ? sinon.stub().rejects(storageErr)
@@ -1375,19 +1381,17 @@ describe("service/model", () => {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             (opts.packageBindings ?? opts.shapeBindings) as any,
          );
-         // Only presence matters here: loadServeShapeQuery is stubbed below, so
+         // Only presence matters here: the served copy is stubbed below, so
          // the provider is never called.
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          model.setServeDestinationConfig((() => ({})) as any);
-         sinon
-            .stub(StorageServeShape.prototype, "loadServeShapeQuery")
-            .resolves({
-               runnable: storageRunnable,
-               virtualMap: { v: "lake.t_x" },
-               bindings: opts.shapeBindings,
-            } as unknown as Awaited<
-               ReturnType<StorageServeShape["loadServeShapeQuery"]>
-            >);
+         sinon.stub(ServedCopyServe.prototype, "hasBindings").returns(true);
+         sinon.stub(ServedCopyServe.prototype, "loadQuery").resolves({
+            runnable: storageRunnable,
+            virtualMap: { v: "lake.t_x" },
+            bindings: opts.shapeBindings,
+            tablesRead: opts.shapeBindings,
+         } as unknown as Awaited<ReturnType<ServedCopyServe["loadQuery"]>>);
          return { model, liveRun };
       }
 

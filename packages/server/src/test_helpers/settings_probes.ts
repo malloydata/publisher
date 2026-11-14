@@ -27,7 +27,6 @@ import {
    getModelPageMode,
    getPartitionedWriteFlushThreshold,
    getMaterializeEnabled,
-   getV1ServedCopyMode,
    getPersistAddressIncludesDestination,
    getPersistCollisionEnforce,
    getPersistStorageMode,
@@ -168,7 +167,6 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    "persist.collisionEnforcementEnabled": () => getPersistCollisionEnforce(),
    "materialize.enabled": () => getMaterializeEnabled(),
    "materialize.gatedSources": () => settings.get("materialize.gatedSources"),
-   "materialize.v1ServedCopy": getV1ServedCopyMode,
    "materialization.schedulerEnabled": () =>
       getMaterializationSchedulerConfig() !== null,
    "materialization.schedulerIntervalMs": () =>

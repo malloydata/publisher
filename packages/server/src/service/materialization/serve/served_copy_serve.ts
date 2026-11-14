@@ -22,6 +22,7 @@
  */
 
 import { readFileSync } from "fs";
+import { lazyCounter } from "../../../telemetry";
 import { fileURLToPath } from "url";
 import {
    MalloyError,
@@ -287,6 +288,11 @@ export interface ServedCopyProblem {
 }
 
 /** What the served copy reads from the model that owns it. */
+const staleBindingsWithheld = lazyCounter(
+   "publisher_storage_bindings_withheld_total",
+   "Storage serve bindings withheld from a routed query because the freshness gate found them stale; each one is read live instead. Until now staleness was visible only as a later live read.",
+);
+
 export interface ServedCopyHost {
    modelPath(): string;
    modelDef(): unknown;
@@ -297,13 +303,27 @@ export interface ServedCopyHost {
     */
    serveDestinationConfig(): (() => MalloyConfig) | undefined;
    /**
-    * The v1 cutover's per-column types (G5): a v1 table whose column an
-    * older build typed is re-rooted with that column cast on read when a
-    * cast is faithful, and with it left out (only queries reading it answer
-    * live) when none is, rather than refused whole. Absent or false: the
-    * source is refused (`column_types`), as before the cutover.
+    * The shape ({@link resultShapeOf}) of `queryString`'s result compiled
+    * against the author's model, reading no table; undefined when it does
+    * not compile there. Without it, a query reading a table whose re-root
+    * leaves a column out is declined.
     */
-   perColumnTypes?(): boolean;
+   authorResultShape?(
+      queryString: string,
+      givens?: Record<string, unknown>,
+   ): Promise<string | undefined>;
+   /**
+    * Build the compiled copy's QueryModel once, so every query compiled
+    * against it reuses it rather than building its own (the host's
+    * `ensureSharedQueryModel`). Absent: each query builds its own.
+    */
+   ensureSharedQueryModel?(materializer: ModelMaterializer): Promise<void>;
+   /**
+    * A throwaway copy that only asks whether queries compile (a dry run's
+    * view verdicts): what a served copy logs as a warning, it logs at debug,
+    * since nothing is served.
+    */
+   quiet?: boolean;
 }
 
 interface Compiled {
@@ -361,6 +381,15 @@ interface Compiled {
     * column (`joined_annotations`), whose notes a record cannot carry.
     */
    inlinedJoins?: ReadonlyMap<string, ReadonlyMap<string, ReadonlySet<string>>>;
+   /**
+    * The tables whose re-root leaves stored columns out of its `type:`
+    * (`columnsLeftOut`: a column no cast reads as its declared type, a
+    * big-integer column no native cast reads exactly, an undeclarable one),
+    * by table path. A query naming one fails to compile and answers live;
+    * a wildcard (`select: *`) expands without it, so a query reading one of
+    * these tables is checked against the author's compile of it.
+    */
+   leftOutTables?: ReadonlySet<string>;
    aliased: ServeBinding[];
    problems: ServedCopyProblem[];
    /**
@@ -701,6 +730,14 @@ export class ServedCopyServe {
        */
       graftScope: GraftScope;
    }> {
+      // A stored table past its freshness window is left out of the copy and
+      // read live: counted per query, since a query succeeds either way and
+      // this is how an operator sees the tier degrade.
+      const usable = this.bindings.filter((b) => this.usable(b));
+      const withheld = usable.length - this.freshBindings(Date.now()).length;
+      if (withheld > 0 && !this.host.quiet) {
+         staleBindingsWithheld().add(withheld);
+      }
       return this.answer(await this.ensureCompiled(), queryString, givens);
    }
 
@@ -755,6 +792,7 @@ export class ServedCopyServe {
          }
       };
       const virtualMap = buildVirtualMap(compiled.aliased);
+      await this.host.ensureSharedQueryModel?.(compiled.materializer);
       const runnable = compiled.materializer.loadRestrictedQuery(queryString);
       // The prepared query, read once, when a check below needs it. No check
       // mutates it.
@@ -826,6 +864,31 @@ export class ServedCopyServe {
          // A table on the queried source's chain that is not re-rooted was
          // left unserved, with a package warning saying why.
          decline("the query reads no re-rooted table", "not_served");
+      }
+      // A table whose re-root leaves a stored column out answers a query
+      // naming that column live (it does not compile here), but a wildcard
+      // (`select: *`, in the query or a view it calls) expands without it:
+      // the answer would lack a column live returns. Such a query is
+      // answered here only when its result has the shape the author's
+      // compile gives it.
+      if (tablesRead.some((b) => compiled.leftOutTables?.has(b.tablePath))) {
+         const live = await this.host
+            .authorResultShape?.(queryString, givens)
+            .catch(() => undefined);
+         const served = resultShapeOf(
+            await compiling(() =>
+               runnable.getPreparedResult({
+                  virtualMap,
+                  givens: givens as never,
+               }),
+            ),
+         );
+         if (live === undefined || live !== served) {
+            decline(
+               "the query's result includes a column the served copy leaves out of a stored table's type",
+               "not_served",
+            );
+         }
       }
       // A join answered from stored columns is a record, so an aggregate at
       // its grain (`j.x.sum()`, `j.count()`, a measure that reads one) would
@@ -1339,18 +1402,14 @@ export class ServedCopyServe {
          // one holds what Malloy built, hidden columns too (G2): each is
          // kept with its access modifier, written again on the stored table
          // (P3), so a measure over it compiles and the column stays hidden.
-         // The cutover's per-column handling (G5, review F3); before it, the
-         // v1 path is what it was.
-         const perColumn = this.host.perColumnTypes?.() === true;
-         // Under it, a colocated table's columns are every column it holds,
-         // with no access modifier: the author's own text after the query
-         // (kept whole, `keepsIncludes`) renames, drops and re-hides them.
+         // The cutover's per-column handling (G5, review F3): a colocated
+         // table's columns are every column it holds, with no access
+         // modifier: the author's own text after the query (kept whole,
+         // `keepsIncludes`) renames, drops and re-hides them.
          const named = binding.colocated
-            ? perColumn
-               ? storedColumnsWithAccess(binding.schema, def.fields).map(
-                    ({ name, type }) => ({ name, type }),
-                 )
-               : storedColumnsWithAccess(binding.schema, def.fields)
+            ? storedColumnsWithAccess(binding.schema, def.fields).map(
+                 ({ name, type }) => ({ name, type }),
+              )
             : narrowSchemaToPublic(binding.schema, def.fields);
          // A stored column no field of the source names is one its own
          // `extend` block drops (`except:`, `accept:`) or an `include`
@@ -1358,31 +1417,24 @@ export class ServedCopyServe {
          // author's text compiles and removes it again (review F3). Should
          // the text not remove it, the access check below finds a public
          // field the author's source lacks and leaves the source as written.
-         const narrowed = perColumn
-            ? [...named, ...unnamedStoredColumns(binding.schema, def.fields)]
-            : named;
+         const narrowed = [
+            ...named,
+            ...unnamedStoredColumns(binding.schema, def.fields),
+         ];
          const mismatches = storedColumnTypeMismatches(
             narrowed,
             declaredColumnsOf(def.fields),
          );
          // A column the served copy cannot read as its declared type: cast
          // on read when a cast is faithful, else left out so only a query
-         // reading it answers live (G5, the serve shape's handling, plan
-         // call 4); before the cutover, the whole source is refused.
+         // reading it answers live (G5, the serve shape's handling, which
+         // retired plan call 4).
          const typePlan =
-            mismatches.length > 0 && perColumn
+            mismatches.length > 0
                ? serveTypePlan(mismatches, {
                     queryTimezone: queryTimezoneOf(def),
                  })
                : undefined;
-         if (mismatches.length > 0 && !typePlan) {
-            problems.push({
-               sourceName,
-               sourceID: node.sourceID,
-               reason: "column_types",
-            });
-            return undefined;
-         }
          const castTo = new Map(
             (typePlan?.casts ?? []).map((c) => [
                c.column,
@@ -1395,6 +1447,32 @@ export class ServedCopyServe {
             (typePlan?.unservable ?? []).map((m) => m.column),
          );
          columnsLeftOut = [...leftOut];
+         // A nest of the persisted query a destination did not store (a lake
+         // that cannot hold a repeated record): left out like a column no
+         // type reads, so only a query through it answers live, as the serve
+         // shape kept the traversal local.
+         const stored = new Set(
+            binding.schema.map((c) => c.name.toLowerCase()),
+         );
+         for (const f of (def.fields ?? []) as {
+            name?: unknown;
+            as?: unknown;
+            join?: unknown;
+            type?: unknown;
+         }[]) {
+            const name = String(f.as ?? f.name ?? "");
+            // A nest is a repeated (or single) record; a join the source
+            // declares (`join_one: c is …`) is never a stored column, and
+            // its re-root keeps it as written.
+            if (
+               typeof f.join === "string" &&
+               (f.type === "array" || f.type === "record") &&
+               name !== "" &&
+               !stored.has(name.toLowerCase())
+            ) {
+               columnsLeftOut.push(name);
+            }
+         }
          // Each with its field's annotations (`#(doc)`, `# label`, `#
          // percent` on the query's output field), as a `#(materialize)` column
          // carries them, so the stored field reads back as the author's.
@@ -1448,7 +1526,19 @@ export class ServedCopyServe {
          return undefined;
       }
       // A column the `type:` cannot declare faithfully would fail the whole
-      // model's copy, not just this source: leave this one to its fallback.
+      // model's copy, not just this source. For a v1 table it is left out
+      // (a nest a destination stores as a type Malloy cannot read back,
+      // say), so only a query that reads it answers live, as the serve
+      // shape kept it local; otherwise the source is left to its fallback.
+      if (!plan) {
+         const undeclarable = columns
+            .filter((c) => storedMalloyType(c.type) === undefined)
+            .map((c) => c.name);
+         if (undeclarable.length > 0 && undeclarable.length < columns.length) {
+            columns = columns.filter((c) => !undeclarable.includes(c.name));
+            columnsLeftOut = [...columnsLeftOut, ...undeclarable];
+         }
+      }
       if (columns.some((c) => storedMalloyType(c.type) === undefined)) {
          problems.push({
             sourceName,
@@ -1518,8 +1608,14 @@ export class ServedCopyServe {
             : {}),
          ...(inlinedJoins.length > 0 ? { inlinedJoins } : {}),
          ...(columnsLeftOut.length > 0 ? { columnsLeftOut } : {}),
-         ...(!plan && this.host.perColumnTypes?.() === true
-            ? { keepsIncludes: true as const }
+         ...(!plan
+            ? {
+                 keepsIncludes: true as const,
+                 dropsUnstoredExcepts: true as const,
+                 ...(refinesUnfilteredBase(map.node(node.sourceID), map)
+                    ? { refinementRooted: true as const }
+                    : {}),
+              }
             : {}),
          sourceID: node.sourceID,
          authorDef: node.def,
@@ -1650,6 +1746,22 @@ export class ServedCopyServe {
       const rerootedIDs = new Set(candidates.map((c) => c.reroot.sourceID));
       const rerootedNames = new Set(candidates.map((c) => c.reroot.sourceName));
       const throughBase: NonNullable<Compiled["throughBase"]>[number][] = [];
+      // Only through refinements (`extend`, rename): a query-shaped source
+      // (`child is base -> { … }`) starts rows of its own, which its own table
+      // holds, so it is re-rooted on that table even when its base is too, as
+      // the serve shape read a chained child's own table.
+      const refinesRerootedSource = (sourceID: string): boolean => {
+         let node = map.node(sourceID);
+         for (let hops = 0; node && hops < 64; hops++) {
+            const base = node.base;
+            if (!base || base.hop === "query" || base.sourceID === undefined) {
+               return false;
+            }
+            if (rerootedIDs.has(base.sourceID)) return true;
+            node = map.node(base.sourceID);
+         }
+         return false;
+      };
       const readsRerootedBase = (c: (typeof candidates)[number]) => {
          const node = map.node(c.reroot.sourceID);
          const chain = node ? map.chainOf(node.def) : [];
@@ -1659,7 +1771,7 @@ export class ServedCopyServe {
                ? undefined
                : declaredBaseName(text, c.reroot.range);
          const reads =
-            chain.slice(1).some((id) => rerootedIDs.has(id)) ||
+            refinesRerootedSource(c.reroot.sourceID) ||
             (base !== undefined && rerootedNames.has(base));
          if (reads) {
             throughBase.push({
@@ -1891,7 +2003,7 @@ export class ServedCopyServe {
                );
                if (!f) return [c];
                changed = true;
-               logger.warn(
+               logger[this.host.quiet ? "debug" : "warn"](
                   "A re-root does not compile in the served copy; that source alone steps back",
                   {
                      modelPath: this.host.modelPath(),
@@ -2190,6 +2302,11 @@ export class ServedCopyServe {
                         (c.reroot.inlinedJoins ?? []).length > 0 ||
                         (c.reroot.pair?.childStoredDimensions ?? []).length > 0,
                   )
+                  .map((c) => c.binding.tablePath),
+            ),
+            leftOutTables: new Set(
+               candidates
+                  .filter((c) => (c.reroot.columnsLeftOut ?? []).length > 0)
                   .map((c) => c.binding.tablePath),
             ),
             inlinedJoins: new Map(
@@ -3126,4 +3243,51 @@ export function unnamedStoredColumns(
    return schema
       .filter((c) => !names.has(c.name.toLowerCase()))
       .map((c) => ({ name: c.name, type: c.type }));
+}
+
+/**
+ * Whether `node` is declared by refinement (`extend` or rename) of a base
+ * whose compiled chain carries no filter and no row-level gate, so its
+ * stored table (its root's rows) re-rooted with its own `extend` run kept
+ * answers exactly as the source: nothing the base applies is lost.
+ */
+export function refinesUnfilteredBase(
+   node: { base?: { hop: string; def?: unknown } } | undefined,
+   map: SourceMap,
+): boolean {
+   const base = node?.base;
+   if (!base || (base.hop !== "extends" && base.hop !== "rename")) {
+      return false;
+   }
+   const def = base.def as { filterList?: unknown[] } | undefined;
+   if (!def || (def.filterList?.length ?? 0) > 0) return false;
+   try {
+      return (
+         collectEntryPointGates(def as never, map.model() as never).length === 0
+      );
+   } catch {
+      return false;
+   }
+}
+
+/**
+ * A query result's shape: its fields' names, nested results' fields in
+ * place, in order. Two compiles of one query that agree on it return the
+ * same columns.
+ */
+export function resultShapeOf(prepared: { resultExplore: unknown }): string {
+   type Field = {
+      name: string;
+      isExploreField?: () => boolean;
+      allFields?: Field[];
+   };
+   const shape = (fields: readonly Field[]): unknown[] =>
+      fields.map((f) =>
+         f.isExploreField?.() === true
+            ? { [f.name]: shape(f.allFields ?? []) }
+            : f.name,
+      );
+   return JSON.stringify(
+      shape((prepared.resultExplore as { allFields: Field[] }).allFields),
+   );
 }

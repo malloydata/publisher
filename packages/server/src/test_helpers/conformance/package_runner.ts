@@ -81,11 +81,11 @@ export interface Answer {
 export type Outcome = { answer: Answer } | { error: string };
 
 /**
- * The switches a served run is taken under: `off` (today's serve shape),
- * `on` (`PUBLISHER_MATERIALIZE`: the served copy beside today's paths), and
- * `cutover` (`PUBLISHER_MATERIALIZE` and `PUBLISHER_V1_SERVED_COPY=on`: the
- * served copy, the rollup and view legs, or live; no serve shape and no build
- * manifest on the live compile).
+ * The switches a served run is taken under: `off` (`PUBLISHER_MATERIALIZE`
+ * unset, the shipped default) and `on` or `cutover` (`PUBLISHER_MATERIALIZE`
+ * on). Since the v1 cutover's retirement every one serves through the served
+ * copy, the rollup and view legs, or live; `cutover` is kept as a name for
+ * the column the fixture declares its expectations under.
  */
 export type Switch = "off" | "on" | "cutover";
 
@@ -94,7 +94,6 @@ function settingsFor(materialize: Switch) {
       env: {
          PERSIST_STORAGE_MODE: "on",
          PUBLISHER_MATERIALIZE: materialize === "off" ? "false" : "true",
-         PUBLISHER_V1_SERVED_COPY: materialize === "cutover" ? "on" : "off",
       },
    };
 }

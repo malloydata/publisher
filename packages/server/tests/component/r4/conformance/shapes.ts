@@ -193,7 +193,7 @@ const SERVE_SHAPE_FAILS_BESIDE: Gap = {
 };
 
 /** A query live answers wrong on Malloy 0.0.438, whose stored answer is right. */
-const LIVE_WRONG_NEST: Gap = {
+export const LIVE_WRONG_NEST: Gap = {
    kind: "wrong",
    reason:
       "live is wrong here, not the stored answer: Malloy 0.0.438 (malloydata/malloy#3208) drops nested rows under a NULL parent key live (malloydata/malloy#3220); served_copy_conformance_gaps checks the stored answer against the truth",

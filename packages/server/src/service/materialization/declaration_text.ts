@@ -532,3 +532,89 @@ export function documentFlagLines(text: string): string[] {
       .map((line) => line.trim())
       .filter((line) => line.startsWith("##!"));
 }
+
+/**
+ * In a run of `extend { … }` blocks, delete each `except:` item of a
+ * top-level block's own statement that `removable` accepts, and an `except:`
+ * statement left with no item. For a
+ * stored table that never held an excluded column (a v1 `storage=` table
+ * stores public columns only), `except: region` names nothing the re-rooted
+ * source has, which Malloy refuses; with nothing to exclude, deleting it
+ * leaves the surface as it was. An item whose name appears anywhere else in
+ * the text (a field the text itself defines) is kept: it may hide something.
+ * Returns the names it deleted, or undefined when the text does not lex.
+ */
+export function dropExceptItems(
+   text: string,
+   removable: (name: string) => boolean,
+): { text: string; dropped: string[] } | undefined {
+   const tokens = lexAll(text);
+   if (!tokens) return undefined;
+   const nameOf = (t: { kind: string; text: string }): string | undefined =>
+      t.kind === "word"
+         ? t.text
+         : t.text.startsWith("`") && t.text.endsWith("`") && t.text.length > 1
+           ? t.text.slice(1, -1)
+           : undefined;
+   const exceptItems = new Set<number>();
+   const statements: { keyword: number; items: number[]; end: number }[] = [];
+   for (let k = 0; k + 1 < tokens.length; k++) {
+      const t = tokens[k];
+      const colon = tokens[k + 1];
+      // Only a statement of a top-level block (`extend { … }`, `include
+      // { … }`), which excludes from the re-rooted source itself. One nested
+      // deeper (a join's own `extend { except: … }`) hides a field of the
+      // joined source, which the table never stores either: deleting it
+      // would expose that field through the join.
+      if (t.kind !== "word" || t.text !== "except" || t.depth !== 1) continue;
+      if (colon.text !== ":" || colon.start !== t.end) continue;
+      const items: number[] = [];
+      let i = k + 2;
+      for (;;) {
+         const item = tokens[i];
+         if (!item || item.depth !== t.depth || nameOf(item) === undefined) {
+            break;
+         }
+         items.push(i);
+         exceptItems.add(i);
+         if (tokens[i + 1]?.text !== "," || tokens[i + 1].depth !== t.depth) {
+            break;
+         }
+         i += 2;
+      }
+      if (items.length === 0) continue;
+      statements.push({ keyword: k, items, end: items[items.length - 1] });
+   }
+   const elsewhere = new Set<string>();
+   tokens.forEach((t, k) => {
+      const n = nameOf(t);
+      if (n !== undefined && !exceptItems.has(k)) elsewhere.add(n);
+   });
+   const edits: TextEdit[] = [];
+   const dropped: string[] = [];
+   for (const st of statements) {
+      const gone = st.items.filter((k) => {
+         const n = nameOf(tokens[k])!;
+         return !elsewhere.has(n) && removable(n);
+      });
+      if (gone.length === 0) continue;
+      dropped.push(...gone.map((k) => nameOf(tokens[k])!));
+      if (gone.length === st.items.length) {
+         edits.push({
+            start: tokens[st.keyword].start,
+            end: tokens[st.end].end,
+            insert: "",
+         });
+         continue;
+      }
+      const keep = st.items.filter((k) => !gone.includes(k));
+      edits.push({
+         start: tokens[st.items[0]].start,
+         end: tokens[st.end].end,
+         insert: keep.map((k) => tokens[k].text).join(", "),
+      });
+   }
+   if (edits.length === 0) return { text, dropped };
+   const out = applyEdits(text, edits);
+   return out === undefined ? undefined : { text: out, dropped };
+}

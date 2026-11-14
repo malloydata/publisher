@@ -73,7 +73,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
+          "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -142,7 +143,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
+          "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -194,8 +196,7 @@
         "considered": [
           {
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "outcome": "used",
             "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
           }
         ],
@@ -211,13 +212,15 @@
           "sourceName": "from_view"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a named query",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {

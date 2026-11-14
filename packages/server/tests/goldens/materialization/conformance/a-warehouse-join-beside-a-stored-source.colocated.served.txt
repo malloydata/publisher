@@ -1,0 +1,24 @@
+// conformance: a warehouse join beside a stored source [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: cust_b__served is {
+   id::number,
+   segment::string
+}
+
+import "raw.malloy"
+
+#@ persist name="cust_b"
+source: cust_b is duckdb.virtual('820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280')::cust_b__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"BIGINT"
+  primary_key: id
+}
+
+source: orders_b is orders_raw extend {
+  join_one: c is cust_b with customer_id
+}

@@ -413,7 +413,14 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
       // The shape answered from a table the chain walk did not place (an IR
       // shape it does not follow): still name it, so `servedBy` never says
       // `live` for a storage answer.
-      const first = input.storageTablesRead?.[0];
+      // The queried source's own table when it is among them (nearest on
+      // its chain first), not whichever the served copy read first: a fact
+      // read through a persisted join is not served from the join's table.
+      const tablesRead = input.storageTablesRead ?? [];
+      const first =
+         input.chain
+            .map((id) => tablesRead.find((b) => b.sourceIDs?.includes(id)))
+            .find((b) => b !== undefined) ?? tablesRead[0];
       const placed =
          storageAnswered ||
          considered.some(

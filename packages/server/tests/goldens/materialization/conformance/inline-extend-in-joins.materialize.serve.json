@@ -59,7 +59,13 @@
       "equalToLive": true,
       "malloy": "run: by_customer -> { group_by: seg_up; aggregate: t is total.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "71f8495dea14f21de55246d492a02ed7d2988d3cf10cf50157d9c94d37d2eb99"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -72,13 +78,15 @@
           "sourceName": "by_customer"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "71f8495dea14f21de55246d492a02ed7d2988d3cf10cf50157d9c94d37d2eb99",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored column computed through the inline join",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -121,7 +129,15 @@
       "equalToLive": true,
       "malloy": "run: by_customer_plus -> { group_by: cust.home; aggregate: grand }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "CROSS_CONNECTION",
+            "tableId": "71f8495dea14f21de55246d492a02ed7d2988d3cf10cf50157d9c94d37d2eb99"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -184,7 +200,14 @@
       "equalToLive": true,
       "malloy": "run: by_customer_plus -> { group_by: seg_up; aggregate: grand, customers is cust.count() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "MISSING_FIELD",
+            "tableId": "71f8495dea14f21de55246d492a02ed7d2988d3cf10cf50157d9c94d37d2eb99"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],

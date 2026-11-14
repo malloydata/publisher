@@ -53,7 +53,15 @@
       "equalToLive": true,
       "malloy": "run: summary_fresh -> { group_by: region; aggregate: grand }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "code": "persist-opt-out",
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "WARNED",
+            "tableId": "1f62ee077661338e4aa69c6e0c67fa4a23d17f33d7806206cd5caf829b2ff57e"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -115,7 +123,15 @@
       "equalToLive": true,
       "malloy": "run: summary_fresh_rollup -> { group_by: region; aggregate: t is g.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "code": "persist-opt-out",
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "WARNED",
+            "tableId": "1f62ee077661338e4aa69c6e0c67fa4a23d17f33d7806206cd5caf829b2ff57e"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -177,7 +193,13 @@
       "equalToLive": true,
       "malloy": "run: summary_kept -> { group_by: region; aggregate: grand }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "1f62ee077661338e4aa69c6e0c67fa4a23d17f33d7806206cd5caf829b2ff57e"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -190,13 +212,15 @@
           "sourceName": "summary_kept"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "1f62ee077661338e4aa69c6e0c67fa4a23d17f33d7806206cd5caf829b2ff57e",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a sibling that does not opt out",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {

@@ -28,16 +28,8 @@ const drills = (fields: { name: string; type: unknown }[]) =>
 for (const [mode, env, uncast] of [
    ["serve_shape uncast", {}, true],
    ["served_copy (materialize) cast", { PUBLISHER_MATERIALIZE: "true" }, false],
-   [
-      "cutover uncast",
-      { PUBLISHER_MATERIALIZE: "true", PUBLISHER_V1_SERVED_COPY: "on" },
-      true,
-   ],
-   [
-      "cutover cast",
-      { PUBLISHER_MATERIALIZE: "true", PUBLISHER_V1_SERVED_COPY: "on" },
-      false,
-   ],
+   ["cutover uncast", { PUBLISHER_MATERIALIZE: "true" }, true],
+   ["cutover cast", { PUBLISHER_MATERIALIZE: "true" }, false],
 ] as const) {
    describe(mode, () => {
       afterAll(disposeScenarios);

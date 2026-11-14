@@ -3,20 +3,23 @@
 
 /**
  * The storage tier's half of the mixed-fleet guarantee
- * (`run/v1_mixed_fleet_manifest.spec.ts` pins the colocated half): a v1
- * `#@ preaggregate storage=` rollup is `__preagg__` with
- * `PUBLISHER_V1_SERVED_COPY` off and `__rollup__` with it on, at different
- * addresses. A worker handed the other side's storage entry must not read
- * that table, though the storage tier falls back to matching an entry by
- * name: the two sides' names are never equal. Each side's table is tampered
- * with its own offset, and both tables are present in each side's lake, so
- * an answer read from either is told apart from live and from the other.
+ * (`run/v1_mixed_fleet_manifest.spec.ts` pins the colocated half): during the
+ * rollout of the v1 cutover's retirement (6g), an older worker built a v1
+ * `#@ preaggregate storage=` rollup as `__preagg__`, and this one builds it as
+ * `__rollup__`, at another address. Handed the older worker's storage entry,
+ * this worker must not read that table: its address is not this worker's
+ * (the storage tier matches an entry by name AND address), nor is its
+ * name. (The older
+ * worker's half was pinned while the switch existed; it ships in that
+ * worker.)
+ *
+ * The older entry is this worker's own entry under an address and a table no
+ * plan of this worker names, since this server can no longer build one. Each
+ * table is tampered with its own offset, so an answer read from either is
+ * told apart from live and from the other.
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import { DATA_FILES } from "./conformance/data";
 import {
@@ -46,22 +49,6 @@ async function tableLike(lake: DuckDBConnection, part: string) {
    ).map((r) => String(r.table_name));
    expect(found).toHaveLength(1);
    return found[0];
-}
-
-/** Copy `table` from one lake into another, through Parquet. */
-async function copyTable(
-   from: DuckDBConnection,
-   to: DuckDBConnection,
-   table: string,
-): Promise<void> {
-   const file = path.join(
-      fs.mkdtempSync(path.join(os.tmpdir(), "mixed-fleet-")),
-      "t.parquet",
-   );
-   await from.runSQL(`COPY "${table}" TO '${file}' (FORMAT PARQUET)`);
-   await to.runSQL(
-      `CREATE TABLE "${table}" AS SELECT * FROM read_parquet('${file}')`,
-   );
 }
 
 /** Add `offset` to every numeric column of `table`. */
@@ -103,7 +90,7 @@ async function bindStored(
    }
 }
 
-describe("a host storage manifest from the other side of the v1 cutover (mixed fleet)", () => {
+describe("a host storage manifest from an older worker of the v1 cutover (mixed fleet)", () => {
    const disposers: (() => Promise<void>)[] = [];
    let restore: (() => void) | undefined;
    afterEach(async () => {
@@ -112,77 +99,64 @@ describe("a host storage manifest from the other side of the v1 cutover (mixed f
       await freshLoadPool();
    });
 
-   it("ignores a foreign storage entry in both directions, and reads only its own beside one", async () => {
+   it("ignores an older worker's __preagg__ storage entry, and reads only its own beside one", async () => {
       expect(SHAPE).toBeDefined();
       const files = { ...DATA_FILES, ...renderFiles(SHAPE!, "storage") };
 
-      // Off: the v1 composite's __preagg__ storage table.
-      restore = withSwitch("on");
-      await freshLoadPool();
-      const off = await loadFixture(files);
-      disposers.push(off.dispose);
-      const live = await off.run("m.malloy", QUERY);
-      if ("error" in live) throw new Error(live.error);
-      const LIVE = live.answer.rows;
-      const offBound = await off.bind({ includeRollups: true });
-      const offEntries = Object.fromEntries(
-         Object.entries(offBound.stored).filter(([, e]) =>
-            String(e.physicalTableName).includes("__preagg__"),
-         ),
-      );
-      expect(Object.keys(offEntries)).toHaveLength(1);
-
-      // On: the rollup leg's __rollup__ storage table.
-      restore();
       restore = withSwitch("cutover");
       await freshLoadPool();
-      const on = await loadFixture(files);
-      disposers.push(on.dispose);
-      const onBound = await on.bind({ includeRollups: true });
-      const onEntries = Object.fromEntries(
-         Object.entries(onBound.stored).filter(([, e]) =>
+      const fixture = await loadFixture(files);
+      disposers.push(fixture.dispose);
+      const live = await fixture.run("m.malloy", QUERY);
+      if ("error" in live) throw new Error(live.error);
+      const LIVE = live.answer.rows;
+      const bound = await fixture.bind({ includeRollups: true });
+      const ownEntries = Object.fromEntries(
+         Object.entries(bound.stored).filter(([, e]) =>
             String(e.physicalTableName).includes("__rollup__"),
          ),
       );
-      expect(Object.keys(onEntries)).toHaveLength(1);
-      expect(Object.keys(offEntries).filter((id) => id in onEntries)).toEqual(
-         [],
+      const [[ownID, own]] = Object.entries(ownEntries);
+
+      // The older worker's table and entry: the composite's name, at an
+      // address no plan of this worker names.
+      const rollup = await tableLike(fixture.lake, "__rollup__");
+      const preagg = "orders__preagg__region__0123abcd";
+      await fixture.lake.runSQL(
+         `CREATE TABLE "${preagg}" AS SELECT * FROM "${rollup}"`,
       );
+      const olderID = "f".repeat(ownID.length);
+      expect(olderID).not.toBe(ownID);
+      const olderEntries = {
+         [olderID]: {
+            ...own,
+            sourceEntityId: olderID,
+            sourceName: preagg,
+            physicalTableName: preagg,
+         },
+      };
+      await tamper(fixture.lake, preagg, 1000);
+      await tamper(fixture.lake, rollup, 2000);
 
-      // Each side's lake holds both tables, each tampered with its side's offset.
-      const preagg = await tableLike(off.lake, "__preagg__");
-      const rollup = await tableLike(on.lake, "__rollup__");
-      await copyTable(off.lake, on.lake, preagg);
-      await copyTable(on.lake, off.lake, rollup);
-      for (const lake of [off.lake, on.lake]) {
-         await tamper(lake, preagg, 1000);
-         await tamper(lake, rollup, 2000);
-      }
-
-      const ask = async (fixture: Fixture) => {
+      const ask = async () => {
          const out = await fixture.run("m.malloy", QUERY);
          if ("error" in out) throw new Error(out.error);
          return { rows: out.answer.rows, servedBy: out.answer.servedBy };
       };
 
-      // An on worker, handed only the off side's entry: live.
-      await bindStored(on, offEntries);
-      expect(await ask(on)).toEqual({ rows: LIVE, servedBy: "live" });
-      // Both sides' entries: its own table, never the foreign one.
-      await bindStored(on, { ...offEntries, ...onEntries });
-      expect(await ask(on)).toEqual({
-         rows: shifted(LIVE, 2000),
-         servedBy: "rollup",
+      // Handed only the older entry: live.
+      await bindStored(fixture, olderEntries);
+      expect(await ask()).toEqual({ rows: LIVE, servedBy: "live" });
+      // Live too when the older entry carries this worker's name: an entry
+      // is matched by its address, never by its name alone.
+      await bindStored(fixture, {
+         [olderID]: { ...olderEntries[olderID], sourceName: own.sourceName },
       });
-
-      // An off worker (a rollback to off), handed only the on side's entry: live.
-      restore();
-      restore = withSwitch("on");
-      await bindStored(off, onEntries);
-      expect(await ask(off)).toEqual({ rows: LIVE, servedBy: "live" });
-      await bindStored(off, { ...onEntries, ...offEntries });
-      expect(await ask(off)).toEqual({
-         rows: shifted(LIVE, 1000),
+      expect(await ask()).toEqual({ rows: LIVE, servedBy: "live" });
+      // Both: its own table, never the older one.
+      await bindStored(fixture, { ...olderEntries, ...ownEntries });
+      expect(await ask()).toEqual({
+         rows: shifted(LIVE, 2000),
          servedBy: "rollup",
       });
    }, 300_000);

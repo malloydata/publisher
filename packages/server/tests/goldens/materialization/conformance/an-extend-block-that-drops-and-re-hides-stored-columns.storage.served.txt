@@ -1,6 +1,6 @@
 // conformance: an extend block that drops and re-hides stored columns [storage]: files generated while serving
 
-// ==== <pkg>/m.malloy
+// ==== <pkg>/m.malloy (text 1 of 2)
 ##! experimental { persistence access_modifiers }
 ##! experimental { virtual_source }
 type: rehidden__served is {
@@ -10,7 +10,8 @@ type: rehidden__served is {
 type: dropped__served is {
    id::number,
    region::string,
-   amount::number
+   amount::number,
+   status::string
 }
 
 import "raw.malloy"
@@ -27,10 +28,44 @@ source: dropped is __served_copy_alias_of_lake.virtual('8c98767eac2f2caa728cf310
 
 #@ persist name="rehidden" storage="lake"
 source: rehidden is __served_copy_alias_of_lake.virtual('d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e')::rehidden__served extend {
+  rename: region_raw is home_region
+} include { internal: region_raw; public: * } extend {
   internal rename:
     id__stored is id
   dimension:
     id is id__stored::"HUGEINT"
+  measure: n is count()
+  measure: west_n is count() { where: region_raw = 'west' }
+}
+
+// ==== <pkg>/m.malloy (text 2 of 2)
+##! experimental { persistence access_modifiers }
+##! experimental { virtual_source }
+type: dropped__served is {
+   id::number,
+   region::string,
+   amount::number,
+   status::string
+}
+
+import "raw.malloy"
+
+#@ persist name="dropped" storage="lake"
+source: dropped is __served_copy_alias_of_lake.virtual('8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792')::dropped__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"HUGEINT"
+  except: status
+  measure: total is amount.sum()
+}
+
+#@ persist name="rehidden" storage="lake"
+source: rehidden is customers_raw -> {
+  select: id, segment, home_region
+} extend {
+  rename: region_raw is home_region
+} include { internal: region_raw; public: * } extend {
   measure: n is count()
   measure: west_n is count() { where: region_raw = 'west' }
 }
