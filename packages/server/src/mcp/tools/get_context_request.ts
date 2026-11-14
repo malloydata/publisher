@@ -139,7 +139,7 @@ export const convergedContextShape = {
       .min(0)
       .nullish()
       .describe(
-         "Fields to skip in a field listing (dimension, measure, view or join targets with no search_text): a previous response's next_entity_offset, sent with every other argument unchanged, returns the next page. Not for a search or a source listing, which page with offset.",
+         "Fields to skip in one source's field listing (dimension, measure, view or join targets with no search_text, and scopes[].source set): a previous response's next_entity_offset, sent with every other argument unchanged, returns the next page. A field listing across a package is capped and does not page; a search or a source listing pages with offset.",
       ),
 };
 

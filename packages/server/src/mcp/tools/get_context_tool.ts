@@ -150,17 +150,35 @@ async function lockedSourceKeys(
 }
 
 /**
+ * Which control pages a listing: `offset` (sources) for a source browse,
+ * `entity_offset` (fields) for one source's fields, and none for a field
+ * listing across a package, which is capped. Undefined for a search.
+ */
+function listingPager(
+   request: ResolvedRequest,
+): "offset" | "entity_offset" | "none" | undefined {
+   if (!request.listingOnly) return undefined;
+   if (request.pureSourceListing) return "offset";
+   return request.sourceName ? "entity_offset" : "none";
+}
+
+/**
  * Why the request's paging control is the wrong one for it, or undefined when
- * it is right. A field listing has no source order to resume, and a search or
- * a source browse has no field rows.
+ * it is right. Each is refused rather than ignored: ignoring it would hand
+ * back page 1 as if it were page 2.
  */
 function misusedOffset(request: ResolvedRequest): string | undefined {
-   const fieldListing = request.listingOnly && !request.pureSourceListing;
+   const pager = listingPager(request);
+   const fieldListing = pager === "entity_offset" || pager === "none";
    if (fieldListing && request.offset > 0) {
-      return "Invalid offset: offset counts sources, and this is a field listing (entity targets with no search_text). Fix: send the previous response's next_entity_offset as entity_offset instead.";
+      return pager === "entity_offset"
+         ? "Invalid offset: offset counts sources, and this is a field listing (entity targets with no search_text). Fix: send the previous response's next_entity_offset as entity_offset instead."
+         : "Invalid offset: offset counts sources, and this is a field listing (entity targets with no search_text). Fix: set scopes[].source to list one source's fields, which page with entity_offset.";
    }
-   if (!fieldListing && request.entityOffset > 0) {
-      return "Invalid entity_offset: entity_offset pages a field listing (dimension, measure, view or join targets with no search_text). Fix: drop entity_offset; a search or a source listing pages with offset.";
+   if (pager !== "entity_offset" && request.entityOffset > 0) {
+      return pager === "none"
+         ? "Invalid entity_offset: entity_offset pages one source's fields, and this listing spans the package. Fix: set scopes[].source to the source whose fields you want."
+         : "Invalid entity_offset: entity_offset pages one source's fields (dimension, measure, view or join targets with no search_text, scoped to a source). Fix: drop entity_offset; a search or a source listing pages with offset.";
    }
    return undefined;
 }
@@ -197,15 +215,21 @@ function runListing(
       ...matching.filter((e) => e.recordPath),
    ];
    // A listing is catalog order, so it pages: a source browse by `offset`
-   // (sources), a field listing by `entity_offset` (rows). The order holds for
-   // a loaded package; a reload between pages can shift it. A drill-down's
+   // (sources), one source's fields by `entity_offset` (fields). A field
+   // listing across a package is capped, not paged, as on the hosted server,
+   // whose package-wide listing is capped per source and type. The order holds
+   // for a loaded package; a reload between pages can shift it. A drill-down's
    // source row becomes the card on every page, so it is not a row to page.
+   const pager = listingPager(request) ?? "none";
    const isCard = (e: (typeof inScope)[number]) =>
       Boolean(sourceName) && e.kind === "source";
    const pageable = inScope.filter((e) => !isCard(e));
-   const skip = request.pureSourceListing
-      ? request.offset
-      : request.entityOffset;
+   const skip =
+      pager === "offset"
+         ? request.offset
+         : pager === "entity_offset"
+           ? request.entityOffset
+           : 0;
    const page = new Set(pageable.slice(skip, skip + request.limit));
    const capped = inScope.filter((e) => isCard(e) || page.has(e));
    const next = skip + page.size;
@@ -231,10 +255,11 @@ function runListing(
       ranking: "prominence" as const,
       total_available: cardsInScope,
       returned: sources.length,
-      ...(next < pageable.length
-         ? request.pureSourceListing
-            ? { next_offset: next }
-            : { next_entity_offset: next }
+      ...(next < pageable.length && pager === "offset"
+         ? { next_offset: next }
+         : {}),
+      ...(next < pageable.length && pager === "entity_offset"
+         ? { next_entity_offset: next }
          : {}),
    };
    // The package loaded (a failed load throws from packageIndex), so an
@@ -260,8 +285,8 @@ function runListing(
       ...skillsFor(ctx),
       ...warningsFor(
          listingPageWarning({
-            param: request.pureSourceListing ? "offset" : "entity_offset",
-            unit: request.pureSourceListing ? "sources" : "entities",
+            pager,
+            unit: pager === "offset" ? "sources" : "entities",
             skipped: skip,
             returned: page.size,
             total: pageable.length,

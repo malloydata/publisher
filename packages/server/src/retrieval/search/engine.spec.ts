@@ -802,13 +802,13 @@ describe("fcj paging", () => {
       expect(stageNames(same)).toEqual(["page"]);
    });
 
-   it("pages a field listing with entity_offset, past the cap a caller cannot raise", async () => {
+   it("pages one source's fields with entity_offset, past the cap a caller cannot raise", async () => {
       await ready();
       const { pkg } = await compileFcjFixture();
       const listing = (limit: number, entity_offset?: number) =>
          callPayload(harness.handlerFor(pkg), {
             search_targets: [{ target_type: "dimension" }],
-            scopes,
+            scopes: [{ ...scopes[0], source: "flights" }],
             limit,
             ...(entity_offset === undefined ? {} : { entity_offset }),
          });

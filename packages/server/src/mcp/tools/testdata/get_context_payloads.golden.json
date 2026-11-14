@@ -620,9 +620,8 @@
     "ranking": "prominence",
     "total_available": 2,
     "returned": 1,
-    "next_entity_offset": 2,
     "warnings": [
-      "Returned 2 of 5 entities in scope. Pass next_entity_offset back as entity_offset, with every other argument unchanged, for the next page, or narrow with search_text or more targeted scopes."
+      "Returned 2 of 5 entities in scope. To see the rest, list one source's fields by setting scopes[].source (that listing pages with entity_offset), or narrow with search_text."
     ]
   },
   "unconfigured/listing: offset beyond the results": {
