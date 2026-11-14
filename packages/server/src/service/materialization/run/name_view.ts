@@ -448,7 +448,7 @@ export async function probeNameView(
 }
 
 /** What holds a name, as `owner` sees it: another package's view is taken. */
-export type OwnedSlot =
+type OwnedSlot =
    | { state: "empty" }
    | { state: "ours"; target: string }
    | { state: "taken"; holder: string }
@@ -533,7 +533,7 @@ export async function dropNameView(
  * reclaim drops with the table (reclaimer.ts drops `<table><backupSuffix>`),
  * so a copy a crash or a failed restore leaves there is never stranded.
  */
-export function asideTableNameFor(
+function asideTableNameFor(
    viewName: string,
    table: Pick<OwnNameTable, "sourceEntityId">,
 ): string {

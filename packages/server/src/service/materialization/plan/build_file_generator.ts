@@ -270,7 +270,7 @@ import {
 import { SourceMap, type FieldJoinReads, type SourceJoin } from "./source_map";
 
 /** The route `#(materialize)` is on. */
-export const MATERIALIZE_ROUTE = "materialize";
+const MATERIALIZE_ROUTE = "materialize";
 
 /** Appended to an author model path to name its generated build companion. */
 export const MATERIALIZE_COMPANION_SUFFIX = ".materialize.malloy";
@@ -279,7 +279,7 @@ export const MATERIALIZE_COMPANION_SUFFIX = ".materialize.malloy";
  * Ends the name of a build copy: the author's file with one materialized
  * source's given-reading `where:` terms taken out (P2).
  */
-export const MATERIALIZE_BUILD_COPY_SUFFIX = ".materialize-build.malloy";
+const MATERIALIZE_BUILD_COPY_SUFFIX = ".materialize-build.malloy";
 
 /**
  * The `index`th build copy of an author model, by its file name. One copy per
@@ -343,7 +343,7 @@ const DEFERRED_KEYS: Readonly<Record<string, string>> = {};
  * A pair table's parent-row flag column: true on exactly one row per parent
  * (see the module comment).
  */
-export const PAIR_PARENT_ROW = "__parent_row";
+const PAIR_PARENT_ROW = "__parent_row";
 
 /**
  * The row flag of a level between the source and the leaf of a path of more
@@ -360,10 +360,10 @@ export function pairLevelRowColumn(level: number): string {
  * A table that stores more than one inlined path (one block per path) marks
  * each row with its block's number in this column.
  */
-export const PAIR_LANE_COLUMN = "__pair_lane";
+const PAIR_LANE_COLUMN = "__pair_lane";
 
 /** One join past the first of an inlined path of join_manys. */
-export interface MaterializePairHop {
+interface MaterializePairHop {
    /** The join's name on the previous hop's joined source. */
    join: string;
    /** This hop's joined source's primary key, as that source names it. */
@@ -384,14 +384,13 @@ export interface MaterializePairHop {
  * watermark, and every row of one parent carries the same value (see
  * {@link pairIncremental}).
  */
-export const PAIR_WATERMARK = "__pair_watermark";
+const PAIR_WATERMARK = "__pair_watermark";
 
 /**
  * The code of the warning on a pair table whose `refresh="incremental"` is
  * not honoured: the table is rebuilt in full on every refresh, and served.
  */
-export const MATERIALIZE_PAIR_FULL_REFRESH_CODE =
-   "materialize-pair-full-refresh";
+const MATERIALIZE_PAIR_FULL_REFRESH_CODE = "materialize-pair-full-refresh";
 
 /** How a pair table (an inlined join_many, P5) is laid out. */
 export interface MaterializePair {
@@ -436,7 +435,7 @@ export interface MaterializePair {
  * {@link PAIR_LANE_COLUMN}. Every block stores every column, the other
  * blocks' as typed nulls, and every level flag down to the deepest path.
  */
-export interface MaterializePairBlocks {
+interface MaterializePairBlocks {
    /** The blocks, by block number; the first is the plan's `pair`. */
    blocks: MaterializePair[];
    /** The block-number column ({@link PAIR_LANE_COLUMN}). */
@@ -470,13 +469,13 @@ export const GENERATOR_KEYS: readonly string[] = [
 ];
 
 /** The code of a `#(materialize)` key outside the route's closed set. */
-export const MATERIALIZE_UNKNOWN_KEY_CODE = "materialize-unknown-key";
+const MATERIALIZE_UNKNOWN_KEY_CODE = "materialize-unknown-key";
 
 /** The code of a `#(materialize)` line that does not parse. */
-export const MATERIALIZE_UNPARSEABLE_CODE = "materialize-unparseable";
+const MATERIALIZE_UNPARSEABLE_CODE = "materialize-unparseable";
 
 /** One stored column of a materialized source. */
-export interface MaterializeColumn {
+interface MaterializeColumn {
    /** The dimension's name on the author's source. */
    dimension: string;
    /** The column the build stores it as: the dimension's own name. */
@@ -551,7 +550,7 @@ export interface InlineUniquenessCheck {
  * the term is in the declaration's own trailing `extend`, which the re-root
  * keeps as written (see {@link termSpans}).
  */
-export interface GivenReadTerm {
+interface GivenReadTerm {
    kind: "given";
    /** The term as the author wrote it, verbatim. */
    code: string;
@@ -586,13 +585,13 @@ export function givenReadTerms(
 }
 
 /** What a caller sets that a left-out dimension's value depends on (P9). */
-export type CallerInput = "given" | "current_time" | "time_zone";
+type CallerInput = "given" | "current_time" | "time_zone";
 
 /**
  * A dimension of a materialized source left out of its build because its
  * value depends on the caller (P9): the served copy computes it at read.
  */
-export interface LeftOutDimension {
+interface LeftOutDimension {
    dimension: string;
    reads: CallerInput[];
    /**
@@ -604,7 +603,7 @@ export interface LeftOutDimension {
 }
 
 /** A given a read-time term reads, and the file that declares it. */
-export interface MaterializeGivenDeclaration {
+interface MaterializeGivenDeclaration {
    name: string;
    url: string;
    /**
@@ -839,7 +838,7 @@ export function splitSourceID(
  * `contents`, `def` among them (see {@link declaredNotes}). Undefined when the
  * source declares none.
  */
-export function readMaterializeDeclaration(
+function readMaterializeDeclaration(
    def: SourceDefLike,
    contents: Readonly<Record<string, unknown>> = {},
 ):
@@ -1127,13 +1126,13 @@ export function materializeColumns(
  * the base's own names, so it is left out of the build only when the source
  * renames, redefines, drops or re-hides none of them.
  */
-export interface PlanBases {
+interface PlanBases {
    chain: KeptAncestor[];
    unchanged: boolean[];
 }
 
 /** {@link PlanBases} for `def`, from the source map. */
-export function planBases(def: SourceDefLike, map: SourceMap): PlanBases {
+function planBases(def: SourceDefLike, map: SourceMap): PlanBases {
    const declaration = declarationOf(def);
    if (typeof def.sourceID !== "string" || !declaration) {
       return { chain: [], unchanged: [] };
@@ -1238,7 +1237,7 @@ function joinsRead(def: SourceDefLike, uses: readonly TermUse[]): boolean {
  * given is read: its stored columns would hold one caller's values. A
  * zone-dependent one declared elsewhere is stored as built.
  */
-export function callerDependentDimensions(
+function callerDependentDimensions(
    def: SourceDefLike,
    probed: ReadonlyMap<string, FieldDependence> | undefined,
    inline: readonly string[] = [],
@@ -1977,7 +1976,7 @@ function declarationOf(def: SourceDefLike): TermUse | undefined {
  * a given and the current time is not this function's: rolling_window.ts
  * refuses it.
  */
-export function readTimeTermsOf(
+function readTimeTermsOf(
    def: SourceDefLike,
    classified: readonly ClassifiedWhereTerm[],
    columns: readonly MaterializeColumn[],
@@ -2923,7 +2922,7 @@ ${stored.map((c) => `    ${identifier(c)}`).join(",\n")}
  * per parent, which the build takes the greatest of across blocks into
  * {@link PAIR_WATERMARK}. Stored beside it, and read by nothing.
  */
-export const PAIR_BLOCK_WATERMARK = "__pair_watermark_block";
+const PAIR_BLOCK_WATERMARK = "__pair_watermark_block";
 
 /**
  * An incremental pair table's watermark (see {@link pairIncremental}): the
@@ -3544,7 +3543,7 @@ function parentJoinRecords(parent: MaterializePlan): InlinedJoinText[] {
 }
 
 /** Ends a level file's name: one depth of a chain's generated sources (P10). */
-export const MATERIALIZE_LEVEL_SUFFIX = ".materialize-level.malloy";
+const MATERIALIZE_LEVEL_SUFFIX = ".materialize-level.malloy";
 
 /** The level file of `level`'s generated sources, beside the author's model. */
 export function levelFileName(modelFileName: string, level: number): string {
@@ -3844,7 +3843,7 @@ ${plans
 }
 
 /** The generated files for one author model. */
-export interface GeneratedBuildFiles {
+interface GeneratedBuildFiles {
    /** The companion: compiled, and its build targets are every generated source. */
    entry: string;
    /**

@@ -44,7 +44,7 @@ import { persistBlankedFiles } from "../persist_blanking";
 import { authorNameImports } from "./author_imports";
 
 /** A variant compiled over the author's declaring file. */
-export interface CompiledDeclaringFileVariant {
+interface CompiledDeclaringFileVariant {
    materializer?: ModelMaterializer;
    modelDef?: ModelDef;
    /** The runtime the variant compiled in, which a graft on it reloads through. */
@@ -53,7 +53,7 @@ export interface CompiledDeclaringFileVariant {
 }
 
 /** What the leg's declaration callback is handed. */
-export interface DeclaringFileContext {
+interface DeclaringFileContext {
    /** The declaring file's URL (its overlay key is where the variant lives). */
    declaringURL: URL;
    /** The copy of the declaring file, holding its other names. */

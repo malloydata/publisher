@@ -336,6 +336,176 @@ body
   });
 });
 
+describe("fit", () => {
+  // `gh-release` writes the page from this. GitHub refuses a body over 125,000
+  // characters, after npm, Docker and PyPI have published, which is what 0.13.0's
+  // 136k of narrative did.
+
+  /** A header, a narrative of `count` sections of `size` characters each, and a generated list of `prs` entries. */
+  function release(count: number, size: number, prs = 0) {
+    const sectionsText = Array.from(
+      { length: count },
+      (_, i) => `## [0.0.249] — section ${i + 1}\n\n${"x".repeat(size)}\n`,
+    ).join("\n---\n\n");
+    const { file } = workspace(`${HEADER}\n${sectionsText}`);
+    const dir = path.dirname(file);
+    const header = path.join(dir, "header.md");
+    writeFileSync(header, "## Release v0.0.249\n\nthe npm and Docker links\n");
+    const generated = path.join(dir, "generated.md");
+    writeFileSync(
+      generated,
+      "## What's Changed\n" +
+        Array.from(
+          { length: prs },
+          (_, i) =>
+            `* change ${i + 1} by @someone in https://github.com/malloydata/publisher/pull/${i + 1}`,
+        ).join("\n") +
+        "\n\n**Full Changelog**: https://github.com/malloydata/publisher/compare/v0.0.248...v0.0.249\n",
+    );
+    return { file, header, generated, out: path.join(dir, "body.md") };
+  }
+
+  function fitRun(
+    r: ReturnType<typeof release>,
+    ...args: string[]
+  ): ReturnType<typeof run> & { body: string } {
+    const result = run(
+      r.file,
+      "fit",
+      "0.0.249",
+      "--header",
+      r.header,
+      "--out",
+      r.out,
+      "--prev-tag",
+      "v0.0.248",
+      ...args,
+    );
+    let body = "";
+    try {
+      body = readFileSync(r.out, "utf8");
+    } catch {}
+    return { ...result, body };
+  }
+
+  it("keeps the full narrative and the generated list when they fit", () => {
+    const r = release(2, 100, 3);
+    const { code, stdout, body } = fitRun(r, "--generated", r.generated);
+    expect(code).toBe(0);
+    expect(stdout).toMatch(/^narrative=full generated=kept length=\d+\n$/);
+    expect(body.startsWith("## Release v0.0.249")).toBe(true);
+    // The same text `extract` prints, between the header and the list.
+    expect(body).toContain(run(r.file, "extract", "0.0.249").stdout.trim());
+    expect(body).toContain("* change 3 by @someone");
+    expect(body.trimEnd().endsWith("v0.0.248...v0.0.249")).toBe(true);
+  });
+
+  it("falls back to an index linking RELEASE_NOTES.md when the narrative is too long", () => {
+    // 0.13.0's shape: many sections, together past the page's limit.
+    const r = release(75, 1_900, 140);
+    const { code, stdout, body } = fitRun(r, "--generated", r.generated);
+    expect(code).toBe(0);
+    expect(stdout).toContain("narrative=index generated=kept");
+    expect(body.length).toBeLessThanOrEqual(120_000);
+    expect(body).toContain(
+      "so the full text is in [RELEASE_NOTES.md at v0.0.249](https://github.com/malloydata/publisher/blob/v0.0.249/RELEASE_NOTES.md). The sections it ships:",
+    );
+    expect(body).toContain("\n- section 1\n");
+    expect(body).toContain("\n- section 75\n");
+    expect(body).not.toContain("xxxxxxxxxx");
+    // The whole generated list is still there.
+    expect(body).toContain("* change 140 by @someone");
+  });
+
+  it("truncates the generated list, keeping its compare link, when the index alone does not leave room", () => {
+    const r = release(5, 1_000, 200);
+    const { code, stdout, body } = fitRun(
+      r,
+      "--generated",
+      r.generated,
+      "--limit",
+      "3000",
+    );
+    expect(code).toBe(0);
+    expect(stdout).toContain("narrative=index generated=truncated");
+    expect(body.length).toBeLessThanOrEqual(3000);
+    expect(body).toContain("- section 5");
+    expect(body).toContain("* change 1 by @someone");
+    expect(body).not.toContain("* change 200 by");
+    expect(body).toMatch(/_…and \d+ more, too many for this page/);
+    expect(body.trimEnd().endsWith("v0.0.248...v0.0.249")).toBe(true);
+  });
+
+  it("shortens the index itself, and always fits, however small the limit", () => {
+    const r = release(50, 10, 50);
+    for (const limit of [400, 120, 10]) {
+      const { code, stdout, body } = fitRun(
+        r,
+        "--generated",
+        r.generated,
+        "--limit",
+        String(limit),
+      );
+      expect(code).toBe(0);
+      expect(stdout).toContain("narrative=index-truncated");
+      expect(body.length).toBeLessThanOrEqual(limit);
+    }
+  });
+
+  it("links the compare view when the generated list could not be fetched", () => {
+    const r = release(1, 10);
+    const { code, stdout, body } = fitRun(r);
+    expect(code).toBe(0);
+    expect(stdout).toContain("narrative=full generated=link");
+    expect(
+      body
+        .trimEnd()
+        .endsWith(
+          "**Full Changelog**: https://github.com/malloydata/publisher/compare/v0.0.248...v0.0.249",
+        ),
+    ).toBe(true);
+  });
+
+  it("leaves the narrative off with --no-narrative, for a RELEASE_NOTES.md extract could not read", () => {
+    const r = release(2, 10, 1);
+    const { code, stdout, body } = fitRun(
+      r,
+      "--generated",
+      r.generated,
+      "--no-narrative",
+    );
+    expect(code).toBe(0);
+    expect(stdout).toContain("narrative=none generated=kept");
+    expect(body).not.toContain("section 1");
+  });
+
+  it("uses the repo URL it is given", () => {
+    const r = release(10, 100);
+    const { body } = fitRun(
+      r,
+      "--repo-url",
+      "https://github.example/acme/fork/",
+      "--limit",
+      "1000",
+    );
+    expect(body).toContain(
+      "(https://github.example/acme/fork/blob/v0.0.249/RELEASE_NOTES.md)",
+    );
+    expect(body).toContain(
+      "https://github.example/acme/fork/compare/v0.0.248...v0.0.249",
+    );
+  });
+
+  it("fails, writing nothing, on a section extract would refuse", () => {
+    const r = release(1, 10);
+    writeFileSync(r.file, `${HEADER}\n## [0.0.249]\n\nuntitled\n`);
+    const { code, stderr, body } = fitRun(r);
+    expect(code).toBe(1);
+    expect(stderr).toContain("has no title");
+    expect(body).toBe("");
+  });
+});
+
 describe("bad invocations leave the file alone", () => {
   const NOTES = `${HEADER}
 ## [Unreleased] — shipping now
@@ -352,6 +522,13 @@ body
     ["no command", []],
     ["extract with a version that is not a version", ["extract", "nope"]],
     ["a stray extra argument", ["stamp", "0.0.249", "0.0.250"]],
+    ["fit with no --header or --out", ["fit", "0.0.249"]],
+    ["fit with an unknown flag", ["fit", "0.0.249", "--bogus", "x"]],
+    ["fit with no version", ["fit"]],
+    [
+      "fit with a limit that is not a number",
+      ["fit", "0.0.249", "--header", "h", "--out", "o", "--limit", "big"],
+    ],
   ];
 
   for (const [name, args] of cases) {

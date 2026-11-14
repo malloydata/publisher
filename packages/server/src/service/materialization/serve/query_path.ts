@@ -34,9 +34,10 @@ import type { components } from "../../../api";
 import type { ConsideredVariant } from "../../query_router";
 import type { KeyUniqueness } from "../types";
 import { forEachFieldPath } from "../../governance/ir/array_query";
+import { declineOfCode } from "./leg_decline";
 
 export type ApiQueryPath = components["schemas"]["QueryPath"];
-export type ApiQueryShape = components["schemas"]["QueryShape"];
+type ApiQueryShape = components["schemas"]["QueryShape"];
 type ApiCandidate = components["schemas"]["QueryPathCandidate"];
 type ApiNearby = components["schemas"]["QueryPathNearby"];
 type ApiServer = components["schemas"]["QueryPathServer"];
@@ -136,7 +137,7 @@ export interface StorageTable {
 }
 
 /** A rollup this model's pre-aggregation plans. */
-export interface ModelRollup {
+interface ModelRollup {
    rollupSourceName: string;
    baseSourceName: string;
    baseSourceID?: string;
@@ -405,9 +406,7 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
                t,
                skipReasonOf(decision),
                decision.callerDetail,
-               VARIANT_WARNED_CODES[
-                  decision.code as keyof typeof VARIANT_SKIP_CODES
-               ],
+               declineOfCode(decision.code)?.warnedCode,
             );
          }
       }
@@ -671,7 +670,7 @@ function ownVerdictExplains(
  * text, which can carry a refusal's detail; that stays on the package's
  * warnings and its status.
  */
-export function verdictWarningMessage(reason: string): string {
+function verdictWarningMessage(reason: string): string {
    switch (reason) {
       case "storage_mode":
          return "Built into storage, but the server's storage mode routes no query to it, so its queries are answered live.";
@@ -691,53 +690,12 @@ export function verdictWarningMessage(reason: string): string {
 }
 
 /**
- * The codes a variant's {@link Variant.explain} gives, mapped to skip reasons.
+ * The reason for a variant the router skipped because it did not answer.
  * Anything unexplained is a compile failure against the stored form: almost
  * always a field or refinement the stored form does not carry.
  */
-export const VARIANT_SKIP_CODES = {
-   rollup_missing_field: "MISSING_FIELD",
-   rollup_count_semantics: "COUNT_SEMANTICS",
-   rollup_grain_too_coarse: "GRAIN_TOO_COARSE",
-   rollup_time_zone: "TIME_ZONE",
-   rollup_not_built: "NOT_BUILT",
-   // A7: a joined source's gate, which the rollup read through the join does
-   // not carry; a rollup in a storage destination, across from the source.
-   rollup_contract: "CONTRACT",
-   rollup_cross_connection: "CROSS_CONNECTION",
-   view_missing_field: "MISSING_FIELD",
-   view_not_built: "NOT_BUILT",
-   view_stale: "STALE",
-   served_copy_time_zone: "TIME_ZONE",
-   served_copy_cross_connection: "CROSS_CONNECTION",
-   served_copy_not_served: "WARNED",
-   served_copy_opt_out: "WARNED",
-   served_copy_count_semantics: "COUNT_SEMANTICS",
-   // The table lacks the field as live returns it: with its annotations.
-   served_copy_joined_annotations: "MISSING_FIELD",
-   served_copy_pair_shape: "COUNT_SEMANTICS",
-   // Exact or not, a query that reads nothing through the inlined join_many
-   // reads each parent off a flag over every pair row: the table's rows are
-   // not the parents the query counts, so it is not the table to count them
-   // from (see pair_flat_query.ts).
-   served_copy_pair_parent_only: "COUNT_SEMANTICS",
-} as const satisfies Record<string, SkipReason>;
-
-/**
- * The `code` a `WARNED` skip carries: the package warning that explains it,
- * or, for a reader whose own `#@ -persist` sends it live, that annotation.
- */
-const VARIANT_WARNED_CODES: Partial<
-   Record<keyof typeof VARIANT_SKIP_CODES, string>
-> = {
-   served_copy_not_served: "served-copy-not-served",
-   served_copy_opt_out: "persist-opt-out",
-};
-
-/** The reason for a variant the router skipped because it did not answer. */
 function skipReasonOf(decision: ConsideredVariant): SkipReason {
-   const code = decision.code as keyof typeof VARIANT_SKIP_CODES | undefined;
-   return (code && VARIANT_SKIP_CODES[code]) ?? "MISSING_FIELD";
+   return declineOfCode(decision.code)?.reason ?? "MISSING_FIELD";
 }
 
 /** Whether the run that answered read this colocated table from the manifest. */

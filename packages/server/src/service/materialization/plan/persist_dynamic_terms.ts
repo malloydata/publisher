@@ -634,7 +634,7 @@ export interface RollingWindow {
 }
 
 /** What one `where:` term of a compiled source depends on. */
-export type WhereTermDependency =
+type WhereTermDependency =
    /** Neither a given nor the current time: built once, never re-applied. */
    | { kind: "fixed" }
    /**
@@ -829,9 +829,7 @@ export function readRollingWindow(entry: unknown): RollingWindow | undefined {
  * not, or Malloy's range `ts ? now - 60 days to now - 30 days`, which compiles
  * to the same `and`), or undefined for any other shape.
  */
-export function readRollingWindows(
-   entry: unknown,
-): RollingWindow[] | undefined {
+function readRollingWindows(entry: unknown): RollingWindow[] | undefined {
    const e = (entry as { e?: NowExpr } | null)?.e;
    const out: RollingWindow[] = [];
    const walk = (node: NowExpr | undefined, depth: number): boolean => {
