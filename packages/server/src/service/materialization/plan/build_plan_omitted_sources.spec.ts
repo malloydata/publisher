@@ -53,6 +53,15 @@ function reader(overlay: ReadonlyMap<string, string>): URLReader {
 }
 
 /**
+ * A source ID with the package directory masked as `<pkg>`. The ID holds the
+ * directory as a file URL, which on Windows reads `/D:/Temp/...`, not the
+ * `D:\Temp\...` path `dir` holds, so mask the URL's form of it.
+ */
+function maskDir(id: string, dir: string): string {
+   return id.replace(pathToFileURL(dir).pathname, "<pkg>");
+}
+
+/**
  * Plan one model file. `companionsFail`: the factory every generated
  * companion (and the v1 build copy) compiles through throws, as a companion
  * whose generated text does not compile would. `"unreadable"`: the factory
@@ -161,7 +170,7 @@ source: p is base -> { group_by: a }
       const env = { PUBLISHER_V1_SERVED_COPY: "off" };
       const good = await plan(V1_ROLLUP, env, false);
       const planned = Object.keys(good.parts.preaggregatePlans).map((id) =>
-         id.replace(good.dir, "<pkg>"),
+         maskDir(id, good.dir),
       );
       expect(planned).toHaveLength(1);
       expect(planned[0]).toMatch(/__preagg__.*@file:.*\.preagg\.malloy$/);
@@ -174,7 +183,7 @@ source: p is base -> { group_by: a }
       expect(
          wire?.omittedSources?.map((o) => ({
             ...o,
-            sourceID: o.sourceID.replace(bad.dir, "<pkg>"),
+            sourceID: maskDir(o.sourceID, bad.dir),
          })),
       ).toEqual(
          planned.map((sourceID) => ({
@@ -189,7 +198,7 @@ source: p is base -> { group_by: a }
       const env = { PUBLISHER_V1_SERVED_COPY: "on" };
       const good = await plan(V1_ROLLUP, env, false);
       const planned = Object.keys(good.parts.preaggregatePlans).map((id) =>
-         id.replace(good.dir, "<pkg>"),
+         maskDir(id, good.dir),
       );
       expect(planned).toHaveLength(1);
       expect(planned[0]).toMatch(/__rollup__.*@file:.*\.preaggregate\.malloy$/);
@@ -198,7 +207,7 @@ source: p is base -> { group_by: a }
       expect(
          wirePlan(bad.parts)?.omittedSources?.map((o) => ({
             ...o,
-            sourceID: o.sourceID.replace(bad.dir, "<pkg>"),
+            sourceID: maskDir(o.sourceID, bad.dir),
          })),
       ).toEqual(
          planned.map((sourceID) => ({
@@ -217,14 +226,14 @@ source: by_category is orders -> { group_by: category }
       const env = { PUBLISHER_V1_SERVED_COPY: "on" };
       const good = await plan(text, env, false);
       const planned = Object.keys(good.parts.preaggregatePlans).map((id) =>
-         id.replace(good.dir, "<pkg>"),
+         maskDir(id, good.dir),
       );
       expect(planned).toHaveLength(1);
       const bad = await plan(text, env, "unreadable");
       expect(
          wirePlan(bad.parts)?.omittedSources?.map((o) => ({
             ...o,
-            sourceID: o.sourceID.replace(bad.dir, "<pkg>"),
+            sourceID: maskDir(o.sourceID, bad.dir),
          })),
       ).toEqual(
          planned.map((sourceID) => ({
@@ -242,7 +251,7 @@ source: p is base extend { measure: n is count() } -> { group_by: a, b; aggregat
       const env = { PUBLISHER_V1_SERVED_COPY: "on" };
       const good = await plan(text, env, false);
       const planned = Object.keys(good.parts.sources).map((id) =>
-         id.replace(good.dir, "<pkg>"),
+         maskDir(id, good.dir),
       );
       expect(planned).toHaveLength(1);
 
@@ -253,7 +262,7 @@ source: p is base extend { measure: n is count() } -> { group_by: a, b; aggregat
          expect(
             wirePlan(bad.parts)?.omittedSources?.map((o) => ({
                ...o,
-               sourceID: o.sourceID.replace(bad.dir, "<pkg>"),
+               sourceID: maskDir(o.sourceID, bad.dir),
             })),
          ).toEqual(
             planned.map((sourceID) => ({
@@ -273,7 +282,7 @@ source: plain is duckdb.sql("select 1 as a") extend {
       const env = { PUBLISHER_MATERIALIZE: "true" };
       const good = await plan(text, env, false);
       const planned = Object.keys(good.parts.materializePlans).map((id) =>
-         id.replace(good.dir, "<pkg>"),
+         maskDir(id, good.dir),
       );
       expect(planned).toHaveLength(1);
 
@@ -281,7 +290,7 @@ source: plain is duckdb.sql("select 1 as a") extend {
       expect(
          wirePlan(bad.parts)?.omittedSources?.map((o) => ({
             ...o,
-            sourceID: o.sourceID.replace(bad.dir, "<pkg>"),
+            sourceID: maskDir(o.sourceID, bad.dir),
          })),
       ).toEqual(
          planned.map((sourceID) => ({
@@ -302,14 +311,14 @@ source: plain is duckdb.sql("select 1 as a") extend {
       const good = await plan(text, env, false);
       const planned = Object.keys(good.parts.sources)
          .filter((id) => id.includes("__view@"))
-         .map((id) => id.replace(good.dir, "<pkg>"));
+         .map((id) => maskDir(id, good.dir));
       expect(planned).toHaveLength(1);
 
       const bad = await plan(text, env, true);
       expect(
          wirePlan(bad.parts)?.omittedSources?.map((o) => ({
             ...o,
-            sourceID: o.sourceID.replace(bad.dir, "<pkg>"),
+            sourceID: maskDir(o.sourceID, bad.dir),
          })),
       ).toEqual(
          planned.map((sourceID) => ({
@@ -347,7 +356,7 @@ source: q is base -> { group_by: a }
          expect(
             wire?.omittedSources?.map((o) => ({
                ...o,
-               sourceID: o.sourceID.replace(dir, "<pkg>"),
+               sourceID: maskDir(o.sourceID, dir),
             })),
          ).toEqual([
             {
