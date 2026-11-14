@@ -35,6 +35,16 @@ import { finalizeOmissions, omittedFromFile } from "./omitted_sources";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
 
+/**
+ * A source ID with the package directory written `file://<pkg>`. The ID holds
+ * the directory's file URL, which on Windows (`file:///D:/Temp/…`) never
+ * contains the path the directory was made with (`D:\Temp\…`), so the URL is
+ * what is replaced, on every platform.
+ */
+function inPkg(id: string, dir: string): string {
+   return id.replace(pathToFileURL(dir).href, "file://<pkg>");
+}
+
 const duckdb = new DuckDBConnection("duckdb", ":memory:");
 const connections = new FixedConnectionMap(
    new Map([["duckdb", duckdb]]),
@@ -161,7 +171,7 @@ source: p is base -> { group_by: a }
       const env = { PUBLISHER_V1_SERVED_COPY: "off" };
       const good = await plan(V1_ROLLUP, env, false);
       const planned = Object.keys(good.parts.preaggregatePlans).map((id) =>
-         id.replace(good.dir, "<pkg>"),
+         inPkg(id, good.dir),
       );
       expect(planned).toHaveLength(1);
       expect(planned[0]).toMatch(/__preagg__.*@file:.*\.preagg\.malloy$/);
@@ -174,7 +184,7 @@ source: p is base -> { group_by: a }
       expect(
          wire?.omittedSources?.map((o) => ({
             ...o,
-            sourceID: o.sourceID.replace(bad.dir, "<pkg>"),
+            sourceID: inPkg(o.sourceID, bad.dir),
          })),
       ).toEqual(
          planned.map((sourceID) => ({
@@ -189,7 +199,7 @@ source: p is base -> { group_by: a }
       const env = { PUBLISHER_V1_SERVED_COPY: "on" };
       const good = await plan(V1_ROLLUP, env, false);
       const planned = Object.keys(good.parts.preaggregatePlans).map((id) =>
-         id.replace(good.dir, "<pkg>"),
+         inPkg(id, good.dir),
       );
       expect(planned).toHaveLength(1);
       expect(planned[0]).toMatch(/__rollup__.*@file:.*\.preaggregate\.malloy$/);
@@ -198,7 +208,7 @@ source: p is base -> { group_by: a }
       expect(
          wirePlan(bad.parts)?.omittedSources?.map((o) => ({
             ...o,
-            sourceID: o.sourceID.replace(bad.dir, "<pkg>"),
+            sourceID: inPkg(o.sourceID, bad.dir),
          })),
       ).toEqual(
          planned.map((sourceID) => ({
@@ -217,14 +227,14 @@ source: by_category is orders -> { group_by: category }
       const env = { PUBLISHER_V1_SERVED_COPY: "on" };
       const good = await plan(text, env, false);
       const planned = Object.keys(good.parts.preaggregatePlans).map((id) =>
-         id.replace(good.dir, "<pkg>"),
+         inPkg(id, good.dir),
       );
       expect(planned).toHaveLength(1);
       const bad = await plan(text, env, "unreadable");
       expect(
          wirePlan(bad.parts)?.omittedSources?.map((o) => ({
             ...o,
-            sourceID: o.sourceID.replace(bad.dir, "<pkg>"),
+            sourceID: inPkg(o.sourceID, bad.dir),
          })),
       ).toEqual(
          planned.map((sourceID) => ({
@@ -242,7 +252,7 @@ source: p is base extend { measure: n is count() } -> { group_by: a, b; aggregat
       const env = { PUBLISHER_V1_SERVED_COPY: "on" };
       const good = await plan(text, env, false);
       const planned = Object.keys(good.parts.sources).map((id) =>
-         id.replace(good.dir, "<pkg>"),
+         inPkg(id, good.dir),
       );
       expect(planned).toHaveLength(1);
 
@@ -253,7 +263,7 @@ source: p is base extend { measure: n is count() } -> { group_by: a, b; aggregat
          expect(
             wirePlan(bad.parts)?.omittedSources?.map((o) => ({
                ...o,
-               sourceID: o.sourceID.replace(bad.dir, "<pkg>"),
+               sourceID: inPkg(o.sourceID, bad.dir),
             })),
          ).toEqual(
             planned.map((sourceID) => ({
@@ -273,7 +283,7 @@ source: plain is duckdb.sql("select 1 as a") extend {
       const env = { PUBLISHER_MATERIALIZE: "true" };
       const good = await plan(text, env, false);
       const planned = Object.keys(good.parts.materializePlans).map((id) =>
-         id.replace(good.dir, "<pkg>"),
+         inPkg(id, good.dir),
       );
       expect(planned).toHaveLength(1);
 
@@ -281,7 +291,7 @@ source: plain is duckdb.sql("select 1 as a") extend {
       expect(
          wirePlan(bad.parts)?.omittedSources?.map((o) => ({
             ...o,
-            sourceID: o.sourceID.replace(bad.dir, "<pkg>"),
+            sourceID: inPkg(o.sourceID, bad.dir),
          })),
       ).toEqual(
          planned.map((sourceID) => ({
@@ -302,14 +312,14 @@ source: plain is duckdb.sql("select 1 as a") extend {
       const good = await plan(text, env, false);
       const planned = Object.keys(good.parts.sources)
          .filter((id) => id.includes("__view@"))
-         .map((id) => id.replace(good.dir, "<pkg>"));
+         .map((id) => inPkg(id, good.dir));
       expect(planned).toHaveLength(1);
 
       const bad = await plan(text, env, true);
       expect(
          wirePlan(bad.parts)?.omittedSources?.map((o) => ({
             ...o,
-            sourceID: o.sourceID.replace(bad.dir, "<pkg>"),
+            sourceID: inPkg(o.sourceID, bad.dir),
          })),
       ).toEqual(
          planned.map((sourceID) => ({
@@ -347,7 +357,7 @@ source: q is base -> { group_by: a }
          expect(
             wire?.omittedSources?.map((o) => ({
                ...o,
-               sourceID: o.sourceID.replace(dir, "<pkg>"),
+               sourceID: inPkg(o.sourceID, dir),
             })),
          ).toEqual([
             {
