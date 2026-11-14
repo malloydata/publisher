@@ -56,6 +56,7 @@ import {
 } from "./persisted_view";
 import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
 import { SourceMap } from "./source_map";
+import { omittedFromFile, type Omission } from "./omitted_sources";
 
 export interface GeneratedPersistedViews {
    /** The views the companion declares. Never empty. */
@@ -232,9 +233,16 @@ export async function tryCompilePersistedViewCompanion(args: {
 }): Promise<{
    generated?: GeneratedPersistedViews;
    refused: PersistedViewRefusal[];
+   /** The views a failure left out of the plan (see omitted_sources). */
+   omitted?: Omission[];
 }> {
    const modelFile = path.resolve(args.packagePath, args.modelPath);
+   const companionHref = persistedViewCompanionHref(
+      pathToFileURL(modelFile).href,
+   );
    const refused: PersistedViewRefusal[] = [];
+   // The build sources admitted so far; until planned a failure cannot name them.
+   let plannedNames: string[] | undefined;
    try {
       const planned = planModelPersistedViews(args.modelDef, (url) => {
          try {
@@ -254,6 +262,7 @@ export async function tryCompilePersistedViewCompanion(args: {
          if (reason === undefined) plans.push(plan);
          else refused.push({ ...plan, reason });
       }
+      plannedNames = plans.map((p) => p.buildSourceName);
       const text = generatePersistedViewFile(
          plans,
          path.basename(args.modelPath),
@@ -279,9 +288,7 @@ export async function tryCompilePersistedViewCompanion(args: {
          }
          return { refused };
       }
-      const url = new URL(
-         persistedViewCompanionHref(pathToFileURL(modelFile).href),
-      );
+      const url = new URL(companionHref);
       overlay.set(overlayKey(url), text);
       const { runtime, importBaseURL } = await args.getRuntime(overlay);
       const materializer = runtime.loadModel(url, { importBaseURL });
@@ -298,7 +305,14 @@ export async function tryCompilePersistedViewCompanion(args: {
             error: error instanceof Error ? error.message : String(error),
          },
       );
-      return { refused };
+      return {
+         refused,
+         omitted: omittedFromFile(
+            companionHref,
+            plannedNames,
+            "persisted_view_companion_failed",
+         ),
+      };
    }
 }
 

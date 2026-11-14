@@ -53,6 +53,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "alpha@<hammer>/col/col.malloy": {

@@ -69,6 +69,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "summary@<pkg>/a.malloy": {

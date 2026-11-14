@@ -22,6 +22,7 @@ import type {
 import { fileURLToPath, pathToFileURL } from "url";
 import * as path from "path";
 import { logger } from "../../../logger";
+import { omittedFromFile, type Omission } from "./omitted_sources";
 import {
    planModelPreaggregation,
    synthesizePreaggregationModel,
@@ -137,6 +138,11 @@ async function compileSynthesizedPreaggregation(args: {
  */
 export async function tryCompileSynthesizedPreaggregation(
    args: Parameters<typeof compileSynthesizedPreaggregation>[0],
+   /**
+    * Called on a failure with the rollups it left out of the build plan
+    * (see {@link Omission}), so the plan can say it is incomplete.
+    */
+   onOmitted?: (omitted: Omission[]) => void,
 ): Promise<SynthesizedPreaggregation | undefined> {
    try {
       return await compileSynthesizedPreaggregation(args);
@@ -145,6 +151,29 @@ export async function tryCompileSynthesizedPreaggregation(
          modelPath: args.modelPath,
          error: error instanceof Error ? error.message : String(error),
       });
+      onOmitted?.(synthesizedRollupsOmitted(args));
       return undefined;
    }
+}
+
+/**
+ * The rollups a failed synthesized companion would have planned, by the
+ * sourceIDs they would have had, or the companion's `*` entry when the
+ * planner itself is what failed.
+ */
+function synthesizedRollupsOmitted(args: {
+   packagePath: string;
+   modelPath: string;
+   contents: Record<string, unknown>;
+}): Omission[] {
+   const url = synthesizedModelURL(args.packagePath, args.modelPath).href;
+   let names: string[] | undefined;
+   try {
+      names = planModelPreaggregation(args.contents).map(
+         (p) => p.rollupSourceName,
+      );
+   } catch {
+      // The planner failed: the rollups cannot be named.
+   }
+   return omittedFromFile(url, names, "preaggregate_companion_failed");
 }

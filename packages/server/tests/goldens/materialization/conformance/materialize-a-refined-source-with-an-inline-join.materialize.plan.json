@@ -157,6 +157,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "enriched@<pkg>/m.malloy": {

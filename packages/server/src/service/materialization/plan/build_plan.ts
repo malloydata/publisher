@@ -81,6 +81,7 @@ import { quoteIdentifier } from "../../quoting";
 import {
    addressSQL,
    computeSourceEntityId,
+   isUnkeyable,
    plannedSources,
    presentAs,
    recordTarget,
@@ -99,6 +100,12 @@ import {
    type SourceEligibility,
 } from "./eligibility_collect";
 import { resolveFreshness, resolveQueryMetadata } from "./plan_layers";
+import {
+   finalizeOmissions,
+   omittedByID,
+   type Omission,
+   type OmittedSourceReason,
+} from "./omitted_sources";
 
 // Addressing, plan layers and eligibility collection live in their own
 // modules; re-exported so every existing import of build_plan keeps working.
@@ -224,6 +231,11 @@ export interface CompiledBuildPlan {
     * generated source's table (materialization v2, phase 3).
     */
    materializePlans?: Record<string, MaterializePlan>;
+   /**
+    * Sources planning left out because it FAILED (a companion that did not
+    * compile), for the wire plan's `omittedSources`. Absent: none.
+    */
+   omittedSources?: Omission[];
 }
 
 function wireTerm(term: DynamicTerm): WireStrippedTerm {
@@ -406,6 +418,58 @@ function detectDroppedPersistSources(
 }
 
 /**
+ * The sourceIDs of the `#@ persist` sources a compiled model holds, read as
+ * {@link detectDroppedPersistSources} reads them: what a model's build copy
+ * would have planned, for `omittedSources` when that copy does not compile.
+ */
+function declaredPersistSourceIDs(malloyModel: MalloyModel): string[] {
+   const ids: string[] = [];
+   try {
+      for (const def of Object.values(malloyModel._modelDef?.contents ?? {})) {
+         if (!isSourceDef(def) || !def.annotations) continue;
+         try {
+            if (routeHasKey(new Annotations(def.annotations), "@", "persist")) {
+               if (def.sourceID) ids.push(def.sourceID);
+            }
+         } catch {
+            // An annotation that cannot be read plans nothing either.
+         }
+      }
+   } catch {
+      // Fail open, as detectDroppedPersistSources does.
+   }
+   return ids;
+}
+
+/**
+ * The sourceIDs of the sources in `malloyModel` carrying a `#@` note at `at`
+ * (a `#@` line that did not parse), read in the model's own coordinates.
+ * Fail-open: an unreadable annotation names nothing.
+ */
+function sourceIDsWithNoteAt(
+   malloyModel: MalloyModel,
+   at: { url: string; range: { start: { line: number } } },
+): string[] {
+   const ids: string[] = [];
+   try {
+      for (const def of Object.values(malloyModel._modelDef?.contents ?? {})) {
+         if (!isSourceDef(def) || !def.annotations || !def.sourceID) continue;
+         try {
+            const notes = new Annotations(def.annotations).forRoute("@");
+            if (notes.some((note) => noteCovers(note, at))) {
+               ids.push(def.sourceID);
+            }
+         } catch {
+            // An annotation that cannot be read names nothing.
+         }
+      }
+   } catch {
+      // Fail open, as detectDroppedPersistSources does.
+   }
+   return ids;
+}
+
+/**
  * Classify one persist source's entry-point `#(authorize)` gate(s) and decide
  * whether it is `attributed` — see {@link PersistSourceGateOutcome}.
  *
@@ -484,6 +548,8 @@ export interface BuildPlanParts {
    sourceGateOutcomes: Record<string, PersistSourceGateOutcome>;
    /** Findings on the `#@` annotations of this model's sources (see annotation_reader). */
    annotationFindings: PackageAnnotationFinding[];
+   /** See {@link CompiledBuildPlan.omittedSources}. */
+   omittedSources: Omission[];
 }
 
 export function emptyBuildPlanParts(): BuildPlanParts {
@@ -497,6 +563,7 @@ export function emptyBuildPlanParts(): BuildPlanParts {
       materializePlans: {},
       sourceGateOutcomes: {},
       annotationFindings: [],
+      omittedSources: [],
    };
 }
 
@@ -517,6 +584,8 @@ export function mergeBuildPlanParts(
    Object.assign(into.preaggregatePlans, from.preaggregatePlans);
    Object.assign(into.materializePlans, from.materializePlans);
    Object.assign(into.sourceGateOutcomes, from.sourceGateOutcomes);
+   // `?? []`: parts a worker built before this field existed.
+   into.omittedSources.push(...(from.omittedSources ?? []));
    for (const finding of from.annotationFindings) {
       addAnnotationFinding(into, finding);
    }
@@ -611,19 +680,22 @@ async function collectGeneratedMaterialize(
    },
 ): Promise<void> {
    const authorDef: ModelDef = args.malloyModel._modelDef;
-   const { generated, refused } = await tryCompileMaterializeCompanion({
-      ...args,
-      contents: authorDef.contents ?? {},
-      givens: authorDef.givens ?? {},
-      // P9's probes compile against the author's model, never run.
-      probe: args.materializer,
-   });
+   const { generated, refused, omitted } = await tryCompileMaterializeCompanion(
+      {
+         ...args,
+         contents: authorDef.contents ?? {},
+         givens: authorDef.givens ?? {},
+         // P9's probes compile against the author's model, never run.
+         probe: args.materializer,
+      },
+   );
    for (const refusal of refused) {
       addAnnotationFinding(
          parts,
          materializeRefusalFinding(refusal, args.modelPath),
       );
    }
+   parts.omittedSources.push(...(omitted ?? []));
    if (!generated) return;
    for (const plan of generated.plans) {
       if (plan.pairFullRefresh) {
@@ -716,13 +788,15 @@ async function collectGeneratedRollups(
       modelDef: unknown;
    },
 ): Promise<void> {
-   const { generated, refused } = await tryCompileRollupCompanion(args);
+   const { generated, refused, omitted } =
+      await tryCompileRollupCompanion(args);
    for (const refusal of refused) {
       addAnnotationFinding(
          parts,
          rollupRefusalFinding(refusal, args.modelPath),
       );
    }
+   parts.omittedSources.push(...(omitted ?? []));
    if (!generated) return;
    const all = await generated.runtime.getBuildTargets(generated.model);
    const planByName = new Map(
@@ -813,19 +887,21 @@ async function collectGeneratedPersistedViews(
    },
 ): Promise<void> {
    const authorDef: ModelDef = args.malloyModel._modelDef;
-   const { generated, refused } = await tryCompilePersistedViewCompanion({
-      packagePath: args.packagePath,
-      modelPath: args.modelPath,
-      modelDef: authorDef,
-      materializer: args.materializer,
-      getRuntime: args.getRuntime,
-   });
+   const { generated, refused, omitted } =
+      await tryCompilePersistedViewCompanion({
+         packagePath: args.packagePath,
+         modelPath: args.modelPath,
+         modelDef: authorDef,
+         materializer: args.materializer,
+         getRuntime: args.getRuntime,
+      });
    for (const refusal of refused) {
       addAnnotationFinding(
          parts,
          persistedViewRefusalFinding(refusal, args.modelPath),
       );
    }
+   parts.omittedSources.push(...(omitted ?? []));
    if (!generated) return;
    const all = await generated.runtime.getBuildTargets(generated.model);
    const planByName = new Map(
@@ -915,6 +991,11 @@ export async function collectModelBuildPlan(
        * it, or null when it has none; compiled here when absent.
        */
       synthesized?: SynthesizedPreaggregation | null;
+      /**
+       * The rollups a caller's failed compile of {@link synthesized} left
+       * out (see `tryCompileSynthesizedPreaggregation`'s `onOmitted`).
+       */
+      synthesizedOmitted?: Omission[];
    },
 ): Promise<void> {
    const {
@@ -931,17 +1012,23 @@ export async function collectModelBuildPlan(
    // flag — the SYNTHESIZED model carries both — and must still get its rollup.
    // Under the v1 cutover a v1 rollup is planned by the rollup leg instead
    // (`#(preaggregate)`'s, below; G4), so v1's own synthesis is skipped.
+   if (!v1Cutover && args.synthesized !== undefined) {
+      parts.omittedSources.push(...(args.synthesizedOmitted ?? []));
+   }
    const synthesized = v1Cutover
       ? null
       : args.synthesized !== undefined
         ? args.synthesized
-        : await tryCompileSynthesizedPreaggregation({
-             packagePath,
-             modelPath,
-             getRuntime,
-             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-             contents: (malloyModel as any)._modelDef?.contents ?? {},
-          });
+        : await tryCompileSynthesizedPreaggregation(
+             {
+                packagePath,
+                modelPath,
+                getRuntime,
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                contents: (malloyModel as any)._modelDef?.contents ?? {},
+             },
+             (omitted) => parts.omittedSources.push(...omitted),
+          );
    if (synthesized) {
       const rollupTargets = await synthesized.runtime.getBuildTargets(
          synthesized.model,
@@ -1037,7 +1124,23 @@ export async function collectModelBuildPlan(
       )
    ) {
       const companion = v1Cutover
-         ? await compileV1BuildCompanion({ packagePath, modelPath, getRuntime })
+         ? await compileV1BuildCompanion({
+              packagePath,
+              modelPath,
+              getRuntime,
+              onCompileFailed: (error) => {
+                 logger.error(
+                    "The v1 build copy of a model could not be read or did not compile; its #@ persist sources are left out of the build plan",
+                    { modelPath, error: errMessage(error) },
+                 );
+                 parts.omittedSources.push(
+                    ...omittedByID(
+                       declaredPersistSourceIDs(malloyModel),
+                       "v1_build_companion_failed",
+                    ),
+                 );
+              },
+           })
          : undefined;
       if (!companion) return;
       planModel = companion.model;
@@ -1089,6 +1192,17 @@ export async function collectModelBuildPlan(
               }))
               .find((hit) => hit.note !== undefined)
          : undefined;
+      // A source none of whose `#@` lines parse is not planned at all, and
+      // the finding names a line: report the source by its sourceID, so its
+      // absence is not read as its leaving the plan.
+      if (at && !onPlanned?.note) {
+         parts.omittedSources.push(
+            ...omittedByID(
+               sourceIDsWithNoteAt(planModel, at),
+               "persist_annotation_unparseable",
+            ),
+         );
+      }
       addAnnotationFinding(
          parts,
          persistUnparseableFinding(
@@ -1175,6 +1289,8 @@ export function deriveBuildPlan(
       preaggregatePlans?: Record<string, RollupPlan>;
       materializePlans?: Record<string, MaterializePlan>;
       sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
+      /** See {@link CompiledBuildPlan.omittedSources}. */
+      omittedSources?: Omission[];
    },
 ): BuildPlan {
    const include = sourceNames ? new Set(sourceNames) : null;
@@ -1208,8 +1324,13 @@ export function deriveBuildPlan(
 
    const wireSources: Record<string, WirePersistSourcePlan> = {};
    const refusedSources: Record<string, WireRefusedSource> = {};
+   const omitted: Omission[] = [...(options?.omittedSources ?? [])];
    for (const [sourceID, source] of Object.entries(sources)) {
       if (include && !include.has(source.name)) continue;
+      // What the catch below reports, if this source fails to project: a
+      // gate failing with an error (not a refusal) is told apart from the
+      // rest of the projection.
+      let failedAt: OmittedSourceReason = "projection_failed";
       // One unreadable source must not cost the package its plan: addressing
       // throws for a colocated source referencing a given with no default, and
       // an escaping throw would drop EVERY colocated binding for the package.
@@ -1240,7 +1361,10 @@ export function deriveBuildPlan(
             } catch (err) {
                // Only an eligibility refusal is reportable; anything else must not
                // masquerade as a security refusal.
-               if (!(err instanceof MaterializationEligibilityError)) throw err;
+               if (!(err instanceof MaterializationEligibilityError)) {
+                  failedAt = "eligibility_check_failed";
+                  throw err;
+               }
                refusedSources[sourceID] = {
                   name: source.name,
                   sourceID: source.sourceID,
@@ -1267,7 +1391,10 @@ export function deriveBuildPlan(
                   }),
                });
             } catch (err) {
-               if (!(err instanceof MaterializationEligibilityError)) throw err;
+               if (!(err instanceof MaterializationEligibilityError)) {
+                  failedAt = "eligibility_check_failed";
+                  throw err;
+               }
                refusedSources[sourceID] = {
                   name: source.name,
                   sourceID: source.sourceID,
@@ -1311,7 +1438,10 @@ export function deriveBuildPlan(
                   storageRefused = false;
                }
             } catch (err) {
-               if (!(err instanceof MaterializationEligibilityError)) throw err;
+               if (!(err instanceof MaterializationEligibilityError)) {
+                  failedAt = "eligibility_check_failed";
+                  throw err;
+               }
                refusedSources[sourceID] = {
                   name: source.name,
                   sourceID: source.sourceID,
@@ -1358,15 +1488,25 @@ export function deriveBuildPlan(
             modelPath: sourceModelPaths?.[sourceID],
          };
       } catch (err) {
+         // Reported, so a host does not read the source's absence as its
+         // leaving the plan; by a code, never the message, which may quote SQL.
+         const reason = isUnkeyable(source) ? "unkeyable" : failedAt;
          logger.warn("Failed to project a persist source into the build plan", {
             sourceID,
             sourceName: source.name,
+            reason,
             error: errMessage(err),
          });
+         omitted.push({ sourceID, reason });
       }
    }
 
-   return { graphs: wireGraphs, sources: wireSources, refusedSources };
+   return {
+      graphs: wireGraphs,
+      sources: wireSources,
+      refusedSources,
+      ...finalizeOmissions(omitted, new Set(Object.keys(wireSources))),
+   };
 }
 
 /** What a package load keeps from its build plan. */
@@ -1423,8 +1563,10 @@ export function deriveBuildPlanOutcome(
       compiled.sources,
       compiled.materializePlans,
    );
+   // A plan that lost sources is not "no plan": it is kept, so a host reads
+   // `omittedSources` rather than an empty plan.
    const plan =
-      compiled.builds.length === 0
+      compiled.builds.length === 0 && !compiled.omittedSources?.length
          ? null
          : deriveBuildPlan(
               compiled.builds,
@@ -1437,6 +1579,7 @@ export function deriveBuildPlanOutcome(
                  preaggregatePlans: compiled.preaggregatePlans,
                  materializePlans: compiled.materializePlans,
                  sourceGateOutcomes: compiled.sourceGateOutcomes,
+                 omittedSources: compiled.omittedSources,
               },
            );
    // One entry per base: its grains share the reason.

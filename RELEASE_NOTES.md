@@ -21,6 +21,38 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A cancelled run keeps the error it raced, and a failed shared table is built once
+
+- A materialization run that was cancelled while a real failure was in flight still records `error:
+  "Cancelled"`, and now also keeps that failure's message in its metadata as `errorAtCancel`, on the
+  record only; the logs carry its code.
+- When a base and its `extend` share one table and its build fails, the second source takes the
+  same failure (reason and `retryable`) without running the build again. The run's `failures` keep
+  one entry per table, as before.
+
+## [Unreleased] — The build plan says when it is incomplete: `omittedSources`
+
+A build plan (`GET …/packages/{pkg}/build-plan`, the dry run, and the deprecated `Package.buildPlan`) now carries `omittedSources`, a list of `{ sourceID, reason }`: each source the plan would have held but left out because planning it failed, where before such a source vanished from the plan with only a log line. Failures it reports: a generated companion (the `#@ preaggregate` composite, the `#(preaggregate)` rollup companion, `#(materialize)`, persisted views, the v1 cutover's build copy) that did not compile, a `#@` annotation none of whose lines parse, and a source whose plan entry could not be projected. A companion whose planner failed before it could name its sources is listed in a second field, `omittedFiles` (`{ file, reason }`): retire nothing declared in that file. `reason` is an open string, a code such as `rollup_companion_failed`, never the failure's message. Both empty means every source the package plans is in `sources` or `refusedSources`, so a host can retire a table whose source is absent from both; otherwise keep the tables the entries name. A plan whose only sources were lost this way is now returned rather than read as no plan. A plan from an older Publisher has neither field; read that as completeness unknown. See [docs/materialization.md](docs/materialization.md#retiring-tables-the-plan-no-longer-lists). No enum is added.
+
+Under the v1 cutover, two ways a model file without `##! experimental.persistence` lost its `#@ persist` sources are fixed: a `#@` line naming `persist` after another key (`#@ name=t persist`) is planned, as Malloy plans it in a flagged file, and a file that joins sources across connections is planned from its build view rather than from the file on disk, which never compiled.
+
+## [Unreleased] — Materialization logs no longer carry watermark values or driver messages
+
+A materialization log line no longer carries a value from the data or a driver's error message, which
+can quote the build's SQL or a row value. The detail is still on the run's record. Log pipelines that
+read these fields should switch to the codes:
+
+- "Rebuilding an incremental source in full" and "Skipping an incremental source's refresh" drop
+  `reason` (it could name a watermark boundary) and keep `reasonCode`. "Applied an incremental delta"
+  drops `rangeStart` and `rangeEnd`. The boundary reached is on the manifest entry's `ledger`.
+- "Could not read a covered_through boundary after a full rebuild" carries `errorCode`, not `error`.
+- "Chained storage build could not reuse the parent table" carries `code` (a driver's code,
+  Publisher's error kind or the error's class), not `reason`; the cast fallback and the two rollback
+  warnings carry `errorCode` or `causeCode`.
+- "Materialization run failed" and "Materialization run cancelled", logged for a run failure that
+  `materialization.run.finished` did not already report, carry `code` and, for a failure, the
+  stack's frames without its message line.
+
 ## [Unreleased] — (BREAKING) Materialization build metrics: one build counter, and structured run and build events
 
 Three materialization metrics are replaced, and one loses a label. Dashboards or alerts on the old
@@ -90,6 +122,10 @@ API: a build manifest entry gains `nativeSchema`, each colocated column with its
 recorded by every colocated build and incremental refresh. A host that stores and replays manifests
 should keep it; without it, a colocated table's big-integer columns are answered live. See
 docs/materialization.md, "Stored column types follow the model, not the warehouse".
+
+## [Unreleased] — A colocated `#@ persist` table past its freshness window is no longer read
+
+A wrong answer is fixed, with the default settings as well as under the v1 cutover. After a host binds a build manifest, a query on a `#@ persist` source whose colocated table was past its freshness window (`freshness.fallback` `live` or `fail`) could still read that table, while the path report said `servedBy: live`. With the default `PUBLISHER_V1_SERVED_COPY=off` this happened when the stale table's only fresh neighbours were `#@ preaggregate` rollups or persisted views; under `on` it happened to every such table, and `shadow` compared against that answer. Such a query is now answered live, as its fallback says.
 
 ## [Unreleased] — In development: join-to-rollup checks the querying source's primary key, and declines a count beside a re-pointed join
 

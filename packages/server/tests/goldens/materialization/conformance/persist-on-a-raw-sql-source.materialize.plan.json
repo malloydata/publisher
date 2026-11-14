@@ -74,6 +74,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "raw_direct@<pkg>/m.malloy": {

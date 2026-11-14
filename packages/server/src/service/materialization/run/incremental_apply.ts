@@ -4,6 +4,7 @@
 import { decodeDottedTablePath } from "@malloydata/malloy";
 
 import { logger } from "../../../logger";
+import { errorCodeOf } from "./error_code";
 import type { IncrementalStepReason } from "../../../materialization_metrics";
 import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface";
 import type { IncrementalStrategy } from "../types";
@@ -525,7 +526,7 @@ export async function probeMaxWatermark(
    innerSelect: string,
    watermarkName: string,
    malloyType: string,
-): Promise<{ bound?: WatermarkBound; error?: string }> {
+): Promise<{ bound?: WatermarkBound; error?: string; errorCode?: string }> {
    const column = quoteIdentifier(watermarkName, dialect);
    const sql = probeSelect(
       dialect,
@@ -538,7 +539,9 @@ export async function probeMaxWatermark(
       if (raw === null || raw === undefined) return {};
       return { bound: canonicalBoundValue(malloyType, raw) };
    } catch (err) {
-      return { error: errMessage(err) };
+      // The message can quote the value read (a watermark the parser
+      // refused), so only the code may be logged.
+      return { error: errMessage(err), errorCode: errorCodeOf(err) };
    }
 }
 
@@ -1437,7 +1440,7 @@ export async function seedCoveredThrough(
    lineage: IncrementalLineage,
    quotedTablePath: string,
    now: Date,
-): Promise<{ bound?: WatermarkBound; error?: string }> {
+): Promise<{ bound?: WatermarkBound; error?: string; errorCode?: string }> {
    const frontier = await probeMaxWatermark(
       runner,
       dialect,

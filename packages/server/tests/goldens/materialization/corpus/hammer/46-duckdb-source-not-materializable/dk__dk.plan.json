@@ -42,6 +42,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "dk_daily@<hammer>/dk/dk.malloy": {
