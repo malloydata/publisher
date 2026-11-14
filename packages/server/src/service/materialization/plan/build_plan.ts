@@ -498,9 +498,15 @@ export async function classifyPersistSourceGate(
             break;
          }
       }
+      // A row filter read off another level (a derivation's base, or an
+      // ancestor the entry point extends), not the entry point's own note.
+      const inheritedRowFilter = groups.some(
+         (g) => g.route === "access_filter" && g.selfContained,
+      );
       return {
          classification,
          attributed: isAuthorizeAttributedToEntryPoint(persistSource),
+         ...(inheritedRowFilter ? { inheritedRowFilter } : {}),
       };
    } catch (err) {
       logger.warn("Failed to classify persist source gate; refusing", {
