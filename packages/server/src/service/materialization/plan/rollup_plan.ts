@@ -114,7 +114,7 @@ import {
 import type { SourceMap, SourceNode } from "./source_map";
 
 /** The route `#(preaggregate)` is on. */
-export const PREAGGREGATE_ROUTE = "preaggregate";
+const PREAGGREGATE_ROUTE = "preaggregate";
 
 /** A v1 `#@ preaggregate` (or `#@ -preaggregate`) line. */
 const V1_PREAGGREGATE_NOTE = /^\s*#@\s*-?preaggregate\b/;
@@ -123,7 +123,7 @@ const V1_PREAGGREGATE_NOTE = /^\s*#@\s*-?preaggregate\b/;
 export const ROLLUP_COMPANION_SUFFIX = ".preaggregate.malloy";
 
 /** One stored partial of a measure. */
-export interface RollupPartial {
+interface RollupPartial {
    /** The stored column. */
    column: string;
    leaf: AggregateLeaf;
@@ -280,7 +280,7 @@ export function rollupsServeGatedBases(placement: {
 }
 
 /** A `#(preaggregate)` rollup's plan, never a v1 `#@ preaggregate` one. */
-export function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
+function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
    return (
       typeof plan === "object" &&
       plan !== null &&
@@ -538,7 +538,7 @@ export function rollupName(
 }
 
 /** What planning needs beyond the source map. */
-export interface RollupPlanContext {
+interface RollupPlanContext {
    /** The base's `sourceID` relative to the package (`orders@models/o.malloy`). */
    packageRelativeSourceID(sourceID: string): string;
    /**

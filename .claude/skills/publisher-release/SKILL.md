@@ -469,8 +469,17 @@ gh release view "v$V" --repo malloydata/publisher --json body -q .body | head -4
 ```
 
 If the release page is missing narrative that `[$V]` sections on the branch
-carry, `gh-release` logged a `could not read RELEASE_NOTES.md` warning. Add the
-output of `extract "$V"` to the page by hand with `gh release edit`.
+carry, `gh-release` logged a `could not read RELEASE_NOTES.md` or `could not
+fit the release body` warning. Add the output of `extract "$V"` to the page by
+hand with `gh release edit`.
+
+A page that lists the section titles under "This release's notes are longer
+than a GitHub release page allows" is not a failure. GitHub caps a release
+body at 125,000 characters, so when the narrative and the PR list would not fit,
+`gh-release` (`release-notes.mjs fit`) puts an index of the titles on the page
+with a link to `RELEASE_NOTES.md` at the tag, and truncates the PR list to its
+compare link if it has to; the run logs a notice saying which. The titles
+should still match step 4's `extract "$V" | grep '^## '`.
 
 Left unmerged, `release-sync.yml` fails on `main` and on every PR, naming
 this version; merging this PR is the only fix. Confirm it went green on `main`

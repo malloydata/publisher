@@ -197,3 +197,62 @@ describe("a delta into a table the build cast", () => {
       ]);
    }, 120000);
 });
+
+// A Postgres `bytea` or `interval`: Postgres's dialect declares both `string`,
+// and live answers them in Postgres's own text, which DuckDB's cast to VARCHAR
+// does not write. The build keeps the BLOB and INTERVAL the session reads them
+// as, so the served copy leaves them out and a query reading one answers live.
+describe("a Postgres build keeps a binary or interval column's warehouse type", () => {
+   const declared = [
+      { name: "id", type: "number" },
+      { name: "name", type: "string" },
+      { name: "code", type: "string" },
+      { name: "bin", type: "string" },
+      { name: "iv", type: "string" },
+   ];
+   const seed = `SELECT * FROM (VALUES
+      (1, 'a', 7, '\\x0102'::BLOB, INTERVAL 3 MONTH)
+   ) AS t(id, name, code, bin, iv)`;
+   const typesOf = (schema: { name?: string; type?: string }[]) =>
+      Object.fromEntries(schema.map((c) => [c.name, c.type]));
+
+   it("stores them uncast, and still casts every other declared string", async () => {
+      const conn = await lake();
+      const schema = await createTableWithDeclaredTypes(
+         conn,
+         "lake.t",
+         seed,
+         { columns: declared },
+         [],
+         { sourceType: "postgres" },
+      );
+      expect(typesOf(schema)).toEqual({
+         id: "INTEGER",
+         name: "VARCHAR",
+         code: "VARCHAR",
+         bin: "BLOB",
+         iv: "INTERVAL",
+      });
+   });
+
+   // Only a Postgres passthrough is described: describing another engine's
+   // may run its query.
+   it.each([["bigquery" as const], [undefined]])(
+      "casts every declared string for a %s source, as before",
+      async (sourceType) => {
+         const conn = await lake();
+         const schema = await createTableWithDeclaredTypes(
+            conn,
+            "lake.t",
+            seed,
+            { columns: declared },
+            [],
+            sourceType ? { sourceType } : {},
+         );
+         expect(typesOf(schema)).toMatchObject({
+            bin: "VARCHAR",
+            iv: "VARCHAR",
+         });
+      },
+   );
+});

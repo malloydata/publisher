@@ -3,11 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { MalloyConfig } from "@malloydata/malloy";
-import {
-   isServedCopyAlias,
-   servedCopyAlias,
-   servedCopyConfig,
-} from "./served_copy_config";
+import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { MalloyError } from "@malloydata/malloy";
 import { classifyServedCopyFailure } from "./served_copy_serve";
 
@@ -31,7 +27,6 @@ const pkg = new Map([["duckdb", fakeConnection("duckdb")]]);
 describe("servedCopyConfig", () => {
    it("reaches a destination only through its alias", async () => {
       const alias = servedCopyAlias("lake");
-      expect(isServedCopyAlias(alias)).toBe(true);
       expect(alias).not.toContain("lake");
       const config = servedCopyConfig(pkg, destinations(), new Set(["lake"]));
       expect(
