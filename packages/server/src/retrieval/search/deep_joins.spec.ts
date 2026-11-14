@@ -382,6 +382,7 @@ describe("routes in the judge's list, the response and the trace", () => {
          unsupported: [],
          limit: 20,
          offset: 0,
+         entityOffset: 0,
       };
       const out = await respond({
          index: d.index,

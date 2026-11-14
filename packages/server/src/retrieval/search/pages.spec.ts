@@ -38,6 +38,7 @@ const request: ResolvedRequest = {
    unsupported: [],
    limit: 20,
    offset: 0,
+   entityOffset: 0,
 };
 
 /** Fifteen targets over every island of the fixture. */
@@ -241,12 +242,14 @@ describe("resultKey", () => {
          ...base,
          givens: { region: "west", role: { level: 2, name: "analyst" } },
          offset: 0,
+         entityOffset: 0,
          limit: 5,
       });
       const b = resultKey({
          ...base,
          givens: { role: { name: "analyst", level: 2 }, region: "west" },
          offset: 5,
+         entityOffset: 0,
          limit: 20,
       });
       expect(a).toBe(b);

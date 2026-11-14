@@ -476,19 +476,27 @@ export function skillsFor(ctx: Pick<ListingContext, "pkgIndex">) {
 }
 
 /**
- * A listing page that is not the last one, or undefined on the last page.
- * Its remedy is paging by `offset`, not raising the limit, which is capped,
- * so a source with more fields than the cap would never be listed in full.
+ * What a listing page leaves out, or undefined on a last page. Its remedy is
+ * paging, not raising the limit, which is capped, so a source with more
+ * fields than the cap would never be listed in full. A page past the end says
+ * so, rather than coming back empty and silent, which reads as "no fields".
  */
-export const listingPageWarning = (page: {
+export function listingPageWarning(page: {
+   /** The control that pages this listing: `offset` or `entity_offset`. */
+   param: "offset" | "entity_offset";
    unit: "sources" | "entities";
-   offset: number;
+   skipped: number;
    returned: number;
    total: number;
-}) =>
-   page.offset + page.returned < page.total
-      ? `Returned ${page.returned} of ${page.total} ${page.unit} in scope${page.offset > 0 ? `, after skipping the first ${page.offset}` : ""}. Pass next_offset back as offset, with every other argument unchanged, for the next page, or narrow with search_text or more targeted scopes.`
-      : undefined;
+}): string | undefined {
+   const { param, unit, skipped, returned, total } = page;
+   if (returned === 0 && skipped > 0 && total > 0) {
+      return `${param} ${skipped} is past the end: there are ${total} ${unit} in scope. Start again without ${param}.`;
+   }
+   if (skipped + returned >= total) return undefined;
+   const after = skipped > 0 ? `, after skipping the first ${skipped}` : "";
+   return `Returned ${returned} of ${total} ${unit} in scope${after}. Pass next_${param} back as ${param}, with every other argument unchanged, for the next page, or narrow with search_text or more targeted scopes.`;
+}
 /**
  * A target type this server cannot search, said plainly with the remedy that
  * works. Reached only when value search is turned off

@@ -99,6 +99,7 @@ const REQUEST: ResolvedRequest = {
    unsupported: [],
    limit: 20,
    offset: 0,
+   entityOffset: 0,
 };
 
 describe("route keys", () => {
