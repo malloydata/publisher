@@ -1,0 +1,654 @@
+{
+   "rows": [
+      {
+         "model": "hammer/05-a-stored-source-built-on-another-rebuilds/ivc/ivc.malloy",
+         "source": "doubled",
+         "address": "5875d5353c8ddde5587013b5dbf932da78a0e3b0c296ea7926ae7844d7514515",
+         "destination": "lake",
+         "upstreams": ["batch_totals"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "batch",
+               "type": "BIGINT"
+            },
+            {
+               "name": "doubled_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/06-a-query-term-over-materialized-sources-still-scopes/qts/qts.malloy",
+         "source": "visible_orders",
+         "address": "6ea058bc1d9e343ebd955e6aeb03d3545a1cd7c5455fdf7ee39bd8c135afc0f4",
+         "destination": "lake",
+         "upstreams": ["vis_all"],
+         "outcome": "ChainedShapeNotCarriedError: 'visible_orders' reaches only stored upstreams ('vis_all'), but the build could not express it over them — a refinement declared on a stored upstream that the build does not re-declare, or a construct the destination's dialect lacks: Chained build model did not yield a persist source named 'visible_orders' (the downstream references something the rebound parents don't provide)."
+      },
+      {
+         "model": "hammer/07-a-join-to-a-materialized-grant-table-serves-per-user/pvj/pvj.malloy",
+         "source": "opps",
+         "address": "89e53e4ccfff4bbf00f26ed8b70ba3b28193d1a347e3142890324b20063d9ef2",
+         "destination": "lake",
+         "upstreams": ["grants"],
+         "outcome": "MaterializationEligibilityError: 'opps' reads the source warehouse (raw_opps) through 'opps', which no stored table can stand in for"
+      },
+      {
+         "model": "hammer/100-an-unused-join-to-an-unsupplied-persisted-source-does-not-refuse/ujp/ujp.malloy",
+         "source": "rollup",
+         "address": "32de1a909d6b1f4b6394d94f9dcd8444465e9f3da6d74e2692c9ab8b21c170f6",
+         "destination": "lake",
+         "upstreams": ["counts", "daily"],
+         "outcome": "ChainedUpstreamMissingError: persisted upstream of 'rollup': 'daily' is not materialized in destination 'lake' for this build; 'counts' is not materialized in destination 'lake' for this build — the build cannot stack on it, and the recompute that remains would rebuild the stored tables its SQL inlines"
+      },
+      {
+         "model": "hammer/101-a-chained-build-honours-the-parents-own-where/pow/pow.malloy",
+         "source": "rollup",
+         "address": "109f9e591e2a572b40c8c069db911040d10bf0d06cd2c9944a9d78a4ca89f674",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/101-a-chained-build-honours-the-parents-own-where/pow/pow.malloy",
+         "source": "rollup_wide",
+         "address": "c1ecb7d25608104b7c86515287e84b2b865ca4371a79189d62f1b39bde2fff24",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/103-a-stored-parent-reached-through-a-selective-import-is-stacked-on/sim/orders.malloy",
+         "source": "weekly",
+         "address": "b7dc0bde91e7fcd8f6341bf1b3cad0d478c3d67837bd8a2ac3e4b22816c1b411",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/104-a-stored-parent-two-imports-away-is-stacked-on/tim/b.malloy",
+         "source": "weekly",
+         "address": "6241135a4b6a4b9ddd075a8e34e268e7cc21b7287716993416f7ab66efe5c825",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "order_date",
+               "type": "DATE"
+            },
+            {
+               "name": "weekly_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/104-a-stored-parent-two-imports-away-is-stacked-on/tim/c.malloy",
+         "source": "monthly",
+         "address": "07bdba4378a9f9824085fc1e9d69321e24fde3d600abd482af7ae732bba35803",
+         "destination": "lake",
+         "upstreams": ["weekly"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/104-a-stored-parent-two-imports-away-is-stacked-on/tim/c.malloy",
+         "source": "weekly",
+         "address": "6241135a4b6a4b9ddd075a8e34e268e7cc21b7287716993416f7ab66efe5c825",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "order_date",
+               "type": "DATE"
+            },
+            {
+               "name": "weekly_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/105-every-reading-of-a-filtered-parent-applies-its-filter/frp/frp.malloy",
+         "source": "w",
+         "address": "68e72be8b5bc20c82dafb3c69af3c5d17412a293aafda09ed3e1d413d126a2ef",
+         "destination": "lake",
+         "upstreams": ["deals"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/105-every-reading-of-a-filtered-parent-applies-its-filter/frp/frp.malloy",
+         "source": "x",
+         "address": "79022a620efce1cface94a9533460d53ebdbed65b9faa34f51dd69d8f6d5382b",
+         "destination": "lake",
+         "upstreams": ["pipeline_now"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/105-every-reading-of-a-filtered-parent-applies-its-filter/frp/frp.malloy",
+         "source": "y",
+         "address": "94edcf9e1e5551a4c6c5e681d0d8ca9705b80d1cfc1242d849944296670ea011",
+         "destination": "lake",
+         "upstreams": ["deals_alias"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/105-every-reading-of-a-filtered-parent-applies-its-filter/frp/frp.malloy",
+         "source": "z",
+         "address": "fbacdb0120d765bad2ec24452a75d9ce5bc649c5f89819957e7bdf0d4f7883b8",
+         "destination": "lake",
+         "upstreams": ["deals"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "total",
+               "type": "DOUBLE"
+            },
+            {
+               "name": "n",
+               "type": "BIGINT"
+            }
+         ]
+      },
+      {
+         "model": "hammer/106-a-parents-join-to-a-warehouse-table-does-not-stop-the-chain/pjw/pjw.malloy",
+         "source": "by_name",
+         "address": "facba4c36dabf239c35e3768a3b75a9669f09a1dce09f92f8584a5edf44c16ea",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "ChainedShapeNotCarriedError: 'by_name' reaches only stored upstreams ('daily'), but the build could not express it over them — a refinement declared on a stored upstream that the build does not re-declare, or a construct the destination's dialect lacks: Chained build model did not compile over the rebound parents: Error(s) compiling model:\nFILE: file:///chained-build/m.malloy\nline 16: 'region_name' is not defined\n  | source: by_name is daily -> { group_by: region_name; aggregate: grand is total.sum() }\n  |                                         ^"
+      },
+      {
+         "model": "hammer/106-a-parents-join-to-a-warehouse-table-does-not-stop-the-chain/pjw/pjw.malloy",
+         "source": "rollup",
+         "address": "473d5c8a71f38bd63987623fa965191e23e25d993e5e467d0e98458ae96e83d8",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/107-an-unused-join-to-a-supplied-stored-source-does-not-start-a-chain/ujs/ujs.malloy",
+         "source": "rollup",
+         "address": "74ccbad0db04932e37c4a5aa4c9a67e0b1b156e9afbcbd3cbb2e5e0c1ef160a3",
+         "destination": "lake",
+         "upstreams": ["counts", "daily"],
+         "outcome": "ChainedUpstreamMissingError: persisted upstream of 'rollup': 'daily' is not materialized in destination 'lake' for this build — the build cannot stack on it, and the recompute that remains would rebuild the stored tables its SQL inlines"
+      },
+      {
+         "model": "hammer/108-a-parents-view-over-an-unbindable-join-keeps-its-dimensions/pvd/pvd.malloy",
+         "source": "rollup",
+         "address": "387075193ba78f4be15415564a187462878eae9f895cd1e5872fdd6ea013a351",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "big",
+               "type": "BOOLEAN"
+            },
+            {
+               "name": "grand",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/11-chained-persist/ch/ch.malloy",
+         "source": "rollup",
+         "address": "e4ee9e924c99537e20cd99e03ae72471de19e25d09f0fb9941c27ae13ca48d53",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/114-a-chained-build-reads-its-own-intermediate-not-a-same-named-stored-source/chsh/report.malloy",
+         "source": "rollup",
+         "address": "aaf0c389d34788c4cb70a62f01b66687daba8232f1d400c3d9eb1ea3fbc2b20a",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/118-an-orchestrator-can-refuse-the-warehouse-recompute/owr/owr.malloy",
+         "source": "rollup",
+         "address": "7c05546cc59fd35b82b9496fe71856c3988b8c11e1a1c23d1c5d1ad18653a6e6",
+         "destination": "lake",
+         "upstreams": ["daily_regional"],
+         "outcome": "MaterializationEligibilityError: 'rollup' reads the source warehouse (regions) through 'daily_regional', which no stored table can stand in for"
+      },
+      {
+         "model": "hammer/14-chained-visibility-leak-guard/chv/chv.malloy",
+         "source": "rollup",
+         "address": "c6c5eb634ccae4988001ad85a63accd0348e8d38f3c7a0c8c9e816feec9f6a6b",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "order_date",
+               "type": "DATE"
+            },
+            {
+               "name": "t",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/15-join-across-two-persisted/jt/jt.malloy",
+         "source": "orders",
+         "address": "8482db35fd7688eb03636912ceaac8e8b080251a4db333260b8ee455bea847a7",
+         "destination": "lake",
+         "upstreams": ["regions"],
+         "outcome": "MaterializationEligibilityError: 'orders' reads the source warehouse (orders) through 'orders', which no stored table can stand in for"
+      },
+      {
+         "model": "hammer/31-reference-manifest-reuse/rmr/rmr.malloy",
+         "source": "rollup",
+         "address": "9cc87aa85d88ba785a32a367a235e816a55c66f4ba16853d05781d67470fb285",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/33-cross-worker-reference-isolation/xw/xw.malloy",
+         "source": "rollup",
+         "address": "68b78d79cece35dfbd70388ebb832573d71b903e00c237448ea39e65fa32a680",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/34-cross-worker-refreshed-manifest/xwr/xwr.malloy",
+         "source": "monthly",
+         "address": "587b7b9d8c42f3f3dae3e6155e8e877d1378abf921ce68388342b272353a969b",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/38-strict-upstreams-refused/su/su.malloy",
+         "source": "rollup",
+         "address": "33331a08036daf9246a6d6c21aaec24c08fbb241bfbcc0579f6b64ecefe22558",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/54-chained-build-error-redaction/cbe/cbe.malloy",
+         "source": "rollup",
+         "address": "fe78d14d373f78b3994115b96eb997f4e6847d09896467beada03e3ad07a2c42",
+         "destination": "cbelake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/64-failed-run-reclaims-its-tables/prt/prt.malloy",
+         "source": "b",
+         "address": "fb6bef66578ed8b5bde37ab64c57426459d7e929fa506c469409901635eb8513",
+         "destination": "lake",
+         "upstreams": ["a"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/70-strict-upstream-built-here/sbh/sbh.malloy",
+         "source": "rollup",
+         "address": "7e708219305cc8adc05201967c9859a773a6cc881dc784afa543887646bdaef8",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/71-chained-write-only/cwo/cwo.malloy",
+         "source": "rollup",
+         "address": "c0a6dbeb0275ed0df1c1a487568064dd305d344b712f698da9687473c0219da0",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/72-chained-write-only-orchestrated/cwoo/cwoo.malloy",
+         "source": "rollup",
+         "address": "43f0c76eefe466e542736afe615f1b740a5e0f47035cda62b84cda530384273c",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/74-chained-write-only-orchestrated-strict/cwos/cwos.malloy",
+         "source": "rollup",
+         "address": "57d28d26879237ecfc805b4235b9cf613b79a5a61a4d8c65260a66445eb38208",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/75-instruction-order-does-not-change-the-build/iob/iob.malloy",
+         "source": "rollup",
+         "address": "920d05b73fdbd63844172c80dcf72f30c05b70d59583605241fadc1e8c1ebed0",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/85-chained-through-an-intermediate/cti/cti.malloy",
+         "source": "rollup",
+         "address": "85f1d60497cbc3c9c28ce5eacebb56485c8dc22c83fea92be0f62793d3f85f08",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/86-an-intermediate-reaching-the-warehouse-is-recomputed-and-says-so/cir/cir.malloy",
+         "source": "rollup",
+         "address": "c3851701bd0b612b749cecd3a3c3a12467195588ef3bb0cd846d40da84dae103",
+         "destination": "lake",
+         "upstreams": ["daily_regional"],
+         "outcome": "MaterializationEligibilityError: 'rollup' reads the source warehouse (regions) through 'daily_regional', which no stored table can stand in for"
+      },
+      {
+         "model": "hammer/87-strict-still-refuses-an-upstream-never-built-through-an-intermediate/snb/snb.malloy",
+         "source": "rollup",
+         "address": "f1addb86300561a707fd4f7426fb687803d60a22a0c57cd12f2161dd756bccda",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/88-an-upstream-in-another-destination-is-a-missing-upstream-not-a-shape-miss/cxd/cxd.malloy",
+         "source": "rollup",
+         "address": "640dd0e5cc97b7c8607621636b70201c106a14cbde4f725ddd3acfc851d259c3",
+         "destination": "far",
+         "upstreams": ["daily"],
+         "outcome": "ChainedUpstreamMissingError: persisted upstream of 'rollup': 'daily' is materialized in destination 'lake', not 'far' — the build cannot stack on it, and the recompute that remains would rebuild the stored tables its SQL inlines"
+      },
+      {
+         "model": "hammer/89-a-carried-intermediate-compiles-under-its-files-flags/cfl/cfl.malloy",
+         "source": "rollup",
+         "address": "05770c5c5d6b5f02e97b6016abecdf56ee6342d69c79dd51f58cc2b8ba46cfc7",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/90-an-intermediate-joining-two-stored-sources-is-still-built-from-them/ctp/ctp.malloy",
+         "source": "joined",
+         "address": "1e293e5e5b3f61f6667c604108068a2f9411adb1747f42ba4db0d3973c080b47",
+         "destination": "lake",
+         "upstreams": ["daily_counts"],
+         "outcome": "ChainedShapeNotCarriedError: 'joined' reaches only stored upstreams ('daily_counts'), but the build could not express it over them — a refinement declared on a stored upstream that the build does not re-declare, or a construct the destination's dialect lacks: Chained build model did not yield a persist source named 'joined' (the downstream references something the rebound parents don't provide)."
+      },
+      {
+         "model": "hammer/90-an-intermediate-joining-two-stored-sources-is-still-built-from-them/ctp/ctp.malloy",
+         "source": "rollup",
+         "address": "d7603f4cbbb75170abcf158873d50c03139aeb19769f62b8e61482fb9c7fba4b",
+         "destination": "lake",
+         "upstreams": ["daily_counts", "joined"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            },
+            {
+               "name": "orders",
+               "type": "HUGEINT"
+            }
+         ]
+      },
+      {
+         "model": "hammer/91-a-chain-mixing-reused-and-recomputed-sources-builds-in-one-strict-run/cmx/cmx.malloy",
+         "source": "regional",
+         "address": "b0df0bcee5b03bbd9604ab55bef2b50bac4fcc8fe77700c1c5abd493dea1aa3b",
+         "destination": "lake",
+         "upstreams": ["daily_regional"],
+         "outcome": "MaterializationEligibilityError: 'regional' reads the source warehouse (regions) through 'daily_regional', which no stored table can stand in for"
+      },
+      {
+         "model": "hammer/91-a-chain-mixing-reused-and-recomputed-sources-builds-in-one-strict-run/cmx/cmx.malloy",
+         "source": "summary",
+         "address": "7d9a9b69ca7911d78c24daaf802e9549aedcec86b586e34f1312e459013838ff",
+         "destination": "lake",
+         "upstreams": ["regional"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/92-an-intermediate-declared-in-an-imported-model-is-carried/cim/agg.malloy",
+         "source": "rollup",
+         "address": "e5b83cb02a42ea7738f24efca38e396ecda651c3ac40c207ef3b79ef9fd208e1",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/93-a-join-declared-on-a-stored-upstream-counts-as-reaching-what-it-joins/sjs/sjs.malloy",
+         "source": "rollup",
+         "address": "a52ca7d5a6177fa45357d0b78474961a0c4b3251825df511830be9a2f777ccb6",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "ChainedUpstreamMissingError: persisted upstream of 'rollup': 'daily' is not materialized in destination 'lake' for this build — the build cannot stack on it, and the recompute that remains would rebuild the stored tables its SQL inlines"
+      },
+      {
+         "model": "hammer/94-a-downstream-of-a-partitioned-upstream-stacks-on-its-table/ppu/ppu.malloy",
+         "source": "rollup",
+         "address": "255bf73dcc33ccd19af2931a6745b7733316b7d5000619fd32fb03ad12acdead",
+         "destination": "lake",
+         "upstreams": ["orders_all"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "org_id",
+               "type": "BIGINT"
+            },
+            {
+               "name": "total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/95-a-carried-intermediate-reading-a-given-still-compiles/cig/cig.malloy",
+         "source": "rollup",
+         "address": "6081f1520eaae6456f69998561d2ec83634f98e8c7dd835f5cd45f9c2e9c0234",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/96-an-intermediate-over-an-inline-extend-is-carried/iie/iie.malloy",
+         "source": "rollup",
+         "address": "6b3146e5f1b60699a98f79d2af0aea3879942f899d93962cc33bd3db360dbd95",
+         "destination": "lake",
+         "upstreams": ["daily", "regions_kept"],
+         "outcome": "stacked (reused)",
+         "schema": [
+            {
+               "name": "region",
+               "type": "VARCHAR"
+            },
+            {
+               "name": "grand_total",
+               "type": "DOUBLE"
+            }
+         ]
+      },
+      {
+         "model": "hammer/99-a-dependency-only-the-compiler-reaches-is-still-strict/dcr/dcr.malloy",
+         "source": "rollup",
+         "address": "552c780905d49116f7832b6540ddca574f6770a6bb0166c4ecaa41848b0024e8",
+         "destination": "lake",
+         "upstreams": ["daily"],
+         "outcome": "ChainedUpstreamMissingError: persisted upstream of 'rollup': 'daily' is not materialized in destination 'lake' for this build — the build cannot stack on it, and the recompute that remains would rebuild the stored tables its SQL inlines"
+      }
+   ],
+   "modelsThatDidNotPlan": [
+      "hammer/111-a-source-reading-its-destinations-own-catalog-builds-into-it/scb/scb.malloy: MalloyError: Error(s) compiling model:\nFILE: <scratch>/scb/scb.malloy\nline 3: Binder Error: Catalog \"lake_probe\" does not exist!\n  | source: events is lake_probe.table('lake_probe.main.scb_events')\n  |                   ^\nline 6: Reference to undefined object 'events'\n  | source: by_kind is events -> {\n  |                    ^",
+      "hammer/111-a-source-reading-its-destinations-own-catalog-builds-into-it/scbsql/scbsql.malloy: MalloyError: Error(s) compiling model:\nFILE: <scratch>/scbsql/scbsql.malloy\nline 4: Invalid SQL, Binder Error: Catalog \"lake_probe\" does not exist!\n  | source: by_kind_sql is lake_probe.sql('SELECT kind FROM lake_probe.main.scb_events') -> {\n  |                        ^\nline 5: 'kind' is not defined\n  |   group_by: kind\n  |             ^",
+      "hammer/13-visibility-leak-guard/vis/vis.malloy: MalloyError: Error(s) compiling model:\nFILE: <scratch>/vis/vis.malloy\nline 4: Invalid SQL, Catalog Error: Table with name vis_orders does not exist!\n    Did you mean \"public.vis_orders\"?\n    \n    LINE 1: ...RIBE SELECT * FROM (SELECT order_date, region, amount FROM vis_orders)\n                                                                          ^\n  | source: daily is orders_pg.sql(\"SELECT order_date, region, amount FROM vis_orders\") extend {\n  |                  ^\nline 5: `region` is not defined\n  |   except: region\n  |           ^",
+      "hammer/18-parameter-eligibility/f2/f2.malloy: MalloyError: Error(s) compiling model:\nFILE: <scratch>/f2/f2.malloy\nline 11: Argument not provided for required parameter `min_amount`\n  | source: high_value_daily is high_value -> {\n  |                             ^"
+   ]
+}
