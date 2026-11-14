@@ -239,15 +239,20 @@ describe("writeTableAs: the load's and the copy's write", () => {
       lake = undefined;
    });
 
-   async function attached(): Promise<DuckDBConnection> {
+   /** `inliningLimit`: a limit the catalog records itself, as a POST can set. */
+   async function attached(inliningLimit?: number): Promise<DuckDBConnection> {
       const dir = mkdtempSync(join(tmpdir(), "write-table-as-"));
       const conn = new DuckDBConnection("write_as", join(dir, "host.duckdb"));
       lake = { conn, dir };
       await conn.runSQL("INSTALL ducklake");
       await conn.runSQL("LOAD ducklake");
+      const limit =
+         inliningLimit === undefined
+            ? ""
+            : `, DATA_INLINING_ROW_LIMIT ${inliningLimit}`;
       await conn.runSQL(
          `ATTACH 'ducklake:${join(dir, "catalog.ducklake")}' AS lake ` +
-            `(DATA_PATH '${join(dir, "data")}/')`,
+            `(DATA_PATH '${join(dir, "data")}/'${limit})`,
       );
       await conn.runSQL("CREATE SCHEMA lake.s");
       return conn;
@@ -270,6 +275,17 @@ describe("writeTableAs: the load's and the copy's write", () => {
             { name: "label", type: "VARCHAR" },
          ],
       });
+      const files = await conn.runSQL(
+         "SELECT data_file FROM ducklake_list_files('lake', 't', schema => 's')",
+      );
+      expect(files.rows.length).toBeGreaterThan(0);
+   });
+
+   it("flushes to Parquet the rows a catalog's own inlining limit would keep in it", async () => {
+      const conn = await attached(10);
+      expect((await writeTableAs(conn, params("create"), ROWS)).rowCount).toBe(
+         2,
+      );
       const files = await conn.runSQL(
          "SELECT data_file FROM ducklake_list_files('lake', 't', schema => 's')",
       );
