@@ -2525,6 +2525,40 @@
       ]
     }
   },
+  "TablesNotDroppedError": {
+    "class": "TablesNotDroppedError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "Materialization m1 was not deleted: 1 of its tables is still there",
+        "reason": "TABLE_HAS_DEPENDENTS"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: Materialization m1 was not deleted: 1 of its tables is still there",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Materialization m1 was not deleted: 1 of its tables is still there",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "InstalledFromLocationError": {
     "class": "InstalledFromLocationError",
     "http": {

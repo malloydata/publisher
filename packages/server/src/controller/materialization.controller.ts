@@ -472,7 +472,11 @@ export class MaterializationController {
       environmentName: string,
       packageName: string,
       materializationId: string,
-      options: { dropTables?: boolean; versionId?: VersionRef } = {},
+      options: {
+         dropTables?: boolean;
+         requireTablesDropped?: boolean;
+         versionId?: VersionRef;
+      } = {},
    ) {
       return this.materializationService.deleteMaterialization(
          environmentName,

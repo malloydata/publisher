@@ -65,6 +65,9 @@ export function createMocks(): ServiceMocks {
       createMaterialization: sandbox.stub(),
       updateMaterialization: sandbox.stub(),
       deleteMaterialization: sandbox.stub(),
+      // No package row and no versions: no bound manifest keeps a table.
+      getPackageByName: sandbox.stub().resolves(null),
+      listVersions: sandbox.stub().resolves([]),
    } as unknown as MockRepo;
 
    const storageManager = { getRepository: () => repository };

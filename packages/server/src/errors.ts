@@ -119,6 +119,9 @@ export type ErrorReason =
    // 409: a create-only report write found a file at the path; another name
    // may be free.
    | "FILE_EXISTS"
+   // 409: a run's delete with `requireTablesDropped` left tables; the record
+   // is kept so the delete can be retried. See TablesNotDroppedError.
+   | TablesNotDroppedReason
    // Package versions; each is raised only as a PackageVersionError, whose
    // reason fixes its status (see PACKAGE_VERSION_ERROR_STATUS).
    | PackageVersionErrorReason;
@@ -1167,6 +1170,37 @@ export class WriteConflictError extends Error {
 }
 
 /**
+ * Why a delete with `requireTablesDropped` refused, most specific first:
+ * a `name=` view another package marked reads a table; the warehouse
+ * refused a drop because other objects depend on the table; any other table
+ * left.
+ */
+export type TablesNotDroppedReason =
+   | "NAME_VIEW_HELD_ELSEWHERE"
+   | "TABLE_HAS_DEPENDENTS"
+   | "TABLES_NOT_DROPPED";
+
+/**
+ * A materialization delete that asked for every table to go
+ * (`requireTablesDropped`) left some: 409, the record kept, so a retry of
+ * the same delete finishes what this one could not. The message names each
+ * table left and why.
+ */
+export class TablesNotDroppedError extends Error {
+   get kind(): "tables_not_dropped" {
+      return "tables_not_dropped";
+   }
+
+   constructor(
+      message: string,
+      readonly reason: TablesNotDroppedReason,
+   ) {
+      super(message);
+      this.name = "TablesNotDroppedError";
+   }
+}
+
+/**
  * A write to a package installed from a `location`, which a reload would
  * discard: a reload fetches the package again from there and replaces its
  * files. 409, `reason` PACKAGE_INSTALLED_FROM_LOCATION. Interim, until package
@@ -1421,6 +1455,7 @@ interface ErrorByKind {
    materialization_conflict: MaterializationConflictError;
    write_conflict: WriteConflictError;
    installed_from_location: InstalledFromLocationError;
+   tables_not_dropped: TablesNotDroppedError;
    write_rolled_back: WriteRolledBackError;
    write_rollback_failed: WriteRollbackFailedError;
    connection_save: ConnectionSaveError;
@@ -1504,6 +1539,7 @@ const ERROR_CLASSES: {
    materialization_conflict: MaterializationConflictError,
    write_conflict: WriteConflictError,
    installed_from_location: InstalledFromLocationError,
+   tables_not_dropped: TablesNotDroppedError,
    write_rolled_back: WriteRolledBackError,
    write_rollback_failed: WriteRollbackFailedError,
    connection_save: ConnectionSaveError,
@@ -1881,6 +1917,11 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    materialization_conflict: { status: 409, mcp: { advice: "internal" } },
    invalid_state_transition: { status: 409, mcp: { advice: "internal" } },
    write_conflict: {
+      status: 409,
+      reason: (error) => error.reason,
+      mcp: { advice: "internal" },
+   },
+   tables_not_dropped: {
       status: 409,
       reason: (error) => error.reason,
       mcp: { advice: "internal" },

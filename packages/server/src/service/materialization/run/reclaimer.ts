@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
+import { causeChain } from "../../../driver_errors";
 import { logger } from "../../../logger";
 import { recordDropTables } from "../../../materialization_metrics";
 import {
@@ -20,6 +21,7 @@ import {
 } from "../../versions/materialization_scope";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
 import { ManifestEntry } from "../types";
+import { fetchManifestEntries } from "./manifest_loader";
 import { dropStorageTable } from "./materialization_build_session";
 import {
    backupSuffix,
@@ -53,6 +55,53 @@ interface NameViewsToSettle {
 /** A physical table's key for drop bookkeeping: where it lives, and its name. */
 function tableKey(destination: string, physicalTableName: string): string {
    return `${destination}:${physicalTableName}`;
+}
+
+/**
+ * The key a table a bound host manifest names is kept under, whatever
+ * destination it is in: a host manifest's entry may name no connection, and
+ * keeping a table of the same name elsewhere too only keeps more.
+ */
+function boundTableKey(physicalTableName: string): string {
+   return tableKey(BOUND_ANYWHERE, physicalTableName);
+}
+const BOUND_ANYWHERE = "\u0000bound";
+/**
+ * In a kept set: a bound manifest could not be read, so no table is
+ * provably unserved, and every table is kept.
+ */
+const KEEP_ALL = tableKey(BOUND_ANYWHERE, "\u0000unreadable");
+
+/**
+ * Why a table a drop was asked for is still there. An open string, like the
+ * reasons the API answers with:
+ * - `name_view_held_elsewhere`: a `name=` view another package marked reads
+ *   it (its mark names the table), so the table is left for that package;
+ * - `name_view_unsettled`: this package's own `name=` view reads it, and
+ *   repointing or dropping the view failed, so the table is left under it;
+ * - `table_has_dependents`: the warehouse refused the drop because other
+ *   objects depend on the table (Postgres SQLSTATE 2BP01), such as a view an
+ *   author made over it;
+ * - `bound_manifest_unreadable`: a version's bound build manifest could not
+ *   be read, so whether a version serves the table is unknown;
+ * - `destination_unavailable`: its storage destination is no longer
+ *   configured;
+ * - `drop_failed`: any other failure.
+ */
+export interface OwedTable extends ManifestEntry {
+   cause: string;
+   message: string;
+}
+
+/** Whether a drop failed because other objects depend on the table. */
+function refusedForDependents(err: unknown): boolean {
+   for (const current of causeChain(err)) {
+      const { code } = current as { code?: unknown };
+      if (code === "2BP01") return true;
+      // DuckDB names no SQLSTATE: its Dependency Error.
+      if (/entries that depend on it/i.test(current.message)) return true;
+   }
+   return false;
 }
 
 /**
@@ -291,10 +340,10 @@ export class Reclaimer {
       environmentName: string,
       packageName: string,
       m: Materialization,
-   ): Promise<void> {
+   ): Promise<OwedTable[]> {
       const entries = m.manifest?.entries;
       if (!entries || Object.keys(entries).length === 0) {
-         return;
+         return [];
       }
 
       const environment = await this.deps.host.getEnvironment(
@@ -311,7 +360,7 @@ export class Reclaimer {
          packageName,
          (other) => other.id !== m.id,
       );
-      await this.deps.dropManifestEntries(
+      return this.deps.dropManifestEntries(
          environment,
          environmentName,
          packageName,
@@ -352,14 +401,24 @@ export class Reclaimer {
 
    /**
     * The destination-and-name keys of every table a MANIFEST_FILE_READY run of
-    * the package references, among the runs `include` admits.
+    * the package references, among the runs `include` admits, and every
+    * table a build manifest bound to the package names: the unversioned
+    * package's, and each version's in service. A host binds its own manifest
+    * (PUT .../versions/{version}/manifest), which may name a table no
+    * surviving run record names, and a version serves those tables whatever
+    * became of the runs. An archived version's binding is not counted: it
+    * serves nothing, and its tables are the ones an archive's cleanup drops.
+    * A bound manifest that cannot be read keeps every table ({@link KEEP_ALL}).
     */
    private async tablesStillReferenced(
       environmentId: string,
       packageName: string,
       include: (other: Materialization) => boolean,
    ): Promise<Set<string>> {
-      const stillReferenced = new Set<string>();
+      const stillReferenced = await this.tablesBoundByManifests(
+         environmentId,
+         packageName,
+      );
       const others =
          (await this.repository.listMaterializations(
             environmentId,
@@ -376,6 +435,46 @@ export class Reclaimer {
          }
       }
       return stillReferenced;
+   }
+
+   /** The bound-manifest half of {@link tablesStillReferenced}. */
+   private async tablesBoundByManifests(
+      environmentId: string,
+      packageName: string,
+   ): Promise<Set<string>> {
+      const kept = new Set<string>();
+      const uris = new Set<string>();
+      const pkg = await this.repository.getPackageByName(
+         environmentId,
+         packageName,
+      );
+      if (pkg?.manifestPath) uris.add(pkg.manifestPath);
+      for (const version of await this.repository.listVersions(
+         environmentId,
+         packageName,
+      )) {
+         if (version.archiveStatus !== "archive" && version.manifestPath) {
+            uris.add(version.manifestPath);
+         }
+      }
+      for (const uri of uris) {
+         try {
+            const fetched = await fetchManifestEntries(uri);
+            for (const entry of Object.values(fetched.tableNameManifest)) {
+               if (entry.tableName) kept.add(boundTableKey(entry.tableName));
+            }
+            for (const entry of Object.values(fetched.storageEntries)) {
+               kept.add(boundTableKey(entry.physicalTableName));
+            }
+         } catch (err) {
+            logger.warn(
+               "Keeping every table: a bound build manifest could not be read",
+               { packageName, manifestLocation: uri, error: errMessage(err) },
+            );
+            kept.add(KEEP_ALL);
+         }
+      }
+      return kept;
    }
 
    /**
@@ -419,10 +518,12 @@ export class Reclaimer {
       connectionFor: (name: string) => Promise<MalloyConnection | undefined>,
       // The `name=` views to settle before their tables go (name_view.ts).
       nameViews?: NameViewsToSettle,
-   ): Promise<ManifestEntry[]> {
+   ): Promise<OwedTable[]> {
       const m = { id: materializationId };
       const connectionCache = new Map<string, MalloyConnection>();
-      const owed: ManifestEntry[] = [];
+      const owed: OwedTable[] = [];
+      const owe = (entry: ManifestEntry, cause: string, message: string) =>
+         owed.push({ ...entry, cause, message });
       const cachedConnection = async (name: string) => {
          const cached = connectionCache.get(name);
          if (cached) return cached;
@@ -453,6 +554,19 @@ export class Reclaimer {
       // (name_view.ts), so the table is gone and its entry is retired, not
       // owed. Probed only after a failed drop.
       const owner = nameViewOwner(environmentName, packageName);
+      // The driver's text stays in the log: the record says only why.
+      const oweFailedDrop = (entry: ManifestEntry, err: unknown) =>
+         refusedForDependents(err)
+            ? owe(
+                 entry,
+                 "table_has_dependents",
+                 "the warehouse refused the drop: other objects depend on the table",
+              )
+            : owe(
+                 entry,
+                 "drop_failed",
+                 "the drop failed; the server log says why",
+              );
       const replacedByOwnView = (entry: ManifestEntry) =>
          heldByOwnNameView(
             {
@@ -477,7 +591,19 @@ export class Reclaimer {
          }
 
          const destForKey = entry.storageDestinationName ?? connectionName;
-         if (stillReferenced.has(tableKey(destForKey, physicalTableName))) {
+         if (stillReferenced.has(KEEP_ALL)) {
+            owe(
+               entry,
+               "bound_manifest_unreadable",
+               "a build manifest bound to the package could not be read, " +
+                  "so whether a version serves this table is unknown",
+            );
+            continue;
+         }
+         if (
+            stillReferenced.has(tableKey(destForKey, physicalTableName)) ||
+            stillReferenced.has(boundTableKey(physicalTableName))
+         ) {
             logger.info(
                "Skipping drop: table still referenced by another materialization",
                {
@@ -517,13 +643,29 @@ export class Reclaimer {
 
          // Before the table: a Postgres view refuses its table's drop, and a
          // view left reading a dropped table answers nothing.
+         // A view that still reads the table after that (another package's,
+         // or this package's that could not be moved) keeps it: the drop
+         // would fail (Postgres) or leave the view reading nothing.
          if (nameViews) {
-            await settleNameViewsBeforeDrop(
+            const unsettled = await settleNameViewsBeforeDrop(
                entry,
                nameViews.recorded,
                nameViews.successorFor,
                viewContext,
             );
+            if (unsettled.length > 0) {
+               const elsewhere = unsettled.some(
+                  (v) => v.cause === "held_elsewhere",
+               );
+               owe(
+                  entry,
+                  elsewhere
+                     ? "name_view_held_elsewhere"
+                     : "name_view_unsettled",
+                  unsettled.map((v) => v.message).join("; "),
+               );
+               continue;
+            }
          }
 
          // A storage= table lives in the destination, not the source warehouse,
@@ -535,7 +677,11 @@ export class Reclaimer {
                entry.storageDestinationName,
             );
             if (!destinationConnection) {
-               owed.push(entry);
+               owe(
+                  entry,
+                  "destination_unavailable",
+                  `storage destination '${entry.storageDestinationName}' is not configured`,
+               );
                continue;
             }
             try {
@@ -563,7 +709,7 @@ export class Reclaimer {
                   storageDestinationName: entry.storageDestinationName,
                });
             } catch (err) {
-               owed.push(entry);
+               oweFailedDrop(entry, err);
                recordDropTables("failure", "storage");
                logger.warn("Failed to drop a storage-materialized table", {
                   materializationId: m.id,
@@ -634,7 +780,7 @@ export class Reclaimer {
                connectionName,
             });
          } catch (err) {
-            owed.push(entry);
+            oweFailedDrop(entry, err);
             recordDropTables("failure", "in_warehouse");
             logger.warn("Failed to drop materialized table on delete", {
                materializationId: m.id,

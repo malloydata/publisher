@@ -960,11 +960,12 @@ function registerMaterializationRoutes(
       materialization,
       apiRoute(async (req, res) => {
          const dropTables = booleanParam(req, "dropTables");
+         const requireTablesDropped = booleanParam(req, "requireTablesDropped");
          await materializationController.deleteMaterialization(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
-            { dropTables, versionId: versionRefOf(req) },
+            { dropTables, requireTablesDropped, versionId: versionRefOf(req) },
          );
          res.status(204).send();
       }),

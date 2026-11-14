@@ -64,6 +64,7 @@ import {
    VersionFilesMissingError,
    WriteConflictError,
    InstalledFromLocationError,
+   TablesNotDroppedError,
    WriteRollbackFailedError,
    WriteRolledBackError,
    WriteVerifyError,
@@ -414,6 +415,14 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "WriteConflictError (FILE_EXISTS)",
       () => new WriteConflictError("file exists", "FILE_EXISTS"),
+   ],
+   [
+      "TablesNotDroppedError",
+      () =>
+         new TablesNotDroppedError(
+            "Materialization m1 was not deleted: 1 of its tables is still there",
+            "TABLE_HAS_DEPENDENTS",
+         ),
    ],
    [
       "InstalledFromLocationError",

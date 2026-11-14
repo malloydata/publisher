@@ -3,6 +3,7 @@
 
 import {
    BadRequestError,
+   TablesNotDroppedError,
    BuildPlanUnavailableError,
    InvalidStateTransitionError,
    MaterializationEligibilityError,
@@ -77,7 +78,7 @@ import {
    type NameViewRecord,
 } from "./name_view";
 import { nameViewOwner } from "./name_view_sql";
-import { Reclaimer } from "./reclaimer";
+import { Reclaimer, type OwedTable } from "./reclaimer";
 import { RunLifecycle } from "./run_lifecycle";
 import {
    buildKindOf,
@@ -1390,13 +1391,29 @@ export class MaterializationService {
     * Delete a terminal materialization record; an active run must be stopped
     * first. Physical-table GC is the caller's, unless `dropTables` asks for a
     * best-effort drop of the run's tables (a failure never blocks the delete).
+    *
+    * `requireTablesDropped` (with `dropTables`) makes the drop all or
+    * nothing for the record: when any table the drop was asked for is left
+    * (Reclaimer.dropManifestEntries says why), the record is kept and
+    * {@link TablesNotDroppedError} thrown, so the same delete can be retried.
+    * A table kept on purpose (another run or a bound manifest names it) is
+    * not left over.
     */
    async deleteMaterialization(
       environmentName: string,
       packageName: string,
       id: string,
-      options: { dropTables?: boolean; versionId?: VersionRef } = {},
+      options: {
+         dropTables?: boolean;
+         requireTablesDropped?: boolean;
+         versionId?: VersionRef;
+      } = {},
    ): Promise<void> {
+      if (options.requireTablesDropped && !options.dropTables) {
+         throw new BadRequestError(
+            "requireTablesDropped=true needs dropTables=true: without it no table is dropped",
+         );
+      }
       const m = await this.getMaterialization(
          environmentName,
          packageName,
@@ -1416,7 +1433,14 @@ export class MaterializationService {
       }
 
       if (options.dropTables) {
-         await this.dropMaterializedTables(environmentName, packageName, m);
+         const left = await this.dropMaterializedTables(
+            environmentName,
+            packageName,
+            m,
+         );
+         if (options.requireTablesDropped && left.length > 0) {
+            throw tablesNotDropped(id, left);
+         }
       }
 
       // The record is part of what proves a recorded uniqueness pass still
@@ -1441,7 +1465,7 @@ export class MaterializationService {
       environmentName: string,
       packageName: string,
       m: Materialization,
-   ): Promise<void> {
+   ): Promise<OwedTable[]> {
       return this.reclaimer.dropMaterializedTables(
          environmentName,
          packageName,
@@ -1452,7 +1476,7 @@ export class MaterializationService {
    /** See {@link Reclaimer.dropManifestEntries}. */
    private dropManifestEntries(
       ...args: Parameters<Reclaimer["dropManifestEntries"]>
-   ): Promise<ManifestEntry[]> {
+   ): Promise<OwedTable[]> {
       return this.reclaimer.dropManifestEntries(...args);
    }
 
@@ -1499,4 +1523,33 @@ export class MaterializationService {
    private resolveEnvironmentId(environmentName: string): Promise<string> {
       return resolveEnvironmentId(this.repository, environmentName);
    }
+}
+
+/**
+ * The refusal of a delete whose `requireTablesDropped` drop left `left`: its
+ * reason is the most specific cause any table was left for.
+ */
+function tablesNotDropped(
+   id: string,
+   left: OwedTable[],
+): TablesNotDroppedError {
+   const causes = new Set(left.map((t) => t.cause));
+   const reason = causes.has("name_view_held_elsewhere")
+      ? "NAME_VIEW_HELD_ELSEWHERE"
+      : causes.has("table_has_dependents")
+        ? "TABLE_HAS_DEPENDENTS"
+        : "TABLES_NOT_DROPPED";
+   const tables = left.map((t) => {
+      const where = t.storageDestinationName
+         ? `storage destination '${t.storageDestinationName}'`
+         : `connection '${t.connectionName}'`;
+      return `'${t.physicalTableName}' on ${where} (${t.cause}: ${t.message})`;
+   });
+   return new TablesNotDroppedError(
+      `Materialization ${id} was not deleted: ${left.length} of its tables ` +
+         `${left.length === 1 ? "is" : "are"} still there: ${tables.join("; ")}. ` +
+         `The record is kept; once the cause is cleared, the same delete ` +
+         `drops what is left.`,
+      reason,
+   );
 }

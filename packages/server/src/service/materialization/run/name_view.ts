@@ -5,6 +5,7 @@ import type {
    Connection as MalloyConnection,
    PersistSource,
 } from "@malloydata/malloy";
+import { Mutex } from "async-mutex";
 import { getMaterializeEnabled } from "../../../config";
 import { BadRequestError } from "../../../errors";
 import { logger } from "../../../logger";
@@ -216,6 +217,36 @@ export function nameViewsIn(
          typeof (r as NameViewRecord).physicalTableName === "string" &&
          typeof (r as NameViewRecord).connectionName === "string",
    );
+}
+
+/**
+ * One lock per view name, held while a view is probed and then pointed,
+ * restored or dropped, so a build publishing or restoring a view and a drop
+ * settling it never interleave between the probe and the act: each then
+ * finds the view as the other left it. Keyed by the view's last segment,
+ * lower-cased: two connections or environments may reach one schema under
+ * different names, and an over-wide key only serializes. In-process only;
+ * across servers the mark, probed under the lock, is what each acts on.
+ */
+const nameViewLocks = new Map<string, { mutex: Mutex; holders: number }>();
+
+export async function withNameViewLock<T>(
+   viewName: string,
+   fn: () => Promise<T>,
+): Promise<T> {
+   const key = viewName.slice(viewName.lastIndexOf(".") + 1).toLowerCase();
+   let lock = nameViewLocks.get(key);
+   if (!lock) {
+      lock = { mutex: new Mutex(), holders: 0 };
+      nameViewLocks.set(key, lock);
+   }
+   lock.holders++;
+   const held = lock;
+   try {
+      return await held.mutex.runExclusive(fn);
+   } finally {
+      if (--held.holders === 0) nameViewLocks.delete(key);
+   }
 }
 
 /** Which view a record is: where it lives, and its name. */
@@ -1159,10 +1190,12 @@ export async function publishNameViews(
       }
       // A base and its extension share a table: one view, recorded once.
       records.push(
-         await publishNameView(
-            group[0],
-            context,
-            ownTables.get(nameViewKey(group[0])),
+         await withNameViewLock(group[0].viewName, () =>
+            publishNameView(
+               group[0],
+               context,
+               ownTables.get(nameViewKey(group[0])),
+            ),
          ),
       );
    }
@@ -1300,33 +1333,20 @@ export async function restoreNameViews(
    const restored: NameViewRecord[] = [];
    for (const record of records) {
       if (record.outcome === "replaced_own_table") {
-         restored.push(await restoreReplacedTable(record, context));
+         restored.push(
+            await withNameViewLock(record.viewName, () =>
+               restoreReplacedTable(record, context),
+            ),
+         );
          continue;
       }
       if (record.outcome !== "created" && record.outcome !== "repointed") {
          continue;
       }
       try {
-         await atNameViewSite(record, context, async (site) => {
-            const slot = ownedSlot(
-               await probeNameView(site, record.viewName),
-               record.owner,
-            );
-            if (
-               slot.state !== "ours" ||
-               slot.target !== record.physicalTableName
-            ) {
-               return;
-            }
-            if (record.previousTarget) {
-               await pointNameView(site, record.viewName, {
-                  target: record.previousTarget,
-                  owner: record.owner,
-               });
-            } else {
-               await dropNameView(site, record.viewName);
-            }
-         });
+         await withNameViewLock(record.viewName, () =>
+            restoreNameView(record, context),
+         );
       } catch (err) {
          logger.warn("Failed to put back a name= view after a failed commit", {
             viewName: record.viewName,
@@ -1336,6 +1356,33 @@ export async function restoreNameViews(
       }
    }
    return restored;
+}
+
+/**
+ * Point a view a run that did not commit created or repointed back where it
+ * was, when it is still this package's and still reads the run's table.
+ */
+async function restoreNameView(
+   record: NameViewRecord,
+   context: NameViewContext,
+): Promise<void> {
+   await atNameViewSite(record, context, async (site) => {
+      const slot = ownedSlot(
+         await probeNameView(site, record.viewName),
+         record.owner,
+      );
+      if (slot.state !== "ours" || slot.target !== record.physicalTableName) {
+         return;
+      }
+      if (record.previousTarget) {
+         await pointNameView(site, record.viewName, {
+            target: record.previousTarget,
+            owner: record.owner,
+         });
+      } else {
+         await dropNameView(site, record.viewName);
+      }
+   });
 }
 
 /**
@@ -1436,14 +1483,37 @@ function renameBack(
 }
 
 /**
+ * A recorded `name=` view that still reads a table about to be dropped, and
+ * that the drop could not settle, so the table is left rather than dropped
+ * from under it ({@link settleNameViewsBeforeDrop}).
+ */
+export interface UnsettledNameView {
+   viewName: string;
+   /**
+    * `held_elsewhere`: the view at the name carries ANOTHER package's mark,
+    * and its mark says it reads this very table, so it is that package's to
+    * settle, never this one's. `settle_failed`: the view is this package's
+    * and reads the table, but repointing or dropping it failed.
+    */
+   cause: "held_elsewhere" | "settle_failed";
+   message: string;
+}
+
+/**
  * Before a table is dropped: settle every recorded view that reads it. A view
  * the probe shows is this package's and still reads `entry`'s table is repointed
  * to `successorFor`'s table, or dropped when there is none. A view that reads
- * another table, or that is not this package's, is left alone. Done BEFORE
- * the table's drop because a Postgres view refuses its table's drop.
+ * another table, or that no package marked, is left alone. Done BEFORE the
+ * table's drop because a Postgres view refuses its table's drop. Each view is
+ * probed and acted on under its lock ({@link withNameViewLock}), so a build
+ * pointing the same view meanwhile is never undone.
  *
- * Never throws: a view that cannot be settled is logged, and the table's own
- * drop goes ahead (and on Postgres fails, so the table is owed, not lost).
+ * Returns the views that still read the table and were left: another
+ * package's view whose mark names this table, and this package's own view
+ * when settling it failed. The caller leaves that table in place, since
+ * dropping it would fail (Postgres) or leave the view reading nothing
+ * (everywhere else). Never throws: a view that cannot be probed is logged
+ * and not returned, and the table's own drop decides.
  */
 export async function settleNameViewsBeforeDrop(
    entry: Pick<
@@ -1453,7 +1523,7 @@ export async function settleNameViewsBeforeDrop(
    recorded: NameViewRecord[],
    successorFor: (view: NameViewRecord) => NameViewRecord | undefined,
    context: NameViewContext,
-): Promise<void> {
+): Promise<UnsettledNameView[]> {
    const reading = recorded.filter(
       (r) =>
          r.physicalTableName === entry.physicalTableName &&
@@ -1461,51 +1531,89 @@ export async function settleNameViewsBeforeDrop(
          (r.storageDestinationName ?? undefined) ===
             (entry.storageDestinationName ?? undefined),
    );
+   const unsettled: UnsettledNameView[] = [];
    const seen = new Set<string>();
    for (const view of reading) {
       const key = nameViewKey(view);
       if (seen.has(key)) continue;
       seen.add(key);
+      // Set once the probe shows the view is this package's and reads the
+      // table: a failure after that leaves it reading a table to keep.
+      let ours = false;
       try {
-         await atNameViewSite(view, context, async (site) => {
-            if (!nameViewDialectSupported(site.dialect)) return;
-            const slot = ownedSlot(
-               await probeNameView(site, view.viewName),
-               view.owner,
-            );
-            if (
-               slot.state !== "ours" ||
-               slot.target !== view.physicalTableName
-            ) {
-               return;
-            }
-            const successor = successorFor(view);
-            if (successor) {
-               await pointNameView(site, view.viewName, {
-                  target: successor.physicalTableName,
-                  owner: view.owner,
-               });
-               logger.info("Repointed a name= view off a table being dropped", {
-                  viewName: view.viewName,
-                  from: view.physicalTableName,
-                  to: successor.physicalTableName,
-               });
-            } else {
-               await dropNameView(site, view.viewName);
-               logger.info("Dropped a name= view with its last table", {
-                  viewName: view.viewName,
-                  physicalTableName: view.physicalTableName,
-               });
-            }
-         });
+         const left = await withNameViewLock(view.viewName, () =>
+            atNameViewSite(view, context, async (site) => {
+               if (!nameViewDialectSupported(site.dialect)) return undefined;
+               const raw = await probeNameView(site, view.viewName);
+               if (raw.state === "ours" && raw.owner !== view.owner) {
+                  return raw.target === view.physicalTableName
+                     ? ({
+                          viewName: view.viewName,
+                          cause: "held_elsewhere",
+                          message:
+                             `'${view.viewName}' is a view package ` +
+                             `'${raw.owner}' made, and its mark says it reads ` +
+                             `'${view.physicalTableName}'`,
+                       } as const)
+                     : undefined;
+               }
+               if (
+                  raw.state !== "ours" ||
+                  raw.target !== view.physicalTableName
+               ) {
+                  return undefined;
+               }
+               ours = true;
+               const successor = successorFor(view);
+               if (successor) {
+                  await pointNameView(site, view.viewName, {
+                     target: successor.physicalTableName,
+                     owner: view.owner,
+                  });
+                  logger.info(
+                     "Repointed a name= view off a table being dropped",
+                     {
+                        viewName: view.viewName,
+                        from: view.physicalTableName,
+                        to: successor.physicalTableName,
+                     },
+                  );
+               } else {
+                  await dropNameView(site, view.viewName);
+                  logger.info("Dropped a name= view with its last table", {
+                     viewName: view.viewName,
+                     physicalTableName: view.physicalTableName,
+                  });
+               }
+               return undefined;
+            }),
+         );
+         if (left) {
+            logger.warn("Leaving a table another package's name= view reads", {
+               viewName: view.viewName,
+               physicalTableName: view.physicalTableName,
+            });
+            unsettled.push(left);
+         }
       } catch (err) {
          logger.warn("Failed to settle a name= view before its table's drop", {
             viewName: view.viewName,
             physicalTableName: view.physicalTableName,
             error: errMessage(err),
          });
+         if (ours) {
+            unsettled.push({
+               viewName: view.viewName,
+               cause: "settle_failed",
+               message:
+                  `this package's view '${view.viewName}' reads ` +
+                  `'${view.physicalTableName}' and could not be repointed ` +
+                  `or dropped`,
+            });
+         }
       }
    }
+   return unsettled;
 }
 
 /**

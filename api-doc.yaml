@@ -4083,6 +4083,39 @@ paths:
         only; the caller owns table GC. Set dropTables=true to also drop
         the physical tables this run produced (from the materialization's
         manifest) as a best-effort cleanup.
+
+        This is the drop an orchestrating host uses for a run it instructed, and
+        not a `DROP TABLE` of its own: Publisher made the run's `#(materialize)
+        name=` views, and only it can tell which it may touch. Before each table
+        goes, a `name=` view the run recorded (`metadata.nameViews`) whose comment
+        mark names this package AND this table is repointed to the newest other
+        committed run's table for the same view, or dropped when there is none. A
+        view whose mark names another package, or that carries no mark, is never
+        touched.
+
+        Tables dropTables=true keeps, on purpose, and never reports as left:
+        - a table another MANIFEST_FILE_READY run of the package names, in any
+          version;
+        - a table named by a build manifest bound to the package: the
+          unversioned package's, or any version's in service
+          (`PUT .../versions/{version}/manifest`). An archived version's binding
+          does not keep a table. A bound manifest that cannot be read keeps every
+          table, reported as left (`bound_manifest_unreadable`);
+        - a table another package has since built and marked at its own `name=`;
+        - a table in an unloaded version's in-memory `duckdb`, which went with it.
+
+        Tables it leaves, which `requireTablesDropped=true` reports: one a
+        `name=` view of another package reads (its mark names the table); one
+        this package's own `name=` view reads and that view could not be moved;
+        one the warehouse refused to drop because other objects depend on it
+        (Postgres); one whose storage destination is no longer configured; and
+        any other failed drop.
+
+        To delete an archived version's run, omit `versionId`: naming an
+        archived version answers 410. To remove a package's tables, delete its
+        runs this way before the package (a package delete removes its run
+        records, after which nothing names the views), clearing the bound
+        manifests first if those tables are to go too.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -4101,6 +4134,29 @@ paths:
           schema:
             type: boolean
             default: false
+        - name: requireTablesDropped
+          in: query
+          required: false
+          description: |
+            With dropTables=true: when any table the drop was asked for is left,
+            keep the record and answer 409, its `reason` saying why and its
+            message naming each table left and why, instead of deleting the
+            record and answering 204. A table kept on purpose (see above) is not
+            left. Retrying the same delete finishes the job once the cause is
+            cleared: dropped tables and settled views are not touched again.
+
+            `reason` is the most specific cause among the tables left:
+            `NAME_VIEW_HELD_ELSEWHERE` (a `name=` view another package marked
+            reads a table; that package must settle it), `TABLE_HAS_DEPENDENTS`
+            (the warehouse refused because other objects depend on a table, such
+            as a view an author made over it), or `TABLES_NOT_DROPPED` (anything
+            else). New reasons may be added.
+
+            Without dropTables=true it is refused with 400. Only `true` and
+            `false` are accepted.
+          schema:
+            type: boolean
+            default: false
         - $ref: "#/components/parameters/versionId"
       responses:
         "204":
@@ -4110,7 +4166,10 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: Materialization cannot be deleted while it is active
+          description: |
+            The materialization is active and cannot be deleted, or, with
+            requireTablesDropped=true, some of its tables were left (see
+            `reason`) and the record was kept.
           content:
             application/json:
               schema:
@@ -9892,6 +9951,13 @@ components:
             CONNECTION_NOT_FOUND, on a 424, means the model names a connection
             the environment does not have, usually one deleted after the
             package was loaded.
+
+            NAME_VIEW_HELD_ELSEWHERE, TABLE_HAS_DEPENDENTS and
+            TABLES_NOT_DROPPED, on a 409 from a materialization delete with
+            `requireTablesDropped=true`, say why some of the run's tables were
+            left: a `name=` view another package marked reads one, the warehouse
+            refused a drop because other objects depend on the table, or any
+            other cause. The record is kept, so the same delete can be retried.
 
             Deliberately an open string rather than an enum. Generators render
             an enum closed, so adding a second value here would break every
