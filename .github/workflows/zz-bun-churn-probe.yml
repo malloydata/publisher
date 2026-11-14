@@ -1,0 +1,68 @@
+# TEMPORARY (dropped before merge): package-load worker churn, Bun 1.3.13 vs 1.4.4.
+name: zz Bun worker churn probe
+
+on:
+  push:
+    branches: [kyle/bun-1.4]
+
+permissions: {}
+
+env:
+  WINDOWS_USERPROFILE: "D:\\"
+  WINDOWS_BUN_CACHE_DIR: "D:\\.bun\\install\\cache"
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - name: Configure Temp Directory (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $TEMP_DIR = "$env:WINDOWS_USERPROFILE\Temp"
+          New-Item -ItemType Directory -Force -Path $TEMP_DIR | Out-Null
+          "TEMP=$TEMP_DIR" >> $env:GITHUB_ENV
+          "TMP=$TEMP_DIR"  >> $env:GITHUB_ENV
+      - name: Disable Windows Defender (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+      - uses: actions/checkout@v4
+        with:
+          submodules: "true"
+      - uses: oven-sh/setup-bun@v2
+        env:
+          USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
+        with:
+          bun-version: 1.4.4
+      - name: Install
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.os == 'Windows' && env.WINDOWS_BUN_CACHE_DIR || '' }}
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
+        run: bun install --frozen-lockfile --prefer-offline
+        shell: bash
+      - run: bun run generate-api-types
+        shell: bash
+      - env:
+          USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
+        run: bun run build
+        shell: bash
+      - name: Churn probe, 60 package-load worker cycles per Bun
+        working-directory: packages/server
+        env:
+          USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
+        shell: bash
+        run: |
+          set +e
+          for v in 1.3.13 1.4.4; do
+            mkdir -p "$RUNNER_TEMP/bun$v" && (cd "$RUNNER_TEMP/bun$v" && npm init -y >/dev/null && npm i --no-audit --no-fund bun@$v >/dev/null 2>&1)
+            B="$RUNNER_TEMP/bun$v/node_modules/bun/bin/bun.exe"
+            [ -x "$B" ] || B="$RUNNER_TEMP/bun$v/node_modules/bun/bin/bun"
+            echo "== bun $("$B" --version)"
+            NODE_ENV=test MODE=workers N=60 "$B" zz_churn_commit.ts 2>&1 | grep -E '^(start|workers|end)'
+          done
