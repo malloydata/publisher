@@ -61,7 +61,7 @@ describe("packageRelativeText", () => {
          `FILE: ${sibling}`,
       );
       expect(packageRelativeText(`in ${dir}, nothing`, dir)).toBe(
-         "in ., nothing",
+         "in pkg, nothing",
       );
    });
 

@@ -4,7 +4,8 @@
 /**
  * A message with every mention of a package's directory on this server, as a
  * path or a `file:` URL, made package-relative: `/srv/data/env/pkg/m.malloy`
- * and `file:///srv/data/env/pkg/m.malloy` both read `m.malloy`. A compile
+ * and `file:///srv/data/env/pkg/m.malloy` both read `m.malloy`, and the
+ * directory itself reads `pkg`. A compile
  * error names the file it failed in by the URL it was loaded from, and an
  * API-visible message (a run's failure or recompute reason, a load error)
  * must not tell its reader where the server keeps its files.
@@ -46,10 +47,10 @@ export function packageRelativeText(text: string, packagePath: string): string {
    let out = text;
    for (const root of [...spellings].sort((a, b) => b.length - a.length)) {
       out = out.split(`${root}/`).join("").split(`${root}\\`).join("");
-      // The directory itself, where nothing under it is named.
+      // The directory itself, where nothing under it is named: by its name.
       out = out.replace(
          new RegExp(`${escapeRegExp(root)}(?![\\w.-])`, "g"),
-         ".",
+         path.basename(path.resolve(packagePath)),
       );
    }
    return out;
