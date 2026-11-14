@@ -285,26 +285,62 @@ describe("hasCallerAuthorizeAnnotation: everything outside a prose body is refus
          "#|(markdown)\n" +
          "#(authorize) x\n".repeat(lines) +
          "|#\nrun: orders -> { aggregate: c }";
+      // Malloy's parser is most of an ask and its time swings several-fold on
+      // a shared runner. Each text is parsed once and its tokens replayed, so
+      // the clock sees only the guard's own code.
+      interface Parsed {
+         tokenStream: {
+            getTokens(): {
+               type: number;
+               startIndex: number;
+               stopIndex: number;
+            }[];
+         };
+         parser: { malloyDocument(): unknown };
+      }
+      const parsed = new Map<string, Parsed>();
+      const replay = () => (code: string, options: unknown) => {
+         let made = parsed.get(code);
+         if (!made) {
+            made = makeMalloyParser(code, options) as Parsed;
+            made.parser.malloyDocument();
+            parsed.set(code, made);
+         }
+         return {
+            tokenStream: made.tokenStream,
+            parser: { malloyDocument: () => undefined },
+         };
+      };
       // Three asks, as the query path makes; the lex is shared, the scan is linear.
-      let fresh = 0;
-      // A distinct text per measurement, so the kept lex never answers for it.
-      const time = (base: string) => {
-         const text = `${base}\n// ${fresh++}`;
+      const time = (text: string) => {
+         // Forgets the kept lex, so every measurement reads the tokens again.
+         setMalloyParserLoaderForTest(replay);
          const started = performance.now();
          for (let site = 0; site < 3; site++)
             expect(hasCallerAuthorizeAnnotation(text)).toBe(false);
          return performance.now() - started;
       };
-      time(prose(1000));
-      const small = Math.min(time(prose(16250)), time(prose(16250)));
-      const large = Math.min(time(prose(65000)), time(prose(65000)));
+      const smallText = prose(16250);
+      const largeText = prose(65000);
+      let small = Infinity;
+      let large = Infinity;
+      try {
+         time(smallText);
+         time(largeText);
+         // Alternating, best of ten: a slow stretch on the runner lands on
+         // both sizes, and one clean pass of each is enough.
+         for (let round = 0; round < 10; round++) {
+            small = Math.min(small, time(smallText));
+            large = Math.min(large, time(largeText));
+         }
+      } finally {
+         setMalloyParserLoaderForTest();
+      }
       console.log(
-         `caller-annotation guard, three asks: ${Math.round(small)}ms at ~245KB, ${Math.round(large)}ms at ~975KB`,
+         `caller-annotation guard, three asks less the parse: ${small.toFixed(1)}ms at ~245KB, ${large.toFixed(1)}ms at ~975KB`,
       );
-      // Four times the text: linear takes about 4x, quadratic 16x. 8x keeps
-      // that apart with room for a shared runner's noise, which a 2x step
-      // (2x against 4x) did not: Windows CI measured 3.5x on linear code.
-      expect(large).toBeLessThan(8 * small + 50);
+      // Four times the text: linear takes about 4x, quadratic 16x.
+      expect(large).toBeLessThan(8 * small + 5);
       expect(
          hasCallerAuthorizeAnnotation(`${prose(65000)}\n#(authorize) y\n`),
       ).toBe(true);
