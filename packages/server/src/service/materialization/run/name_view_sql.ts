@@ -357,14 +357,42 @@ interface NameViewDdl {
 }
 
 /**
+ * Postgres: fail unless the name `segments` names holds exactly what the
+ * caller probed there: this view, carrying the mark `expected`, or nothing at
+ * all when `expected` is undefined. Run first in a transaction that drops the
+ * view, so a view that changed hands since the probe is never dropped.
+ */
+function postgresExpectedViewGuard(
+   segments: string[],
+   expected: NameViewMark | undefined,
+): string {
+   const path = sqlString(quotedPath(segments, "postgres"), "postgres");
+   const holds = expected
+      ? `NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c ` +
+        `WHERE c.oid = to_regclass(${path}) AND c.relkind = 'v' ` +
+        `AND obj_description(c.oid, 'pg_class') = ` +
+        `${sqlString(nameViewComment(expected), "postgres")})`
+      : `to_regclass(${path}) IS NOT NULL`;
+   return (
+      `DO $guard$ BEGIN IF ${holds} ` +
+      `THEN RAISE EXCEPTION 'the name= view % is not as this package left it', ${path}; ` +
+      `END IF; END $guard$`
+   );
+}
+
+/**
  * The DDL that points the view `segments` names at `targetSql` (an already
- * quoted table reference), carrying `mark`.
+ * quoted table reference), carrying `mark`. `expected` is what the caller's
+ * probe found at the name: this package's view with that mark, or nothing
+ * (undefined). A fallback that drops the view first checks it in the same
+ * transaction, and leaves anything else at the name alone.
  */
 export function nameViewReplaceDdl(
    segments: string[],
    targetSql: string,
    mark: NameViewMark,
    dialect: string,
+   expected?: NameViewMark,
 ): NameViewDdl {
    const view = quotedPath(segments, dialect);
    const comment = sqlString(nameViewComment(mark), dialect);
@@ -389,17 +417,21 @@ export function nameViewReplaceDdl(
          // views a reader built over this one, but refuses a column list that
          // is not an extension of the old one; then the view is dropped and
          // made again (which a reader's own dependent view refuses, leaving
-         // the old view as it was).
-         const create = (orReplace: boolean) =>
-            [
-               `CREATE ${orReplace ? "OR REPLACE " : ""}VIEW ${view} AS ${select}`,
-               `COMMENT ON VIEW ${view} IS ${comment}`,
-            ]
-               .map((s) => `${s};`)
-               .join("\n");
+         // the old view as it was). The drop goes ahead only while the name
+         // still holds what the caller probed: a view another package or the
+         // author put there since is left as it is, and the call fails.
+         const statements = (orReplace: boolean) => [
+            `CREATE ${orReplace ? "OR REPLACE " : ""}VIEW ${view} AS ${select}`,
+            `COMMENT ON VIEW ${view} IS ${comment}`,
+         ];
+         const oneCall = (s: string[]) => s.map((x) => `${x};`).join("\n");
          return {
-            primary: create(true),
-            fallback: `DROP VIEW IF EXISTS ${view};\n${create(false)}`,
+            primary: oneCall(statements(true)),
+            fallback: oneCall([
+               postgresExpectedViewGuard(segments, expected),
+               `DROP VIEW IF EXISTS ${view}`,
+               ...statements(false),
+            ]),
          };
       }
       case "standardsql":

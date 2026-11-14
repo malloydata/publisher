@@ -697,10 +697,15 @@ describe("in a DuckLake catalog", () => {
    it("a storage build that fails leaves the view", async () => {
       const site = storageNameViewSite("lake", lake, session);
       await session.runSQL("DROP TABLE lake.main.summary");
-      await pointNameView(site, "summary", {
-         target: "summary_g1",
-         owner: OWNER,
-      });
+      await pointNameView(
+         site,
+         "summary",
+         {
+            target: "summary_g1",
+            owner: OWNER,
+         },
+         undefined,
+      );
       await expect(
          createTableAndDescribe(
             session,
@@ -797,10 +802,15 @@ describe("on a colocated DuckDB connection", () => {
    it("a swap without the view carried fails and leaves the view", async () => {
       const site = colocatedNameViewSite(connection);
       await connection.runSQL("DROP TABLE mz.summary");
-      await pointNameView(site, "mz.summary", {
-         target: "mz.summary_g1",
-         owner: OWNER,
-      });
+      await pointNameView(
+         site,
+         "mz.summary",
+         {
+            target: "mz.summary_g1",
+            owner: OWNER,
+         },
+         undefined,
+      );
       await connection.runSQL("CREATE TABLE mz.summary_s AS SELECT 3 AS x");
       await expect(
          swapIntoPlace({

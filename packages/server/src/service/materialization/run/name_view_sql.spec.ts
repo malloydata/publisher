@@ -155,6 +155,7 @@ describe("pointing the view, per dialect", () => {
          `"s"."t_g2"`,
          { target: "s.t_g2", owner: OWNER },
          "postgres",
+         { target: "s.t_g1", owner: OWNER },
       );
       expect(ddl.primary).toBe(
          [
@@ -162,14 +163,35 @@ describe("pointing the view, per dialect", () => {
             `COMMENT ON VIEW "s"."v" IS ${mark("postgres")};`,
          ].join("\n"),
       );
+      const was = `'${nameViewComment({ target: "s.t_g1", owner: OWNER })}'`;
       expect(ddl.fallback).toBe(
          [
+            `DO $guard$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c ` +
+               `WHERE c.oid = to_regclass('"s"."v"') AND c.relkind = 'v' ` +
+               `AND obj_description(c.oid, 'pg_class') = ${was}) ` +
+               `THEN RAISE EXCEPTION 'the name= view % is not as this package left it', '"s"."v"'; ` +
+               `END IF; END $guard$;`,
             `DROP VIEW IF EXISTS "s"."v";`,
             `CREATE VIEW "s"."v" AS SELECT * FROM "s"."t_g2";`,
             `COMMENT ON VIEW "s"."v" IS ${mark("postgres")};`,
          ].join("\n"),
       );
       expect(ddl.rollback).toBeUndefined();
+   });
+
+   it("Postgres: the fallback drops only what the caller probed at the name", () => {
+      // Nothing was there: the fallback drops nothing a racing writer made.
+      const fresh = nameViewReplaceDdl(
+         ["s", "v"],
+         `"s"."t_g2"`,
+         { target: "s.t_g2", owner: OWNER },
+         "postgres",
+      );
+      expect(fresh.fallback!.split("\n")[0]).toBe(
+         `DO $guard$ BEGIN IF to_regclass('"s"."v"') IS NOT NULL ` +
+            `THEN RAISE EXCEPTION 'the name= view % is not as this package left it', '"s"."v"'; ` +
+            `END IF; END $guard$;`,
+      );
    });
 
    it("BigQuery: one statement, the mark as the description", () => {

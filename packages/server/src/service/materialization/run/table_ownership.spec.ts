@@ -355,7 +355,12 @@ describe("on a DuckDB connection", () => {
    it("this package's own name= view is its own; any other view is refused", async () => {
       await run("CREATE TABLE g1 AS SELECT 1 AS x");
       const site = colocatedNameViewSite(connection);
-      await pointNameView(site, "named_t", { target: "g1", owner: A });
+      await pointNameView(
+         site,
+         "named_t",
+         { target: "g1", owner: A },
+         undefined,
+      );
       await check(A);
       expect((await check(B).catch((e) => e)).code).toBe(TABLE_OWNED_ELSEWHERE);
       await run("DROP VIEW named_t");

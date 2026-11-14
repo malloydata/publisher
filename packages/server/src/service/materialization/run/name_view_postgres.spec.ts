@@ -64,27 +64,42 @@ describe.skipIf(!url)("the name= view on Postgres", () => {
 
    it("is made, and repointed to a table of another shape", async () => {
       const site = colocatedNameViewSite(pg);
-      await pointNameView(site, intent.viewName, {
-         target: "name_view_test.flights_g1",
-         owner: intent.owner,
-      });
+      await pointNameView(
+         site,
+         intent.viewName,
+         {
+            target: "name_view_test.flights_g1",
+            owner: intent.owner,
+         },
+         undefined,
+      );
       expect(await answer()).toEqual([{ x: 1 }]);
       // CREATE OR REPLACE refuses a column of another type: the view is
       // dropped and made again in one transaction.
-      await pointNameView(site, intent.viewName, {
-         target: "name_view_test.flights_g2",
-         owner: intent.owner,
-      });
+      await pointNameView(
+         site,
+         intent.viewName,
+         {
+            target: "name_view_test.flights_g2",
+            owner: intent.owner,
+         },
+         { target: "name_view_test.flights_g1", owner: intent.owner },
+      );
       expect(await answer()).toEqual([{ x: "two", y: 2 }]);
       expect(await probeNameView(site, intent.viewName)).toEqual({
          state: "ours",
          target: "name_view_test.flights_g2",
          owner: intent.owner,
       });
-      await pointNameView(site, intent.viewName, {
-         target: "name_view_test.flights_g1",
-         owner: intent.owner,
-      });
+      await pointNameView(
+         site,
+         intent.viewName,
+         {
+            target: "name_view_test.flights_g1",
+            owner: intent.owner,
+         },
+         { target: "name_view_test.flights_g2", owner: intent.owner },
+      );
    });
 
    it("a rebuild of the table the view reads keeps the view, through the swap", async () => {

@@ -9,6 +9,7 @@ import { getMaterializeEnabled } from "../../../config";
 import { BadRequestError } from "../../../errors";
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
+import { errorCodeOf } from "./error_code";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import type { ApiConnection } from "../../model";
 import { quoteTablePath } from "../../quoting";
@@ -492,17 +493,25 @@ function claimableTable(slot: NameViewSlot, owner: string): boolean {
    );
 }
 
-/** Make or repoint the view to read `mark.target`, mark and all. */
+/**
+ * Make or repoint the view to read `mark.target`, mark and all. `expected` is
+ * what the caller's probe found at the name: this package's view carrying
+ * that mark, or nothing (undefined). A dialect that must drop the view to
+ * remake it (Postgres, for a changed column list) checks it again in the same
+ * transaction, and fails rather than drop anything else.
+ */
 export async function pointNameView(
    site: NameViewSite,
    viewName: string,
    mark: NameViewMark,
+   expected: NameViewMark | undefined,
 ): Promise<void> {
    const ddl = nameViewReplaceDdl(
       site.segments(viewName),
       site.targetSql(mark.target),
       mark,
       site.dialect,
+      expected,
    );
    try {
       await site.run(ddl.primary);
@@ -550,9 +559,12 @@ function asideTableNameFor(
  * commit, and {@link restoreNameViews} puts it back when the commit fails.
  * On DuckDB (a file, or a DuckLake or DuckDB storage destination) and
  * Postgres the rename and the view are one transaction, so a failure leaves
- * the table as it was; elsewhere a view that cannot be made, or whose mark
- * does not read back, puts the table back. Returns the aside name; throws
- * when the view is not in place (the run records `failed` with why).
+ * the table as it was; elsewhere a view that cannot be made puts the table
+ * back. A view whose mark does not read back puts the table back only when
+ * the name is empty or still holds this package's view of the new generation
+ * ({@link putTableBack}); anything else there is left alone and the table
+ * stays aside. Returns the aside name; throws when the view is not in place
+ * (the run records `failed` with why).
  */
 export async function replaceOwnTableWithView(
    site: NameViewSite,
@@ -632,17 +644,36 @@ export async function replaceOwnTableWithView(
 }
 
 /**
- * Drop the view at `intent`'s name and rename the aside table back. False,
- * logged, when that fails: the table is then still under its aside name.
+ * Drop the view at `intent`'s name and rename the aside table back, provided
+ * a fresh probe finds the name empty or holding this package's view of
+ * `intent.physicalTableName`. Anything else there (a view another package or
+ * the author put there since, or one whose mark does not read back) is never
+ * dropped: the table stays under its aside name, which its run's reclaim
+ * drops with it, and the next build's preflight puts it back once the name is
+ * clear ({@link recoverInterruptedReplacement}). False, logged, when the table
+ * is not put back.
  */
 async function putTableBack(
    site: NameViewSite,
-   intent: Pick<NameViewIntent, "viewName">,
+   intent: Pick<NameViewIntent, "viewName" | "owner" | "physicalTableName">,
    aside: string,
    ddl: NameViewTableReplaceDdl,
    cause: unknown,
 ): Promise<boolean> {
    try {
+      const slot = ownedSlot(
+         await probeNameView(site, intent.viewName),
+         intent.owner,
+      );
+      const viewIsOurs =
+         slot.state === "ours" && slot.target === intent.physicalTableName;
+      if (!viewIsOurs && slot.state !== "empty") {
+         logger.error(
+            "A name= view's name no longer holds this package's view; it is left as it is, and the table it replaced is kept under its aside name",
+            { viewName: intent.viewName, asideName: aside },
+         );
+         return false;
+      }
       if (ddl.transactional) {
          try {
             await site.run(ddl.restore);
@@ -657,9 +688,11 @@ async function putTableBack(
             throw err;
          }
       } else {
-         await site.run(
-            nameViewDropSql(site.segments(intent.viewName), site.dialect),
-         );
+         if (viewIsOurs) {
+            await site.run(
+               nameViewDropSql(site.segments(intent.viewName), site.dialect),
+            );
+         }
          await site.run(ddl.restore);
       }
    } catch (restoreErr) {
@@ -1233,26 +1266,52 @@ async function publishNameView(
             ) {
                return { ...intent, outcome: "unchanged" };
             }
-            await pointNameView(site, intent.viewName, mark);
-            // The mark must read back, or the next build would find its own
-            // view "taken" and refuse the source. A view this call made whose
-            // mark does not read back is dropped again; one that was already
-            // Publisher's read back before, so the dialect round-trips.
-            const after = ownedSlot(
-               await probeNameView(site, intent.viewName),
-               intent.owner,
+            await pointNameView(
+               site,
+               intent.viewName,
+               mark,
+               slot.state === "ours"
+                  ? { target: slot.target, owner: intent.owner }
+                  : undefined,
             );
+            // The mark must read back as this package's view of this table.
+            // When it does not, or cannot be read, whatever holds the name is
+            // left as it is: it may be another package's view or the author's
+            // that replaced this one since the write, and nothing is dropped
+            // that a probe has not just shown is this package's. The cost is
+            // a view of this call's own that may stay unmarked, which the
+            // next build reports as taken rather than repoint.
+            let after: OwnedSlot;
+            try {
+               after = ownedSlot(
+                  await probeNameView(site, intent.viewName),
+                  intent.owner,
+               );
+            } catch (err) {
+               logger.warn("Could not read back a name= view's mark", {
+                  sourceName: intent.sourceName,
+                  viewName: intent.viewName,
+                  causeCode: errorCodeOf(err),
+               });
+               return {
+                  ...intent,
+                  outcome: "failed",
+                  message:
+                     `the view's mark could not be read back from ` +
+                     `'${intent.viewName}'; the name is left as it is`,
+               };
+            }
             if (
                after.state !== "ours" ||
                after.target !== intent.physicalTableName
             ) {
-               if (slot.state === "empty") {
-                  await dropNameView(site, intent.viewName);
-               }
                return {
                   ...intent,
                   outcome: "failed",
-                  message: `the view's mark did not read back from '${intent.viewName}'`,
+                  message:
+                     `the view's mark did not read back from ` +
+                     `'${intent.viewName}' (${readBackHolder(after)}); ` +
+                     `the name is left as it is`,
                };
             }
             return slot.state === "ours"
@@ -1278,6 +1337,20 @@ async function publishNameView(
             err instanceof NameViewUnsupportedError ? "unsupported" : "failed",
          message: errMessage(err),
       };
+   }
+}
+
+/** What a read-back found at the name instead of this run's view, by name. */
+function readBackHolder(after: OwnedSlot): string {
+   switch (after.state) {
+      case "empty":
+         return "nothing holds it";
+      case "ours":
+         return `this package's view reads '${after.target}'`;
+      case "taken":
+         return `it is held by ${after.holder}`;
+      case "own_table":
+         return "it holds a table";
    }
 }
 
@@ -1319,10 +1392,12 @@ export async function restoreNameViews(
                return;
             }
             if (record.previousTarget) {
-               await pointNameView(site, record.viewName, {
-                  target: record.previousTarget,
-                  owner: record.owner,
-               });
+               await pointNameView(
+                  site,
+                  record.viewName,
+                  { target: record.previousTarget, owner: record.owner },
+                  { target: record.physicalTableName, owner: record.owner },
+               );
             } else {
                await dropNameView(site, record.viewName);
             }
@@ -1481,10 +1556,12 @@ export async function settleNameViewsBeforeDrop(
             }
             const successor = successorFor(view);
             if (successor) {
-               await pointNameView(site, view.viewName, {
-                  target: successor.physicalTableName,
-                  owner: view.owner,
-               });
+               await pointNameView(
+                  site,
+                  view.viewName,
+                  { target: successor.physicalTableName, owner: view.owner },
+                  { target: view.physicalTableName, owner: view.owner },
+               );
                logger.info("Repointed a name= view off a table being dropped", {
                   viewName: view.viewName,
                   from: view.physicalTableName,

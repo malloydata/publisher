@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A `name=` view whose mark does not read back is left in place, never dropped
+
+Behind `PUBLISHER_MATERIALIZE`, once a run creates or repoints a `#(materialize) name=` view it reads the view's mark back. When the mark did not read back as this package's view of the run's table, a view the run had just created was dropped again, whatever then held the name: a view another package's build or the author had put there in the meantime could be removed. Now nothing at the name is dropped unless a probe has just shown it is this package's view. A mark that does not read back, or cannot be read back at all, leaves the name as it is, and the run records the view `failed` in `metadata.nameViews`, with what holds the name instead. The trade-off: a view of the run's own whose mark did not stick stays at the name unmarked, and the next build refuses the source as `name=` taken until someone drops it.
+
+Two more paths that dropped a view without a fresh check now make one. When a view that replaced this package's own table does not read back, the table is put back only if the name is empty or still holds this package's view; otherwise both are left, the table under its aside name. And on Postgres, a repoint that has to drop the view and make it again (the new table's columns no longer extend the old ones) first checks, in the same transaction, that the name still holds the view it probed, and fails rather than drop another one. Nothing changes when the read-back succeeds.
+
 ## [Unreleased] — Bun 1.4.4: a respawned package-load worker no longer leaks its memory
 
 Publisher now builds, tests and ships on Bun 1.4.4, up from 1.3.13. The Docker image's base is `oven/bun:1.4.4-slim`, and building from a clone needs Bun 1.4.4 or newer (`engines.bun` is now `>=1.4.4`). Running the published package with `npx` still needs only Node.js 20 or newer.

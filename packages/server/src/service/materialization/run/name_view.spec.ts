@@ -519,19 +519,29 @@ describe("in a DuckLake catalog", () => {
       expect(await probeNameView(site, "flights_all")).toEqual({
          state: "empty",
       });
-      await pointNameView(site, "flights_all", {
-         target: "flights_all_g1",
-         owner: OWNER,
-      });
+      await pointNameView(
+         site,
+         "flights_all",
+         {
+            target: "flights_all_g1",
+            owner: OWNER,
+         },
+         undefined,
+      );
       expect(await probeNameView(site, "flights_all")).toEqual({
          state: "ours",
          target: "flights_all_g1",
          owner: OWNER,
       });
-      await pointNameView(site, "flights_all", {
-         target: "flights_all_g2",
-         owner: OWNER,
-      });
+      await pointNameView(
+         site,
+         "flights_all",
+         {
+            target: "flights_all_g2",
+            owner: OWNER,
+         },
+         { target: "flights_all_g1", owner: OWNER },
+      );
       expect(await probeNameView(site, "flights_all")).toEqual({
          state: "ours",
          target: "flights_all_g2",
@@ -574,7 +584,12 @@ describe("on a colocated DuckDB connection", () => {
    it("lives beside its table in the table's schema, and reads it", async () => {
       const site = colocatedNameViewSite(connection);
       const viewName = nameViewName("flights_all", "mz.t_g1");
-      await pointNameView(site, viewName, { target: "mz.t_g1", owner: OWNER });
+      await pointNameView(
+         site,
+         viewName,
+         { target: "mz.t_g1", owner: OWNER },
+         undefined,
+      );
       expect(await probeNameView(site, viewName)).toEqual({
          state: "ours",
          target: "mz.t_g1",
@@ -592,7 +607,7 @@ describe("on a colocated DuckDB connection", () => {
 });
 
 describe("a view whose mark does not read back", () => {
-   it("is dropped again and reported, so the next build does not find its own view taken", async () => {
+   it("is left as it is and reported: nothing unverified is dropped", async () => {
       const statements: string[] = [];
       let made = false;
       // A warehouse that keeps the view but loses its comment.
@@ -628,7 +643,10 @@ describe("a view whose mark does not read back", () => {
       );
       expect(records[0].outcome).toBe("failed");
       expect(records[0].message).toMatch(/did not read back/);
-      expect(made).toBe(false);
-      expect(statements.at(-1)).toBe(`DROP VIEW IF EXISTS "mz"."flights_all"`);
+      expect(records[0].message).toMatch(/left as it is/);
+      // The unmarked view may be this call's own, or another writer's that
+      // replaced it since: either way it is not dropped.
+      expect(made).toBe(true);
+      expect(statements.some((s) => s.startsWith("DROP VIEW"))).toBe(false);
    });
 });
