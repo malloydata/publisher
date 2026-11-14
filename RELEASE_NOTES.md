@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a field read inside a classified record or array column carries the column's classes
+
+A field read inside a record or array column, such as `group_by: purchases.ssn` where `purchases` is a classified array (`#(classification) "phi.direct_identifier" rename: purchases is items`), was read with no classes at all. The access record listed it with `classifications: []` while still claiming a complete field list, so a source with no `#(carries)` under-reported what the query read. Under `#(carries)` the same read was refused as unclassified, even where the ceiling lists the column's class.
+
+Now such a field carries the classes of the nearest record or array column around it that declares some, unless it declares its own. The access record lists `purchases.ssn` as `phi.direct_identifier`, a `#(carries)` ceiling that lists that class serves it, and one that does not refuses it naming the class. A record or array built by an expression already handed its parts its class and is unchanged.
+
 ## [Unreleased] — `storage=` tables with list, struct, MAP, BLOB, INTERVAL, ENUM, UNION or JSON columns build again
 
 A `storage=` source whose stored table had a column outside Malloy's basic types (a list such as `INTEGER[]`, a struct, a MAP, BLOB, INTERVAL, ENUM, UNION or JSON column, or a list of structs) was never stored. Its build failed after the table was written, with 422 and the message "cannot be served from its storage destination: its materialized shape does not compile in DuckDB (… 'json' is a reserved word …)", the table was dropped, and the source answered every query live. The build-time check declared each such column as `json`, which Malloy does not accept in a type declaration. A chained `storage=` source over such a parent never built over the parent's table either: it recomputed from the warehouse, or was refused under `strictUpstreams`. Present in 0.13.0 and earlier.
