@@ -139,6 +139,59 @@ describe("a field read inside a record or array column", () => {
       });
    });
 
+   it("leaves a whole column read as one read, not a read of every part", async () => {
+      await withModel(MODEL, async ({ model }) => {
+         await run(model, "run: cls -> { select: pid, purchases }");
+         const record = lastRecord();
+         // The parts only carry the column's own class, so they are not inputs to it.
+         expect(classesOf(record)).toEqual({
+            pid: ["none"],
+            purchases: ["phi.direct_identifier"],
+         });
+         expect(record.fieldsReadComplete).toBe(true);
+      });
+   });
+
+   it("leaves parts of computed records, record literals and query outputs as they were", async () => {
+      const { modelDefs } = await compileModelFiles({
+         "m.malloy": `
+source: cls is duckdb.sql("select [{'sku': 'x', 'ssn': 's'}] as items, {'a': 'a'} as rec, 1 as id") extend {
+  #(classification) "phi.direct_identifier"
+  rename: purchases is items
+  #(classification) "pii"
+  rename: r is rec
+  #(classification) "none"
+  dimension: pid is id
+  #(classification) "pii"
+  dimension: lit is { a is pid }
+  #(classification) "gdpr.personal"
+  dimension: cr is r
+  #(classification) "gdpr.personal"
+  dimension: arr is [pid]
+}
+source: q is cls -> { select: pid, purchases, lit }
+`,
+      });
+      const md = modelDefs["m.malloy"] as ModelDef;
+      const lineageOf = (name: string) => {
+         const s = md.contents[name] as { fields?: unknown[]; query?: unknown };
+         return readSourceClassifications(s.fields as never, s.query as never);
+      };
+      const classes = (name: string, path: string) =>
+         lineageOf(name).get(path)?.classifications;
+      // A literal's part reads its own element, not the record's class.
+      expect(classes("cls", "lit.a")).toEqual(["none"]);
+      // A computed record's or array's part takes what the value reads.
+      expect(classes("cls", "cr.a")).toEqual(["gdpr.personal", "pii"]);
+      expect(classes("cls", "arr.each")).toEqual(["gdpr.personal"]);
+      // A query output's part reads the output it is part of.
+      expect(classes("q", "purchases.ssn")).toEqual(["phi.direct_identifier"]);
+      expect(lineageOf("q").get("purchases.ssn")?.inputs).toEqual([
+         { field: "purchases", classifications: ["phi.direct_identifier"] },
+      ]);
+      expect(classes("q", "lit.a")).toEqual(["pii"]);
+   });
+
    it("is served under a #(carries) ceiling that lists the column's class, and refused by one that does not", async () => {
       await withModel(
          `${MODEL}

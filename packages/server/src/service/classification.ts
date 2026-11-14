@@ -1047,6 +1047,8 @@ function walkSourceClassifications(
    );
 
    const visiting = new Set<string>();
+   // Parts whose only classes are those of a column around them.
+   const inheritedOnly = new Set<string>();
    const resolve = (path: string): FieldClassification | undefined => {
       const done = resolved.get(path);
       if (done) return done;
@@ -1159,7 +1161,17 @@ function walkSourceClassifications(
          filters.push(...input.filtered);
       };
       read(reads.value);
-      for (const p of partOf ? [partOf] : parts) readInput(p, resolve(p));
+      for (const p of partOf ? [partOf] : parts) {
+         const part = resolve(p);
+         // A part that only carries the class of a column around it adds
+         // nothing to that column, so the column does not list it as read.
+         readInput(
+            p,
+            part && !partOf && inheritedOnly.has(p)
+               ? { ...part, classifications: [] }
+               : part,
+         );
+      }
       const valueInputs = inputs.length;
       read(reads.filter);
       take(filters);
@@ -1191,6 +1203,7 @@ function walkSourceClassifications(
          ceilings,
          ceilingUnresolved,
       };
+      if (enclosing.length > 0 && inputs.length === 0) inheritedOnly.add(path);
       resolved.set(path, result);
       return result;
    };
