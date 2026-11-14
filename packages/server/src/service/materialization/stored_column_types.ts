@@ -1062,8 +1062,3 @@ export function declarableColumns(
 }
 
 /** `name TYPE, …` for an error or log line: names and types, never values. */
-export function describeColumns(
-   columns: readonly UndeclarableColumn[],
-): string {
-   return columns.map((c) => `'${c.name}' (${c.type})`).join(", ");
-}

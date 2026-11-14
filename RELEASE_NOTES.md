@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a `storage=` table no column of which Malloy can type is built, and its source is answered live
+
+A `storage=` build no longer compiles a per-build DuckDB check of the table it just wrote. Whether a stored table can be read is decided when it is bound, per source, by the served copy's own type plan, the one declaration rule every stored table follows. The one outcome that changes: a table none of whose columns Malloy has a faithful type for (every column a MAP, UNION, ENUM, BLOB, BIT, INTERVAL or JSON, or the table has no column at all) used to fail its build with a 422 whose `reason` was `not_duckdb_portable`. It now builds, and the served copy declines its source at bind (`column_types` in the package's `served-copy-not-served` warning), so every query over it is answered live, with the same answer as before. A table with at least one typed column builds and serves exactly as before. `not_duckdb_portable` stays in the API's reason enum, which is an open string, and is no longer produced. Each left-out column is still counted in `publisher_storage_serve_shape_type_fallback_total` and logged when its table is built.
+
+v1 chained `storage=` builds (a `#@ persist storage=` source over another one in its destination) now compile from the author's own files with each stored parent re-rooted as a query reads it, not from a model the build assembled out of lifted text. What they build, and when they stack on a parent or recompute it, is unchanged. No API change.
+
 ## [Unreleased] — a field read inside a classified record or array column carries the column's classes
 
 A field read inside a record or array column, such as `group_by: purchases.ssn` where `purchases` is a classified array (`#(classification) "phi.direct_identifier" rename: purchases is items`), was read with no classes at all. The access record listed it with `classifications: []` while still claiming a complete field list, so a source with no `#(carries)` under-reported what the query read. Under `#(carries)` the same read was refused as unclassified, even where the ceiling lists the column's class.

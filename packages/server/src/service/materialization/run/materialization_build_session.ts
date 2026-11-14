@@ -75,10 +75,6 @@ import {
 import type { WatermarkBound } from "./incremental_apply";
 import { storageDestinationRoot } from "../../connection_config";
 import {
-   assertServesInDuckDB,
-   type ServeBinding,
-} from "../serve/materialization_serve_transform";
-import {
    DEFAULT_DESTINATION_SCHEMA,
    destinationSchemaOf,
    storageTablePath,
@@ -87,12 +83,6 @@ import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
 
 type ApiConnection = components["schemas"]["Connection"];
 
-/**
- * The process-wide session the build-time servability gate compiles against.
- * Created on first use and never disposed: it holds no attach and no
- * credentials, and a session per build was the largest per-build memory cost.
- */
-let sharedGateSession: DuckDBConnection | undefined;
 type WireColumn = components["schemas"]["Column"];
 
 /** Source warehouse types the native query-passthrough build supports. */
@@ -1374,67 +1364,6 @@ export async function buildDownstreamIntoStorage(params: {
    } finally {
       await dispose();
    }
-}
-
-/**
- * Build-time servability gate: compile the source's serve shape in DuckDB
- * against the captured (post-build) schema and refuse the build if it does not
- * compile. The served table lives in DuckDB, so this turns a serve-time error
- * into a build-time 422. No SQL runs and no table is read, so an in-memory
- * session with no attach suffices.
- *
- * @throws {MaterializationEligibilityError} (HTTP 422) if the shape can't compile.
- */
-export async function assertStorageServeShapeCompiles(params: {
-   destinationName: string;
-   /** The destination's schema (see storageTablePath); absent is `main`. */
-   destinationSchema?: string;
-   sourceName: string;
-   virtualHandle: string;
-   physicalTableName: string;
-   schema: WireColumn[];
-}): Promise<void> {
-   const { destinationName, sourceName, virtualHandle, physicalTableName } =
-      params;
-   // No `origin`: the gate compiles from the captured schema alone, so it treats
-   // a rollup's table and an authored one alike.
-   const binding: ServeBinding = {
-      sourceName,
-      destinationName,
-      virtualHandle,
-      tablePath: storageTablePath(
-         destinationName,
-         physicalTableName,
-         params.destinationSchema,
-      ),
-      schema: params.schema
-         .filter((c) => c.name && c.type)
-         .map((c) => ({ name: c.name as string, type: c.type as string })),
-   };
-   // ONE session for the process: this gate neither attaches nor federates, so
-   // it has no cross-tenant collision surface, and an instance per build was
-   // the bulk of the build path's unreclaimed memory growth. The risk is a
-   // shared catalog (earlier declarations leaking into later compiles); the
-   // spec pins that refusals still refuse and recompiles see new schemas.
-   //
-   // Assigned synchronously: an `await` before the assignment would let two
-   // concurrent callers each create a session, orphaning one for the life of
-   // the process.
-   sharedGateSession ??= createIsolatedBuildSession("gate_shared").session;
-   // Bounded on every use (idempotent per connection) so the line above stays
-   // synchronous. It must be bounded here: it is the longest-lived instance and
-   // reaches no connection lookup or attach that would bound it otherwise. No
-   // session-owned spill directory: one would accumulate for the process's life,
-   // so it uses the configured one.
-   await applySessionResourceLimits(sharedGateSession);
-   await assertServesInDuckDB(
-      sourceName,
-      binding,
-      new FixedConnectionMap(
-         new Map([[destinationName, sharedGateSession]]),
-         destinationName,
-      ),
-   );
 }
 
 /** DDL to drop a storage table by its recorded name, catalog-qualified for DuckDB. */

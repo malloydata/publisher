@@ -1,18 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   InMemoryURLReader,
-   type LookupConnection,
-   type Connection as MalloyConnection,
-   Runtime,
-} from "@malloydata/malloy";
-import { MaterializationEligibilityError } from "../../../errors";
 import { logger } from "../../../logger";
-import {
-   recordEligibilityRefused,
-   recordServeShapeTypeFallback,
-} from "../../../materialization_metrics";
+import { recordServeShapeTypeFallback } from "../../../materialization_metrics";
 import type { ManifestEntry } from "../domain/types";
 import { quoteManifestTablePath } from "../../quoting";
 import {
@@ -30,7 +20,6 @@ import {
 } from "../text/author_model";
 import {
    declarableColumns,
-   describeColumns,
    duckdbTypeToMalloyType,
    storedMalloyType,
    type UndeclarableColumn,
@@ -1310,64 +1299,4 @@ export function buildVirtualMap(
       inner.set(b.virtualHandle, boundTablePath(b));
    }
    return map;
-}
-
-/**
- * The DuckDB portability gate, run post-build because it needs the captured
- * schema: refuse a source whose serve shape does not compile in DuckDB, turning
- * a serve-time 500 into a build-time refusal.
- *
- * It compiles only the base shape (captured columns, no refinements), so it is
- * a floor, not a full check that the source's refinements are DuckDB-portable.
- * A column no `type:` declares faithfully ({@link storedMalloyType}) is left
- * out of the shape rather than refusing the table, so only a query reading it
- * is answered live; a table with no column left to declare is refused.
- *
- * @throws {MaterializationEligibilityError} (HTTP 422, reason
- *   `not_duckdb_portable`) if the serve shape does not compile in DuckDB. Its
- *   message names columns and types, never values.
- */
-export async function assertServesInDuckDB(
-   sourceName: string,
-   binding: ServeBinding,
-   connections: LookupConnection<MalloyConnection>,
-): Promise<void> {
-   const refuse = (detail: string): never => {
-      recordEligibilityRefused("not_duckdb_portable");
-      throw new MaterializationEligibilityError({
-         reason: "not_duckdb_portable",
-         message:
-            `Source '${sourceName}' cannot be served from its storage ` +
-            `destination: ${detail}. A source materialized into a ` +
-            `DuckDB/DuckLake store must have a DuckDB-portable served shape.`,
-      });
-   };
-   const { declared, leftOut } = declarableColumns(binding.schema);
-   if (declared.length === 0 && leftOut.length > 0) {
-      refuse(
-         `no stored column has a Malloy type that reads it back faithfully ` +
-            `(${describeColumns(leftOut)})`,
-      );
-   }
-   const { modelText } = buildServeShapeModel(sourceName, binding);
-   const root = "file:///serve-shape/";
-   const urlReader = new InMemoryURLReader(
-      new Map([[`${root}shape.malloy`, modelText]]),
-   );
-   const runtime = new Runtime({ urlReader, connections });
-   try {
-      await runtime
-         .loadModel(new URL(`${root}shape.malloy`), {
-            importBaseURL: new URL(root),
-         })
-         .getModel();
-   } catch (err) {
-      refuse(
-         `its materialized shape does not compile in DuckDB ` +
-            `(${err instanceof Error ? err.message : String(err)})` +
-            (leftOut.length > 0
-               ? `; left out of it: ${describeColumns(leftOut)}`
-               : ""),
-      );
-   }
 }

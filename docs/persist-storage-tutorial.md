@@ -727,20 +727,14 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
 
 Remove `paramtest.malloy` and reload to continue.
 
-A third check runs **after** the build, once the table's authoritative schema is
-captured: the served shape must **compile in DuckDB** (the served table lives
-there, even for a warehouse-authored source). A source whose materialized shape
-isn't DuckDB-portable is refused the same way — a serve-time error turned into a
-build-time refusal: the failure on the run record names the columns by name
-and type, and the build's `materialization.build.failed` log event carries code
-`not_duckdb_portable`. In practice it rarely fires,
-because the served shape is just the stored columns; it's the floor that
-guarantees the captured schema forms a valid DuckDB source. A list or struct
-column is declared as Malloy's array or record type. A column Malloy has no
-faithful declaration for (a MAP, UNION, ENUM, BLOB, INTERVAL or JSON column, or
-a list or struct holding one) is left out of the shape rather than refusing the
-table, so a query that reads it is answered live and every other query reads
-the table. Only a table with no column left to declare is refused.
+Once the table is built, its authoritative schema is captured, and whether
+each stored column can be read is decided when the table is bound, per source,
+not by refusing the build. A list or struct column is declared as Malloy's
+array or record type. A column Malloy has no faithful declaration for (a MAP,
+UNION, ENUM, BLOB, INTERVAL or JSON column, or a list or struct holding one)
+is left out of the source's declaration, so a query that reads it is answered
+live and every other query reads the table. A table with no column left to
+declare still builds; its source is answered live.
 
 These are the checks derivable from the compiled source and the built schema
 alone. One more belongs here and **is enforced**: a source protected by

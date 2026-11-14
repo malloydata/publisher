@@ -41,8 +41,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.3",
    "service/materialization/run/materialization_build_session.ts -> service/materialization/plan/build_plan":
       "2g.3",
-   "service/materialization/run/materialization_build_session.ts -> service/materialization/serve/materialization_serve_transform":
-      "R",
    "service/materialization/run/materialization_instructed_run.ts -> service/materialization/plan/build_plan":
       "2g.3",
    "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/build_file_generator":

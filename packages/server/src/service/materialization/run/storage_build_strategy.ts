@@ -52,11 +52,9 @@ import {
    type IncrementalRunContext,
 } from "./incremental_build";
 import {
-   assertStorageServeShapeCompiles,
    BilledReadNotCapturedError,
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
-   dropStorageTable,
    oneFileModel,
    type StorageBuildResult,
    type StorageIncrementalRefresh,
@@ -122,8 +120,10 @@ export interface StorageBuildRequest {
  * (DuckDB/DuckLake), never the source or serve connection. A source that
  * reads a stored upstream stacks on that parent's table when it can, and
  * recomputes from the source warehouse otherwise; a delta of an incremental
- * table applies inside the destination session. Every build passes the
- * serve-shape gate before its table is reported.
+ * table applies inside the destination session. Whether a stored table can
+ * be read is decided at bind, per source, by the served copy's stored-type
+ * plan: a table whose columns no type declares faithfully is built and
+ * answers live.
  */
 export class StorageBuildStrategy
    implements BuildStrategy<StorageBuildRequest>
@@ -469,56 +469,18 @@ export class StorageBuildStrategy
          }
       }
 
-      // Build-time servability gate: the serve shape must compile in DuckDB
-      // against the captured schema, or the build is refused (422) instead of
-      // failing at serve time. Outside the redaction try: its error carries no
-      // secrets.
-      try {
-         await assertStorageServeShapeCompiles({
-            destinationName,
-            destinationSchema: destinationSchemaOf(destinationConnection),
-            sourceName: persistSource.name,
-            virtualHandle: sourceEntityId,
-            physicalTableName,
-            schema: result.schema,
-         });
-      } catch (gateErr) {
-         // An in-place refresh advanced the LIVE serving table, over a shape
-         // a delta cannot change, so it is never dropped. The run still fails,
-         // leaving the boundary unrecorded so the next refresh re-applies the
-         // same idempotent range.
-         if (result.refresh) throw gateErr;
-         // No manifest records the just-built table, so GC would never see it:
-         // drop it, best-effort. With in-place naming the prior generation is
-         // already gone, so the source serves live until a successful build;
-         // rollback-safe regeneration needs host-generational names.
-         try {
-            await dropStorageTable({
-               destinationName,
-               destinationConnection,
-               physicalTableName,
-               environmentPath: environment.getEnvironmentPath(),
-            });
-         } catch (dropErr) {
-            logger.error(
-               "Failed to drop a storage table stranded by a serve-shape gate " +
-                  "refusal (physical leak)",
-               {
-                  sourceName: persistSource.name,
-                  destinationName,
-                  physicalTableName,
-                  // The drop runs on a read-write attach, so a failure can echo
-                  // the catalog connstring.
-                  error: redactConnectionSecrets(
-                     errMessage(dropErr),
-                     sourceConnection,
-                     destinationConnection,
-                  ),
-               },
-            );
-         }
-         throw gateErr;
-      }
+      // A column no `type:` declares faithfully is left out of its source's
+      // declaration at bind, so only a query reading it answers live, and a
+      // table with none left is declined there: counted and logged here,
+      // never refused.
+      reportLeftOutColumns(
+         persistSource.name,
+         declarableColumns(
+            result.schema.flatMap((c) =>
+               c.name && c.type ? [{ name: c.name, type: c.type }] : [],
+            ),
+         ).leftOut,
+      );
 
       // What the cast could not make faithful (a number the warehouse returned
       // as text), or a delta applied to a table an older build typed. Not a
