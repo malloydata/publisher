@@ -200,7 +200,8 @@ verdict tests stay green.
 
 - The map module, on `source_graph.ts`.
 - The three hand-written chain walkers are replaced by map walks:
-  - `reachedPersistedSources` (`materialization_serve_transform.ts`), the
+  - `reachedPersistedSources` (`materialization_serve_transform.ts`, since
+    deleted; the walk is now `reachPersisted` in `text/source_map.ts`), the
     build-side reach that stops at persisted sources;
   - `sourceChainOf` (`query_path.ts`), the chain the path report and router
     candidates read;

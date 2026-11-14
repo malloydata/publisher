@@ -2923,17 +2923,10 @@ export class Model {
    }
 
    /**
-    * Whether each named view of the given stored sources compiles against a
-    * serve shape over `bindings`, without touching this model's own shape
-    * (ms2data/service#7090). The shape is a throwaway: it compiles against the
-    * same destinations a served query would, and needs no built table, since a
-    * virtual source declares its columns. Empty when no destination is
-    * configured, since then nothing serves from storage either way.
-    */
-   /**
     * The text a chained `storage=` build of a downstream this model declares
     * compiles from, with each stored upstream the request carries re-rooted
-    * as this model's served copy re-roots it (serve/chain_build_text.ts).
+    * as this model's served copy re-roots it (`chainBuildText` in
+    * serve/served_copy_serve.ts).
     * Undefined when this model has no served copy or does not declare the
     * downstream.
     */

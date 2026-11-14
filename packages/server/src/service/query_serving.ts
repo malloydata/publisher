@@ -348,15 +348,11 @@ export function recordRoutingDecision(route: RouteDecision<RoutedExtra>): void {
       recordStorageServeRouting("blocked_by_row_level_gate");
       return;
    }
-   // The served copy reads the same stored tables, so it counts as the tier.
-   const storage = route.considered.find(
-      (c) => c.kind === "served" && c.outcome === "used",
-   );
-   if (!storage) return;
+   // The served copy reads the same stored tables, so its answer counts as
+   // the tier's. Its decline counts nothing: only the retired serve shape's
+   // candidate reported a miss (`live_fallback`).
    if (route.served === "variant" && route.extra.kind === "served") {
       recordStorageServeRouting("storage", "persist");
-   } else if (storage.reason === "does_not_answer") {
-      recordStorageServeRouting("live_fallback");
    }
 }
 
