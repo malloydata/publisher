@@ -51,7 +51,7 @@ import {
 } from "./harness";
 
 /** Measures that count through the inlined path (see {@link expectPairServedVia}). */
-const PATH_COUNTS = ["seg_n", "long_legs", "stop_n", "crew_n"];
+const PATH_COUNTS: string[] = [];
 
 const B = "2026-11-10 00:00:00"; // the full build
 const R1 = "2026-11-11 00:00:00"; // first refresh

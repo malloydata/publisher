@@ -17,6 +17,10 @@
  */
 
 import { capturedNativeSchema } from "../../service/materialization/run/colocated_native_types";
+import {
+   pairLeafKeyChecksOf,
+   runRollupKeyCheck,
+} from "../../service/materialization/run/inline_uniqueness";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -368,13 +372,39 @@ async function buildAll(
    // an extension that inherits its annotation.
    // Rollups only when asked (`#@ preaggregate`, `#(preaggregate)`), each
    // recorded with its origin, as a build records it.
-   const entries = Object.values(pkg.getBuildPlan()?.sources ?? {})
+   const entries = Object.entries(pkg.getBuildPlan()?.sources ?? {})
+      .map(([sourceID, e]) => ({ ...e, sourceID }))
       .filter((e) => options.includeRollups || e.origin !== "preaggregate")
       .sort(
          (a, b) =>
             Number(b.annotationFields?.name === b.name) -
             Number(a.annotationFields?.name === a.name),
       );
+   // A pair table's leaf key check, run on the source's connection once its
+   // table is written and bound beside it, as an auto-run records it (known
+   // limitation 40). The package's own plans hold the check's compiled SQL.
+   const materializePlans =
+      (
+         pkg as unknown as {
+            materialization?: { materializePlans?: Record<string, unknown> };
+         }
+      ).materialization?.materializePlans ?? {};
+   const leafKeys = async (
+      sourceID: string,
+      warehouse: DuckDBConnection,
+   ): Promise<{ keyUniqueness?: { parentKeys: Record<string, boolean> } }> => {
+      const checks = pairLeafKeyChecksOf(
+         (materializePlans as Record<string, never>)[sourceID],
+      );
+      const parentKeys: Record<string, boolean> = {};
+      for (const check of checks) {
+         const record = await runRollupKeyCheck(check, warehouse, "pair");
+         if (record) parentKeys[check.sourceID] = record.unique;
+      }
+      return Object.keys(parentKeys).length > 0
+         ? { keyUniqueness: { parentKeys } }
+         : {};
+   };
    try {
       for (const entry of entries) {
          if (seen.has(entry.sourceEntityId)) continue;
@@ -433,6 +463,7 @@ async function buildAll(
                         column_type: string;
                      }[]
                   ).map((r) => ({ name: r.column_name, type: r.column_type })),
+                  ...(await leafKeys(entry.sourceID, warehouse)),
                };
                built.push({ name: entry.name, tier: "storage" });
             } else {
@@ -451,6 +482,7 @@ async function buildAll(
                   tableName: table,
                   connectionName: entry.connectionName ?? "duckdb",
                   ...(nativeSchema ? { nativeSchema } : {}),
+                  ...(await leafKeys(entry.sourceID, warehouse)),
                };
                built.push({ name: entry.name, tier: "colocated" });
             }

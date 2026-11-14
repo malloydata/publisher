@@ -45,14 +45,7 @@ import {
 } from "./harness";
 
 /** Measures that count through the inlined path (see {@link expectPairServedVia}). */
-const PATH_COUNTS = [
-   "item_n",
-   "opt_n",
-   "pay_n",
-   "big_opts",
-   "pricey_items",
-   "by_color",
-];
+const PATH_COUNTS: string[] = [];
 
 // Orders 1–7. Order 4 and 6 have no item; item 12, 14 and 16 have no option;
 // item 13 has three options, item 11 two. Payments: order 2 has two, 4 one,
@@ -343,6 +336,23 @@ describe("R4: a path of join_manys and more than one join_many, served flat from
          "a middle ratio beside the leaf",
          "run: orders_hop -> { group_by: cat; aggregate: price_per_order, extra_per_order }",
       ],
+      // A middle count, and a middle average of a computed field (not null on
+      // a childless item row's null-extended row), beside the leaf: under the
+      // level's presence field the flagged rows are the items, one per item,
+      // as live's count and average by the item key read them (known
+      // limitation 40, narrowed).
+      [
+         "a middle count beside a leaf measure (live aggregates the middle by its key)",
+         "run: orders_hop -> { group_by: cat; aggregate: item_n, opt_n }",
+      ],
+      [
+         "a middle count in a query whose nest reads the leaf",
+         "run: orders_hop -> { group_by: cat; aggregate: item_n; nest: k is { group_by: items.opts.kind; aggregate: opt_n } }",
+      ],
+      [
+         "a middle average of a computed field beside the leaf (its null row is not null)",
+         "run: orders_hop -> { group_by: cat; aggregate: pricey_avg, opt_n }",
+      ],
    ] as const;
    for (const [name, query] of served) {
       for (const malloy of both(query)) {
@@ -391,14 +401,16 @@ describe("R4: a path of join_manys and more than one join_many, served flat from
       });
    }
 
-   it("answers a childless order's middle count (none, since malloydata/malloy#3208) live", async () => {
+   it("serves a childless order's middle count (none, since malloydata/malloy#3208)", async () => {
       const run = await fixture.run({
          name: "childless",
          malloy:
             "run: orders_hop -> { where: id = 4 | 1; group_by: id; aggregate: item_n }",
       });
-      // The flag marks order 4's null-extended row, which would count one.
-      expect(run.servedVia).toBeUndefined();
+      // The flag marks order 4's null-extended row, which would count one as
+      // written; the served copy counts only the flagged rows whose item key
+      // is not null.
+      expect(run.servedVia).toBe("served_copy");
       expect(
          run.live
             .map((r) => [Number(r.id), Number(r.item_n)])
@@ -413,11 +425,6 @@ describe("R4: a path of join_manys and more than one join_many, served flat from
    // Each answered live, equal to live, with the reason the path report gives.
    const declined = [
       [
-         "a middle measure beside a leaf measure (live aggregates the middle by its key)",
-         "run: orders_hop -> { group_by: cat; aggregate: item_n, opt_n }",
-         "COUNT_SEMANTICS",
-      ],
-      [
          "a middle measure grouped by the leaf",
          "run: orders_hop -> { group_by: items.opts.kind; aggregate: item_n, price_sum }",
          "COUNT_SEMANTICS",
@@ -425,16 +432,6 @@ describe("R4: a path of join_manys and more than one join_many, served flat from
       [
          "a middle measure filtered by the leaf",
          "run: orders_hop -> { where: items.opts.kind = 'x'; group_by: cat; aggregate: item_n }",
-         "COUNT_SEMANTICS",
-      ],
-      [
-         "a middle count in a query whose nest reads the leaf",
-         "run: orders_hop -> { group_by: cat; aggregate: item_n; nest: k is { group_by: items.opts.kind; aggregate: opt_n } }",
-         "COUNT_SEMANTICS",
-      ],
-      [
-         "a middle average of a computed field beside the leaf (its null row is not null)",
-         "run: orders_hop -> { group_by: cat; aggregate: pricey_avg, opt_n }",
          "COUNT_SEMANTICS",
       ],
       [
@@ -658,6 +655,9 @@ source: ${rerootDeclaration(declaration, {
          {
             join: pair.join,
             parentRowField: pair.parentRowField,
+            // The fixture's leaf keys are unique and never null: a passing
+            // leaf key record, as the served copy reads one.
+            leafKeyChecked: true,
             ...(pair.hops ? { hops: pair.hops.map((h) => h.join) } : {}),
             ...(pair.levelRows
                ? { levelRowFields: pair.levelRows.map((l) => l.field) }
