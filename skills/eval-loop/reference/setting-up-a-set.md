@@ -124,6 +124,32 @@ as "unpublished". `[store]` is in `sharing-runs.md`.
 Where both are set, `eval.toml` wins, and `check` refuses the set until they
 agree.
 
+### A model on a hosted platform, served locally
+
+When the package and its connections live on a hosted platform, a local
+Publisher can serve it with the connections proxied through the host. The
+host's CLI usually does this. The harness does not start that server, so name its
+address instead of its ports:
+
+```toml
+[model]
+environment = "<env the local server names>"
+package     = "<package name>"
+repo        = "<path to the package>"
+publisher   = "http://localhost:4900"
+mcp_url     = "http://127.0.0.1:4940/mcp"
+
+[truth]
+environment = "<env>"
+package_dir = "<path to the truth package>"
+publisher   = "http://localhost:4950"      # a second local server, for the truth package alone
+```
+
+Start both servers before a run. `check` notes a role named by address and does
+not ask who holds its ports, and there is no `eval.py serve` for that role. The
+truth package's sources read the same warehouse tables through the same proxy,
+so it needs no data of its own.
+
 Pick ports nothing else on the machine holds; `check` names any that are taken.
 Every later step reads them from this file, so change them here rather than
 passing `--port`, which `serve` refuses when it disagrees with the file.

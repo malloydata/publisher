@@ -285,6 +285,31 @@ def export_summary(run: pathlib.Path, set_dir: pathlib.Path, out: pathlib.Path) 
     return manifest
 
 
+def export_summary_all(runs_dir: pathlib.Path, set_dir: pathlib.Path,
+                       out: pathlib.Path) -> dict[str, Any]:
+    """One eval_summary.csv with a row per run under `runs_dir`, oldest first.
+
+    A database table cannot have rows added to it, so the history of the
+    number is this one file, written whole each time and loaded over the last.
+    """
+    case_list = read_jsonl(set_dir / "cases.jsonl")
+    cases = {c.get("qid"): c for c in case_list}
+    index = {r["run"]: r for r in index_runs(runs_dir.parent, len(case_list))}
+    rows = []
+    for run in sorted(p for p in runs_dir.iterdir() if (p / "run.json").is_file()):
+        meta = json.loads((run / "run.json").read_text())
+        rows += rows_summary(run, meta, index.get(run.name, {}), cases)
+    rows.sort(key=lambda r: (r.get("started") or "", r.get("run_id") or ""))
+    out.mkdir(parents=True, exist_ok=True)
+    f = out / "eval_summary.csv"
+    write_csv(f, rows, SUMMARY_COLUMNS)
+    manifest = {"setName": set_dir.name, "summaryOnly": True, "runs": [r["run_id"] for r in rows],
+                "tables": {"eval_summary": {"file": f.name, "rows": len(rows),
+                                            "bytes": f.stat().st_size, "name": "eval_summary"}}}
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
+    return manifest
+
+
 COLUMNS = {
     "eval_runs": ("run_id", "set_name", "label", "kind", "phase", "status", "started", "target",
                   "environment", "package", "version_id", "content_hash", "base_version",
@@ -358,7 +383,10 @@ def export(run: pathlib.Path, set_dir: pathlib.Path, out: pathlib.Path) -> dict[
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--run", type=pathlib.Path, required=True, help="the run directory")
+    ap.add_argument("--run", type=pathlib.Path, default=None, help="the run directory")
+    ap.add_argument("--all", dest="every", action="store_true",
+                    help="with --summary: one eval_summary.csv holding a row per run of the "
+                         "set, to load over the last one. Default out: <workdir>/export-summary")
     ap.add_argument("--set", dest="set_dir", type=pathlib.Path, required=True)
     ap.add_argument("--out", type=pathlib.Path, default=None, help="default: <run>/export")
     ap.add_argument("--summary", action="store_true",
@@ -366,6 +394,20 @@ def main(argv: list[str] | None = None) -> int:
                          "question, golden, answer, query or case id. Default out: "
                          "<run>/export-summary")
     a = ap.parse_args(argv)
+    if a.every:
+        if not a.summary:
+            raise SystemExit("--all exports summaries only. Fix: add --summary, or export one "
+                             "run in full with --run.")
+        import config
+        workdir = config.load(a.set_dir).workdir()
+        out = a.out or workdir / "export-summary"
+        m = export_summary_all(workdir / "runs", a.set_dir, out)
+        info = m["tables"]["eval_summary"]
+        print(f"{info['rows']:>6} rows  {info['bytes']:>9} bytes  {out / info['file']}  -> {info['name']}")
+        print("This file holds each run's numbers and no case, key, answer or query.")
+        return 0
+    if a.run is None:
+        raise SystemExit("Name the run. Fix: --run <run directory>, or --summary --all.")
     if not (a.run / "run.json").is_file():
         raise SystemExit(f"{a.run} holds no run.json. Fix: --run must be a run directory.")
     if a.summary:

@@ -134,5 +134,15 @@ class Report(unittest.TestCase):
             f"`port` under [model] in {d / 'eval.toml'}"])
 
 
+    def test_a_server_the_set_names_by_url_is_not_a_port_problem(self):
+        # `cred dev` serves the model through a hosted connection: the set
+        # names its URL, and nothing here started it or binds its ports.
+        d = a_set(MODEL + 'publisher = "http://localhost:4811"\n', [CASE])
+        with mock.patch.object(check_set.serve, "listening", return_value=True):
+            problems, notes = check_set.report(d)
+        self.assertEqual(problems, [])
+        self.assertTrue(any("http://localhost:4811" in n and "not started by" in n
+                            for n in notes), notes)
+
 if __name__ == "__main__":
     unittest.main()

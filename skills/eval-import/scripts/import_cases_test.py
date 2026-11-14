@@ -94,7 +94,16 @@ class WhatAnImportedKeyMayClaim(unittest.TestCase):
         got = findings(case(golden={"status": "provisional", "kind": "scalar",
                                     "value": 1830000}))
         self.assertEqual(len(got), 1)
-        self.assertIn('Fix: `"value": {"answer": 1830000}`', got[0])
+        self.assertIn('Fix: `"value": {"<column>": 1830000}`', got[0])
+
+    def test_a_one_row_list_is_refused_with_that_row_as_the_fix(self):
+        # The rows a query returns, pasted whole: the fix is the row itself,
+        # which already names the column. "answer" there failed the value
+        # check, which pairs by the query's own column name.
+        got = findings(case(golden={"status": "provisional", "kind": "scalar",
+                                    "value": [{"orders": 54571}]}))
+        self.assertEqual(len(got), 1)
+        self.assertIn('Fix: `"value": {"orders": 54571}`', got[0])
 
     def test_an_explicit_null_value_is_not_a_value(self):
         # How the ecommerce set's four refusal cases say "no number".

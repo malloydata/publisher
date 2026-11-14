@@ -298,10 +298,14 @@ def check_case(case: dict[str, Any], where: str) -> tuple[list[str], list[str]]:
 
     value = golden.get("value")
     if kind == "scalar" and value is not None and not isinstance(value, dict):
+        # One row of one named column is already the shape, minus the list.
+        row = value[0] if isinstance(value, list) and len(value) == 1 else None
+        fix = (json.dumps(row) if isinstance(row, dict) and len(row) == 1
+               else f'{{"<column>": {json.dumps(value)}}}')
         findings.append(
             f"{where} {qid}: `kind: scalar` holds a bare {type(value).__name__}. "
             "It must name the query's column, or the value check cannot pair "
-            f'it with a result. Fix: `"value": {{"answer": {json.dumps(value)}}}`, '
+            f'it with a result. Fix: `"value": {fix}`, '
             "with the column name the canonical query returns")
 
     if golden.get("verifiedBy") == "authored_query" and not golden.get("canonicalQuery"):

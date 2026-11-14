@@ -134,6 +134,17 @@ where the answerer can read, such as a database in the package's own
 environment, when no separate one exists. It keeps the history of the number.
 It cannot be imported back into a run.
 
+A database table cannot have rows added to it, so for a trend over many runs
+write every run's summary into one file and load it over the last one:
+
+```bash
+eval.py export --summary --all --set <set>     # <workdir>/export-summary/eval_summary.csv
+```
+
+It holds one row per run in the workdir, oldest first, under the table name
+`eval_summary`. A model or report over that one table shows the number over
+time, and it may live in the same environment as the package it measures.
+
 ## Reading a run back from the tables
 
 The tables are also the run. `eval_runs.run_json` is `run.json` as written,

@@ -340,10 +340,26 @@ class Routine:
             return NEEDS_A_LOOK, f"{said}. {n['errors']} query(ies) errored"
         return DONE, said
 
+    def improve_unready(self) -> str | None:
+        if self.a.mode != "improve":
+            return None
+        repo = self.cfg.get("model", "repo")
+        if repo is None:
+            return (f"no [model] repo in {self.cfg.file_hint}, so there is no repository "
+                    f"to leave an edit in. Fix: add `repo = \"<path to the package>\"` "
+                    f"under [model]")
+        import improve_mode
+        return improve_mode.repo_not_ready(pathlib.Path(repo))
+
     def go(self) -> int:
         code, reason = CANNOT_START, "did not start"
         try:
-            if self.a.serve and self.serve() != 0:
+            unready = self.improve_unready()
+            if unready:
+                # Before anything is spent: improve mode would otherwise run
+                # and diagnose, then find it has nowhere to leave an edit.
+                code, reason = CANNOT_START, f"improve mode cannot start: {unready}"
+            elif self.a.serve and self.serve() != 0:
                 code, reason = STEP_FAILED, "a server did not start"
             else:
                 code, reason = self.quality() if self.a.kind == "quality" else self.speed()

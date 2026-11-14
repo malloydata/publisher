@@ -86,6 +86,31 @@ class Export(unittest.TestCase):
         for leak in ("q1", "run: x", "quoted", '"n": 3', "how many"):
             self.assertNotIn(leak, text, leak)
 
+    def test_the_summary_of_every_run_is_one_row_per_run_oldest_first(self):
+        second = self.run.parent / "Base-02"
+        shutil.copytree(self.run, second)
+        meta = json.loads((second / "run.json").read_text())
+        meta.update(runId="Base-02", started="2026-11-02T00:00:00Z")
+        (second / "run.json").write_text(json.dumps(meta))
+        first = json.loads((self.run / "run.json").read_text())
+        first["started"] = "2026-11-01T00:00:00Z"
+        (self.run / "run.json").write_text(json.dumps(first))
+        (self.run.parent / "notes").mkdir()  # not a run: no run.json
+        out = self.root / "all"
+        m = ex.export_summary_all(self.run.parent, self.set, out)
+        self.assertEqual(m["runs"], ["Base-01", "Base-02"])
+        self.assertEqual(m["tables"]["eval_summary"]["name"], "eval_summary")
+        rows = read_csv(out / "eval_summary.csv")
+        self.assertEqual([(r["run_id"], r["passed"]) for r in rows], [("Base-01", "1"), ("Base-02", "1")])
+        text = (out / "eval_summary.csv").read_text()
+        for leak in ("q1", "run: x", "quoted", "How many"):
+            self.assertNotIn(leak, text, leak)
+
+    def test_all_without_summary_is_refused(self):
+        with self.assertRaises(SystemExit) as e:
+            ex.main(["--all", "--set", str(self.set)])
+        self.assertIn("--all exports summaries only", str(e.exception))
+
     def test_a_set_that_moved_since_the_run_is_refused(self):
         (self.set / "cases.jsonl").write_text('{"qid": "q1", "question": "edited"}\n')
         with self.assertRaises(SystemExit) as e:

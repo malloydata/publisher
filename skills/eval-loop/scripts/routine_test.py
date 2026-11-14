@@ -214,6 +214,28 @@ class Kinds(unittest.TestCase):
             code, ran, _, _ = self.go("quality", {"serve model": 1}, None, "--serve")
         self.assertEqual((code, ran), (1, ["serve model"]))
 
+    def test_improve_mode_with_a_dirty_repository_stops_before_anything_runs(self):
+        # Found live: a run and its diagnosis were paid for, and only then did
+        # improve mode find it had nowhere to leave an edit.
+        (self.set / "eval.toml").write_text(
+            (self.set / "eval.toml").read_text().replace('package = "p"', 'package = "p"\nrepo = "."'))
+        with mock.patch("improve_mode.repo_not_ready", return_value="the repository at /r "
+                        "has uncommitted changes (3 path(s))"):
+            code, ran, result, _ = self.go("quality", None, None, "--mode", "improve")
+        self.assertEqual((code, ran), (routine.CANNOT_START, []))
+        self.assertIn("improve mode cannot start: the repository at /r", result["reason"])
+
+    def test_improve_mode_with_no_repo_named_cannot_start(self):
+        code, ran, result, _ = self.go("quality", None, None, "--mode", "improve")
+        self.assertEqual((code, ran), (routine.CANNOT_START, []))
+        self.assertIn("no [model] repo in", result["reason"])
+
+    def test_run_mode_does_not_ask_about_the_repository(self):
+        with mock.patch("improve_mode.repo_not_ready", side_effect=AssertionError("asked")):
+            self.answer_run(self.run_dir)
+            code, _, _, _ = self.go("quality")
+        self.assertEqual(code, routine.DONE)
+
     def test_the_kind_is_required(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             routine.main(["--set", str(self.set)])

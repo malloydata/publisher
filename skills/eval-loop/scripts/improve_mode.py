@@ -335,21 +335,30 @@ def improve_speed(R: Any) -> dict[str, Any]:
                        "the replay found no source an edit would speed up")
 
 
-def on_a_branch(R: Any, found: list[dict[str, Any]], try_one: Any, nothing: str) -> dict[str, Any]:
-    """Try an edit for each of `found` on the branch eval/<label>, and end on
-    the branch the repository was on."""
-    repo = pathlib.Path(R.cfg.need(None, "model", "repo"))
+def repo_not_ready(repo: pathlib.Path) -> str | None:
+    """Why improve mode cannot leave edits in `repo`, or None."""
     if git(repo, "rev-parse", "--is-inside-work-tree").stdout.strip() != "true":
-        return {"edits": [], "why": f"{repo} is not a git checkout, so there is no branch "
-                                    f"to leave an edit on"}
+        return f"{repo} is not a git checkout, so there is no branch to leave an edit on"
     # The whole repository, not only the package: a rejected edit is taken off
     # with a hard reset, which would take any other uncommitted work with it.
     top = pathlib.Path(git(repo, "rev-parse", "--show-toplevel").stdout.strip())
     dirty = git(top, "status", "--porcelain").stdout.strip()
     if dirty:
-        return {"edits": [], "why": f"the repository at {top} has uncommitted changes "
-                                    f"({len(dirty.splitlines())} path(s)). Commit or stash them: "
-                                    f"an edit is committed there and a rejected one is reset away"}
+        return (f"the repository at {top} has uncommitted changes "
+                f"({len(dirty.splitlines())} path(s)). Commit or stash them: "
+                f"an edit is committed there and a rejected one is reset away")
+    return None
+
+
+def on_a_branch(R: Any, found: list[dict[str, Any]], try_one: Any, nothing: str) -> dict[str, Any]:
+    """Try an edit for each of `found` on the branch eval/<label>, and end on
+    the branch the repository was on."""
+    repo = pathlib.Path(R.cfg.need(None, "model", "repo"))
+    # Asked again here, not only before the run: the repository can change
+    # while the run is answering.
+    why = repo_not_ready(repo)
+    if why:
+        return {"edits": [], "why": why}
     issues = found[:R.a.max_edits]
     if not issues:
         return {"edits": [], "why": nothing}

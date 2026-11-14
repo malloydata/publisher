@@ -139,6 +139,14 @@ def check_ports(cfg: config.Config) -> tuple[list[str], list[str]]:
         if clash:
             problems.append(clash)
     for role in roles:
+        named = cfg.get(role, "publisher")
+        if named:
+            # Somebody else's server (a `cred dev`, a shared host): eval.py
+            # serve does not bind this role's ports, so who holds them is not
+            # this set's business.
+            notes.append(f"{role}: {named}, named in {cfg.file_hint} and not "
+                         f"started by `eval.py serve {role}`")
+            continue
         for key in ("port", "mcp_port"):
             port = cfg.get(role, key)
             if not serve.listening(port):
