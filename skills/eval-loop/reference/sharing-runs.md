@@ -123,6 +123,17 @@ FROM query_table(['eval_attempts__baseline_01', 'eval_attempts__baseline_02'], t
 A host may ship a skill that does the upload for its own storage: look for one
 before writing the commands by hand.
 
+### The summary, for a place the agent under test can read
+
+`eval.py export --summary --set <set> --label <run>` writes one file,
+`eval_summary.csv`, into `<run>/export-summary/`: the run's row of `eval_runs`
+without `run_json` and the slice's case ids, plus the pass rate on each split,
+the diagnosis cost and the weighted query time. It names no case and holds no
+question, golden, answer or query, so it is the one export that may be loaded
+where the answerer can read, such as a database in the package's own
+environment, when no separate one exists. It keeps the history of the number.
+It cannot be imported back into a run.
+
 ## Reading a run back from the tables
 
 The tables are also the run. `eval_runs.run_json` is `run.json` as written,

@@ -39,6 +39,14 @@ VARCHAR, which unions with anything. So a model reading several runs unions by
 name and CASTS each column it computes on (`TRY_CAST(passed AS BOOLEAN)`):
 measured on DuckDB 1.5.1.
 
+`--summary` writes one file instead, `eval_summary.csv`, into
+`<run>/export-summary/`: the run's one row of `eval_runs` without `run_json`
+and the slice's case ids, plus the pass rate on each split. It holds the
+numbers and the pins and nothing else: no question, no golden, no answer, no
+query, no case id. That is the file that may be loaded where the agent under
+test can read, when there is nowhere else: a database in the package's own
+environment. It cannot be imported back into a run.
+
 THE FILES HOLD THE ANSWER KEY. `eval_cases` carries every golden, and a
 transcript holds an answer. Load them only where the agent being evaluated
 cannot read them: a database is commonly readable from everything in its
@@ -229,6 +237,54 @@ def rows_cases(run_id: str, dataset_sha: str | None, cases: list[dict]) -> list[
              "case": as_text(c)} for c in cases]
 
 
+# What the summary leaves out of the eval_runs row, and why: run.json carries
+# the judge's notes on doubted keys, and a slice's qids name cases.
+NOT_IN_SUMMARY = ("run_json", "slice_qids")
+SUMMARY_EXTRA = ("dev_passed", "dev_decided", "holdout_passed", "holdout_decided",
+                 "test_passed", "test_decided", "diagnose_cost_usd", "weighted_ms")
+
+
+def rows_summary(run: pathlib.Path, meta: dict[str, Any], index_row: dict[str, Any],
+                 cases: dict[str, dict]) -> list[dict]:
+    """The run's numbers and pins, and nothing that names a case or an answer."""
+    row = {k: v for k, v in rows_runs(run, meta, index_row)[0].items() if k not in NOT_IN_SUMMARY}
+    from flip_table import verdicts
+    by: dict[str, list[int]] = {}
+    if (run / "events.jsonl").is_file() and meta.get("phase") != "query-replay":
+        for q, v in verdicts(run).items():
+            if v["passed"] is not None:
+                s = by.setdefault((cases.get(q) or {}).get("split") or "dev", [0, 0])
+                s[0] += bool(v["passed"])
+                s[1] += 1
+    for split in ("dev", "holdout", "test"):
+        p, d = by.get(split, (None, None))
+        row[f"{split}_passed"], row[f"{split}_decided"] = p, d
+    row["diagnose_cost_usd"] = meta.get("diagnoseCostUsd")
+    try:
+        row["weighted_ms"] = json.loads((run / "summary.json").read_text()).get("weighted_ms")
+    except (OSError, ValueError):
+        row["weighted_ms"] = None
+    return [row]
+
+
+def export_summary(run: pathlib.Path, set_dir: pathlib.Path, out: pathlib.Path) -> dict[str, Any]:
+    """Write eval_summary.csv and manifest.json; return the manifest."""
+    meta = json.loads((run / "run.json").read_text())
+    case_list = read_jsonl(set_dir / "cases.jsonl")
+    index_row = next((r for r in index_runs(run.parent.parent, len(case_list))
+                      if r["run"] == run.name), {})
+    rows = rows_summary(run, meta, index_row, {c.get("qid"): c for c in case_list})
+    out.mkdir(parents=True, exist_ok=True)
+    f = out / "eval_summary.csv"
+    write_csv(f, rows, SUMMARY_COLUMNS)
+    manifest = {"runId": run.name, "setName": meta.get("setName"),
+                "packageVersion": meta.get("packageVersion"), "summaryOnly": True,
+                "tables": {"eval_summary": {"file": f.name, "rows": 1, "bytes": f.stat().st_size,
+                                            "name": table_name("eval_summary", run.name)}}}
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
+    return manifest
+
+
 COLUMNS = {
     "eval_runs": ("run_id", "set_name", "label", "kind", "phase", "status", "started", "target",
                   "environment", "package", "version_id", "content_hash", "base_version",
@@ -245,6 +301,9 @@ COLUMNS = {
     "eval_query_timings": TIMING_COLUMNS,
     "eval_files": ("run_id", "path", "text"),
 }
+
+
+SUMMARY_COLUMNS = tuple(c for c in COLUMNS["eval_runs"] if c not in NOT_IN_SUMMARY) + SUMMARY_EXTRA
 
 
 def write_csv(path: pathlib.Path, rows: list[dict[str, Any]], columns: tuple[str, ...]) -> None:
@@ -302,9 +361,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--run", type=pathlib.Path, required=True, help="the run directory")
     ap.add_argument("--set", dest="set_dir", type=pathlib.Path, required=True)
     ap.add_argument("--out", type=pathlib.Path, default=None, help="default: <run>/export")
+    ap.add_argument("--summary", action="store_true",
+                    help="write only eval_summary.csv: the run's numbers and pins, with no "
+                         "question, golden, answer, query or case id. Default out: "
+                         "<run>/export-summary")
     a = ap.parse_args(argv)
     if not (a.run / "run.json").is_file():
         raise SystemExit(f"{a.run} holds no run.json. Fix: --run must be a run directory.")
+    if a.summary:
+        out = a.out or a.run / "export-summary"
+        m = export_summary(a.run, a.set_dir, out)
+        info = m["tables"]["eval_summary"]
+        print(f"     1 row   {info['bytes']:>9} bytes  {out / info['file']}  -> {info['name']}")
+        print("This file holds the run's numbers and no case, key, answer or query.")
+        return 0
     m = export(a.run, a.set_dir, a.out or a.run / "export")
     out = a.out or a.run / "export"
     for t, info in m["tables"].items():

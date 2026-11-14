@@ -71,6 +71,21 @@ class Export(unittest.TestCase):
         self.assertEqual(json.loads(cases[0]["golden"])["value"], {"n": 3})
         self.assertEqual(m["tables"]["eval_attempts"]["name"], "eval_attempts__base_01")
 
+    def test_the_summary_holds_the_numbers_and_nothing_that_names_a_case_or_an_answer(self):
+        out = self.root / "sum"
+        m = ex.export_summary(self.run, self.set, out)
+        self.assertEqual(list(m["tables"]), ["eval_summary"])
+        self.assertEqual(sorted(p.name for p in out.iterdir()), ["eval_summary.csv", "manifest.json"])
+        row = read_csv(out / "eval_summary.csv")[0]
+        self.assertEqual((row["run_id"], row["version_id"], row["passed"], row["decided"]),
+                         ("Base-01", "1.2.0", "1", "1"))
+        self.assertEqual((row["dev_passed"], row["dev_decided"]), ("1", "1"))
+        self.assertNotIn("run_json", row)
+        self.assertNotIn("slice_qids", row)
+        text = (out / "eval_summary.csv").read_text() + (out / "manifest.json").read_text()
+        for leak in ("q1", "run: x", "quoted", '"n": 3', "how many"):
+            self.assertNotIn(leak, text, leak)
+
     def test_a_set_that_moved_since_the_run_is_refused(self):
         (self.set / "cases.jsonl").write_text('{"qid": "q1", "question": "edited"}\n')
         with self.assertRaises(SystemExit) as e:
