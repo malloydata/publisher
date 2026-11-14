@@ -914,6 +914,54 @@
       "description": "Add documentation with #(doc) tags to Malloy models so fields and sources are described in plain language. Use when user asks to \"add documentation\", \"add doc tags\", \"document the model\", or wants fields and sources described for natural-language search and discovery. For runtime filters, declare given: parameters (see the malloy-model skill); #(filter) is deprecated. Filters are a runtime/modeling construct (governance, latency, correctness), not a documentation tag."
     },
     {
+      "name": "malloy-excel-review",
+      "description": "Move an Excel workbook (.xlsx or .xlsm) onto Malloy - recover the model hiding in its cells, translate its formulas and pivots, and prove the numbers match against the values the file already stores. Use when a workbook is present, when a user wants to migrate or switch off a spreadsheet, and whenever a specific formula has to become Malloy - SUMIFS, COUNTIF, SUMPRODUCT, VLOOKUP, XLOOKUP, INDEX/MATCH, pivot tables, assumption cells, roll-forwards, circular references, Monte Carlo, or a Power Pivot model. Carries worked recipes, each labelled executed or semantics-cited in place, and states what each port costs. Works with or without a database connection."
+    },
+    {
+      "name": "malloy-excel-review/_concepts",
+      "description": "Excel → Malloy Concept Mapping. Reference detail for the malloy-excel-review skill."
+    },
+    {
+      "name": "malloy-excel-review/cookbook-lookup-aggregate",
+      "description": "Cookbook: Aggregates and Lookups (Step 3). Reference detail for the malloy-excel-review skill."
+    },
+    {
+      "name": "malloy-excel-review/cookbook-pivot",
+      "description": "Cookbook: Pivot Tables (Step 3). Reference detail for the malloy-excel-review skill."
+    },
+    {
+      "name": "malloy-excel-review/cookbook-scenario",
+      "description": "Cookbook: Scenario and Financial Models (Step 3). Reference detail for the malloy-excel-review skill."
+    },
+    {
+      "name": "malloy-excel-review/discover",
+      "description": "Excel Discovery (Step 1). Reference detail for the malloy-excel-review skill."
+    },
+    {
+      "name": "malloy-excel-review/limitations",
+      "description": "What the script reads, and what it does not (any step). Reference detail for the malloy-excel-review skill."
+    },
+    {
+      "name": "malloy-excel-review/parity",
+      "description": "Cached-Value Parity (Step 5). Reference detail for the malloy-excel-review skill."
+    },
+    {
+      "name": "malloy-excel-review/power-pivot",
+      "description": "Power Pivot: Workbooks With a Data Model (Step 4). Reference detail for the malloy-excel-review skill."
+    },
+    {
+      "name": "malloy-excel-review/recover-sources",
+      "description": "Recover Sources (Step 2). Reference detail for the malloy-excel-review skill."
+    },
+    {
+      "name": "malloy-excel-review/review-coverage",
+      "description": "Excel Coverage Review (Step 6). Reference detail for the malloy-excel-review skill."
+    },
+    {
+      "name": "malloy-excel-review/translate-formulas",
+      "description": "Formula Translation (Step 3). Reference detail for the malloy-excel-review skill."
+    },
+    {
       "name": "malloy-getting-started",
       "description": "First steps for using a Malloy Publisher deployment through its MCP tools. Use when connecting to Publisher for the first time, when you do not yet know the available environments, packages, or models, or when a user asks what data they can explore. Also use for \"malloy help\" or which Malloy skill to read. Covers verifying the server, discovering data with get_context, and running a first grounded query."
     },
