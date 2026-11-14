@@ -10423,6 +10423,9 @@ components:
             was refused, `true` when any failure was transient, with the same
             rules as `SourceFailure.retryable`. Absent when unclassified, for a
             cancelled run, and from a Publisher that predates it.
+            `errorAtCancel` (string) is set on a CANCELLED run whose last
+            error was not the cancellation itself: the message of the failure
+            the cancel raced, which `error` reports only as "Cancelled".
         createdAt:
           type: string
           format: date-time
