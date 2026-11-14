@@ -63,4 +63,12 @@ export type ChainBuildText =
          */
         rerootedSpans: readonly { url: string; start: number; end: number }[];
      }
-   | { declined: string };
+   | {
+        declined: string;
+        /**
+         * `package_stale`: the package serves a model older than its files,
+         * so no text can be written from them that the plan's addresses
+         * describe. Absent: the text could not be written for `declined`.
+         */
+        code?: "package_stale";
+     };

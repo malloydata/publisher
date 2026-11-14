@@ -71,6 +71,7 @@ import {
    redactConnectionSecrets,
    currentUpstreamEntries,
    noteWrongTierRecompute,
+   ChainedPackageStaleError,
    HostSuppliedWrongTierError,
    upstreamEntryIsCurrent,
    WRONG_TIER_MARKER,
@@ -742,7 +743,14 @@ export class StorageBuildStrategy
             names,
          })),
       });
-      if ("declined" in text) throw notCarried(text.declined);
+      if ("declined" in text) {
+         throw text.code === "package_stale"
+            ? new ChainedPackageStaleError(
+                 `'${persistSource.name}' was not stacked on its stored ` +
+                    `upstreams: ${text.declined}`,
+              )
+            : notCarried(text.declined);
+      }
       try {
          return await buildDownstreamIntoStorage({
             destinationName,

@@ -109,6 +109,12 @@ export interface MaterializationEnvironment {
       options?: { versionId?: VersionRef },
    ): Promise<MaterializationPackage>;
    getLoadedPackages(): MaterializationPackage[];
+   /**
+    * Whether the package serves a model older than its files, because its
+    * last reload did not compile (a `stale: true` load error). Optional: a
+    * test double's packages are never stale.
+    */
+   getStaleCompileErrors?(): ReadonlyMap<string, unknown>;
    withPackageLock<T>(packageName: string, fn: () => Promise<T>): Promise<T>;
 
    getVersionService(): MaterializationVersions | null;

@@ -8,7 +8,10 @@ import {
 import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
 import type { PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
-import { MaterializationEligibilityError } from "../../../errors";
+import {
+   ChainedShapeNotCarriedError,
+   MaterializationEligibilityError,
+} from "../../../errors";
 import { logger } from "../../../logger";
 import {
    recordStaleUpstreamEntry,
@@ -512,6 +515,23 @@ export class HostSuppliedWrongTierError extends Error {
    }
 }
 
+/**
+ * A chained `storage=` build could not stack on its parents because its
+ * package serves a model older than its files (its last reload did not
+ * compile): the build text is read from those files, which the plan's content
+ * addresses do not describe. A shape not carried, with its own code, so the
+ * caller recomputes from the model the package serves (or, strict, refuses).
+ */
+export class ChainedPackageStaleError extends ChainedShapeNotCarriedError {
+   /** The code a log or metric carries for it (errorCodeOf). */
+   readonly reason = "package_stale" as const;
+
+   constructor(detail: string) {
+      super(detail);
+      this.name = "ChainedPackageStaleError";
+   }
+}
+
 /** The phrase every wrong-tier detail carries, for a caller that classifies one. */
 export const WRONG_TIER_MARKER = "supplied at the wrong tier";
 
@@ -620,12 +640,30 @@ export interface BuildEnvironment {
 export function withChainBuildText<E extends BuildEnvironment>(
    environment: E,
    pkg: { chainBuildText?(request: ChainBuildRequest): ChainBuildText },
+   /**
+    * Whether the package serves a model older than its files (a reload that
+    * did not compile), asked at each build: its files are not what the plan's
+    * addresses describe, so no chained build is written from them.
+    */
+   isStale: () => boolean = () => false,
 ): E {
    if (!pkg.chainBuildText) return environment;
    const scoped = Object.create(environment) as E;
-   scoped.chainBuildText = (request) => pkg.chainBuildText!(request);
+   scoped.chainBuildText = (request) =>
+      isStale()
+         ? {
+              declined:
+                 `its package ${PACKAGE_STALE_MARKER}: its last reload did ` +
+                 `not compile, so the files a chained build is written from ` +
+                 `are not the model this build was planned from`,
+              code: "package_stale",
+           }
+         : pkg.chainBuildText!(request);
    return scoped;
 }
+
+/** The phrase a stale package's recompute reason carries, for a reader that classifies one. */
+export const PACKAGE_STALE_MARKER = "serves a model older than its files";
 
 /**
  * What a build needs to tag its statements: the package-level metadata layer

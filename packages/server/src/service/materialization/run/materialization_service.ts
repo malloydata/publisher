@@ -914,7 +914,16 @@ export class MaterializationService {
             uniquenessChecks,
          } = await this.executeInstructedBuild(
             compiled,
-            withChainBuildText(environment, pkg),
+            withChainBuildText(
+               environment,
+               pkg,
+               // A version's files never change; only the unversioned package
+               // a reload replaces can be stale.
+               () =>
+                  versionId === undefined &&
+                  (environment.getStaleCompileErrors?.().has(packageName) ??
+                     false),
+            ),
             instructions,
             carried,
             signal,

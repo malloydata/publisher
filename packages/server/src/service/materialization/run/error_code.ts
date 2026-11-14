@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { causeChain } from "../../../driver_errors";
-import { MaterializationEligibilityError } from "../../../errors";
+import {
+   ChainedShapeNotCarriedError,
+   MaterializationEligibilityError,
+} from "../../../errors";
 
 // A leaf module, so a strategy or the build session can reduce an error to a
 // log code without importing run_telemetry, which imports them.
@@ -12,7 +15,7 @@ const CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
 
 /**
  * An error reduced to a code a log may carry: an eligibility refusal's
- * reason, else Publisher's error kind, else a driver's own code (a SQLSTATE,
+ * reason (or a stale package's, `package_stale`), else Publisher's error kind, else a driver's own code (a SQLSTATE,
  * `ECONNREFUSED`), else the error's class name. Never its message, which can
  * quote SQL or a value. The cause chain is read outermost first: a strategy
  * rewraps a driver's error in a plain `Error` to redact its message.
@@ -22,6 +25,15 @@ export function errorCodeOf(err: unknown): string {
    for (const e of chain) {
       if (e instanceof MaterializationEligibilityError && e.reason) {
          return e.reason;
+      }
+      // A shape not carried that names its own reason (a stale package).
+      const reason = (e as { reason?: unknown }).reason;
+      if (
+         e instanceof ChainedShapeNotCarriedError &&
+         typeof reason === "string" &&
+         CODE_PATTERN.test(reason)
+      ) {
+         return reason;
       }
       const { kind, code } = e as Error & { kind?: unknown; code?: unknown };
       for (const candidate of [kind, code]) {
