@@ -428,6 +428,49 @@ source: open_src is duckdb.table('people')
    });
 });
 
+describe("array queries: a caller's join inside an array query, wherever the query holds it", () => {
+   const CARRIED = `
+source: base is duckdb.table('people') extend {
+  #(classification) "phi.direct_identifier"
+  dimension: social is ssn
+}
+#(carries) ["none"]
+source: car is base include { internal: * } extend {
+  #(classification) "none"
+  dimension: k is org_id
+}
+source: open_a is duckdb.table('people') extend { view: v is { select: id } }
+`;
+   const JOIN = "join_one: c is car extend { dimension: z is social } on sku = c.k";
+   const READ = `items -> { extend: { ${JOIN} } aggregate: m is c.z.max() }`;
+   const FORMS: Record<string, string> = {
+      "a stage's extend": `run: open_a -> { extend: { dimension: d is ${READ} } select: d }`,
+      "a source extend": `run: open_a extend { dimension: d is ${READ} } -> { select: d }`,
+      "a view refinement": `run: open_a -> v + { select: x is ${READ} }`,
+      "a where": `run: open_a -> { where: ${READ} = '111'; select: id }`,
+      "a having": `run: open_a -> { group_by: id; aggregate: n is count(); having: max(${READ}) = '111' }`,
+      "a pick": `run: open_a -> { select: x is pick ${READ} when id = 1 else 'n' }`,
+      "a nest": `run: open_a -> { group_by: id; nest: n is { select: x is ${READ} } }`,
+      "an array query nested in another": `run: open_a -> { select: x is items -> { select: sku, y is tags -> { extend: { join_one: c is car extend { dimension: z is social } on t = c.k } aggregate: m is c.z.max() } } }`,
+      "a nest inside the array query": `run: open_a -> { select: x is items -> { group_by: sku; nest: n is { extend: { ${JOIN} } aggregate: m is c.z.max() } } }`,
+      "a later stage of the array query": `run: open_a -> { select: x is items -> { select: sku } -> { extend: { ${JOIN} } aggregate: m is c.z.max() } }`,
+      "a named query": `query: qq is open_a -> { select: id, x is ${READ} }\nrun: qq -> { select: * }`,
+      "a source the query declares": `source: s2 is open_a extend { dimension: d is ${READ} }\nrun: s2 -> { select: d }`,
+      "a source the query declares and joins": `source: s2 is open_a extend { dimension: d is ${READ} }\nrun: open_a extend { join_one: j is s2 on id = j.id } -> { select: j.d }`,
+      "a query source the query declares and joins": `source: s2 is open_a -> { select: id, x is ${READ} }\nrun: open_a extend { join_one: j is s2 on id = j.id } -> { select: j.x }`,
+   };
+
+   for (const [where, query] of Object.entries(FORMS)) {
+      it(`is refused in ${where}`, async () => {
+         await withModel(CARRIED, async ({ model }) => {
+            expect(await refusal(rows(model, query))).toContain(
+               ARRAY_JOIN_REFUSAL,
+            );
+         });
+      });
+   }
+});
+
 describe("array queries: a join inside the array query refuses a governed package's load", () => {
    let pool: PackageLoadPool;
    let dir: string;
@@ -515,6 +558,43 @@ source: open_a is duckdb.table('people') extend {
 }
 `),
       ).toContain("`l`");
+   });
+
+   it("refuses a notebook, or a model, whose own join reads a governed model it imports", async () => {
+      const governed = `${FLAGS}
+source: base is duckdb.table('people.parquet') extend {
+  #(classification) "phi.direct_identifier"
+  dimension: social is ssn
+}
+#(carries) ["none"]
+source: car is base include { internal: * } extend {
+  #(classification) "none"
+  dimension: k is org_id
+}
+source: open_a is duckdb.table('people.parquet')
+`;
+      const join =
+         "items -> { extend: { join_one: c is car extend { dimension: z is social } on sku = c.k } aggregate: m is c.z.max() }";
+      for (const [file, text] of [
+         [
+            "n.malloynb",
+            `>>>malloy\n${FLAGS}\nimport 'g.malloy'\n>>>malloy\nrun: open_a -> { select: id, x is ${join} }\n`,
+         ],
+         [
+            "u.malloy",
+            `${FLAGS}\nimport { car } from 'g.malloy'\nsource: open_u is duckdb.table('people.parquet') extend { dimension: leak is ${join} }\n`,
+         ],
+      ]) {
+         fs.writeFileSync(path.join(dir, "g.malloy"), governed);
+         fs.writeFileSync(path.join(dir, file), text);
+         try {
+            expect(await loadRefusal("")).toContain(
+               `Model ${file} ${ARRAY_JOIN_REFUSAL}`,
+            );
+         } finally {
+            fs.rmSync(path.join(dir, file));
+         }
+      }
    });
 
    it("loads the same join where the package governs nothing", async () => {
