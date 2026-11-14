@@ -360,8 +360,9 @@ export interface ResolvedRequest {
    /** Sources to skip: pages a source browse or a held ranked result. */
    offset: number;
    /**
-    * Rows to skip in a field listing (entity targets, none with text): the
-    * listing's paging control, separate from `offset`, which counts sources.
+    * Fields to skip in one source's field listing (entity targets, none with
+    * text, scoped to a source): its paging control, separate from `offset`,
+    * which counts sources. A field listing across a package does not page.
     */
    entityOffset: number;
 }

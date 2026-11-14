@@ -2315,10 +2315,11 @@ describe("get_context field listing paging controls", () => {
       expect(payload.error).toContain("entity_offset");
    });
 
-   it("refuses entity_offset on a search and on a source listing", async () => {
+   it("refuses entity_offset on a search, a source listing, and a field listing across the package", async () => {
       for (const search_targets of [
          [{ target_type: "measure", search_text: "revenue" }],
          [{ target_type: "source" }],
+         [{ target_type: "measure" }],
       ]) {
          const payload = parse(
             await handler()({
@@ -2329,6 +2330,24 @@ describe("get_context field listing paging controls", () => {
          );
          expect(payload.error).toContain("Invalid entity_offset");
       }
+   });
+
+   it("caps a field listing across the package, and says to list one source to see the rest", async () => {
+      // The hosted server caps its package-wide listing per source and type,
+      // so neither server pages it; one source's fields page on both.
+      const payload = parse(
+         await handler()({
+            search_targets: [{ target_type: "measure" }],
+            scopes: [{ environment: "specs", package: "wide" }],
+            limit: 5,
+         }),
+      );
+      expect(payload.sources[0].entities).toHaveLength(5);
+      expect(payload).not.toHaveProperty("next_entity_offset");
+      expect(payload).not.toHaveProperty("next_offset");
+      expect(payload.warnings).toEqual([
+         "Returned 5 of 12 entities in scope. To see the rest, list one source's fields by setting scopes[].source (that listing pages with entity_offset), or narrow with search_text.",
+      ]);
    });
 });
 
