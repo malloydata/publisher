@@ -40,6 +40,7 @@ import {
 } from "../errors";
 import { getPersistStorageMode, isPackageInlineFieldsEnabled } from "../config";
 import { logger } from "../logger";
+import { packageRelativeText } from "../package_relative_text";
 import { redactPgSecrets } from "../pg_helpers";
 import {
    mergeConnectionUpdate,
@@ -2767,12 +2768,10 @@ export class Environment {
       return this.trackPackageLoad(packageName, async () => {
          this.transition(packageName, { type: "beginLoad" });
 
+         let packagePath: string | undefined;
          try {
             logger.debug(`Loading package ${packageName}...`);
-            const packagePath = safeJoinUnderRoot(
-               this.environmentPath,
-               packageName,
-            );
+            packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
             const _package = await Package.create(
                this.environmentName,
                packageName,
@@ -2790,6 +2789,12 @@ export class Environment {
             return _package;
          } catch (error) {
             logger.error(`Failed to load package ${packageName}`, { error });
+            // The load failure is the caller's answer and the package's
+            // status: a compile error in it names the package's files
+            // package-relative, never where this server keeps them.
+            if (packagePath !== undefined && error instanceof Error) {
+               error.message = packageRelativeText(error.message, packagePath);
+            }
             if (existingPackage !== undefined) {
                // A failed reload keeps serving the last good model (replaced
                // only on success) rather than evicting the package. Recorded

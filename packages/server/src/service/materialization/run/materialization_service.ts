@@ -67,6 +67,7 @@ import type { EligibilityTier } from "./materialization_instructed_run";
 import {
    BuildEnvironment,
    outcomeFor,
+   packageRelativeRun,
    tallySources,
    type WarehouseReach,
    withChainBuildText,
@@ -95,6 +96,7 @@ import {
    validateInstructions,
    writeTargetsFor,
 } from "./run_instructions";
+import { packageRelativeText } from "../../../package_relative_text";
 import { SourceBuilder } from "./source_build";
 import {
    StorageBuildStrategy,
@@ -657,6 +659,9 @@ export class MaterializationService {
       let markedShared = false;
       const mode: MaterializationMode = telemetry.mode;
       const startedAt = Date.now();
+      // Where the package is on this server, once known: a whole-run failure
+      // names its files package-relative too (see packageRelativeRun).
+      let packagePath: string | undefined;
 
       try {
          // Persisted so the UI can compute a duration.
@@ -677,6 +682,7 @@ export class MaterializationService {
                ? { versionId: VersionRef.parse(versionId) }
                : {},
          );
+         packagePath = pkg.getPackagePath();
          // The version whose own runs this run reuses from and builds into
          // (`scope: version`); undefined, the package's shared ones.
          const owned =
@@ -900,10 +906,10 @@ export class MaterializationService {
          );
 
          const {
-            entries,
-            failures,
+            entries: builtEntries,
+            failures: builtFailures,
             sourcesRefused: instructedRefused,
-            refusedBesideBuilt = {},
+            refusedBesideBuilt: builtRefusedBeside = {},
             nameViews = [],
             uniquenessChecks,
          } = await this.executeInstructedBuild(
@@ -955,6 +961,26 @@ export class MaterializationService {
                     );
                  })(),
          );
+
+         // What the run records names the package's files package-relative:
+         // a compile error in a reason names its file by where the server
+         // keeps it.
+         const {
+            entries,
+            failures,
+            refused: refusedBesideBuilt,
+         } = packageRelativeRun(
+            {
+               entries: builtEntries,
+               failures: builtFailures,
+               refused: builtRefusedBeside,
+            },
+            pkg.getPackagePath(),
+         );
+         derivedRefused = packageRelativeRun(
+            { entries: {}, failures: {}, refused: derivedRefused },
+            pkg.getPackagePath(),
+         ).refused;
 
          const { sourcesBuilt, sourcesFailed, sourcesReused } = tallySources(
             entries,
@@ -1126,6 +1152,9 @@ export class MaterializationService {
          this.lifecycle.recordRun(mode, outcome, startedAt);
          telemetry.finished(outcome, Date.now() - startedAt, err);
          markRunFailureReported(err);
+         if (packagePath !== undefined && err instanceof Error) {
+            err.message = packageRelativeText(err.message, packagePath);
+         }
          if (markedShared && opts.version !== null) {
             // The run may have rebuilt some shared tables before it failed.
             // Its record stays, so rebinding now leaves those tables unbound

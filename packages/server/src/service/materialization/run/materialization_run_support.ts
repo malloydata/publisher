@@ -41,6 +41,7 @@ import type { ApiConnection } from "../../model";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { redactPgSecrets } from "../../../pg_helpers";
+import { packageRelativeText } from "../../../package_relative_text";
 
 /**
  * What a build needs from the plan about stored tables: which reached sources
@@ -1021,4 +1022,43 @@ export function physicalTargetKey(
            ]
          : ["connection", connectionName, instruction.physicalTableName],
    );
+}
+
+/**
+ * A run's results with every message a reader of the run sees (a failure's
+ * reason, an entry's error or recompute reason, a refusal's message) naming
+ * the package's files package-relative, never by where the server keeps
+ * them: a compile error names its file by the URL it was loaded from.
+ */
+export function packageRelativeRun(
+   run: {
+      entries: Record<string, ManifestEntry>;
+      failures: Record<string, SourceFailure>;
+      refused: Record<string, RefusedSource>;
+   },
+   packagePath: string,
+): {
+   entries: Record<string, ManifestEntry>;
+   failures: Record<string, SourceFailure>;
+   refused: Record<string, RefusedSource>;
+} {
+   const rel = (text: string) => packageRelativeText(text, packagePath);
+   const each = <T>(
+      record: Record<string, T>,
+      map: (value: T) => T,
+   ): Record<string, T> =>
+      Object.fromEntries(Object.entries(record).map(([k, v]) => [k, map(v)]));
+   return {
+      entries: each(run.entries, (e) => ({
+         ...e,
+         ...(typeof e.error === "string" ? { error: rel(e.error) } : {}),
+         ...(e.upstreamRecomputeReason
+            ? { upstreamRecomputeReason: rel(e.upstreamRecomputeReason) }
+            : {}),
+      })),
+      failures: each(run.failures, (f) => ({ ...f, reason: rel(f.reason) })),
+      refused: each(run.refused, (r) =>
+         typeof r.message === "string" ? { ...r, message: rel(r.message) } : r,
+      ),
+   };
 }
