@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { KeyCheckCompiler } from "../domain/key_check";
 import {
    exploreOf,
    modelDefIfAny,
@@ -222,6 +223,12 @@ export interface CompiledBuildPlan {
     * generated source's table (materialization v2, phase 3).
     */
    materializePlans?: Record<string, MaterializePlan>;
+   /**
+    * Each `#(materialize)` uniqueness check's compiler over a run's manifest,
+    * by `keyCheckCompilerKey`; set only on a plan compiled on the thread
+    * that builds (`build_plan_compile.ts`).
+    */
+   keyCheckCompilers?: ReadonlyMap<string, KeyCheckCompiler>;
    /**
     * Sources planning left out because it FAILED (a companion that did not
     * compile), for the wire plan's `omittedSources`. Absent: none.
@@ -678,6 +685,7 @@ async function collectGeneratedMaterialize(
       /** The author's compiled model, and the materializer that compiled it. */
       malloyModel: MalloyModel;
       materializer: ModelMaterializer;
+      keyCheckCompilers?: Map<string, KeyCheckCompiler>;
    },
 ): Promise<void> {
    const authorDef: ModelDef = modelDefOf(args.malloyModel);
@@ -698,6 +706,9 @@ async function collectGeneratedMaterialize(
    }
    parts.omittedSources.push(...(omitted ?? []));
    if (!generated) return;
+   for (const [key, compile] of generated.checkCompilers) {
+      args.keyCheckCompilers?.set(key, compile);
+   }
    for (const plan of generated.plans) {
       if (plan.pairFullRefresh) {
          addAnnotationFinding(
@@ -987,6 +998,12 @@ export async function collectModelBuildPlan(
       malloyModel: MalloyModel;
       runtime: Runtime;
       getRuntime: SynthesizedRuntimeFactory;
+      /**
+       * Where each `#(materialize)` uniqueness check's compiler over a run's
+       * manifest is put, on a thread that runs builds; absent on the load
+       * worker, whose plan crosses to the main thread as data.
+       */
+      keyCheckCompilers?: Map<string, KeyCheckCompiler>;
    },
 ): Promise<void> {
    const {
@@ -996,6 +1013,7 @@ export async function collectModelBuildPlan(
       malloyModel,
       runtime,
       getRuntime,
+      keyCheckCompilers,
    } = args;
    // `#(materialize)` (materialization v2, phase 3), behind
    // PUBLISHER_MATERIALIZE: off, nothing here runs and the plan is exactly what
@@ -1009,6 +1027,7 @@ export async function collectModelBuildPlan(
          getRuntime,
          malloyModel,
          materializer,
+         keyCheckCompilers,
       });
       // `#@ persist` on a view (phase 4, P14), under the same switch.
       await collectGeneratedPersistedViews(parts, {

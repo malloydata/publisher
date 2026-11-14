@@ -218,6 +218,7 @@
  * Every name and value in the generated text goes through `malloy_text`.
  */
 
+import { keyCheckPipeline } from "../text/key_check_text";
 import { Annotations } from "@malloydata/malloy";
 import { ownLevelNotes, sameNotePosition } from "../../annotations";
 import { declaredNotes } from "../../governance/ir/declared_notes";
@@ -3061,24 +3062,10 @@ function pairKeyChecks(
  * table's key check ({@link pairKeyChecks}) also returns a null key.
  */
 function emitUniquenessCheck(check: InlineUniquenessCheck): string {
-   const key = identifier(check.keyColumn);
-   if (check.pairLevel !== undefined) {
-      return `query: ${identifier(check.queryName)} is ${identifier(checkAlias(check))} -> {
-  group_by: ${key}
-  aggregate: matches is count()
-} -> {
-  where: matches > 1 or ${key} is null
-  select: ${key}
-  limit: 1
-}`;
-   }
-   return `query: ${identifier(check.queryName)} is ${identifier(checkAlias(check))} -> {
-  where: ${key} is not null
-  group_by: ${key}
-  aggregate: matches is count()
-  having: matches > 1
-  limit: 1
-}`;
+   const kind =
+      check.pairLevel !== undefined ? "pair_level" : "inline_join_one";
+   // malloy-text: keyCheckPipeline writes its names through identifier
+   return `query: ${identifier(check.queryName)} is ${keyCheckPipeline(kind, checkAlias(check), check.keyColumn)}`;
 }
 
 /**

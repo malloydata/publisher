@@ -13,8 +13,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    // R7: plan/ never imports run/, serve/ or service/model.ts.
    "service/materialization/plan/incremental_policy.ts -> service/materialization/run/incremental_apply":
       "2l",
-   "service/materialization/plan/materialize_compile.ts -> service/materialization/run/inline_uniqueness":
-      "2i",
    // R8: plan/, run/ and serve/ never import one another.
    "service/materialization/run/incremental_apply.ts -> service/materialization/plan/incremental_declaration":
       "2g.3",

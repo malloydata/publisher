@@ -65,6 +65,7 @@
  * readers are `governance/ir/source_graph.ts`'s single walk).
  */
 
+import { keyCheckPipeline } from "../text/key_check_text";
 import {
    primaryKeyOf,
    recordedTimezoneOf,
@@ -1277,14 +1278,8 @@ export function rollupKeyCheckQuery(
    if (key === undefined || rest.length > 0 || plan.storage !== undefined) {
       return undefined;
    }
-   const k = identifier(key);
-   return `run: ${identifier(rollupBaseAlias(plan.baseDeclaredName))} -> {
-  where: ${k} != null
-  group_by: ${k}
-  aggregate: key_rows__check is count()
-  having: key_rows__check > 1
-  limit: 1
-}`;
+   // malloy-text: keyCheckPipeline writes its names through identifier
+   return `run: ${keyCheckPipeline("rollup_key", rollupBaseAlias(plan.baseDeclaredName), key)}`;
 }
 
 /**
@@ -1439,14 +1434,8 @@ export function storedKeyChecksOf(
  * is held by more than one row, or is NULL.
  */
 export function parentKeyCheckQuery(name: string, keyColumn: string): string {
-   return `run: ${identifier(name)} -> {
-  group_by: key__check is ${identifier(keyColumn)}
-  aggregate: key_rows__check is count()
-} -> {
-  where: key_rows__check > 1 or key__check = null
-  select: key__check
-  limit: 1
-}`;
+   // malloy-text: keyCheckPipeline writes its names through identifier
+   return `run: ${keyCheckPipeline("parent_key", name, keyColumn)}`;
 }
 
 /** The key {@link joinOneKeysOf} holds for a join_one on `keyColumn` of `sourceID`. */

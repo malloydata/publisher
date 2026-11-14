@@ -21,6 +21,7 @@
  * package warning.
  */
 
+import { requireUnique, verdictOf } from "../domain/key_check";
 import {
    modelDefOf,
    queryTimezoneOf,
@@ -1629,7 +1630,8 @@ export class ServedCopyServe {
                ),
             // The leaf's key check, as the run that wrote the table recorded
             // it beside the table (`pairLeafKeyChecks`).
-            (sourceID) => binding.primaryKeys?.[sourceID] === true,
+            (sourceID) =>
+               requireUnique(verdictOf(binding.primaryKeys?.[sourceID])),
          );
          if (!pair) {
             problems.push({

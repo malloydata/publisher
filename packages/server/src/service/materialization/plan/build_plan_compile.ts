@@ -9,6 +9,7 @@
  * worker compiles from its own file map.
  */
 
+import type { KeyCheckCompiler } from "../domain/key_check";
 import { modelDefOf, primaryKeyOf } from "../../governance/ir/compiled_model";
 import { MODEL_FILE_SUFFIX } from "../../../constants";
 import { logger } from "../../../logger";
@@ -68,6 +69,9 @@ export async function compilePackageBuildPlan(
    }[] = [];
    // Every declared primary key, by sourceID, for the stored-table key checks.
    const primaryKeys = new Map<string, string>();
+   // Each `#(materialize)` uniqueness check's compiler over a run's
+   // manifest: this plan is built on the thread that runs builds.
+   const keyCheckCompilers = new Map<string, KeyCheckCompiler>();
    const yielder = createEventLoopYielder();
 
    for (const modelPath of pkg.getModelPaths()) {
@@ -150,6 +154,7 @@ export async function compilePackageBuildPlan(
                pkg.getMalloyConfig(),
                buildView ?? new Map(),
             ).runtime(overlay),
+         keyCheckCompilers,
       });
    }
 
@@ -218,6 +223,7 @@ export async function compilePackageBuildPlan(
       preaggregatePlans: parts.preaggregatePlans,
       ...(Object.keys(storedKeyChecks).length > 0 ? { storedKeyChecks } : {}),
       materializePlans: parts.materializePlans,
+      ...(keyCheckCompilers.size > 0 ? { keyCheckCompilers } : {}),
       sourceGateOutcomes: parts.sourceGateOutcomes,
       omittedSources: parts.omittedSources,
    });

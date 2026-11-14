@@ -78,6 +78,7 @@
  * `materialize.enabled`.
  */
 
+import { requireUnique, verdictOf, type KeyVerdict } from "../domain/key_check";
 import {
    primaryKeyOf,
    recordedTimezoneOf,
@@ -792,14 +793,14 @@ export class RollupVariantServe {
       // are the same rows.
       if (join.relationship === "one") {
          const outside = aggregateOutsideJoin(q.prepared, q.struct, name);
-         const unique =
+         const verdict: KeyVerdict =
             outside === undefined
-               ? undefined
+               ? "unknown"
                : this.keyUniqueness(plan, join.keyColumn);
-         if (outside !== undefined && unique !== true) {
+         if (outside !== undefined && !requireUnique(verdict)) {
             throw new LegDecline(
                "rollup_count_semantics",
-               unique === false
+               verdict === "repeated"
                   ? `${outside} aggregates rows outside the join_one \`${name}\`, whose key the data holds more than once, so live repeats those rows; its rollup holds one row per key`
                   : `${outside} aggregates rows outside the join_one \`${name}\`, which live repeats for each of its rows, and its key was not checked unique when its rollup was built; its rollup holds one row per key`,
             );
@@ -888,7 +889,9 @@ export class RollupVariantServe {
          read,
          primaryKeyOf(childDef),
          plan.storage !== undefined
-            ? this.tableOf(plan)?.binding?.primaryKeys?.[plan.baseSourceID]
+            ? verdictOf(
+                 this.tableOf(plan)?.binding?.primaryKeys?.[plan.baseSourceID],
+              )
             : this.parentKeyUniqueness(plan, { sourceID: plan.baseSourceID }),
       );
       if (joinedProblem !== undefined) {
@@ -1289,68 +1292,70 @@ export class RollupVariantServe {
 
    /**
     * What the build of `plan`'s table found of its one grain dimension, when
-    * that is `keyColumn` (known limitation 29): true when unique, false when
-    * a value repeats, undefined when unknown (not checked, not built by a run
-    * that checked it, or a table bound from a host's manifest).
+    * that is `keyColumn` (known limitation 29): `unknown` when not checked,
+    * not built by a run that checked it, or a table bound from a host's
+    * manifest.
     */
    private keyUniqueness(
       plan: RollupVariantPlan,
       keyColumn: string | undefined,
-   ): boolean | undefined {
+   ): KeyVerdict {
       if (
          keyColumn === undefined ||
          plan.grainDimensions.length !== 1 ||
          plan.grainDimensions[0] !== keyColumn
       ) {
-         return undefined;
+         return "unknown";
       }
       // The table's content address fixes its grain, so its check is of
       // this key.
       const id = this.tableOf(plan)?.sourceEntityId;
-      return id === undefined
-         ? undefined
-         : this.host.catalog()?.bound[id]?.keyUniqueness?.unique;
+      return verdictOf(
+         id === undefined
+            ? undefined
+            : this.host.catalog()?.bound[id]?.keyUniqueness?.unique,
+      );
    }
 
    /**
     * What the build of `plan`'s table found of the query source's primary key
-    * (its parent key check): true when unique and never NULL, false when not,
-    * undefined when unknown (not checked, or a table a host's manifest binds).
+    * (its parent key check): `unique` when unique and never NULL, `unknown`
+    * when not checked, or a table a host's manifest binds.
     */
    private parentKeyUniqueness(
       plan: RollupVariantPlan,
       struct: unknown,
-   ): boolean | undefined {
+   ): KeyVerdict {
       const sourceID = (struct as { sourceID?: unknown } | undefined)?.sourceID;
       const id = this.tableOf(plan)?.sourceEntityId;
-      if (typeof sourceID !== "string" || id === undefined) return undefined;
-      return this.host.catalog()?.bound[id]?.keyUniqueness?.parentKeys?.[
-         sourceID
-      ];
+      if (typeof sourceID !== "string" || id === undefined) return "unknown";
+      return verdictOf(
+         this.host.catalog()?.bound[id]?.keyUniqueness?.parentKeys?.[sourceID],
+      );
    }
 
    /**
     * What the build of a stored table the served copy reads for the query's
-    * source found of `key`: true when a source it stores declares `key` its
-    * primary key and the check found it unique and never NULL; false when one
-    * found it repeated or NULL; undefined when unknown (not checked, or a
-    * binding a host's manifest made).
+    * source found of `key`: `unique` when a source it stores declares `key`
+    * its primary key and the check found it unique and never NULL;
+    * `repeated` when one found it repeated or NULL; `unknown` when not
+    * checked, or a binding a host's manifest made.
     */
    private storedKeyUniqueness(
       binding: ServeBinding,
       key: string | undefined,
-   ): boolean | undefined {
-      if (key === undefined || !binding.primaryKeys) return undefined;
+   ): KeyVerdict {
+      if (key === undefined || !binding.primaryKeys) return "unknown";
       const map = SourceMap.of(this.host.modelDef());
       let found: boolean | undefined;
       for (const id of binding.sourceIDs ?? []) {
          const unique = binding.primaryKeys[id];
          if (unique === undefined) continue;
          if (primaryKeyOf(map.node(id)?.def) !== key) continue;
-         if (!unique) return false;
+         if (!unique) return "repeated";
          found = true;
       }
-      return found;
+      return verdictOf(found);
    }
 
    /**
@@ -1377,7 +1382,9 @@ export class RollupVariantServe {
             continue;
          }
          for (const plan of byBase.get(j.sourceID) ?? []) {
-            if (this.keyUniqueness(plan, j.keyColumn) === false) return j.name;
+            if (this.keyUniqueness(plan, j.keyColumn) === "repeated") {
+               return j.name;
+            }
          }
       }
       return undefined;

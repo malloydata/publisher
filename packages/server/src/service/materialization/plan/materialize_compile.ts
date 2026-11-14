@@ -22,7 +22,10 @@ import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import type { Omission } from "../domain/omitted_sources";
-import { registerUniquenessCheckCompiler } from "../run/inline_uniqueness";
+import {
+   keyCheckCompilerKey,
+   type KeyCheckCompiler,
+} from "../domain/key_check";
 import {
    buildCopyDeclarationAt,
    buildCopyName,
@@ -81,6 +84,12 @@ interface GeneratedMaterialize {
     * table and is no build of its own.
     */
    generatedURLs: ReadonlySet<string>;
+   /**
+    * Each uniqueness check's compiler over a run's manifest, by
+    * {@link keyCheckCompilerKey}: compiled through the companion, which only
+    * this process holds.
+    */
+   checkCompilers: ReadonlyMap<string, KeyCheckCompiler>;
 }
 
 /** Where the generated companion for `modelPath` lives, as an absolute URL. */
@@ -473,6 +482,7 @@ async function compileCompanion(
    const model = await materializer.getModel().catch((error: unknown) => {
       throw new CompanionCompileError(error, overlay, copyOwners);
    });
+   const checkCompilers = new Map<string, KeyCheckCompiler>();
    // The P8 checks' SQL, compiled now (never run here) so a build runs it
    // against the joined source's connection before it writes anything.
    // Each check can also be compiled again over a run's manifest, so a run
@@ -491,8 +501,8 @@ async function compileCompanion(
                   plan.sourceID,
                );
             });
-         registerUniquenessCheckCompiler(
-            check,
+         checkCompilers.set(
+            keyCheckCompilerKey(plan.sourceID, check.queryName),
             (buildManifest, connectionDigests) =>
                materializer
                   .loadQueryByName(check.queryName)
@@ -507,6 +517,7 @@ async function compileCompanion(
       runtime,
       text,
       generatedURLs: new Set(overlay.keys()),
+      checkCompilers,
       ...(used.size > 0
          ? {
               buildCopies: new Map(
