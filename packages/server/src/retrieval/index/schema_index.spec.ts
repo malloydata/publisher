@@ -1,9 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { beforeEach, describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { sanitizeLunrQuery as sanitizeQuery } from "../shared";
-import type { EmbeddingProvider } from "../llm/embedding_provider";
+import { logger } from "../../logger";
+import { setRetrievalConfig } from "../config";
+import { EmbeddingProvider } from "../llm/embedding_provider";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import {
    MAX_COLUMNS_IN_INDEX_TEXT,
@@ -59,12 +61,14 @@ function fakeProvider(
       embedBatch: (texts: string[], timeoutMs: number) => Promise<number[][]>;
       model: string;
       dimensions: number | undefined;
+      maxBatch: number;
       minSimilarity: number;
    }> = {},
 ): EmbeddingProvider {
    return {
       model: overrides.model ?? "test-model",
       dimensions: overrides.dimensions,
+      maxBatch: overrides.maxBatch ?? 512,
       // Required: the floor travels on the provider, and a double that omits
       // it makes every `score >= provider.minSimilarity` compare against
       // undefined, which is always false -- silently dropping every hit.
@@ -248,6 +252,151 @@ describe("rankTables", () => {
       });
       expect(result.ranking).toBe("semantic");
       expect(result.hits).toEqual([]);
+   });
+
+   it("embeds the tables under retrieval.embedding.timeoutMs, the query under its own deadline", async () => {
+      const deadlines: number[] = [];
+      const provider = fakeProvider({
+         embedBatch: async (texts: string[], timeoutMs: number) => {
+            deadlines.push(timeoutMs);
+            return texts.map((text) =>
+               MARKERS.map((m) => (text.toLowerCase().includes(m) ? 1 : 0)),
+            );
+         },
+      });
+      const rank = (cacheKey: string) =>
+         rankTables({
+            tables: ALL,
+            query: "orders",
+            limit: 10,
+            provider,
+            caches,
+            cacheKey,
+         });
+      await rank("default");
+      setRetrievalConfig({
+         embedding: { queryPrefix: "", documentPrefix: "", timeoutMs: 120_000 },
+      });
+      try {
+         await rank("configured");
+      } finally {
+         setRetrievalConfig(undefined);
+      }
+      expect(deadlines).toEqual([30_000, 5_000, 120_000, 5_000]);
+   });
+
+   it("embeds the tables in requests of the package index's size: 256, or the provider's batch size when smaller", async () => {
+      const sizes = async (maxBatch: number) => {
+         const seen: number[] = [];
+         await rankTables({
+            tables: Array.from({ length: 600 }, (_, i) =>
+               table(`sales.t${i}`, ["id"]),
+            ),
+            query: "orders",
+            limit: 10,
+            provider: fakeProvider({
+               maxBatch,
+               embedBatch: async (texts: string[]) => {
+                  seen.push(texts.length);
+                  return texts.map(() => [1, 0, 0, 0]);
+               },
+            }),
+            caches,
+            cacheKey: `max ${maxBatch}`,
+         });
+         return seen;
+      };
+      expect(await sizes(512)).toEqual([256, 256, 88, 1]);
+      expect(await sizes(250)).toEqual([250, 250, 100, 1]);
+      expect(await sizes(100)).toEqual([100, 100, 100, 100, 100, 100, 1]);
+   });
+
+   it("names retrieval.embedding.timeoutMs in the warning when the table vectors time out, and only then", async () => {
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      // The real adapter, so each failure is the error `postJson` makes of it.
+      const rank = (
+         cacheKey: string,
+         respond: (inputs: number) => Response | Promise<Response>,
+      ) =>
+         rankTables({
+            tables: ALL,
+            query: "orders",
+            limit: 10,
+            provider: new EmbeddingProvider(
+               {
+                  apiKey: "test",
+                  model: "m",
+                  baseUrl: "https://embeddings.example.com/v1",
+                  minSimilarity: DEFAULT_EMBEDDING_MIN_SIMILARITY,
+               },
+               (async (_url: RequestInfo | URL, init?: RequestInit) =>
+                  respond(
+                     (JSON.parse(String(init?.body)) as { input: string[] })
+                        .input.length,
+                  )) as typeof fetch,
+            ),
+            caches,
+            cacheKey,
+         });
+      const vectors = (inputs: number) =>
+         new Response(
+            JSON.stringify({
+               data: Array.from({ length: inputs }, (_, index) => ({
+                  index,
+                  embedding: [1, 0, 0, 0],
+               })),
+            }),
+         );
+      const timeout = () =>
+         new DOMException("The operation timed out.", "TimeoutError");
+      try {
+         await rank("the request times out", () => {
+            throw timeout();
+         });
+         setRetrievalConfig({
+            embedding: {
+               queryPrefix: "",
+               documentPrefix: "",
+               timeoutMs: 120_000,
+            },
+         });
+         await rank(
+            "the reply times out",
+            () =>
+               ({
+                  ok: true,
+                  status: 200,
+                  text: async () => {
+                     throw timeout();
+                  },
+               }) as unknown as Response,
+         );
+         setRetrievalConfig(undefined);
+         await rank(
+            "a gateway timed out",
+            () => new Response("upstream request timed out", { status: 504 }),
+         );
+         await rank("the endpoint is down", () => {
+            throw new Error("connection refused");
+         });
+         await rank("the query times out", (inputs) => {
+            if (inputs === 1) throw timeout();
+            return vectors(inputs);
+         });
+         const fields = (warn.mock.calls as unknown[][])
+            .filter(([message]) => String(message).includes("Embedding failed"))
+            .map(([, logged]) => (logged as { deadline?: string }).deadline);
+         expect(fields).toEqual([
+            "30000 ms for each request of up to 256 tables (retrieval.embedding.timeoutMs)",
+            "120000 ms for each request of up to 256 tables (retrieval.embedding.timeoutMs)",
+            undefined,
+            undefined,
+            undefined,
+         ]);
+      } finally {
+         setRetrievalConfig(undefined);
+         warn.mockRestore();
+      }
    });
 
    it("reuses cached vectors: a second query embeds only the query", async () => {
