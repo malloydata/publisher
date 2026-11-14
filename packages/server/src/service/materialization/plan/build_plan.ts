@@ -24,7 +24,7 @@ import {
    persistUnparseableFinding,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
-import { routeHasKey } from "../../motly";
+import { declares } from "./declaration";
 import { Annotations, isSourceDef } from "@malloydata/malloy";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
@@ -391,7 +391,7 @@ function detectDroppedPersistSources(
          try {
             // Presence only, read over every line as Malloy reads it, so a
             // `#@ persist` line carrying an `@env.` reference is still caught.
-            isPersist = routeHasKey(
+            isPersist = declares(
                new Annotations(def.annotations),
                "@",
                "persist",
@@ -421,7 +421,7 @@ function declaredPersistSourceIDs(malloyModel: MalloyModel): string[] {
       )) {
          if (!isSourceDef(def) || !def.annotations) continue;
          try {
-            if (routeHasKey(new Annotations(def.annotations), "@", "persist")) {
+            if (declares(new Annotations(def.annotations), "@", "persist")) {
                if (def.sourceID) ids.push(def.sourceID);
             }
          } catch {
@@ -1040,7 +1040,7 @@ export async function collectModelBuildPlan(
    let planModel = malloyModel;
    let planRuntime = runtime;
    if (
-      !routeHasKey(
+      !declares(
          malloyModel.modelAnnotations,
          "!",
          "experimental",

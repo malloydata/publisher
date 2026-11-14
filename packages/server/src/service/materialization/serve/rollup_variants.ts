@@ -93,13 +93,13 @@ import type {
 import * as path from "path";
 import { logger } from "../../../logger";
 import { fileURLToPath, pathToFileURL } from "url";
-import { Annotations, EMPTY_BUILD_MANIFEST } from "@malloydata/malloy";
+import { EMPTY_BUILD_MANIFEST } from "@malloydata/malloy";
 import type { ModelConnectionInput } from "../../model_runtime";
 import { overlayKey } from "../../overlay_key";
 import { quoteManifestTablePath } from "../../quoting";
 import { ownModelNoteObjects } from "../../annotations";
 import { routeOfNote } from "../../annotation_reader";
-import { parseRouteTag } from "../../motly";
+import { experimentalFlagKeys } from "../../motly";
 import {
    doubleQuotedString,
    identifier,
@@ -2238,13 +2238,7 @@ function flagLine(modelDef: unknown): string {
          (n) => routeOfNote(n.text) === "!",
       );
       if (notes.length > 0) {
-         const { tag } = parseRouteTag(
-            new Annotations({ notes } as ConstructorParameters<
-               typeof Annotations
-            >[0]),
-            "!",
-         );
-         for (const [key] of tag.tag("experimental")?.entries() ?? []) {
+         for (const key of experimentalFlagKeys(notes)) {
             if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) flags.add(key);
          }
       }

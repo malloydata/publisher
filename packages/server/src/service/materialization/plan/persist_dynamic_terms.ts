@@ -3,7 +3,7 @@
 
 import { sourceDefOf } from "../../governance/ir/compiled_model";
 import { Annotations, type PersistSource } from "@malloydata/malloy";
-import { parseRouteTag } from "../../motly";
+import { destinationOf, readRouteIfAny } from "./declaration";
 import { collectGivenRefs } from "../../given";
 import { readsAGiven } from "../../probe_compiler";
 import { forEachFieldPath } from "../../governance/ir/array_query";
@@ -426,15 +426,14 @@ const MAX_JOIN_DEPTH = 4;
 function declaresStorage(annotations: unknown): boolean {
    if (annotations === undefined || annotations === null) return false;
    try {
-      const tag = parseRouteTag(
+      const tag = readRouteIfAny(
          new Annotations(
             annotations as ConstructorParameters<typeof Annotations>[0],
          ),
          "@",
-      ).tag;
-      if (!tag.has("persist")) return false;
-      const storage = tag.text("storage");
-      return typeof storage === "string" && storage.trim().length > 0;
+      );
+      if (!tag?.has("persist")) return false;
+      return destinationOf(tag, "persist") !== undefined;
    } catch {
       return false;
    }

@@ -1,202 +1,30 @@
 {
   "internal": {
-    "annotationFindings": [],
-    "builds": [
+    "annotationFindings": [
       {
-        "connectionName": "duckdb",
-        "dependsOn": {
-          "m_empty@<pkg>/m.malloy": []
-        },
-        "order": [
-          "m_empty@<pkg>/m.malloy"
-        ]
+        "code": "materialize-not-built",
+        "message": "#(materialize) on source \"m_empty\" is not built, so the source is served live: its `storage=` names no destination: name the storage destination to build it into, or remove the key to build it in its own warehouse.",
+        "model": "m.malloy",
+        "route": "materialize",
+        "subject": "m_empty",
+        "tier": "unservable"
       }
     ],
+    "builds": [],
     "droppedPersistSources": [],
-    "materializePlans": {
-      "m_empty@<pkg>/m.malloy": {
-        "buildSourceName": "m_empty__mat",
-        "columns": [
-          {
-            "column": "id",
-            "computed": false,
-            "dimension": "id"
-          },
-          {
-            "column": "customer_id",
-            "computed": false,
-            "dimension": "customer_id"
-          },
-          {
-            "column": "region",
-            "computed": false,
-            "dimension": "region"
-          },
-          {
-            "column": "status",
-            "computed": false,
-            "dimension": "status"
-          },
-          {
-            "column": "amount",
-            "computed": false,
-            "dimension": "amount"
-          },
-          {
-            "column": "discount",
-            "computed": false,
-            "dimension": "discount"
-          },
-          {
-            "column": "order_date",
-            "computed": false,
-            "dimension": "order_date"
-          },
-          {
-            "column": "created_at",
-            "computed": false,
-            "dimension": "created_at"
-          },
-          {
-            "column": "order",
-            "computed": false,
-            "dimension": "order"
-          }
-        ],
-        "nameDefaulted": true,
-        "persist": {
-          "name": "m_empty",
-          "storage": ""
-        },
-        "sourceID": "m_empty@<pkg>/m.malloy",
-        "sourceName": "m_empty",
-        "storedColumns": [
-          {
-            "name": "id",
-            "type": "DOUBLE"
-          },
-          {
-            "name": "customer_id",
-            "type": "DOUBLE"
-          },
-          {
-            "name": "region",
-            "type": "VARCHAR"
-          },
-          {
-            "name": "status",
-            "type": "VARCHAR"
-          },
-          {
-            "name": "amount",
-            "type": "DOUBLE"
-          },
-          {
-            "name": "discount",
-            "type": "DOUBLE"
-          },
-          {
-            "name": "order_date",
-            "type": "DATE"
-          },
-          {
-            "name": "created_at",
-            "type": "TIMESTAMP"
-          },
-          {
-            "name": "order",
-            "type": "DOUBLE"
-          }
-        ],
-        "zoneFreeRows": true
-      }
-    },
+    "materializePlans": {},
     "rollupPlans": {},
-    "sourceGateOutcomes": {
-      "m_empty@<pkg>/m.malloy": {
-        "attributed": true,
-        "classification": "row_level"
-      }
-    },
-    "sourceModelPaths": {
-      "m_empty@<pkg>/m.malloy": "m.malloy"
-    }
+    "sourceGateOutcomes": {},
+    "sourceModelPaths": {}
   },
-  "loadWarnings": [],
-  "wirePlan": {
-    "graphs": [
-      {
-        "connectionName": "duckdb",
-        "nodes": [
-          [
-            {
-              "dependsOn": [],
-              "sourceID": "m_empty@<pkg>/m.malloy"
-            }
-          ]
-        ]
-      }
-    ],
-    "omittedFiles": [],
-    "omittedSources": [],
-    "refusedSources": {},
-    "sources": {
-      "m_empty@<pkg>/m.malloy": {
-        "annotationFields": {
-          "name": "m_empty",
-          "storage": ""
-        },
-        "columns": [
-          {
-            "name": "id",
-            "type": "number"
-          },
-          {
-            "name": "customer_id",
-            "type": "number"
-          },
-          {
-            "name": "region",
-            "type": "string"
-          },
-          {
-            "name": "status",
-            "type": "string"
-          },
-          {
-            "name": "amount",
-            "type": "number"
-          },
-          {
-            "name": "discount",
-            "type": "number"
-          },
-          {
-            "name": "order_date",
-            "type": "date"
-          },
-          {
-            "name": "created_at",
-            "type": "timestamp"
-          },
-          {
-            "name": "order",
-            "type": "number"
-          }
-        ],
-        "connectionName": "duckdb",
-        "dialect": "duckdb",
-        "freshness": null,
-        "modelPath": "m.malloy",
-        "name": "m_empty",
-        "origin": "persist",
-        "preaggregate": null,
-        "queryMetadata": null,
-        "refresh": null,
-        "sourceEntityId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
-        "sourceID": "m_empty@<pkg>/m.malloy",
-        "sql": "sha256:d7205aaa5763e7e3"
-      }
+  "loadWarnings": [
+    {
+      "code": "materialize-not-built",
+      "message": "#(materialize) on source \"m_empty\" is not built, so the source is served live: its `storage=` names no destination: name the storage destination to build it into, or remove the key to build it in its own warehouse.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "m_empty"
     }
-  }
+  ],
+  "wirePlan": null
 }

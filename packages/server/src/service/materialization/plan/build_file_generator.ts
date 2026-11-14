@@ -233,7 +233,13 @@ import {
    nowComparison,
    stringLiteral,
 } from "../../malloy_text";
-import { parseRouteTag, routeHasKey } from "../../motly";
+import {
+   declares,
+   EMPTY_STORAGE_REASON,
+   placementOf,
+   readNotes,
+   type RouteTag,
+} from "./declaration";
 import {
    accessLiftEdits,
    afterModelHeader,
@@ -862,7 +868,7 @@ function readMaterializeDeclaration(
    contents: Readonly<Record<string, unknown>> = {},
 ):
    | {
-        tag: ReturnType<typeof parseRouteTag>["tag"];
+        tag: RouteTag;
         keys: string[];
         /** Parse errors: a declaration with any is not read at all. */
         errors: string[];
@@ -872,12 +878,7 @@ function readMaterializeDeclaration(
       (note) => routeOfNote(note.text) === MATERIALIZE_ROUTE,
    );
    if (notes.length === 0) return undefined;
-   const { tag, log } = parseRouteTag(
-      new Annotations({ notes } as ConstructorParameters<
-         typeof Annotations
-      >[0]),
-      MATERIALIZE_ROUTE,
-   );
+   const { tag, log } = readNotes(notes, MATERIALIZE_ROUTE);
    return {
       tag,
       keys: [...tag.entries()].map(([key]) => key),
@@ -896,7 +897,7 @@ function declaresOwnPersist(
       (note) => routeOfNote(note.text) === "@",
    );
    if (notes.length === 0) return false;
-   return routeHasKey(
+   return declares(
       new Annotations({ notes } as ConstructorParameters<
          typeof Annotations
       >[0]),
@@ -921,7 +922,7 @@ function inheritedPersist(
    const chain = new Annotations(
       (def.annotations ?? {}) as ConstructorParameters<typeof Annotations>[0],
    );
-   if (!routeHasKey(chain, "@", "persist")) return undefined;
+   if (!declares(chain, "@", "persist")) return undefined;
    const own = declaredNotes(def, contents);
    const inherited = chain
       .forRoute("@")
@@ -2446,6 +2447,19 @@ export function planModelMaterialize(
          continue;
       }
       const { persist } = carried;
+      // Its place, by the one placement rule (declaration.ts).
+      const placed = placementOf(declaration.tag);
+      if ("refused" in placed) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: EMPTY_STORAGE_REASON,
+         });
+         continue;
+      }
+      if (placed.placement.tier === "storage") {
+         persist.storage = placed.placement.destination;
+      }
       // A source is planned in the model that declares it (see `declaredHere`),
       // so its name here is the name its author gave it.
       const tableName = name;

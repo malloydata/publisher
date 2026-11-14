@@ -4,7 +4,7 @@
 import { sourceDefOf } from "../../governance/ir/compiled_model";
 import type { PersistSource } from "@malloydata/malloy";
 import { RECOGNIZED_PERSIST_KEYS } from "../../annotation_reader";
-import { parseRouteTag } from "../../motly";
+import { readRoute } from "./declaration";
 import type { RollingWindow } from "./rolling_window";
 import type { Tag } from "@malloydata/malloy-tag";
 
@@ -160,7 +160,7 @@ export interface PairDelta {
 /** The source's `#@` tag, or undefined when it does not parse. */
 function safeTag(source: PersistSource): Tag | undefined {
    try {
-      return parseRouteTag(source.annotations, "@").tag;
+      return readRoute(source.annotations, "@").tag;
    } catch {
       return undefined;
    }

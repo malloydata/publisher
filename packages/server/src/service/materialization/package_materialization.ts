@@ -104,6 +104,9 @@ type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 const PREAGG_WARN_ONLY: ReadonlySet<PreaggregateViolationCode> = new Set([
    "non_public_measure",
    "grain_dimension_not_public",
+   // A rollup whose `storage=` names nothing is refused alone, as every
+   // route refuses one (plan/declaration.ts), never the package.
+   "empty_storage",
 ]);
 
 /**
@@ -2250,7 +2253,11 @@ export class PackageMaterialization {
       ).join("\n");
    }
 
-   /** The access-modifier violations, surfaced at load as warnings. */
+   /**
+    * The violations that only warn, surfaced at load: the access-modifier
+    * pair, and a rollup whose `storage=` names nothing (refused alone, as
+    * every route refuses one).
+    */
    preaggregateAccessWarnings(): ApiPackageWarning[] {
       return this.preaggregateFindings((code) =>
          PREAGG_WARN_ONLY.has(code),
@@ -2258,7 +2265,10 @@ export class PackageMaterialization {
          model: modelPath,
          subject: violation.fieldName ?? violation.sourceName,
          message: violation.message,
-         code: "preaggregate-hidden-field",
+         code:
+            violation.code === "empty_storage"
+               ? "preaggregate-malformed"
+               : "preaggregate-hidden-field",
          severity: "warn" as const,
       }));
    }

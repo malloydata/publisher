@@ -1,16 +1,15 @@
 {
   "bind": {
     "buildErrors": {},
-    "built": [
+    "built": [],
+    "verdicts": [],
+    "warnings": [
       {
-        "name": "m_empty",
-        "tier": "colocated"
+        "code": "materialize-not-built",
+        "message": "#(materialize) on source \"m_empty\" is not built, so the source is served live: its `storage=` names no destination: name the storage destination to build it into, or remove the key to build it in its own warehouse.",
+        "subject": "m_empty"
       }
-    ],
-    "verdicts": [
-      "m_empty:live:served_copy"
-    ],
-    "warnings": []
+    ]
   },
   "queries": []
 }

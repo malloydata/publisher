@@ -70,7 +70,7 @@ import {
    recordedTimezoneOf,
    timezoneOf,
 } from "../../governance/ir/compiled_model";
-import { Annotations, type ModelDef, type SourceDef } from "@malloydata/malloy";
+import type { ModelDef, SourceDef } from "@malloydata/malloy";
 import { getMaterializeGatedSources } from "../../../config";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
 import { basePersistNamespace } from "./preaggregation_synthesis";
@@ -92,7 +92,7 @@ import {
    doubleQuotedString,
    identifier,
 } from "../../malloy_text";
-import { parseRouteTag } from "../../motly";
+import { placementOf, readNotes } from "./declaration";
 import { malloyIdentifiers } from "../../query_text";
 import {
    classifyWhereTerms,
@@ -427,12 +427,7 @@ function readDeclaration(
          "reads the environment (`@env.`); write the value itself",
       );
    }
-   const { tag, log } = parseRouteTag(
-      new Annotations({ notes: [note] } as ConstructorParameters<
-         typeof Annotations
-      >[0]),
-      PREAGGREGATE_ROUTE,
-   );
+   const { tag, log } = readNotes([note], PREAGGREGATE_ROUTE);
    const errors = log.filter((m) => m.severity === "error");
    if (errors.length > 0) {
       return refuse(
@@ -465,11 +460,11 @@ function readDeclaration(
          "has a grain=[…] that names nothing, or holds something other than quoted dimension names",
       );
    }
-   const storage = keys.includes("storage") ? tag.text("storage") : undefined;
+   const placed = placementOf(tag);
    const namespace = keys.includes("namespace")
       ? tag.text("namespace")
       : undefined;
-   if (keys.includes("storage") && !storage?.trim()) {
+   if ("refused" in placed) {
       return refuse(
          "preaggregate-malformed",
          "has a storage= that is not a destination name",
@@ -481,6 +476,10 @@ function readDeclaration(
          "has a namespace= that is not a name",
       );
    }
+   const storage =
+      "placement" in placed && placed.placement.tier === "storage"
+         ? placed.placement.destination
+         : undefined;
    if (storage !== undefined && namespace !== undefined) {
       return refuse(
          "preaggregate-malformed",
@@ -498,7 +497,7 @@ function readDeclaration(
       grain: [...new Set((grain as string[]).map((g) => g.trim()))].sort(
          byCodepoint,
       ),
-      ...(storage !== undefined ? { storage: storage.trim() } : {}),
+      ...(storage !== undefined ? { storage } : {}),
       ...(namespace !== undefined ? { namespace } : {}),
    };
 }

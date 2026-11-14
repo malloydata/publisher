@@ -10,7 +10,7 @@
 
 import type { PersistSource } from "@malloydata/malloy";
 import { components } from "../../../api";
-import { parseRouteTag } from "../../motly";
+import { readRoute } from "./declaration";
 
 type WireFreshness = components["schemas"]["Freshness"];
 type QueryMetadata = components["schemas"]["QueryMetadata"];
@@ -94,7 +94,7 @@ function packageFreshnessLayer(
 /** The source's `#@` tag, or undefined if it fails to parse (degrade to unset). */
 function safeSourceTag(source: PersistSource): ReadableTag | undefined {
    try {
-      return parseRouteTag(source.annotations, "@").tag as ReadableTag;
+      return readRoute(source.annotations, "@").tag as ReadableTag;
    } catch {
       return undefined;
    }
@@ -107,7 +107,7 @@ function safeSourceTag(source: PersistSource): ReadableTag | undefined {
  */
 function safeModelTag(source: PersistSource): ReadableTag | undefined {
    try {
-      return parseRouteTag(source.modelAnnotations).tag as ReadableTag;
+      return readRoute(source.modelAnnotations).tag as ReadableTag;
    } catch {
       return undefined;
    }

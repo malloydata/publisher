@@ -517,7 +517,10 @@
         "sql": "sha256:d7205aaa5763e7e3"
       },
       "p_named_nested@<pkg>/m.malloy": {
-        "annotationFields": {},
+        "annotationFields": {
+          "name": "p_named_nested",
+          "storage": "lake"
+        },
         "columns": [
           {
             "name": "status",
@@ -570,7 +573,9 @@
         "sql": "sha256:8b0c58a474b6c64b"
       },
       "p_nested@<pkg>/m.malloy": {
-        "annotationFields": {},
+        "annotationFields": {
+          "storage": "lake"
+        },
         "columns": [
           {
             "name": "region",
@@ -727,7 +732,9 @@
         "sql": "sha256:d0afc282344820b6"
       },
       "views__v_nested__view@<pkg>/m.malloy.persist-view.malloy": {
-        "annotationFields": {},
+        "annotationFields": {
+          "storage": "lake"
+        },
         "columns": [
           {
             "name": "status",

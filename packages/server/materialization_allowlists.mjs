@@ -358,37 +358,7 @@ export const MATERIALIZATION_UNIMPORTED_EXPORTS = {
    "service/materialization/stored_column_types.ts#faithfulCastTarget": "2j",
 };
 /** Annotation payload reads outside plan/declaration.ts, per file. */
-export const RATCHET_ANNOTATION_READS = {
-   "service/materialization/plan/build_file_generator.ts": {
-      count: 3,
-      step: "2f",
-   },
-   "service/materialization/plan/build_plan.ts": { count: 3, step: "2f" },
-   "service/materialization/plan/incremental_declaration.ts": {
-      count: 1,
-      step: "2f",
-   },
-   "service/materialization/plan/persist_dynamic_terms.ts": {
-      count: 1,
-      step: "2f",
-   },
-   "service/materialization/plan/persist_source_fields.ts": {
-      count: 1,
-      step: "2f",
-   },
-   "service/materialization/plan/persisted_view.ts": { count: 3, step: "2f" },
-   "service/materialization/plan/plan_layers.ts": { count: 2, step: "2f" },
-   "service/materialization/plan/preaggregation_annotation.ts": {
-      count: 1,
-      step: "2f",
-   },
-   "service/materialization/plan/preaggregation_synthesis.ts": {
-      count: 1,
-      step: "2f",
-   },
-   "service/materialization/plan/rollup_plan.ts": { count: 1, step: "2f" },
-   "service/materialization/serve/rollup_variants.ts": { count: 1, step: "2f" },
-};
+export const RATCHET_ANNOTATION_READS = {};
 /** Reads of `_modelDef`, `_query`, `_sourceDef` or `_explore` outside governance/ir, per file. */
 export const RATCHET_IR_READS = {};
 /** Clock reads in serve/ and domain/, per file. */

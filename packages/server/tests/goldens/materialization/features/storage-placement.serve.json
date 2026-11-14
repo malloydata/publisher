@@ -7,12 +7,12 @@
         "tier": "storage"
       },
       {
-        "name": "views__v_sibling__view",
+        "name": "p_named_nested",
         "tier": "storage"
       },
       {
-        "name": "views__v_nested__view",
-        "tier": "colocated"
+        "name": "views__v_sibling__view",
+        "tier": "storage"
       },
       {
         "name": "rollups__rollup__region__495e6697",
@@ -32,8 +32,8 @@
       "views__v_sibling__view:serves",
       "views__v_nested__view:serves",
       "p_sibling:serves",
-      "p_nested:not_built",
-      "p_named_sibling:not_built",
+      "p_nested:serves",
+      "p_named_sibling:serves",
       "p_named_nested:serves"
     ],
     "warnings": [
@@ -1076,8 +1076,7 @@
         "considered": [
           {
             "kind": "view",
-            "outcome": "skipped",
-            "reason": "NOT_BUILT",
+            "outcome": "used",
             "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
           }
         ],
@@ -1088,13 +1087,6 @@
             "relationship": "sibling",
             "sourceName": "m_storage",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
-          },
-          {
-            "built": true,
-            "kind": "materialized",
-            "relationship": "sibling",
-            "sourceName": "p_named_nested",
-            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
           },
           {
             "built": true,
@@ -1136,13 +1128,14 @@
           "sourceName": "views"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "view",
+          "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
         },
         "warnings": []
       },
       "query": "nested view",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "view",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {

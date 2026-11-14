@@ -1,16 +1,15 @@
 {
   "bind": {
     "buildErrors": {},
-    "built": [
+    "built": [],
+    "verdicts": [],
+    "warnings": [
       {
-        "name": "views__v_empty__view",
-        "tier": "colocated"
+        "code": "persist-view-not-built",
+        "message": "#@ persist on view \"v_empty\" of source \"views\" is not built, so the view is served live: its `storage=` names no destination: name the storage destination to build it into, or remove the key to build it in its own warehouse.",
+        "subject": "views -> v_empty"
       }
-    ],
-    "verdicts": [
-      "views__v_empty__view:serves"
-    ],
-    "warnings": []
+    ]
   },
   "queries": []
 }
