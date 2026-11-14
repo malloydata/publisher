@@ -476,7 +476,7 @@ export function timeframeRestatements(
 }
 
 /** Why a declaration could not be re-rooted; the source then serves live. */
-export interface RerootRefusal {
+interface RerootRefusal {
    sourceName: string;
    url: string;
    /**
@@ -517,7 +517,7 @@ export interface ServedCopySpan {
 }
 
 /** The served copy of the files that declare re-rooted sources. */
-export interface ServedCopy {
+interface ServedCopy {
    /** File URL → its served text. Files with nothing re-rooted are absent. */
    files: Map<string, string>;
    /** Re-roots that did not apply. */

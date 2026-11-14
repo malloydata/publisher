@@ -66,7 +66,7 @@ export const BUILD_OUTCOMES = [
    "failed",
    "cancelled",
 ] as const;
-export type BuildOutcome = (typeof BUILD_OUTCOMES)[number];
+type BuildOutcome = (typeof BUILD_OUTCOMES)[number];
 
 /**
  * Why a build failed, for whoever decides on a retry: `deterministic`,
@@ -110,9 +110,7 @@ export const BUILD_DURATION_BUCKETS_MS = [
    100, 500, 1_000, 5_000, 15_000, 60_000, 300_000, 900_000, 3_600_000,
 ];
 /** Bucket boundaries of the build-read histogram, in bytes: 1 MB to 10 TB by decades. */
-export const BUILD_READ_BYTES_BUCKETS = [
-   1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13,
-];
+const BUILD_READ_BYTES_BUCKETS = [1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13];
 /**
  * `partial` is a run that committed a manifest while some of its sources failed:
  * distinct from `success` because the manifest is missing tables a consumer
@@ -126,7 +124,7 @@ export const MATERIALIZATION_OUTCOMES = [
 ] as const;
 export type MaterializationOutcome = (typeof MATERIALIZATION_OUTCOMES)[number];
 /** Manifest bind outcome: timeout is split out from generic failure on purpose. */
-export type ManifestBindOutcome = "success" | "failure" | "timeout";
+type ManifestBindOutcome = "success" | "failure" | "timeout";
 /**
  * Which engine a table drop ran against (`publisher_materialization_drop_tables_total`):
  * the source's own warehouse (`in_warehouse`) or a DuckDB/DuckLake `storage=`
@@ -134,7 +132,7 @@ export type ManifestBindOutcome = "success" | "failure" | "timeout";
  * for the label's history; a build's tier and method are labels of their own
  * on the build instruments ({@link BuildTier}, {@link BuildMethod}).
  */
-export type StorageBuildEngine =
+type StorageBuildEngine =
    | "storage"
    | "in_warehouse"
    | "delta"
@@ -173,7 +171,7 @@ export type EligibilityRefusalReason =
  * built over them, so the build failed loudly rather than recomputing a table
  * the orchestrator meant to pin.
  */
-export type ChainedStorageBuildOutcome =
+type ChainedStorageBuildOutcome =
    | "parent_reuse"
    | "inline_fallback"
    | "strict_shape_fallback"
@@ -414,7 +412,7 @@ export function recordMaterializationRun(
  * `failed` and absent otherwise, so the counter's `failure_class` is `none`
  * exactly when the outcome is not `failed`.
  */
-export type BuildOutcomeLabels =
+type BuildOutcomeLabels =
    | {
         kind: BuildKind;
         tier: BuildTier;

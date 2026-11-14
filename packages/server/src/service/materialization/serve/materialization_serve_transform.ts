@@ -1168,7 +1168,7 @@ function ownFilterList(
  * dropping a join or view only costs the tier, but dropping a `where:` answers
  * with rows the source excludes.
  */
-export const NEVER_THINNED: readonly string[] = ["filter"];
+const NEVER_THINNED: readonly string[] = ["filter"];
 
 /**
  * The refinement kinds each tier keeps, richest first, down to
@@ -1620,7 +1620,7 @@ export function extractSourceFilters(
  * Malloy: failing the shape compile serves live, where dropping the entry would
  * serve the unfiltered relation.
  */
-export const UNREPRODUCIBLE_FILTER = "__unreproducible_filter__";
+const UNREPRODUCIBLE_FILTER = "__unreproducible_filter__";
 
 /**
  * The dimensions and measures defined on a materialized source, from its

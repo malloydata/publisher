@@ -130,6 +130,7 @@ import {
    leaveOutCrossConnectionJoins,
    type LeftOutDefinition,
 } from "../plan/cross_connection_joins";
+import { LegDecline, type ServedCopyDeclineCode } from "./leg_decline";
 
 type VirtualMap = Map<string, Map<string, string>>;
 
@@ -146,44 +147,6 @@ function servedConnectionOf(b: ServeBinding): string {
 /** No storage destination: a served copy of colocated tables alone. */
 const NO_DESTINATIONS = (): MalloyConfig =>
    new MalloyConfig({ connections: {} });
-
-/**
- * Why the served copy declined a query, for the path report: `time_zone`, the
- * query sets a timezone over a stored computed dimension; `cross_connection`,
- * the copy waits on a join across connections, or the query reads a join it
- * leaves out across connections; `not_served`, the copy (or the
- * queried source in it) carries a `served-copy-not-served` warning;
- * `opt_out`, the queried source opts out with `#@ -persist`;
- * `count_semantics`, the query aggregates at the grain of a join the copy
- * answers from stored columns (an inlined join_one), which only live's join
- * computes; `joined_annotations`, the query returns a field of such a join
- * that the author annotated, whose notes its record cannot carry;
- * `pair_shape`, the query aggregates a pair table (an inlined join_many,
- * served flat) in a way that table does not reproduce exactly;
- * `pair_parent_only`, the query reads nothing through the inlined join, so
- * the pair table (one row per child) is the costly way to answer it.
- */
-export type ServedCopyDeclineCode =
-   | "time_zone"
-   | "cross_connection"
-   | "not_served"
-   | "opt_out"
-   | "count_semantics"
-   | "joined_annotations"
-   | "pair_shape"
-   | "pair_parent_only";
-
-/** A query the served copy declines, with why. */
-export class ServedCopyDecline extends Error {
-   constructor(
-      message: string,
-      readonly code: ServedCopyDeclineCode,
-      /** What the path report may tell the caller; the message stays in logs. */
-      readonly callerDetail?: string,
-   ) {
-      super(message);
-   }
-}
 
 /** The caller's detail for a join-grain aggregate through an inlined join. */
 const JOIN_GRAIN_DETAIL =
@@ -295,7 +258,7 @@ const staleBindingsWithheld = lazyCounter(
    "Storage serve bindings withheld from a routed query because the freshness gate found them stale; each one is read live instead. Until now staleness was visible only as a later live read.",
 );
 
-export interface ServedCopyHost {
+interface ServedCopyHost {
    modelPath(): string;
    modelDef(): unknown;
    /**
@@ -401,7 +364,7 @@ interface Compiled {
     * this compile, so a repeat is declined without compiling it again
     * (decision 6). Dropped with the compile: a rebind or reload starts empty.
     */
-   declined?: Map<string, ServedCopyDecline>;
+   declined?: Map<string, LegDecline>;
    /**
     * The pair tables (inlined join_many, P5) the copy reads flat: a query that
     * reads one is checked against it (governance/ir/pair_flat_query.ts).
@@ -489,7 +452,7 @@ export interface ServedCopyJoinBasis {
    aliased: readonly ServeBinding[];
    /** The definitions the copy left out because a join they read crosses connections. */
    leftOut: readonly LeftOutDefinition[];
-   /** The copy's checks on a query a variant over it answers; throws a {@link ServedCopyDecline}. */
+   /** The copy's checks on a query a variant over it answers; throws a {@link LegDecline}. */
    check(args: {
       /** The query source's author `sourceID`. */
       sourceID: string;
@@ -753,14 +716,18 @@ export class ServedCopyServe {
       givens?: Record<string, unknown>,
    ): Promise<Awaited<ReturnType<ServedCopyServe["loadQuery"]>>> {
       if (!compiled.materializer || compiled.rerooted.length === 0) {
-         throw new ServedCopyDecline(
-            compiled.problems[0]?.detail ??
-               "no stored table is re-rooted in this model's served copy",
+         throw new LegDecline(
             compiled.problems.some(
                (p) => p.reason === "cross_connection_unbuilt",
             )
-               ? "cross_connection"
-               : "not_served",
+               ? "served_copy_cross_connection"
+               : "served_copy_not_served",
+            undefined,
+            {
+               message:
+                  compiled.problems[0]?.detail ??
+                  "no stored table is re-rooted in this model's served copy",
+            },
          );
       }
       const declined = compiled.declined?.get(queryString);
@@ -772,7 +739,7 @@ export class ServedCopyServe {
       ): never => {
          const memo = (compiled.declined ??= new Map());
          if (memo.size >= DECLINED_LIMIT) memo.clear();
-         const error = new ServedCopyDecline(reason, code, callerDetail);
+         const error = new LegDecline(code, callerDetail, { message: reason });
          memo.set(queryString, error);
          throw error;
       };
@@ -786,7 +753,7 @@ export class ServedCopyServe {
             if (readsLeftOutDefinition(compiled, error, queryString)) {
                decline(
                   "the query reads a join the served copy leaves out across connections",
-                  "cross_connection",
+                  "served_copy_cross_connection",
                   LEFT_OUT_JOIN_DETAIL,
                );
             }
@@ -816,7 +783,7 @@ export class ServedCopyServe {
          if (name !== undefined && this.gateCannotGraft(compiled, name)) {
             decline(
                "a row-level gate on the queried source was declared on a source the served copy re-roots, so it cannot be grafted here",
-               "not_served",
+               "served_copy_not_served",
             );
          }
       }
@@ -839,13 +806,13 @@ export class ServedCopyServe {
          if (chain.some((id) => compiled.unsafeIDs?.has(id))) {
             decline(
                "the query reads a source whose served copy exposes a field the compile of record does not classify or carry",
-               "not_served",
+               "served_copy_not_served",
             );
          }
          if (chain.some((id) => compiled.optOutIDs?.has(id))) {
             decline(
                "the query reads a source that opts out of persist",
-               "opt_out",
+               "served_copy_opt_out",
             );
          }
       }
@@ -865,7 +832,10 @@ export class ServedCopyServe {
          // work over live. Let the next candidate answer.
          // A table on the queried source's chain that is not re-rooted was
          // left unserved, with a package warning saying why.
-         decline("the query reads no re-rooted table", "not_served");
+         decline(
+            "the query reads no re-rooted table",
+            "served_copy_not_served",
+         );
       }
       // A table whose re-root leaves a stored column out answers a query
       // naming that column live (it does not compile here), but a wildcard
@@ -888,7 +858,7 @@ export class ServedCopyServe {
          if (live === undefined || live !== served) {
             decline(
                "the query's result includes a column the served copy leaves out of a stored table's type",
-               "not_served",
+               "served_copy_not_served",
             );
          }
       }
@@ -930,7 +900,7 @@ export class ServedCopyServe {
          if (levels.some((l) => l === undefined)) {
             decline(
                "the query could not be read to tell which inlined join_many it reads",
-               "pair_shape",
+               "served_copy_pair_shape",
                PAIR_BLOCKS_DETAIL,
             );
          }
@@ -938,7 +908,7 @@ export class ServedCopyServe {
          if (read.length > 1) {
             decline(
                "the query reads more than one inlined join_many of a pair table",
-               "pair_shape",
+               "served_copy_pair_shape",
                PAIR_BLOCKS_DETAIL,
             );
          }
@@ -1008,13 +978,13 @@ export class ServedCopyServe {
             if (verdict.kind === "parent_only") {
                decline(
                   "the query reads nothing through the inlined join_many, so its pair table is not read for it",
-                  "pair_parent_only",
+                  "served_copy_pair_parent_only",
                   "The table stores this source once per child of its inlined join_many and the query reads no child field, so it is answered without this table, which would read every child row to count each parent once.",
                );
             } else {
                decline(
                   `the pair table cannot answer this query exactly: ${verdict.reason}`,
-                  "pair_shape",
+                  "served_copy_pair_shape",
                   `The table stores an inlined join_many flat, which cannot answer this query exactly (${verdict.reason}), so it is answered without this table.`,
                );
             }
@@ -1037,7 +1007,7 @@ export class ServedCopyServe {
             computed
                ? "the query sets a timezone over a table built in the default zone (a stored computed dimension or a row filter that depends on it)"
                : "the query sets a timezone, which moves a rolling window's cut-off past what its table stores",
-            "time_zone",
+            "served_copy_time_zone",
          );
       }
       return {
@@ -1100,7 +1070,7 @@ export class ServedCopyServe {
     * keeps its grain and annotation rules. The copy's time-zone rule needs
     * no check here: the join leg declines every query that sets a
     * `timezone:` (`TIME_ZONE`) before it compiles one. Throws a
-    * {@link ServedCopyDecline}.
+    * {@link LegDecline}.
     */
    private async checkJoinVariant(
       compiled: Compiled,
@@ -1116,7 +1086,7 @@ export class ServedCopyServe {
          code: ServedCopyDeclineCode,
          callerDetail?: string,
       ): never => {
-         throw new ServedCopyDecline(reason, code, callerDetail);
+         throw new LegDecline(code, callerDetail, { message: reason });
       };
       const map = SourceMap.of(compiled.modelDef);
       const node = map.node(args.sourceID);
@@ -1124,13 +1094,13 @@ export class ServedCopyServe {
       if (chain.some((id) => compiled.unsafeIDs?.has(id))) {
          decline(
             "the query reads a source whose served copy exposes a field the compile of record does not classify or carry",
-            "not_served",
+            "served_copy_not_served",
          );
       }
       if (chain.some((id) => compiled.optOutIDs?.has(id))) {
          decline(
             "the query reads a source that opts out of persist",
-            "opt_out",
+            "served_copy_opt_out",
          );
       }
       const { tablesRead } = args;
@@ -1141,7 +1111,7 @@ export class ServedCopyServe {
       ) {
          decline(
             "the query reads a pair table, which holds its source once per child of its inlined join_many",
-            "pair_shape",
+            "served_copy_pair_shape",
          );
       }
       let preparedRead: ReturnType<typeof readPreparedQuery> | undefined;
@@ -2447,7 +2417,7 @@ async function checkRecordJoins(args: {
       ) {
          decline(
             "the query aggregates at the grain of a join the served copy answers from stored columns",
-            "count_semantics",
+            "served_copy_count_semantics",
             JOIN_GRAIN_DETAIL,
          );
       }
@@ -2469,7 +2439,7 @@ async function checkRecordJoins(args: {
             out.output
                ? `the query returns ${out.output.path.join(".")}, whose annotations the served copy's record of stored columns cannot carry`
                : "the query's output columns cannot be read",
-            "joined_annotations",
+            "served_copy_joined_annotations",
             JOINED_ANNOTATIONS_DETAIL,
          );
       }
@@ -3286,7 +3256,7 @@ function declaresBlocks(def: unknown): boolean {
  * case-fold (see {@link storedColumnsWithAccess}): what the source's own text
  * drops or renames away after the build.
  */
-export function unnamedStoredColumns(
+function unnamedStoredColumns(
    schema: readonly { name: string; type: string }[],
    fields: readonly unknown[] | undefined,
 ): { name: string; type: string }[] {
