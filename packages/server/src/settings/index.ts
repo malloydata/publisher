@@ -7,7 +7,7 @@ import { Settings } from "./settings";
 /**
  * The one way code reads a setting: `settings.get("mcp.port")`, typed by the
  * registry, from the settings this process started with. See
- * docs/configuration-design.md.
+ * docs/publisher-v1.md, Appendix C.
  */
 export const settings = {
    get: <K extends SettingKey>(key: K): SettingValue<K> =>

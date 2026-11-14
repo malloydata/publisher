@@ -25,7 +25,7 @@ import {
 const KEY = { EMBEDDING_API_KEY: "sk-test" };
 
 /**
- * The variable the configuration design (docs/configuration-design.md, "The
+ * The variable the configuration design (docs/publisher-v1.md, Appendix C, "The
  * mapping") gives each setting, read from step 2. A row the design marks
  * "unchanged" keeps today's name, which the derivation must reproduce.
  */

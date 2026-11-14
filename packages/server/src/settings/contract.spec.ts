@@ -14,7 +14,7 @@ import { PROBES } from "../test_helpers/settings_probes";
 /**
  * What each setting gives for each way an operator can set it, today. One
  * entry per setting, under its key in the configuration design
- * (docs/configuration-design.md), with today's variable, flag and file key as
+ * (docs/publisher-v1.md, Appendix C), with today's variable, flag and file key as
  * the sources. Every row is a case a deployment can hit: unset, each source
  * read today, a blank variable, and values that are wrong. The expected result
  * is today's, quirks included, so a change to how a setting is read shows up

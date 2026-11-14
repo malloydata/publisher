@@ -3,7 +3,7 @@
 
 /**
  * The value types in the configuration design's table
- * (docs/configuration-design.md, "Types, read the same way from every
+ * (docs/publisher-v1.md, Appendix C, "Types, read the same way from every
  * source"). Each one reads a value as a variable or flag spells it
  * (`fromString`) and as the config file holds it (`fromJson`), and says what it
  * expects in the words a message uses.
