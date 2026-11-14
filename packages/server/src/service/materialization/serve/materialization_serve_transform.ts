@@ -661,6 +661,7 @@ function serveShapeFragment(binding: ServeBinding): string {
    const { declared, leftOut } = declarableColumns(binding.schema);
    reportLeftOutColumns(binding.sourceName, leftOut);
    const fields = declared
+      // malloy-text: each type is storedMalloyType's, a Malloy type from the fixed DuckDB type map
       .map((c) => `   ${identifier(c.name)}::${c.malloyType}`)
       .join(",\n");
    const virtual = `${identifier(binding.destinationName)}.virtual(${stringLiteral(binding.virtualHandle)})::${shapeTypeName}`;
@@ -686,6 +687,7 @@ function serveShapeFragment(binding: ServeBinding): string {
             return cast.native
                ? `${name} is ${name}::${doubleQuotedString(cast.castTo)}`
                : // A cast target is a scalar (BOOLEAN, DATE), so it maps.
+                 // malloy-text: a Malloy type name from the fixed DuckDB type map
                  `${name} is ${name}::${storedMalloyType(cast.castTo) ?? doubleQuotedString(cast.castTo)}`;
          })
          .join(", ");
