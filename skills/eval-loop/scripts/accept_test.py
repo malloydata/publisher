@@ -212,6 +212,17 @@ class Noise(unittest.TestCase):
         shutil.rmtree(self.aa)
         self.assertIsNone(accept.find_aa(self.cfg, self.base))
 
+    def test_the_same_served_content_at_another_commit_is_still_a_second_run(self):
+        pv = {"id": "1.0.0", "contentHash": "h1"}
+        a = {"modelGitSha": "c1", "packageVersion": pv, "maxTurns": 30}
+        self.assertTrue(accept.same_measurement(a, {**a, "modelGitSha": "c2"}))
+        self.assertFalse(accept.same_measurement(
+            a, {**a, "modelGitSha": "c2", "packageVersion": {"id": "1.0.0", "contentHash": "h2"}}))
+        # with no content hash the commit is all there is to go on
+        bare = {"modelGitSha": "c1", "maxTurns": 30}
+        self.assertFalse(accept.same_measurement(bare, {**bare, "modelGitSha": "c2"}))
+        self.assertFalse(accept.same_measurement(a, {**a, "maxTurns": 40}))
+
     def test_a_run_with_other_pins_named_as_the_second_run_cannot_be_checked(self):
         self.cand("a"), self.cand("b")
         code = accept.main(["--set", str(self.set), "--baseline", "base", "--run", "a",

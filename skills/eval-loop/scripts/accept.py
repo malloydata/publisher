@@ -110,8 +110,20 @@ def distinct(baseline: pathlib.Path, candidates: list[pathlib.Path]) -> None:
 
 
 def same_measurement(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    """Do two runs share every pin, the model's included, and the same cases?"""
-    return (all(a.get(k) == b.get(k) for k in (*COMPARABLE, *RUN_SETTINGS))
+    """Do two runs share every pin, the model's included, and the same cases?
+
+    The model is the same when the served package's content hash is the same.
+    The repository's commit is only consulted when a run has no content hash:
+    in a repository that holds more than the model, the commit moves with every
+    unrelated change, and two runs of one unchanged package then never pair.
+    Measured: two nights of one package, identical in every other pin, differed
+    in `modelGitSha` alone.
+    """
+    def content(r: dict[str, Any]) -> Any:
+        return (r.get("packageVersion") or {}).get("contentHash")
+    same_content = content(a) is not None and content(a) == content(b)
+    pins = [k for k in (*COMPARABLE, *RUN_SETTINGS) if not (same_content and k == "modelGitSha")]
+    return (all(a.get(k) == b.get(k) for k in pins)
             and (a.get("slice") or {}).get("qids") == (b.get("slice") or {}).get("qids"))
 
 
