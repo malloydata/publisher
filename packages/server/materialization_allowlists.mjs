@@ -320,7 +320,7 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
    },
    "service/materialization/serve/storage_bindings.ts": { count: 1, step: "5" },
    "service/materialization/serve/view_variants.ts": { count: 1, step: "5" },
-   "service/materialization/stored_column_types.ts": { count: 2, step: "5" },
+   "service/materialization/stored_column_types.ts": { count: 1, step: "5" },
 };
 /** H4: exports no other file imports, "<file>#<name>": step. */
 export const MATERIALIZATION_UNIMPORTED_EXPORTS = {
@@ -353,7 +353,6 @@ export const MATERIALIZATION_UNIMPORTED_EXPORTS = {
    "service/materialization/run/table_ownership.ts#OWNED_TABLE_MARK": "2g.4",
    "service/materialization/serve/declaring_file_variant.ts#gateLines": "2g.2",
    "service/materialization/serve/rollup_variants.ts#checkCoverage": "2g.2",
-   "service/materialization/stored_column_types.ts#faithfulCastTarget": "2j",
 };
 /** Annotation payload reads outside plan/declaration.ts, per file. */
 export const RATCHET_ANNOTATION_READS = {};

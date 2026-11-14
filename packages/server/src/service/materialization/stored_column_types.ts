@@ -2,32 +2,31 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Stored column types against the types Malloy declares (ms2data/service#6642).
+ * A stored column's type, both directions, in one module.
  *
- * A `storage=` table's column types are whatever the warehouse returned, which
- * need not be the type Malloy declares for the field: Postgres answers a date
- * truncation with a timestamp, DuckDB answers `date + 1 month` with one, and a
- * `sql_boolean` over an integer stays an integer. The serve shape types each
- * column from its STORED type, so such a column serves as a different type than
- * live: a date compared with a date column no longer compiles, and a boolean
- * groups as 0 and 1.
+ * - What a field is stored as: the type a build writes for each column
+ *   ({@link storedColumnsOfOutput}), with the casts that make the table hold
+ *   the declared type whatever the warehouse returned ({@link
+ *   BUILD_CAST_TARGETS}, {@link storageBuildCasts}).
+ * - What a stored column is declared as when served: one declaration rule
+ *   ({@link storedMalloyType}, {@link storedMalloyTypeFor}, {@link
+ *   storedTypeText}), and per column a verdict: declared as its stored type,
+ *   read through a faithful cast ({@link serveTypePlan}), read as its native
+ *   type (a big integer, {@link bigIntegerReads}), or left out, so a query
+ *   reading it answers live and every other query is served.
+ * - The schema a bound entry carries ({@link boundSchemaOf}, {@link
+ *   boundNativeSchemaOf}) and a dry run's prediction of it ({@link
+ *   previewNativeSchema}).
  *
- * Two halves, one table:
+ * The warehouse need not return the type Malloy declares: Postgres answers a
+ * date truncation with a timestamp, DuckDB answers `date + 1 month` with one,
+ * and a `sql_boolean` over an integer stays an integer. An incremental source
+ * whose stored table holds a type a rebuild would cast re-seeds on its next
+ * run ({@link rebuildWouldRecast}), since a delta never reaches the CTAS that
+ * casts. The capture of a colocated table's native types stays in
+ * `run/colocated_native_types.ts`.
  *
- * - At build, a column whose declared type has a single faithful DuckDB type
- *   ({@link BUILD_CAST_TARGETS}) is CAST to it in the build's SELECT, so the
- *   table stores the declared type whatever the warehouse returned.
- * - At serve, a column whose stored type does not serve as its declared type
- *   ({@link storedTypeServesAs}) is read through a cast to its declared type
- *   when one is faithful ({@link serveTypePlan}), so a table an older build
- *   typed still serves every field built on it. A column no cast can make
- *   faithful (a number stored as text) is left off the shape when nothing on
- *   the shape names it, so only queries reading it are answered live; when a
- *   refinement names it, that one binding is withheld instead, so the failure
- *   stays with that source and never degrades the rest of the shape.
- * - An incremental source whose stored table holds a type a rebuild would cast
- *   re-seeds on its next run ({@link rebuildWouldRecast}), since a delta never
- *   reaches the CTAS that casts.
+ * Pure: the build and the served copy apply what it decides.
  */
 
 import { queryTimezoneOf } from "../governance/ir/compiled_model";
@@ -36,6 +35,7 @@ import { getDialect } from "@malloydata/malloy";
 import { identifier } from "../malloy_text";
 import { quoteIdentifier } from "../quoting";
 import { fromSubselect } from "./subselect";
+import type { ServeBinding } from "./domain/serve_binding";
 
 /**
  * The `code` of the package warning, and of the build and serve log lines, for
@@ -342,7 +342,7 @@ const NAIVE_TIMESTAMP_TYPES =
  * Nothing else: a number or boolean stored as text can hold a value the cast
  * refuses, and text-to-number has no single right type.
  */
-export function faithfulCastTarget(
+function faithfulCastTarget(
    m: StoredColumnTypeMismatch,
    options: BuildCastOptions = {},
 ): string | undefined {
@@ -1044,3 +1044,66 @@ export function declarableColumns(
 }
 
 /** `name TYPE, …` for an error or log line: names and types, never values. */
+
+/**
+ * The Malloy type a stored column is declared as in the `type:`: the one rule
+ * every stored table's declaration follows ({@link storedMalloyType}). A
+ * column it cannot declare is left out before a declaration is written, so
+ * the `json` here is never reached by one that compiles: Malloy refuses it in
+ * a `type:`, which fails that copy and leaves the source to its fallback.
+ */
+export function storedTypeText(stored: string): string {
+   return storedMalloyType(stored) ?? "json";
+}
+
+/**
+ * A wire entry's captured `schema` as a bound entry carries it: only columns
+ * with both a name and a type, and undefined when none is left.
+ */
+export function boundSchemaOf(
+   schema: readonly { name?: string; type?: string }[] | undefined,
+): { schema: { name: string; type: string }[] } | Record<string, never> {
+   const columns = (schema ?? []).flatMap((c) =>
+      typeof c.name === "string" && typeof c.type === "string"
+         ? [{ name: c.name, type: c.type }]
+         : [],
+   );
+   return columns.length > 0 ? { schema: columns } : {};
+}
+
+/** {@link boundSchemaOf} for a wire entry's `nativeSchema`. */
+export function boundNativeSchemaOf(
+   schema: readonly { name?: string; type?: string }[] | undefined,
+): { nativeSchema: { name: string; type: string }[] } | Record<string, never> {
+   const bound = boundSchemaOf(schema);
+   return "schema" in bound ? { nativeSchema: bound.schema } : {};
+}
+
+/**
+ * A dry run's colocated binding with the warehouse types a build would
+ * capture (`ManifestEntry.nativeSchema`), so it predicts the cast a big-integer
+ * column is read through: each column as the dialect's own type for a
+ * `bigint` number. A preview has no table to read; the real build's capture
+ * can only be as wide or wider, and a type Malloy does not read as `bigint`
+ * answers that column live, which no dry run can foresee.
+ */
+export function previewNativeSchema(
+   binding: ServeBinding,
+   sources: Readonly<Record<string, { dialect?: string }>>,
+): ServeBinding {
+   const dialect = sources[binding.sourceIDs?.[0] ?? ""]?.dialect;
+   if (!binding.colocated || !dialect) return binding;
+   let type: string;
+   try {
+      type = getDialect(dialect).malloyTypeToSQLType({
+         type: "number",
+         numberType: "bigint",
+      });
+   } catch {
+      return binding;
+   }
+   return {
+      ...binding,
+      nativeSchema: binding.schema.map((c) => ({ name: c.name, type })),
+   };
+}
