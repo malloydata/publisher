@@ -78,7 +78,7 @@ export interface JoinRollupLeg {
 }
 
 /** Why a join cannot take the leg at all, whatever the query: a skip code and a caller-safe detail. */
-export interface JoinRollupRefusal {
+interface JoinRollupRefusal {
    code:
       | "rollup_count_semantics"
       | "rollup_grain_too_coarse"

@@ -109,7 +109,7 @@ export const INLINE_UNIQUENESS_KEY = "inlineUniquenessChecks";
  * Recorded only for a check that read a persisted joined table (a
  * {@link StoredJoin}); a check over anything read live is never relied on.
  */
-export interface UniquenessPass {
+interface UniquenessPass {
    /** The joined source's content address (its sourceEntityId). */
    joinedAddress: string;
    /** The table the check read: its connection and physical name. */
@@ -119,7 +119,7 @@ export interface UniquenessPass {
 }
 
 /** What became of one check in a run, for the run's metadata. */
-export interface UniquenessCheckOutcome {
+interface UniquenessCheckOutcome {
    sourceName: string;
    join: string;
    /** `ran`: the check ran (and passed). `skipped`: a recorded pass held. */
@@ -454,7 +454,7 @@ export function withoutUniquenessPasses(
  * companion's materializer is (materialize_compile.ts); a check without one
  * (a plan from elsewhere) is never compiled over a stored table.
  */
-export type UniquenessCheckCompiler = (
+type UniquenessCheckCompiler = (
    buildManifest: BuildManifest,
    connectionDigests: Record<string, string>,
 ) => Promise<string>;

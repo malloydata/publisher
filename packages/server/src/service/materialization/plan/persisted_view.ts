@@ -116,7 +116,7 @@ export function persistedViewCompanionHref(declaringURL: string): string {
 }
 
 /** The generated build source's name for `source -> view`. */
-export function persistedViewBuildName(source: string, view: string): string {
+function persistedViewBuildName(source: string, view: string): string {
    return `${source}__${view}__view`;
 }
 
@@ -211,7 +211,7 @@ function storageOf(notes: readonly AnnotationNote[]): string | undefined {
  * of the compiled model (see {@link declaredFieldNotes}), which tells a view
  * the source's statement annotated from one it inherited.
  */
-export function planSourcePersistedViews(
+function planSourcePersistedViews(
    node: SourceNode,
    scope: SourceScope,
 ): {

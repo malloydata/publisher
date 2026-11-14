@@ -1,0 +1,152 @@
+// feature: time zones: files generated while serving
+
+// ==== <pkg>/m.malloy (text 1 of 2)
+##! experimental { virtual_source }
+type: wide__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number,
+   customers__id::number,
+   customers__name::string,
+   customers__segment::string,
+   customers__home_region::string,
+   customers__signup_date::date
+}
+type: mat__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number
+}
+
+import "raw.malloy"
+
+source: orders is orders_raw extend {
+  dimension: m is created_at.month
+  #(preaggregate) grain=["region", "m"]
+  measure: total is amount.sum()
+}
+
+source: zoned is orders_raw extend {
+  timezone: 'America/Los_Angeles'
+  dimension: m is created_at.month
+  #(preaggregate) grain=["region", "m"]
+  measure: total is amount.sum()
+}
+
+source: rezoned is orders extend { timezone: 'America/New_York' }
+
+#(materialize) storage="lake"
+source: mat is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb')::mat__served extend {
+  internal rename:
+    id__stored is id
+    customer_id__stored is customer_id
+    order__stored is order
+  dimension:
+    id is id__stored::"HUGEINT"
+    customer_id is customer_id__stored::"HUGEINT"
+    order is order__stored::"HUGEINT"
+  dimension: created_day is created_at.day
+  measure: n is count()
+}
+
+#(materialize) storage="lake" inline=["customers"]
+source: wide is __served_copy_alias_of_lake.virtual('a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13')::wide__served extend {
+  internal rename:
+    customers__id__stored is customers__id
+    customers__name__stored is customers__name
+    customers__segment__stored is customers__segment
+    customers__home_region__stored is customers__home_region
+    customers__signup_date__stored is customers__signup_date
+  dimension:
+    customers is {
+      id is customers__id__stored::"HUGEINT",
+      name is customers__name__stored,
+      segment is customers__segment__stored,
+      home_region is customers__home_region__stored,
+      signup_date is customers__signup_date__stored
+    }
+  internal rename:
+    id__stored is id
+    customer_id__stored is customer_id
+    order__stored is order
+  dimension:
+    id is id__stored::"HUGEINT"
+    customer_id is customer_id__stored::"HUGEINT"
+    order is order__stored::"HUGEINT"
+
+  measure: n is count()
+}
+
+// ==== <pkg>/m.malloy (text 2 of 2)
+##! experimental { access_modifiers persistence virtual_source }
+import { mat, rezoned, wide, zoned } from "m.malloy.rollup-author.malloy"
+
+import { orders__rollup__m_region__75e7c0f9__built is orders__rollup__m_region__75e7c0f9 } from "m.malloy.preaggregate.malloy"
+source: orders__rollup__m_region__75e7c0f9__served is orders__rollup__m_region__75e7c0f9__built extend {
+  measure:
+    #(preaggregate) grain=["region", "m"]
+    total is total__partial.sum()
+}
+source: orders is orders__rollup__m_region__75e7c0f9__served include { internal: total__partial public: * }
+export { orders, mat, rezoned, wide, zoned }
+
+// ==== <pkg>/m.malloy.preaggregate.malloy
+##! experimental.persistence
+import { orders__rollup_base is orders } from "m.malloy.rollup-author.malloy"
+
+#@ persist
+source: orders__rollup__m_region__75e7c0f9 is orders__rollup_base -> {
+  group_by:
+    m
+    region
+  aggregate:
+    total__partial is amount.sum()
+}
+
+// ==== <pkg>/m.malloy.rollup-author.malloy
+import "raw.malloy"
+
+source: orders is orders_raw extend {
+  dimension: m is created_at.month
+  #(preaggregate) grain=["region", "m"]
+  measure: total is amount.sum()
+}
+
+source: zoned is orders_raw extend {
+  timezone: 'America/Los_Angeles'
+  dimension: m is created_at.month
+  #(preaggregate) grain=["region", "m"]
+  measure: total is amount.sum()
+}
+
+source: rezoned is orders extend { timezone: 'America/New_York' }
+
+#(materialize) storage="lake"
+source: mat is orders_raw extend {
+  dimension: created_day is created_at.day
+  measure: n is count()
+}
+
+#(materialize) storage="lake" inline=["customers"]
+source: wide is orders_raw extend {
+  join_one: customers is customers_raw with customer_id
+  measure: n is count()
+}
+
+// ==== <pkg>/m.malloy.rollup.malloy
+##! experimental { access_modifiers persistence virtual_source }
+import { orders_raw, customers_raw, lines_raw } from "raw.malloy"
+import { orders } from "m.malloy"
+import { zoned, rezoned, mat, wide } from "m.malloy.rollup-author.malloy"

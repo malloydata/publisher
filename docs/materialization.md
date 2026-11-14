@@ -476,6 +476,22 @@ rest, give the field a native cast in the model so the warehouse returns the dec
 example `amount_text::"double"`: a cast to a type Malloy already believes the field has, such as
 `::number` here, emits no SQL.
 
+**Columns with no Malloy basic type.** A stored list or struct column is declared as Malloy's array
+or record type, so it reads back as it does live, when the source's field is one; a column Malloy has
+no faithful declaration for (a MAP, UNION, ENUM, BLOB, INTERVAL or JSON column, a list or struct
+holding one, a list or struct whose field live types as a warehouse-native type or that holds one, or
+a list or struct holding an integer live keeps exact past 2^53, such as a DuckDB `BIGINT[]`) is left out
+of its source, so a query reading it is answered live and every other query reads the table. A list or
+struct of zoned timestamps is declared `timestamptz`, as live types it. A stored scalar whose field live
+types as a warehouse-native type (`sql native`: a `uuid`, or a Postgres `json`, `jsonb` or composite
+type, which the destination stores as text) is left out the same way, and a Postgres `bytea` or
+`interval` is stored as BLOB or INTERVAL rather than cast to text, so it is left out too: live answers
+each in a type or text the stored column does not reproduce. A table built before 0.13.1 keeps a `bytea`
+or `interval` column as text until it is rebuilt in full. The build no
+longer refuses such a table; it refuses (reason `not_duckdb_portable`) only one with no column left
+to declare. Each column the build-time check leaves out is counted in
+`publisher_storage_serve_shape_type_fallback_total`.
+
 **Integers past 2^53.** A stored table's columns are declared to Malloy as plain numbers, which it
 reads through a JavaScript number, so 9007199254740993 would come back as 9007199254740992. A
 column whose field Malloy types as a big integer (a DuckDB `BIGINT`, `HUGEINT` or `UBIGINT`, a

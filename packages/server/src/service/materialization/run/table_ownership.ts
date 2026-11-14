@@ -180,7 +180,7 @@ export function ownedTableComment(owner: string): string {
 }
 
 /** The dialects whose tables' holders can be read (and marked). */
-export function tableOwnershipDialectSupported(dialect: string): boolean {
+function tableOwnershipDialectSupported(dialect: string): boolean {
    return (
       nameViewDialectSupported(dialect) ||
       dialect === "mysql" ||
@@ -266,7 +266,7 @@ export function ownedTableMarkSql(
 }
 
 /** What holds a table's name, as `owner` sees it. */
-export type TableHolder =
+type TableHolder =
    | { state: "free" }
    /**
     * A table marked as `owner`'s, or (`view`) `owner`'s own `name=` view,

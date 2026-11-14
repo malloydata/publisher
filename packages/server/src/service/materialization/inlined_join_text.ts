@@ -33,7 +33,7 @@ export const TIMEFRAMES: ReadonlySet<string> = new Set([
 ]);
 
 /** A stored column that holds a joined source's field, as the record reads it. */
-export interface InlinedJoinColumnText {
+interface InlinedJoinColumnText {
    /** The field on the joined source. */
    name: string;
    /** The stored column (`<join>__<field>`). */
@@ -57,9 +57,7 @@ export interface InlinedJoinText {
 }
 
 /** A statement's access label, as Malloy text: empty for a public one. */
-export function accessLabel(
-   access: "private" | "internal" | undefined,
-): string {
+function accessLabel(access: "private" | "internal" | undefined): string {
    switch (access) {
       case "private":
          return "private ";

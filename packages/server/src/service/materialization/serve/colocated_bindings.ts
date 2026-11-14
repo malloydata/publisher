@@ -39,7 +39,7 @@ import type { FreshnessAwareManifestEntry, FreshnessManifest } from "../types";
 import type { ServeBinding } from "./materialization_serve_transform";
 
 /** What a binding reads of a build-plan source. */
-export interface ColocatedPlanSource {
+interface ColocatedPlanSource {
    name: string;
    sourceEntityId: string;
    connectionName: string;
