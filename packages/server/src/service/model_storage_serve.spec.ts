@@ -5,8 +5,7 @@
 // exercised through the real Model.runQuery against a real in-memory
 // DuckDB. The ORIGINAL source returns 0; the serve binding points at a table
 // returning 60 — so the value observed proves whether the query was routed
-// through the serve-shape transform (60) or served live from the original
-// model (0). This pins the mode gate, the binding gate, and the safe fallback.
+// through the served copy (60) or served live from the original model (0). This pins the mode gate, the binding gate, and the safe fallback.
 import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
@@ -21,6 +20,10 @@ import { Model } from "./model";
 import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
 import { installSettings } from "../test_helpers/settings_env";
 import { QueryPrivileges } from "./model_query_request";
+import {
+   type ServedCopyFiles,
+   writeServedCopyFiles,
+} from "../test_helpers/served_copy_files";
 
 /** Puts back the settings the current test installed. */
 let restoreSettings: (() => void) | undefined;
@@ -41,7 +44,11 @@ afterEach(() => {
    restoreSettings = undefined;
 });
 
-const ROOT = "file:///storage-serve-e2e/";
+/** The files the last {@link buildModel} wrote, for a sourceID by URL. */
+let lastFiles: ServedCopyFiles | undefined;
+/** `name`'s sourceID in `file` of the last model built. */
+const sourceIDIn = (name: string, file: string) =>
+   `${name}@${lastFiles!.urlOf(file)}`;
 const QUERY = "run: X -> { aggregate: t is total.sum() }";
 const BINDING: ServeBinding = {
    sourceName: "X",
@@ -73,21 +80,20 @@ async function buildModel(opts?: {
    const connMap = new Map<string, DuckDBConnection>([["duckdb", duckdb]]);
    const originalText =
       opts?.originalText ?? `source: X is duckdb.sql("SELECT 0 AS total")`;
-   const urlReader = new InMemoryURLReader(
-      new Map([
-         [`${ROOT}m.malloy`, originalText],
-         ...Object.entries(opts?.files ?? {}).map(
-            ([name, text]) => [`${ROOT}${name}`, text] as [string, string],
-         ),
-      ]),
-   );
+   // On disk, as a package's files are: the served copy re-roots the
+   // author's own text.
+   const files = (lastFiles = writeServedCopyFiles({
+      "m.malloy": originalText,
+      ...(opts?.files ?? {}),
+   }));
+   const urlReader = new InMemoryURLReader(files.byUrl);
    const entry = opts?.entry ?? "m.malloy";
    const runtime = new Runtime({
       urlReader,
       connections: new FixedConnectionMap(connMap, "duckdb"),
    });
-   const mm = runtime.loadModel(new URL(`${ROOT}${entry}`), {
-      importBaseURL: new URL(ROOT),
+   const mm = runtime.loadModel(new URL(files.urlOf(entry)), {
+      importBaseURL: new URL(files.root),
    });
    const compiled = await mm.getModel();
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -109,6 +115,7 @@ async function buildModel(opts?: {
    const serveConfig = new MalloyConfig({ connections: {} });
    serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
    model.setServeDestinationConfig(() => serveConfig);
+   model.setServedCopyContext(files.dir, connMap);
    return model;
 }
 
@@ -247,8 +254,17 @@ describe("storage= serve routing (end-to-end)", () => {
             ],
          },
       ]);
-      // The public column serves from storage...
-      expect(await runTotal(model)).toBe(60);
+      // The served copy keeps a stored column no field names under its
+      // captured spelling, so the author's `except: secret` does not compile
+      // over `SECRET`: the source is left as written and answers live
+      // (known limitation), never from the table...
+      expect(await runTotal(model)).toBe(0);
+      expect(model.servedCopyProblems()).toEqual([
+         expect.objectContaining({
+            sourceName: "X",
+            reason: "reroot_not_compiled",
+         }),
+      ]);
       // ...and the hidden one is still refused, not served as 'from_storage'.
       await expect(
          model.runQuery(
@@ -347,12 +363,12 @@ describe("storage= serve routing (end-to-end)", () => {
 // sources it materializes, and a model keeps it only for its own source of
 // that name.
 describe("storage= serve bindings match on source identity", () => {
-   const OWN = `X@${ROOT}m.malloy`;
-
    it("routes when the binding names the model's own source", async () => {
       setStorageMode("on");
       const model = await buildModel();
-      model.setServeBindings([{ ...BINDING, sourceIDs: [OWN] }]);
+      model.setServeBindings([
+         { ...BINDING, sourceIDs: [sourceIDIn("X", "m.malloy")] },
+      ]);
       expect(await runTotal(model)).toBe(60);
    });
 
@@ -360,7 +376,7 @@ describe("storage= serve bindings match on source identity", () => {
       setStorageMode("on");
       const model = await buildModel();
       model.setServeBindings([
-         { ...BINDING, sourceIDs: [`X@${ROOT}other.malloy`] },
+         { ...BINDING, sourceIDs: [sourceIDIn("X", "other.malloy")] },
       ]);
       expect(await runTotal(model)).toBe(0);
    });
@@ -379,7 +395,9 @@ describe("storage= serve bindings match on source identity", () => {
          entry: "importer.malloy",
       });
       // An imported source keeps its declaring model's sourceID.
-      model.setServeBindings([{ ...BINDING, sourceIDs: [OWN] }]);
+      model.setServeBindings([
+         { ...BINDING, sourceIDs: [sourceIDIn("X", "m.malloy")] },
+      ]);
       expect(await runTotal(model)).toBe(60);
    });
 
@@ -393,7 +411,9 @@ describe("storage= serve bindings match on source identity", () => {
          },
          entry: "other.malloy",
       });
-      model.setServeBindings([{ ...BINDING, sourceIDs: [OWN] }]);
+      model.setServeBindings([
+         { ...BINDING, sourceIDs: [sourceIDIn("X", "m.malloy")] },
+      ]);
       expect(await runTotal(model)).toBe(0);
    });
 
@@ -410,7 +430,9 @@ source: weekly is X -> { aggregate: total is total.sum() }`,
          },
          entry: "report.malloy",
       });
-      model.setServeBindings([{ ...BINDING, sourceIDs: [OWN] }]);
+      model.setServeBindings([
+         { ...BINDING, sourceIDs: [sourceIDIn("X", "m.malloy")] },
+      ]);
       const res = await model.runQuery(
          unrecordedAudit(),
          {
@@ -423,7 +445,10 @@ source: weekly is X -> { aggregate: total is total.sum() }`,
       expect(Number(rows[0].t)).toBe(0);
    });
 
-   it("without sourceIDs, that same-named source is served from the wrong table (the defect)", async () => {
+   it("without sourceIDs, the served copy still reads no same-named source from another's table", async () => {
+      // The serve shape matched such a binding by name and served the wrong
+      // table (the defect sourceIDs fix). The served copy resolves it to this
+      // model's own X, whose `extra` the stored table lacks, so it declines.
       setStorageMode("on");
       const model = await buildModel({
          files: {
@@ -432,6 +457,6 @@ source: weekly is X -> { aggregate: total is total.sum() }`,
          entry: "other.malloy",
       });
       model.setServeBindings([BINDING]);
-      expect(await runTotal(model)).toBe(60);
+      expect(await runTotal(model)).toBe(0);
    });
 });

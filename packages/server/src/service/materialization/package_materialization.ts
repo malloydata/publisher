@@ -18,7 +18,6 @@ import {
    getPersistCollisionEnforce,
    getMaterializeEnabled,
    getPersistStorageMode,
-   getV1ServedCopyMode,
 } from "../../config";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
 import { BuildPlanRefreshingError } from "../../errors";
@@ -839,22 +838,23 @@ export class PackageMaterialization {
     * from the plan must not read as consent. Refused bindings are dropped, and
     * that source serves live, which is always correct.
     *
-    * A published version also binds only the tables its own definition built.
-    * Storage bindings are keyed by source NAME, and the versions of a
-    * `scope: package` package share its tables under unchanged names, so an
-    * entry whose `sourceEntityId` none of this version's same-named sources
-    * has was built by another version's definition, and that source serves
-    * live. (The colocated tier is keyed by content address already.)
+    * A package also binds only the tables its own definitions built: an
+    * entry is matched to a plan source by name AND content address
+    * ({@link planSourceIds}), never by name alone. An entry at an address no
+    * same-named plan source has was built from another definition (another
+    * version's, in a `scope: package` package whose versions share tables
+    * under unchanged names, or an earlier edit's, or an older release's), so
+    * it is dropped and that source serves live. (The colocated tier is keyed
+    * by content address already.)
     */
    bindStorageServeBindings(entries: Record<string, ManifestEntry>): void {
       const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
+      const sourceIDsFor = planSourceIds(plan?.sources ?? {});
       const derived = deriveServeBindings(
-         this.owner.versionId() === undefined
-            ? entries
-            : this.ownEntries(entries),
+         plan ? this.ownEntries(entries, sourceIDsFor) : entries,
          groupAliasesByName(Object.values(plan?.sources ?? {})),
          this.serveDestinationSchema,
-         planSourceIds(plan?.sources ?? {}),
+         sourceIDsFor,
       );
       const eligibility = this.sourceEligibility;
       // Keyed by sourceID (the source map's keying rule): a binding passes when
@@ -905,49 +905,34 @@ export class PackageMaterialization {
    }
 
    /**
-    * The entries this version's own sources built: same name, same content
-    * address. See {@link bindStorageServeBindings}.
+    * The entries this package's own sources built: a plan source of the
+    * entry's name at its content address. See {@link bindStorageServeBindings}.
     */
    private ownEntries(
       entries: Record<string, ManifestEntry>,
+      sourceIDsFor: (sourceName: string, sourceEntityId: string) => string[],
    ): Record<string, ManifestEntry> {
-      const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
-      const own = new Set(
-         Object.values(plan?.sources ?? {}).map(
-            (source) => `${source.name}\u0000${source.sourceEntityId}`,
-         ),
-      );
       const kept: Record<string, ManifestEntry> = {};
       for (const [key, entry] of Object.entries(entries)) {
-         if (own.has(`${entry.sourceName}\u0000${entry.sourceEntityId}`)) {
+         if (
+            !entry.sourceName ||
+            sourceIDsFor(entry.sourceName, entry.sourceEntityId).length > 0
+         ) {
             kept[key] = entry;
             continue;
          }
          logger.info(
-            "Serving a source live: its stored table was built from another version's definition",
+            "Serving a source live: its stored table was built from another definition",
             {
                packageName: this.owner.packageName(),
-               versionId: this.owner.versionId(),
+               ...(this.owner.versionId() !== undefined
+                  ? { versionId: this.owner.versionId() }
+                  : {}),
                sourceName: entry.sourceName,
             },
          );
       }
       return kept;
-   }
-
-   /**
-    * Compile each model's pre-aggregation companion so the serve path can route
-    * to a rollup. Re-run after a manifest bind, since the companion compiles
-    * against the manifest. A no-op for a model with no `#@ preaggregate`.
-    */
-   async pushPreaggregateServeModels(): Promise<void> {
-      for (const model of this.owner.models().values()) {
-         await model.buildPreaggregateServeModel(
-            this.owner.packagePath(),
-            this.owner.malloyConfig(),
-            this.buildManifestEntries,
-         );
-      }
    }
 
    /**
@@ -974,11 +959,9 @@ export class PackageMaterialization {
       const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
       const sources = plan?.sources ?? {};
       const eligible = this.colocatedSourceEligibility?.eligibleEntityIds;
-      // The v1 cutover (G1): v1 colocated `#@ persist` tables too, once the
-      // switch is past `off` (under `shadow` the model keeps them off its own
-      // served copy; Model.setServeBindings).
-      const v1 = getV1ServedCopyMode() !== "off";
-      const viewBuilds = v1 ? this.persistedViewBuildIDs() : undefined;
+      // v1 colocated `#@ persist` tables too (the v1 cutover's G1).
+      const v1 = true;
+      const viewBuilds = this.persistedViewBuildIDs();
       return deriveColocatedServeBindings({
          entries: this.freshnessEntries,
          planSources: sources,
@@ -1036,18 +1019,36 @@ export class PackageMaterialization {
             ? this.storageServeBindings
             : [...this.storageServeBindings, ...colocated];
       for (const model of this.owner.models().values()) {
-         // Optional: a model a spec stands in for need not implement them.
-         model.setServedCopyContext?.(
-            this.owner.packagePath(),
-            this.owner.malloyConfig(),
-            this.materializePlans,
-            (sourceID) => this.declarationOf(sourceID),
-         );
+         this.setServedCopyContextOn(model);
          model.setServeBindings(bindings);
          // Compiled at bind so a served copy that does not compile is a
          // package warning before any query; never throws.
          void model.prepareServedCopy?.();
       }
+   }
+
+   /**
+    * Hand every loaded model the package directory, connections and plans its
+    * served copy, rollup and persisted-view legs compile with, before any
+    * binding exists. A colocated rollup is read through the build manifest,
+    * which a bind sets without pushing bindings, so its leg needs this from
+    * load (a package whose only tables are colocated rollups otherwise never
+    * routes to them).
+    */
+   pushServedCopyContextToModels(): void {
+      for (const model of this.owner.models().values()) {
+         this.setServedCopyContextOn(model);
+      }
+   }
+
+   private setServedCopyContextOn(model: Model): void {
+      // Optional: a model a spec stands in for need not implement it.
+      model.setServedCopyContext?.(
+         this.owner.packagePath(),
+         this.owner.malloyConfig(),
+         this.materializePlans,
+         (sourceID) => this.declarationOf(sourceID),
+      );
    }
 
    /**
@@ -1805,7 +1806,6 @@ export class PackageMaterialization {
          }
       }
       const verdicts = this.serveVerdicts(views);
-      if (getV1ServedCopyMode() === "off") return verdicts;
       try {
          return await this.withCutoverPaths(verdicts);
       } catch (error) {

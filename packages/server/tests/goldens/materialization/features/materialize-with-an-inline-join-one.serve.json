@@ -63,7 +63,13 @@
       "equalToLive": true,
       "malloy": "run: orders_wide -> { group_by: customers.segment; aggregate: order_count, total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -85,13 +91,15 @@
           "sourceName": "orders_wide"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a joined dimension, storage=",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -134,7 +142,13 @@
       "equalToLive": true,
       "malloy": "run: orders_wide -> { group_by: customer_region; aggregate: customers_ordering }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -155,13 +169,15 @@
           "sourceName": "orders_wide"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a dimension reading the join",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -209,7 +225,13 @@
       "equalToLive": true,
       "malloy": "run: orders_wide -> by_segment",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -231,13 +253,15 @@
           "sourceName": "orders_wide"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a declared view",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -280,7 +304,14 @@
       "equalToLive": true,
       "malloy": "run: orders_wide -> { group_by: region; aggregate: customers.customer_count }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "MISSING_FIELD",
+            "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -350,7 +381,13 @@
       "equalToLive": true,
       "malloy": "run: orders_wide_local -> { group_by: customers.loud_name; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -371,12 +408,14 @@
           "sourceName": "orders_wide_local"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a joined dimension, colocated",
-      "servedBy": "live",
+      "servedBy": "materialized",
       "servedFrom": null,
       "switch": "off"
     },

@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The v1 cutover's dry-run verdict (6e, plan question 15): with
- * `PUBLISHER_V1_SERVED_COPY` past `off`, `POST …/packages?dryRun=true`
- * names the path that will serve each materialized source after the cutover
- * (`cutoverPath`: `served_copy`, `rollup`, or `live` with `cutoverReason`),
- * judged by compiling the served copy over bindings declared from the plan,
- * before any table is built. With the switch off, it carries no such field.
+ * The v1 cutover's dry-run verdict (6e, plan question 15):
+ * `POST …/packages?dryRun=true` names the path that will serve each
+ * materialized source (`cutoverPath`: `served_copy`, `rollup`, or `live` with
+ * `cutoverReason`), judged by compiling the served copy over bindings
+ * declared from the plan, before any table is built.
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
@@ -83,10 +82,5 @@ describe("v1 cutover: the dry run's serve path", () => {
          "cutover",
       );
       expect(Object.values(paths).map((p) => p[0])).toContain("rollup");
-   }, 120_000);
-
-   it("carries no cutover path with the switch off", async () => {
-      const paths = await preview("baseline", "colocated", "on");
-      expect(paths.daily).toEqual([undefined, undefined]);
    }, 120_000);
 });

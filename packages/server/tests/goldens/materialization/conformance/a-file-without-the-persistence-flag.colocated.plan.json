@@ -1,13 +1,80 @@
 {
   "internal": {
     "annotationFindings": [],
-    "builds": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "daily_nf@<pkg>/m.malloy": []
+        },
+        "order": [
+          "daily_nf@<pkg>/m.malloy"
+        ]
+      }
+    ],
     "droppedPersistSources": [],
     "materializePlans": {},
     "rollupPlans": {},
-    "sourceGateOutcomes": {},
-    "sourceModelPaths": {}
+    "sourceGateOutcomes": {
+      "daily_nf@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily_nf@<pkg>/m.malloy": "m.malloy"
+    }
   },
   "loadWarnings": [],
-  "wirePlan": null
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily_nf@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily_nf@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "daily_nf"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "daily_nf",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "1e5484a3823a4e65fdf5c864a38250e45a7f191789529e2d3f1fd9032fb84b00",
+        "sourceID": "daily_nf@<pkg>/m.malloy",
+        "sql": "sha256:3fc08fbea906575e"
+      }
+    }
+  }
 }

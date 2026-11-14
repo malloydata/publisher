@@ -89,7 +89,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
+          "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -172,7 +173,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd"
+          "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -256,7 +258,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef"
+          "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -314,7 +317,7 @@
           {
             "kind": "materialized",
             "outcome": "used",
-            "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef"
+            "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
           }
         ],
         "notConsidered": [],
@@ -331,7 +334,7 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef",
+          "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463",
           "via": "served_copy"
         },
         "warnings": []
@@ -390,7 +393,7 @@
           {
             "kind": "materialized",
             "outcome": "used",
-            "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef"
+            "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd"
           }
         ],
         "notConsidered": [
@@ -415,7 +418,7 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef",
+          "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd",
           "via": "served_copy"
         },
         "warnings": []

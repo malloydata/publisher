@@ -940,6 +940,20 @@ export class InstructedBuild {
             writtenTableIdentity(instruction, graphConnectionName),
          );
       }
+      // A rollup in a destination whose base a join reaches on a column
+      // other than its primary key: that key unique and never NULL, checked
+      // over the base's rows on its own connection.
+      if (!orchestrated && run.uniqueness && entry.storageDestinationName) {
+         await checkParentKeys(
+            run.uniqueness,
+            rollupParentKeyChecksOf(run.compiled, persistSource.sourceID),
+            connection,
+            graphConnectionName,
+            persistSource.name,
+            sourceEntityId,
+            writtenTableIdentity(instruction, graphConnectionName),
+         );
+      }
       // A source stored in a destination, read there beside a joined
       // source's rollup through a join keyed on its primary key (#1704):
       // check that key over the rows its table holds.
@@ -1651,19 +1665,20 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
          compiled.targets?.[sourceID],
       );
       const entry = run.entries[address];
-      if (
-         !entry?.physicalTableName ||
-         entry.storageDestinationName ||
-         run.builtAddresses.has(address)
-      ) {
+      if (!entry?.physicalTableName || run.builtAddresses.has(address)) {
          continue;
       }
-      const table = tableIdentityKey(
-         "connection",
-         source.connectionName,
-         entry.physicalTableName,
-      );
-      if (check) {
+      // A rollup in a destination carries only its base's own key check
+      // (`compileParentKeyChecks`), recorded against its table there.
+      const stored = entry.storageDestinationName;
+      const table = stored
+         ? tableIdentityKey("destination", stored, entry.physicalTableName)
+         : tableIdentityKey(
+              "connection",
+              source.connectionName,
+              entry.physicalTableName,
+           );
+      if (check && !stored) {
          ledger.carryRollupKey(address, table, checkDigest(table, check.sql));
       }
       for (const parent of parentChecks) {

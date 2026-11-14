@@ -47,11 +47,7 @@ import {
    isAuthorizeAttributedToEntryPoint,
 } from "./materialization_eligibility";
 
-import {
-   tryCompileSynthesizedPreaggregation,
-   type SynthesizedPreaggregation,
-   type SynthesizedRuntimeFactory,
-} from "./preaggregation_compile";
+import { type SynthesizedRuntimeFactory } from "./preaggregation_compile";
 import type { RollupPlan } from "./preaggregation_synthesis";
 import {
    materializeRefusalFinding,
@@ -68,7 +64,7 @@ import { tryCompileRollupCompanion } from "./rollup_compile";
 import { compileV1BuildCompanion } from "./v1_build_companion";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
 import { rollupRefusalFinding } from "./rollup_plan";
-import { getMaterializeEnabled, getV1ServedCopyMode } from "../../../config";
+import { getMaterializeEnabled } from "../../../config";
 import { admitGivenPositions, type DynamicTerm } from "./persist_dynamic_terms";
 import { resolvePartitionColumns } from "./persist_partition";
 import {
@@ -986,16 +982,6 @@ export async function collectModelBuildPlan(
       malloyModel: MalloyModel;
       runtime: Runtime;
       getRuntime: SynthesizedRuntimeFactory;
-      /**
-       * The model's pre-aggregation companion when the caller already compiled
-       * it, or null when it has none; compiled here when absent.
-       */
-      synthesized?: SynthesizedPreaggregation | null;
-      /**
-       * The rollups a caller's failed compile of {@link synthesized} left
-       * out (see `tryCompileSynthesizedPreaggregation`'s `onOmitted`).
-       */
-      synthesizedOmitted?: Omission[];
    },
 ): Promise<void> {
    const {
@@ -1006,75 +992,6 @@ export async function collectModelBuildPlan(
       runtime,
       getRuntime,
    } = args;
-   const v1Cutover = getV1ServedCopyMode() === "on";
-   // Pre-aggregation runs BEFORE the early `return`s below: a model may declare
-   // `#@ preaggregate` with no persist source and no `experimental.persistence`
-   // flag — the SYNTHESIZED model carries both — and must still get its rollup.
-   // Under the v1 cutover a v1 rollup is planned by the rollup leg instead
-   // (`#(preaggregate)`'s, below; G4), so v1's own synthesis is skipped.
-   if (!v1Cutover && args.synthesized !== undefined) {
-      parts.omittedSources.push(...(args.synthesizedOmitted ?? []));
-   }
-   const synthesized = v1Cutover
-      ? null
-      : args.synthesized !== undefined
-        ? args.synthesized
-        : await tryCompileSynthesizedPreaggregation(
-             {
-                packagePath,
-                modelPath,
-                getRuntime,
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                contents: (malloyModel as any)._modelDef?.contents ?? {},
-             },
-             (omitted) => parts.omittedSources.push(...omitted),
-          );
-   if (synthesized) {
-      const rollupTargets = await synthesized.runtime.getBuildTargets(
-         synthesized.model,
-      );
-      // Builds whole: they order a rollup after the persisted base it reads.
-      // The base's sourceID embeds the author's model, so walking the build
-      // resolves it to the author's own source, added below.
-      parts.builds.push(...sourceBuildsOf(rollupTargets));
-      const planByName = new Map(
-         synthesized.plans.map((p) => [p.rollupSourceName, p]),
-      );
-      // Lazily built, as in the author-model loop below.
-      let rollupClassificationCtx:
-         | { modelDef: ModelDef; deps: GateClassificationDeps }
-         | undefined;
-      for (const source of plannedSources(rollupTargets)) {
-         if (!planByName.has(source.name)) continue;
-         const sourceID = source.sourceID;
-         parts.sources[sourceID] = source;
-         recordTarget(parts, sourceID, source);
-         // The AUTHOR's model path: that is where the annotation is changed.
-         parts.sourceModelPaths[sourceID] = modelPath;
-         const rollup = planByName.get(source.name);
-         if (rollup) parts.preaggregatePlans[sourceID] = rollup;
-         if (!rollupClassificationCtx) {
-            const rollupGivens = Array.from(
-               synthesized.model.givens.values(),
-            ) as unknown as MalloyGiven[];
-            rollupClassificationCtx = {
-               modelDef: synthesized.model._modelDef,
-               deps: createGateClassificationDeps(
-                  rollupGivens.map(malloyGivenToApi),
-                  `${modelPath}#preaggregate`,
-               ),
-            };
-         }
-         parts.sourceGateOutcomes[sourceID] = await classifyPersistSourceGate(
-            source,
-            rollupClassificationCtx.modelDef,
-            synthesized.materializer,
-            rollupClassificationCtx.deps,
-            `${modelPath}#preaggregate`,
-         );
-      }
-   }
-
    // `#(materialize)` (materialization v2, phase 3), behind
    // PUBLISHER_MATERIALIZE: off, nothing here runs and the plan is exactly what
    // it was. Like pre-aggregation, BEFORE the early `return`s below: the
@@ -1097,9 +1014,11 @@ export async function collectModelBuildPlan(
          materializer,
       });
    }
-   // `#(preaggregate)` (phase 4), under the same switch, and under the v1
-   // cutover, which reads v1 `#@ preaggregate` lines as its declarations.
-   if (getMaterializeEnabled() || v1Cutover) {
+   // Rollups (phase 4): v1 `#@ preaggregate` lines are read as their
+   // declarations (the v1 cutover's G4), and `#(preaggregate)` with
+   // PUBLISHER_MATERIALIZE. Before the early `return`s below, since a model
+   // declaring only rollups needs no persistence flag.
+   {
       await collectGeneratedRollups(parts, {
          modelPath,
          packagePath,
@@ -1123,25 +1042,23 @@ export async function collectModelBuildPlan(
          "persistence",
       )
    ) {
-      const companion = v1Cutover
-         ? await compileV1BuildCompanion({
-              packagePath,
-              modelPath,
-              getRuntime,
-              onCompileFailed: (error) => {
-                 logger.error(
-                    "The v1 build copy of a model could not be read or did not compile; its #@ persist sources are left out of the build plan",
-                    { modelPath, error: errMessage(error) },
-                 );
-                 parts.omittedSources.push(
-                    ...omittedByID(
-                       declaredPersistSourceIDs(malloyModel),
-                       "v1_build_companion_failed",
-                    ),
-                 );
-              },
-           })
-         : undefined;
+      const companion = await compileV1BuildCompanion({
+         packagePath,
+         modelPath,
+         getRuntime,
+         onCompileFailed: (error) => {
+            logger.error(
+               "The v1 build copy of a model could not be read or did not compile; its #@ persist sources are left out of the build plan",
+               { modelPath, error: errMessage(error) },
+            );
+            parts.omittedSources.push(
+               ...omittedByID(
+                  declaredPersistSourceIDs(malloyModel),
+                  "v1_build_companion_failed",
+               ),
+            );
+         },
+      });
       if (!companion) return;
       planModel = companion.model;
       planRuntime = companion.runtime;

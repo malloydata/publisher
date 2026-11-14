@@ -64,7 +64,13 @@
       "equalToLive": true,
       "malloy": "run: order_facts -> { group_by: c.segment; aggregate: t is amount.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -77,13 +83,15 @@
           "sourceName": "order_facts"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a persisted fact through its join, from the index",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -126,7 +134,13 @@
       "equalToLive": true,
       "malloy": "run: order_facts -> { group_by: c.segment; aggregate: t is amount.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -139,13 +153,15 @@
           "sourceName": "order_facts"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a persisted fact through its join, in its own file",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -184,7 +200,13 @@
       "equalToLive": true,
       "malloy": "run: customer_dim -> { group_by: segment; aggregate: n is count() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "bf4286a91b893ea3bbeb2399ae99134474169fa1ea85a6dec9df7b2e2c845f59"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -195,13 +217,15 @@
           "sourceName": "customer_dim"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "bf4286a91b893ea3bbeb2399ae99134474169fa1ea85a6dec9df7b2e2c845f59",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the joined source directly, in its own file",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {

@@ -53,7 +53,13 @@
       "equalToLive": true,
       "malloy": "run: daily_r -> { group_by: order_day; aggregate: grand }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "795f45fa66eea903bdfe67664522fbeb875ef94ed68b499f85d7e46fc9c8557f"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -66,13 +72,15 @@
           "sourceName": "daily_r"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "795f45fa66eea903bdfe67664522fbeb875ef94ed68b499f85d7e46fc9c8557f",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a field renamed in the extend block",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -115,7 +123,13 @@
       "equalToLive": true,
       "malloy": "run: daily_r2 -> { group_by: zone; aggregate: grand }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "795f45fa66eea903bdfe67664522fbeb875ef94ed68b499f85d7e46fc9c8557f"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -128,13 +142,15 @@
           "sourceName": "daily_r2"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "795f45fa66eea903bdfe67664522fbeb875ef94ed68b499f85d7e46fc9c8557f",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a rename in an extension",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -182,7 +198,13 @@
       "equalToLive": true,
       "malloy": "run: daily_r3 -> { group_by: territory, day_month; aggregate: grand }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "795f45fa66eea903bdfe67664522fbeb875ef94ed68b499f85d7e46fc9c8557f"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -196,13 +218,15 @@
           "sourceName": "daily_r3"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "795f45fa66eea903bdfe67664522fbeb875ef94ed68b499f85d7e46fc9c8557f",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a rename of a rename, and a dimension over a renamed field",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {

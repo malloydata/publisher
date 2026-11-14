@@ -1,0 +1,15 @@
+// conformance: query-shaped: a nest [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: nested__served is {
+   region::string,
+   total::number,
+   by_status::{ status::string, n::number }[]
+}
+
+import "raw.malloy"
+
+#@ persist name="nested"
+source: nested is duckdb.virtual('4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732')::nested__served

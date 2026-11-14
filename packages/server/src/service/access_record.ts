@@ -490,14 +490,6 @@ const mintAudit = (): QueryAudit => ({}) as QueryAudit;
 export const unrecordedAudit = mintAudit;
 
 /**
- * For the v1 cutover's shadow comparison (`PUBLISHER_V1_SERVED_COPY=shadow`)
- * alone: its second run of a query whose caller already has the access record
- * of the run that answered, so the comparison writes none. Only the Model may
- * call it (`access_record_audit.spec`).
- */
-export const shadowRunAudit = mintAudit;
-
-/**
  * Run a query the system issues for itself (the value-index build at package
  * load), which no caller asked for and so is owed no record. Nothing else may
  * call it (`access_record_audit.spec`).

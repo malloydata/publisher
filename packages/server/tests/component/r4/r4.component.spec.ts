@@ -7,9 +7,9 @@ import {
    InMemoryURLReader,
    Runtime,
 } from "@malloydata/malloy";
-import { afterAll, beforeAll, describe, expect, it, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
-import { shadowRowDifference } from "../../../src/service/materialization/serve/v1_shadow";
+import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
 import {
    buildScenario,
    rowDifference,
@@ -21,14 +21,13 @@ import {
 } from "./harness";
 
 /**
- * The #7098 fixture runs three ways: through today's storage serve shape;
- * with PUBLISHER_MATERIALIZE on, through the served copy on `virtual`
- * wherever it can answer (phase 0 Evidence 5); and after the v1 cutover
- * (PUBLISHER_V1_SERVED_COPY=on), where no serve shape exists, so every
- * stored answer is the served copy's. Every answer must equal live in all.
+ * The #7098 fixture, served after the v1 cutover: no serve shape exists, so
+ * every stored answer is the served copy's (or a leg's). Every answer must
+ * equal live. (Before the retirement it also ran through today's storage
+ * serve shape, and with PUBLISHER_MATERIALIZE on beside it.)
  */
-for (const mode of ["serve_shape", "served_copy", "cutover"] as const) {
-   const servedCopy = mode !== "serve_shape";
+for (const mode of ["cutover"] as const) {
+   const servedCopy = true;
    describe(`[${mode}]`, () => {
       let restoreSettings: () => void;
       beforeAll(() => {
@@ -36,9 +35,6 @@ for (const mode of ["serve_shape", "served_copy", "cutover"] as const) {
             env: {
                PERSIST_STORAGE_MODE: "on",
                ...(servedCopy ? { PUBLISHER_MATERIALIZE: "true" } : {}),
-               ...(mode === "cutover"
-                  ? { PUBLISHER_V1_SERVED_COPY: "on" }
-                  : {}),
             },
          }).restore;
       });
@@ -61,11 +57,11 @@ for (const mode of ["serve_shape", "served_copy", "cutover"] as const) {
          if (query.expectLive) expect(run.servedFrom).not.toBe("storage");
          else expect(run.servedFrom).toBe("storage");
          expect(rowDifference(run.live, run.served)).toBeUndefined();
-         // After the cutover, also by the shadow comparison's exact rule (a
-         // string stays a string, an integer and a bigint exact): what the
-         // shadow release would log must be nothing.
+         // After the cutover, also by the strict comparison
+         // (`answer_difference.ts`: a string stays a string, an integer and a
+         // bigint exact), which must find nothing.
          if (mode === "cutover") {
-            expect(shadowRowDifference(run.live, run.served)).toBeUndefined();
+            expect(strictRowDifference(run.live, run.served)).toBeUndefined();
          }
          return run;
       }
@@ -203,43 +199,30 @@ source: flights is duckdb.table('flights') -> { select: * } extend {
             ).toBeUndefined();
          });
 
-         // The served copy compiles the author's own join, so it counts as live
-         // does (malloydata/malloy#1762): equal to live, as R4 requires, and short
-         // of the truth until Malloy's fix; the serve shape is the other way round.
-         (servedCopy ? test.failing : it)(
-            "serves the right child count from storage",
-            async () => {
-               const run = await fixture.run(byCarrier);
-               expect(
-                  rowDifference(counts(run.truth ?? []), counts(run.served)),
-               ).toBeUndefined();
-            },
-         );
+         // Since Malloy 0.0.438 (malloydata/malloy#3208, fixing #1762) live
+         // counts a childless flight as no segments, so live, the served copy
+         // (which compiles the author's own join) and the serve shape all
+         // answer the truth.
+         it("serves the right child count from storage", async () => {
+            const run = await fixture.run(byCarrier);
+            expect(
+               rowDifference(counts(run.truth ?? []), counts(run.served)),
+            ).toBeUndefined();
+         });
 
-         // Live counts each childless flight as one segment: Malloy compiles the
-         // leafiest join_many count as COUNT(1) over the LEFT JOIN
-         // (malloydata/malloy#1762). The storage serve shape does not, so served and
-         // live disagree, and served is right. Both tests pass once Publisher's
-         // Malloy pin carries malloydata/malloy#3207; then drop `.failing`.
-         test.failing(
-            "live child count matches the truth (malloydata/malloy#1762)",
-            async () => {
-               const run = await fixture.run(byCarrier);
-               expect(
-                  rowDifference(counts(run.truth ?? []), counts(run.live)),
-               ).toBeUndefined();
-            },
-         );
+         it("live child count matches the truth (malloydata/malloy#1762)", async () => {
+            const run = await fixture.run(byCarrier);
+            expect(
+               rowDifference(counts(run.truth ?? []), counts(run.live)),
+            ).toBeUndefined();
+         });
 
-         (servedCopy ? it : test.failing)(
-            "served child count equals live (malloydata/malloy#1762)",
-            async () => {
-               const run = await fixture.run(byCarrier);
-               expect(
-                  rowDifference(counts(run.live), counts(run.served)),
-               ).toBeUndefined();
-            },
-         );
+         it("served child count equals live (malloydata/malloy#1762)", async () => {
+            const run = await fixture.run(byCarrier);
+            expect(
+               rowDifference(counts(run.live), counts(run.served)),
+            ).toBeUndefined();
+         });
       });
 
       // ms2data/service#6982, the phase 0 probe: two sources from different origin
@@ -314,9 +297,8 @@ source: account_usage is accounts extend { join_many: u is usage on u.account_id
                query,
             );
             const rows = (await q.run()).data.toObject() as Row[];
-            // initech has no usage: Malloy's sum of no rows is 0. Its count reads 1
-            // until malloy#3207 ships, so only the sum is compared here; the count
-            // case is above.
+            // initech has no usage: Malloy's sum of no rows is 0. Only the sum is
+            // compared here; the count case is above.
             expect(
                rowDifference(
                   [

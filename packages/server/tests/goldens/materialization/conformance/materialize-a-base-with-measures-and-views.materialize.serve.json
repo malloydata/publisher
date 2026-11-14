@@ -53,7 +53,13 @@
       "equalToLive": true,
       "malloy": "run: orders_m -> { group_by: zone; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "3f4562aa4a00b1792d2a380e8e007d40f57d6d24f3a52d472b1298cd7a48742c"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -66,13 +72,15 @@
           "sourceName": "orders_m"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "3f4562aa4a00b1792d2a380e8e007d40f57d6d24f3a52d472b1298cd7a48742c",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a base measure by a stored dimension",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -120,7 +128,13 @@
       "equalToLive": true,
       "malloy": "run: orders_m -> by_region",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "3f4562aa4a00b1792d2a380e8e007d40f57d6d24f3a52d472b1298cd7a48742c"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -134,13 +148,15 @@
           "sourceName": "orders_m"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "3f4562aa4a00b1792d2a380e8e007d40f57d6d24f3a52d472b1298cd7a48742c",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the base's view",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -186,7 +202,13 @@
       "equalToLive": true,
       "malloy": "run: orders_m -> { group_by: status; nest: by_zone is { group_by: zone; aggregate: n; order_by: zone } }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "3f4562aa4a00b1792d2a380e8e007d40f57d6d24f3a52d472b1298cd7a48742c"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -200,13 +222,15 @@
           "sourceName": "orders_m"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "3f4562aa4a00b1792d2a380e8e007d40f57d6d24f3a52d472b1298cd7a48742c",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a base measure in a nest",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {

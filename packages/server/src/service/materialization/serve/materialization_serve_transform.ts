@@ -9,7 +9,6 @@ import {
 } from "@malloydata/malloy";
 import { MaterializationEligibilityError } from "../../../errors";
 import { logger } from "../../../logger";
-import { givenScopedJoinTargets } from "../plan/persist_dynamic_terms";
 import {
    recordEligibilityRefused,
    recordServeShapeTypeFallback,
@@ -221,11 +220,15 @@ export interface ServeBinding {
  * the plan by name and content address is what lets a binding the host supplied
  * carry this server's identity.
  *
- * When no plan source has the entry's content address (an instructed build on
- * an unversioned package stamps the caller's address, which this server may not
- * compute), the one plan source of that name is returned. When the plan holds
- * several, none is: an empty list matches no model's source, so every source of
- * that name serves live rather than one being served from another's table.
+ * Only an exact match counts: a plan source of that name AT that content
+ * address. Every manifest entry carries the content address this server
+ * computes (an instructed build keys its entry by it, whatever identity the
+ * instruction used), so an entry at another address was built from another
+ * definition: a source edited under its old name in an unversioned package, a
+ * manifest restored from before the edit, or one from a release that addressed
+ * the source differently. Its table holds that definition's rows, and its
+ * columns may well be the same, so it serves nothing and the source answers
+ * live until its own table is built. An empty list matches no model's source.
  */
 export function planSourceIds(
    planSources: Record<string, { name?: string; sourceEntityId?: string }>,
@@ -238,13 +241,9 @@ export function planSourceIds(
       byName.set(source.name, named);
    }
    return (sourceName, sourceEntityId) => {
-      const named = byName.get(sourceName) ?? [];
-      const exact = named.filter((s) => s.address === sourceEntityId);
-      if (exact.length > 0) return exact.map((s) => s.sourceID);
-      // No address matches: trust the name only when one plan source has it.
-      // Two would be two different tables' sources, and picking both serves one
-      // from the other's table, so neither is named and both serve live.
-      return named.length === 1 ? [named[0].sourceID] : [];
+      return (byName.get(sourceName) ?? [])
+         .filter((s) => s.address === sourceEntityId)
+         .map((s) => s.sourceID);
    };
 }
 
@@ -622,26 +621,6 @@ function refinementLines(refinements: readonly SourceRefinement[]): string[] {
 }
 
 /**
- * The two source sets that explain a serve-shape fallback. "Reference to
- * undefined object" reads the same whether a source is unpersisted or withheld
- * by the freshness gate, so the sets are reported beside it. A name in NEITHER
- * is not materialized at all.
- */
-export function serveShapeDiagnostics(
-   allBindings: ServeBinding[],
-   freshBindings: ServeBinding[],
-): { shapeSources: string[]; staleSources: string[] } {
-   const shapeSources = freshBindings.map((b) => b.sourceName);
-   const fresh = new Set(shapeSources);
-   return {
-      shapeSources,
-      staleSources: allBindings
-         .map((b) => b.sourceName)
-         .filter((name) => !fresh.has(name)),
-   };
-}
-
-/**
  * A source the author did NOT persist, carried onto the serve shape because
  * everything it is built from is.
  *
@@ -961,65 +940,6 @@ function ownFilterList(
 }
 
 /**
- * Generate ONE transient serve-shape model rebinding every supplied materialized
- * source to its virtual form, with its refinements re-declared on top. This is
- * the model the serve path compiles queries against; a query relying on
- * anything not carried fails to compile here and serves live.
- */
-export function buildServeShapeModelForBindings(
-   bindings: ServeBinding[],
-   /**
-    * Pre-aggregation groups. Their members are NOT in `bindings`: a rollup's
-    * synthesized name is never queried, so it reaches the shape only here.
-    */
-   rollupGroups: RollupShapeGroup[] = [],
-   /**
-    * The author model's WHOLE given surface, not just what re-emitted filters
-    * read: an unreferenced given is inert, and the routed query itself may read
-    * a given, so the shape must accept what the author's model accepts.
-    */
-   givens: ServeShapeGiven[] = [],
-   /**
-    * Non-persisted sources built from materialized ones, in dependency order
-    * (see {@link liftDerivedSources}), emitted after the sources they extend.
-    */
-   derived: DerivedSourceLift[] = [],
-   /**
-    * The `##!` flags of the author files `derived` came from: lifted text
-    * written under e.g. `access_modifiers` compiles only under the same flag.
-    */
-   documentFlags: string[] = [],
-): {
-   modelText: string;
-} {
-   const fragments = orderBindingsByJoinDeps(bindings)
-      .map(serveShapeFragment)
-      .join("\n");
-   // After the materialized sources, before the rollup groups: a lift extends a
-   // source emitted above it, and nothing below it can reference one.
-   const lifted = derived.map(derivedSourceFragment).join("\n");
-   // Rollup groups last: nothing above can reference a group's base, since joins
-   // are emitted only to bound sources. Joining TO rollup-backed rows would not
-   // mean what the author's join means, so such a query rightly serves live.
-   const groups = rollupGroups.map(rollupServeShapeFragment).join("\n");
-   // Each flag only when what it enables is emitted.
-   const enabled = ["virtual_source"];
-   if (rollupGroups.length) enabled.push("composite_sources");
-   if (givens.length) enabled.push("givens");
-   const ownFlags =
-      enabled.length === 1
-         ? "##! experimental.virtual_source"
-         : `##! experimental { ${enabled.join(" ")} }`;
-   const flags = [...documentFlags, ownFlags].join("\n");
-   // Before the sources, because a source's re-emitted `where:` reads them.
-   const givenBlock = givens.length
-      ? `given:\n${givens.map(serveShapeGivenLine).join("\n")}\n`
-      : "";
-   const body = [fragments, lifted, groups].filter(Boolean).join("\n");
-   return { modelText: `${flags}\n${givenBlock}${body}\n` };
-}
-
-/**
  * Refinement kinds that are SEMANTICS, carried by every tier of the ladder:
  * dropping a join or view only costs the tier, but dropping a `where:` answers
  * with rows the source excludes.
@@ -1071,68 +991,6 @@ export async function buildOverTiers<T>(
       }
    }
    throw lastError;
-}
-
-/**
- * One rung of the serve-shape escalation ladder: which refinement kinds to keep,
- * and whether pre-aggregation groups are carried.
- */
-interface ServeShapeTier {
-   keep: ReadonlySet<string>;
-   groups: RollupShapeGroup[];
-}
-
-/**
- * The ladder `Model.compileServeShape` walks, richest first. Built here so the
- * invariant can be asserted: EVERY tier, including the floor, keeps
- * {@link NEVER_THINNED}.
- */
-export function buildServeShapeTiers(
-   rollupGroups: RollupShapeGroup[],
-): ServeShapeTier[] {
-   const always = [...NEVER_THINNED];
-   const keepKinds: Array<ReadonlySet<string>> = [...REFINEMENT_TIER_KINDS];
-   const hasGroups = rollupGroups.length > 0;
-   return [
-      { keep: keepKinds[0], groups: rollupGroups },
-      // Then groups DROPPED while every authored refinement is kept, so a
-      // group-caused failure costs the rollups and nothing else.
-      ...(hasGroups
-         ? [{ keep: keepKinds[0], groups: [] as RollupShapeGroup[] }]
-         : []),
-      // Then the thinning ladder, still WITH groups: dropping groups alone did
-      // not help, so an authored refinement is implicated.
-      ...keepKinds.slice(1).map((keep) => ({ keep, groups: rollupGroups })),
-      // The floor: no optional refinements and no groups (without groups the
-      // last thinning tier is already this). Must still keep NEVER_THINNED, or
-      // a package with any rollup serves a filtered source unfiltered.
-      ...(hasGroups
-         ? [{ keep: new Set(always), groups: [] as RollupShapeGroup[] }]
-         : []),
-   ];
-}
-
-/** One base source re-exposed over its rollup members. */
-export interface RollupShapeGroup {
-   baseSourceName: string;
-   members: ServeBinding[];
-}
-
-/**
- * The fragment that re-exposes ONE base source name over its rollups: each member
- * as its own virtual source, then a `compose()` binding the author's name to them.
- *
- * `compose()` even for one member: it routes identically to a direct rebind
- * (pinned in preaggregation_virtual_compose_contract.spec.ts), and one code path
- * for one grain and several leaves no branch for a grain-count bug to hide in.
- *
- * The composite has no base member (the base is on another connection), so a
- * query no rollup covers fails to compile here and serves live.
- */
-function rollupServeShapeFragment(group: RollupShapeGroup): string {
-   const members = group.members.map(serveShapeFragment).join("\n");
-   const names = group.members.map((m) => identifier(m.sourceName)).join(", ");
-   return `${members}\nsource: ${identifier(group.baseSourceName)} is compose(${names})`;
 }
 
 /**
@@ -1781,58 +1639,5 @@ export async function assertServesInDuckDB(
             `materialized into a DuckDB/DuckLake store must have a ` +
             `DuckDB-portable served shape.`,
       });
-   }
-}
-
-/**
- * The bindings left once every binding with a caller-scoped join the serve shape
- * cannot reproduce is withheld, to a fixpoint; and the names withheld.
- *
- * A join to a given-scoped source reproduces the caller's scope only through
- * that source's own binding (see `joinedSourceRefusal`). It cannot be re-emitted
- * when the target is unbound, bound on another destination (no cross-connection
- * joins), or the join is access-restricted; fields reading through it then fail
- * the shape. Left in, the ladder would thin EVERY binding in the model;
- * withholding confines the cost to the joining source, which serves live.
- *
- * A fixpoint, because a withheld binding stops being a valid target.
- * Ordinary unmaterialized join targets are not handled here: extraction skips
- * them and the ladder answers whatever reads through them.
- */
-export function withholdUnreproducibleCallerScopedJoins(
-   bindings: ServeBinding[],
-   contents: Record<string, { fields?: unknown }> | undefined,
-   sourceNameById: ReadonlyMap<string, string>,
-): { kept: ServeBinding[]; withheld: string[] } {
-   let kept = bindings;
-   for (;;) {
-      const destinationOf = new Map(
-         kept.map((b) => [b.sourceName, b.destinationName]),
-      );
-      const next = kept.filter((b) =>
-         givenScopedJoinTargets(contents?.[b.sourceName]?.fields).every(
-            (sourceID) => {
-               const target =
-                  sourceID === undefined
-                     ? undefined
-                     : sourceNameById.get(sourceID);
-               return (
-                  target !== undefined &&
-                  destinationOf.has(target) &&
-                  destinationOf.get(target) === b.destinationName
-               );
-            },
-         ),
-      );
-      if (next.length === kept.length) {
-         const keptNames = new Set(kept.map((b) => b.sourceName));
-         return {
-            kept,
-            withheld: bindings
-               .map((b) => b.sourceName)
-               .filter((name) => !keptNames.has(name)),
-         };
-      }
-      kept = next;
    }
 }

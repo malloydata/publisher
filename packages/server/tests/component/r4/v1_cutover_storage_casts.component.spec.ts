@@ -1,13 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// 6b / G5: a v1 `storage=` table an older build typed, under PUBLISHER_V1_SERVED_COPY=on. Every answer must equal
-// live by both the R4 rule and the shadow's exact rule, with the same wire
+// 6b / G5: a v1 `storage=` table an older build typed, under the v1 cutover. Every answer must equal
+// live by both the R4 rule and the strict rule (answer_difference.ts), with the same wire
 // types, and a query reading a left-out column must answer live.
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
-import { shadowRowDifference } from "../../../src/service/materialization/serve/v1_shadow";
+import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
 import {
    buildScenario,
    disposeScenarios,
@@ -22,7 +22,6 @@ beforeAll(() => {
       env: {
          PERSIST_STORAGE_MODE: "on",
          PUBLISHER_MATERIALIZE: "true",
-         PUBLISHER_V1_SERVED_COPY: "on",
       },
    }).restore;
 });
@@ -34,7 +33,7 @@ afterAll(async () => {
 async function expectEqualLive(fixture: R4Fixture, q: R4Query) {
    const run = await fixture.run(q);
    expect(rowDifference(run.live, run.served)).toBeUndefined();
-   expect(shadowRowDifference(run.live, run.served)).toBeUndefined();
+   expect(strictRowDifference(run.live, run.served)).toBeUndefined();
    // G6 (a number's subtype) is accepted, and a nest's reference ids differ
    // per compile: neither is compared.
    const shape = (f: typeof run.liveFields) =>

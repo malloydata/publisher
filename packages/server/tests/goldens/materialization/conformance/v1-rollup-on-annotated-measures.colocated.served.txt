@@ -1,0 +1,50 @@
+// conformance: v1 rollup on annotated measures [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { access_modifiers persistence virtual_source }
+
+import { orders__rollup__region__409e9efb__built is orders__rollup__region__409e9efb } from "m.malloy.preaggregate.malloy"
+source: orders__rollup__region__409e9efb__served is orders__rollup__region__409e9efb__built extend {
+  measure:
+    #(doc) "Orders"
+    #@ preaggregate grain="region"
+    n is n__partial.sum()
+    # currency
+    #(doc) "Revenue"
+    #@ preaggregate grain="region"
+    total is total__partial.sum()
+}
+source: orders is orders__rollup__region__409e9efb__served include { internal: n__partial, total__partial public: * }
+
+// ==== <pkg>/m.malloy.preaggregate.malloy
+##! experimental.persistence
+import { orders__rollup_base is orders } from "m.malloy.rollup-author.malloy"
+
+#@ persist
+source: orders__rollup__region__409e9efb is orders__rollup_base -> {
+  group_by:
+    region
+  aggregate:
+    n__partial is count()
+    total__partial is amount.sum()
+}
+
+// ==== <pkg>/m.malloy.rollup-author.malloy
+##! experimental { persistence }
+import "raw.malloy"
+
+source: orders is orders_raw extend {
+  dimension: zone is upper(region)
+  # currency
+  #(doc) "Revenue"
+  #@ preaggregate grain="region"
+  measure: total is amount.sum()
+  #(doc) "Orders"
+  #@ preaggregate grain="region"
+  measure: n is count()
+}
+
+// ==== <pkg>/m.malloy.rollup.malloy
+##! experimental { access_modifiers persistence virtual_source }
+import { orders_raw, customers_raw, lines_raw } from "raw.malloy"
+import { orders } from "m.malloy"

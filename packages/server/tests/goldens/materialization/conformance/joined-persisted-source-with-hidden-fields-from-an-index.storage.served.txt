@@ -11,7 +11,7 @@ type: customer_dim__served is {
 import "raw.malloy"
 
 #@ persist name="customer_dim" storage="lake"
-source: customer_dim is __served_copy_alias_of_lake.virtual('d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e')::customer_dim__served extend {
+source: customer_dim is __served_copy_alias_of_lake.virtual('d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e')::customer_dim__served include { internal: home_region; public: * } extend {
   internal rename:
     id__stored is id
   dimension:

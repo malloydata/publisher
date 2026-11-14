@@ -822,9 +822,17 @@ describe("service/package", () => {
             expect(boundSources(pkg)).toEqual(["orders"]);
          });
 
-         it("leaves a package with no versions binding by name, as before", () => {
+         it("serves live, in a package with no versions too, a table another definition built", () => {
+            // The author edited `orders` in place, and the store (or a host)
+            // still holds the table the old definition built under its name.
             const pkg = definedAs(undefined, { orders: "v1-orders" });
             pkg.bindStorageServeBindings({ a: built("orders", "v2-orders") });
+            expect(boundSources(pkg)).toEqual([]);
+         });
+
+         it("binds, in a package with no versions, a table its own definition built", () => {
+            const pkg = definedAs(undefined, { orders: "v1-orders" });
+            pkg.bindStorageServeBindings({ a: built("orders", "v1-orders") });
             expect(boundSources(pkg)).toEqual(["orders"]);
          });
       });

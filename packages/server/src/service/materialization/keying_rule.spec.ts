@@ -43,10 +43,6 @@ const NAME_KEY = new RegExp(
  */
 const ALLOWED: Record<string, Record<string, string>> = {
    "plan/build_plan.ts": {
-      "if (!planByName.has(source.name)) continue;":
-         "phase 3 (PR 1 follow-up): rollup plans by name within one model; migrate to sourceID",
-      "const rollup = planByName.get(source.name);":
-         "phase 3 (PR 1 follow-up): rollup plans by name within one model; migrate to sourceID",
       "const plan = planByName.get(source.name);":
          "generated #(materialize) build sources by name within one generated companion, where each name is unique; migrate with the rollup plans",
       "if (include && !include.has(source.name)) continue;":
@@ -83,8 +79,6 @@ const ALLOWED: Record<string, Record<string, string>> = {
          "orders one serve shape's bindings by the Malloy names they declare",
       "if (remaining.has(b.sourceName)) {":
          "orders one serve shape's bindings by the Malloy names they declare",
-      "givenScopedJoinTargets(contents?.[b.sourceName]?.fields).every(":
-         "the model's own namespace",
    },
    "serve/serve_verdict.ts": {
       "const storageBound = facts.boundStorageNames.has(source.name);":
@@ -94,11 +88,7 @@ const ALLOWED: Record<string, Record<string, string>> = {
       "!facts.freshStorageNames.has(source.name)":
          "phase 3: storage bindings are emitted by name; migrate verdict facts to sourceID with the catalog",
    },
-   "serve/preaggregation_serve_bindings.ts": {
-      "const plan = planByRollupName.get(binding.sourceName);":
-         "phase 3: rollup bindings by generated name; migrate to the rollup's sourceID",
-   },
-   "serve/model_serve_shape.ts": {
+   "serve/storage_bindings.ts": {
       "} else if (!this.shadowedSourcesLogged.has(binding.sourceName)) {":
          "log dedupe only",
       "const def = contents?.[binding.sourceName] as":

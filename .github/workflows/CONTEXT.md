@@ -64,6 +64,31 @@ once, through `pull_request`. Path filters are not used on `build.yml` or `app-p
 their jobs are required status checks on `main`, and a filtered-out workflow leaves a required check
 pending forever. A docs-only skip needs an always-run gate job first.
 
+### Credible's donated runners
+
+Credible runs self-hosted Ubuntu 24.04 x64 runners for the `malloydata` organization (4 vCPU / 16 GB,
+Docker, one job per machine), which do not count against GitHub's 20-concurrent-job limit. A job
+opts in with:
+
+```yaml
+runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+timeout-minutes: 30
+```
+
+The organization variable `DONATED_RUNNERS` is the kill switch: set it to `false` and every such job
+goes back to GitHub's runners with no PR. On them: `build.yml`'s jobs, the Linux leg of
+`cross-platform-tests.yml`, `app-playwright.yml`, the Trivy jobs in `security-scan.yml` and
+`image-scan.yml` (amd64 build only), and `python-sdk.yml` when `build.yml` calls it (not when
+`release.yml` does). `docker_smoke_test` reads a registry layer cache there and writes it only from
+`main`, through the `layer-cache-writer` identity bound to `main`'s OIDC subject.
+
+**Keep off them:** any job that uses a repository or organization secret, holds `id-token: write`
+for anything but the layer cache, publishes, or runs on `pull_request_target`; and macOS, Windows,
+and arm64 jobs. Every job moved there needs a `timeout-minutes`. `credible-ubuntu-24.04` is spot
+(a reclaimed job fails "The operation was canceled." and a rerun covers it);
+`credible-ubuntu-24.04-ondemand` is the label for a job that must not be interrupted. Package
+installs go through pull-through caches whose credentials last an hour from job start.
+
 ## Publishing
 
 There are three npm trains and one PyPI train. The PyPI train shares sdk/app/server's version;

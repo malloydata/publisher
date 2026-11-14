@@ -3,8 +3,8 @@
 
 /**
  * The v1 cutover's conformance runner, from the command line (plan question
- * 15): answers each query of a package snapshot live, today and after the
- * cutover, and prints one row per query.
+ * 15): answers each query of a package snapshot live and served, and
+ * prints one row per query.
  *
  *   bun scripts/v1-cutover-conformance.ts --package <dir> --queries <file.json> [--json]
  *
@@ -12,8 +12,8 @@
  * `<file.json>` is an array of `{ "name", "model", "malloy", "givens"? }`.
  * Exits 0 when no row's verdict is `bug`, 1 when one is (the cutover's answer
  * differs from live), 2 on a usage error or unreadable input, and 3 when the
- * run itself fails; a `regression` (served today, live after) is printed for
- * review, not failed. The server's log lines go to stderr, so stdout holds
+ * run itself fails; a `live` row is printed for review, not failed. The
+ * server's log lines go to stderr, so stdout holds
  * only the rows (`--json` parses as is).
  */
 
@@ -98,11 +98,11 @@ try {
 if (process.argv.includes("--json")) {
    console.log(JSON.stringify(rows, null, 2));
 } else {
-   console.log("| query | today | cutover | path | verdict | detail |");
-   console.log("| --- | --- | --- | --- | --- | --- |");
+   console.log("| query | cutover | path | verdict | detail |");
+   console.log("| --- | --- | --- | --- | --- |");
    for (const r of rows) {
       console.log(
-         `| ${r.query} | ${r.today} | ${r.cutover} | ${r.cutoverPath} | ${r.verdict} | ${r.detail ?? ""} |`,
+         `| ${r.query} | ${r.cutover} | ${r.cutoverPath} | ${r.verdict} | ${r.detail ?? ""} |`,
       );
    }
 }

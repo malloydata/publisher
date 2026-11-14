@@ -648,7 +648,8 @@ source: by_category_table is orders -> by_category
       expect(outcome.models[0].renderTagResults?.[0].result).not.toHaveProperty(
          "sql",
       );
-      expect(outcome.models[0].preaggregateCompanion?.modelDef).toBeDefined();
+      // A v1 rollup is the rollup leg's: no composite companion is compiled.
+      expect(outcome.models[0].preaggregateCompanion?.modelDef).toBeUndefined();
       const entities = outcome.models[0].entities;
       expect(entities?.status).toBe("planned");
       if (entities?.status !== "planned") return;
@@ -887,7 +888,7 @@ source: t is base -> { group_by: a }
 
    it("loads a package whose compile fits the job timeout, with the work for this thread on top", async () => {
       // With the worker's schema cache off, the compile waits 1000 ms on its
-      // table and the companion's compile then waits 3500 ms on it again. The
+      // table and the rollup companion's compile then waits 3500 ms on it again. The
       // compile fits a 4000 ms timeout with room to spare before the worker's
       // deadline at three quarters of it (3000 ms), and the job, at 4500 ms or
       // more, runs past the timeout itself. The companion ends past the
@@ -922,9 +923,8 @@ source: orders is duckdb.table('limit_t') extend {
          );
          const outcome = await load(true);
          expect(outcome.models[0].compilationError).toBeUndefined();
-         expect(
-            outcome.models[0].preaggregateCompanion?.modelDef,
-         ).toBeDefined();
+         // No composite companion: the plan's own rollup companion compiles.
+         expect(outcome.models[0].preaggregateCompanion).toEqual({});
          expect(outcome.buildPlan?.ok).toBe(true);
       } finally {
          await tearDown();
@@ -944,7 +944,7 @@ source: orders is duckdb.table('shared_t') extend {
 `,
       );
       // With the worker's schema cache off, every compile fetches the table:
-      // the model's, the companion's, and a second companion's if the plan
+      // the model's, the rollup companion's, and a second one's if the plan
       // compiled its own.
       const cacheOff = installSettings({
          env: { PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "0" },
@@ -957,9 +957,8 @@ source: orders is duckdb.table('shared_t') extend {
             "create or replace table shared_t as select 10 as amount, 'A' as category",
          );
          const outcome = await load(true);
-         expect(
-            outcome.models[0].preaggregateCompanion?.modelDef,
-         ).toBeDefined();
+         // No composite companion: the plan's own rollup companion compiles.
+         expect(outcome.models[0].preaggregateCompanion).toEqual({});
          expect(outcome.buildPlan?.ok).toBe(true);
          expect(
             tableFetches.filter((paths) => paths.includes("shared_t")),

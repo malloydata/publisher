@@ -13,12 +13,11 @@ import {
    InMemoryURLReader,
    Runtime,
 } from "@malloydata/malloy";
-import { beforeAll, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { MaterializationEligibilityError } from "../../../errors";
 import { plannedSources } from "../plan/build_plan";
 import { reachPersisted } from "../plan/source_map";
 import {
-   assertServesInDuckDB,
    buildChainedStorageBuildModel,
    documentFlagLines,
    liftDerivedSources,
@@ -30,12 +29,7 @@ import {
    documentFlagsForLifts,
    type DerivedSourceLift,
    buildServeShapeModel,
-   buildServeShapeModelForBindings,
    extractSourceFilters,
-   buildServeShapeTiers,
-   NEVER_THINNED,
-   type RollupShapeGroup,
-   UNREPRODUCIBLE_FILTER,
    bindingServesModelSource,
    buildVirtualMap,
    sqlReadsTable,
@@ -47,7 +41,6 @@ import {
    extractRefinements,
    extractViews,
    narrowSchemaToPublic,
-   serveShapeDiagnostics,
    sliceSourceRange,
    type ServeBinding,
 } from "./materialization_serve_transform";
@@ -182,229 +175,6 @@ describe("buildVirtualMap", () => {
          },
       ]);
       expect(map.get("lake")?.get("h")).toBe('"My Table"');
-   });
-});
-
-describe("serve transform end-to-end (generate -> compile -> bind -> run)", () => {
-   let connections: FixedConnectionMap;
-   let duckdb: DuckDBConnection;
-
-   beforeAll(async () => {
-      duckdb = new DuckDBConnection("duckdb", ":memory:");
-      await duckdb.runSQL(
-         "CREATE TABLE mz_physical AS " +
-            "SELECT 10 AS amount, 'US' AS region " +
-            "UNION ALL SELECT 20, 'EU' UNION ALL SELECT 30, 'US'",
-      );
-      connections = new FixedConnectionMap(
-         new Map([["duckdb", duckdb]]),
-         "duckdb",
-      );
-   });
-
-   /** DESCRIBE the physical table to build a binding from its real schema. */
-   async function bindingFromLiveTable(): Promise<ServeBinding> {
-      const described = await duckdb.runSQL("DESCRIBE mz_physical");
-      const rows = Array.isArray(described) ? described : described.rows;
-      const schema = (rows as Record<string, unknown>[]).map((r) => ({
-         name: String(r.column_name),
-         type: String(r.column_type),
-      }));
-      return {
-         sourceName: "mz",
-         destinationName: "duckdb",
-         virtualHandle: "mz_handle",
-         tablePath: "mz_physical",
-         schema,
-      };
-   }
-
-   it("runs a query against the virtual source bound to the live table", async () => {
-      const binding = await bindingFromLiveTable();
-      const { modelText } = buildServeShapeModel("mz", binding);
-      const root = "file:///e2e/";
-      const urlReader = new InMemoryURLReader(
-         new Map([[`${root}m.malloy`, modelText]]),
-      );
-      const runtime = new Runtime({ urlReader, connections });
-      const query = runtime
-         .loadModel(new URL(`${root}m.malloy`), {
-            importBaseURL: new URL(root),
-         })
-         .loadQuery("run: mz -> { aggregate: total is amount.sum() }");
-
-      const virtualMap = buildVirtualMap([binding]);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = await query.run({ virtualMap } as any);
-      const out = result.data.toObject() as { total: number }[];
-      expect(out[0].total).toBe(60);
-   });
-
-   // A source, a refinement field and a stored column that each need
-   // backticks: emitted bare, the shape fails to compile and every query on
-   // the model serves live.
-   it("quotes a rollup group's base and member names", () => {
-      const member: ServeBinding = {
-         sourceName: "date",
-         destinationName: "duckdb",
-         virtualHandle: "h_date",
-         tablePath: "t",
-         schema: [{ name: "n", type: "INTEGER" }],
-         origin: "preaggregate",
-      };
-      const { modelText } = buildServeShapeModelForBindings(
-         [],
-         [{ baseSourceName: "order-facts", members: [member] }],
-      );
-      expect(modelText).toContain("source: `order-facts` is compose(`date`)");
-   });
-
-   it("compiles and runs for names that need quoting, a read cast included", async () => {
-      const binding: ServeBinding = {
-         sourceName: "order-facts",
-         destinationName: "duckdb",
-         virtualHandle: "of_handle",
-         tablePath: "mz_physical",
-         schema: [
-            { name: "amount", type: "INTEGER" },
-            { name: "region", type: "VARCHAR" },
-         ],
-         readCasts: [{ column: "amount", castTo: "DOUBLE" }],
-         refinements: [
-            { kind: "dimension", name: "date", code: "region" },
-            { kind: "measure", name: "count", code: "amount.sum()" },
-         ],
-      };
-      const { modelText } = buildServeShapeModelForBindings([binding]);
-      expect(modelText).toContain("source: `order-facts` is");
-      expect(modelText).toContain("dimension: `date` is region");
-      const root = "file:///quoting-e2e/";
-      const runtime = new Runtime({
-         urlReader: new InMemoryURLReader(
-            new Map([[`${root}m.malloy`, modelText]]),
-         ),
-         connections,
-      });
-      const query = runtime
-         .loadModel(new URL(`${root}m.malloy`), {
-            importBaseURL: new URL(root),
-         })
-         .loadQuery(
-            "run: `order-facts` -> { group_by: `date`; aggregate: `count` }",
-         );
-      const result = await query.run({
-         virtualMap: buildVirtualMap([binding]),
-         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } as any);
-      const out = result.data.toObject() as { date: string; count: number }[];
-      expect(out.find((r) => r.date === "US")?.count).toBe(40);
-   });
-
-   it("assertServesInDuckDB passes for a well-formed captured schema", async () => {
-      const binding = await bindingFromLiveTable();
-      await expect(
-         assertServesInDuckDB("mz", binding, connections),
-      ).resolves.toBeUndefined();
-   });
-
-   it("assertServesInDuckDB refuses a serve shape that cannot compile", async () => {
-      // A field named after a reserved token with no valid mapping path: force a
-      // compile failure by declaring an empty shape name collision is hard, so
-      // use a connection name that does not resolve — the virtual source's
-      // connection must exist, so an unknown connection fails compilation.
-      const binding: ServeBinding = {
-         sourceName: "mz",
-         destinationName: "does_not_exist",
-         virtualHandle: "h",
-         tablePath: "t",
-         schema: [{ name: "amount", type: "BIGINT" }],
-      };
-      await expect(
-         assertServesInDuckDB("mz", binding, connections),
-      ).rejects.toThrow(MaterializationEligibilityError);
-   });
-});
-
-describe("join serve end-to-end (two virtual sources, join runs in DuckDB)", () => {
-   let connections: FixedConnectionMap;
-   let duckdb: DuckDBConnection;
-
-   beforeAll(async () => {
-      duckdb = new DuckDBConnection("duckdb", ":memory:");
-      await duckdb.runSQL(
-         "CREATE TABLE orders_phys AS " +
-            "SELECT 10 AS amount, 'r1' AS region_id " +
-            "UNION ALL SELECT 20, 'r2' UNION ALL SELECT 30, 'r1'",
-      );
-      await duckdb.runSQL(
-         "CREATE TABLE regions_phys AS " +
-            "SELECT 'r1' AS region_id, 'North' AS region_name " +
-            "UNION ALL SELECT 'r2', 'South'",
-      );
-      connections = new FixedConnectionMap(
-         new Map([["duckdb", duckdb]]),
-         "duckdb",
-      );
-   });
-
-   it("serves a query that traverses a join from the materialized tables", async () => {
-      const bindings: ServeBinding[] = [
-         {
-            sourceName: "regions",
-            destinationName: "duckdb",
-            virtualHandle: "regions_h",
-            tablePath: "regions_phys",
-            schema: [
-               { name: "region_id", type: "VARCHAR" },
-               { name: "region_name", type: "VARCHAR" },
-            ],
-         },
-         {
-            sourceName: "orders",
-            destinationName: "duckdb",
-            virtualHandle: "orders_h",
-            tablePath: "orders_phys",
-            schema: [
-               { name: "amount", type: "BIGINT" },
-               { name: "region_id", type: "VARCHAR" },
-            ],
-            refinements: [
-               {
-                  kind: "join",
-                  name: "regions",
-                  keyword: "join_one",
-                  text: "regions is regions on region_id = regions.region_id",
-                  dependsOn: "regions",
-               },
-            ],
-         },
-      ];
-      const { modelText } = buildServeShapeModelForBindings(bindings);
-      const root = "file:///join-e2e/";
-      const runtime = new Runtime({
-         urlReader: new InMemoryURLReader(
-            new Map([[`${root}m.malloy`, modelText]]),
-         ),
-         connections,
-      });
-      const query = runtime
-         .loadModel(new URL(`${root}m.malloy`), {
-            importBaseURL: new URL(root),
-         })
-         .loadQuery(
-            "run: orders -> { group_by: regions.region_name; aggregate: total is amount.sum() }",
-         );
-      const virtualMap = buildVirtualMap(bindings);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = await query.run({ virtualMap } as any);
-      const out = result.data.toObject() as {
-         region_name: string;
-         total: number;
-      }[];
-      const byRegion = Object.fromEntries(
-         out.map((r) => [r.region_name, r.total]),
-      );
-      expect(byRegion).toEqual({ North: 40, South: 20 });
    });
 });
 
@@ -722,106 +492,6 @@ describe("extractRefinements", () => {
       expect(extractRefinements(fields)).toEqual([
          { kind: "dimension", name: "public_dim", code: "upper(region)" },
       ]);
-   });
-});
-
-describe("buildServeShapeModelForBindings with refinements", () => {
-   it("re-declares dimensions/measures as an extend on the virtual base", () => {
-      const { modelText } = buildServeShapeModelForBindings([
-         {
-            sourceName: "daily",
-            destinationName: "lake",
-            virtualHandle: "h",
-            tablePath: "lake.daily",
-            schema: [
-               { name: "total_amount", type: "BIGINT" },
-               { name: "order_count", type: "BIGINT" },
-            ],
-            refinements: [
-               {
-                  kind: "dimension",
-                  name: "avg_order_value",
-                  code: "total_amount / order_count",
-               },
-            ],
-         },
-      ]);
-      expect(modelText).toContain(
-         "source: daily is lake.virtual('h')::daily__shape extend {",
-      );
-      expect(modelText).toContain(
-         "dimension: avg_order_value is total_amount / order_count",
-      );
-   });
-
-   it("emits joins (verbatim, keyword-prefixed) before dimensions/measures", () => {
-      const { modelText } = buildServeShapeModelForBindings([
-         {
-            sourceName: "orders",
-            destinationName: "lake",
-            virtualHandle: "h",
-            tablePath: "lake.orders",
-            schema: [
-               { name: "amount", type: "BIGINT" },
-               { name: "region_id", type: "VARCHAR" },
-            ],
-            refinements: [
-               {
-                  kind: "join",
-                  name: "regions",
-                  keyword: "join_one",
-                  text: "regions is regions on region_id = regions.region_id",
-                  dependsOn: "regions",
-               },
-               {
-                  kind: "measure",
-                  name: "total",
-                  code: "amount.sum()",
-               },
-            ],
-         },
-      ]);
-      expect(modelText).toContain(
-         "join_one: regions is regions on region_id = regions.region_id",
-      );
-      expect(modelText).toContain("measure: total is amount.sum()");
-      // Join must precede the measure so the measure can reference joined fields.
-      expect(modelText.indexOf("join_one:")).toBeLessThan(
-         modelText.indexOf("measure: total"),
-      );
-   });
-
-   it("declares a joined source before the source that joins it (dependency order)", () => {
-      // `orders` (joins `regions`) is listed FIRST, but must be emitted after
-      // `regions` so the join reference resolves.
-      const { modelText } = buildServeShapeModelForBindings([
-         {
-            sourceName: "orders",
-            destinationName: "lake",
-            virtualHandle: "o",
-            tablePath: "lake.orders",
-            schema: [{ name: "region_id", type: "VARCHAR" }],
-            refinements: [
-               {
-                  kind: "join",
-                  name: "regions",
-                  keyword: "join_one",
-                  text: "regions is regions on region_id = regions.region_id",
-                  dependsOn: "regions",
-               },
-            ],
-         },
-         {
-            sourceName: "regions",
-            destinationName: "lake",
-            virtualHandle: "r",
-            tablePath: "lake.regions",
-            schema: [{ name: "region_id", type: "VARCHAR" }],
-         },
-      ]);
-      expect(modelText.indexOf("source: regions is")).toBeLessThan(
-         modelText.indexOf("source: orders is"),
-      );
    });
 });
 
@@ -1145,121 +815,6 @@ describe("extractViews", () => {
 
    it("returns [] for undefined fields", () => {
       expect(extractViews(undefined, liftText)).toEqual([]);
-   });
-});
-
-describe("buildServeShapeModelForBindings with a view", () => {
-   it("emits the view (verbatim, view: prefixed) after joins and measures", () => {
-      const { modelText } = buildServeShapeModelForBindings([
-         {
-            sourceName: "orders",
-            destinationName: "lake",
-            virtualHandle: "h",
-            tablePath: "lake.orders",
-            schema: [{ name: "amount", type: "BIGINT" }],
-            refinements: [
-               { kind: "measure", name: "total", code: "amount.sum()" },
-               {
-                  kind: "view",
-                  name: "by_amount",
-                  text: "by_amount is { group_by: amount; aggregate: total }",
-               },
-            ],
-         },
-      ]);
-      expect(modelText).toContain(
-         "view: by_amount is { group_by: amount; aggregate: total }",
-      );
-      // The view must come after the measure it references.
-      expect(modelText.indexOf("measure: total")).toBeLessThan(
-         modelText.indexOf("view: by_amount"),
-      );
-   });
-});
-
-describe("view serve end-to-end (view over a join runs in DuckDB)", () => {
-   let connections: FixedConnectionMap;
-   let duckdb: DuckDBConnection;
-
-   beforeAll(async () => {
-      duckdb = new DuckDBConnection("duckdb", ":memory:");
-      await duckdb.runSQL(
-         "CREATE OR REPLACE TABLE v_orders AS " +
-            "SELECT 10 AS amount, 'r1' AS region_id " +
-            "UNION ALL SELECT 20, 'r2' UNION ALL SELECT 30, 'r1'",
-      );
-      await duckdb.runSQL(
-         "CREATE OR REPLACE TABLE v_regions AS " +
-            "SELECT 'r1' AS region_id, 'North' AS region_name " +
-            "UNION ALL SELECT 'r2', 'South'",
-      );
-      connections = new FixedConnectionMap(
-         new Map([["duckdb", duckdb]]),
-         "duckdb",
-      );
-   });
-
-   it("invokes a named view that groups by a joined field, served from storage", async () => {
-      const bindings: ServeBinding[] = [
-         {
-            sourceName: "regions",
-            destinationName: "duckdb",
-            virtualHandle: "vr",
-            tablePath: "v_regions",
-            schema: [
-               { name: "region_id", type: "VARCHAR" },
-               { name: "region_name", type: "VARCHAR" },
-            ],
-         },
-         {
-            sourceName: "orders",
-            destinationName: "duckdb",
-            virtualHandle: "vo",
-            tablePath: "v_orders",
-            schema: [
-               { name: "amount", type: "BIGINT" },
-               { name: "region_id", type: "VARCHAR" },
-            ],
-            refinements: [
-               {
-                  kind: "join",
-                  name: "regions",
-                  keyword: "join_one",
-                  text: "regions is regions on region_id = regions.region_id",
-                  dependsOn: "regions",
-               },
-               { kind: "measure", name: "total", code: "amount.sum()" },
-               {
-                  kind: "view",
-                  name: "by_region",
-                  text: "by_region is { group_by: regions.region_name; aggregate: total }",
-               },
-            ],
-         },
-      ];
-      const { modelText } = buildServeShapeModelForBindings(bindings);
-      const root = "file:///view-e2e/";
-      const runtime = new Runtime({
-         urlReader: new InMemoryURLReader(
-            new Map([[`${root}m.malloy`, modelText]]),
-         ),
-         connections,
-      });
-      const query = runtime
-         .loadModel(new URL(`${root}m.malloy`), {
-            importBaseURL: new URL(root),
-         })
-         .loadQuery("run: orders -> by_region");
-      const virtualMap = buildVirtualMap(bindings);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = await query.run({ virtualMap } as any);
-      const out = result.data.toObject() as {
-         region_name: string;
-         total: number;
-      }[];
-      expect(
-         Object.fromEntries(out.map((r) => [r.region_name, r.total])),
-      ).toEqual({ North: 40, South: 20 });
    });
 });
 
@@ -1588,70 +1143,6 @@ describe("buildChainedStorageBuildModel declares the author's givens", () => {
          givens: [{ name: "ORG_ID", type: "number", defaultText: "1" }],
       });
       expect(model).toContain("given:\n  ORG_ID :: number is 1\n");
-   });
-});
-
-describe("buildServeShapeModelForBindings carries the author files' flags", () => {
-   const binding: ServeBinding = {
-      sourceName: "daily",
-      destinationName: "lake",
-      virtualHandle: "daily_h",
-      tablePath: "daily__mabc",
-      schema: [
-         { name: "order_date", type: "DATE" },
-         { name: "total_amount", type: "DOUBLE" },
-      ],
-   };
-   const wrapper: DerivedSourceLift = {
-      sourceName: "daily_public",
-      base: "daily",
-      refinements: [],
-      text: "daily_public is daily -> { select: * } include {\n  public:\n    order_date\n    total_amount\n}",
-   };
-
-   function compile(model: string, tag: string) {
-      const conn = new DuckDBConnection("lake", ":memory:");
-      const root = `file:///${tag}/`;
-      const url = `${root}m.malloy`;
-      const runtime = new Runtime({
-         urlReader: new InMemoryURLReader(new Map([[url, model]])),
-         connections: new FixedConnectionMap(new Map([["lake", conn]]), "lake"),
-      });
-      return runtime
-         .loadModel(new URL(url), { importBaseURL: new URL(root) })
-         .getModel();
-   }
-
-   it("a lifted include {} wrapper compiles under its file's flags, and not without them", async () => {
-      const flagged = buildServeShapeModelForBindings(
-         [binding],
-         [],
-         [],
-         [wrapper],
-         ["##! experimental { persistence, access_modifiers }"],
-      ).modelText;
-      expect(
-         flagged.startsWith(
-            "##! experimental { persistence, access_modifiers }\n##! experimental.virtual_source\n",
-         ),
-      ).toBe(true);
-      await compile(flagged, "s1-flags");
-      const bare = buildServeShapeModelForBindings(
-         [binding],
-         [],
-         [],
-         [wrapper],
-      ).modelText;
-      await expect(compile(bare, "s1-no-flags")).rejects.toThrow(
-         /access_modifiers/,
-      );
-   });
-
-   it("with no flags the text is what it was", () => {
-      const { modelText } = buildServeShapeModelForBindings([binding]);
-      expect(modelText.startsWith("##! experimental.virtual_source\n")).toBe(
-         true,
-      );
    });
 });
 
@@ -2341,222 +1832,6 @@ describe("liftDerivedSources carrying a persist source that extends another", ()
    });
 });
 
-describe("serveShapeDiagnostics", () => {
-   const binding = (sourceName: string): ServeBinding => ({
-      sourceName,
-      destinationName: "credible",
-      virtualHandle: `${sourceName}#h`,
-      tablePath: `main.${sourceName}`,
-      schema: [{ name: "n", type: "BIGINT" }],
-   });
-
-   // Both live failures this exists for produce the SAME compiler error, so the
-   // sets are what separate them. Asserted as a pair for that reason: either one
-   // alone leaves the two indistinguishable, which is the state this replaces.
-   it("distinguishes a source that is not materialized from one withheld as stale", () => {
-      const all = [binding("_fact"), binding("rollup")];
-
-      // Nothing stale: everything bound is in the shape. A query naming
-      // `wrapper` finds it in neither set -- it carries no `#@ persist`.
-      const allFresh = serveShapeDiagnostics(all, all);
-      expect(allFresh.shapeSources).toEqual(["_fact", "rollup"]);
-      expect(allFresh.staleSources).toEqual([]);
-
-      // `rollup` is bound but past its freshness window, so it is absent from
-      // the shape for a reason the compiler's message cannot express.
-      const oneStale = serveShapeDiagnostics(all, [binding("_fact")]);
-      expect(oneStale.shapeSources).toEqual(["_fact"]);
-      expect(oneStale.staleSources).toEqual(["rollup"]);
-   });
-
-   it("reports every bound source as stale when the gate withholds them all", () => {
-      const all = [binding("a"), binding("b")];
-      expect(serveShapeDiagnostics(all, [])).toEqual({
-         shapeSources: [],
-         staleSources: ["a", "b"],
-      });
-   });
-});
-
-describe("a source's own filters on the serve shape", () => {
-   const base = {
-      sourceName: "deals",
-      destinationName: "lake",
-      virtualHandle: "h",
-      tablePath: "lake.deals",
-      schema: [
-         { name: "amount", type: "BIGINT" },
-         { name: "is_deleted", type: "BOOLEAN" },
-         { name: "is_open", type: "BOOLEAN" },
-      ],
-   };
-
-   it("emits each filterList entry as its own where:, never combined with and", () => {
-      // Combining would reassociate: `(a or b) and c` is not `a or b and c`.
-      const { modelText } = buildServeShapeModelForBindings([
-         {
-            ...base,
-            refinements: [
-               { kind: "filter", code: "is_open or is_deleted" },
-               { kind: "filter", code: "amount > 10" },
-            ],
-         },
-      ]);
-      expect(modelText).toContain("where: is_open or is_deleted");
-      expect(modelText).toContain("where: amount > 10");
-      expect(modelText).not.toContain("and amount > 10");
-   });
-
-   it("emits filters after joins and fields, which a where: may reference", () => {
-      const { modelText } = buildServeShapeModelForBindings([
-         {
-            ...base,
-            refinements: [
-               {
-                  kind: "filter",
-                  code: "big and regions.region_name = 'North'",
-               },
-               { kind: "dimension", name: "big", code: "amount > 100" },
-               {
-                  kind: "join",
-                  name: "regions",
-                  keyword: "join_one",
-                  text: "regions on region_id = regions.region_id",
-                  dependsOn: "regions",
-               },
-            ],
-         },
-      ]);
-      const joinAt = modelText.indexOf("join_one: regions");
-      const dimAt = modelText.indexOf("dimension: big");
-      const whereAt = modelText.indexOf("where: big and");
-      for (const at of [joinAt, dimAt, whereAt]) expect(at).toBeGreaterThan(-1);
-      expect(joinAt).toBeLessThan(dimAt);
-      expect(dimAt).toBeLessThan(whereAt);
-   });
-
-   it("emits filters before views, which are emitted last", () => {
-      const { modelText } = buildServeShapeModelForBindings([
-         {
-            ...base,
-            refinements: [
-               {
-                  kind: "view",
-                  name: "by_month",
-                  text: "by_month is { group_by: m }",
-               },
-               { kind: "filter", code: "not is_deleted" },
-            ],
-         },
-      ]);
-      const whereAt = modelText.indexOf("where: not is_deleted");
-      const viewAt = modelText.indexOf("view: by_month");
-      // Assert presence before order: indexOf returns -1 for an absent filter,
-      // which would satisfy a bare `toBeLessThan` and let this pass with the
-      // filter dropped entirely.
-      expect(whereAt).toBeGreaterThan(-1);
-      expect(viewAt).toBeGreaterThan(-1);
-      expect(whereAt).toBeLessThan(viewAt);
-   });
-
-   it("declares no extend block when a source has no filters and no refinements", () => {
-      // The no-filter shape must stay byte-identical to what it was, so a package
-      // that declares none reads exactly as before.
-      const { modelText } = buildServeShapeModelForBindings([base]);
-      expect(modelText).not.toContain("extend {");
-      expect(modelText).not.toContain("where:");
-   });
-});
-
-describe("extractSourceFilters", () => {
-   it("carries one refinement per entry, in order, with the author's text", () => {
-      expect(
-         extractSourceFilters([
-            { code: "not is_deleted" },
-            { code: "is_open" },
-         ]),
-      ).toEqual([
-         { kind: "filter", code: "not is_deleted" },
-         { kind: "filter", code: "is_open" },
-      ]);
-   });
-
-   it("treats an absent filterList as no filters", () => {
-      expect(extractSourceFilters(undefined)).toEqual([]);
-      expect(extractSourceFilters([])).toEqual([]);
-   });
-
-   it("fails closed on an entry whose code is unreadable", () => {
-      // Dropping the entry would serve the unfiltered relation. Emitting
-      // something that cannot compile withholds the binding instead, and the
-      // query serves live.
-      const out = extractSourceFilters([{ code: 42 }, {}, null]);
-      expect(out).toHaveLength(3);
-      expect(out.every((f) => f.code === UNREPRODUCIBLE_FILTER)).toBe(true);
-      const { modelText } = buildServeShapeModelForBindings([
-         {
-            sourceName: "deals",
-            destinationName: "lake",
-            virtualHandle: "h",
-            tablePath: "lake.deals",
-            schema: [{ name: "amount", type: "BIGINT" }],
-            refinements: out,
-         },
-      ]);
-      expect(modelText).toContain(UNREPRODUCIBLE_FILTER);
-   });
-});
-
-describe("buildServeShapeTiers", () => {
-   // The invariant the whole filter fix rests on. A tier that thins `filter`
-   // answers with rows the source excludes — and the floor tier, which is
-   // assembled separately from the thinning ladder, is exactly where that
-   // reappears when someone adds a rung.
-   const oneGroup: RollupShapeGroup[] = [
-      { baseSourceName: "orders", members: [] },
-   ];
-   for (const [label, groups] of [
-      ["no rollup groups", [] as RollupShapeGroup[]],
-      ["with a rollup group", oneGroup],
-   ] as const) {
-      it(`keeps every never-thinned kind at every tier (${label})`, () => {
-         const tiers = buildServeShapeTiers([...groups]);
-         expect(tiers.length).toBeGreaterThan(0);
-         for (const [i, tier] of tiers.entries()) {
-            for (const kind of NEVER_THINNED) {
-               expect(`tier ${i} keeps ${kind}: ${tier.keep.has(kind)}`).toBe(
-                  `tier ${i} keeps ${kind}: true`,
-               );
-            }
-         }
-      });
-   }
-
-   it("adds the group-dropping rungs only when there is a group", () => {
-      const without = buildServeShapeTiers([]);
-      const with_ = buildServeShapeTiers([
-         { baseSourceName: "orders", members: [] },
-      ]);
-      expect(with_.length).toBe(without.length + 2);
-      // The floor drops the groups AND keeps the never-thinned kinds.
-      const floor = with_[with_.length - 1];
-      expect(floor.groups).toEqual([]);
-      for (const kind of NEVER_THINNED) expect(floor.keep.has(kind)).toBe(true);
-   });
-
-   it("thins the optional kinds monotonically", () => {
-      const tiers = buildServeShapeTiers([]);
-      const optional = tiers.map(
-         (t) => [...t.keep].filter((k) => !NEVER_THINNED.includes(k)).length,
-      );
-      for (let i = 1; i < optional.length; i++) {
-         expect(optional[i]).toBeLessThanOrEqual(optional[i - 1]);
-      }
-      expect(optional[optional.length - 1]).toBe(0);
-   });
-});
-
-// malloydata/publisher#1001: a binding carries the sourceIDs it materializes.
 describe("serve binding source identity", () => {
    const plan = {
       "daily@file:///p/a.malloy": { name: "daily", sourceEntityId: "addr_a" },
@@ -2584,14 +1859,12 @@ describe("serve binding source identity", () => {
       expect(ids("nope", "addr_a")).toEqual([]);
    });
 
-   it("planSourceIds trusts the name when no address matches only if one plan source has it", () => {
-      // An instructed build stamps the caller's address.
-      expect(planSourceIds(plan)("daily_ext", "caller_addr")).toEqual([
-         "daily_ext@file:///p/a.malloy",
-      ]);
-      // Two `daily`s are two tables' sources: naming both would serve one from
-      // the other's table, so neither is named.
-      expect(planSourceIds(plan)("daily", "caller_addr")).toEqual([]);
+   it("planSourceIds names no plan source when no address matches, however few share the name", () => {
+      // An entry at another address was built from another definition of a
+      // same-named source (an edit, a restored manifest, an older release):
+      // its table holds that definition's rows.
+      expect(planSourceIds(plan)("daily_ext", "other_addr")).toEqual([]);
+      expect(planSourceIds(plan)("daily", "other_addr")).toEqual([]);
    });
 
    it("an empty sourceIDs list serves no model's source of that name", () => {
@@ -2660,5 +1933,24 @@ describe("serve binding source identity", () => {
             other,
          ),
       ).toBe(true);
+   });
+});
+
+describe("extractSourceFilters", () => {
+   it("carries one refinement per entry, in order, with the author's text", () => {
+      expect(
+         extractSourceFilters([
+            { code: "not is_deleted" },
+            { code: "is_open" },
+         ]),
+      ).toEqual([
+         { kind: "filter", code: "not is_deleted" },
+         { kind: "filter", code: "is_open" },
+      ]);
+   });
+
+   it("treats an absent filterList as no filters", () => {
+      expect(extractSourceFilters(undefined)).toEqual([]);
+      expect(extractSourceFilters([])).toEqual([]);
    });
 });

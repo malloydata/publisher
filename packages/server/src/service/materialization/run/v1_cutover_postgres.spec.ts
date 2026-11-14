@@ -27,7 +27,7 @@ import { MaterializationService } from "./materialization_service";
 /**
  * The v1 cutover on a real Postgres (the R4 subset the
  * fixture cannot reach, and G7): v1 colocated `#@ persist` tables, one of them
- * incremental, built through real builds with PUBLISHER_V1_SERVED_COPY=on and
+ * incremental, built through real builds and
  * answered from the served copy equal to live, before and after a delta. Date
  * truncations stored by Postgres as timestamps exercise G5's read cast there.
  */
@@ -224,7 +224,6 @@ for (const flag of [true, false])
                env: {
                   PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
                   PUBLISHER_MATERIALIZE: "true",
-                  PUBLISHER_V1_SERVED_COPY: "on",
                },
             }).restore;
             await __setPackageLoadPoolForTests(null);

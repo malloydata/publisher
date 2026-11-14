@@ -158,23 +158,25 @@ describe("pairQueryReadsChild and flatPairQueryVerdict", () => {
    }
 
    const child = [
-      // Child aggregates, as measures, written in the query, by count.
+      // Child aggregates, as measures, written in the query, by count. A
+      // count at the child is not exact over the pair table: live skips a
+      // childless parent's null-extended row (malloydata/malloy#3208).
       ["run: flights -> { group_by: carrier; aggregate: seg_total }", true],
-      ["run: flights -> { aggregate: n is segments.count() }", true],
+      ["run: flights -> { aggregate: n is segments.count() }", false],
       ["run: flights -> { aggregate: d is count(segments.seg_id) }", true],
       // A child field grouped by, directly or through a parent dimension.
       ["run: flights -> { group_by: segments.miles }", true],
-      ["run: flights -> { group_by: leg; aggregate: seg_n }", true],
+      ["run: flights -> { group_by: leg; aggregate: seg_total }", true],
       // A filter on the child, in a stage or in a filtered measure.
       [
-         "run: flights -> { where: segments.miles > 1; group_by: carrier; aggregate: seg_n }",
+         "run: flights -> { where: segments.miles > 1; group_by: carrier; aggregate: seg_total }",
          true,
       ],
-      ["run: flights -> { aggregate: long_legs }", true],
+      ["run: flights -> { aggregate: long_legs }", false],
       // A ratio across both, a nest or a view that reads the child.
       ["run: flights -> { aggregate: per_flight }", true],
       [
-         "run: flights -> { group_by: carrier; aggregate: flight_count; nest: n is { group_by: segments.miles; aggregate: seg_n } }",
+         "run: flights -> { group_by: carrier; aggregate: flight_count; nest: n is { group_by: segments.miles; aggregate: seg_total } }",
          true,
       ],
       ["run: flights -> child_view", true],
@@ -301,6 +303,51 @@ source: flights is duckdb.sql("select 1 as id, 'AA' as carrier") extend {
    }
 });
 
+describe("flatPairQueryRefusal at the leaf, beside a childless parent's null row", () => {
+   // Since malloydata/malloy#3208 live's count, sum and avg at a join skip
+   // the row a LEFT JOIN writes for a parent with no child; the pair table
+   // holds that row, null-extended.
+   const refusal = async (malloy: string) => {
+      const prepared = (await runtime
+         .loadModel(flat)
+         .loadQuery(malloy)
+         .getPreparedQuery()) as unknown as {
+         _query: { pipeline: unknown };
+         _modelDef: { contents: Record<string, unknown> };
+      };
+      return flatPairQueryRefusal(
+         prepared._query,
+         prepared._modelDef.contents.flights as never,
+         { join: "segments", parentRowField: "pr" },
+      );
+   };
+   for (const malloy of [
+      "run: flights -> { group_by: carrier; aggregate: seg_total }",
+      "run: flights -> { aggregate: a is segments.miles.avg() }",
+      "run: flights -> { aggregate: m is max(segments.miles + 1) }",
+      "run: flights -> { aggregate: d is count(segments.seg_id) }",
+   ]) {
+      it(`serves ${malloy}`, async () => {
+         expect(await refusal(malloy)).toBeUndefined();
+      });
+   }
+   it("refuses a count at the leaf", async () => {
+      expect(
+         await refusal("run: flights -> { aggregate: n is segments.count() }"),
+      ).toMatch(/a count through the inlined join/);
+   });
+   for (const malloy of [
+      "run: flights -> { aggregate: s is segments.sum(1) }",
+      "run: flights -> { aggregate: s is segments.sum(segments.miles + 1) }",
+   ]) {
+      it(`refuses a sum of a value not null on that row: ${malloy}`, async () => {
+         expect(await refusal(malloy)).toMatch(
+            /not null on the pair table's row/,
+         );
+      });
+   }
+});
+
 describe("flatPairQueryRefusal through a join_one's join_many", () => {
    // The served shape, beside a join_one whose joined source joins many.
    const served = `source: hubs is duckdb.sql("select 'AA' as code") extend {
@@ -311,7 +358,7 @@ source: flights is duckdb.sql("select 1 as id, 'AA' as carrier, 1 as sid, 2.0 as
   primary_key: id
   dimension: segments is { seg_id is sid, miles is smiles }
   join_one: hubs with carrier
-  measure: seg_n is segments.count()
+  measure: seg_n is segments.miles.sum()
 }`;
    const refusal = async (malloy: string) => {
       const prepared = (await runtime

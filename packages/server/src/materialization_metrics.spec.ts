@@ -23,7 +23,6 @@ import {
    recordDropTables,
    recordEligibilityRefused,
    recordMaterializationRun,
-   recordServeShapeTierDrop,
    recordServeShapeTypeFallback,
    recordStorageServeRouting,
    resetMaterializationTelemetryForTesting,
@@ -296,22 +295,15 @@ describe("materialization_metrics", () => {
       ).toBe(1);
    });
 
-   it("counts eligibility refusals, tier drops, and type fallbacks", async () => {
+   it("counts eligibility refusals and type fallbacks", async () => {
       recordEligibilityRefused("given");
       recordEligibilityRefused("free_parameter");
-      recordServeShapeTierDrop(0);
       recordServeShapeTypeFallback("array");
 
       expect(
          await harness.collectCounter(
             "publisher_materialization_eligibility_refused_total",
             { reason: "given" },
-         ),
-      ).toBe(1);
-      expect(
-         await harness.collectCounter(
-            "publisher_storage_serve_shape_tier_drop_total",
-            { tier: "0" },
          ),
       ).toBe(1);
       expect(

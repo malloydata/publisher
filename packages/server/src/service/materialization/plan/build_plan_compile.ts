@@ -26,8 +26,10 @@ import { refuseCollidingMaterialize } from "./eligibility_collect";
 import {
    joinOneKey,
    joinOneKeysOf,
+   joinedKeyNeedsOf,
    parentKeyNeedsOf,
    storedKeyChecksOf,
+   type JoinedKeyNeed,
    type ParentKeyNeed,
    type RollupVariantPlan,
 } from "./rollup_plan";
@@ -55,6 +57,12 @@ export async function compilePackageBuildPlan(
    // names it, for the query source key checks a rollup's build runs.
    const parentKeyNeeds: {
       need: ParentKeyNeed;
+      compile: (text: string) => Promise<string>;
+   }[] = [];
+   // Every source a join reaches on a column other than its primary key, with
+   // the model that names it, for the check of a rollup's base's own key.
+   const joinedKeyNeeds: {
+      need: JoinedKeyNeed;
       compile: (text: string) => Promise<string>;
    }[] = [];
    // Every declared primary key, by sourceID, for the stored-table key checks.
@@ -124,6 +132,12 @@ export async function compilePackageBuildPlan(
             compile: parentKeyCheckCompiler(materializer),
          });
       }
+      for (const need of joinedKeyNeedsOf(map)) {
+         joinedKeyNeeds.push({
+            need,
+            compile: parentKeyCheckCompiler(materializer),
+         });
+      }
       await collectModelBuildPlan(parts, {
          modelPath,
          packagePath: pkg.getPackagePath(),
@@ -154,12 +168,13 @@ export async function compilePackageBuildPlan(
       }
    }
 
-   // A query source read through a join_many keyed on its primary key:
-   // the rollup's build checks that key unique and never NULL.
+   // A query source read through a join_many keyed on its primary key, and
+   // a rollup's base reached by a join on another column: the rollup's build
+   // checks that key unique and never NULL.
    const rollupPlans = Object.values(
       parts.preaggregatePlans,
    ) as RollupVariantPlan[];
-   await compileParentKeyChecks(rollupPlans, parentKeyNeeds);
+   await compileParentKeyChecks(rollupPlans, parentKeyNeeds, joinedKeyNeeds);
    // A `storage=` rollup read that way is read beside the query source's
    // stored table (#1704): each stored source's key is checked over its
    // table at its own build instead.

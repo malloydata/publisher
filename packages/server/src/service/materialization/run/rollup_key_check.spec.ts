@@ -67,6 +67,7 @@ afterEach(async () => {
 const SEED = [
    "CREATE OR REPLACE TABLE crew_src AS SELECT * FROM (VALUES (1, 3), (3, 2), (5, 4)) AS t(flight_id, size)",
    "CREATE OR REPLACE TABLE flights_src AS SELECT * FROM (VALUES (1, 'AA'), (2, 'AA'), (3, 'BB')) AS t(id, carrier)",
+   "CREATE OR REPLACE TABLE segs_src AS SELECT * FROM (VALUES (10, 1, 2.0), (11, 1, 3.0), (12, 3, 4.0)) AS t(seg_id, flight_id, miles)",
 ];
 
 const CREW = `source: crew is duckdb.table('crew_src') extend {
@@ -351,12 +352,75 @@ ${MANY.replace(
 });
 
 /**
+ * `flights` joins `segments` on `flight_id`, not on `segments`' own primary
+ * key: since malloydata/malloy#3208 live counts and sums `segments` through
+ * the join over the rows whose `seg_id` is not NULL, and its rollup over
+ * every row, so the rollup's build checks `seg_id` unique and never NULL.
+ */
+const SEGS = `source: segments is duckdb.table('segs_src') extend {
+  primary_key: seg_id
+  #(preaggregate) grain=["flight_id"]
+  measure: seg_miles is miles.sum()
+}
+source: flights is duckdb.table('flights_src') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+}
+`;
+
+describe("the joined source's own primary key check, on a build", () => {
+   it("is planned for a rollup whose base a join reaches on another column, and only then", async () => {
+      const segs = await scenario(SEGS);
+      expect(
+         segs.rollup?.parentKeyChecks?.map((c) => [
+            c.sourceID.split("@")[0],
+            c.keyColumn,
+         ]),
+      ).toEqual(
+         expect.arrayContaining([
+            ["flights", "id"],
+            ["segments", "seg_id"],
+         ]),
+      );
+      // A join keyed on the joined source's primary key needs none.
+      const many = await scenario(MANY);
+      expect(many.rollup?.parentKeyChecks?.map((c) => c.keyColumn)).toEqual([
+         "id",
+      ]);
+   });
+
+   it(
+      "records a NULL key as not unique on the next build",
+      async () => {
+         const s = await scenario(SEGS);
+         const base = s.rollup?.parentKeyChecks?.find((c) =>
+            c.sourceID.startsWith("segments@"),
+         );
+         expect(base).toBeDefined();
+         const key = rollupKeyRecordKey(s.address, base!.sourceID);
+         const first = await s.run(true);
+         expect(first.uniquenessChecks?.rollupKeys?.[key]).toMatchObject({
+            keyColumn: "seg_id",
+            unique: true,
+         });
+         await s.duckdb.runSQL("INSERT INTO segs_src VALUES (NULL, 1, 9.0)");
+         const second = await s.run(true);
+         expect(second.uniquenessChecks?.rollupKeys?.[key]?.unique).toBe(false);
+      },
+      { timeout: 60000 },
+   );
+});
+
+/**
  * A source stored in a destination, checked over its table at its own build
  * (the join-to-rollup leg in a destination reads that table). The destination
  * is a plain DuckDB file under the environment, as a `storage=` destination
  * of type duckdb is; the stand-in build writes the source's rows there.
  */
-async function storedScenario() {
+async function storedScenario(
+   /** Base key checks to attach to the rollup's plan, as for a storage rollup. */
+   baseChecks: { sourceID: string; keyColumn: string; sql: string }[] = [],
+) {
    const pkg = await packages.create(JOINED);
    const duckdb = (await pkg.getMalloyConnection(
       "duckdb",
@@ -367,6 +431,14 @@ async function storedScenario() {
    const source = compiled.sources[sourceID ?? ""];
    if (!sourceID || !source) throw new Error("no planned source");
    compiled.storedKeyChecks = { [sourceID]: "flight_id" };
+   if (baseChecks.length > 0) {
+      (
+         compiled.preaggregatePlans?.[sourceID] as RollupVariantPlan
+      ).parentKeyChecks = baseChecks.map((c) => ({
+         ...c,
+         connectionName: "duckdb",
+      }));
+   }
    const address = computeSourceEntityId(
       source,
       compiled.connectionDigests,
@@ -451,9 +523,9 @@ async function storedScenario() {
       previous = { entries: result.entries, metadata: result.uniquenessChecks };
       return result;
    }
-   const record = (m: Metadata | undefined) =>
-      m?.rollupKeys?.[rollupKeyRecordKey(address, sourceID)];
-   return { duckdb, run, record };
+   const record = (m: Metadata | undefined, id: string = sourceID) =>
+      m?.rollupKeys?.[rollupKeyRecordKey(address, id)];
+   return { duckdb, run, record, address };
 }
 
 describe("a stored source's primary key check, on a build into a destination", () => {
@@ -488,6 +560,51 @@ describe("a stored source's primary key check, on a build into a destination", (
          expect(
             s.record((await s.run(false, false)).uniquenessChecks),
          ).toBeUndefined();
+      },
+      { timeout: 60000 },
+   );
+});
+
+describe("a storage rollup's base key check, on a build into a destination", () => {
+   it(
+      "runs on the base's connection, records against the table in the destination, and carries while it stands",
+      async () => {
+         const s = await storedScenario([
+            {
+               sourceID: "base@x",
+               keyColumn: "seg_id",
+               sql: "SELECT 1 AS k WHERE false",
+            },
+            {
+               sourceID: "nulls@x",
+               keyColumn: "seg_id",
+               sql: "SELECT 1 AS k",
+            },
+         ]);
+         const first = await s.run(true);
+         const table = tableIdentityKey("destination", "lake", "crew_stored_t");
+         expect(s.record(first.uniquenessChecks, "base@x")).toMatchObject({
+            table,
+            unique: true,
+         });
+         expect(s.record(first.uniquenessChecks, "nulls@x")?.unique).toBe(
+            false,
+         );
+         const second = await s.run(false);
+         expect(s.record(second.uniquenessChecks, "base@x")).toEqual(
+            s.record(first.uniquenessChecks, "base@x"),
+         );
+         // Bound with the storage entry, as the leg reads it.
+         const entry = second.entries[s.address]!;
+         expect(
+            keyUniquenessAt(
+               rollupKeyRecordsIn({
+                  [INLINE_UNIQUENESS_KEY]: second.uniquenessChecks!,
+               }),
+               s.address,
+               entry,
+            )?.parentKeys,
+         ).toMatchObject({ "base@x": true, "nulls@x": false });
       },
       { timeout: 60000 },
    );

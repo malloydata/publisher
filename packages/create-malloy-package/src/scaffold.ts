@@ -1673,7 +1673,6 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--workload-log-store",
    "--workload-log-retention-days",
    "--workload-log-max-rows",
-   "--materialize-v1-served-copy",
 ]);
 
 /** True when a quote is left open, which sh refuses to run at all. */
@@ -2251,6 +2250,9 @@ function workspaceGitignoreEntries(): string[] {
       // machine, which reads as every table failing to resolve rather than as a
       // missing file.
       "malloy-config.json",
+      // docs/configuration.md tells users to keep API keys and passwords here.
+      ".env",
+      "*.env",
    ];
 }
 

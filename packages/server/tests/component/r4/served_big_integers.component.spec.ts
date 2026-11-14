@@ -18,7 +18,7 @@
 
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { shadowRowDifference } from "../../../src/service/materialization/serve/v1_shadow";
+import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    freshLoadPool,
@@ -217,15 +217,6 @@ const tiers: Tier[] = [
       }),
    },
    {
-      label: "#@ persist storage=, the storage serve shape",
-      env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "false" },
-      cases: duckdbCases,
-      scenario: async () => ({
-         files: { "m.malloy": models("duckdb", "").persist },
-         seedSql: seed("", true),
-      }),
-   },
-   {
       label: "#(materialize) storage=",
       env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       cases: [...duckdbCases, ...JOIN_CASES],
@@ -311,11 +302,9 @@ for (const tier of tiers) {
          await cleanup?.();
       });
 
-      if (!tier.label.includes("serve shape")) {
-         it("compiles the served copy with no problem", async () => {
-            expect(await fixture.servedCopyProblems()).toEqual([]);
-         });
-      }
+      it("compiles the served copy with no problem", async () => {
+         expect(await fixture.servedCopyProblems()).toEqual([]);
+      });
 
       for (const c of tier.cases) {
          it(c.name, async () => {
@@ -349,12 +338,7 @@ for (const tier of tiers) {
                expect(run.servedVia).toBeUndefined();
                return;
             }
-            if (tier.label.includes("serve shape")) {
-               expect(run.servedVia).toBeUndefined();
-               expect(run.servedFrom).toBe("storage");
-            } else {
-               expect(run.servedVia).toBe("served_copy");
-            }
+            expect(run.servedVia).toBe("served_copy");
          });
       }
    });
@@ -367,15 +351,15 @@ for (const tier of tiers) {
  * every other query still reads the table, and a source whose own text names
  * it is left as written.
  */
-for (const shape of [false, true]) {
-   describe(`R4: a big-integer column no cast reads exactly is left out per query (${shape ? "serve shape" : "served copy"})`, () => {
+{
+   describe("R4: a big-integer column no cast reads exactly is left out per query (served copy)", () => {
       let restore: () => void;
       let fixture: R4Fixture;
       beforeAll(async () => {
          restore = installSettings({
             env: {
                PERSIST_STORAGE_MODE: "on",
-               PUBLISHER_MATERIALIZE: shape ? "false" : "true",
+               PUBLISHER_MATERIALIZE: "true",
             },
          }).restore;
          fixture = await buildScenario({
@@ -385,19 +369,12 @@ source: base is duckdb.table('big')
 
 #@ persist name="plain" storage="lake"
 source: plain is base -> { select: * }
-${
-   // The serve shape withholds every binding once any refinement on it
-   // names such a column (its existing rule for an unservable one), so the
-   // source that names it is checked on the served copy alone.
-   shape
-      ? ""
-      : `
+${`
 #@ persist name="sp" storage="lake"
 source: s is base -> { select: * } extend {
   measure: id_total is id.sum()
 }
-`
-}`,
+`}`,
             },
             seedSql: seed("", true),
          });
@@ -442,32 +419,29 @@ source: s is base -> { select: * } extend {
          expect(rowDifference(live.rows, served.rows)).toBeUndefined();
       });
 
-      it.skipIf(shape)(
-         "leaves a source whose own text names it as written, and answers live",
-         async () => {
-            const { live, served } = await answer(
-               "run: s -> { group_by: g; aggregate: n is count(), id_total }",
-            );
-            expect(served.path?.servedBy.kind).toBe("live");
-            expect(rowDifference(live.rows, served.rows)).toBeUndefined();
-            expect(
-               (await fixture.servedCopyProblems()).map((p) => [
-                  p.sourceName,
-                  p.reason,
-               ]),
-            ).toEqual([["s", "column_types"]]);
-         },
-      );
+      it("leaves a source whose own text names it as written, and answers live", async () => {
+         const { live, served } = await answer(
+            "run: s -> { group_by: g; aggregate: n is count(), id_total }",
+         );
+         expect(served.path?.servedBy.kind).toBe("live");
+         expect(rowDifference(live.rows, served.rows)).toBeUndefined();
+         expect(
+            (await fixture.servedCopyProblems()).map((p) => [
+               p.sourceName,
+               p.reason,
+            ]),
+         ).toEqual([["s", "column_types"]]);
+      });
    });
 }
 
 /**
  * The v1 cutover's colocated tables (`#@ persist` with no `storage=`, under
- * `PUBLISHER_V1_SERVED_COPY=on`): the served copy reads them in the source's
+ * the v1 cutover): the served copy reads them in the source's
  * own warehouse, and a big-integer column through the warehouse's own bigint
  * type, so it stays served and exact.
  */
-describe("R4: integers past 2^53 served from storage equal live (v1 colocated #@ persist, PUBLISHER_V1_SERVED_COPY=on)", () => {
+describe("R4: integers past 2^53 served from storage equal live (v1 colocated #@ persist, the v1 cutover)", () => {
    const values = seed("", true)[0].replace(/^CREATE TABLE big AS /, "");
    const model = `##! experimental { persistence }
 source: base is duckdb.sql("""${values}""")
@@ -512,7 +486,7 @@ source: s is base -> { select: * } extend {
          expect(s.answer.via).toBe("served_copy");
          expect(s.answer.servedBy).not.toBe("live");
          expect(
-            shadowRowDifference(l.answer.rows, s.answer.rows),
+            strictRowDifference(l.answer.rows, s.answer.rows),
          ).toBeUndefined();
          if (c.expect) {
             expect(exact(l.answer.rows, c.expect.column)).toEqual(

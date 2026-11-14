@@ -9,14 +9,17 @@
  *
  * In: a package (a directory holding a package whose connections are DuckDB,
  * the data snapshot, or the fixture's files) and a list of queries with their
- * givens. Out: one row per query, answered three ways and classified:
+ * givens. Out: one row per query, answered two ways and classified:
  *
  *  - `live`: before any table is bound;
- *  - `today`: with `PUBLISHER_V1_SERVED_COPY=off` (the storage serve shape,
- *    the `#@ preaggregate` composite, the colocated build manifest);
- *  - `cutover`: a package loaded, built and bound under
- *    `PUBLISHER_V1_SERVED_COPY=on` (the served copy, the rollup and view legs,
- *    or live), compared with that package's own live answer.
+ *  - `cutover`: a package loaded, built and bound (the served copy, the
+ *    rollup and view legs, or live), compared with that package's own live
+ *    answer.
+ *
+ * Before the retirement (6g) a third column, `today`, answered through the
+ * storage serve shape, the composite and the colocated build manifest, and
+ * the verdict compared the two; those paths are gone, so the verdict reads
+ * the cutover's answer alone.
  *
  * Each stored answer is compared with live in rows (exactly: strings as
  * strings, integers and bigints exact, floats within a relative tolerance)
@@ -31,9 +34,9 @@
 
 import type { GivenValue } from "@malloydata/malloy";
 import {
-   shadowFieldDifference,
-   shadowRowDifference,
-} from "../../service/materialization/serve/v1_shadow";
+   strictFieldDifference,
+   strictRowDifference,
+} from "./answer_difference";
 import { installSettings } from "../settings_env";
 import {
    type Answer,
@@ -65,19 +68,12 @@ export type Classification =
 /** One query's row. */
 export interface CutoverRow {
    query: string;
-   today: Classification;
    cutover: Classification;
    /**
-    * `served_equal`, `newly_served`, `live_both`, `regression` (served today,
-    * live after), or `bug` (the cutover's answer differs from live, or
-    * failed where live did not).
+    * `served_equal`, `live`, or `bug` (the cutover's answer differs from
+    * live, or failed where live did not).
     */
-   verdict:
-      | "served_equal"
-      | "newly_served"
-      | "live_both"
-      | "regression"
-      | "bug";
+   verdict: "served_equal" | "live" | "bug";
    /** What answered after the cutover (`served_copy`, `rollup`, `view`, `live`). */
    cutoverPath: string;
    /** For a difference or an error: where (a row and column, a field), never a value. */
@@ -85,15 +81,9 @@ export interface CutoverRow {
 }
 
 const MODES = {
-   today: {
-      PERSIST_STORAGE_MODE: "on",
-      PUBLISHER_MATERIALIZE: "false",
-      PUBLISHER_V1_SERVED_COPY: "off",
-   },
    cutover: {
       PERSIST_STORAGE_MODE: "on",
       PUBLISHER_MATERIALIZE: "false",
-      PUBLISHER_V1_SERVED_COPY: "on",
    },
 } as const;
 
@@ -125,12 +115,12 @@ export function classify(
       };
    }
    const path = pathOf(answer.answer);
-   const rows = shadowRowDifference(
+   const rows = strictRowDifference(
       live.answer.rows as Record<string, unknown>[],
       answer.answer.rows as Record<string, unknown>[],
    );
    if (rows) return { c: "wrong_rows", path, detail: rows };
-   const fields = shadowFieldDifference(
+   const fields = strictFieldDifference(
       live.answer.fields.map(asResultField),
       answer.answer.fields.map(asResultField),
    );
@@ -152,21 +142,14 @@ function pathOf(a: Answer): string {
    return a.servedFrom === "storage" ? "serve_shape" : "colocated_manifest";
 }
 
-function verdictOf(
-   today: Classification,
-   cutover: Classification,
-): CutoverRow["verdict"] {
-   if (cutover !== "served" && cutover !== "live") return "bug";
-   if (cutover === "served") {
-      return today === "served" ? "served_equal" : "newly_served";
-   }
-   return today === "served" ? "regression" : "live_both";
+function verdictOf(cutover: Classification): CutoverRow["verdict"] {
+   if (cutover === "served") return "served_equal";
+   return cutover === "live" ? "live" : "bug";
 }
 
 /**
- * Answer every query live, today and after the cutover, and classify each.
- * Loads the package twice (once per switch), each time with a load pool
- * spawned under that switch, and disposes of both.
+ * Answer every query live and after the cutover, and classify each. Loads
+ * the package once, with a load pool spawned under the runner's settings.
  */
 export async function runV1CutoverConformance(args: {
    /** A package directory (a DuckDB snapshot), or the package's files. */
@@ -198,16 +181,13 @@ export async function runV1CutoverConformance(args: {
          await freshLoadPool();
       }
    };
-   const today = await run("today");
    const cutover = await run("cutover");
    return args.queries.map((q, i) => {
-      const t = classify(today.live[i], today.served[i]);
       const c = classify(cutover.live[i], cutover.served[i]);
       return {
          query: q.name,
-         today: t.c,
          cutover: c.c,
-         verdict: verdictOf(t.c, c.c),
+         verdict: verdictOf(c.c),
          cutoverPath: c.path,
          ...(c.detail ? { detail: c.detail } : {}),
       };

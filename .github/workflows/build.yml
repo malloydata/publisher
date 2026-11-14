@@ -32,7 +32,8 @@ concurrency:
 jobs:
   lint:
     name: Typecheck
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Setup Bun
@@ -62,7 +63,8 @@ jobs:
           bun run typecheck
   lint_format:
     name: Lint and check formatting
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Setup Bun
@@ -147,7 +149,8 @@ jobs:
   # Bun bin entry).
   runtime_test:
     name: ${{ matrix.runtime }} test
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -270,13 +273,28 @@ jobs:
   # that the bundled .mjs executes under Bun (which runtime_test covers).
   docker_smoke_test:
     name: Docker smoke test
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    # id-token is used only on main, to write the donated runners' layer cache;
+    # a pull request's token cannot impersonate the writer (it is bound to the
+    # main branch's OIDC subject), so a PR run only reads the cache.
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      LAYER_CACHE: us-central1-docker.pkg.dev/credibledata-oss-ci/layer-cache/publisher/smoke:buildcache
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: "true"
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+      - name: Authenticate as the layer-cache writer
+        if: vars.DONATED_RUNNERS == 'true' && github.ref == 'refs/heads/main'
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/160497775026/locations/global/workloadIdentityPools/oss-github/providers/github
+          service_account: layer-cache-writer@credibledata-oss-ci.iam.gserviceaccount.com
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -315,8 +333,13 @@ jobs:
             DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
             APT_REFRESH=${{ steps.day.outputs.value }}
           tags: malloy-publisher:smoke-test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # The donated runners' registry cache when on them (GitHub's runners
+          # cannot reach it), GitHub's cache otherwise. Only main writes.
+          cache-from: ${{ vars.DONATED_RUNNERS == 'true' && format('type=registry,ref={0}', env.LAYER_CACHE) || 'type=gha' }}
+          cache-to: >-
+            ${{ github.ref != 'refs/heads/main' && '' ||
+                vars.DONATED_RUNNERS == 'true' && format('type=registry,ref={0},mode=max', env.LAYER_CACHE) ||
+                'type=gha,mode=max' }}
       - name: Inspect image metadata
         run: |
           # Lock in the Dockerfile claims made for audit findings #7 and #8:
@@ -638,7 +661,7 @@ jobs:
   python_sdk_smoke_test:
     name: Python SDK smoke test
     needs: python_sdk_build
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       PUBLISHER_PORT: "4010"

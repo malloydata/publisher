@@ -53,7 +53,13 @@
       "equalToLive": true,
       "malloy": "run: raw_direct -> { group_by: region; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "d315aa74c60e26bdae2de1c53ed1a5dbd279d607ad66f56d81a4684721304742"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -66,13 +72,15 @@
           "sourceName": "raw_direct"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "d315aa74c60e26bdae2de1c53ed1a5dbd279d607ad66f56d81a4684721304742",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the source itself",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {

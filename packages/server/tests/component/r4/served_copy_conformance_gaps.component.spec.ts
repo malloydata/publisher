@@ -51,8 +51,20 @@ const CASES: Case[] = [
       variant: "materialize",
       queries: ["the persisted source alone"],
    },
-   { gap: "nests", shape: "query-shaped: a nest", variant: "storage" },
-   { gap: "nests", shape: "query-shaped: a nest", variant: "materialize" },
+   // "through the nested rows" is checked against the truth below: Malloy
+   // 0.0.438 answers it wrong live.
+   {
+      gap: "nests",
+      shape: "query-shaped: a nest",
+      variant: "storage",
+      queries: ["the top level"],
+   },
+   {
+      gap: "nests",
+      shape: "query-shaped: a nest",
+      variant: "materialize",
+      queries: ["the top level"],
+   },
    { gap: "reserved words", shape: "reserved-word names", variant: "storage" },
    {
       gap: "reserved words",
@@ -168,6 +180,57 @@ for (const c of CASES) {
             expect(comparable(s.fields)).toEqual(comparable(l.fields));
          });
       }
+   });
+}
+
+/**
+ * Malloy 0.0.438 (malloydata/malloy#3208) skips an aggregate's rows where its
+ * source's key is NULL, and an unnested record's key is its parent's key with
+ * the element's ordinal: a query-shaped parent grouped by a NULL `region`
+ * has a NULL key, so live drops that group's nested rows from a sum through
+ * the nest (malloydata/malloy#3220). The served copy reads the stored nest
+ * and answers the true sum.
+ * This pins both: once Malloy is fixed, live equals the truth again, this
+ * fails, and the query goes back to the gap cases above.
+ */
+for (const variant of ["storage", "materialize"] as const) {
+   describe(`a sum through a stored nest under a NULL parent key, against the truth [${variant}]`, () => {
+      const shape = SHAPES.find((s) => s.name === "query-shaped: a nest");
+      if (!shape) throw new Error("no conformance shape query-shaped: a nest");
+      const entry = Object.keys(shape.files)[0];
+      const nested =
+         "run: nested -> { group_by: by_status.status; aggregate: n is by_status.n.sum() }";
+      const truth =
+         "run: orders_raw -> { group_by: status; aggregate: n is count() }";
+      let restore: () => void = () => {};
+      let fixture: LoadedFixture | undefined;
+      let live: Outcome | undefined;
+      let want: Outcome | undefined;
+      let served: Outcome | undefined;
+      beforeAll(async () => {
+         restore = withSwitch("on");
+         const loader = await loadFixture({
+            ...DATA_FILES,
+            ...renderFiles(shape, variant),
+         });
+         live = await loader.run(entry, nested);
+         want = await loader.run(entry, truth);
+         fixture = await loader.bind();
+         served = await fixture.run(entry, nested);
+      });
+      afterAll(async () => {
+         restore();
+         await fixture?.dispose();
+      });
+
+      it("the served copy answers the truth; live does not", () => {
+         const s = answerOf(served);
+         expect(s.servedBy).toBe("materialized");
+         expect(s.via).toBe("served_copy");
+         const truthRows = answerOf(want).rows;
+         expect(rowDifference(truthRows, s.rows)).toBeUndefined();
+         expect(rowDifference(truthRows, answerOf(live).rows)).toBeDefined();
+      });
    });
 }
 

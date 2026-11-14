@@ -1,8 +1,15 @@
 {
   "bind": {
     "buildErrors": {},
-    "built": [],
-    "verdicts": [],
+    "built": [
+      {
+        "name": "daily_nf",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "daily_nf:serves"
+    ],
     "warnings": []
   },
   "queries": [
@@ -46,7 +53,13 @@
       "equalToLive": true,
       "malloy": "run: daily_nf -> { group_by: region; aggregate: grand }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "1e5484a3823a4e65fdf5c864a38250e45a7f191789529e2d3f1fd9032fb84b00"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -59,13 +72,15 @@
           "sourceName": "daily_nf"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "1e5484a3823a4e65fdf5c864a38250e45a7f191789529e2d3f1fd9032fb84b00",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored measure by region",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -108,7 +123,13 @@
       "equalToLive": true,
       "malloy": "run: daily_nf -> { group_by: region; aggregate: grand }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "1e5484a3823a4e65fdf5c864a38250e45a7f191789529e2d3f1fd9032fb84b00"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -121,13 +142,15 @@
           "sourceName": "daily_nf"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "1e5484a3823a4e65fdf5c864a38250e45a7f191789529e2d3f1fd9032fb84b00",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored measure by region",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     }
   ]

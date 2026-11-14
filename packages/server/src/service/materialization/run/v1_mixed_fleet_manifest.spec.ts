@@ -2,17 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A fleet mid-rollout of `PUBLISHER_V1_SERVED_COPY` has workers on both
- * sides, and a host may bind a manifest built on one side to a worker on the
- * other. A v1 `#@ preaggregate` rollup is `__preagg__` (off) on one side and
- * `__rollup__` (on) on the other, with different `sourceEntityId`s. Each
- * worker must match a manifest entry only against its own plan, so a foreign
- * entry costs a rebuild (the query answers live) and never an answer read
- * from the other side's table.
+ * A fleet mid-rollout of the v1 cutover's retirement (6g) has older workers
+ * that served a v1 `#@ preaggregate` rollup through the composite, from a
+ * `__preagg__` table, beside workers that serve it through the rollup leg,
+ * from a `__rollup__` table, under a different `sourceEntityId`. A host may
+ * bind a manifest an older worker built to a new one. The new worker must
+ * match a manifest entry only against its own plan, so the older entry costs
+ * a rebuild (the query answers live) and never an answer read from its
+ * table. (The older worker's half of this was pinned while the switch
+ * existed; it ships in that worker.)
  *
- * Each side's table is tampered with its own offset, so an answer read from
- * either is told apart from live and from the other: a foreign entry alone
- * answers live, and beside the worker's own entry, the worker reads its own.
+ * The older entry is the new worker's own entry under a key and table no
+ * plan of this worker names, since this server can no longer build one.
+ * Each table is tampered with its own offset, so an answer read from either
+ * is told apart from live and from the other.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -60,7 +63,7 @@ const LIVE = [
    { category: "B", total: 35 },
 ];
 
-describe("a host manifest from the other side of the v1 cutover (mixed fleet)", () => {
+describe("a host manifest from an older worker of the v1 cutover (mixed fleet)", () => {
    let root: string;
    let envPath: string;
    let db: DuckDBConnection;
@@ -69,21 +72,15 @@ describe("a host manifest from the other side of the v1 cutover (mixed fleet)", 
    let service: MaterializationService;
    let restoreSettings: () => void;
 
-   async function switchTo(mode: "off" | "shadow" | "on"): Promise<void> {
-      restoreSettings?.();
+   beforeEach(async () => {
       restoreSettings = installSettings({
          env: {
             PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
             PERSIST_STORAGE_MODE: "on",
             PUBLISHER_MATERIALIZE: "false",
-            PUBLISHER_V1_SERVED_COPY: mode,
          },
       }).restore;
       await __setPackageLoadPoolForTests(null);
-   }
-
-   beforeEach(async () => {
-      await switchTo("off");
       root = fs.realpathSync(
          fs.mkdtempSync(path.join(os.tmpdir(), "v1-mixed-fleet-")),
       );
@@ -160,10 +157,6 @@ describe("a host manifest from the other side of the v1 cutover (mixed fleet)", 
    const named = async (part: string) =>
       (await tables()).filter((t) => t.includes(part));
 
-   async function reload(): Promise<void> {
-      await env.getPackage(parsePackageName("pa"), true);
-   }
-
    async function ask(): Promise<{ rows: unknown; servedBy?: string }> {
       const pkg = await env.getPackage(parsePackageName("pa"), false);
       const r = await pkg
@@ -215,54 +208,42 @@ describe("a host manifest from the other side of the v1 cutover (mixed fleet)", 
    const shifted = (offset: number) =>
       LIVE.map((row) => ({ ...row, total: row.total + offset }));
 
-   it("ignores a foreign entry in both directions, and reads only its own beside one", async () => {
-      // Off: the v1 composite's __preagg__ table.
-      const off = await build();
-      expect(off.status).toBe("MANIFEST_FILE_READY");
-      const offEntries = off.manifest?.entries ?? {};
-      expect(Object.values(offEntries).map((e) => e.physicalTableName)).toEqual(
-         [expect.stringContaining("__preagg__")],
-      );
+   it("ignores an older worker's __preagg__ entry, and reads only its own beside one", async () => {
+      const built = await build();
+      expect(built.status).toBe("MANIFEST_FILE_READY");
+      const ownEntries = built.manifest?.entries ?? {};
+      const [[ownID, own]] = Object.entries(ownEntries);
+      expect(own.physicalTableName).toContain("__rollup__");
 
-      // On: the rollup leg's __rollup__ table.
-      await switchTo("on");
-      await reload();
-      const on = await build();
-      expect(on.status).toBe("MANIFEST_FILE_READY");
-      const onEntries = on.manifest?.entries ?? {};
-      expect(Object.values(onEntries).map((e) => e.physicalTableName)).toEqual([
-         expect.stringContaining("__rollup__"),
-      ]);
-      // Different content addresses, so no key is shared.
-      expect(Object.keys(offEntries).filter((id) => id in onEntries)).toEqual(
-         [],
+      // The older worker's table and entry: the composite's name, under a
+      // content address no plan of this worker names.
+      const olderTable = "orders__preagg__category__0123abcd";
+      await sql(
+         `CREATE TABLE "${olderTable}" AS SELECT * FROM "${own.physicalTableName}"`,
       );
+      const olderID = "f".repeat(ownID.length);
+      expect(olderID).not.toBe(ownID);
+      const olderEntries = {
+         [olderID]: {
+            ...own,
+            sourceEntityId: olderID,
+            sourceName: olderTable,
+            physicalTableName: olderTable,
+         },
+      };
 
       await tamper("__preagg__", 1000);
       await tamper("__rollup__", 2000);
 
-      // An on worker, handed only the off side's entry: live.
-      await bindHostManifest(offEntries);
+      // Handed only the older entry: live.
+      await bindHostManifest(olderEntries);
       let answer = await ask();
       expect(answer.rows).toEqual(LIVE);
       expect(answer.servedBy).toBe("live");
-      // Both sides' entries: its own table, never the foreign one.
-      await bindHostManifest({ ...offEntries, ...onEntries });
+      // Both: its own table, never the older one.
+      await bindHostManifest({ ...olderEntries, ...ownEntries });
       answer = await ask();
       expect(answer.rows).toEqual(shifted(2000));
-      expect(answer.servedBy).toBe("rollup");
-
-      // An off worker, handed only the on side's entry: live.
-      await switchTo("off");
-      await reload();
-      await bindHostManifest(onEntries);
-      answer = await ask();
-      expect(answer.rows).toEqual(LIVE);
-      expect(answer.servedBy).toBe("live");
-      // Both sides' entries: its own table, never the foreign one.
-      await bindHostManifest({ ...onEntries, ...offEntries });
-      answer = await ask();
-      expect(answer.rows).toEqual(shifted(1000));
       expect(answer.servedBy).toBe("rollup");
    }, 120_000);
 });

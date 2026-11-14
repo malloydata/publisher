@@ -8,7 +8,33 @@ source: fact_joined is fact_s extend {
                                        
 }
 
-// ==== <pkg>/m.malloy
+// ==== <pkg>/m.malloy (text 1 of 2)
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: dim_c__served is {
+   id::number,
+   segment::string
+}
+
+import "raw.malloy"
+
+#@ persist name="dim_colocated"
+source: dim_c is duckdb.virtual('820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280')::dim_c__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"BIGINT"
+  primary_key: id
+}
+
+#@ persist name="fact_stored" storage="lake"
+source: fact_s is orders_raw -> {
+  select: id, customer_id, region, amount
+} extend {
+  measure: total is amount.sum()
+}
+
+// ==== <pkg>/m.malloy (text 2 of 2)
 ##! experimental { persistence }
 ##! experimental { virtual_source }
 type: fact_s__served is {
@@ -17,13 +43,19 @@ type: fact_s__served is {
    region::string,
    amount::number
 }
+type: dim_c__served is {
+   id::number,
+   segment::string
+}
 
 import "raw.malloy"
 
 #@ persist name="dim_colocated"
-source: dim_c is customers_raw -> {
-  select: id, segment
-} extend {
+source: dim_c is duckdb.virtual('820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280')::dim_c__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"BIGINT"
   primary_key: id
 }
 

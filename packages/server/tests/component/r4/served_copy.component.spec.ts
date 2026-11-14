@@ -237,27 +237,3 @@ source: daily_plus is daily extend {
       });
    });
 });
-
-describe("R4: with the served copy off, today's serve shape answers", () => {
-   let restore: () => void;
-   let fixture: R4Fixture;
-   beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
-      }).restore;
-      fixture = await buildScenario({ files: { "m.malloy": model }, seedSql });
-   });
-   afterAll(async () => {
-      restore();
-      await disposeScenarios();
-   });
-   it("serves from storage without the served copy", async () => {
-      const run = await fixture.run({
-         name: "off",
-         malloy: "run: daily -> { group_by: region; aggregate: grand }",
-      });
-      expect(run.servedFrom).toBe("storage");
-      expect(run.servedVia).toBeUndefined();
-      expect(rowDifference(run.live, run.served)).toBeUndefined();
-   });
-});

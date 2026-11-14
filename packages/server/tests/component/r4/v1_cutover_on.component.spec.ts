@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// v1 colocated tables under PUBLISHER_V1_SERVED_COPY=on. Each query is
+// v1 colocated tables under the v1 cutover. Each query is
 // answered live before any table is bound, then under the cutover; the served
 // answer must equal live per caller, and a refusal must stay a refusal.
 
@@ -268,9 +268,9 @@ describe("v1 cutover on: a stored column the extend block excepts", () => {
       }
    }, 300_000);
 
-   it("storage=, served by the serve shape today, by the served copy after", async () => {
+   it("storage=, served by the served copy", async () => {
       await freshLoadPool();
-      let restore = withSwitch("off");
+      const restore = withSwitch("cutover");
       const loader = await loadFixture({
          ...DATA_FILES,
          "raw.malloy": RAW_MODEL,
@@ -281,21 +281,10 @@ describe("v1 cutover on: a stored column the extend block excepts", () => {
       });
       try {
          const f = await loader.bind();
-         const today = await f.run("d.malloy", Q);
-         restore();
-         restore = withSwitch("cutover");
-         await f.rebind();
          const after = await f.run("d.malloy", Q);
-         if ("error" in today || "error" in after) throw new Error("errored");
-         console.log(
-            "STORAGE today",
-            today.answer.servedBy,
-            "after",
-            after.answer.servedBy,
-            after.answer.via,
-         );
-         expect(today.answer.servedBy).toBe("materialized");
+         if ("error" in after) throw new Error(after.error);
          expect(after.answer.servedBy).toBe("materialized");
+         expect(after.answer.via).toBe("served_copy");
       } finally {
          restore();
          await loader.dispose();
@@ -519,40 +508,4 @@ import "raw.malloy"
          300_000,
       );
    }
-});
-
-describe("today: a renamed internal column's source", () => {
-   it("is served by today's colocated manifest path", async () => {
-      await freshLoadPool();
-      const restore = withSwitch("off");
-      const loader = await loadFixture({
-         ...DATA_FILES,
-         "raw.malloy": RAW_MODEL,
-         "x.malloy": `##! experimental { persistence access_modifiers }
-import "raw.malloy"
-#@ persist name="cust_a"
-source: cust_a is customers_raw -> {
-  select: id, segment, home_region
-} extend {
-  rename: region_raw is home_region
-} include { internal: region_raw; public: * } extend {
-  measure: n is count()
-}
-`,
-      });
-      try {
-         const f = await loader.bind();
-         const out = await f.run(
-            "x.malloy",
-            "run: cust_a -> { group_by: segment; aggregate: n }",
-         );
-         if ("error" in out) throw new Error(out.error);
-         console.log("TODAY", out.answer.servedBy, out.answer.servedFrom);
-         expect(out.answer.servedBy).toBe("materialized");
-      } finally {
-         restore();
-         await loader.dispose();
-         await freshLoadPool();
-      }
-   }, 300_000);
 });

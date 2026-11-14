@@ -14,10 +14,13 @@
  * row of that level (`__parent_row`: one per parent). Levels count from the
  * source (0) to the last hop (the leaf, `depth`). On those rows:
  *
- *  - an aggregate at the leaf (`j.x.sum()`, `j.count()`, `items.options.x
- *    .sum()`) reads every row, which are the rows live aggregates there, so it
- *    is exact as it stands, live's count of a childless parent
- *    (malloydata/malloy#1762) included;
+ *  - an aggregate at the leaf (`j.x.sum()`, `items.options.x.sum()`, a `max`)
+ *    reads every row, the null-extended row of a parent with no child
+ *    included. Live reads that row for a `min` or `max`, and, since
+ *    malloydata/malloy#3208 (Malloy 0.0.438), skips it for a `count()`,
+ *    `sum` or `avg`, which test the join's key. So a sum or average at the
+ *    leaf is exact only of a stored column of the leaf, null on that row,
+ *    and a count at the leaf is not ({@link unmatchedRowRefusal});
  *  - an aggregate at a level above the leaf is exact only under that level's
  *    flag, and only where nothing it is grouped or filtered by reads a deeper
  *    level: a flagged row is one of its level's rows, so a deeper value would
@@ -725,6 +728,8 @@ function checkSegment(
                      "an aggregate through the inlined join under a row flag",
                   );
                }
+               const unmatched = unmatchedRowRefusal(pair, leaf, aggregate);
+               if (unmatched !== undefined) throw new Refusal(unmatched);
                return;
             }
             if (ctx.flagged !== level) {
@@ -740,6 +745,10 @@ function checkSegment(
                      ? "an aggregate over the source's own fields, grouped or filtered by the inlined join's fields"
                      : "an aggregate above the inlined path's last join, grouped or filtered by a level below it",
                );
+            }
+            if (level > 0) {
+               const unmatched = unmatchedRowRefusal(pair, level, aggregate);
+               if (unmatched !== undefined) throw new Refusal(unmatched);
             }
             if (
                level > 0 &&
@@ -766,6 +775,42 @@ function checkSegment(
          depth + 1,
       );
    }
+}
+
+/**
+ * Why an aggregate at a level of the inlined path (the leaf, or a middle
+ * level under its row flag, which also marks the null-extended row of a
+ * parent with no row there) reads that row where live skips it, or
+ * undefined. Since malloydata/malloy#3208 live's `count()`, `sum` and `avg`
+ * at a join skip the rows where its key is NULL: a count there counts that
+ * level's rows only, which the pair table's rows cannot say apart from the
+ * null-extended one; a sum or average is exact when its argument is a stored
+ * column of the level, null on that row, and not otherwise (a constant, a
+ * computed column, `??`). A `min`, `max` or distinct count reads that row
+ * live too (Malloy does not guard them), so it is exact as it stands.
+ */
+function unmatchedRowRefusal(
+   pair: FlatPair,
+   level: number,
+   aggregate: Node,
+): string | undefined {
+   const fn = (aggregate as { function?: unknown }).function;
+   if (fn === "min" || fn === "max" || fn === "distinct") return undefined;
+   if (fn === "count") {
+      return "a count through the inlined join, which live takes over the join's own rows and the pair table's row for a parent with none would add to";
+   }
+   const arg = (aggregate.e ?? {}) as Node;
+   const path = arg.node === "field" ? pathOf(arg) : undefined;
+   if (
+      (fn === "sum" || fn === "avg") &&
+      path !== undefined &&
+      path.length === level + 1 &&
+      levelOfNames(path, pair) === level &&
+      !(pair.computedFields ?? []).includes(path.join("."))
+   ) {
+      return undefined;
+   }
+   return "an aggregate through the inlined join of a value that is not null on the pair table's row for a parent with none, which live skips";
 }
 
 /**

@@ -65,7 +65,13 @@
       ],
       "malloy": "run: scoped -> { group_by: status; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -78,13 +84,15 @@
           "sourceName": "scoped"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a per-caller where:, one caller",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -132,7 +140,13 @@
       ],
       "malloy": "run: scoped -> { group_by: status; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -145,13 +159,15 @@
           "sourceName": "scoped"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a per-caller where:, another caller",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -205,7 +221,14 @@
       ],
       "malloy": "run: gated_ext -> { group_by: status; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "CONTRACT",
+            "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -436,7 +459,14 @@
       ],
       "malloy": "run: gated_ext -> { group_by: status; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "CONTRACT",
+            "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],

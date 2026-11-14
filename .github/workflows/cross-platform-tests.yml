@@ -35,7 +35,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ ubuntu-latest, windows-latest, macos-latest ]
-    runs-on: ${{ matrix.os }}
+    # The Linux leg on Credible's donated runners when DONATED_RUNNERS is on
+    # (they are Linux x64 only); macOS and Windows stay on GitHub's.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || matrix.os }}
+    timeout-minutes: 75
 
     steps:
       - name: Configure Temp Directory (Windows)

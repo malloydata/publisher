@@ -25,7 +25,7 @@ This file is the core. The details live beside it, one topic per file, and each 
 
 ## v1 or v2: which spelling to write
 
-Publisher has two spellings. **v1** is `#@ persist` on a source and `#@ preaggregate` on a measure, and it is what a server runs by default. **v2** is `#(materialize)` on a source and `#(preaggregate)` on a measure. v2 is in development behind the server switch `PUBLISHER_MATERIALIZE` (default off) until the v1 cutover; everything else in this skill describes v1 unless it says otherwise.
+Publisher has two spellings. **v1** is `#@ persist` on a source and `#@ preaggregate` on a measure, and it is what a server reads by default. **v2** is `#(materialize)` on a source and `#(preaggregate)` on a measure, in development behind the server switch `PUBLISHER_MATERIALIZE` (default off). Since the v1 cutover both are served the same way: a stored table by the served copy (the author's own files with each stored source re-rooted on its table), a rollup by the rollup leg, so a query reads a table only when the path report says so. Everything else in this skill describes v1 unless it says otherwise.
 
 **Pick by what the server runs, then by where the table goes:**
 

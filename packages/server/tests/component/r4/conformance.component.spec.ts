@@ -4,10 +4,9 @@
 /**
  * The conformance fixture (ms2data/service#7098): synthetic packages shaped
  * like real ones, each served three ways (v1 `#@ persist` with `storage=`,
- * v1 colocated, and `#(materialize)`), with the materialize switch off
- * (today's serve shape), on (the served copy) and with the v1 cutover on
- * (`cutover`: `PUBLISHER_V1_SERVED_COPY=on`, so v1 tables are read by the
- * served copy, the rollup and view legs, or not at all), through the real
+ * v1 colocated, and `#(materialize)`), under the v1 cutover (`cutover`: v1
+ * tables are read by the served copy, the rollup and view legs, or not at
+ * all; since the retirement the only path), through the real
  * package path (conformance/package_harness.ts). Every query's served answer must
  * equal live, rows and result metadata (field types with their timeframes,
  * and annotations), and a stored table must have answered it.
@@ -48,11 +47,13 @@ import {
    VARIANTS,
 } from "./conformance/shapes";
 import { rowDifference } from "./harness";
-import { shadowRowDifference } from "../../../src/service/materialization/serve/v1_shadow";
+import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
 
 const RUN_GAPS = process.env.CONFORMANCE_GAPS === "run";
 const REPORT = process.env.CONFORMANCE_REPORT === "1";
-const SWITCHES: Switch[] = ["off", "on", "cutover"];
+// Only the cutover column: `off` and `on` pinned the retired serve shape and
+// composite; the shipped default is conformance_default_settings's.
+const SWITCHES: Switch[] = ["cutover"];
 
 /**
  * Metadata differences every stored read has on main, tolerated per case so
@@ -383,11 +384,12 @@ for (const shape of SHAPES) {
                   expect(
                      rowDifference(l.answer.rows, s.answer.rows),
                   ).toBeUndefined();
-                  // After the cutover, by the shadow comparison's exact rule
-                  // too (strings as strings, integers and bigints exact).
+                  // After the cutover, by the strict comparison too
+                  // (`answer_difference.ts`: strings as strings, integers
+                  // and bigints exact).
                   if (on === "cutover") {
                      expect(
-                        shadowRowDifference(l.answer.rows, s.answer.rows),
+                        strictRowDifference(l.answer.rows, s.answer.rows),
                      ).toBeUndefined();
                   }
                   const needed = tolerancesNeeded(l.answer, s.answer);

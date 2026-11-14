@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import type { PersistSource } from "@malloydata/malloy";
-import { getMaterializeGatedSources } from "../../../config";
+import {
+   getMaterializeEnabled,
+   getMaterializeGatedSources,
+} from "../../../config";
 import { MaterializationEligibilityError } from "../../../errors";
 import { recordEligibilityRefused } from "../../../materialization_metrics";
 import type { AnnotationNote } from "../../annotations";
@@ -684,7 +687,9 @@ export function gateEnforcedAtRead(
    // are grafted and proven on its variant (R3 for rollups), a v1 one's never.
    const rollup = plan?.preaggregatePlans?.[sourceID];
    if (rollup !== undefined) return rollupGateEnforcedAtRead(rollup);
-   if (!getMaterializeGatedSources()) return false;
+   // A `#(materialize)` source is v2's: its gate is admitted only with v2's
+   // switch, not with the v1 cutover that also enables the gated switch.
+   if (!getMaterializeEnabled() || !getMaterializeGatedSources()) return false;
    if (!plan?.materializePlans?.[sourceID]) return false;
    const outcome = plan.sourceGateOutcomes?.[sourceID];
    return outcome?.classification === "row_level" && outcome.attributed;
