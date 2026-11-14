@@ -17,6 +17,7 @@
  * rewriter is checked against the same scenarios when it lands (phase 3).
  */
 
+import { expect } from "bun:test";
 import { loadLeavingOutCrossConnectionJoins } from "../../../src/service/materialization/plan/cross_connection_joins";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
 import { assertInlinedJoinsUnique } from "../../../src/service/materialization/run/inline_uniqueness";
@@ -28,6 +29,7 @@ import {
 import {
    joinOneKey,
    joinOneKeysOf,
+   joinedKeyNeedsOf,
    parentKeyNeedsOf,
    storedKeyChecksOf,
 } from "../../../src/service/materialization/plan/rollup_plan";
@@ -213,6 +215,8 @@ export interface R4Run {
    /** The path report's `servedBy`: which table answered. */
    servedBy?: { kind: string; tableId?: string };
    truth?: Row[];
+   /** The query that ran. */
+   malloy?: string;
 }
 
 /** A built scenario: run queries against it. */
@@ -583,6 +587,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             need,
             compile: parentKeyCheckCompiler(materializer),
          })),
+         joinedKeyNeedsOf(SourceMap.of(authorDef)).map((need) => ({
+            need,
+            compile: parentKeyCheckCompiler(materializer),
+         })),
       );
    }
    const rollupPlanned: [
@@ -943,6 +951,33 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             };
          }
       }
+      // A storage rollup's base key check, run on the base's connection
+      // over its rows, as its build runs it (`compileParentKeyChecks`).
+      const rollupChecks = rollupOrigin.has(source.sourceID)
+         ? (rollupPlanByName.get(source.name)?.parentKeyChecks ?? [])
+         : [];
+      if (rollupChecks.length > 0 && checks !== false) {
+         const parentKeys: Record<string, boolean> = {};
+         for (const parent of rollupChecks) {
+            const record =
+               checks === "unique"
+                  ? { unique: true }
+                  : await runRollupKeyCheck(
+                       parent,
+                       connections.get(parent.connectionName ?? "duckdb") ??
+                          duckdb,
+                       table,
+                    );
+            if (record) parentKeys[parent.sourceID] = record.unique;
+         }
+         const entry = entries[`h${i}`] as ManifestEntry & {
+            keyUniqueness?: KeyUniqueness;
+         };
+         entry.keyUniqueness = {
+            ...entry.keyUniqueness,
+            parentKeys: { ...entry.keyUniqueness?.parentKeys, ...parentKeys },
+         };
+      }
       entryBySourceID.set(source.sourceID, entries[`h${i}`]);
    }
    const bindings = [
@@ -1183,6 +1218,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                  .rows as Row[])
             : undefined;
          return {
+            malloy: query.malloy,
             live: live.rows,
             served: served.rows,
             liveFields: live.fields,
@@ -1204,6 +1240,29 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          };
       },
    };
+}
+
+/**
+ * Whether a run over a pair table (`inline=` on a join_many) was served by the
+ * served copy, as it should be: since Malloy 0.0.438 (malloydata/malloy#3208)
+ * live counts a parent with no joined row as none, which the pair table's
+ * null-extended row for that parent cannot be told apart from, so a query
+ * that counts through the inlined path (`segments.count()`, or one of the
+ * fixture's measures that does, named in `counts`) is answered live. Rows are
+ * compared by the caller.
+ */
+export function expectPairServedVia(
+   run: R4Run,
+   counts: readonly string[],
+   servedHere = true,
+): void {
+   const malloy = run.malloy ?? "";
+   const countsThroughPath =
+      /\.count\(\)/.test(malloy) ||
+      counts.some((n) => new RegExp(`\\b${n}\\b`).test(malloy));
+   expect(run.servedVia).toBe(
+      servedHere && !countsThroughPath ? "served_copy" : undefined,
+   );
 }
 
 /** Relative tolerance for floats, as R4 states it. */
@@ -1338,10 +1397,11 @@ function pairingKey(value: unknown): string {
 /**
  * Integers (counts, sums of integers) must match exactly; other numbers
  * within the relative float tolerance, floored at 1 so two values near zero
- * are compared absolutely.
+ * are compared absolutely. NaN matches NaN: DuckDB divides 0.0 by 0 as NaN,
+ * which a ratio over a childless parent's sum and count is.
  */
 function numbersEqual(x: number, y: number): boolean {
-   if (x === y) return true;
+   if (x === y || (Number.isNaN(x) && Number.isNaN(y))) return true;
    if (Number.isSafeInteger(x) && Number.isSafeInteger(y)) return false;
    const scale = Math.max(Math.abs(x), Math.abs(y), 1);
    return Math.abs(x - y) <= FLOAT_TOLERANCE * scale;
