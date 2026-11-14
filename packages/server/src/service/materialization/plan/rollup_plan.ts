@@ -66,10 +66,7 @@
  */
 
 import { Annotations, type ModelDef, type SourceDef } from "@malloydata/malloy";
-import {
-   getMaterializeGatedSources,
-   getV1ServedCopyMode,
-} from "../../../config";
+import { getMaterializeGatedSources } from "../../../config";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
 import { basePersistNamespace } from "./preaggregation_synthesis";
 import { collectEntryPointGates } from "../../gate_classification";
@@ -394,6 +391,11 @@ interface Declaration {
    grain: string[];
    storage?: string;
    namespace?: string;
+   /**
+    * Read from a v1 `#@ preaggregate` line (the cutover's G4): a finding v1's
+    * own validation already reports with the same code is not reported again.
+    */
+   v1?: true;
 }
 
 /**
@@ -546,10 +548,16 @@ export interface RollupPlanContext {
    readUnderGates?: boolean;
    /**
     * Whether v1 `#@ preaggregate` lines are read as `#(preaggregate)`
-    * declarations (the v1 cutover's G4). Absent: under
-    * `PUBLISHER_V1_SERVED_COPY=on`.
+    * declarations (the v1 cutover's G4). Absent: they are.
     */
    readsV1?: boolean;
+   /**
+    * Whether `#(preaggregate)` declarations are read. Absent: they are. A
+    * caller that plans only because the v1 cutover is on passes
+    * `getMaterializeEnabled()`, so v2's route stays unread with its switch
+    * off.
+    */
+   readsV2?: boolean;
 }
 
 /**
@@ -575,7 +583,10 @@ export function planSourceRollups(
    // Every declaration this source writes, and a refusal for one on a field
    // that is not a measure (the wrong kind of field: malformed).
    const declarations: Declaration[] = [];
-   for (const field of fields) {
+   // `#(preaggregate)` is read unless the caller runs only for the v1
+   // cutover (`readsV2: false`), which reads v1's lines below alone.
+   const readsV2 = ctx.readsV2 ?? true;
+   for (const field of readsV2 ? fields : []) {
       const name = fieldNameOf(field);
       if (name === undefined) continue;
       const notes = declaredRollupNotes(def, field, sources);
@@ -603,7 +614,7 @@ export function planSourceRollups(
    // rollup's table name, so it rebuilds once) and served here, and the v1
    // composite is not. A line v1 reports as unusable is left to v1's own
    // validation.
-   if (ctx.readsV1 ?? getV1ServedCopyMode() === "on") {
+   if (ctx.readsV1 ?? true) {
       // As v1 places it: a grain naming no namespace (and no storage=) is
       // created beside its base's own `#@ persist name=`.
       const inheritedNamespace = basePersistNamespace({
@@ -626,6 +637,7 @@ export function planSourceRollups(
             declarations.push({
                measure: name,
                grain: grain.dimensions,
+               v1: true,
                ...(grain.storage !== undefined
                   ? { storage: grain.storage }
                   : {}),
@@ -640,7 +652,7 @@ export function planSourceRollups(
       }
    }
    // A source-level declaration names no measure.
-   for (const note of ownLevelNotes(def.annotations)) {
+   for (const note of readsV2 ? ownLevelNotes(def.annotations) : []) {
       if (routeOfNote(note.text) !== PREAGGREGATE_ROUTE) continue;
       refused.push({
          tier: "malformed",
@@ -733,6 +745,8 @@ export function planSourceRollups(
    for (const decl of declarations) {
       const field = byName.get(decl.measure) as FieldLike;
       if (isHidden(field)) {
+         // v1's validation warns for its own line (preaggregate-hidden-field).
+         if (decl.v1) continue;
          refused.push(
             unservable(
                "preaggregate-hidden-field",
@@ -806,6 +820,7 @@ export function planSourceRollups(
             ),
       );
       if (hiddenGrain) {
+         if (decl.v1) continue;
          refused.push(
             unservable(
                "preaggregate-hidden-field",
@@ -1306,6 +1321,68 @@ export function parentKeyNeedsOf(map: SourceMap): ParentKeyNeed[] {
       }
    }
    return out;
+}
+
+/**
+ * A joined source whose declared primary key is not the column a join to it
+ * is keyed on: the join-to-rollup leg needs that key checked never NULL and
+ * unique before it serves a count, sum or average of the source's own rows
+ * through the join. Since malloydata/malloy#3208 live takes those at a joined
+ * source over the rows whose key is not NULL (`CASE WHEN key IS NOT NULL`,
+ * `COUNT(DISTINCT key)` where the rows fan out), while the rollup, built at
+ * the source's own grain, counts and sums every row.
+ */
+export interface JoinedKeyNeed {
+   /** The joined source, the base of its rollups. */
+   sourceID: string;
+   /** Its name in the model it was found in. */
+   name: string;
+   /** Its declared primary key. */
+   keyColumn: string;
+   connectionName: string | undefined;
+}
+
+/**
+ * Every named source in `map` that a join reaches on a column other than its
+ * declared primary key (see {@link JoinedKeyNeed}). A join keyed on the
+ * joined source's primary key (`join_one: crew with id`) meets no row whose
+ * key is NULL, so it needs no check.
+ */
+export function joinedKeyNeedsOf(map: SourceMap): JoinedKeyNeed[] {
+   const out = new Map<string, JoinedKeyNeed>();
+   for (const node of map.nodes()) {
+      for (const join of map.joinsOf(node.sourceID)) {
+         if (
+            join.relationship === "cross" ||
+            join.sourceID === undefined ||
+            join.keyColumn === undefined ||
+            out.has(join.sourceID)
+         ) {
+            continue;
+         }
+         const joined = map.node(join.sourceID);
+         const def = joined?.def as
+            | { primaryKey?: unknown; connection?: unknown }
+            | undefined;
+         const keyColumn =
+            typeof def?.primaryKey === "string" ? def.primaryKey : undefined;
+         if (
+            joined?.name === undefined ||
+            keyColumn === undefined ||
+            keyColumn === join.keyColumn
+         ) {
+            continue;
+         }
+         out.set(join.sourceID, {
+            sourceID: join.sourceID,
+            name: joined.name,
+            keyColumn,
+            connectionName:
+               typeof def?.connection === "string" ? def.connection : undefined,
+         });
+      }
+   }
+   return [...out.values()];
 }
 
 /**

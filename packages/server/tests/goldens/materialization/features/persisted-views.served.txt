@@ -13,6 +13,7 @@ source: orders__by_region__view__stored is __served_copy_alias_of_lake.virtual('
 source: orders is orders__by_region__view__stored extend {
   view: by_region is { select: region, n, total; order_by: n desc }
 }
+export { orders, north_orders }
 
 // ==== <pkg>/m.malloy (text 2 of 3)
 ##! experimental { access_modifiers givens persistence virtual_source }
@@ -22,6 +23,7 @@ import { orders__by_status__view__built is orders__by_status__view } from "m.mal
 source: orders is orders__by_status__view__built extend {
   view: by_status is { select: status, n; order_by: n desc }
 }
+export { orders, north_orders }
 
 // ==== <pkg>/m.malloy (text 3 of 3)
 ##! experimental { access_modifiers givens persistence virtual_source }
@@ -35,6 +37,7 @@ source: orders__two_stage__view__stored is __served_copy_alias_of_lake.virtual('
 source: orders is orders__two_stage__view__stored extend {
   view: two_stage is { select: region, n }
 }
+export { orders, north_orders }
 
 // ==== <pkg>/m.malloy.persist-view.malloy
 ##! experimental.persistence

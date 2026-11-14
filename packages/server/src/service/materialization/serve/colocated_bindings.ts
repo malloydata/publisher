@@ -21,14 +21,12 @@
  * connection of that name, never a server-only alias, since an author can
  * already read their own warehouse.
  *
- * v1's colocated `#@ persist` is bound here only under the v1 cutover
- * (`PUBLISHER_V1_SERVED_COPY` past `off`, gap G1): the caller passes
- * `v1Schema`, and each planned v1 source without `storage=` whose table the
- * manifest names is bound with the schema its build captured
+ * v1's colocated `#@ persist` is bound here (the v1 cutover, gap G1) when
+ * the caller passes `v1Schema`: each planned v1 source without `storage=`
+ * whose table the manifest names is bound with the schema its build captured
  * ({@link FreshnessAwareManifestEntry.schema}), or, for a table built before
  * the capture, the schema derived from its compiled output
- * ({@link v1StoredColumnsOf}). With the switch `off` it is still served
- * through Malloy's build manifest.
+ * ({@link v1StoredColumnsOf}).
  */
 
 import { quoteManifestTablePath } from "../../quoting";

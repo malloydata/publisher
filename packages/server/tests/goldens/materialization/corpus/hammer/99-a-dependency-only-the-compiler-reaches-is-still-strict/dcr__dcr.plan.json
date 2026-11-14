@@ -154,9 +154,9 @@
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "771259a69a58edf222ac391568d923c3f246f971d46d37de2f72cda4b9e9b402",
+        "sourceEntityId": "7198faaf8672ba01060bb77f1ae48c2820d856f5a172a1d9962efdb8094e749e",
         "sourceID": "rollup@<hammer>/dcr/dcr.malloy",
-        "sql": "sha256:81d2f81e87de578b"
+        "sql": "sha256:fe160456df315afe"
       }
     }
   }

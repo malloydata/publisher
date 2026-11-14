@@ -60,7 +60,10 @@ jobs:
   # no repository code.
   build:
     name: Build and verify the wheel and sdist
-    runs-on: ubuntu-latest
+    # Credible's donated runners for build.yml's PR and main runs. A release
+    # (which passes `ref`) builds the wheel it uploads to PyPI on GitHub's
+    # runners: an artifact we publish is built on infrastructure we choose.
+    runs-on: ${{ inputs.ref == '' && vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
     # Bounded for the reason its siblings are, and generously, because it does
     # the most work here.
     timeout-minutes: 30

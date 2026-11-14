@@ -25,6 +25,7 @@ import { malloyGivenToApi } from "./given";
 import { Model } from "./model";
 import { installSettings } from "../test_helpers/settings_env";
 import { QueryPrivileges } from "./model_query_request";
+import { writeServedCopyFiles } from "../test_helpers/served_copy_files";
 
 /** Puts back the settings the current test installed. */
 let restoreSettings: (() => void) | undefined;
@@ -44,8 +45,6 @@ afterEach(() => {
    restoreSettings?.();
    restoreSettings = undefined;
 });
-
-const ROOT = "file:///storage-serve-givens/";
 
 /**
  * The author's model: a source scoped to the caller's org by an extend-block
@@ -83,15 +82,16 @@ async function buildModel(): Promise<Model> {
    const duckdb = new DuckDBConnection("duckdb", ":memory:");
    await duckdb.runSQL(STORED);
    const connMap = new Map<string, DuckDBConnection>([["duckdb", duckdb]]);
-   const urlReader = new InMemoryURLReader(
-      new Map([[`${ROOT}m.malloy`, MODEL]]),
-   );
+   // On disk, as a package's files are: the served copy re-roots the
+   // author's own text.
+   const files = writeServedCopyFiles({ "m.malloy": MODEL });
+   const urlReader = new InMemoryURLReader(files.byUrl);
    const runtime = new Runtime({
       urlReader,
       connections: new FixedConnectionMap(connMap, "duckdb"),
    });
-   const mm = runtime.loadModel(new URL(`${ROOT}m.malloy`), {
-      importBaseURL: new URL(ROOT),
+   const mm = runtime.loadModel(new URL(files.urlOf("m.malloy")), {
+      importBaseURL: new URL(files.root),
    });
    const compiled = await mm.getModel();
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -113,6 +113,7 @@ async function buildModel(): Promise<Model> {
    const serveConfig = new MalloyConfig({ connections: {} });
    serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
    model.setServeDestinationConfig(() => serveConfig);
+   model.setServedCopyContext(files.dir, connMap);
    model.setServeBindings([BINDING]);
    return model;
 }

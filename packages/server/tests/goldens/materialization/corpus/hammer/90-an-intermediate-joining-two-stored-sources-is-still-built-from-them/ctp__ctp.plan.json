@@ -193,9 +193,9 @@
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "067cf1c1dccc96f12d0ae683b02e2b48aa69cc9447e166f65f25b5d6ea66216b",
+        "sourceEntityId": "7e7d5b77f7d7730214932db51cbdb586c5c191831cb5f069207bfbf174bb74b2",
         "sourceID": "rollup@<hammer>/ctp/ctp.malloy",
-        "sql": "sha256:5d9c1f5892d03cee"
+        "sql": "sha256:8b838eafeb1120a1"
       }
     }
   }

@@ -5154,8 +5154,8 @@ components:
         cutoverPath:
           type: string
           description: >-
-            On a dry run while `PUBLISHER_V1_SERVED_COPY` is not `off`: the path
-            that will answer queries on this source after the v1 cutover,
+            On a dry run: the path that will answer queries on this source
+            (the v1 cutover's, now the only one),
             judged by compiling the package's served copy over bindings declared
             from the plan's output columns (no table is built): `served_copy`
             (the served copy re-roots it on its table), `rollup` (a rollup the
@@ -10537,17 +10537,15 @@ components:
             value); `eligibility_check_failed` (an eligibility gate failed
             with an error rather than a refusal); `projection_failed` (the
             plan entry could not otherwise be computed);
-            `preaggregate_companion_failed` (the synthesized `#@ preaggregate`
-            companion did not compile); `rollup_companion_failed` (the
-            generated `#(preaggregate)` rollup companion, which also plans v1
-            `#@ preaggregate` rollups under the v1 cutover, did not plan or
-            compile); `rollup_companion_blanking_failed` (that companion was
+            `rollup_companion_failed` (the generated `#(preaggregate)` rollup
+            companion, which also plans v1 `#@ preaggregate` rollups, did not
+            plan or compile); `rollup_companion_blanking_failed` (that companion was
             not built because a `#@` line of the author's files could not be
             set aside); `materialize_companion_failed` (the generated
             `#(materialize)` companion did not plan or compile);
             `persisted_view_companion_failed` (the persisted-view companion
-            did not plan or compile); `v1_build_companion_failed` (under the
-            v1 cutover, the build copy of a model file without
+            did not plan or compile); `v1_build_companion_failed` (the build
+            copy of a model file without
             `##! experimental.persistence` did not compile, so none of its
             `#@ persist` sources were planned);
             `persist_annotation_unparseable` (none of the source's `#@` lines

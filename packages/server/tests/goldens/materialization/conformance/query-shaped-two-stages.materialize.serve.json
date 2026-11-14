@@ -58,7 +58,13 @@
       "equalToLive": true,
       "malloy": "run: two_stage -> { group_by: region; aggregate: c is customers.sum(), t is t2.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "2c9a41b07b97b53c525b3357ea2ac18d040c22dc82548fe282a2d81b9ea3a549"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -72,13 +78,15 @@
           "sourceName": "two_stage"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "2c9a41b07b97b53c525b3357ea2ac18d040c22dc82548fe282a2d81b9ea3a549",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the second stage's columns",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {

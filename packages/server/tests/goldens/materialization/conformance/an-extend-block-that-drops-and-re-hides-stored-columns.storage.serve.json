@@ -19,11 +19,6 @@
       {
         "code": "served-copy-not-served",
         "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
-        "subject": "dropped"
-      },
-      {
-        "code": "served-copy-not-served",
-        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
         "subject": "rehidden"
       }
     ]
@@ -72,8 +67,7 @@
         "considered": [
           {
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "outcome": "used",
             "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
           }
         ],
@@ -89,13 +83,15 @@
           "sourceName": "dropped"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a measure beside the excepted column",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -145,9 +141,10 @@
       "path": {
         "considered": [
           {
+            "code": "served-copy-not-served",
             "kind": "materialized",
             "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "reason": "WARNED",
             "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e"
           }
         ],
@@ -216,8 +213,7 @@
         "considered": [
           {
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "outcome": "used",
             "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
           }
         ],
@@ -233,13 +229,15 @@
           "sourceName": "dropped"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a measure beside the excepted column",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -289,9 +287,10 @@
       "path": {
         "considered": [
           {
+            "code": "served-copy-not-served",
             "kind": "materialized",
             "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "reason": "WARNED",
             "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e"
           }
         ],

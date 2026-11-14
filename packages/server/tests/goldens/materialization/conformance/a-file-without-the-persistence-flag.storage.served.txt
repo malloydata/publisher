@@ -1,0 +1,16 @@
+// conformance: a file without the persistence flag [storage]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { virtual_source }
+type: daily_nf__served is {
+   region::string,
+   order_date::date,
+   total::number
+}
+
+import "raw.malloy"
+
+#@ persist name="daily_nf" storage="lake"
+source: daily_nf is __served_copy_alias_of_lake.virtual('1e5484a3823a4e65fdf5c864a38250e45a7f191789529e2d3f1fd9032fb84b00')::daily_nf__served extend {
+  measure: grand is total.sum()
+}

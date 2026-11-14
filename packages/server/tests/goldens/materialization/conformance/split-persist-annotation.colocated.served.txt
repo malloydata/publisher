@@ -1,0 +1,15 @@
+// conformance: split persist annotation [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: split_daily__served is {
+   region::string,
+   total::number
+}
+
+import "raw.malloy"
+
+#@ persist
+#@ name="split_daily"
+source: split_daily is duckdb.virtual('35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533')::split_daily__served

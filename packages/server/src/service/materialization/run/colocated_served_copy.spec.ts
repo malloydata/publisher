@@ -238,17 +238,23 @@ for (const tier of TIERS)
                QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
             );
          const served = await runQuery();
-         const off = installSettings({
-            env: {
-               PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
-               PUBLISHER_MATERIALIZE: "false",
-            },
-         });
+         // Live: the same model with its served copy holding no table, so
+         // no candidate reads one (the live compile reads none).
+         const copy = (
+            model as unknown as {
+               servedCopy: {
+                  bindings: unknown[];
+                  setBindings(b: unknown[]): void;
+               };
+            }
+         ).servedCopy;
+         const kept = copy.bindings;
+         copy.setBindings([]);
          let live: Awaited<ReturnType<typeof runQuery>>;
          try {
             live = await runQuery();
          } finally {
-            off.restore();
+            copy.setBindings(kept);
          }
          return { served, live };
       }

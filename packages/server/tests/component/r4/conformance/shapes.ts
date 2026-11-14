@@ -192,6 +192,13 @@ const SERVE_SHAPE_FAILS_BESIDE: Gap = {
       "today's serve shape does not compile this model (the re-hidden source's measure reads a column its storage= table does not hold), so every source in it answers live; the cutover's served copy contains that failure and serves the source beside it",
 };
 
+/** A query live answers wrong on Malloy 0.0.438, whose stored answer is right. */
+export const LIVE_WRONG_NEST: Gap = {
+   kind: "wrong",
+   reason:
+      "live is wrong here, not the stored answer: Malloy 0.0.438 (malloydata/malloy#3208) drops nested rows under a NULL parent key live (malloydata/malloy#3220); served_copy_conformance_gaps checks the stored answer against the truth",
+};
+
 export const SHAPES: Shape[] = [
    {
       name: "baseline",
@@ -597,6 +604,12 @@ source: nested is orders_raw -> {
             name: "through the nested rows",
             malloy:
                "run: nested -> { group_by: by_status.status; aggregate: n is by_status.n.sum() }",
+            gaps: {
+               "storage/on": LIVE_WRONG_NEST,
+               "storage/cutover": LIVE_WRONG_NEST,
+               "colocated/cutover": LIVE_WRONG_NEST,
+               "materialize/on": LIVE_WRONG_NEST,
+            },
          },
       ],
    },

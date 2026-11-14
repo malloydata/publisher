@@ -80,7 +80,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
+          "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -131,9 +132,10 @@
       "path": {
         "considered": [
           {
+            "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
             "kind": "materialized",
             "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "reason": "CROSS_CONNECTION",
             "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973"
           }
         ],

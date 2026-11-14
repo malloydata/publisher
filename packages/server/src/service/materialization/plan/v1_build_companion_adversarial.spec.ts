@@ -49,16 +49,16 @@ function reader(overlay: ReadonlyMap<string, string>): URLReader {
 async function plan(
    files: Record<string, string>,
    modelPath: string,
-   mode: "off" | "on",
+   // A label only since the switch retired: an unflagged file is planned
+   // from its build copy, a flagged one from itself.
+   _mode: "off" | "on",
 ): Promise<BuildPlanParts> {
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "v1-build-companion-"));
    for (const [f, text] of Object.entries(files)) {
       fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
       fs.writeFileSync(path.join(dir, f), text);
    }
-   const { restore } = installSettings({
-      env: { PUBLISHER_V1_SERVED_COPY: mode },
-   });
+   const { restore } = installSettings({ env: {} });
    try {
       const base = pathToFileURL(dir + "/");
       const runtime = new Runtime({
@@ -79,7 +79,6 @@ async function plan(
             runtime: new Runtime({ urlReader: reader(overlay), connections }),
             importBaseURL: base,
          }),
-         synthesized: null,
       });
       return parts;
    } finally {
@@ -109,11 +108,6 @@ source: p is base extend { measure: n is count() } -> { group_by: a, b; aggregat
 `;
 
 describe("the v1 build copy on adversarial files", () => {
-   it("off: an unflagged #@ persist file plans nothing (guard 1 unchanged)", async () => {
-      const parts = await plan({ "m.malloy": PERSIST }, "m.malloy", "off");
-      expect(Object.keys(parts.sources)).toEqual([]);
-   });
-
    for (const [label, authorText] of [
       ["plain", PERSIST],
       ["leading comment and blank lines", `// header\n\n-- more\n${PERSIST}`],
@@ -200,9 +194,9 @@ source: account_usage is accounts extend {
 source: by_name is accounts -> { group_by: account_name }
 `;
 
-   async function planCross(text: string, mode: "off" | "on") {
+   async function planCross(text: string) {
       const { restore } = installSettings({
-         env: { PUBLISHER_MATERIALIZE: "true", PUBLISHER_V1_SERVED_COPY: mode },
+         env: { PUBLISHER_MATERIALIZE: "true" },
       });
       const crm = new DuckDBConnection("crm", ":memory:");
       const product = new DuckDBConnection("product", ":memory:");
@@ -235,9 +229,9 @@ source: by_name is accounts -> { group_by: account_name }
       }
    }
 
-   it("on: an unflagged file plans what the author-flagged file plans off", async () => {
-      const off = await planCross(FLAG + CROSS, "off");
-      expect(off).toEqual({ names: ["by_name"], omitted: [] });
-      expect(await planCross(CROSS, "on")).toEqual(off);
+   it("an unflagged file plans what the author-flagged file plans", async () => {
+      const flagged = await planCross(FLAG + CROSS);
+      expect(flagged).toEqual({ names: ["by_name"], omitted: [] });
+      expect(await planCross(CROSS)).toEqual(flagged);
    });
 });

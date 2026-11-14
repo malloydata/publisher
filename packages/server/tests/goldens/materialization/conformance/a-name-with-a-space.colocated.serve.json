@@ -73,7 +73,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "5af4cda2cb1755ea8666a6d3d3846c41477f2dbc3de37ef4b5618385021eb460"
+          "tableId": "5af4cda2cb1755ea8666a6d3d3846c41477f2dbc3de37ef4b5618385021eb460",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -142,7 +143,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "5af4cda2cb1755ea8666a6d3d3846c41477f2dbc3de37ef4b5618385021eb460"
+          "tableId": "5af4cda2cb1755ea8666a6d3d3846c41477f2dbc3de37ef4b5618385021eb460",
+          "via": "served_copy"
         },
         "warnings": []
       },

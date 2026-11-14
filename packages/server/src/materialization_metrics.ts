@@ -302,16 +302,6 @@ const storageServeRoutingCounter = lazyCounter(
       "which QueryResult.servedFrom reports as null - that field's " +
       "'live_fallback' is this counter's 'runtime_live_fallback'.",
 );
-const v1ServedCopyShadowCounter = lazyCounter(
-   "publisher_v1_served_copy_shadow_total",
-   "Under PUBLISHER_V1_SERVED_COPY=shadow, one count per query text a v1 table " +
-      "answered, comparing that answer with the one the v1 cutover would give. " +
-      "Label: outcome ('equal' served by the cutover and equal; 'live' the " +
-      "cutover would answer live; 'rows_differ'; 'metadata_differ'; 'error' the " +
-      "cutover's run failed or ran past its budget; 'skipped' not compared, past " +
-      "the cap on comparisons at once). Anything but 'equal' and an expected 'live' is a " +
-      "shape to fix before the cutover.",
-);
 const queryVariantRoutingCounter = lazyCounter(
    "publisher_query_variant_routing_total",
    "The variant router's decision on each candidate it considered for a query, " +
@@ -356,24 +346,19 @@ const eligibilityRefusedCounter = lazyCounter(
       "that carry it and is no longer produced: where a given sits decides the " +
       "outcome, so one reason covering every placement cannot be raised.",
 );
-const serveShapeTierDropCounter = lazyCounter(
-   "publisher_storage_serve_shape_tier_drop_total",
-   "storage serve-shape compile escalations: a refinement tier failed to " +
-      "compile and the riskiest category was dropped, or one or more lifted " +
-      "entry points failed to compile and were dropped alone. Label: tier (the " +
-      "failed tier index, 0=full; 'lifts' for dropped lifts).",
-);
 const serveShapeTypeFallbackCounter = lazyCounter(
    "publisher_storage_serve_shape_type_fallback_total",
-   "Captured DuckDB column types mapped to json in the serve shape (type " +
-      "fidelity loss). Label: kind ('array'|'unrecognized').",
+   "Captured DuckDB column types mapped to json in a stored table's declared " +
+      "type (type fidelity loss). Named for the retired storage serve shape. " +
+      "Label: kind ('array'|'unrecognized').",
 );
 const storedColumnTypeMismatchCounter = lazyCounter(
    "publisher_storage_column_type_mismatch_total",
    "Stored columns whose DuckDB type does not serve as the type Malloy " +
       "declares for them (ms2data/service#6642). Labels: stage ('build' = " +
-      "found after a storage build; 'serve' = left off a serve shape, so " +
-      "queries reading it are answered live), declared (the Malloy type).",
+      "found after a storage build; 'serve' = found when a model's bindings " +
+      "are set, then cast on read or left out of the served copy so queries " +
+      "reading it are answered live), declared (the Malloy type).",
 );
 const chainedStorageBuildCounter = lazyCounter(
    "publisher_storage_chained_build_total",
@@ -681,30 +666,9 @@ export function setEligibilityRefusalSink(
 }
 
 /**
- * Record a serve-shape compile escalation: the refinement tier at `failedTier`
- * did not compile, so the riskiest category was dropped and the shape retried.
- * A systematically-dropping source tells authors which refinements aren't
- * servable from storage.
- *
- * `"lifts"` records that one or more lifted entry points (derived sources
- * carried onto the richest rung) did not compile and were dropped alone; it is
- * recorded only when a lift was actually dropped, not when the probe with every
- * lift failed and each was then kept.
- *
- * `"views"` records that one or more views did not compile against the stored
- * columns and were dropped alone, each view on its own, while the source's other
- * views kept serving.
- */
-export function recordServeShapeTierDrop(
-   failedTier: number | "lifts" | "views",
-): void {
-   serveShapeTierDropCounter().add(1, { tier: String(failedTier) });
-}
-
-/**
  * Record a captured DuckDB column type that could not map onto a Malloy basic
- * type and was carried as json in the serve shape — a type-fidelity loss
- * specific to the storage tier. `array` = a collection/array type; `unrecognized`
+ * type and was carried as json in a stored table's declared type — a
+ * type-fidelity loss specific to the storage tier. `array` = a collection/array type; `unrecognized`
  * = an unknown/nested/struct/enum/blob type.
  */
 export function recordServeShapeTypeFallback(
@@ -715,8 +679,9 @@ export function recordServeShapeTypeFallback(
 
 /**
  * Record a stored column whose type does not serve as its declared Malloy type:
- * at `build`, found in the landed table's schema; at `serve`, left off the
- * serve shape (queries reading it are answered live).
+ * at `build`, found in the landed table's schema; at `serve`, found when a
+ * model's bindings are set (the served copy casts it on read, or leaves it
+ * out so queries reading it are answered live).
  */
 export function recordStoredColumnTypeMismatch(
    stage: "build" | "serve",
@@ -757,8 +722,8 @@ export function recordStoredColumnTypeMismatch(
  * denominator, not counted as a miss.
  *
  * `origin` splits storage hits: `persist` is an authored `storage=` source,
- * `preaggregate` a query answered by a lake-served rollup (which routes through
- * the same serve shape, so both count as storage hits in the total). Absent
+ * `preaggregate` a query answered by a lake-served rollup (both count as
+ * storage hits in the total). Absent
  * when nothing routed. An attribute rather than a new `outcome` value because
  * consumers generate strict clients from the outcome enum, where an unexpected
  * value throws; an added attribute breaks no consumer.
@@ -775,19 +740,6 @@ export function recordStorageServeRouting(
       outcome,
       ...(origin ? { origin } : {}),
    });
-}
-
-/** One shadow comparison's outcome (see v1ServedCopyShadowCounter). */
-export function recordV1ServedCopyShadow(
-   outcome:
-      | "equal"
-      | "live"
-      | "rows_differ"
-      | "metadata_differ"
-      | "error"
-      | "skipped",
-): void {
-   v1ServedCopyShadowCounter().add(1, { outcome });
 }
 
 /**

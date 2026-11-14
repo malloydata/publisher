@@ -687,16 +687,19 @@ source: by_category is orders -> {
          withEnv(R3_ON, () =>
             assertTierEligible(source, true, inputs(source.sourceID)),
          );
-         for (const env of [
+         const envs: Record<string, string>[] = [
             {
                PUBLISHER_MATERIALIZE: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
             },
+            // With the v1 cutover off, the gated switch needs the materialize
+            // switch (under the cutover it applies alone).
             {
                PUBLISHER_MATERIALIZE: "false",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
             },
-         ]) {
+         ];
+         for (const env of envs) {
             const refused = withEnv(env, () =>
                refusal(() =>
                   assertTierEligible(source, true, inputs(source.sourceID)),

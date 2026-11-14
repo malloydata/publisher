@@ -1,0 +1,35 @@
+// conformance: query-shaped: from a view [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: from_view__served is {
+   region::string,
+   status::string,
+   total::number,
+   n::number
+}
+
+import "raw.malloy"
+
+source: orders_v is orders_raw extend {
+  view: by_region_status is {
+    group_by: region, status
+    aggregate: total is amount.sum(), n is count()
+  }
+}
+
+#@ persist name="from_view"
+source: from_view is duckdb.virtual('4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426')::from_view__served
+
+source: from_view_rollup is from_view -> {
+  group_by: status
+  aggregate: total2 is total.sum()
+}
+
+query: top_regions is from_view -> {
+  group_by: region
+  aggregate: t is total.sum()
+  order_by: t desc
+  limit: 2
+}

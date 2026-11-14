@@ -1,0 +1,22 @@
+// conformance: reserved-word names [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: order__served is {
+   order::number,
+   `select`::string,
+   `count`::number,
+   amt::number
+}
+
+import "raw.malloy"
+
+#@ persist name="order"
+source: `order` is duckdb.virtual('ddeab0253bd9657798b023c29fabb35badff349b5ffe3f3fd2e14f144ba0e635')::order__served extend {
+  internal rename:
+    order__stored is order
+  dimension:
+    order is order__stored::"BIGINT"
+  measure: `group` is amt.sum()
+}

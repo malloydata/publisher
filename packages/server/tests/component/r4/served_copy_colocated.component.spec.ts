@@ -27,7 +27,11 @@ import {
    type R4Fixture,
    type R4Scenario,
    type Row,
+   expectPairServedVia,
 } from "./harness";
+
+/** Measures that count through the inlined path (see {@link expectPairServedVia}). */
+const PATH_COUNTS = ["seg_n"];
 
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
 const PG_SCHEMA = "r4_colocated";
@@ -303,7 +307,9 @@ for (const tier of tiers) {
                expect(run.servedVia).toBeUndefined();
                return;
             }
-            expect(run.servedVia).toBe("served_copy");
+            expectPairServedVia(run, PATH_COUNTS);
+            // A count through the pair table's join is answered live.
+            if (run.servedVia === undefined) return;
             // The source's own warehouse: not a storage hit.
             expect(run.servedFrom).toBeNull();
             expect(run.servedBy?.kind).toBe("materialized");
@@ -482,7 +488,7 @@ source: gated is orders_raw extend {
       }
    });
 
-   it("leaves a v1 colocated #@ persist on Malloy's build manifest, not the served copy", async () => {
+   it("binds a v1 colocated #@ persist on the served copy, which answers it (the v1 cutover, G1)", async () => {
       const restore = installSettings({
          env: { PERSIST_STORAGE_MODE: "off", PUBLISHER_MATERIALIZE: "true" },
       }).restore;
@@ -500,6 +506,7 @@ source: v1 is orders_raw -> {
 }
 `,
       });
+
       const query = "run: v1 -> { aggregate: t is total.sum() }";
       const live = await loader.run("m.malloy", query);
       const fixture = await loader.bind();
@@ -508,15 +515,15 @@ source: v1 is orders_raw -> {
          const served = await fixture.run("m.malloy", query);
          if ("error" in served) throw new Error(served.error);
          expect(served.answer.servedBy).toBe("materialized");
-         expect(served.answer.via).toBeUndefined();
+         expect(served.answer.via).toBe("served_copy");
          expect(
             rowDifference(live.answer.rows, served.answer.rows),
          ).toBeUndefined();
-         // No served-copy binding for it: the copy reads only #(materialize).
+         // Bound on the served copy, not left to Malloy's build manifest.
          const model = fixture.pkg.getModel("m.malloy") as unknown as {
             servedCopy: { hasBindings(): boolean };
          };
-         expect(model.servedCopy.hasBindings()).toBe(false);
+         expect(model.servedCopy.hasBindings()).toBe(true);
       } finally {
          await fixture.dispose();
          restore();

@@ -1,0 +1,32 @@
+// conformance: doc, percent and timeframes carried [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: monthly__served is {
+   order_month::date,
+   created_hour::timestamp,
+   order_week::date,
+   region::string,
+   total::number,
+   # percent
+   discount_rate::number
+}
+
+import "raw.malloy"
+
+#@ persist name="monthly"
+source: monthly is duckdb.virtual('513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc')::monthly__served extend {
+  internal rename:
+    order_month__stored is order_month
+    created_hour__stored is created_hour
+    order_week__stored is order_week
+  dimension:
+    #(doc) "Calendar month of the order"
+    order_month is order_month__stored.month
+    created_hour is created_hour__stored.hour
+    order_week is order_week__stored.week
+  #(doc) "Share of all orders' amount"
+  # percent
+  measure: share is total.sum() / all(total.sum())
+}

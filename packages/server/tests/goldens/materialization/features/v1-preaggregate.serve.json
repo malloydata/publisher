@@ -3,7 +3,7 @@
     "buildErrors": {},
     "built": [
       {
-        "name": "orders__preagg__m_region__3b5ca627",
+        "name": "orders__rollup__m_region__75e7c0f9",
         "tier": "colocated"
       }
     ],
@@ -61,7 +61,7 @@
           {
             "kind": "rollup",
             "outcome": "used",
-            "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+            "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
           }
         ],
         "notConsidered": [],
@@ -77,7 +77,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+          "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
         },
         "warnings": []
       },
@@ -130,7 +130,7 @@
           {
             "kind": "rollup",
             "outcome": "used",
-            "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+            "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
           }
         ],
         "notConsidered": [],
@@ -146,7 +146,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+          "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
         },
         "warnings": []
       },
@@ -197,10 +197,11 @@
       "path": {
         "considered": [
           {
+            "detail": "the query reads `status`, which the rollup's grain does not keep",
             "kind": "rollup",
             "outcome": "skipped",
             "reason": "GRAIN_TOO_COARSE",
-            "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+            "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
           }
         ],
         "notConsidered": [],
@@ -266,10 +267,11 @@
       "path": {
         "considered": [
           {
+            "detail": "the query aggregates `n`, which the rollup does not store",
             "kind": "rollup",
             "outcome": "skipped",
-            "reason": "GRAIN_TOO_COARSE",
-            "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+            "reason": "MISSING_FIELD",
+            "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
           }
         ],
         "notConsidered": [],
@@ -337,7 +339,7 @@
           {
             "kind": "rollup",
             "outcome": "used",
-            "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+            "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
           }
         ],
         "notConsidered": [],
@@ -353,7 +355,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+          "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
         },
         "warnings": []
       },
@@ -406,7 +408,7 @@
           {
             "kind": "rollup",
             "outcome": "used",
-            "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+            "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
           }
         ],
         "notConsidered": [],
@@ -422,7 +424,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+          "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
         },
         "warnings": []
       },
@@ -473,10 +475,11 @@
       "path": {
         "considered": [
           {
+            "detail": "the query reads `status`, which the rollup's grain does not keep",
             "kind": "rollup",
             "outcome": "skipped",
             "reason": "GRAIN_TOO_COARSE",
-            "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+            "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
           }
         ],
         "notConsidered": [],
@@ -542,10 +545,11 @@
       "path": {
         "considered": [
           {
+            "detail": "the query aggregates `n`, which the rollup does not store",
             "kind": "rollup",
             "outcome": "skipped",
-            "reason": "GRAIN_TOO_COARSE",
-            "tableId": "cf4eac5212df2662deebb78b554263af3b76acc31bb380777d02b9023100c381"
+            "reason": "MISSING_FIELD",
+            "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
           }
         ],
         "notConsidered": [],

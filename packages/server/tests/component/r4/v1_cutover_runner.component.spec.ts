@@ -18,7 +18,7 @@ import { DATA_FILES } from "./conformance/data";
 import { renderFiles, SHAPES } from "./conformance/shapes";
 
 describe("runV1CutoverConformance", () => {
-   it("classifies each query live, today and after the cutover, from a package directory", async () => {
+   it("classifies each query live and served, from a package directory", async () => {
       const shape = SHAPES.find((s) => s.name === "baseline")!;
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "v1-cutover-runner-"));
       try {
@@ -42,7 +42,7 @@ describe("runV1CutoverConformance", () => {
       }
    }, 300_000);
 
-   it("reports today's metadata defect, and the path that answers after the cutover, from the package's files", async () => {
+   it("reports the path that answers, from the package's files", async () => {
       const shape = SHAPES.find(
          (s) => s.name === "v1 rollup on annotated measures",
       )!;
@@ -55,15 +55,13 @@ describe("runV1CutoverConformance", () => {
          })),
       });
       const byName = Object.fromEntries(rows.map((r) => [r.query, r]));
-      // Today's serve shape drops the measures' annotations; after the
-      // cutover the rollup leg answers with them.
+      // The rollup leg answers, with the measures' annotations.
       expect(byName["covered by the rollup"]).toMatchObject({
-         today: "wrong_metadata",
          cutover: "served",
          cutoverPath: "rollup",
       });
       expect(byName["not covered (status)"]).toMatchObject({
-         verdict: "live_both",
+         verdict: "live",
       });
    }, 300_000);
 });

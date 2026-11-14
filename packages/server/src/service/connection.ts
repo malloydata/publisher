@@ -2863,33 +2863,6 @@ export async function deleteDuckLakeConnectionFile(
 }
 
 /**
- * A config that resolves `allowed` connection names and nothing else, delegating
- * those to `base`.
- *
- * Used for the materialization serve-shape compile, which may resolve only the
- * destinations its bindings name: never a user connection, nor a destination it
- * has no binding for. Deriving the set from the bindings keeps the reachable
- * surface minimal by construction.
- */
-export function restrictMalloyConfigToConnections(
-   base: MalloyConfig,
-   allowed: ReadonlySet<string>,
-): MalloyConfig {
-   const restricted = new MalloyConfig({ connections: {} });
-   restricted.wrapConnections(() => ({
-      lookupConnection: async (name?: string) => {
-         if (!name || !allowed.has(name)) {
-            throw new ConnectionNotFoundError(
-               `Connection ${name ?? "(default)"} is not available to a materialization serve shape`,
-            );
-         }
-         return base.connections.lookupConnection(name);
-      },
-   }));
-   return restricted;
-}
-
-/**
  * The SQL dialect of every storage destination: DuckLake, the one declarable
  * destination type (DECLARABLE_STORAGE_DESTINATION_TYPES), is DuckDB.
  */

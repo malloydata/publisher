@@ -11,14 +11,14 @@
  * row whose measure column is NULL (flight 5), and a joined row with no
  * parent (segment 17), since those are where a rollup and a join disagree.
  *
- * Counts through a join_many wait for malloydata/malloy#3208: until the
- * pinned Malloy carries it (`malloyCountsChildlessParentsAsZero`), live
- * counts a childless parent as one child, and those cases assert the
- * decline; after it, they assert the rollup answers.
+ * Since malloydata/malloy#3208 (Malloy 0.0.438) live counts a childless
+ * parent as no children and sums nothing for it, so counts and sums through
+ * a join_many are served. A `min` or `max` of a value that is not NULL on the
+ * unmatched row, and an aggregate at a join of the joined source keyed on a
+ * computed dimension, still read that row live and are declined.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { malloyCountsChildlessParentsAsZero } from "../../../src/service/materialization/serve/join_rollup";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
@@ -67,6 +67,8 @@ function model(placement: string): string {
   measure: miles_per_seg is miles.sum() / count()
   #(preaggregate) grain=["flight_id"]${placement}
   measure: padded_miles is sum(miles + 1)
+  #(preaggregate) grain=["flight_id"]${placement}
+  measure: floor_longest is max(coalesce(miles, 0))
 }
 
 source: crew is duckdb.table('crew_raw') extend {
@@ -103,8 +105,9 @@ function expectServedFromRollup(run: R4Run): void {
 
 /** Live answered, equal to live. */
 function expectLive(run: R4Run): void {
-   expect(run.servedBy?.kind).not.toBe("rollup");
+   // Rows first: a guard that lets a wrong answer through shows here.
    expect(rowDifference(run.live, run.served)).toBeUndefined();
+   expect(run.servedBy?.kind).not.toBe("rollup");
 }
 
 const SERVED = [
@@ -247,9 +250,14 @@ const LIVE = [
       "run: p_flights -> { group_by: carrier; aggregate: segments.seg_miles }",
       "COUNT_SEMANTICS",
    ],
+   [
+      "a max of a value that is not NULL on a childless parent",
+      "run: flights -> { group_by: carrier; aggregate: segments.floor_longest }",
+      "COUNT_SEMANTICS",
+   ],
 ] as const;
 
-/** Count-shaped cases: declined until malloydata/malloy#3208 is pinned, served after. */
+/** Count-shaped cases, served since malloydata/malloy#3208 skips a childless parent's row. */
 const COUNTS = [
    [
       "a count through a join_many",
@@ -303,30 +311,20 @@ describe("R4: join-to-rollup (A7), a joined source's colocated rollup, equal to 
       });
    }
 
-   const skipsUnmatched = malloyCountsChildlessParentsAsZero();
    for (const [name, malloy] of COUNTS) {
-      it.if(!skipsUnmatched)(
-         `answers ${name} live until malloydata/malloy#3208 (COUNT_SEMANTICS)`,
-         async () => {
-            expectLive(await fixture.run({ name, malloy }));
-            expect(await reasonOf(malloy)).toContain("COUNT_SEMANTICS");
-         },
-      );
-      it.if(skipsUnmatched)(
-         `serves ${name} once malloydata/malloy#3208 is pinned`,
-         async () => {
-            expectServedFromRollup(await fixture.run({ name, malloy }));
-         },
-      );
+      it(`serves ${name}`, async () => {
+         expectServedFromRollup(await fixture.run({ name, malloy }));
+      });
    }
 
-   it("the count switch says what the pinned Malloy answers for a childless parent", async () => {
-      // Flight 4 has no segments: one child live before #3208, none after.
+   it("live counts a childless parent as no children (malloydata/malloy#3208)", async () => {
+      // Flight 4 has no segments: one child live before 0.0.438.
       fixture.setBindings([]);
       const { rows } = await fixture.runAsIs(
-         "run: flights -> { where: id = 4; aggregate: segments.seg_count }",
+         "run: flights -> { where: id = 4; aggregate: segments.seg_count, segments.padded_miles }",
       );
-      expect(Number(rows[0]?.seg_count)).toBe(skipsUnmatched ? 0 : 1);
+      expect(Number(rows[0]?.seg_count)).toBe(0);
+      expect(Number(rows[0]?.padded_miles)).toBe(0);
    });
 
    it("reports the joined source's rollup as the table that answered", async () => {
@@ -415,6 +413,8 @@ source: segments is duckdb.table('segs_raw') extend {
   measure: line_qty is lines.qty.sum()
   #(preaggregate) grain=["flight_id", "kind_or_p"]
   measure: p_weight is kinds_or_p.weight.sum()
+  #(preaggregate) grain=["flight_id", "kind_or_p"]
+  measure: p_kind_count is kinds_or_p.count()
 }
 source: crew is duckdb.table('crew_raw') extend {
   primary_key: flight_id
@@ -619,6 +619,11 @@ const FAN_OUT_LIVE = [
       "run: flights -> { group_by: id; aggregate: segments.p_weight; order_by: id }",
       "COUNT_SEMANTICS",
    ],
+   [
+      "a join-level count through a join keyed on a computed dimension, which matches a row for a childless parent",
+      "run: flights -> { group_by: id; aggregate: segments.p_kind_count; order_by: id }",
+      "COUNT_SEMANTICS",
+   ],
 ] as const;
 
 describe("R4: join-to-rollup (A7) with fan-out grain dimensions and join-level measures (row 27)", () => {
@@ -662,24 +667,11 @@ describe("R4: join-to-rollup (A7) with fan-out grain dimensions and join-level m
       });
    }
 
-   const skipsUnmatched = malloyCountsChildlessParentsAsZero();
-   const count =
-      "run: flights -> { group_by: id; aggregate: segments.kind_count; order_by: id }";
-   it.if(!skipsUnmatched)(
-      "answers a join-level count through a join_many live until malloydata/malloy#3208 (COUNT_SEMANTICS)",
-      async () => {
-         expectLive(await fixture.run({ name: "count", malloy: count }));
-         expect(await reasonOf(count)).toContain("COUNT_SEMANTICS");
-      },
-   );
-   it.if(skipsUnmatched)(
-      "serves a join-level count with its other grain dimension fixed once malloydata/malloy#3208 is pinned",
-      async () => {
-         expectServedFromRollup(
-            await fixture.run({ name: "count", malloy: count }),
-         );
-      },
-   );
+   it("serves a join-level count with its other grain dimension fixed", async () => {
+      const malloy =
+         "run: flights -> { group_by: id; aggregate: segments.kind_count; order_by: id }";
+      expectServedFromRollup(await fixture.run({ name: "count", malloy }));
+   });
 });
 
 /**
@@ -1299,10 +1291,10 @@ describe("R4: join-to-rollup (A7) through a join_many whose parent key the data 
 
    // A count through another join_many beside a join_many the leg re-points
    // as a join_one (`key_miles` is stored only at the key, so that leg is the
-   // only one): with the fan-out gone, Malloy before
-   // malloydata/malloy#3208 counts the row a LEFT JOIN writes for a parent
-   // with no certs as one cert (6 against live's 4).
-   const skipsUnmatched = malloyCountsChildlessParentsAsZero();
+   // only one): with the fan-out gone, Malloy before 0.0.438 wrote the count
+   // as COUNT(1) and counted the row a LEFT JOIN writes for a parent with no
+   // certs as one cert (6 against live's 4). Since malloydata/malloy#3208 a
+   // joined source's count reads its key, so these are served.
    for (const [name, malloy] of [
       [
          "a count through another join_many",
@@ -1321,32 +1313,9 @@ describe("R4: join-to-rollup (A7) through a join_many whose parent key the data 
          "run: flights -> { aggregate: segments.key_miles, certs.cert_rows }",
       ],
    ] as const) {
-      it.if(!skipsUnmatched)(
-         `answers ${name} beside a re-pointed join live until malloydata/malloy#3208 (COUNT_SEMANTICS)`,
-         async () => {
-            // Rows first: served from the rollup, these differ from live.
-            const run = await fixture.run({ name, malloy });
-            expect(rowDifference(run.live, run.served)).toBeUndefined();
-            expect(run.servedBy?.kind).not.toBe("rollup");
-            const considered = await reasonsOf(malloy);
-            expect(considered.map((c) => c.reason)).toContain(
-               "COUNT_SEMANTICS",
-            );
-            expect(
-               considered.some((c) =>
-                  ((c as { detail?: string }).detail ?? "").includes(
-                     "through the join_many `certs`",
-                  ),
-               ),
-            ).toBe(true);
-         },
-      );
-      it.if(skipsUnmatched)(
-         `serves ${name} beside a re-pointed join once malloydata/malloy#3208 is pinned`,
-         async () => {
-            expectServedFromRollup(await fixture.run({ name, malloy }));
-         },
-      );
+      it(`serves ${name} beside a re-pointed join`, async () => {
+         expectServedFromRollup(await fixture.run({ name, malloy }));
+      });
    }
 
    for (const [name, malloy] of [
@@ -1437,4 +1406,121 @@ describe("R4: join-to-rollup (A7) through a join_many on the key of a query sour
          }
       });
    }
+});
+
+/**
+ * The joined source's own primary key, NULL or repeated in the data. Since
+ * malloydata/malloy#3208 live takes a count, sum or average at `segments`
+ * over the rows whose `seg_id` is not NULL, and once per distinct `seg_id`
+ * where the rows fan out; the rollup, built at `segments`' own grain, reads
+ * every row. Each rollup's build checks the key, and a count, sum or average
+ * through the join is answered live when the check found it NULL or
+ * repeated. Flight 1 has a segment with no `seg_id` (9 miles), flight 2 one
+ * `seg_id` twice; a `min` or `max` reads every row live too, so is served.
+ */
+const NULL_CHILD_KEY_SEED = [
+   `CREATE TABLE flights_raw AS SELECT * FROM (VALUES
+      (1, 'AA', 100), (2, 'AA', 200), (3, 'BB', 300), (4, 'CC', 400)
+    ) AS t(id, carrier, distance)`,
+   `CREATE TABLE segs_raw AS SELECT * FROM (VALUES
+      (10, 1, 'p', 2.0), (11, 1, 'q', 3.0), (NULL, 1, 'p', 9.0), (12, 2, 'p', 4.0),
+      (12, 2, 'p', 1.5), (14, 3, 'q', 1.0), (16, 3, 'p', 7.0)
+    ) AS t(seg_id, flight_id, kind, miles)`,
+   `CREATE TABLE certs_raw AS SELECT * FROM (VALUES
+      (1, 1), (2, 1), (3, 2), (4, 3)
+    ) AS t(cert_id, flight_id)`,
+];
+
+function nullChildKeyModel(placement: string): string {
+   return `source: certs is duckdb.table('certs_raw') extend { primary_key: cert_id }
+source: segments is duckdb.table('segs_raw') extend {
+  primary_key: seg_id
+  #(preaggregate) grain=["flight_id"]${placement}
+  measure: seg_miles is miles.sum()
+  #(preaggregate) grain=["flight_id"]${placement}
+  measure: seg_count is count()
+  #(preaggregate) grain=["flight_id"]${placement}
+  measure: padded_miles is sum(miles + 1)
+  #(preaggregate) grain=["flight_id"]${placement}
+  measure: longest is miles.max()
+}
+source: flights is duckdb.table('flights_raw') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  join_many: certs on certs.flight_id = id
+}
+`;
+}
+
+const NULL_CHILD_KEY_LIVE = [
+   [
+      "a sum of a column",
+      "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }",
+   ],
+   [
+      "a count",
+      "run: flights -> { group_by: carrier; aggregate: segments.seg_count }",
+   ],
+   [
+      "a sum of a computed value",
+      "run: flights -> { group_by: carrier; aggregate: segments.padded_miles }",
+   ],
+   [
+      "a count in a nest",
+      "run: flights -> { group_by: carrier; nest: n is { group_by: id; aggregate: segments.seg_count } }",
+   ],
+   [
+      "a sum and a count beside another join_many",
+      "run: flights -> { group_by: carrier; aggregate: segments.seg_miles, segments.seg_count, cert_n is certs.count() }",
+   ],
+] as const;
+
+describe("R4: join-to-rollup (A7) through a join to a source whose own primary key the data holds NULL or repeated", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": nullChildKeyModel("") },
+         seedSql: NULL_CHILD_KEY_SEED,
+         preaggregate: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   for (const [name, malloy] of NULL_CHILD_KEY_LIVE) {
+      it(`answers ${name} live (COUNT_SEMANTICS)`, async () => {
+         // Rows first: served from the rollup, flight 1's NULL-keyed segment
+         // is counted and summed where live skips it.
+         expectLive(await fixture.run({ name, malloy }));
+         fixture.setBindings(fixture.bindings);
+         const { path } = await fixture.runAsIs(malloy);
+         const considered = (path?.considered ?? []).filter(
+            (c) => c.kind === "rollup",
+         );
+         expect(considered.map((c) => c.reason)).toContain("COUNT_SEMANTICS");
+         expect(
+            considered.some((c) =>
+               ((c as { detail?: string }).detail ?? "").includes(
+                  "primary key `seg_id` more than once or NULL",
+               ),
+            ),
+         ).toBe(true);
+      });
+   }
+
+   it("serves a max, which live reads every row for", async () => {
+      expectServedFromRollup(
+         await fixture.run({
+            name: "max",
+            malloy:
+               "run: flights -> { group_by: carrier; aggregate: segments.longest }",
+         }),
+      );
+   });
 });

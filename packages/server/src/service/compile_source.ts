@@ -449,15 +449,18 @@ async function openCompileContext(
    if (!documentCandidate) await runEarlyGate();
 
    // The package's MalloyConfig (borrowed; the package lifecycle releases it)
-   // and bound build manifest, so compile sees the same duckdb and the same
-   // persist routing as execution — otherwise includeSql would show
-   // base-table SQL that diverges from what runs.
+   // and its freshness-filtered build manifest, so compile sees the same
+   // duckdb and the same persist routing as execution: otherwise includeSql
+   // would show base-table SQL that diverges from what runs, or name a table
+   // past its window that execution no longer reads. The package dry-run
+   // keeps the bound entries, as the reload it mirrors does.
    const boundManifestEntries = pkg.getBuildManifestEntries();
+   const freshManifestEntries = pkg.getFreshBuildManifest();
    const runtime = new Runtime({
       urlReader: interceptingReader,
       config: pkg.getMalloyConfig(),
-      buildManifest: boundManifestEntries
-         ? { entries: boundManifestEntries, strict: false }
+      buildManifest: freshManifestEntries
+         ? { entries: freshManifestEntries, strict: false }
          : undefined,
    });
 

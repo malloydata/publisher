@@ -8,35 +8,21 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# Without `##! experimental.persistence`, a `#@ persist` source is served live and the package still loads
+# Without `##! experimental.persistence`, a `#@ persist` source is still planned, built and served
 
-The `#@ persist` machinery is gated behind Malloy's `##! experimental.persistence`
-model flag. Malloy's `getBuildTargets()` THROWS `Model must have ##!
-experimental.persistence` on any model lacking the flag — it does not return an
-empty plan. So `compilePackageBuildPlan` flag-checks each `.malloy` model (the same
-`experimental.persistence` predicate Malloy uses) and **skips** a flagless model
-before ever calling `getBuildTargets()`; without that skip, one flagless model would
-throw and abort the whole package's build plan.
+Malloy plans persisted sources only in a file that carries `##!
+experimental.persistence`; its `getBuildTargets()` throws on any other. Before the
+v1 cutover, `compilePackageBuildPlan` skipped such a file, so a `#@ persist` in a
+model that forgot the header was silently inert and served live (this scenario's
+id still names that).
 
-A consequence of that skip: a source annotated `#@ persist storage=lake` in a model
-that **forgot the `##! experimental.persistence` header** is skipped along with the
-model. It never materializes — neither into the lake (external) nor colocated — no
-binding is produced, and (because the skip happens before the dropped-persist-source
-detector runs) **no warning is surfaced**. The `#@ persist` annotation is inert and
-the source is served live, exactly as if the annotation were absent.
+Under the v1 cutover (the only path since 6g), the planner
+compiles a build copy of the file with the flag as its first line (D3), so the
+author's file needs no flag: the source is planned under its own address, built
+into the lake and served from its table by the served copy.
 
-This pins that footgun. The complementary case — a flagless model coexisting with a
-*separate* flagged model whose persist source still materializes (the skip prevents
-the abort) — is proven by `cross-model-dag`.
-
-The proof mirrors `off-builds-colocated` in reverse. With the tier fully `on`, build
-the (flagless) `storage=lake` source, then mutate and re-query:
-- **served live (skipped, correct):** the query recomputes from the source warehouse
-  ⇒ the mutation is visible ⇒ **fresh**.
-- if it had somehow materialized: the frozen snapshot would serve the pre-mutation
-  value ⇒ **stale**.
-
-So a **fresh** re-query proves nothing was materialized — the annotation was ignored.
+The proof: build, mutate the warehouse, re-query. A **stale** re-query (the
+pre-mutation value) proves the stored table answered.
 
 ## Publisher
 
@@ -52,8 +38,7 @@ So a **fresh** re-query proves nothing was materialized — the annotation was i
 
 ## Model pwf.malloy
 
-Note the **missing** `##! experimental.persistence` header — the `#@ persist`
-annotation below is therefore inert.
+Note the **missing** `##! experimental.persistence` header.
 
 ```malloy
 source: orders is orders_pg.table('public.pwf_orders')
@@ -67,8 +52,7 @@ source: daily is orders -> {
 
 ## Publish
 
-The flagless model is skipped: no persist source is recognized, so the build is a
-no-op. No binding is produced (no `expect binding`), and no warning is surfaced.
+expect binding: daily -> lake
 
 ## Query base
 
@@ -91,28 +75,12 @@ Expect:
 
 ## Query base (again)
 
-Fresh `1150` ⇒ the query recomputed live from the source warehouse. Nothing was
-materialized — the `#@ persist storage=lake` annotation was silently ignored because
-the model lacks `##! experimental.persistence`.
+Stale `150` ⇒ the stored table answered: the flagless file was planned from its
+build copy and its source built.
 
 Expect:
 
 | order_date | total_amount |
 | ---------- | ------------ |
-| 2026-01-01 | 1150         |
+| 2026-01-01 | 150          |
 | 2026-01-02 | 200          |
-
-## Note (since=2026-07-23)
-
-> Open question — should a `#@ persist` annotation on a model that lacks `##!
-> experimental.persistence` be **silently ignored**, or should it **warn**? Today it
-> is silent: `compilePackageBuildPlan` skips the flagless model (it must — Malloy's
-> `getBuildTargets()` throws without the flag, and skipping is what keeps one flagless
-> model from aborting the whole package), and because the skip happens *before* the
-> dropped-persist-source detector runs, an author who simply forgot the header gets
-> no signal — their source is served live with no materialization and no warning.
-> That is an easy mistake to make. Consider surfacing a package warning ("source
-> `daily` carries `#@ persist` but the model is missing `##! experimental.persistence`;
-> the annotation was ignored and the source is served live"), analogous to the
-> kill-switch "ignored … served live" warning. This scenario pins the CURRENT
-> (silent) behavior so a change flags loudly.
