@@ -72,6 +72,7 @@ import {
    resolveCompositeResolvedBase,
    resolveQuerySourceBase,
 } from "./governance/ir/source_graph";
+import { forEachFieldPath } from "./governance/ir/array_query";
 
 export type ApiPackageWarning = NonNullable<
    components["schemas"]["Package"]["warnings"]
@@ -333,33 +334,22 @@ function isPassthrough(e: unknown): boolean {
    return false;
 }
 
-/** Every `{node: "field", path}` or `{type: "fieldref", path}` a tree reads. */
+/**
+ * Every `{node: "field", path}` or `{type: "fieldref", path}` a tree reads,
+ * a read inside an array query re-rooted under its array
+ * ({@link forEachFieldPath}).
+ */
 function fieldReferences(e: unknown): string[][] {
    const out: string[][] = [];
-   const seen = new Set<object>();
-   const visit = (node: unknown): void => {
-      if (!node || typeof node !== "object" || seen.has(node)) return;
-      seen.add(node);
-      if (Array.isArray(node)) {
-         for (const item of node) visit(item);
-         return;
-      }
-      const obj = node as Record<string, unknown>;
-      if (
-         (obj.node === "field" || obj.type === "fieldref") &&
-         Array.isArray(obj.path)
-      ) {
-         out.push(obj.path.map(String));
-      }
-      for (const [key, value] of Object.entries(obj)) {
-         // Positions are not expressions, and nothing a reference hides in.
-         if (key === "at" || key === "location") continue;
-         visit(value);
-      }
-   };
-   visit(e);
+   // Positions are not expressions, and nothing a reference hides in.
+   forEachFieldPath(e, (path) => out.push(path), {
+      skipKeys: FIELD_REFERENCE_SKIPPED_KEYS,
+      fieldrefs: true,
+   });
    return out;
 }
+
+const FIELD_REFERENCE_SKIPPED_KEYS = new Set(["at", "location"]);
 
 /**
  * The structs a query runs on: the source it names and, for a composite, the

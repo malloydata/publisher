@@ -8,11 +8,11 @@
  * which it refuses with a 422. Recorded as it behaves today, so replacing or
  * removing the gate (step R) shows exactly which builds change outcome.
  *
- * Recorded as is, not endorsed: every type the strict mapper does not
- * recognize falls back to `json`, which a Malloy `type:` declaration reads as
- * a reserved word, so such a column refuses the whole build rather than
- * being carried lossily as the fallback's doc says. The refusal also carries
- * no `reason`; only the eligibility metric records `not_duckdb_portable`.
+ * A list or struct column is declared as Malloy's array or record type and
+ * passes. A column no Malloy type reads back faithfully (MAP, UNION, ENUM,
+ * BLOB, INTERVAL, BIT, JSON, an unknown type) is left out of the shape, so a
+ * query reading it answers live; the gate refuses only a table with no column
+ * left, with reason `not_duckdb_portable`.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -79,9 +79,9 @@ const BY_TYPE: Record<string, "serves" | "refused"> = {
    BLOB: "refused",
    BIT: "refused",
    JSON: "refused",
-   "INTEGER[]": "refused",
-   "VARCHAR[]": "refused",
-   "STRUCT(a INTEGER, b VARCHAR)": "refused",
+   "INTEGER[]": "serves",
+   "VARCHAR[]": "serves",
+   "STRUCT(a INTEGER, b VARCHAR)": "serves",
    "MAP(VARCHAR, INTEGER)": "refused",
    "ENUM('a', 'b')": "refused",
    "UNION(n INTEGER, s VARCHAR)": "refused",
@@ -107,13 +107,19 @@ describe("the storage= build's DuckDB gate", () => {
       expect(seen).toEqual(BY_TYPE);
    });
 
-   it("refuses a whole table for one column it cannot type", async () => {
+   it("leaves out a column it cannot type rather than refusing the table", async () => {
       expect(
          await outcome([
             { name: "id", type: "BIGINT" },
             { name: "tags", type: "VARCHAR[]" },
          ]),
-      ).toBe("refused");
+      ).toBe("serves");
+      expect(
+         await outcome([
+            { name: "id", type: "BIGINT" },
+            { name: "m", type: "MAP(VARCHAR, INTEGER)" },
+         ]),
+      ).toBe("serves");
    });
 
    it("refuses a table with no typed column, and skips a column without a name or type", async () => {
@@ -139,21 +145,18 @@ describe("the storage= build's DuckDB gate", () => {
       ).toBe("serves");
    });
 
-   it("refuses as a 422 with no reason on the error, and counts not_duckdb_portable", async () => {
-      const err = await gate([{ name: "c", type: "INTEGER[]" }]).then(
+   it("refuses a table with no column left as a 422 with reason not_duckdb_portable, naming the columns", async () => {
+      const err = await gate([
+         { name: "c", type: "MAP(VARCHAR, INTEGER)" },
+      ]).then(
          () => undefined,
          (e: unknown) => e as MaterializationEligibilityError,
       );
       expect(err).toBeInstanceOf(MaterializationEligibilityError);
-      expect(err!.reason).toBeUndefined();
+      expect(err!.reason).toBe("not_duckdb_portable");
       expect(err!.message).toStartWith(
-         "Source 's' cannot be served from its storage destination: its " +
-            "materialized shape does not compile in DuckDB (",
-      );
-      expect(err!.message).toContain("'json' is a reserved word");
-      expect(err!.message).toEndWith(
-         "A source materialized into a DuckDB/DuckLake store must have a " +
-            "DuckDB-portable served shape.",
+         "Source 's' cannot be served from its storage destination: no stored " +
+            "column has a Malloy type that reads it back faithfully ('c' (MAP(VARCHAR, INTEGER))).",
       );
       expect(internalErrorToHttpError(err!, { log: false }).status).toBe(422);
       expect(
