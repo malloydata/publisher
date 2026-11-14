@@ -88,6 +88,11 @@ import {
 } from "./governed_runnable";
 import { derivedStructsReachable } from "./ir/source_graph";
 import {
+   arrayQueryJoinRefusal,
+   arrayQueryJoins,
+   governsAccess,
+} from "./ir/array_query";
+import {
    assertFilterDimensionBindsToDeclaringSource,
    assertGraftedGateBindsToDeclaringSource,
    assertInheritedSourceFiltersBind,
@@ -704,6 +709,8 @@ export class QueryGovernor {
             );
          }
       }
+      // The compile that runs: live, or the served copy when it answers.
+      await this.assertNoArrayQueryJoin(runnable);
       if (request.ceiling && !request.bypassAuthorize) {
          const source = await request.ceiling.source(runnable);
          for (const target of await this.ceilingTargets(
@@ -1985,6 +1992,35 @@ export class QueryGovernor {
       return liveCompiles
          ? [{ compile: live, servedCopy: false }, served]
          : [served];
+   }
+
+   /**
+    * Refuse a query that joins a source inside a query on an array, in a
+    * model that governs access: no check here can follow what that join
+    * reads, so a gate or a `#(carries)` it reaches would pass unseen and the
+    * access record would miss it. A model's own such join refuses its load
+    * (`Package.formatArrayQueryJoins`), so this is one the caller wrote, in
+    * the query or in a source it declares. After the gates, so a caller a
+    * gate refuses is refused as one.
+    */
+   private async assertNoArrayQueryJoin(
+      runnable: QueryMaterializer,
+   ): Promise<void> {
+      if (!governsAccess(this.modelDef)) return;
+      let prepared: Awaited<ReturnType<typeof readPreparedQuery>>;
+      try {
+         prepared = await readPreparedQuery(runnable);
+      } catch {
+         // No query to read (a compile with no final `run:`): nothing runs.
+         return;
+      }
+      const joins = [
+         prepared.query,
+         resolveStructRef(prepared.structRef, prepared.modelDef),
+         prepared.compositeResolvedSourceDef,
+      ].flatMap((root) => arrayQueryJoins(root));
+      const refusal = arrayQueryJoinRefusal("This query", joins);
+      if (refusal) throw new BadRequestError(refusal);
    }
 
    /**

@@ -254,6 +254,10 @@ source research carries [none, phi.clinical]; this query reads x, which is class
   is held to the list like the first stage's, against what the stage before it returned. A
   `compose(…)` source is held to the ceiling of the member Malloy resolved for the query as well as
   its own.
+- A query on an array (`items -> { aggregate: t is price.sum() }`) reads the array, with its
+  class, and the fields of its elements under it (`items.price`). A join written inside one reads
+  a source no check here can follow, so a model that declares `#(carries)` or `#(classification)`
+  refuses it, at load and per query.
 - What counts as a read: every field the query selects, aggregates, groups, filters, nests or
   indexes on, a field a caller's `extend:` adds with the classes of what it reads, and each
   reference in the `on` of a join the caller writes. An `internal:` field is not exempt here; it
