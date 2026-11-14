@@ -40,9 +40,8 @@ describe("packageRelativeText", () => {
       const real = fs.realpathSync(dir);
       const link = path.join(path.dirname(dir), "link");
       fs.symlinkSync(dir, link);
-      expect(packageRelativeText(`FILE: ${real}/m.malloy`, link)).toBe(
-         "FILE: m.malloy",
-      );
+      const file = path.join(real, "m.malloy");
+      expect(packageRelativeText(`FILE: ${file}`, link)).toBe("FILE: m.malloy");
    });
 
    it("decodes a URL a reader printed with a space in it", () => {
@@ -56,7 +55,7 @@ describe("packageRelativeText", () => {
 
    it("leaves a sibling directory sharing the package's prefix alone", () => {
       const dir = packageDir();
-      const sibling = `${dir}2/m.malloy`;
+      const sibling = path.join(`${dir}2`, "m.malloy");
       expect(packageRelativeText(`FILE: ${sibling}`, dir)).toBe(
          `FILE: ${sibling}`,
       );
@@ -65,9 +64,57 @@ describe("packageRelativeText", () => {
       );
    });
 
+   it("leaves a longer path that ends in the package's path alone", () => {
+      const dir = packageDir();
+      const longer = path.join(path.parse(dir).root, "elsewhere") + dir;
+      const text = `at ${path.join(longer, "m.malloy")}`;
+      expect(packageRelativeText(text, dir)).toBe(text);
+   });
+
    it("returns text that names no part of the package as it is", () => {
       expect(packageRelativeText("Binder Error: x", packageDir())).toBe(
          "Binder Error: x",
       );
+   });
+});
+
+describe("packageRelativeText on a Windows server's paths", () => {
+   const win = path.win32;
+   const root = "C:\\srv\\Publisher Data\\env\\pkg";
+   const rel = (text: string) => packageRelativeText(text, root, win);
+
+   it("names a file under the package package-relative, `/`-separated", () => {
+      expect(rel(`FILE: ${win.join(root, "sub", "m.malloy")}:3:4`)).toBe(
+         "FILE: sub/m.malloy:3:4",
+      );
+   });
+
+   it("finds the package spelled with forward slashes, or another case", () => {
+      expect(rel("at C:/srv/Publisher Data/env/pkg/m.malloy")).toBe(
+         "at m.malloy",
+      );
+      expect(rel("at c:\\SRV\\publisher data\\ENV\\pkg\\m.malloy")).toBe(
+         "at m.malloy",
+      );
+   });
+
+   it("finds the package as a file URL, encoded or not, with the drive's colon plain or encoded", () => {
+      expect(
+         rel("at file:///C:/srv/Publisher%20Data/env/pkg/sub/m.malloy:2"),
+      ).toBe("at sub/m.malloy:2");
+      expect(rel("at file:///C:/srv/Publisher Data/env/pkg/m.malloy")).toBe(
+         "at m.malloy",
+      );
+      expect(rel("at file:///c%3A/srv/Publisher%20Data/env/pkg/m.malloy")).toBe(
+         "at m.malloy",
+      );
+   });
+
+   it("names the directory itself by its name, and leaves a sibling alone", () => {
+      expect(rel(`manifest for ${root} does not exist`)).toBe(
+         "manifest for pkg does not exist",
+      );
+      const sibling = `${root}2\\m.malloy`;
+      expect(rel(`at ${sibling}`)).toBe(`at ${sibling}`);
    });
 });
