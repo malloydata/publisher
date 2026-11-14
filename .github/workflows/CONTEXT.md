@@ -268,6 +268,19 @@ their published version is decided at release time from npm's own state (see *Sk
 create-malloy-package version at release time* above). Both halves used to be manual post-release
 steps and were reliably skipped: 0.0.243 through 0.0.247 shipped with none of their narrative.
 
+**The release page has a length limit, and the job fits the body to it.** GitHub refuses a release
+body over 125,000 characters with a 422, and `gh-release` runs after npm, Docker and PyPI have
+published, so 0.13.0 (75 sections, about 136k characters) failed there and its page was made by hand.
+`gh-release` now fetches the generated PR list itself (`gh api …/releases/generate-notes`, the list
+`--generate-notes` would append) and has `release-notes.mjs fit` compose the whole body under a
+120,000-character budget. It gives up detail in order until the body fits: the narrative's full text
+becomes an index of its section titles linking `RELEASE_NOTES.md` at the tag (the form 0.13.0's page
+was made in by hand), then the PR list is truncated keeping its **Full Changelog** compare link, then
+only that link is left, then the index itself is shortened. The last step is a plain cut, so length
+cannot fail the job. Each fallback logs a notice, and the index fallback adds a line to the job
+summary. If the list cannot be fetched, the compare link stands in for it; if `fit` itself fails, the
+header goes up alone with `--generate-notes`, under the usual warning.
+
 Why this shape, and not the ones it replaced:
 
 - **One tree.** The stamp, the version and the narrative on the release page all come from the
@@ -325,7 +338,8 @@ the commit, `version_taken` checks the tag as well as the branch, and the releas
 
 `scripts/release-notes.mjs` and `scripts/set-version.mjs` both have unit coverage —
 `release-notes.spec.ts` and `set-version.spec.ts` — run by `build.yml`'s `lint_format` job on every PR
-(`bun run test:scripts`). The notes spec also smoke-runs `extract` against the real
+(`bun run test:scripts`). The notes spec covers each of `fit`'s fallbacks, and that the body never
+exceeds its limit however small. The notes spec also smoke-runs `extract` against the real
 `RELEASE_NOTES.md`, so a heading it cannot read a title from fails the PR that wrote it rather than the
 release that would silently drop the narrative; the version spec does the equivalent, asserting the
 replace still finds the `"version"` field in all three real manifests at their real paths, so a
