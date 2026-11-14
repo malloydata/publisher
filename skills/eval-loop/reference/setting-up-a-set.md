@@ -183,6 +183,28 @@ eval.py routine --kind speed --set <set> --label baseline-01-perf   # time its p
 That first full run is the set's first record. From here, `team-workflow.md`
 is the day-to-day loop.
 
+## 8. Two agents to run it on a schedule
+
+A package can declare agents in its `publisher.json` (`skill:malloy-define-agent`).
+`examples/storefront` ships two that run this loop, each with one task per
+mode:
+
+| Agent | `nightly-run` | `nightly-improve` |
+|---|---|---|
+| `quality-optimizer` | `routine --kind quality`: the pass rate | `--mode improve`: one edit for the largest cluster, left on a branch if accepted |
+| `latency-cost-optimizer` | `routine --kind speed`: the queries' time and the build cost | `--mode improve`: one materialization for the costliest source, left on a branch if both replays show it faster |
+
+Copy `agents/quality-optimizer/` and `agents/latency-cost-optimizer/` and
+their two entries in `publisher.json` into your package, and change the set's
+path in each `instructions.md`. They are briefs, not machinery: a definition
+adds instructions to a session and grants no tool, so an agent that adopts
+one needs a shell, Python, the skills' scripts on disk and the `claude` CLI
+already. They carry no copy of the eval skills, which every Publisher serves.
+Publisher lists the schedules and runs none: whatever host adopts the agent
+decides when a task runs. Each task says what to do when the host has a skill
+of its own for fetching the day's logs or saving a run, and what to do when it
+has none.
+
 Then `reference/running-a-run.md` for what the run prints and how to read it,
 and `skill:eval-report` for the write-up.
 

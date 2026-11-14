@@ -6,13 +6,51 @@
     "analyst": {
       "description": "Answers revenue and order questions using the storefront house conventions",
       "instructions": "agents/analyst/instructions.md",
-      "skills": ["agents/analyst/skills"],
+      "skills": [
+        "agents/analyst/skills"
+      ],
       "schedules": [
         {
           "cron": "0 13 * * MON",
           "task": "agents/analyst/tasks/weekly-report.md"
         }
       ]
+    },
+    "quality-optimizer": {
+      "description": "Measures how often a new agent answers this package's eval set correctly, and tries one edit a night to raise it",
+      "instructions": "agents/quality-optimizer/instructions.md",
+      "schedules": [
+        {
+          "cron": "0 7 * * *",
+          "task": "agents/quality-optimizer/tasks/nightly-run.md"
+        },
+        {
+          "cron": "0 8 * * *",
+          "task": "agents/quality-optimizer/tasks/nightly-improve.md"
+        }
+      ],
+      "budget": {
+        "wall_clock_minutes": 120,
+        "job_minutes": 120
+      }
+    },
+    "latency-cost-optimizer": {
+      "description": "Times this package's queries against what its materialized tables cost to build, and tries one materialization a night",
+      "instructions": "agents/latency-cost-optimizer/instructions.md",
+      "schedules": [
+        {
+          "cron": "30 7 * * *",
+          "task": "agents/latency-cost-optimizer/tasks/nightly-run.md"
+        },
+        {
+          "cron": "30 8 * * *",
+          "task": "agents/latency-cost-optimizer/tasks/nightly-improve.md"
+        }
+      ],
+      "budget": {
+        "wall_clock_minutes": 60,
+        "job_minutes": 60
+      }
     }
   }
 }
