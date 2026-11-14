@@ -441,7 +441,8 @@ source: car is base include { internal: * } extend {
 }
 source: open_a is duckdb.table('people') extend { view: v is { select: id } }
 `;
-   const JOIN = "join_one: c is car extend { dimension: z is social } on sku = c.k";
+   const JOIN =
+      "join_one: c is car extend { dimension: z is social } on sku = c.k";
    const READ = `items -> { extend: { ${JOIN} } aggregate: m is c.z.max() }`;
    const FORMS: Record<string, string> = {
       "a stage's extend": `run: open_a -> { extend: { dimension: d is ${READ} } select: d }`,
