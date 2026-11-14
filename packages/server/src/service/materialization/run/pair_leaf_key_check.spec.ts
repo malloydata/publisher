@@ -19,6 +19,12 @@ import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_ha
 import { installSettings } from "../../../test_helpers/settings_env";
 import { computeSourceEntityId } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
+import type { MaterializePlan } from "../plan/build_file_generator";
+import {
+   PackageMaterialization,
+   type PackageMaterializationOwner,
+} from "../package_materialization";
+import type { ServeBinding } from "../serve/materialization_serve_transform";
 import type { BuildInstruction, ManifestEntry } from "../types";
 import {
    INLINE_UNIQUENESS_KEY,
@@ -104,7 +110,7 @@ async function scenario() {
       metadata?: Metadata;
    } = { entries: {} };
    let runs = 0;
-   async function run(rebuild: boolean) {
+   async function run(rebuild: boolean, orchestrated = false) {
       runs += 1;
       const ledger = new UniquenessLedger(
          undefined,
@@ -116,7 +122,9 @@ async function scenario() {
       const result = await build.run(
          compiled,
          environment,
-         rebuild ? [instruction] : [],
+         rebuild
+            ? [orchestrated ? { ...instruction, sourceID } : instruction]
+            : [],
          rebuild ? {} : previous.entries,
          new AbortController().signal,
          false,
@@ -125,7 +133,7 @@ async function scenario() {
          undefined,
          [],
          undefined,
-         false,
+         orchestrated,
          "recompute",
          ledger,
       );
@@ -225,4 +233,86 @@ describe("a pair table's leaf key check, on a build", () => {
       },
       { timeout: 60000 },
    );
+
+   // A host instructs the build (an instruction naming the source's
+   // sourceID): the run never checks the leaf, so the table carries no
+   // record and the served copy declines every leaf count, sum and average,
+   // whatever the leaf's key holds (known limitation 40).
+   it(
+      "is never recorded on an orchestrated build",
+      async () => {
+         const s = await scenario();
+         await s.duckdb.runSQL("INSERT INTO segs_src VALUES (NULL, 2, 9.0)");
+         const result = await s.run(true, true);
+         expect(result.entries[s.address]?.physicalTableName).toBe(
+            "flights_pairs_t",
+         );
+         expect(result.uniquenessChecks?.rollupKeys?.[s.key]).toBeUndefined();
+         expect(
+            keyUniquenessAt(
+               result.uniquenessChecks?.rollupKeys,
+               s.address,
+               result.entries[s.address] as ManifestEntry,
+            ),
+         ).toBeUndefined();
+      },
+      { timeout: 60000 },
+   );
+
+   // A run about to rewrite a colocated pair table forgets its leaf record on
+   // the bindings the models serve from, before any table is written: a run
+   // that fails part-way, or a rewrite that brings a NULL or repeated leaf
+   // key, never leaves a pass bound over rows it did not check.
+   it("is forgotten on the models' colocated bindings when a run is about to write the table", () => {
+      const pushed: ServeBinding[][] = [];
+      const model = {
+         setServeBindings: (b: ServeBinding[]) => pushed.push(b),
+      };
+      const materialization = new PackageMaterialization({
+         models: () => new Map([["m.malloy", model]]),
+         packageName: () => "pkg",
+         packagePath: () => "/nowhere",
+         malloyConfig: () => undefined,
+      } as unknown as PackageMaterializationOwner);
+      materialization.buildPlan = {
+         sources: {
+            "flights@m": {
+               name: "flights",
+               sourceEntityId: "a",
+               connectionName: "duckdb",
+            },
+         },
+      } as never;
+      materialization.materializePlans = {
+         "flights@m": {
+            persist: {},
+            storedColumns: [{ name: "id", type: "number" }],
+         } as unknown as MaterializePlan,
+      };
+      materialization.colocatedSourceEligibility = {
+         eligibleEntityIds: new Set(["a"]),
+      } as never;
+      const bound = () =>
+         pushed[pushed.length - 1]?.find((b) => b.virtualHandle === "a");
+      materialization.recordManifestBinding({
+         a: {
+            tableName: "flights_pairs",
+            connectionName: "duckdb",
+            keyUniqueness: { parentKeys: { "segs@m": true } },
+         },
+      });
+      expect(bound()?.primaryKeys).toEqual({ "segs@m": true });
+      materialization.forgetKeyUniqueness(["a"]);
+      expect(bound()?.tablePath).toBe("flights_pairs");
+      expect(bound()?.primaryKeys).toBeUndefined();
+      // A later bind that holds the record again pushes it.
+      materialization.recordManifestBinding({
+         a: {
+            tableName: "flights_pairs",
+            connectionName: "duckdb",
+            keyUniqueness: { parentKeys: { "segs@m": false } },
+         },
+      });
+      expect(bound()?.primaryKeys).toEqual({ "segs@m": false });
+   });
 });

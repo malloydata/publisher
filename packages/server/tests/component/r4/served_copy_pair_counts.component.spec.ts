@@ -22,6 +22,12 @@
 
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { splitManifestEntries } from "../../../src/service/materialization/run/manifest_loader";
+import { deriveServeBindings } from "../../../src/service/materialization/serve/materialization_serve_transform";
+import type {
+   KeyUniqueness,
+   ManifestEntry,
+} from "../../../src/service/materialization/types";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
@@ -510,4 +516,98 @@ describe("R4: counts through a pair table with no leaf key check on record", () 
       expect(rowDifference(leaf.live, leaf.served)).toBeUndefined();
       expect(leaf.servedVia).toBeUndefined();
    });
+});
+
+// A host's manifest binds the table through the path a host bind takes
+// (`splitManifestEntries`, then `deriveServeBindings`), which never reads a
+// leaf key record from the host: even one claiming the leaf's key unique and
+// never null, over a table whose leaf key is NULL on a row or held twice.
+// Every leaf count, sum and average answers live, a stored column's sum
+// included, and equals live.
+describe("R4: a pair table a host's manifest binds, its leaf key claimed checked", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": model("duckdb", "", () => 'storage="lake"') },
+         seedSql: seed(""),
+         materialize: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   /** The source's bindings as a host's manifest, claiming its leaf checked, binds them. */
+   const hostBound = (sourceName: string) => {
+      const own = fixture.bindings.find(
+         (b) => b.sourceName === sourceName && b.destinationName,
+      );
+      if (!own?.primaryKeys)
+         throw new Error(`no checked binding: ${sourceName}`);
+      const claimed: KeyUniqueness = {
+         parentKeys: Object.fromEntries(
+            Object.keys(own.primaryKeys).map((id) => [id, true]),
+         ),
+      };
+      const entry = {
+         sourceEntityId: own.virtualHandle,
+         sourceName,
+         physicalTableName: fixture.physicalTables[sourceName],
+         connectionName: "duckdb",
+         storageDestinationName: own.destinationName,
+         schema: own.schema,
+         realization: "COPY",
+         rowCount: null,
+         keyUniqueness: claimed,
+      } as ManifestEntry;
+      const { storageEntries } = splitManifestEntries(
+         { [own.virtualHandle]: entry },
+         "a host's manifest",
+      );
+      const host = deriveServeBindings(
+         storageEntries,
+         {},
+         undefined,
+         () => own.sourceIDs ?? [],
+      );
+      return {
+         own,
+         bindings: [...fixture.bindings.filter((b) => b !== own), ...host],
+         host,
+      };
+   };
+
+   for (const [source, measures] of [
+      ["flights", "seg_n, seg_ones, seg_miles, seg_distance"],
+      ["flights_nullkey", "seg_n, seg_miles, seg_distance"],
+      ["flights_dupkey", "seg_n, seg_miles, seg_distance"],
+   ] as const) {
+      it(`answers ${source}'s leaf counts and sums live, equal to live`, async () => {
+         const { own, bindings, host } = hostBound(source);
+         expect(host).toHaveLength(1);
+         expect(host[0].tablePath).toBe(own.tablePath);
+         expect(host[0].primaryKeys).toBeUndefined();
+         const malloy = `run: ${source} -> { group_by: carrier; aggregate: ${measures} }`;
+         fixture.setBindings([]);
+         const live = await fixture.runAsIs(malloy);
+         fixture.setBindings(bindings);
+         const served = await fixture.runAsIs(malloy);
+         fixture.setBindings(fixture.bindings);
+         expect(live.rows.length).toBeGreaterThan(0);
+         expect(served.servedFrom).toBeNull();
+         expect(rowDifference(live.rows, served.rows)).toBeUndefined();
+         // The same table still serves what needs no leaf record.
+         fixture.setBindings(bindings);
+         const max = await fixture.runAsIs(
+            `run: ${source} -> { group_by: carrier; aggregate: seg_longest, flight_count }`,
+         );
+         fixture.setBindings(fixture.bindings);
+         expect(max.servedFrom).not.toBeNull();
+      });
+   }
 });
