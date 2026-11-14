@@ -45,7 +45,7 @@ import { collectEntryPointGates } from "../../gate_classification";
 import { readPreparedQuery } from "../../governance/ir/prepared_query";
 import { identifier } from "../../malloy_text";
 import { overlayKey } from "../../overlay_key";
-import { persistBlankedFiles } from "../persist_blanking";
+import { persistBlankedFiles } from "../text/persist_blanking";
 import { currentTimeFields, readsCurrentTime } from "./persist_dynamic_terms";
 import {
    generatePersistedViewFile,
@@ -55,8 +55,8 @@ import {
    type PersistedViewRefusal,
 } from "./persisted_view";
 import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
-import { SourceMap } from "./source_map";
-import { omittedFromFile, type Omission } from "./omitted_sources";
+import { SourceMap } from "../text/source_map";
+import { omittedFromFile, type Omission } from "../domain/omitted_sources";
 
 export interface GeneratedPersistedViews {
    /** The views the companion declares. Never empty. */

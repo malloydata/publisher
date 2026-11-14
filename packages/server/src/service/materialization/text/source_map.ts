@@ -3,8 +3,8 @@
 
 /**
  * The source map: one read-only description of a model's sources, and the one
- * place materialization walks a source's chain (materialization v2, phase 3;
- * design in `docs/materialization-source-map.md`).
+ * place materialization walks a source's chain (design in
+ * `docs/materialization-source-map.md`).
  *
  * Every reader that used to walk the compiled IR on its own (the build-side
  * reach, the path report's chain, the unreachable verdict's reachability)
@@ -17,6 +17,8 @@
  * table by `(sourceEntityId, destination)`, and a name is for display and logs
  * only. A `sourceID` survives import and re-export, so a source an
  * `index.malloy` re-exports is one node in every model that can see it.
+ *
+ * Pure: it reads the compiled IR it is handed and nothing else.
  */
 
 import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";

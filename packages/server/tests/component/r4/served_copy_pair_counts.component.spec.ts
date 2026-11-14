@@ -27,7 +27,7 @@ import { deriveServeBindings } from "../../../src/service/materialization/serve/
 import type {
    KeyUniqueness,
    ManifestEntry,
-} from "../../../src/service/materialization/types";
+} from "../../../src/service/materialization/domain/types";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,

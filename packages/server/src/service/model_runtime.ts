@@ -20,7 +20,7 @@ import { ModelNotFoundError } from "../errors";
 import { logger } from "../logger";
 import type { SerializedNotebookCell } from "../package_load/protocol";
 import { safeJoinUnderRoot } from "../path_safety";
-import { BuildManifest } from "./materialization/types";
+import { BuildManifest } from "./materialization/domain/types";
 import { URL_READER } from "../utils";
 import { parseMalloynb } from "./deprecated/malloynb";
 import { overlayKey, overlayKeyOfPath } from "./overlay_key";

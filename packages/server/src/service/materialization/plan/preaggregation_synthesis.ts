@@ -31,7 +31,7 @@ import {
    type ReaggregateFunction,
 } from "./preaggregation_classifier";
 import { isSpliceableNamespace } from "./preaggregation_namespace";
-import { fieldNotes } from "../field_notes";
+import { fieldNotes } from "../text/field_notes";
 import type { ValidatableSource } from "./preaggregation_validation";
 
 /** Suffix on the stored partial-aggregate column for a measure. */

@@ -21,7 +21,7 @@ import type { FederatedSourceType } from "../../connection";
 import type { QueryMetadata } from "../../query_metadata";
 import { quoteIdentifier } from "../../quoting";
 import { errMessage } from "../../../utils";
-import { storageTablePath } from "./storage_table_path";
+import { storageTablePath } from "../domain/storage_table_path";
 
 /**
  * The delta target for a source materialized into a `storage=` destination — the

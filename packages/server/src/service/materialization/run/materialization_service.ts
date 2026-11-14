@@ -45,7 +45,7 @@ import {
    ManifestReference,
    MaterializationStatus,
    RefusedSource,
-} from "../types";
+} from "../domain/types";
 import {
    incrementalRunContext,
    type IncrementalRunContext,

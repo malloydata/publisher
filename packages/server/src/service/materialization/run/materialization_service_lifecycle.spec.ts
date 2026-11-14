@@ -10,7 +10,11 @@ import {
    MaterializationConflictError,
    MaterializationNotFoundError,
 } from "../../../errors";
-import { BuildInstruction, LedgerEntry, MaterializationStatus } from "../types";
+import {
+   BuildInstruction,
+   LedgerEntry,
+   MaterializationStatus,
+} from "../domain/types";
 import { DuplicateActiveMaterializationError } from "../../../storage/duckdb/MaterializationRepository";
 import {
    makeBuildPlan,

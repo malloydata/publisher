@@ -37,7 +37,7 @@ import {
    compileParentKeyChecks,
    parentKeyCheckCompiler,
 } from "./rollup_compile";
-import { SourceMap } from "./source_map";
+import { SourceMap } from "../text/source_map";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import { Model } from "../../model";
 import { keyedOverlay } from "../../overlay_key";

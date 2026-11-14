@@ -7,7 +7,7 @@ import { afterAll, describe, expect, it } from "bun:test";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { InMemoryURLReader, SingleConnectionRuntime } from "@malloydata/malloy";
 import { planModelRollups } from "./rollup_plan";
-import { SourceMap } from "./source_map";
+import { SourceMap } from "../text/source_map";
 
 const connection = new DuckDBConnection("duckdb", ":memory:");
 afterAll(async () => {

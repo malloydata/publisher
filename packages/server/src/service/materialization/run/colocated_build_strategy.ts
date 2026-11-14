@@ -8,7 +8,7 @@ import { errMessage } from "../../../utils";
 import { quoteRenameTarget, quoteTablePath } from "../../quoting";
 import { storedColumnsOfOutput } from "../stored_column_types";
 import { capturedNativeSchema } from "./colocated_native_types";
-import { ManifestEntry } from "../types";
+import { ManifestEntry } from "../domain/types";
 import type { BuildStrategy, ColocatedBuildRequest } from "./build_strategy";
 import {
    advanceLedgerAfterSeed,

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import type { SourceJoin } from "../plan/source_map";
+import type { SourceJoin } from "../text/source_map";
 import type { RollupVariantPlan } from "../plan/rollup_plan";
 import type { QueryLevelFacts } from "../../governance/ir/prepared_query";
 import {

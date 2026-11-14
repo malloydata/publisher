@@ -21,7 +21,7 @@ import type {
    IncrementalStrategy,
    LedgerEntry,
    ManifestEntry,
-} from "../types";
+} from "../domain/types";
 import {
    collectIncrementalDeclarations,
    CompiledBuildPlan,

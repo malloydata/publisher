@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
-import { accessLiftEdits, applyEdits } from "../declaration_text";
+import { accessLiftEdits, applyEdits } from "../text/declaration_text";
 import { addressSQL, buildSQLOf, deriveBuildPlanOutcome } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
 import type { MaterializePlan } from "./build_file_generator";

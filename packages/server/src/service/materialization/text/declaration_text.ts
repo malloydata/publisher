@@ -12,9 +12,11 @@
  * copy (plan/build_file_generator.ts), which may take a given-reading
  * `where:` out of the build only where that run holds it. One reader, so the
  * two never disagree about which text the served copy keeps.
+ *
+ * Pure: a reader that cannot place a declaration returns undefined.
  */
 
-import { identifier } from "../malloy_text";
+import { identifier } from "../../malloy_text";
 import {
    isName,
    lexAll,

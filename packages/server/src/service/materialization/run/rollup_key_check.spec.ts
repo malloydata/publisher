@@ -28,7 +28,7 @@ import type {
    BuildInstruction,
    FreshnessManifest,
    ManifestEntry,
-} from "../types";
+} from "../domain/types";
 import {
    INLINE_UNIQUENESS_KEY,
    keyUniquenessAt,

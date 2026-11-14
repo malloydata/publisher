@@ -40,7 +40,7 @@ import {
    nowComparison,
    stringLiteral,
 } from "../../malloy_text";
-import { noteSource } from "../field_notes";
+import { noteSource } from "../text/field_notes";
 import type { MaterializeReadTimeTerm } from "../plan/build_file_generator";
 import { storedMalloyType } from "./materialization_serve_transform";
 
@@ -53,14 +53,14 @@ import {
    inverseRenameBlocks,
    inverselyRenamedColumns,
    rewriteDimensions,
-} from "../declaration_text";
+} from "../text/declaration_text";
 import {
    isName,
    lexAll,
    offsetOf,
    statementHead,
    statementStarts,
-} from "../malloy_lexer";
+} from "../text/malloy_lexer";
 import {
    dropJoinDefinition,
    inlinedJoinRenames,
@@ -71,7 +71,7 @@ import {
    renameBlock,
    TIMEFRAMES,
    type GeneratedRename,
-} from "../inlined_join_text";
+} from "../text/inlined_join_text";
 
 export {
    declarationSpans,

@@ -5,7 +5,7 @@ import { Manifest } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import { logger } from "../../../logger";
-import { BuildInstruction, LedgerEntry } from "../types";
+import { BuildInstruction, LedgerEntry } from "../domain/types";
 import { indexCallerLedger } from "./incremental_build";
 import {
    compiledWith,

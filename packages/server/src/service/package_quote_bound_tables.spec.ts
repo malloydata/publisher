@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import sinon from "sinon";
 import type { Connection } from "@malloydata/malloy";
 import { logger } from "../logger";
-import type { FreshnessManifest } from "./materialization/types";
+import type { FreshnessManifest } from "./materialization/domain/types";
 import { Model } from "./model";
 import { Package } from "./package";
 

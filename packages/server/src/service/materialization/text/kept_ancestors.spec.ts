@@ -13,7 +13,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { confirmedAncestors, keptAncestorChain } from "./kept_ancestors";
-import { SourceMap } from "./plan/source_map";
+import { SourceMap } from "./source_map";
 
 // File-backed: db-duckdb's in-memory database is shared across spec files.
 const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), "kept-ancestors-spec-"));

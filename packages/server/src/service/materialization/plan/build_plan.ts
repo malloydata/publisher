@@ -3,7 +3,6 @@
 
 import type {
    BuildTarget,
-   MalloyConfig,
    Connection as MalloyConnection,
    Model as MalloyModel,
    ModelDef,
@@ -101,7 +100,7 @@ import {
    omittedByID,
    type Omission,
    type OmittedSourceReason,
-} from "./omitted_sources";
+} from "../domain/omitted_sources";
 
 // Addressing, plan layers and eligibility collection live in their own
 // modules; re-exported so every existing import of build_plan keeps working.
@@ -140,6 +139,7 @@ export {
    type PersistSourceGateOutcome,
 } from "./persist_source_fields";
 import type { WirePackageMaterialization } from "./plan_layers";
+import type { BuildPlanPackage } from "../domain/plan_input";
 
 type WireBuildGraph = components["schemas"]["BuildGraph"];
 type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
@@ -149,22 +149,7 @@ type WireJoinedTerms = components["schemas"]["JoinedTerms"];
 type BuildPlan = components["schemas"]["BuildPlan"];
 export type { WirePackageMaterialization };
 
-/**
- * Minimal surface a package must expose to compile its build plan; satisfied by
- * {@link Package} and the materialization service.
- */
-export interface BuildPlanPackage {
-   getModelPaths(): string[];
-   getPackagePath(): string;
-   getMalloyConfig(): MalloyConfig;
-   getMalloyConnection(name: string): Promise<MalloyConnection>;
-   /**
-    * The package-level `materialization` config (publisher.json), the
-    * least-specific layer for per-source resolution. Optional: callers without
-    * it resolve with no package default.
-    */
-   getMaterializationConfig?(): WirePackageMaterialization | null;
-}
+export type { BuildPlanPackage };
 
 /**
  * Result of compiling a package's persist sources. The wire {@link BuildPlan} is

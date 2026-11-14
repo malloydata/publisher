@@ -8,7 +8,7 @@ import * as fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { pathToFileURL } from "url";
-import { ManifestEntry } from "../types";
+import { ManifestEntry } from "../domain/types";
 import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 
 describe("fetchManifestEntries", () => {

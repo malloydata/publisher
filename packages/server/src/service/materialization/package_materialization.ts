@@ -54,7 +54,7 @@ import { CronEvaluator } from "./run/cron_evaluator";
 import {
    evaluateManifestFreshness,
    filterFreshManifest,
-} from "./run/freshness";
+} from "./domain/freshness";
 import {
    type BoundTable,
    type LiveTableVerdict,
@@ -84,18 +84,18 @@ import {
    type ServeVerdict,
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
-import { storageTablePath } from "./run/storage_table_path";
+import { storageTablePath } from "./domain/storage_table_path";
 import { persistTableTarget } from "./plan/eligibility_collect";
 import { quoteManifestTablePath } from "../quoting";
 import { structsReachedFrom } from "../governance/ir/source_graph";
 import { CLASSIFICATION_COVERAGE } from "../classification";
-import { reachableSourceIDs, SourceMap } from "./plan/source_map";
+import { reachableSourceIDs, SourceMap } from "./text/source_map";
 import type {
    BuildManifest,
    BuildPlan,
    FreshnessManifest,
    ManifestEntry,
-} from "./types";
+} from "./domain/types";
 
 type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];

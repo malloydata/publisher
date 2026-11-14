@@ -17,7 +17,7 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { logger } from "../../../logger";
 import { recordStoredColumnTypeMismatch } from "../../../materialization_metrics";
-import { evaluateManifestFreshness } from "../run/freshness";
+import { evaluateManifestFreshness } from "../domain/freshness";
 import {
    authorModelLiftContext,
    bindingServesModelSource,

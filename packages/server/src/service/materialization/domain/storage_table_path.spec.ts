@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import type { components } from "../../../api";
 import { assembleEnvironmentConnections } from "../../connection_config";
-import { dropStorageTableSql } from "./materialization_build_session";
+import { dropStorageTableSql } from "../run/materialization_build_session";
 import { deriveServeBindings } from "../serve/materialization_serve_transform";
 import { destinationSchemaOf, storageTablePath } from "./storage_table_path";
 

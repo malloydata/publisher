@@ -37,11 +37,11 @@ import { getMaterializeGatedSources, getPersistStorageMode } from "../config";
 import type { GraftScope } from "./gate_classification";
 import { logger } from "../logger";
 import { recordStorageServeRouting } from "../materialization_metrics";
-import { sourceChain } from "./materialization/plan/source_map";
+import { sourceChain } from "./materialization/text/source_map";
 import { type ServeBinding } from "./materialization/serve/materialization_serve_transform";
 import type { StorageBindings } from "./materialization/serve/storage_bindings";
 import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
-import { explainDecline } from "./materialization/serve/leg_decline";
+import { explainDecline } from "./materialization/domain/leg_decline";
 import {
    type ApiQueryPath,
    buildQueryPath,
@@ -49,7 +49,7 @@ import {
    queryShapeOf,
    type StorageTable,
 } from "./materialization/serve/query_path";
-import type { BuildManifest } from "./materialization/types";
+import type { BuildManifest } from "./materialization/domain/types";
 import type { RollupVariantServe } from "./materialization/serve/rollup_variants";
 import type {
    PersistedViewServe,

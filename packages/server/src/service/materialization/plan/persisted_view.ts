@@ -63,7 +63,7 @@ import {
 } from "../../governance/ir/declared_notes";
 import { doubleQuotedString, identifier } from "../../malloy_text";
 import { hasEnvReference, parseRouteTag } from "../../motly";
-import { SourceMap, type SourceNode } from "./source_map";
+import { SourceMap, type SourceNode } from "../text/source_map";
 
 /** Appended to a declaring file's URL to name its persisted-view companion. */
 export const PERSISTED_VIEW_COMPANION_SUFFIX = ".persist-view.malloy";

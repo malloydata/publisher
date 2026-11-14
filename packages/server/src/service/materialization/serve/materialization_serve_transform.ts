@@ -13,7 +13,7 @@ import {
    recordEligibilityRefused,
    recordServeShapeTypeFallback,
 } from "../../../materialization_metrics";
-import type { ManifestEntry } from "../types";
+import type { ManifestEntry } from "../domain/types";
 import { quoteManifestTablePath } from "../../quoting";
 import {
    annotationValue,
@@ -21,9 +21,9 @@ import {
    identifier,
    stringLiteral,
 } from "../../malloy_text";
-import { storageTablePath } from "../run/storage_table_path";
-import { pipelineReferences, structRefSourceId } from "../plan/source_map";
-import { documentFlagLines } from "../declaration_text";
+import { storageTablePath } from "../domain/storage_table_path";
+import { pipelineReferences, structRefSourceId } from "../text/source_map";
+import { documentFlagLines } from "../text/declaration_text";
 
 export { documentFlagLines };
 

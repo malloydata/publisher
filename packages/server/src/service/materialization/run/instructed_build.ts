@@ -38,7 +38,10 @@ import {
    STORAGE_TARGET_DIALECT,
    withStorageDestinationSession,
 } from "./materialization_build_session";
-import { destinationSchemaOf, storageTablePath } from "./storage_table_path";
+import {
+   destinationSchemaOf,
+   storageTablePath,
+} from "../domain/storage_table_path";
 import {
    CompiledBuildPlan,
    computeSourceEntityId,
@@ -56,7 +59,7 @@ import {
    ManifestEntry,
    RefusedSource,
    SourceFailure,
-} from "../types";
+} from "../domain/types";
 import {
    sourceIncrementalRefresh,
    type IncrementalRunContext,

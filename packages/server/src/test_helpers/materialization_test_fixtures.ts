@@ -7,7 +7,10 @@ import type {
    PersistSource,
 } from "@malloydata/malloy";
 import { Materialization } from "../storage/DatabaseInterface";
-import { BuildInstruction, BuildPlan } from "../service/materialization/types";
+import {
+   BuildInstruction,
+   BuildPlan,
+} from "../service/materialization/domain/types";
 import {
    CompiledBuildPlan,
    setTestAddressForTarget,

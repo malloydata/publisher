@@ -67,8 +67,8 @@ import {
 import type { ModelConnectionInput } from "../../model_runtime";
 import { extractRunViewCall, type RunViewCall } from "../../query_text";
 import { quoteManifestTablePath } from "../../quoting";
-import { evaluateManifestFreshness } from "../run/freshness";
-import type { BuildManifest } from "../types";
+import { evaluateManifestFreshness } from "../domain/freshness";
+import type { BuildManifest } from "../domain/types";
 import {
    generatePersistedViewFile,
    persistedViewCompanionHref,
@@ -77,18 +77,18 @@ import {
    type PersistedViewPlan,
 } from "../plan/persisted_view";
 import { viewNoteTexts } from "../plan/persisted_view_compile";
-import { SourceMap } from "../plan/source_map";
+import { SourceMap } from "../text/source_map";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
 import type { ServeBinding } from "./materialization_serve_transform";
 import type { MaterializedTableCatalog } from "./query_path";
-import { fieldNotes } from "../field_notes";
+import { fieldNotes } from "../text/field_notes";
 import {
    TIMEFRAMES,
    timeframeRestatements,
    typeDeclaration,
 } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
-import { LegDecline } from "./leg_decline";
+import { LegDecline } from "../domain/leg_decline";
 
 type VirtualMap = Map<string, Map<string, string>>;
 

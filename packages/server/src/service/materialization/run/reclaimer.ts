@@ -19,7 +19,7 @@ import {
    writeTargetsIn,
 } from "../../versions/materialization_scope";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
-import { ManifestEntry } from "../types";
+import { ManifestEntry } from "../domain/types";
 import { dropStorageTable } from "./materialization_build_session";
 import {
    backupSuffix,

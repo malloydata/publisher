@@ -33,7 +33,7 @@ import {
    parentKeyNeedsOf,
    storedKeyChecksOf,
 } from "../../../src/service/materialization/plan/rollup_plan";
-import { SourceMap } from "../../../src/service/materialization/plan/source_map";
+import { SourceMap } from "../../../src/service/materialization/text/source_map";
 import {
    pairLeafKeyChecksOf,
    runRollupKeyCheck,
@@ -46,7 +46,7 @@ import {
    type MaterializePlan,
 } from "../../../src/service/materialization/plan/build_file_generator";
 import { planChainedDownstream } from "../../../src/service/materialization/run/materialization_build_session";
-import { storageTablePath } from "../../../src/service/materialization/run/storage_table_path";
+import { storageTablePath } from "../../../src/service/materialization/domain/storage_table_path";
 import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
 import { deriveColocatedServeBindings } from "../../../src/service/materialization/serve/colocated_bindings";
 import { capturedNativeSchema } from "../../../src/service/materialization/run/colocated_native_types";
@@ -91,7 +91,7 @@ import {
 import type {
    KeyUniqueness,
    ManifestEntry,
-} from "../../../src/service/materialization/types";
+} from "../../../src/service/materialization/domain/types";
 import { Model } from "../../../src/service/model";
 import type { HydrationRuntime } from "../../../src/service/model_runtime";
 import { malloyGivenToApi, type MalloyGiven } from "../../../src/service/given";
