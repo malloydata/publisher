@@ -21,7 +21,7 @@ import {
    loadFixture,
    type Outcome,
 } from "./conformance/package_harness";
-import { renderFiles, SHAPES } from "./conformance/shapes";
+import { LIVE_WRONG_NEST, renderFiles, SHAPES } from "./conformance/shapes";
 import { rowDifference } from "./harness";
 
 function metadataDifference(a: Answer, b: Answer): string | undefined {
@@ -92,6 +92,18 @@ describe("the conformance shapes under the default settings", () => {
                            `${q.name}: live ${"error" in l ? l.error : "answered"}, default ${"error" in s ? s.error : "answered"}`,
                         );
                      }
+                     continue;
+                  }
+                  // Live itself is wrong on this query (known limitation 41);
+                  // the stored answer is checked against the truth in
+                  // served_copy_conformance_gaps.
+                  const gaps = { ...shape.gaps, ...q.gaps };
+                  if (
+                     [`${variant}/cutover`, variant, "*"].some(
+                        (key) => gaps[key] === LIVE_WRONG_NEST,
+                     )
+                  ) {
+                     if (s.answer.servedBy !== "live") servedCount++;
                      continue;
                   }
                   const why =
