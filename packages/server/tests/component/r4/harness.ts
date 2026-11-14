@@ -45,7 +45,10 @@ import {
    extensionOverStoredModel,
    type MaterializePlan,
 } from "../../../src/service/materialization/plan/build_file_generator";
-import { planChainedDownstream } from "../../../src/service/materialization/run/materialization_build_session";
+import {
+   oneFileModel,
+   planChainedDownstream,
+} from "../../../src/service/materialization/run/materialization_build_session";
 import { storageTablePath } from "../../../src/service/materialization/domain/storage_table_path";
 import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
 import { deriveColocatedServeBindings } from "../../../src/service/materialization/serve/colocated_bindings";
@@ -878,16 +881,18 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             type: c.type as string,
          }));
          const planned = await planChainedDownstream({
-            transientModel: extensionOverStoredModel({
-               plan: materializePlans[source.sourceID],
-               chain: over.overStored,
-               connectionName: DESTINATION,
-               virtualHandle: parentEntry.sourceEntityId,
-               columns: declarableColumns(schema).declared.map((c) => ({
-                  name: c.name,
-                  type: c.malloyType,
-               })),
-            }),
+            model: oneFileModel(
+               extensionOverStoredModel({
+                  plan: materializePlans[source.sourceID],
+                  chain: over.overStored,
+                  connectionName: DESTINATION,
+                  virtualHandle: parentEntry.sourceEntityId,
+                  columns: declarableColumns(schema).declared.map((c) => ({
+                     name: c.name,
+                     type: c.malloyType,
+                  })),
+               }),
+            ),
             downstreamName: materializePlans[source.sourceID].buildSourceName,
             virtualMap: buildVirtualMap([
                {

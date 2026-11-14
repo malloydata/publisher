@@ -47,7 +47,10 @@ import {
    createModelRuntime,
    type ModelConnectionInput,
 } from "../../model_runtime";
-import { SourceMap } from "../text/source_map";
+import { reachPersisted, SourceMap } from "../text/source_map";
+import { keepDeclarations } from "../text/declarations_kept";
+import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
+import type { ManifestEntry } from "../domain/types";
 import { givenReadingFilterTerms } from "../plan/persist_dynamic_terms";
 import {
    hiddenAccess,
@@ -91,6 +94,8 @@ import {
    narrowSchemaToPublic,
    optsOutOfPersist,
    type ServeBinding,
+   deriveServeBindings,
+   bindingServesModelSource,
 } from "./materialization_serve_transform";
 import {
    authorModelLiftContext,
@@ -292,6 +297,12 @@ interface ServedCopyHost {
     * since nothing is served.
     */
    quiet?: boolean;
+   /**
+    * Read a stored big-integer column as stored, with no exact-digit cast: a
+    * chained build compiles the copy to SQL and never reads a value into
+    * JavaScript, where the cast keeps every digit.
+    */
+   readsStoredIntegers?: boolean;
 }
 
 interface Compiled {
@@ -468,6 +479,21 @@ export interface ServedCopyJoinBasis {
 
 /** How many declined queries one compiled copy remembers before starting over. */
 const DECLINED_LIMIT = 1000;
+
+/** An `import` statement's target, which the chained build's text follows. */
+const IMPORT_TARGET = /^\s*import\b[^"'\n]*["']([^"']+)["']/gm;
+
+/** The flag a model's `#@ persist` sources are planned under. */
+const PERSISTENCE_FLAG = /^\s*##!\s*experimental[^\n]*persistence/m;
+
+/** An author file's text by URL, or undefined when it cannot be read. */
+function readAuthorText(url: string): string | undefined {
+   try {
+      return readFileSync(fileURLToPath(url), "utf8");
+   } catch {
+      return undefined;
+   }
+}
 
 /** One model's served copy. */
 export class ServedCopyServe {
@@ -1502,7 +1528,13 @@ export class ServedCopyServe {
       // A column live answers above 2^53 (a BIGINT, known limitation 12) is
       // read through its native type, which keeps every digit; one no cast
       // reads exactly is left out, so only a query reading it answers live.
-      const ownReads = bigIntegerReadsOf(columns, def.fields, def, binding);
+      const ownReads = bigIntegerReadsOf(
+         columns,
+         def.fields,
+         def,
+         binding,
+         this.host.readsStoredIntegers,
+      );
       columns = columns.flatMap((c) => {
          if (!ownReads.has(c.name)) return [c];
          const nativeCast = ownReads.get(c.name);
@@ -1722,34 +1754,184 @@ export class ServedCopyServe {
          .join(" ");
    }
 
-   private async compile(
-      key: string,
-      generation: number,
-      bindings: ServeBinding[],
-      lane = 0,
-   ): Promise<Compiled> {
-      const problems: ServedCopyProblem[] = [];
-      // Storage bindings reach here only with destinations (`usable`); a
-      // copy of colocated tables alone needs none.
-      const destinations =
-         this.host.serveDestinationConfig() ?? NO_DESTINATIONS;
-      if (!this.packagePath || !this.packageConfig) {
-         return { key, generation, lane, rerooted: [], aliased: [], problems };
-      }
+   /**
+    * The files a chained `storage=` build of `downstreamSourceID` compiles
+    * on its destination alone: each bound upstream re-rooted in the file
+    * that declares it, as this served copy re-roots it ({@link
+    * rerootCandidates}), and every declaration off the downstream's path
+    * blanked ({@link keepDeclarations}), so nothing compiled reads the
+    * warehouse. Declines, with why, when an upstream does not re-root, the
+    * downstream reaches past its re-rooted upstreams, or a file it reaches
+    * cannot be read. Compiles nothing: the build compiles the files on its
+    * own session.
+    */
+   chainBuildFiles(downstreamSourceID: string): ChainBuildText {
       const modelDef = this.host.modelDef();
       const map = SourceMap.of(modelDef);
+      const lift = authorModelLiftContext(modelDef, readAuthorText);
+      const problems: ServedCopyProblem[] = [];
+      const bindings = this.bindings.filter((b) => b.origin !== "preaggregate");
+      const { candidates } = this.rerootCandidates(
+         bindings,
+         map,
+         lift,
+         problems,
+         0,
+      );
+      const why = (detail: string): ChainBuildText => ({ declined: detail });
+      if (candidates.length === 0) {
+         return why(
+            problems.length > 0
+               ? `no stored upstream could be re-rooted (${problems
+                    .map((p) => `'${p.sourceName}': ${p.reason}`)
+                    .join(", ")})`
+               : "no stored upstream could be re-rooted",
+         );
+      }
+      const downstreamName = lift.sourceNameById.get(downstreamSourceID);
+      const location =
+         downstreamName === undefined
+            ? undefined
+            : lift.contents[downstreamName]?.location;
+      const declared =
+         location === undefined ? undefined : lift.liftText(location);
+      const name =
+         declared === undefined
+            ? undefined
+            : /^\s*(`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)/.exec(declared)?.[1];
+      if (!downstreamName || !location?.url || !location.range || !name) {
+         return why("the downstream's declaration could not be found");
+      }
+      // Everything the downstream reads, up to its stored upstreams: the
+      // re-rooted ones, and those that read one by name (a rename) and stay
+      // as written.
+      const stored = new Set(candidates.map((c) => c.reroot.sourceID));
+      const storedNames = new Set<string>();
+      for (const b of bindings) {
+         if (b.sourceIDs) for (const id of b.sourceIDs) stored.add(id);
+         else storedNames.add(b.sourceName);
+      }
+      const reached = reachPersisted(
+         lift,
+         downstreamName,
+         (n, id) => stored.has(id) || storedNames.has(n),
+      );
+      if (reached.raw) {
+         return why(
+            `it reads ${reached.rawLeaves.join(", ")}, which no re-rooted upstream stands in for`,
+         );
+      }
+      const keep = new Map<string, { line: number; character: number }[]>();
+      const keepAt = (url: string | undefined, range: unknown) => {
+         const start = (
+            range as { start?: { line: number; character: number } }
+         )?.start;
+         if (!url || !start) return;
+         keep.set(url, [...(keep.get(url) ?? []), start]);
+      };
+      keepAt(location.url, location.range);
+      for (const visited of reached.visited) {
+         const at = lift.contents[visited]?.location;
+         keepAt(at?.url, at?.range);
+      }
+      for (const c of candidates) keepAt(c.reroot.url, c.reroot.range);
+      // Every file the downstream's file reaches by import, blanked.
+      const blanked = new Map<string, string>();
+      const pending = [location.url];
+      while (pending.length > 0) {
+         const url = pending.pop()!;
+         if (blanked.has(url)) continue;
+         const text = lift.fileText(url);
+         const kept =
+            text === undefined
+               ? undefined
+               : keepDeclarations(text, keep.get(url) ?? []);
+         if (text === undefined || kept === undefined) {
+            return why(`a file it reaches could not be read (${url})`);
+         }
+         blanked.set(url, kept);
+         for (const m of text.matchAll(IMPORT_TARGET)) {
+            try {
+               pending.push(new URL(m[1], url).href);
+            } catch {
+               return why(
+                  `an import it reaches could not be resolved (${m[1]})`,
+               );
+            }
+         }
+      }
+      const copy = buildServedCopy(
+         candidates.map((c) => c.reroot),
+         (u) => blanked.get(u),
+      );
+      if (copy.refused.length > 0) {
+         return why(
+            `a stored upstream did not re-root (${copy.refused
+               .map((r) => `'${r.sourceName}': ${r.reason}`)
+               .join(", ")})`,
+         );
+      }
+      const files = new Map(blanked);
+      for (const [url, text] of copy.files) files.set(url, text);
+      const rerootedSpans = [...copy.spans].flatMap(([url, list]) =>
+         list.map((span) => ({
+            url,
+            start: span.declaration.start,
+            end: span.declaration.end,
+         })),
+      );
+      const entry = files.get(location.url)!;
+      if (!PERSISTENCE_FLAG.test(entry)) {
+         const flag = "##! experimental.persistence\n";
+         files.set(location.url, `${flag}${entry}`);
+         for (const span of rerootedSpans) {
+            if (span.url !== location.url) continue;
+            span.start += flag.length;
+            span.end += flag.length;
+         }
+      }
+      const aliased = candidates.map((c) => ({
+         ...c.binding,
+         destinationName: servedConnectionOf(c.binding),
+      }));
+      return {
+         files,
+         entry: location.url,
+         downstreamName: name.startsWith("`") ? name.slice(1, -1) : name,
+         connection: aliased[0].destinationName,
+         virtualMap: buildVirtualMap(aliased),
+         rerooted: candidates.map((c) => c.reroot.sourceName),
+         rerootedSpans,
+      };
+   }
+
+   /**
+    * Each binding this model can re-root, with its re-root
+    * ({@link rerootFor}), less the sources that read a re-rooted source by
+    * name and so stay as written. `throughBase` names those; `withoutKept`
+    * maps an extension table's re-root to its fallback without its
+    * ancestors' kept blocks. Shared by the served copy's compile and the
+    * chained build's text, so both re-root one way.
+    */
+   private rerootCandidates(
+      bindings: readonly ServeBinding[],
+      map: SourceMap,
+      lift: ReturnType<typeof authorModelLiftContext>,
+      problems: ServedCopyProblem[],
+      lane: number,
+   ): {
+      candidates: { binding: ServeBinding; reroot: AuthorReroot }[];
+      throughBase: NonNullable<Compiled["throughBase"]>[number][];
+      withoutKept: Map<
+         { binding: ServeBinding; reroot: AuthorReroot },
+         { binding: ServeBinding; reroot: AuthorReroot } | undefined
+      >;
+   } {
       let candidates: {
          binding: ServeBinding;
          reroot: AuthorReroot;
       }[] = [];
       const reservedNames = modelFieldNames(map);
-      const lift = authorModelLiftContext(modelDef, (u) => {
-         try {
-            return readFileSync(fileURLToPath(u), "utf8");
-         } catch {
-            return undefined;
-         }
-      });
       for (const binding of bindings) {
          const reroot = this.rerootFor(
             binding,
@@ -1831,6 +2013,35 @@ export class ServedCopyServe {
          withoutKept.set(extension, reads ? undefined : c);
          return [extension];
       });
+      return { candidates, throughBase, withoutKept };
+   }
+
+   private async compile(
+      key: string,
+      generation: number,
+      bindings: ServeBinding[],
+      lane = 0,
+   ): Promise<Compiled> {
+      const problems: ServedCopyProblem[] = [];
+      // Storage bindings reach here only with destinations (`usable`); a
+      // copy of colocated tables alone needs none.
+      const destinations =
+         this.host.serveDestinationConfig() ?? NO_DESTINATIONS;
+      if (!this.packagePath || !this.packageConfig) {
+         return { key, generation, lane, rerooted: [], aliased: [], problems };
+      }
+      const modelDef = this.host.modelDef();
+      const map = SourceMap.of(modelDef);
+      const lift = authorModelLiftContext(modelDef, readAuthorText);
+      const prepared = this.rerootCandidates(
+         bindings,
+         map,
+         lift,
+         problems,
+         lane,
+      );
+      const { throughBase, withoutKept } = prepared;
+      let candidates = prepared.candidates;
       // Inlined joins kept as written because the copy did not compile with
       // their records (see keepInlinedJoins, below), and pair tables dropped
       // because it did not compile with them: each reported only once it
@@ -3136,7 +3347,10 @@ function bigIntegerReadsOf(
    fields: readonly unknown[] | undefined,
    def: unknown,
    binding: ServeBinding,
+   /** A build reads the stored column in SQL, where no digit is lost. */
+   asStored?: boolean,
 ): Map<string, string | undefined> {
+   if (asStored) return new Map();
    return new Map(
       bigIntegerReads(columns, fields, bigIntegerOptionsOf(def, binding)).map(
          (r) => [r.column, r.castTo] as const,
@@ -3413,4 +3627,69 @@ function nestedDeclarationOf(
    const nested = declared.startsWith("{") || declared.endsWith("[]");
    if (!nested || field === undefined) return declared;
    return storedMalloyTypeFor(storedType, field, keepsBigIntegers);
+}
+
+/** What the chained build's text is written from, for one model. */
+interface ChainBuildModel {
+   modelPath: string;
+   modelDef: unknown;
+   context: Parameters<ServedCopyServe["setContext"]>;
+}
+
+/**
+ * The served copy's answer to a chained `storage=` build, for the host
+ * port's `chainBuildText` (through `Model.chainBuildText` and the facade):
+ * the text a downstream builds from on its destination alone, with every
+ * stored upstream re-rooted as the served copy re-roots it. It binds exactly
+ * the upstream entries the request carries, in a served copy of its own that
+ * it discards, so the package's bound tables are neither read nor changed. A
+ * binding whose name means another source in this model is not bound, as on
+ * the serve path. Undefined when this model does not declare the downstream.
+ */
+export function chainBuildText(
+   request: ChainBuildRequest,
+   model: ChainBuildModel,
+): ChainBuildText | undefined {
+   const lift = authorModelLiftContext(model.modelDef, readAuthorText);
+   if (!lift.sourceNameById.has(request.downstream.sourceID)) return undefined;
+   const entries: Record<string, ManifestEntry> = {};
+   const aliases: Record<string, string[]> = {};
+   const sourceIDs = new Map<string, readonly string[] | undefined>();
+   for (const upstream of request.upstreams) {
+      const address = upstream.entry.sourceEntityId;
+      entries[address] = upstream.entry;
+      const names = Object.keys(upstream.names);
+      for (const name of names) {
+         aliases[name] = names;
+         sourceIDs.set(`${name}\u0000${address}`, upstream.names[name]);
+      }
+   }
+   // Without a plan's sourceIDs a binding names its source by name alone.
+   const known = [...sourceIDs.values()].some((ids) => ids !== undefined);
+   const bindings = deriveServeBindings(
+      entries,
+      aliases,
+      () => request.destination.schema,
+      known
+         ? (name, address) => [
+              ...(sourceIDs.get(`${name}\u0000${address}`) ?? []),
+           ]
+         : undefined,
+   ).filter(
+      (b) =>
+         b.destinationName === request.destination.name &&
+         b.origin !== "preaggregate" &&
+         bindingServesModelSource(b, lift.contents),
+   );
+   const copy = new ServedCopyServe({
+      modelPath: () => model.modelPath,
+      modelDef: () => model.modelDef,
+      // Nothing is compiled here: the build compiles the text on its session.
+      serveDestinationConfig: () => undefined,
+      quiet: true,
+      readsStoredIntegers: true,
+   });
+   copy.setContext(...model.context);
+   copy.setBindings(bindings);
+   return copy.chainBuildFiles(request.downstream.sourceID);
 }

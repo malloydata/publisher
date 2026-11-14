@@ -19,23 +19,14 @@ import type { ApiConnection } from "../../model";
 import type { QueryMetadata } from "../../query_metadata";
 import { withStatementUsage } from "../../statement_usage";
 import {
-   authorRefinementsFor,
-   buildChainedStorageBuildModel,
-   buildOverTiers,
    buildVirtualMap,
    bindingServesModelSource,
    deriveServeBindings,
-   documentFlagsForLifts,
-   liftDerivedSources,
    missingPersistedTables,
-   REFINEMENT_TIER_KINDS,
    reportLeftOutColumns,
    type ServeBinding,
 } from "../serve/materialization_serve_transform";
-import {
-   authorModelLiftContext,
-   type SourceLocation,
-} from "../text/author_model";
+import { authorModelLiftContext } from "../text/author_model";
 import { declarableColumns } from "../stored_column_types";
 import { reachPersisted } from "../text/source_map";
 import {
@@ -66,13 +57,13 @@ import {
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
    dropStorageTable,
+   oneFileModel,
    type StorageBuildResult,
    type StorageIncrementalRefresh,
 } from "./materialization_build_session";
 import {
    BuildEnvironment,
    ChainedPlanFacts,
-   chainedBuildGivens,
    NO_PLAN_FACTS,
    partitionColumnsForBuild,
    readAuthorFile,
@@ -688,20 +679,7 @@ export class StorageBuildStrategy
          // file). Filtering it also keeps the legible "no materialized upstream"
          // refusal for a destination holding only rollups.
          .filter((b) => b.origin !== "preaggregate");
-      // Each parent re-declares what its source adds to the table (`where:`,
-      // fields, joins, views), as the serve shape does; without them a binding
-      // reads the table unfiltered.
       const present = new Set(upstreams.map((b) => b.sourceName));
-      for (let i = 0; i < upstreams.length; i++) {
-         upstreams[i] = {
-            ...upstreams[i],
-            refinements: authorRefinementsFor(
-               upstreams[i].sourceName,
-               lift,
-               present,
-            ),
-         };
-      }
       // Stored tables the downstream reads, directly or transitively. One absent
       // from this destination's parents is named here, before any compile, which
       // would report only "undefined object".
@@ -766,80 +744,64 @@ export class StorageBuildStrategy
             "no materialized upstream is available in this destination to build on",
          );
       }
-      const downstreamDefText = this.liftDownstreamDefText(
-         persistSource,
-         lift.liftText,
-      );
-      if (!downstreamDefText) {
-         throw new ChainedShapeNotCarriedError(
-            "could not recover the downstream source definition text from the model",
+      const notCarried = (detail: string) =>
+         new ChainedShapeNotCarriedError(
+            `'${persistSource.name}' reaches only stored upstreams ` +
+               `(${stops.map((p) => `'${p.name}'`).join(", ")}), but ` +
+               `the build could not express it over them — a refinement ` +
+               `declared on a stored upstream that the build does not ` +
+               `re-declare, or a construct the destination's dialect lacks: ` +
+               detail,
          );
+      // The served copy writes the text: each upstream re-rooted on its table
+      // here as a query would read it, from this run's entries alone.
+      if (!environment.chainBuildText) {
+         throw notCarried("this package has no served copy to write it from");
       }
-      // Intermediate sources, each carried once everything it names is in the
-      // model. An extension of a parent becomes the parent's virtual source plus
-      // its refinements. Only sources on this downstream's path, so an
-      // uncompilable lift elsewhere cannot fail this build.
-      const onPath = new Set(reached.visited);
-      const derived = liftDerivedSources({
-         contents: lift.contents,
-         sourceNameById: lift.sourceNameById,
-         shapeSourceNames: present,
-         liftText: lift.liftText,
-         carryPersistExtensions: true,
-      }).filter((d) => onPath.has(d.sourceName));
-      // The `##!` flags of every file whose declarations this model carries.
-      const documentFlags = documentFlagsForLifts(
-         [{ sourceName: persistSource.name }, ...derived],
-         lift,
-      );
-      const givens = chainedBuildGivens(persistSource);
-      const buildOver = (
-         parents: ServeBinding[],
-      ): Promise<StorageBuildResult> =>
-         buildDownstreamIntoStorage({
+      const byAddress = new Map<string, Record<string, string[] | undefined>>();
+      for (const b of upstreams) {
+         const names = byAddress.get(b.virtualHandle) ?? {};
+         names[b.sourceName] = b.sourceIDs;
+         byAddress.set(b.virtualHandle, names);
+      }
+      const text = environment.chainBuildText({
+         downstream: {
+            sourceID: persistSource.sourceID,
+            name: persistSource.name,
+         },
+         destination: {
+            name: destinationName,
+            schema: destinationSchemaOf(destinationConnection),
+         },
+         upstreams: [...byAddress].map(([address, names]) => ({
+            entry: currentEntries[address],
+            names,
+         })),
+      });
+      if ("declined" in text) throw notCarried(text.declined);
+      try {
+         return await buildDownstreamIntoStorage({
             destinationName,
             destinationConnection,
-            transientModel: buildChainedStorageBuildModel({
-               upstreams: parents,
-               downstreamName: persistSource.name,
-               downstreamDefText,
-               destinationName,
-               derived,
-               documentFlags,
-               givens,
-            }),
-            downstreamName: persistSource.name,
-            virtualMap: buildVirtualMap(parents),
+            model: {
+               files: text.files,
+               entry: text.entry,
+               leaveOutWithin: text.rerootedSpans,
+            },
+            connectionName: text.connection,
+            downstreamName: text.downstreamName,
+            virtualMap: text.virtualMap,
             physicalTableName,
             partitionColumns: partitionColumnsForBuild(persistSource),
             environmentPath: environment.getEnvironmentPath(),
             ...(replacesNameView ? { replacesNameView } : {}),
          });
-      // The parents' refinements in the serve shape's tiers
-      // (`REFINEMENT_TIER_KINDS`): everything first, then progressively thinner,
-      // down to the row-changing `where:` alone. A lower tier is tried only on
-      // a compile-time eligibility error, before anything is written. The
-      // filter is never thinned, so no tier reads a parent unfiltered.
-      try {
-         return await buildOverTiers(
-            upstreams,
-            REFINEMENT_TIER_KINDS,
-            buildOver,
-            (err) => err instanceof MaterializationEligibilityError,
-         );
       } catch (err) {
          // The model reached only stored parents (checked above), so a shape
          // failure here is one the build could not carry, not one the
          // destination cannot express. Infrastructure failures pass through.
          if (err instanceof MaterializationEligibilityError) {
-            throw new ChainedShapeNotCarriedError(
-               `'${persistSource.name}' reaches only stored upstreams ` +
-                  `(${stops.map((p) => `'${p.name}'`).join(", ")}), but ` +
-                  `the build could not express it over them — a refinement ` +
-                  `declared on a stored upstream that the build does not ` +
-                  `re-declare, or a construct the destination's dialect lacks: ` +
-                  `${err.message}`,
-            );
+            throw notCarried(err.message);
          }
          throw err;
       }
@@ -915,16 +877,18 @@ export class StorageBuildStrategy
          return await buildDownstreamIntoStorage({
             destinationName,
             destinationConnection,
-            transientModel: extensionOverStoredModel({
-               plan,
-               chain,
-               connectionName: destinationName,
-               virtualHandle: address,
-               columns: declared.map((c) => ({
-                  name: c.name,
-                  type: c.malloyType,
-               })),
-            }),
+            model: oneFileModel(
+               extensionOverStoredModel({
+                  plan,
+                  chain,
+                  connectionName: destinationName,
+                  virtualHandle: address,
+                  columns: declared.map((c) => ({
+                     name: c.name,
+                     type: c.malloyType,
+                  })),
+               }),
+            ),
             downstreamName: plan.buildSourceName,
             virtualMap: buildVirtualMap([binding]),
             physicalTableName,
@@ -944,21 +908,6 @@ export class StorageBuildStrategy
                `of '${parent.sourceName}' in destination '${destinationName}'`,
          );
       }
-   }
-
-   /**
-    * Lift `<name> is <def>` of a persist source's declaration from the author's
-    * model file by its compiled `location` (the assembler prepends `source: `).
-    * Undefined when there is no file-backed location or it can't be sliced.
-    */
-   private liftDownstreamDefText(
-      persistSource: PersistSource,
-      liftText: (location: SourceLocation) => string | undefined,
-   ): string | undefined {
-      const location = (
-         persistSource._explore as unknown as { location?: SourceLocation }
-      ).location;
-      return location ? liftText(location) : undefined;
    }
 }
 

@@ -41,7 +41,9 @@ import {
 } from "../../../test_helpers/persist_corpus";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { storageDestinationRoot } from "../../connection_config";
+import type { ChainBuildRequest } from "../domain/chain_build";
 import { buildSQLOf } from "../plan/addressing";
+import { chainBuildText } from "../serve/served_copy_serve";
 import {
    collectModelBuildPlan,
    emptyBuildPlanParts,
@@ -180,11 +182,12 @@ async function chainedRows(model: CorpusModel): Promise<ChainedRow[]> {
       importBaseURL: base,
    });
    const parts = emptyBuildPlanParts();
+   let malloyModel: Awaited<ReturnType<typeof materializer.getModel>>;
    await collectModelBuildPlan(parts, {
       modelPath: path.relative(root, entry),
       packagePath: root,
       materializer,
-      malloyModel: await materializer.getModel(),
+      malloyModel: (malloyModel = await materializer.getModel()),
       runtime,
       getRuntime: async () => ({ runtime, importBaseURL: base }),
    });
@@ -224,10 +227,17 @@ async function chainedRows(model: CorpusModel): Promise<ChainedRow[]> {
          { name: s.destination, type: "duckdb" },
       ]),
    );
-   const environment = buildEnvironmentStub({
-      destinations,
-      environmentPath: envDir,
-   });
+   // The package's served copy writes a chained build's text, as the facade
+   // does for a real run (the host port's chainBuildText).
+   const environment = {
+      ...buildEnvironmentStub({ destinations, environmentPath: envDir }),
+      chainBuildText: (request: ChainBuildRequest) =>
+         chainBuildText(request, {
+            modelPath: path.relative(root, entry),
+            modelDef: malloyModel._modelDef,
+            context: [root, {} as never, {}],
+         }) ?? { declined: "no model declares the downstream" },
+   };
    const strategy = new StorageBuildStrategy({
       buildDownstreamViaParents: () => {
          throw new Error("not used: the method is called directly");

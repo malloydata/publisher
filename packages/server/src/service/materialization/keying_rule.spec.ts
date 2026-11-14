@@ -49,8 +49,8 @@ const ALLOWED: Record<string, Record<string, string>> = {
          "a scoped run's sourceNames filter is a caller request by name",
    },
    "run/storage_build_strategy.ts": {
-      "}).filter((d) => onPath.has(d.sourceName));":
-         "names on one downstream's path within one model's namespace (the lift is per model)",
+      "names[b.sourceName] = b.sourceIDs;":
+         "the names that read one stored table, each with its own sourceIDs, for the chained build's request",
    },
    "run/run_instructions.ts": {
       "if (include && !include.has(persistSource.name)) continue;":

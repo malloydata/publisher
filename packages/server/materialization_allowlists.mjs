@@ -450,7 +450,7 @@ export const RATCHET_IR_READS = {
    },
    "service/materialization/run/source_build.ts": { count: 1, step: "2c" },
    "service/materialization/run/storage_build_strategy.ts": {
-      count: 3,
+      count: 2,
       step: "2c",
    },
    "service/materialization/serve/declaring_file_variant.ts": {
@@ -531,8 +531,6 @@ export const RATCHET_LONG_FUNCTIONS = {
    "service/materialization/run/source_build.ts#SourceBuilder.build": "2g.4",
    "service/materialization/run/storage_build_strategy.ts#StorageBuildStrategy.build":
       "2g.4",
-   "service/materialization/run/storage_build_strategy.ts#StorageBuildStrategy.buildDownstreamViaParents":
-      "R",
    "service/materialization/serve/query_path.ts#buildQueryPath": "2g.2",
    "service/materialization/serve/rollup_variants.ts#RollupVariantServe.attemptJoin":
       "2g.2",

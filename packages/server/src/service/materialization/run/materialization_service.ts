@@ -69,6 +69,7 @@ import {
    outcomeFor,
    tallySources,
    type WarehouseReach,
+   withChainBuildText,
 } from "./materialization_run_support";
 import {
    dropReplacedTablesAside,
@@ -907,7 +908,7 @@ export class MaterializationService {
             uniquenessChecks,
          } = await this.executeInstructedBuild(
             compiled,
-            environment,
+            withChainBuildText(environment, pkg),
             instructions,
             carried,
             signal,

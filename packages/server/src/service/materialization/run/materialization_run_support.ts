@@ -5,6 +5,7 @@ import {
    generatedNameOwner,
    type MaterializePlan,
 } from "../plan/build_file_generator";
+import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
 import type { PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import { MaterializationEligibilityError } from "../../../errors";
@@ -605,6 +606,26 @@ export interface BuildEnvironment {
    getEnvironmentPath(): string;
    /** For the usage record a metered build emits; absent in some test doubles. */
    getEnvironmentName?(): string;
+   /**
+    * The package's text for a chained `storage=` build (the host port's
+    * `chainBuildText`). Absent, a chained build cannot stack on its parents
+    * and recomputes, or under strict upstreams refuses.
+    */
+   chainBuildText?(request: ChainBuildRequest): ChainBuildText;
+}
+
+/**
+ * `environment` with the package's `chainBuildText`, for one run of that
+ * package. The environment itself is left as it is.
+ */
+export function withChainBuildText<E extends BuildEnvironment>(
+   environment: E,
+   pkg: { chainBuildText?(request: ChainBuildRequest): ChainBuildText },
+): E {
+   if (!pkg.chainBuildText) return environment;
+   const scoped = Object.create(environment) as E;
+   scoped.chainBuildText = (request) => pkg.chainBuildText!(request);
+   return scoped;
 }
 
 /**

@@ -200,7 +200,7 @@
          "address": "facba4c36dabf239c35e3768a3b75a9669f09a1dce09f92f8584a5edf44c16ea",
          "destination": "lake",
          "upstreams": ["daily"],
-         "outcome": "ChainedShapeNotCarriedError: 'by_name' reaches only stored upstreams ('daily'), but the build could not express it over them — a refinement declared on a stored upstream that the build does not re-declare, or a construct the destination's dialect lacks: Chained build model did not compile over the rebound parents: Error(s) compiling model:\nFILE: file:///chained-build/m.malloy\nline 16: 'region_name' is not defined\n  | source: by_name is daily -> { group_by: region_name; aggregate: grand is total.sum() }\n  |                                         ^"
+         "outcome": "ChainedShapeNotCarriedError: 'by_name' reaches only stored upstreams ('daily'), but the build could not express it over them — a refinement declared on a stored upstream that the build does not re-declare, or a construct the destination's dialect lacks: Chained build model did not compile over the rebound parents: Error(s) compiling model:\nFILE: <scratch>/pjw/pjw.malloy\nline 28: 'region_name' is not defined\n  | source: by_name is daily -> { group_by: region_name; aggregate: grand is total.sum() }\n  |                                         ^"
       },
       {
          "model": "hammer/106-a-parents-join-to-a-warehouse-table-does-not-stop-the-chain/pjw/pjw.malloy",

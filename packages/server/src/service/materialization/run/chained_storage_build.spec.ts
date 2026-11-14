@@ -42,7 +42,10 @@ import { installSettings } from "../../../test_helpers/settings_env";
 import { storageDestinationRoot } from "../../connection_config";
 import { collectModelBuildPlan, emptyBuildPlanParts } from "../plan/build_plan";
 import { authorModelLiftContext } from "../text/author_model";
+import type { ChainBuildRequest } from "../domain/chain_build";
 import type { ManifestEntry } from "../domain/types";
+import { chainBuildText } from "../serve/served_copy_serve";
+import { servedCopyAlias } from "../serve/served_copy_config";
 import * as session from "./materialization_build_session";
 import {
    chainedPlanFacts,
@@ -213,10 +216,19 @@ async function stack(
          "lake",
          LAKE as never,
          builtEntries,
-         buildEnvironmentStub({
-            destinations: { lake: LAKE },
-            environmentPath: chain.dir,
-         }) as never,
+         {
+            ...buildEnvironmentStub({
+               destinations: { lake: LAKE },
+               environmentPath: chain.dir,
+            }),
+            // The package's served copy writes the text (the host port).
+            chainBuildText: (request: ChainBuildRequest) =>
+               chainBuildText(request, {
+                  modelPath: "m.malloy",
+                  modelDef: source._model?._modelDef,
+                  context: [chain.dir, {} as never, {}],
+               }) ?? { declined: "no model declares the downstream" },
+         } as never,
          `${name}_t`,
          chain.facts,
          chain.facts.addressBySourceId[id]!,
@@ -230,10 +242,17 @@ async function stack(
    }
 }
 
+/** A file with its blanked lines' spaces gone, as it reads. */
+const trimmed = (text: string) => text.replace(/[ \t]+$/gm, "");
+
+/** The downstream's file each compile read, as the build wrote it. */
 function transientModels(spy: { mock: { calls: unknown[][] } }): string[] {
-   return spy.mock.calls.map(
-      (call) => (call[0] as { transientModel: string }).transientModel,
-   );
+   return spy.mock.calls.map((call) => {
+      const { model } = call[0] as {
+         model: { files: ReadonlyMap<string, string>; entry: string };
+      };
+      return model.files.get(model.entry)!;
+   });
 }
 
 const CHAIN = `${RAW}
@@ -253,7 +272,7 @@ source: monthly is daily -> {
 describe.skipIf(process.platform === "win32")(
    "a v1 chained storage= build, stacked on its parent's stored table",
    () => {
-      it("compiles this transient model, and builds the downstream from the parent's rows", async () => {
+      it("compiles the author's file with the parent re-rooted, and builds the downstream from the parent's rows", async () => {
          const chain = await planChain(CHAIN);
          await writeLake(chain.dir, DAILY_ROWS);
          const { result, error, models } = await stack(
@@ -264,15 +283,18 @@ describe.skipIf(process.platform === "win32")(
          expect(error).toBeUndefined();
          const address =
             chain.facts.addressBySourceId[chain.byName("daily").id];
-         expect(models).toEqual([
-            `##! experimental.persistence
-##! experimental { persistence virtual_source }
-type: daily__shape is {
+         expect(models.map(trimmed)).toEqual([
+            `##! experimental.persistence\n${"\n".repeat(7)}
+##! experimental { virtual_source }
+type: daily__served is {
    d::date,
    cat::string,
    total::number
 }
-source: daily is lake.virtual('${address}')::daily__shape
+
+#@ persist storage="lake"
+source: daily is ${servedCopyAlias("lake")}.virtual('${address}')::daily__served
+
 #@ persist storage="lake"
 source: monthly is daily -> {
   group_by: m is d.month
@@ -301,7 +323,7 @@ source: monthly is daily -> {
          ]);
       });
 
-      it("re-declares a parent's own refinements over its table, and a rename binds to the same table", async () => {
+      it("keeps a parent's own refinements over its table, and a rename reads the re-rooted parent", async () => {
          const chain = await planChain(`${RAW}
 #@ persist storage="lake"
 source: daily is raw -> {
@@ -329,29 +351,23 @@ source: by_cat is day_rows -> {
          expect(error).toBeUndefined();
          const address =
             chain.facts.addressBySourceId[chain.byName("daily").id];
-         // Every tier below the first thins the parent's refinements; the
-         // first compiled, so one model is tried.
-         expect(models).toEqual([
-            `##! experimental.persistence
-##! experimental { persistence virtual_source }
-type: daily__shape is {
+         expect(models.map(trimmed)).toEqual([
+            `##! experimental.persistence\n${"\n".repeat(7)}
+##! experimental { virtual_source }
+type: daily__served is {
    d::date,
    cat::string,
    total::number
 }
-source: daily is lake.virtual('${address}')::daily__shape extend {
-   dimension: loud_cat is upper(cat)
-   where: cat = 'a'
+
+#@ persist storage="lake"
+source: daily is ${servedCopyAlias("lake")}.virtual('${address}')::daily__served extend {
+  where: cat = 'a'
+  dimension: loud_cat is upper(cat)
 }
-type: day_rows__shape is {
-   d::date,
-   cat::string,
-   total::number
-}
-source: day_rows is lake.virtual('${address}')::day_rows__shape extend {
-   dimension: loud_cat is upper(cat)
-   where: cat = 'a'
-}
+
+source: day_rows is daily
+
 #@ persist storage="lake"
 source: by_cat is day_rows -> {
   group_by: loud_cat
@@ -457,6 +473,91 @@ source: weird is daily -> {
          // A parent with no refinements gives every tier the same model, so
          // it is compiled once.
          expect(models.length).toBe(1);
+      });
+
+      it("keeps a gated parent's gates on its re-root, as the author wrote them", async () => {
+         const chain = await planChain(`${RAW.replace(
+            "##! experimental.persistence",
+            "##! experimental { persistence givens }",
+         )}
+given: ROLE :: string is 'admin'
+
+#(authorize) $ROLE = 'admin'
+#(access_filter) cat = 'a'
+#@ persist storage="lake"
+source: daily is raw -> {
+  group_by: d, cat
+  aggregate: total is amt.sum()
+}
+
+#@ persist storage="lake"
+source: monthly is daily -> {
+  group_by: m is d.month
+  aggregate: total is total.sum()
+}
+`);
+         await writeLake(chain.dir, DAILY_ROWS);
+         const { error, models } = await stack(
+            chain,
+            "monthly",
+            parentEntry(chain, "daily"),
+         );
+         // The gates stay on the re-rooted parent as the author wrote them,
+         // so the copy declares the parent with every gate it has live. A
+         // gate is a caller's, proved by govern() at query time, never baked
+         // into a build: the eligibility gate refuses a stored source that
+         // reaches one, so in a run this chain never builds.
+         expect(models.length).toBe(1);
+         expect(models[0]).toContain(
+            "#(authorize) $ROLE = 'admin'\n#(access_filter) cat = 'a'\n#@ persist storage=\"lake\"\nsource: daily is ",
+         );
+         expect(error).toBeUndefined();
+         expect(
+            await readLake(
+               chain.dir,
+               "SELECT CAST(m AS VARCHAR) AS m, total FROM monthly_t ORDER BY m",
+            ),
+         ).toEqual([
+            { m: "2026-01-01", total: 15 },
+            { m: "2026-02-01", total: 7 },
+         ]);
+      });
+
+      it("writes the text from the package's model as loaded, before any build has read its files", async () => {
+         const chain = await planChain(CHAIN);
+         // A fresh compile of the model, as the package holds it: nothing has
+         // read its author files through it yet.
+         const runtime = new Runtime({ urlReader: reader(), connections });
+         const base = pathToFileURL(chain.dir + "/");
+         const model = await runtime
+            .loadModel(new URL("m.malloy", base), { importBaseURL: base })
+            .getModel();
+         const { id, source } = chain.byName("monthly");
+         const address =
+            chain.facts.addressBySourceId[chain.byName("daily").id]!;
+         const text = chainBuildText(
+            {
+               downstream: { sourceID: id, name: source.name },
+               destination: { name: "lake", schema: "main" },
+               upstreams: [
+                  {
+                     entry: parentEntry(chain, "daily")[address],
+                     names: { daily: [chain.byName("daily").id] },
+                  },
+               ],
+            },
+            {
+               modelPath: "m.malloy",
+               modelDef: model._modelDef,
+               context: [chain.dir, {} as never, {}],
+            },
+         );
+         expect(
+            text && "declined" in text ? text.declined : undefined,
+         ).toBeUndefined();
+         expect(text && "rerooted" in text ? text.rerooted : []).toEqual([
+            "daily",
+         ]);
       });
    },
 );

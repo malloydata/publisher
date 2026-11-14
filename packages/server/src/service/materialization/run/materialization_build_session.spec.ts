@@ -27,6 +27,7 @@ import {
    passthroughSourceType,
    wrapPassthrough,
    writePartitionedTable,
+   oneFileModel,
 } from "./materialization_build_session";
 import {
    buildChainedStorageBuildModel,
@@ -652,12 +653,14 @@ describe.skipIf(process.platform === "win32")(
                   name: "lake",
                   type: "duckdb",
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "monthly_orders",
-                  downstreamDefText,
-                  destinationName: "lake",
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText,
+                     destinationName: "lake",
+                  }),
+               ),
                downstreamName: "monthly_orders",
                virtualMap: buildVirtualMap([parent]),
                physicalTableName: "monthly_orders__mdef456",
@@ -692,13 +695,15 @@ describe.skipIf(process.platform === "win32")(
                   // The downstream reads `weekly_orders`, which is NOT rebound here —
                   // the transient model can't compile, mirroring the mixed-engine /
                   // uncarried-parent case that must fall back to recompute-from-raw.
-                  transientModel: buildChainedStorageBuildModel({
-                     upstreams: [parent],
-                     downstreamName: "monthly_orders",
-                     downstreamDefText:
-                        "monthly_orders is weekly_orders -> { group_by: x is 1 }",
-                     destinationName: "lake",
-                  }),
+                  model: oneFileModel(
+                     buildChainedStorageBuildModel({
+                        upstreams: [parent],
+                        downstreamName: "monthly_orders",
+                        downstreamDefText:
+                           "monthly_orders is weekly_orders -> { group_by: x is 1 }",
+                        destinationName: "lake",
+                     }),
+                  ),
                   downstreamName: "monthly_orders",
                   virtualMap: buildVirtualMap([parent]),
                   physicalTableName: "monthly_orders__mdef456",
@@ -721,12 +726,14 @@ describe.skipIf(process.platform === "win32")(
                   name: "lake",
                   type: "duckdb",
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "monthly_orders",
-                  downstreamDefText,
-                  destinationName: "lake",
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText,
+                     destinationName: "lake",
+                  }),
+               ),
                downstreamName: "monthly_orders",
                // No table for the rebound parent, so its SQL cannot be written.
                virtualMap: new Map(),
@@ -752,16 +759,18 @@ describe.skipIf(process.platform === "win32")(
                   name: "lake",
                   type: "duckdb",
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "monthly_orders",
-                  downstreamDefText:
-                     "monthly_orders is daily_orders extend {\n" +
-                     '  dimension: doubled is sql_number("${total} * 2")\n' +
-                     "} -> { group_by: doubled }",
-                  destinationName: "lake",
-                  documentFlags: ["##! experimental.sql_functions"],
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText:
+                        "monthly_orders is daily_orders extend {\n" +
+                        '  dimension: doubled is sql_number("${total} * 2")\n' +
+                        "} -> { group_by: doubled }",
+                     destinationName: "lake",
+                     documentFlags: ["##! experimental.sql_functions"],
+                  }),
+               ),
                downstreamName: "monthly_orders",
                virtualMap: buildVirtualMap([parent]),
                physicalTableName: "monthly_orders__mdef456",
@@ -790,12 +799,14 @@ describe.skipIf(process.platform === "win32")(
                      type: "duckdb",
                      ducklakeConnection: { destinationSchema: "materialzed" },
                   } as ApiConnection,
-                  transientModel: buildChainedStorageBuildModel({
-                     upstreams: [parent],
-                     downstreamName: "monthly_orders",
-                     downstreamDefText,
-                     destinationName: "lake",
-                  }),
+                  model: oneFileModel(
+                     buildChainedStorageBuildModel({
+                        upstreams: [parent],
+                        downstreamName: "monthly_orders",
+                        downstreamDefText,
+                        destinationName: "lake",
+                     }),
+                  ),
                   downstreamName: "monthly_orders",
                   virtualMap: buildVirtualMap([parent]),
                   physicalTableName: "monthly_orders__mdef456",
@@ -813,12 +824,14 @@ describe.skipIf(process.platform === "win32")(
                   type: "duckdb",
                   ducklakeConnection: { destinationSchema: "materialized" },
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "monthly_orders",
-                  downstreamDefText,
-                  destinationName: "lake",
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText,
+                     destinationName: "lake",
+                  }),
+               ),
                downstreamName: "monthly_orders",
                virtualMap: buildVirtualMap([parent]),
                physicalTableName: "monthly_orders__mdef456",
@@ -843,15 +856,17 @@ describe.skipIf(process.platform === "win32")(
                   name: "lake",
                   type: "duckdb",
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "next_days",
-                  downstreamDefText:
-                     "next_days is daily_orders -> {\n" +
-                     "  group_by: next_day is order_date + 1 day\n" +
-                     "  aggregate: t is total.sum()\n}",
-                  destinationName: "lake",
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "next_days",
+                     downstreamDefText:
+                        "next_days is daily_orders -> {\n" +
+                        "  group_by: next_day is order_date + 1 day\n" +
+                        "  aggregate: t is total.sum()\n}",
+                     destinationName: "lake",
+                  }),
+               ),
                downstreamName: "next_days",
                virtualMap: buildVirtualMap([parent]),
                physicalTableName: "next_days__m1",
@@ -878,12 +893,14 @@ describe.skipIf(process.platform === "win32")(
                   name: "lake",
                   type: "duckdb",
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "monthly_orders",
-                  downstreamDefText,
-                  destinationName: "lake",
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText,
+                     destinationName: "lake",
+                  }),
+               ),
                downstreamName: "monthly_orders",
                virtualMap: buildVirtualMap([parent]),
                physicalTableName: "monthly_orders__mdef456",
@@ -939,12 +956,14 @@ describe.skipIf(process.platform === "win32")(
                   name: "lake",
                   type: "duckdb",
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [exotic],
-                  downstreamName: name,
-                  downstreamDefText: defText,
-                  destinationName: "lake",
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [exotic],
+                     downstreamName: name,
+                     downstreamDefText: defText,
+                     destinationName: "lake",
+                  }),
+               ),
                downstreamName: name,
                virtualMap: buildVirtualMap([exotic]),
                physicalTableName: `${name}__m1`,

@@ -221,11 +221,17 @@ import {
 import type { MaterializePlan } from "./materialization/plan/build_file_generator";
 import { RollupVariantServe } from "./materialization/serve/rollup_variants";
 import {
+   chainBuildText,
    resultShapeOf,
    ServedCopyServe,
    type ServedCopyProblem,
 } from "./materialization/serve/served_copy_serve";
 import { type ApiQueryPath } from "./materialization/serve/query_path";
+import type {
+   ChainBuildRequest,
+   ChainBuildText,
+} from "./materialization/domain/chain_build";
+
 import { PersistedViewServe } from "./materialization/serve/view_variants";
 import { sourceChain } from "./materialization/text/source_map";
 import type { ViewServeVerdict } from "./materialization/serve/serve_verdict";
@@ -2924,6 +2930,31 @@ export class Model {
     * virtual source declares its columns. Empty when no destination is
     * configured, since then nothing serves from storage either way.
     */
+   /**
+    * The text a chained `storage=` build of a downstream this model declares
+    * compiles from, with each stored upstream the request carries re-rooted
+    * as this model's served copy re-roots it (serve/chain_build_text.ts).
+    * Undefined when this model has no served copy or does not declare the
+    * downstream.
+    */
+   public chainBuildText(
+      request: ChainBuildRequest,
+   ): ChainBuildText | undefined {
+      if (
+         this.modelType !== "model" ||
+         this.isNotebook() ||
+         !this.modelDef ||
+         !this.servedCopyContext
+      ) {
+         return undefined;
+      }
+      return chainBuildText(request, {
+         modelPath: this.modelPath,
+         modelDef: this.modelDef,
+         context: this.servedCopyContext,
+      });
+   }
+
    /**
     * The v1 cutover's preview (dry run): the sources this model's served copy
     * would re-root over `bindings` (declared from the plan's output columns,

@@ -7,7 +7,9 @@ import {
    InMemoryURLReader,
    Runtime,
    type PersistSource,
+   MalloyError,
 } from "@malloydata/malloy";
+import { leaveOutDefinitionAt } from "../text/declarations_kept";
 import {
    existsSync,
    mkdirSync,
@@ -1089,40 +1091,122 @@ async function buildSameCatalogIntoStorage(params: {
 }
 
 /**
- * Compile a chained `storage=` build's transient model over `connections`
- * (the destination alone) and plan its downstream under `virtualMap`: the
- * SQL to CTAS, projected to its public columns, and the downstream it built.
+ * Compile a chained `storage=` build's model over `connections` (the
+ * destination alone) and plan its downstream under `virtualMap`: the SQL to
+ * CTAS, projected to its public columns, and the downstream it built. The
+ * model is `files` by URL, loaded from `entry`: a one-file model of the build's
+ * own, or the author's files with the upstreams re-rooted (the host port's
+ * `chainBuildText`).
  * The only SHAPE step of a chained build: every failure is a
  * {@link MaterializationEligibilityError}, so the caller may fall back.
  */
+/** A chained build's model: its files by URL, and the one it loads. */
+export interface ChainedBuildModel {
+   files: ReadonlyMap<string, string>;
+   entry: string;
+   /**
+    * Ranges of `files` whose definitions may be left out when they do not
+    * compile on the destination (see ChainBuildText.rerootedSpans). None: a
+    * failure is the build's.
+    */
+   leaveOutWithin?: readonly { url: string; start: number; end: number }[];
+}
+
+/** How many definitions a chained build's compile may leave out, at most. */
+const MAX_LEFT_OUT = 32;
+
+/**
+ * Leave out of `files` each definition a compile error points at, when every
+ * error points inside a range `build` allows; false (nothing changed) when
+ * one does not.
+ */
+function leaveOutFailing(
+   files: Map<string, string>,
+   err: unknown,
+   build: ChainedBuildModel,
+): boolean {
+   if (!(err instanceof MalloyError) || !build.leaveOutWithin?.length) {
+      return false;
+   }
+   const problems = (
+      err.problems as {
+         severity?: string;
+         at?: {
+            url?: string;
+            range?: { start: { line: number; character: number } };
+         };
+      }[]
+   ).filter((p) => (p.severity ?? "error") === "error");
+   const next = new Map(files);
+   for (const p of problems) {
+      const url = p.at?.url;
+      const start = p.at?.range?.start;
+      const text = url === undefined ? undefined : next.get(url);
+      if (url === undefined || !start || text === undefined) return false;
+      const within = build.leaveOutWithin.filter((w) => w.url === url);
+      const left = leaveOutDefinitionAt(text, start, within);
+      // A second error in a definition already left out needs nothing more.
+      if (left === undefined) {
+         const before = files.get(url);
+         if (before === text || before === undefined) return false;
+         continue;
+      }
+      next.set(url, left);
+   }
+   for (const [url, text] of next) files.set(url, text);
+   return true;
+}
+
+/** A one-file model of the build's own, as a {@link ChainedBuildModel}. */
+export function oneFileModel(text: string): ChainedBuildModel {
+   const entry = "file:///chained-build/m.malloy";
+   return { files: new Map([[entry, text]]), entry };
+}
+
 export async function planChainedDownstream(params: {
-   transientModel: string;
+   model: ChainedBuildModel;
    downstreamName: string;
-   virtualMap: Map<string, Map<string, string>>;
+   virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
    connections: FixedConnectionMap;
 }): Promise<{ sql: string; downstream: PersistSource }> {
-   const { transientModel, downstreamName, virtualMap } = params;
+   const { model: build, downstreamName } = params;
+   const virtualMap = new Map(
+      [...params.virtualMap].map(([k, v]) => [k, new Map(v)] as const),
+   );
    // The upstream virtual sources declare their captured schema, so compiling
    // reads no tables; the CTAS below runs the real SQL.
-   const root = "file:///chained-build/";
-   const url = `${root}m.malloy`;
-   const runtime = new Runtime({
-      urlReader: new InMemoryURLReader(new Map([[url, transientModel]])),
-      connections: params.connections,
-   });
+   const files = new Map(build.files);
+   let runtime!: Runtime;
    // The only SHAPE step here: a compile failure means the downstream cannot
    // be expressed over its rebound parents, so the caller may fall back to
    // recomputing. Infrastructure failures (attach, CTAS, DESCRIBE) would fail
    // the same way on fallback, so only shape failures are marked eligible.
+   // A definition of a re-rooted upstream that does not compile here (a join
+   // to a source the build cannot read, and what reads it) is left out, as
+   // the served copy leaves out a join across connections; one the downstream
+   // reads then fails in the downstream's own text, which is never left out.
    let model;
-   try {
-      model = await runtime
-         .loadModel(new URL(url), { importBaseURL: new URL(root) })
-         .getModel();
-   } catch (err) {
-      throw new MaterializationEligibilityError({
-         message: `Chained build model did not compile over the rebound parents: ${errMessage(err)}`,
+   for (let pass = 0; ; pass++) {
+      runtime = new Runtime({
+         urlReader: new InMemoryURLReader(files),
+         connections: params.connections,
       });
+      try {
+         model = await runtime
+            .loadModel(new URL(build.entry), {
+               importBaseURL: new URL(".", build.entry),
+            })
+            .getModel();
+         break;
+      } catch (err) {
+         const left =
+            pass < MAX_LEFT_OUT ? leaveOutFailing(files, err, build) : false;
+         if (!left) {
+            throw new MaterializationEligibilityError({
+               message: `Chained build model did not compile over the rebound parents: ${errMessage(err)}`,
+            });
+         }
+      }
    }
    // Planning renders every source's SQL, and the rebound virtual parents
    // render only through the `virtualMap`.
@@ -1178,9 +1262,9 @@ export async function planChainedDownstream(params: {
  * tables in the destination, instead of recomputing them from the warehouse.
  * The downstream is then a pure function of the parents' STORED rows.
  *
- * `transientModel` (see {@link buildChainedStorageBuildModel}) rebinds every
- * upstream to a virtual source on this destination and re-declares the
- * downstream as a persist source over them. It is compiled against the build
+ * `model` reads every upstream as a virtual source on this destination (the
+ * author's files with the upstreams re-rooted, or an extension's chain over
+ * its parent's table) and declares the downstream as a persist source. It is compiled against the build
  * session, and the downstream's `buildSQL` (planned under the `virtualMap`) is
  * CTAS'd into the destination; nothing is federated and nothing leaves DuckDB.
  * Session lifecycle mirrors {@link buildSourceIntoStorage}.
@@ -1190,12 +1274,14 @@ export async function planChainedDownstream(params: {
 export async function buildDownstreamIntoStorage(params: {
    destinationName: string;
    destinationConnection: ApiConnection;
-   /** Transient rebind model: upstream virtuals + persist-annotated downstream. */
-   transientModel: string;
+   /** The model the downstream compiles from (see planChainedDownstream). */
+   model: ChainedBuildModel;
+   /** The connection the model reads the destination by; the destination's name when absent. */
+   connectionName?: string;
    /** The downstream source's Malloy name, to locate it in the transient plan. */
    downstreamName: string;
-   /** destinationName → handle → quoted physical path for the upstream virtuals. */
-   virtualMap: Map<string, Map<string, string>>;
+   /** connection → handle → quoted physical path for the upstream virtuals. */
+   virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
    /** Logical, unquoted physical table path for the downstream's own table. */
    physicalTableName: string;
    /**
@@ -1211,7 +1297,7 @@ export async function buildDownstreamIntoStorage(params: {
    const {
       destinationName,
       destinationConnection,
-      transientModel,
+      model,
       downstreamName,
       virtualMap,
       physicalTableName,
@@ -1246,13 +1332,14 @@ export async function buildDownstreamIntoStorage(params: {
       // delta path); pinned so lifting that exclusion stays correct.
       await pinSessionToUTC(session);
 
+      const connectionName = params.connectionName ?? destinationName;
       const { sql, downstream } = await planChainedDownstream({
-         transientModel,
+         model,
          downstreamName,
          virtualMap,
          connections: new FixedConnectionMap(
-            new Map([[destinationName, session]]),
-            destinationName,
+            new Map([[connectionName, session]]),
+            connectionName,
          ),
       });
 

@@ -927,28 +927,6 @@ export function missingPersistedTables(
 }
 
 /**
- * What a bound source adds to its table's relation (joins, dimensions,
- * measures, filters, views), which the build SQL leaves out and the virtual
- * binding must re-declare. Shared by the serve shape and the chained build so a
- * table is read the same way in both; a binding missing its `where:` silently
- * reads unfiltered rows. Joins to sources outside `materializedSourceNames` are
- * left off.
- */
-export function authorRefinementsFor(
-   sourceName: string,
-   ctx: Pick<DerivedLiftContext, "contents" | "sourceNameById" | "liftText">,
-   materializedSourceNames: ReadonlySet<string>,
-): SourceRefinement[] {
-   const def = ctx.contents[sourceName];
-   return sourceRefinements(
-      def?.fields,
-      def?.filterList,
-      ctx,
-      materializedSourceNames,
-   );
-}
-
-/**
  * Joins (to sources in `materializedSourceNames` only), dimensions and
  * measures, `where:` filters, then views: the refinements a shape re-declares,
  * in the order {@link refinementLines} emits them.

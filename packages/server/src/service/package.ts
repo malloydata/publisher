@@ -99,6 +99,10 @@ import {
    FreshnessManifest,
    ManifestEntry,
 } from "./materialization/domain/types";
+import type {
+   ChainBuildRequest,
+   ChainBuildText,
+} from "./materialization/domain/chain_build";
 import { errMessage, ignoreDotfiles } from "../utils";
 import { packageResource } from "../api_resource";
 import { isPackageInlineFieldsEnabled } from "../config";
@@ -1496,6 +1500,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
 
    public getPackageName(): string {
       return this.packageName;
+   }
+
+   /** The host port's `chainBuildText` (see PackageMaterialization.chainBuildText). */
+   public chainBuildText(request: ChainBuildRequest): ChainBuildText {
+      return this.materialization.chainBuildText(request);
    }
 
    /** The persist build plan, or null when the package declares no persist source. */
