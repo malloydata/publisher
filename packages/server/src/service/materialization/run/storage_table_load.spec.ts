@@ -2,16 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "fs";
 import fs from "fs";
 import os from "os";
-import path from "path";
+import path, { join } from "path";
+import { tmpdir } from "os";
 import type { components } from "../../../api";
-import { BadRequestError } from "../../../errors";
+import { BadRequestError, ConflictError } from "../../../errors";
 import {
    loadStorageTable,
    readerRefusal,
    readerSql,
+   writeTableAs,
 } from "./storage_table_load";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -218,5 +221,117 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
          expect(refusal?.message).not.toContain(dir);
          expect(refusal?.message).not.toContain("CREATE TABLE");
       });
+   });
+});
+
+/**
+ * The write every load and copy ends in, on a file-catalog DuckLake attached
+ * under the destination's name: the one part of either that runs without a
+ * Postgres catalog.
+ */
+describe("writeTableAs: the load's and the copy's write", () => {
+   let lake: { conn: DuckDBConnection; dir: string } | undefined;
+   afterEach(async () => {
+      if (!lake) return;
+      await lake.conn.runSQL("DETACH lake");
+      await lake.conn.close();
+      rmSync(lake.dir, { recursive: true, force: true });
+      lake = undefined;
+   });
+
+   async function attached(): Promise<DuckDBConnection> {
+      const dir = mkdtempSync(join(tmpdir(), "write-table-as-"));
+      const conn = new DuckDBConnection("write_as", join(dir, "host.duckdb"));
+      lake = { conn, dir };
+      await conn.runSQL("INSTALL ducklake");
+      await conn.runSQL("LOAD ducklake");
+      await conn.runSQL(
+         `ATTACH 'ducklake:${join(dir, "catalog.ducklake")}' AS lake ` +
+            `(DATA_PATH '${join(dir, "data")}/')`,
+      );
+      await conn.runSQL("CREATE SCHEMA lake.s");
+      return conn;
+   }
+
+   const params = (mode: "create" | "replace") => ({
+      destinationName: "lake",
+      schemaName: "s",
+      tableName: "t",
+      mode,
+   });
+   const ROWS = "(SELECT * FROM (VALUES (1, 'a'), (2, 'b')) AS v(id, label))";
+
+   it("creates the table as Parquet, never inlined rows, and reports its count and columns", async () => {
+      const conn = await attached();
+      expect(await writeTableAs(conn, params("create"), ROWS)).toEqual({
+         rowCount: 2,
+         columns: [
+            { name: "id", type: "INTEGER" },
+            { name: "label", type: "VARCHAR" },
+         ],
+      });
+      const files = await conn.runSQL(
+         "SELECT data_file FROM ducklake_list_files('lake', 't', schema => 's')",
+      );
+      expect(files.rows.length).toBeGreaterThan(0);
+   });
+
+   it("refuses to create over a table that exists, as a 409, and replaces it when asked", async () => {
+      const conn = await attached();
+      await writeTableAs(conn, params("create"), ROWS);
+      const conflict = await writeTableAs(conn, params("create"), ROWS).then(
+         () => undefined,
+         (e: unknown) => e,
+      );
+      expect(conflict).toBeInstanceOf(ConflictError);
+      expect((conflict as Error).message).toBe(
+         "Table 's.t' already exists in 'lake'.",
+      );
+      const replaced = await writeTableAs(
+         conn,
+         params("replace"),
+         "(SELECT 9 AS id)",
+      );
+      expect(replaced).toEqual({
+         rowCount: 1,
+         columns: [{ name: "id", type: "INTEGER" }],
+      });
+   });
+
+   it("throws what `refused` returns for a failed write, and the failure itself otherwise", async () => {
+      const conn = await attached();
+      const bad = "(SELECT CAST('x' AS INTEGER) AS id)";
+      const mapped = new BadRequestError("mapped");
+      await expect(
+         writeTableAs(conn, params("create"), bad, () => mapped),
+      ).rejects.toBe(mapped);
+      await expect(
+         writeTableAs(conn, params("create"), bad, () => null),
+      ).rejects.toThrow(/Conversion Error/);
+      await expect(writeTableAs(conn, params("create"), bad)).rejects.toThrow(
+         /Conversion Error/,
+      );
+   });
+
+   it("writes a partitioned table with its partition spec", async () => {
+      const conn = await attached();
+      const result = await writeTableAs(
+         conn,
+         params("create"),
+         ROWS,
+         undefined,
+         [{ column: "label", transform: "identity" }],
+      );
+      expect(result.rowCount).toBe(2);
+      const files = await conn.runSQL(
+         "SELECT data_file FROM ducklake_list_files('lake', 't', schema => 's')",
+      );
+      const dirs = (files.rows as { data_file: string }[])
+         .map(
+            (r) =>
+               /\/(label=[^/]+)\//.exec(r.data_file.replaceAll("\\", "/"))?.[1],
+         )
+         .sort();
+      expect(dirs).toEqual(["label=a", "label=b"]);
    });
 });
