@@ -146,7 +146,8 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
          | "missing"
          | "infra"
          | "wrongTier"
-         | "wrongTierAndMissing";
+         | "wrongTierAndMissing"
+         | "withUndeclarable";
       /** The host instructed the run (orchestrated). */
       hostInstructed?: boolean;
       /** The host's `warehouseReach` (ms2data/service#6756). */
@@ -201,6 +202,16 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
             schema: [
                { name: "order_month", type: "DATE" },
                { name: "monthly_total", type: "DOUBLE" },
+            ],
+            upstreamReuse: "reused",
+         }),
+         // Builds a table with two columns no Malloy type declares.
+         withUndeclarable: sinon.stub().resolves({
+            storageDestinationName: "lake",
+            schema: [
+               { name: "order_month", type: "DATE" },
+               { name: "tags", type: "MAP(VARCHAR, INTEGER)" },
+               { name: "span", type: "INTERVAL" },
             ],
             upstreamReuse: "reused",
          }),
@@ -518,6 +529,21 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
          ] as const) {
             expect(await harness.collectCounter(COUNTER, { outcome })).toBe(n);
          }
+      });
+
+      it("counts each column the table holds that no type declares, once per build", async () => {
+         const result = await callInto({
+            strict: false,
+            stackOnParent: "withUndeclarable",
+         });
+         // Built, not refused: the served copy leaves the columns out at bind.
+         expect(result.storageDestinationName).toBe("lake");
+         expect(
+            await harness.collectCounter(
+               "publisher_storage_serve_shape_type_fallback_total",
+               { kind: "unrecognized" },
+            ),
+         ).toBe(2);
       });
    });
 });
