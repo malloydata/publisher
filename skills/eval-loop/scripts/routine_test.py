@@ -236,6 +236,20 @@ class Kinds(unittest.TestCase):
             code, _, _, _ = self.go("quality")
         self.assertEqual(code, routine.DONE)
 
+    def test_with_no_truth_package_the_keys_go_unchecked_and_the_routine_says_so(self):
+        (self.set / "eval.toml").write_text(
+            (self.set / "eval.toml").read_text().replace("[truth]\n", ""))
+        self.answer_run(self.run_dir)
+        code, ran, result, _ = self.go("quality", {"verify": 3})
+        self.assertEqual(code, routine.DONE)
+        self.assertIn("run", ran)
+        self.assertIs(result["keysVerified"], False)
+        self.assertIn("the answer keys were not re-derived", result["reason"])
+
+    def test_a_truth_server_that_could_not_check_still_stops_the_routine(self):
+        code, ran, _, _ = self.go("quality", {"verify": 3})
+        self.assertEqual((code, ran[-1]), (routine.STEP_FAILED, "verify"))
+
     def test_the_kind_is_required(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             routine.main(["--set", str(self.set)])

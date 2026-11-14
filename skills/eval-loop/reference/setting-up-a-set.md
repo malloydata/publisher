@@ -145,6 +145,11 @@ package_dir = "<path to the truth package>"
 publisher   = "http://localhost:4950"      # a second local server, for the truth package alone
 ```
 
+Where no second server can run, leave `[truth]` out. A quality routine then
+scores against the keys as stored and says in its result that they were not
+re-derived (`keysVerified: false`), so a key that drifted with the data goes
+uncaught until a run that has a truth server.
+
 Start both servers before a run. `check` notes a role named by address and does
 not ask who holds its ports, and there is no `eval.py serve` for that role. The
 truth package's sources read the same warehouse tables through the same proxy,

@@ -106,6 +106,17 @@ class Export(unittest.TestCase):
         for leak in ("q1", "run: x", "quoted", "How many"):
             self.assertNotIn(leak, text, leak)
 
+    def test_the_summary_of_every_run_leaves_out_experiment_runs(self):
+        cand = self.run.parent / "Base-01-c1-1"
+        shutil.copytree(self.run, cand)
+        meta = json.loads((cand / "run.json").read_text())
+        meta.update(runId="Base-01-c1-1", package="p.c1")
+        (cand / "run.json").write_text(json.dumps(meta))
+        first = json.loads((self.run / "run.json").read_text())
+        (self.run / "run.json").write_text(json.dumps({**first, "package": "p"}))
+        m = ex.export_summary_all(self.run.parent, self.set, self.root / "all", "p")
+        self.assertEqual((m["runs"], m["experimentsLeftOut"]), (["Base-01"], ["Base-01-c1-1"]))
+
     def test_all_without_summary_is_refused(self):
         with self.assertRaises(SystemExit) as e:
             ex.main(["--all", "--set", str(self.set)])

@@ -241,6 +241,12 @@ class Routine:
                              "--max-turns", self.a.max_turns, "--parallel", self.a.parallel,
                              *cap)):
             code = self.do(name, *args)
+            if name == "verify" and code == 3 and not self.cfg.has_truth:
+                # No truth package to re-derive the keys from, as on a machine
+                # that cannot serve one beside the model. The run still scores
+                # against the keys as stored; it says they were not re-checked.
+                self.result["keysVerified"] = False
+                continue
             if code != 0 and name == "run" and read_json(
                     self.run_dir / "run.json").get("abortReason") == "max_cost":
                 self.result["number"] = quality_number(self.run_dir, self.cfg.set_dir)
@@ -273,6 +279,9 @@ class Routine:
         self.share()
         n = self.result["number"]
         said = f"{n['passed']} of {n['decided']} decided cases passed"
+        if self.result.get("keysVerified") is False:
+            said += (" (the answer keys were not re-derived: eval.toml has no [truth], "
+                     "so a key that drifted with the data would not be caught)")
         if "test" in n["bySplit"]:
             t = n["bySplit"]["test"]
             said += f" ({t['passed']} of {t['decided']} on the test split, the number to quote)"

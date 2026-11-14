@@ -142,7 +142,8 @@ eval.py export --summary --all --set <set>     # <workdir>/export-summary/eval_s
 ```
 
 It holds one row per run in the workdir, oldest first, under the table name
-`eval_summary`. A model or report over that one table shows the number over
+`eval_summary`. Runs of an experiment are left out and named: each measured a
+candidate edit, often on a few cases, not the package. A model or report over that one table shows the number over
 time, and it may live in the same environment as the package it measures.
 
 ## Reading a run back from the tables

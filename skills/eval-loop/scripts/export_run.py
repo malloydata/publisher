@@ -286,24 +286,31 @@ def export_summary(run: pathlib.Path, set_dir: pathlib.Path, out: pathlib.Path) 
 
 
 def export_summary_all(runs_dir: pathlib.Path, set_dir: pathlib.Path,
-                       out: pathlib.Path) -> dict[str, Any]:
+                       out: pathlib.Path, package: str | None = None) -> dict[str, Any]:
     """One eval_summary.csv with a row per run under `runs_dir`, oldest first.
 
     A database table cannot have rows added to it, so the history of the
     number is this one file, written whole each time and loaded over the last.
+    A run of an experiment (served as `<package>.<name>`) measured a candidate
+    edit, often on a few cases, so it is left out of the package's history.
     """
     case_list = read_jsonl(set_dir / "cases.jsonl")
     cases = {c.get("qid"): c for c in case_list}
     index = {r["run"]: r for r in index_runs(runs_dir.parent, len(case_list))}
-    rows = []
+    from run_index import experiment_of
+    rows, experiments = [], []
     for run in sorted(p for p in runs_dir.iterdir() if (p / "run.json").is_file()):
         meta = json.loads((run / "run.json").read_text())
+        if experiment_of(meta.get("package"), package):
+            experiments.append(run.name)
+            continue
         rows += rows_summary(run, meta, index.get(run.name, {}), cases)
     rows.sort(key=lambda r: (r.get("started") or "", r.get("run_id") or ""))
     out.mkdir(parents=True, exist_ok=True)
     f = out / "eval_summary.csv"
     write_csv(f, rows, SUMMARY_COLUMNS)
     manifest = {"setName": set_dir.name, "summaryOnly": True, "runs": [r["run_id"] for r in rows],
+                "experimentsLeftOut": experiments,
                 "tables": {"eval_summary": {"file": f.name, "rows": len(rows),
                                             "bytes": f.stat().st_size, "name": "eval_summary"}}}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
@@ -401,9 +408,13 @@ def main(argv: list[str] | None = None) -> int:
         import config
         workdir = config.load(a.set_dir).workdir()
         out = a.out or workdir / "export-summary"
-        m = export_summary_all(workdir / "runs", a.set_dir, out)
+        cfg = config.load(a.set_dir)
+        m = export_summary_all(workdir / "runs", a.set_dir, out, cfg.get("model", "package"))
         info = m["tables"]["eval_summary"]
         print(f"{info['rows']:>6} rows  {info['bytes']:>9} bytes  {out / info['file']}  -> {info['name']}")
+        if m["experimentsLeftOut"]:
+            print(f"left out {len(m['experimentsLeftOut'])} experiment run(s): "
+                  f"{', '.join(m['experimentsLeftOut'])}")
         print("This file holds each run's numbers and no case, key, answer or query.")
         return 0
     if a.run is None:
