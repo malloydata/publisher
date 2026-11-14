@@ -1534,7 +1534,7 @@ export class RollupVariantServe {
             ? generateRollupBuildFile([plan], path.basename(declaringFile))
             : undefined;
       if (!companion || !text) return { error: "no companion" };
-      overlay.set(overlayKey(companion.href), text);
+      overlay.set(companion.href, text);
       // The shared, checked blanking (persist_blanking.ts), read through
       // the package's own reader, as the build companion reads them.
       const blanked = await authorFiles.blanked(this.host.modelDef());
@@ -1552,7 +1552,7 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
          { alias: new Map([[localName, parentAlias(plan)]]) },
          declaration,
       );
-      overlay.set(overlayKey(queryModelURL.href), modelText);
+      overlay.set(queryModelURL.href, modelText);
       const { materializer } = await packageFiles(
          packagePath,
          modelPath,
@@ -1599,7 +1599,7 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
       );
       const overlay = new Map(basis.files);
       overlay.set(
-         overlayKey(ctx.queryModelURL.href),
+         ctx.queryModelURL.href,
          `${flagLine(modelDef)}
 ${imports}
 

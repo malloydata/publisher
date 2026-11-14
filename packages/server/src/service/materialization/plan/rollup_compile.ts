@@ -28,7 +28,6 @@ import { getMaterializeEnabled } from "../../../config";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import { queryGivenUsageIds } from "../../governance/ir/prepared_query";
-import { overlayKey } from "../../overlay_key";
 import {
    companionOmissions,
    GeneratedFiles,
@@ -177,7 +176,7 @@ export async function tryCompileRollupCompanion(args: {
             }),
          };
       }
-      overlay.set(overlayKey(url.href), text);
+      overlay.set(url.href, text);
       const { runtime, materializer, model } = await files.compile(
          url,
          overlay,

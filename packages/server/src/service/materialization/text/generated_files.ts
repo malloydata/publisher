@@ -33,8 +33,10 @@
  * With `package_files.ts`, the module's only caller of `createModelRuntime`
  * and of `new Runtime`. Kept apart from it so the load worker, which
  * compiles through its own factory, never loads the server's model runtime.
- * Overlay keys are passed through as the caller wrote them, so a recorded
- * overlay is byte for byte what the caller generated.
+ * It is the one writer of an overlay's keys: a caller names each file by its
+ * URL however it holds it, and every overlay is keyed here as the compiler
+ * asks for the file (`overlay_key.ts`), so no two spellings of one file can
+ * both be served.
  */
 
 import {
@@ -50,6 +52,7 @@ import {
    type Omission,
    type OmittedSourceReason,
 } from "../domain/omitted_sources";
+import { keyedOverlay } from "../../overlay_key";
 import { persistBlankedFiles } from "./persist_blanking";
 
 /**
@@ -115,8 +118,9 @@ export class GeneratedFiles {
    async loadModel(
       overlay: ReadonlyMap<string, string> = new Map(),
    ): Promise<LoadedFiles> {
-      const { runtime, importBaseURL, modelURL } =
-         await this.runtimeFor(overlay);
+      const { runtime, importBaseURL, modelURL } = await this.runtimeFor(
+         keyedOverlay(overlay),
+      );
       if (!modelURL) throw new Error("no package model to load");
       const materializer = runtime.loadModel(modelURL, { importBaseURL });
       return { runtime, importBaseURL, materializer };
@@ -176,7 +180,9 @@ export class GeneratedFiles {
       entry: URL,
       overlay: ReadonlyMap<string, string> = new Map(),
    ): Promise<LoadedFiles> {
-      const { runtime, importBaseURL } = await this.runtimeFor(overlay);
+      const { runtime, importBaseURL } = await this.runtimeFor(
+         keyedOverlay(overlay),
+      );
       const materializer = runtime.loadModel(entry, { importBaseURL });
       return { runtime, importBaseURL, materializer };
    }

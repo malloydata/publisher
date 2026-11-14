@@ -46,7 +46,7 @@ import {
    gateFilterText,
    liftProbeFilterCondition,
 } from "../../authorize";
-import { keyedOverlay, overlayKey } from "../../overlay_key";
+import { keyedOverlay } from "../../overlay_key";
 import type { ModelConnectionInput } from "../../model_runtime";
 import { packageFiles } from "../text/package_files";
 import { reachPersisted, SourceMap } from "../text/source_map";
@@ -2095,10 +2095,7 @@ export class ServedCopyServe {
             ...b,
             destinationName: servedConnectionOf(b),
          }));
-         const overlay = new Map<string, string>();
-         for (const [url, text] of copy.files) {
-            overlay.set(overlayKey(url), text);
-         }
+         const overlay = new Map(copy.files);
          const packagePath = this.packagePath;
          const config = servedCopyConfig(
             this.packageConfig,

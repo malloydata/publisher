@@ -44,7 +44,6 @@ import {
 import { collectEntryPointGates } from "../../gate_classification";
 import { readPreparedQuery } from "../../governance/ir/prepared_query";
 import { identifier } from "../../malloy_text";
-import { overlayKey } from "../../overlay_key";
 import { currentTimeFields, readsCurrentTime } from "./persist_dynamic_terms";
 import {
    generatePersistedViewFile,
@@ -285,7 +284,7 @@ export async function tryCompilePersistedViewCompanion(args: {
          return { refused };
       }
       const url = new URL(companionHref);
-      overlay.set(overlayKey(url), text);
+      overlay.set(url.href, text);
       const { runtime, materializer, model } = await files.compile(
          url,
          overlay,

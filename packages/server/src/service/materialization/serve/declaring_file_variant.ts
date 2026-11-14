@@ -126,7 +126,7 @@ export async function compileDeclaringFileVariant(args: {
       blanked.get(overlayKey(declaringURL)) ??
       (await authorFiles.readIfAny(declaringURL.href));
    if (declaringText === undefined) return { error: "unreadable source" };
-   overlay.set(overlayKey(copyURL), declaringText);
+   overlay.set(copyURL.href, declaringText);
    // The copy's own names, to import into the declaring file's overlay.
    const copyNames = await namesDeclaredIn(authorFiles, overlay, copyURL);
    let gates: string;
@@ -142,7 +142,7 @@ export async function compileDeclaringFileVariant(args: {
       copyName,
       sourceName: source,
       gates,
-      addFile: (url, text) => overlay.set(overlayKey(url), text),
+      addFile: (url, text) => overlay.set(url.href, text),
    });
    if (typeof declaration !== "string") return declaration;
    const others = copyNames.names.filter((n) => n !== source);
@@ -159,7 +159,7 @@ export async function compileDeclaringFileVariant(args: {
          ? `export { ${[source, ...reexported].map((n) => identifier(n)).join(", ")} }\n`
          : "";
    overlay.set(
-      overlayKey(declaringURL),
+      declaringURL.href,
       `${args.flags}
 ${importOthers}
 ${declaration}
@@ -180,7 +180,7 @@ ${exportAll}`,
       },
    );
    overlay.set(
-      overlayKey(args.queryModelURL.href),
+      args.queryModelURL.href,
       `${args.flags}
 ${imports}
 `,
