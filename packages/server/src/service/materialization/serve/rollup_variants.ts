@@ -78,6 +78,11 @@
  * `materialize.enabled`.
  */
 
+import {
+   primaryKeyOf,
+   recordedTimezoneOf,
+   timezoneOf,
+} from "../../governance/ir/compiled_model";
 import type {
    MalloyConfig,
    ModelDef,
@@ -703,9 +708,8 @@ export class RollupVariantServe {
               }[];
            }
          | undefined;
-      const parentZone = (q.struct as { queryTimezone?: unknown } | undefined)
-         ?.queryTimezone;
-      if ((childDef?.queryTimezone ?? "") !== (parentZone ?? "")) {
+      const parentZone = recordedTimezoneOf(q.struct);
+      if ((recordedTimezoneOf(childDef) ?? "") !== (parentZone ?? "")) {
          throw new LegDecline(
             "rollup_time_zone",
             `\`${name}\` is read in the query source's time zone, and its rollup was built in its own`,
@@ -879,12 +883,10 @@ export class RollupVariantServe {
       }
       // The joined source's own key, when the join is keyed on another
       // column: live counts and sums its rows once per non-NULL key.
-      const joinedKey = (childDef as { primaryKey?: unknown } | undefined)
-         ?.primaryKey;
       const joinedProblem = joinedKeyProblem(
          leg,
          read,
-         typeof joinedKey === "string" ? joinedKey : undefined,
+         primaryKeyOf(childDef),
          plan.storage !== undefined
             ? this.tableOf(plan)?.binding?.primaryKeys?.[plan.baseSourceID]
             : this.parentKeyUniqueness(plan, { sourceID: plan.baseSourceID }),
@@ -1142,8 +1144,7 @@ export class RollupVariantServe {
       // a grafted gate or a caller's filter on it compared, in another zone:
       // live's answer would differ, and a truncation gate would admit groups
       // live refuses.
-      const zone = (query.struct as { queryTimezone?: unknown }).queryTimezone;
-      if (typeof zone === "string" && zone !== "") {
+      if (timezoneOf(query.struct) !== undefined) {
          throw new LegDecline(
             "rollup_time_zone",
             "the query's source sets its own time zone, which the rollup's stored times are not read in",
@@ -1345,9 +1346,7 @@ export class RollupVariantServe {
       for (const id of binding.sourceIDs ?? []) {
          const unique = binding.primaryKeys[id];
          if (unique === undefined) continue;
-         const declared = (map.node(id)?.def as { primaryKey?: unknown })
-            ?.primaryKey;
-         if (declared !== key) continue;
+         if (primaryKeyOf(map.node(id)?.def) !== key) continue;
          if (!unique) return false;
          found = true;
       }
@@ -1808,9 +1807,7 @@ function checkExtension(struct: object, baseDef: unknown): SourceDelta {
          { shapeCheck: true },
       );
    }
-   const zone = (d: unknown) =>
-      (d as { queryTimezone?: unknown } | undefined)?.queryTimezone;
-   if (zone(struct) !== zone(baseDef)) {
+   if (recordedTimezoneOf(struct) !== recordedTimezoneOf(baseDef)) {
       throw new LegDecline(
          "rollup_time_zone",
          "the query's source sets its own time zone, and the rollup was built in its base's",
@@ -2074,12 +2071,6 @@ function servedCopySkip(error: LegDecline, join: string): LegDecline {
             `the rollup of \`${join}\` is in a storage destination, and the query's source is not answered from it`,
          );
    }
-}
-
-/** A source's declared primary key, if it has one. */
-function primaryKeyOf(def: unknown): string | undefined {
-   const key = (def as { primaryKey?: unknown } | undefined)?.primaryKey;
-   return typeof key === "string" ? key : undefined;
 }
 
 /** The author's source, imported for a join leg under this name. */

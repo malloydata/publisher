@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { sourceDefOf } from "../../governance/ir/compiled_model";
 import { Annotations, type PersistSource } from "@malloydata/malloy";
 import { parseRouteTag } from "../../motly";
 import { collectGivenRefs } from "../../given";
@@ -98,7 +99,7 @@ function givenNames(node: unknown): string[] {
 export function buildSubstitutesAGiven(persistSource: PersistSource): boolean {
    let def: unknown;
    try {
-      def = persistSource._sourceDef as unknown;
+      def = sourceDefOf(persistSource) as unknown;
    } catch {
       return true;
    }
@@ -185,7 +186,7 @@ export function admitGivenPositions(
 ): DynamicTermClassification {
    let def: unknown;
    try {
-      def = persistSource._sourceDef as unknown;
+      def = sourceDefOf(persistSource) as unknown;
    } catch (err) {
       return unreadable(err, "which givens the build would bake in");
    }
@@ -480,7 +481,7 @@ export function readTimeDynamicTerms(
    persistSource: PersistSource,
 ): DynamicTerm[] {
    try {
-      const def = persistSource._sourceDef as unknown as {
+      const def = sourceDefOf(persistSource) as unknown as {
          filterList?: unknown;
          fields?: unknown;
       };

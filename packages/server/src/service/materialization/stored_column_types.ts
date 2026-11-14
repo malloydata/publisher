@@ -30,6 +30,8 @@
  *   reaches the CTAS that casts.
  */
 
+import { queryTimezoneOf } from "../governance/ir/compiled_model";
+import { exploreOf } from "../governance/ir/compiled_model";
 import { getDialect } from "@malloydata/malloy";
 import { identifier } from "../malloy_text";
 import { quoteIdentifier } from "../quoting";
@@ -189,7 +191,7 @@ export function persistSourceDeclaredColumns(persistSource: {
 }): DeclaredColumn[] {
    try {
       return declaredColumnsOf(
-         persistSource._explore.intrinsicFields.filter((f) =>
+         exploreOf(persistSource).intrinsicFields.filter((f) =>
             (f as { isAtomicField?: () => boolean }).isAtomicField?.(),
          ),
       );
@@ -269,32 +271,12 @@ function buildCastTarget(
    return BUILD_CAST_TARGETS[declaredType];
 }
 
-/**
- * The query time zone a compiled source declares, when it declares one:
- * Malloy records a query's `timezone:` on its pipeline stage, so a query-shaped
- * source carries it on `query.pipeline[i].queryTimezone` (the last stage that
- * sets one wins), or on the source itself.
- */
-export function queryTimezoneOf(structDef: unknown): string | undefined {
-   const def = structDef as
-      | {
-           queryTimezone?: unknown;
-           query?: { pipeline?: readonly { queryTimezone?: unknown }[] };
-        }
-      | undefined;
-   let tz: unknown = def?.queryTimezone;
-   for (const stage of def?.query?.pipeline ?? []) {
-      if (typeof stage?.queryTimezone === "string") tz = stage.queryTimezone;
-   }
-   return typeof tz === "string" && tz !== "" ? tz : undefined;
-}
-
 /** {@link queryTimezoneOf} for a persist source being built. */
 export function persistSourceQueryTimezone(persistSource: {
    _explore: unknown;
 }): string | undefined {
    try {
-      const explore = persistSource._explore as {
+      const explore = exploreOf(persistSource) as {
          _structDef?: unknown;
          structDef?: unknown;
       };

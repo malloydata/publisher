@@ -12,6 +12,7 @@
  * unchanged, so a package warns and binds exactly as before.
  */
 
+import { queryTimezoneOf } from "../../governance/ir/compiled_model";
 import { type MalloyConfig, type ModelDef } from "@malloydata/malloy";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
@@ -29,7 +30,6 @@ import {
 } from "../text/author_model";
 import {
    declaredColumnsOf,
-   queryTimezoneOf,
    type ReadCast,
    serveTypePlan,
    STORED_COLUMN_TYPE_MISMATCH_CODE,

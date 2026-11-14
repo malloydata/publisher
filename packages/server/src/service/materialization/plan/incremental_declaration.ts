@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { sourceDefOf } from "../../governance/ir/compiled_model";
 import type { PersistSource } from "@malloydata/malloy";
 import { RECOGNIZED_PERSIST_KEYS } from "../../annotation_reader";
 import { parseRouteTag } from "../../motly";
@@ -179,7 +180,7 @@ function queryDefinitionFieldKinds(source: PersistSource): {
    const analytics: string[] = [];
    try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const def = source._sourceDef as any;
+      const def = sourceDefOf(source) as any;
       const pipeline: unknown[] = def?.query?.pipeline ?? [];
       pipeline.forEach((rawSegment, index) => {
          // eslint-disable-next-line @typescript-eslint/no-explicit-any

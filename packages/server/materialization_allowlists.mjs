@@ -390,55 +390,7 @@ export const RATCHET_ANNOTATION_READS = {
    "service/materialization/serve/rollup_variants.ts": { count: 1, step: "2f" },
 };
 /** Reads of `_modelDef`, `_query`, `_sourceDef` or `_explore` outside governance/ir, per file. */
-export const RATCHET_IR_READS = {
-   "service/materialization/plan/build_plan.ts": { count: 10, step: "2c" },
-   "service/materialization/plan/build_plan_compile.ts": {
-      count: 1,
-      step: "2c",
-   },
-   "service/materialization/plan/incremental_declaration.ts": {
-      count: 1,
-      step: "2c",
-   },
-   "service/materialization/plan/materialization_eligibility.ts": {
-      count: 4,
-      step: "2c",
-   },
-   "service/materialization/plan/materialize_compile.ts": {
-      count: 2,
-      step: "2c",
-   },
-   "service/materialization/plan/persist_dynamic_terms.ts": {
-      count: 3,
-      step: "2c",
-   },
-   "service/materialization/plan/persist_partition.ts": {
-      count: 1,
-      step: "2c",
-   },
-   "service/materialization/plan/persist_source_fields.ts": {
-      count: 1,
-      step: "2c",
-   },
-   "service/materialization/run/materialization_build_session.ts": {
-      count: 1,
-      step: "2c",
-   },
-   "service/materialization/run/source_build.ts": { count: 1, step: "2c" },
-   "service/materialization/run/storage_build_strategy.ts": {
-      count: 2,
-      step: "2c",
-   },
-   "service/materialization/serve/declaring_file_variant.ts": {
-      count: 2,
-      step: "2c",
-   },
-   "service/materialization/serve/served_copy_serve.ts": {
-      count: 1,
-      step: "2c",
-   },
-   "service/materialization/stored_column_types.ts": { count: 2, step: "2c" },
-};
+export const RATCHET_IR_READS = {};
 /** Clock reads in serve/ and domain/, per file. */
 export const RATCHET_CLOCK_READS = {
    "service/materialization/serve/rollup_variants.ts": {

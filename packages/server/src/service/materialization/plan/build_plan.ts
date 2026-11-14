@@ -1,6 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import {
+   exploreOf,
+   modelDefIfAny,
+   modelDefOf,
+   sourceDefOf,
+} from "../../governance/ir/compiled_model";
 import type {
    BuildTarget,
    Connection as MalloyConnection,
@@ -272,8 +278,8 @@ function planDynamicFields(
 export function publicColumnNames(persistSource: PersistSource): string[] {
    let names: string[];
    try {
-      names = persistSource._explore.intrinsicFields
-         .filter((f) => f.isAtomicField())
+      names = exploreOf(persistSource)
+         .intrinsicFields.filter((f) => f.isAtomicField())
          .map((f) => f.name)
          .filter((n): n is string => typeof n === "string" && n.length > 0);
    } catch (err) {
@@ -374,7 +380,7 @@ function detectDroppedPersistSources(
 ): string[] {
    const dropped: string[] = [];
    try {
-      const contents = malloyModel?._modelDef?.contents as
+      const contents = modelDefIfAny(malloyModel)?.contents as
          | Record<string, { type?: string; annotations?: unknown }>
          | undefined;
       if (!contents) return dropped;
@@ -410,7 +416,9 @@ function detectDroppedPersistSources(
 function declaredPersistSourceIDs(malloyModel: MalloyModel): string[] {
    const ids: string[] = [];
    try {
-      for (const def of Object.values(malloyModel._modelDef?.contents ?? {})) {
+      for (const def of Object.values(
+         modelDefOf(malloyModel)?.contents ?? {},
+      )) {
          if (!isSourceDef(def) || !def.annotations) continue;
          try {
             if (routeHasKey(new Annotations(def.annotations), "@", "persist")) {
@@ -437,7 +445,9 @@ function sourceIDsWithNoteAt(
 ): string[] {
    const ids: string[] = [];
    try {
-      for (const def of Object.values(malloyModel._modelDef?.contents ?? {})) {
+      for (const def of Object.values(
+         modelDefOf(malloyModel)?.contents ?? {},
+      )) {
          if (!isSourceDef(def) || !def.annotations || !def.sourceID) continue;
          try {
             const notes = new Annotations(def.annotations).forRoute("@");
@@ -480,7 +490,7 @@ export async function classifyPersistSourceGate(
    cacheScope: string,
 ): Promise<PersistSourceGateOutcome> {
    try {
-      const entryStruct = persistSource._sourceDef as SourceDef;
+      const entryStruct = sourceDefOf(persistSource) as SourceDef;
       const groups = collectEntryPointGates(
          entryStruct,
          modelDef,
@@ -670,7 +680,7 @@ async function collectGeneratedMaterialize(
       materializer: ModelMaterializer;
    },
 ): Promise<void> {
-   const authorDef: ModelDef = args.malloyModel._modelDef;
+   const authorDef: ModelDef = modelDefOf(args.malloyModel);
    const { generated, refused, omitted } = await tryCompileMaterializeCompanion(
       {
          ...args,
@@ -847,7 +857,7 @@ async function collectGeneratedRollups(
       parts.sourceGateOutcomes[source.sourceID] =
          await classifyPersistSourceGate(
             source,
-            generated.model._modelDef,
+            modelDefOf(generated.model),
             generated.materializer,
             deps,
             `${args.modelPath}#preaggregate`,
@@ -877,7 +887,7 @@ async function collectGeneratedPersistedViews(
       materializer: ModelMaterializer;
    },
 ): Promise<void> {
-   const authorDef: ModelDef = args.malloyModel._modelDef;
+   const authorDef: ModelDef = modelDefOf(args.malloyModel);
    const { generated, refused, omitted } =
       await tryCompilePersistedViewCompanion({
          packagePath: args.packagePath,
@@ -1018,7 +1028,7 @@ export async function collectModelBuildPlan(
          modelPath,
          packagePath,
          getRuntime,
-         modelDef: malloyModel._modelDef,
+         modelDef: modelDefOf(malloyModel),
       });
    }
 
@@ -1171,7 +1181,7 @@ export async function collectModelBuildPlan(
             malloyModel.givens.values(),
          ) as unknown as MalloyGiven[];
          classificationCtx = {
-            modelDef: malloyModel._modelDef,
+            modelDef: modelDefOf(malloyModel),
             deps: createGateClassificationDeps(
                givens.map(malloyGivenToApi),
                modelPath,

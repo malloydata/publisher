@@ -10,6 +10,7 @@
  * against the author's edits.
  */
 
+import { modelDefIfAny, modelDefOf } from "../../governance/ir/compiled_model";
 import {
    FixedConnectionMap,
    type Runtime,
@@ -179,7 +180,7 @@ export async function tryCompileMaterializeCompanion(args: {
             new Map([[url.href, text]]),
          );
          return {
-            contents: model._modelDef.contents as Record<string, unknown>,
+            contents: modelDefOf(model).contents as Record<string, unknown>,
             url: url.href,
          };
       };
@@ -332,11 +333,11 @@ export async function tryCompileMaterializeCompanion(args: {
 function withStoredColumns(
    generated: GeneratedMaterialize,
 ): GeneratedMaterialize {
-   const contents = (
+   const contents = modelDefIfAny(
       generated.model as unknown as {
          _modelDef?: { contents?: Record<string, unknown> };
-      }
-   )._modelDef?.contents;
+      },
+   )?.contents;
    return {
       ...generated,
       plans: generated.plans.map((plan) => {

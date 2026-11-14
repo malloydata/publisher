@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { sourceDefOf } from "../../governance/ir/compiled_model";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -1257,7 +1258,7 @@ export async function planChainedDownstream(params: {
    // downstream's own definition. Marked eligible, so the caller recomputes
    // from raw, where author SQL runs in the source warehouse (or a
    // same-catalog source is refused).
-   if (carriesAuthorSql(downstream._sourceDef)) {
+   if (carriesAuthorSql(sourceDefOf(downstream))) {
       throw new MaterializationEligibilityError({
          message:
             `Chained source '${downstreamName}' carries SQL its author wrote ` +

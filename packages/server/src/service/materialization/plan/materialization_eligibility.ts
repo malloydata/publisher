@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { sourceDefOf } from "../../governance/ir/compiled_model";
 import type { PersistSource } from "@malloydata/malloy";
 import {
    getMaterializeEnabled,
@@ -458,7 +459,7 @@ export function assertColocatedPersistNotAuthorizeGated(
  * eligibility spec pins that shape.
  */
 function unboundParameterNames(persistSource: PersistSource): string[] {
-   const def = persistSource._sourceDef as unknown;
+   const def = sourceDefOf(persistSource) as unknown;
    if (def === null || typeof def !== "object") {
       throw new Error("compiled source definition is not readable");
    }
@@ -501,7 +502,7 @@ const MAX_AUTHORIZE_WALK_DEPTH = 200;
  */
 function referencesAuthorize(persistSource: PersistSource): boolean {
    try {
-      return walkForAuthorize(persistSource._sourceDef, new WeakSet(), 0);
+      return walkForAuthorize(sourceDefOf(persistSource), new WeakSet(), 0);
    } catch {
       return true;
    }
@@ -586,7 +587,7 @@ export function isAuthorizeAttributedToEntryPoint(persistSource: {
    try {
       const deep = new Set<AnnotationNote>();
       walkForAuthorizeNotes(
-         persistSource._sourceDef,
+         sourceDefOf(persistSource),
          new WeakSet(),
          0,
          deep,
@@ -594,7 +595,7 @@ export function isAuthorizeAttributedToEntryPoint(persistSource: {
       );
       const noJoins = new Set<AnnotationNote>();
       walkForAuthorizeNotes(
-         persistSource._sourceDef,
+         sourceDefOf(persistSource),
          new WeakSet(),
          0,
          noJoins,

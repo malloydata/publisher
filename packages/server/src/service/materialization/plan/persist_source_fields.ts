@@ -9,6 +9,7 @@
  * source without importing build_plan back.
  */
 
+import { exploreOf } from "../../governance/ir/compiled_model";
 import type { AtomicField, PersistSource } from "@malloydata/malloy";
 import { parseRouteTag } from "../../motly";
 import { components } from "../../../api";
@@ -20,8 +21,8 @@ type WireColumn = components["schemas"]["Column"];
 /** Output columns of a persist source, degrading to [] if unavailable. */
 export function deriveColumns(persistSource: PersistSource): WireColumn[] {
    try {
-      return persistSource._explore.intrinsicFields
-         .filter((f) => f.isAtomicField())
+      return exploreOf(persistSource)
+         .intrinsicFields.filter((f) => f.isAtomicField())
          .map((f) => ({
             name: f.name,
             type: String((f as AtomicField).type),

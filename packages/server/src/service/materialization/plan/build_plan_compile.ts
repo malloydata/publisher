@@ -9,6 +9,7 @@
  * worker compiles from its own file map.
  */
 
+import { modelDefOf, primaryKeyOf } from "../../governance/ir/compiled_model";
 import { MODEL_FILE_SUFFIX } from "../../../constants";
 import { logger } from "../../../logger";
 import { recordConnectionDigestSkipped } from "../../../materialization_metrics";
@@ -114,13 +115,13 @@ export async function compilePackageBuildPlan(
          buildView = keyedOverlay(view.overlay);
       }
       const { runtime, materializer, malloyModel } = loaded;
-      const map = SourceMap.of(malloyModel._modelDef);
+      const map = SourceMap.of(modelDefOf(malloyModel));
       for (const key of joinOneKeysOf(map)) {
          joinOneKeys.add(key);
       }
       for (const node of map.nodes()) {
-         const key = (node.def as { primaryKey?: unknown }).primaryKey;
-         if (typeof key === "string" && !primaryKeys.has(node.sourceID)) {
+         const key = primaryKeyOf(node.def);
+         if (key !== undefined && !primaryKeys.has(node.sourceID)) {
             primaryKeys.set(node.sourceID, key);
          }
       }

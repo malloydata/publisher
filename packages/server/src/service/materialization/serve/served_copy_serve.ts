@@ -21,6 +21,10 @@
  * package warning.
  */
 
+import {
+   modelDefOf,
+   queryTimezoneOf,
+} from "../../governance/ir/compiled_model";
 import { readFileSync } from "fs";
 import { lazyCounter } from "../../../telemetry";
 import { fileURLToPath } from "url";
@@ -65,7 +69,6 @@ import {
    nativeTypeLookup,
    declaredColumnsOf,
    liveKeepsBigIntegers,
-   queryTimezoneOf,
    serveTypePlan,
    storedColumnTypeMismatches,
 } from "../stored_column_types";
@@ -2118,7 +2121,7 @@ export class ServedCopyServe {
             return {
                materializer: m,
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               def: (model as any)._modelDef,
+               def: modelDefOf(model as any),
                runtime: runtime as unknown as GraftRuntime,
             };
          };

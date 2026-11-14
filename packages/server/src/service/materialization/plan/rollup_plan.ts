@@ -65,6 +65,11 @@
  * readers are `governance/ir/source_graph.ts`'s single walk).
  */
 
+import {
+   primaryKeyOf,
+   recordedTimezoneOf,
+   timezoneOf,
+} from "../../governance/ir/compiled_model";
 import { Annotations, type ModelDef, type SourceDef } from "@malloydata/malloy";
 import { getMaterializeGatedSources } from "../../../config";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
@@ -687,10 +692,7 @@ export function planSourceRollups(
    // the same zone, colocated or, since #1704, in a `storage=` destination
    // the joining source is stored in too (the leg declines at read when it
    // is not). Anything else is never read.
-   const zone =
-      typeof def.queryTimezone === "string" && def.queryTimezone !== ""
-         ? def.queryTimezone
-         : undefined;
+   const zone = timezoneOf(def);
    const joinedInZone =
       zone !== undefined &&
       map
@@ -698,7 +700,7 @@ export function planSourceRollups(
          .some(
             (n) =>
                n.sourceID !== node.sourceID &&
-               (n.def as SourceLike).queryTimezone === zone &&
+               recordedTimezoneOf(n.def) === zone &&
                map
                   .joinsOf(n.sourceID)
                   .some((j) => j.sourceID === node.sourceID),
@@ -1295,9 +1297,8 @@ export function rollupKeyCheckQuery(
 export function parentKeyNeedsOf(map: SourceMap): ParentKeyNeed[] {
    const out: ParentKeyNeed[] = [];
    for (const node of map.nodes()) {
-      const def = node.def as { primaryKey?: unknown; connection?: unknown };
-      const keyColumn =
-         typeof def.primaryKey === "string" ? def.primaryKey : undefined;
+      const def = node.def as { connection?: unknown };
+      const keyColumn = primaryKeyOf(def);
       if (node.name === undefined || keyColumn === undefined) continue;
       for (const join of map.joinsOf(node.sourceID)) {
          if (
@@ -1361,11 +1362,8 @@ export function joinedKeyNeedsOf(map: SourceMap): JoinedKeyNeed[] {
             continue;
          }
          const joined = map.node(join.sourceID);
-         const def = joined?.def as
-            | { primaryKey?: unknown; connection?: unknown }
-            | undefined;
-         const keyColumn =
-            typeof def?.primaryKey === "string" ? def.primaryKey : undefined;
+         const def = joined?.def as { connection?: unknown } | undefined;
+         const keyColumn = primaryKeyOf(def);
          if (
             joined?.name === undefined ||
             keyColumn === undefined ||

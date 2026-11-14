@@ -27,6 +27,7 @@
  * persisted table.
  */
 
+import { modelDefOf } from "../../governance/ir/compiled_model";
 import type { ModelDef, ModelMaterializer } from "@malloydata/malloy";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
@@ -191,7 +192,7 @@ ${imports}
    ).compile(args.queryModelURL, overlay);
    return {
       materializer,
-      modelDef: (model as unknown as { _modelDef: ModelDef })._modelDef,
+      modelDef: modelDefOf(model as unknown as { _modelDef: ModelDef }),
       runtime: runtime as unknown as GraftRuntime,
    };
 }
@@ -206,7 +207,7 @@ async function namesDeclaredIn(
    url: URL,
 ): Promise<{ names: string[]; givens: ReadonlySet<string> }> {
    const { model } = await files.compile(url, overlay);
-   const def = (model as unknown as { _modelDef: ModelDef })._modelDef;
+   const def = modelDefOf(model as unknown as { _modelDef: ModelDef });
    const names = new Set<string>();
    for (const [name, entry] of Object.entries(def.contents ?? {})) {
       const located = entry as { location?: { url?: unknown } };
