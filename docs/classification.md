@@ -307,8 +307,9 @@ Both follow what a caller can reach, not what a file declares:
   carries what the expression reads, and each of its parts carries the same. A struct column is
   charged the union of its parts, and a part of a classified record or array column
   (`purchases.ssn`, under `#(classification) "phi.direct_identifier" rename: purchases is items`)
-  carries the classes of the nearest column around it that declares some. A part that cannot be
-  resolved fails closed.
+  carries the classes of the nearest column around it that declares some, read directly or inside
+  a query on the array (`purchases -> { select: ssn }`). A read of the whole column lists only the
+  column. A part that cannot be resolved fails closed.
 
 ## Known gaps
 
