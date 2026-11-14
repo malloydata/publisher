@@ -31,6 +31,42 @@ const GATED_ON = { PUBLISHER_MATERIALIZE_GATED_SOURCES: "true" };
 
 const raw = { "raw.malloy": RAW_MODEL };
 
+/** A `storage=""` on each route that reads a destination. */
+const EMPTY_STORAGE: [string, string][] = [
+   [
+      "a v1 persist",
+      `#@ persist storage=""
+source: p_empty is orders_raw -> { group_by: region; aggregate: n is count() }`,
+   ],
+   [
+      "a materialize",
+      `#(materialize) storage=""
+source: m_empty is orders_raw extend { measure: n is count() }`,
+   ],
+   [
+      "a persisted view",
+      `source: views is orders_raw extend {
+  measure: n is count()
+  #@ persist storage=""
+  view: v_empty is { group_by: region; aggregate: n }
+}`,
+   ],
+   [
+      "a v2 rollup",
+      `source: rollups is orders_raw extend {
+  #(preaggregate) grain=["status"] storage=""
+  measure: r_empty is amount.max()
+}`,
+   ],
+   [
+      "a v1 rollup",
+      `source: v1_rollups is orders_raw extend {
+  #@ preaggregate grain="region" storage=""
+  measure: v1_empty is amount.min()
+}`,
+   ],
+];
+
 /** Gates over rollups and materialized sources, with the gated switch off and on. */
 const GATED: Pick<FeatureShape, "files" | "queries"> = {
    files: {
@@ -711,4 +747,86 @@ source: wide is orders_raw extend {
    },
    { name: "gated sources", ...GATED },
    { name: "gated sources, gated switch on", env: GATED_ON, ...GATED },
+   {
+      // Every way a declaration names its destination, on every route that
+      // reads one: `storage=` beside the route's key (`#@ persist
+      // storage=`), inside it (`#@ persist { storage= }`), and on a v1 and a
+      // v2 pre-aggregate. Frozen so one placement rule can be shown to read
+      // each as it was read before; an empty one, per route, follows.
+      name: "storage placement",
+      files: {
+         "m.malloy": `##! experimental { persistence composite_sources }
+import "raw.malloy"
+
+#@ persist storage="lake"
+source: p_sibling is orders_raw -> { group_by: region; aggregate: n is count() }
+
+#@ persist { storage="lake" }
+source: p_nested is orders_raw -> { group_by: region; aggregate: n is count() }
+
+#@ persist name="p_named" storage="lake"
+source: p_named_sibling is orders_raw -> { group_by: status; aggregate: n is count() }
+
+#@ persist { name="p_named_nested" storage="lake" }
+source: p_named_nested is orders_raw -> { group_by: status; aggregate: n is count() }
+
+#(materialize) storage="lake"
+source: m_storage is orders_raw extend { measure: n is count() }
+
+source: views is orders_raw extend {
+  measure: n is count()
+  #@ persist storage="lake"
+  view: v_sibling is { group_by: region; aggregate: n }
+  #@ persist { storage="lake" }
+  view: v_nested is { group_by: status; aggregate: n }
+}
+
+source: rollups is orders_raw extend {
+  #(preaggregate) grain=["region"] storage="lake"
+  measure: r_storage is amount.sum()
+}
+
+source: v1_rollups is orders_raw extend {
+  #@ preaggregate grain="region" storage="lake"
+  measure: v1_sibling is amount.sum()
+  #@ preaggregate { grain="status" storage="lake" }
+  measure: v1_nested is amount.max()
+}
+`,
+         ...raw,
+      },
+      queries: [
+         { name: "sibling persist", malloy: "run: p_sibling -> { select: * }" },
+         { name: "nested persist", malloy: "run: p_nested -> { select: * }" },
+         { name: "sibling view", malloy: "run: views -> v_sibling" },
+         { name: "nested view", malloy: "run: views -> v_nested" },
+         {
+            name: "a v2 rollup with a destination",
+            malloy:
+               "run: rollups -> { group_by: region; aggregate: r_storage }",
+         },
+         {
+            name: "a v1 rollup, sibling",
+            malloy:
+               "run: v1_rollups -> { group_by: region; aggregate: v1_sibling }",
+         },
+         {
+            name: "a v1 rollup, nested",
+            malloy:
+               "run: v1_rollups -> { group_by: status; aggregate: v1_nested }",
+         },
+      ],
+   },
+   ...EMPTY_STORAGE.map(([route, declaration]) => ({
+      name: `storage placement, an empty destination on ${route}`,
+      files: {
+         "m.malloy": `##! experimental { persistence composite_sources }
+import "raw.malloy"
+
+${declaration}
+`,
+         ...raw,
+      },
+      queries: [],
+   })),
 ];

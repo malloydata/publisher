@@ -54,6 +54,8 @@ const SUFFIXES: (keyof CaseGoldens)[] = [
 const AREAS = ["conformance", "features", "fixtures"];
 /** The area corpus.goldens.component.spec.ts owns. */
 const CORPUS_AREA = "corpus";
+/** The area served_copy.goldens.component.spec.ts owns. */
+const SERVED_COPY_AREA = "served_copy";
 
 /**
  * Every file under `dir`, by path relative to it with `/` separators, with LF
@@ -187,6 +189,8 @@ describe("materialization goldens: housekeeping", () => {
    });
 
    it("keeps every golden under an area a spec owns", () => {
-      expect(unownedEntries([...AREAS, CORPUS_AREA])).toEqual([]);
+      expect(unownedEntries([...AREAS, CORPUS_AREA, SERVED_COPY_AREA])).toEqual(
+         [],
+      );
    });
 });

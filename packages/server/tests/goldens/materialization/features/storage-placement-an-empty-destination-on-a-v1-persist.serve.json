@@ -1,0 +1,16 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "p_empty",
+        "tier": "colocated"
+      }
+    ],
+    "verdicts": [
+      "p_empty:serves"
+    ],
+    "warnings": []
+  },
+  "queries": []
+}

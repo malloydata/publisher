@@ -1,0 +1,1450 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "m_storage",
+        "tier": "storage"
+      },
+      {
+        "name": "views__v_sibling__view",
+        "tier": "storage"
+      },
+      {
+        "name": "views__v_nested__view",
+        "tier": "colocated"
+      },
+      {
+        "name": "rollups__rollup__region__495e6697",
+        "tier": "storage"
+      },
+      {
+        "name": "v1_rollups__rollup__region__cbe05f06",
+        "tier": "storage"
+      },
+      {
+        "name": "v1_rollups__rollup__status__1425197f",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "m_storage:serves",
+      "views__v_sibling__view:serves",
+      "views__v_nested__view:serves",
+      "p_sibling:serves",
+      "p_nested:not_built",
+      "p_named_sibling:not_built",
+      "p_named_nested:serves"
+    ],
+    "warnings": [
+      {
+        "code": "deprecated-preaggregate-annotation",
+        "message": "Measure v1_sibling on source v1_rollups uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+        "subject": "v1_rollups"
+      },
+      {
+        "code": "deprecated-preaggregate-annotation",
+        "message": "Measure v1_nested on source v1_rollups uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+        "subject": "v1_rollups"
+      }
+    ]
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "n",
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3bef06e26d728685",
+          "kind": "project",
+          "measures": [],
+          "source": "p_sibling",
+          "stages": 1
+        },
+        "source": "p_sibling"
+      },
+      "equalToLive": true,
+      "malloy": "run: p_sibling -> { select: * }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "m_storage",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_named_nested",
+            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "n",
+            "region"
+          ],
+          "measures": [],
+          "sourceName": "p_sibling"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "sibling persist",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "n",
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "e33c08b094dcf981",
+          "kind": "project",
+          "measures": [],
+          "source": "p_nested",
+          "stages": 1
+        },
+        "source": "p_nested"
+      },
+      "equalToLive": true,
+      "malloy": "run: p_nested -> { select: * }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "m_storage",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_named_nested",
+            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "n",
+            "region"
+          ],
+          "measures": [],
+          "sourceName": "p_nested"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "nested persist",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "485d2d1f0feeae86",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "views",
+          "stages": 1
+        },
+        "source": "views"
+      },
+      "equalToLive": true,
+      "malloy": "run: views -> v_sibling",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "m_storage",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_named_nested",
+            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_nested",
+            "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "views"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "sibling view",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "db2fb391a0cd6c76",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "views",
+          "stages": 1
+        },
+        "source": "views"
+      },
+      "equalToLive": true,
+      "malloy": "run: views -> v_nested",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "m_storage",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_named_nested",
+            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_nested",
+            "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "views"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "nested view",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "r_storage"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "104fc2446f8faf8b",
+          "kind": "reduce",
+          "measures": [
+            "r_storage"
+          ],
+          "source": "rollups",
+          "stages": 1
+        },
+        "source": "rollups"
+      },
+      "equalToLive": true,
+      "malloy": "run: rollups -> { group_by: region; aggregate: r_storage }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "m_storage",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_named_nested",
+            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_nested",
+            "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "r_storage"
+          ],
+          "sourceName": "rollups"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a v2 rollup with a destination",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "v1_sibling"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "054389b04a5df076",
+          "kind": "reduce",
+          "measures": [
+            "v1_sibling"
+          ],
+          "source": "v1_rollups",
+          "stages": 1
+        },
+        "source": "v1_rollups"
+      },
+      "equalToLive": true,
+      "malloy": "run: v1_rollups -> { group_by: region; aggregate: v1_sibling }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "m_storage",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_named_nested",
+            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_nested",
+            "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "v1_sibling"
+          ],
+          "sourceName": "v1_rollups"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
+        },
+        "warnings": []
+      },
+      "query": "a v1 rollup, sibling",
+      "servedBy": "rollup",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "v1_nested"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "0edcce671f154ed9",
+          "kind": "reduce",
+          "measures": [
+            "v1_nested"
+          ],
+          "source": "v1_rollups",
+          "stages": 1
+        },
+        "source": "v1_rollups"
+      },
+      "equalToLive": true,
+      "malloy": "run: v1_rollups -> { group_by: status; aggregate: v1_nested }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "m_storage",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_named_nested",
+            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_nested",
+            "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "v1_nested"
+          ],
+          "sourceName": "v1_rollups"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
+        },
+        "warnings": []
+      },
+      "query": "a v1 rollup, nested",
+      "servedBy": "rollup",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "n",
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3bef06e26d728685",
+          "kind": "project",
+          "measures": [],
+          "source": "p_sibling",
+          "stages": 1
+        },
+        "source": "p_sibling"
+      },
+      "equalToLive": true,
+      "malloy": "run: p_sibling -> { select: * }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "m_storage",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_named_nested",
+            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "rollups",
+            "tableId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "n",
+            "region"
+          ],
+          "measures": [],
+          "sourceName": "p_sibling"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "sibling persist",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "n",
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "e33c08b094dcf981",
+          "kind": "project",
+          "measures": [],
+          "source": "p_nested",
+          "stages": 1
+        },
+        "source": "p_nested"
+      },
+      "equalToLive": true,
+      "malloy": "run: p_nested -> { select: * }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "m_storage",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_named_nested",
+            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "rollups",
+            "tableId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "n",
+            "region"
+          ],
+          "measures": [],
+          "sourceName": "p_nested"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "nested persist",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "485d2d1f0feeae86",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "views",
+          "stages": 1
+        },
+        "source": "views"
+      },
+      "equalToLive": true,
+      "malloy": "run: views -> v_sibling",
+      "path": {
+        "considered": [
+          {
+            "kind": "view",
+            "outcome": "used",
+            "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "m_storage",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_named_nested",
+            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "rollups",
+            "tableId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "views"
+        },
+        "servedBy": {
+          "kind": "view",
+          "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6"
+        },
+        "warnings": []
+      },
+      "query": "sibling view",
+      "servedBy": "view",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "db2fb391a0cd6c76",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "views",
+          "stages": 1
+        },
+        "source": "views"
+      },
+      "equalToLive": true,
+      "malloy": "run: views -> v_nested",
+      "path": {
+        "considered": [
+          {
+            "kind": "view",
+            "outcome": "skipped",
+            "reason": "NOT_BUILT",
+            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "m_storage",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_named_nested",
+            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_nested",
+            "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "rollups",
+            "tableId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "views"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "nested view",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "r_storage"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "104fc2446f8faf8b",
+          "kind": "reduce",
+          "measures": [
+            "r_storage"
+          ],
+          "source": "rollups",
+          "stages": 1
+        },
+        "source": "rollups"
+      },
+      "equalToLive": true,
+      "malloy": "run: rollups -> { group_by: region; aggregate: r_storage }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "m_storage",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_named_nested",
+            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_nested",
+            "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "v1_rollups",
+            "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "r_storage"
+          ],
+          "sourceName": "rollups"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed"
+        },
+        "warnings": []
+      },
+      "query": "a v2 rollup with a destination",
+      "servedBy": "rollup",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "v1_sibling"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "054389b04a5df076",
+          "kind": "reduce",
+          "measures": [
+            "v1_sibling"
+          ],
+          "source": "v1_rollups",
+          "stages": 1
+        },
+        "source": "v1_rollups"
+      },
+      "equalToLive": true,
+      "malloy": "run: v1_rollups -> { group_by: region; aggregate: v1_sibling }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "m_storage",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_named_nested",
+            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_nested",
+            "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "rollups",
+            "tableId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "v1_sibling"
+          ],
+          "sourceName": "v1_rollups"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
+        },
+        "warnings": []
+      },
+      "query": "a v1 rollup, sibling",
+      "servedBy": "rollup",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "v1_nested"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "0edcce671f154ed9",
+          "kind": "reduce",
+          "measures": [
+            "v1_nested"
+          ],
+          "source": "v1_rollups",
+          "stages": 1
+        },
+        "source": "v1_rollups"
+      },
+      "equalToLive": true,
+      "malloy": "run: v1_rollups -> { group_by: status; aggregate: v1_nested }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "m_storage",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_named_nested",
+            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "p_nested",
+            "tableId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "rollups",
+            "tableId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "v1_nested"
+          ],
+          "sourceName": "v1_rollups"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
+        },
+        "warnings": []
+      },
+      "query": "a v1 rollup, nested",
+      "servedBy": "rollup",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "views__v_empty__view",
+        "tier": "colocated"
+      }
+    ],
+    "verdicts": [
+      "views__v_empty__view:serves"
+    ],
+    "warnings": []
+  },
+  "queries": []
+}
