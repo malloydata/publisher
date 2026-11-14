@@ -26,7 +26,7 @@ import { lexAll, offsetOf } from "./malloy_lexer";
 import { SourceMap } from "./plan/source_map";
 
 /** A zero-based range, as a note's `at.range` carries it. */
-export interface NoteRange {
+interface NoteRange {
    start: { line: number; character: number };
    end: { line: number; character: number };
 }
@@ -61,7 +61,7 @@ function sourceNotes(annotations: unknown, depth = 0): NoteLike[] {
  * The source-level `#@` notes of every source `modelDef` reaches, by the URL
  * of the file each was parsed in. Undefined when a note carries no span.
  */
-export function persistNoteSpans(
+function persistNoteSpans(
    modelDef: unknown,
 ): Map<string, NoteSpan[]> | undefined {
    const byFile = new Map<string, NoteSpan[]>();

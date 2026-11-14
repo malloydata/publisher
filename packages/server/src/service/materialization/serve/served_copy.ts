@@ -42,10 +42,9 @@ import {
 } from "../../malloy_text";
 import { noteSource } from "../field_notes";
 import type { MaterializeReadTimeTerm } from "../plan/build_file_generator";
-import {
-   duckdbTypeToMalloy,
-   duckdbTypeToMalloyType,
-} from "./materialization_serve_transform";
+import { storedMalloyType } from "./materialization_serve_transform";
+
+export { storedMalloyType };
 import {
    declarationSpans,
    declaredBaseName,
@@ -446,6 +445,12 @@ export interface ServedColumn {
     * so the field reads back as one (the v1 cutover).
     */
    timestamptz?: true;
+   /**
+    * A stored list or struct declared in live's shape where it differs from
+    * the stored type's own (`{ at::timestamptz }[]` for a list of zoned
+    * timestamps whose field live types as `timestamptz`).
+    */
+   declaredType?: string;
 }
 
 /** A timeframe in {@link TIMEFRAMES}, as Malloy text. */
@@ -505,7 +510,7 @@ export function timeframeRestatements(
 }
 
 /** Why a declaration could not be re-rooted; the source then serves live. */
-export interface RerootRefusal {
+interface RerootRefusal {
    sourceName: string;
    url: string;
    /**
@@ -546,7 +551,7 @@ export interface ServedCopySpan {
 }
 
 /** The served copy of the files that declare re-rooted sources. */
-export interface ServedCopy {
+interface ServedCopy {
    /** File URL → its served text. Files with nothing re-rooted are absent. */
    files: Map<string, string>;
    /** Re-roots that did not apply. */
@@ -1421,83 +1426,14 @@ function timeframeStatements(
 }
 
 /**
- * The Malloy type a stored column is declared as in the `type:`. A scalar is
- * the serve shape's mapping; a list and a struct (what a persisted `nest:`
- * stores, `STRUCT(status VARCHAR, n BIGINT)[]`) are written as Malloy's array
- * and record types (`{ status::string, n::number }[]`), so the nest's rows read
- * back through it as they do live. A nested type that does not read as one
- * (a MAP, a union) is the serve shape's `json`, which does not compile.
+ * The Malloy type a stored column is declared as in the `type:`: the one rule
+ * every stored table's declaration follows ({@link storedMalloyType}). A
+ * column it cannot declare is left out before a declaration is written, so
+ * the `json` here is never reached by one that compiles: Malloy refuses it in
+ * a `type:`, which fails that copy and leaves the source to its fallback.
  */
 export function storedTypeText(stored: string): string {
-   return storedMalloyType(stored) ?? duckdbTypeToMalloy(stored);
-}
-
-/**
- * {@link storedTypeText} when the stored type reads back faithfully, else
- * undefined: a type the `type:` could only declare as `json`, which Malloy
- * refuses there, so one such column would fail the whole model's copy. A
- * nest built from a warehouse whose nests are JSON (Postgres, Snowflake) is
- * stored as `JSON`, for one.
- */
-export function storedMalloyType(stored: string): string | undefined {
-   const parsed = parseNestedType(stored.trim());
-   if (parsed === undefined || parsed.rest.trim() !== "") return undefined;
-   return parsed.text;
-}
-
-/**
- * One DuckDB type at the start of `s`: a scalar, `STRUCT(<name> <type>, …)`,
- * or either followed by `[]`. Undefined when it is no such type.
- */
-function parseNestedType(
-   s: string,
-   depth = 0,
-): { text: string; rest: string } | undefined {
-   if (depth > 16) return undefined;
-   let text: string;
-   let rest: string;
-   const struct = /^STRUCT\s*\(/i.exec(s);
-   if (struct) {
-      rest = s.slice(struct[0].length);
-      const fields: string[] = [];
-      for (;;) {
-         const name = /^\s*("(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*)\s+/.exec(
-            rest,
-         );
-         if (!name) return undefined;
-         const fieldName = name[1].startsWith('"')
-            ? name[1].slice(1, -1).replace(/""/g, '"')
-            : name[1];
-         const inner = parseNestedType(rest.slice(name[0].length), depth + 1);
-         if (!inner) return undefined;
-         fields.push(`${identifier(fieldName)}::${inner.text}`);
-         rest = inner.rest.trimStart();
-         if (rest.startsWith(",")) {
-            rest = rest.slice(1);
-            continue;
-         }
-         if (!rest.startsWith(")")) return undefined;
-         rest = rest.slice(1);
-         break;
-      }
-      text = `{ ${fields.join(", ")} }`;
-   } else {
-      // A scalar, with its own parenthesised arguments (`DECIMAL(18,2)`).
-      const scalar =
-         /^[A-Za-z_][A-Za-z0-9_ ]*?(\([0-9,\s]*\))?(?=\s*(\[|,|\)|$))/.exec(s);
-      if (!scalar) return undefined;
-      const mapped = duckdbTypeToMalloyType(scalar[0]);
-      if (!("type" in mapped)) return undefined;
-      text = mapped.type;
-      rest = s.slice(scalar[0].length);
-   }
-   for (;;) {
-      const list = /^\s*\[\s*\]/.exec(rest);
-      if (!list) break;
-      text = `${text}[]`;
-      rest = rest.slice(list[0].length);
-   }
-   return { text, rest };
+   return storedMalloyType(stored) ?? "json";
 }
 
 /** The emitted `type:` declaration for one re-rooted source. */
@@ -1531,7 +1467,7 @@ export function typeDeclaration(
             )
                .map((note) => noteSource(note, "   "))
                .join("") +
-            `   ${identifier(c.name)}::${c.timestamptz ? "timestamptz" : storedTypeText(c.type)}`,
+            `   ${identifier(c.name)}::${c.timestamptz ? "timestamptz" : (c.declaredType ?? storedTypeText(c.type))}`,
       )
       .join(",\n");
    return `type: ${identifier(r.typeName)} is {\n${fields}\n}`;

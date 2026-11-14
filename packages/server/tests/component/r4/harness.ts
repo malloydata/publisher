@@ -78,7 +78,7 @@ import {
 import {
    buildVirtualMap,
    deriveServeBindings,
-   duckdbTypeToMalloy,
+   declarableColumns,
    groupAliasesByName,
    planSourceIds,
    type ServeBinding,
@@ -881,9 +881,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                chain: over.overStored,
                connectionName: DESTINATION,
                virtualHandle: parentEntry.sourceEntityId,
-               columns: schema.map((c) => ({
+               columns: declarableColumns(schema).declared.map((c) => ({
                   name: c.name,
-                  type: duckdbTypeToMalloy(c.type),
+                  type: c.malloyType,
                })),
             }),
             downstreamName: materializePlans[source.sourceID].buildSourceName,

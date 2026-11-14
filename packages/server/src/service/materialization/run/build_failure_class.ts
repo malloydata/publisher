@@ -113,7 +113,7 @@ const TRANSIENT_CODES_IN_MESSAGES: readonly string[] = [
  * {@link BuildRetryable}); {@link classifySourceFailure} classifies it when
  * the upstream failed in this run.
  */
-export function isUpstreamMissingError(err: unknown): boolean {
+function isUpstreamMissingError(err: unknown): boolean {
    return (
       err instanceof ChainedUpstreamMissingError ||
       strictMissSourceId(err) !== undefined

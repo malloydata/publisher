@@ -50,7 +50,7 @@
  * source's own fields) reads each parent off its flagged row, which costs a
  * scan of every pair row where live scans the parents alone (4 to 5.5 times
  * live on the cheapest such query). {@link flatPairQueryVerdict} sends it to
- * the next candidate ({@link pairQueryReadsChild} decides, and fails closed:
+ * the next candidate ({@link pairQueryReadLevel} decides, and fails closed:
  * a query it cannot read is not answered from the pair table either).
  */
 
@@ -122,7 +122,7 @@ export interface FlatPair {
  * Where an aggregate (or a value it reads) lives: 0 for the source's own
  * fields, 1 for the path's first join, and so on to the leaf.
  */
-export type PairLevel = number;
+type PairLevel = number;
 
 /** The number of levels below the source: the leaf's level. */
 function depthOf(pair: Pick<FlatPair, "hops">): number {
@@ -1042,19 +1042,6 @@ export function pairQueryReadLevel(
 }
 
 /**
- * Whether a compiled query reads anything through the inlined join (see
- * {@link pairQueryReadLevel}); undefined when it cannot be read.
- */
-export function pairQueryReadsChild(
-   query: { pipeline?: unknown } | undefined,
-   source: { fields?: unknown; filterList?: unknown } | undefined,
-   join: string,
-): boolean | undefined {
-   const level = pairQueryReadLevel(query, source, join);
-   return level === undefined ? undefined : level > 0;
-}
-
-/**
  * What a compiled filter condition (a row-level gate's, lifted from its
  * probe) on `source` reads of a pair table: the deepest level of the inlined
  * path, and whether it reads through a join that fans out the pair rows (a
@@ -1076,19 +1063,6 @@ export function pairConditionReads(
       if (e instanceof Refusal) return undefined;
       throw e;
    }
-}
-
-/**
- * Whether a compiled filter condition on `source` reads anything through the
- * inlined join; undefined when it cannot be read.
- */
-export function pairConditionReadsChild(
-   condition: unknown,
-   source: { fields?: unknown } | undefined,
-   join: string,
-): boolean | undefined {
-   const reads = pairConditionReads(condition, source, join);
-   return reads === undefined ? undefined : reads.level > 0;
 }
 
 /**
@@ -1228,7 +1202,7 @@ class LevelScan {
 }
 
 /** What {@link flatPairQueryVerdict} decides for one query over a pair table. */
-export type FlatPairVerdict =
+type FlatPairVerdict =
    /** Answered from the pair table, exactly. */
    | { kind: "served" }
    /**

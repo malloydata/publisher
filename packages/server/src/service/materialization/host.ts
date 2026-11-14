@@ -20,7 +20,7 @@ import type { BuildPlanPackage } from "./plan/build_plan";
 import type { BuildPlan, FreshnessManifest, ManifestEntry } from "./types";
 
 /** The package surface a run reads: its plan, its metadata, its connections. */
-export interface MaterializationPackage extends BuildPlanPackage {
+interface MaterializationPackage extends BuildPlanPackage {
    getPackageName(): string;
    /** The published version this package is; undefined for an unversioned one. */
    getVersionId(): string | undefined;
@@ -51,7 +51,7 @@ export interface MaterializationPackage extends BuildPlanPackage {
 }
 
 /** The part of an environment's version registry a run consults. */
-export interface MaterializationVersions {
+interface MaterializationVersions {
    resolve(
       packageName: string,
       rawVersionId?: unknown,

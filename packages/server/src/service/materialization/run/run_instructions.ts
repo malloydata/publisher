@@ -49,7 +49,7 @@ import { hasAuthorTableName } from "./table_ownership";
  * deriveSelfInstructions). Neither: the names as written, as only a test
  * seam asks for.
  */
-export interface SelfTableNaming {
+interface SelfTableNaming {
    /**
     * A `scope: version` version's own (versionTableSuffix): on every name,
     * `name=` included.

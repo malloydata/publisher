@@ -190,6 +190,29 @@ describe("R4: a persisted view answers its exact call, equal to live", () => {
          "NOT_BUILT",
       );
    });
+
+   it("reports a view past its freshness window STALE and answers live", async () => {
+      fixture.setBindings(
+         fixture.bindings.map((b) =>
+            b.sourceName === "flights__by_carrier__view"
+               ? {
+                    ...b,
+                    freshAsOf: "2020-01-01T00:00:00.000Z",
+                    freshnessWindowSeconds: 60,
+                    freshnessFallback: "live",
+                 }
+               : b,
+         ),
+      );
+      const { path, servedFrom } = await fixture.runAsIs(
+         "run: flights -> by_carrier",
+      );
+      expect(servedFrom).not.toBe("storage");
+      expect(path?.servedBy.kind).toBe("live");
+      expect(path?.considered.find((c) => c.kind === "view")?.reason).toBe(
+         "STALE",
+      );
+   });
 });
 
 const gatedModel = `##! experimental { givens }
