@@ -130,9 +130,28 @@ export function deriveColocatedServeBindings(args: {
          ...(entry.freshnessFallback !== undefined
             ? { freshnessFallback: entry.freshnessFallback }
             : {}),
+         // The key checks the run that wrote the table recorded beside it
+         // (a pair table's leaf key, known limitation 40); internal, never
+         // from a host's manifest.
+         ...(primaryKeysOf(entry) ? { primaryKeys: primaryKeysOf(entry) } : {}),
       });
    }
    return bindings;
+}
+
+/**
+ * The key checks a local run recorded beside a colocated table, by the
+ * checked source's sourceID (`KeyUniqueness.parentKeys`), or undefined.
+ */
+function primaryKeysOf(
+   entry: FreshnessAwareManifestEntry,
+): Record<string, boolean> | undefined {
+   const keys = entry.keyUniqueness?.parentKeys;
+   if (!keys) return undefined;
+   const out = Object.fromEntries(
+      Object.entries(keys).filter(([, v]) => typeof v === "boolean"),
+   );
+   return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**

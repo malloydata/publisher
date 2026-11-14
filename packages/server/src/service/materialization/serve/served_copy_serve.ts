@@ -80,6 +80,7 @@ import {
    flatPairQueryVerdict,
    pairConditionReads,
    pairMeasureLevels,
+   pairMeasurePresence,
    pairQueryReadLevel,
    type FlatPair,
 } from "../../governance/ir/pair_flat_query";
@@ -1589,6 +1590,9 @@ export class ServedCopyServe {
                   column,
                   bigIntegerOptionsOf(def, binding),
                ),
+            // The leaf's key check, as the run that wrote the table recorded
+            // it beside the table (`pairLeafKeyChecks`).
+            (sourceID) => binding.primaryKeys?.[sourceID] === true,
          );
          if (!pair) {
             problems.push({
@@ -2524,13 +2528,22 @@ function flatPairOf(pair: PairReroot): FlatPair {
          ? { levelRowFields: pair.levelRows.map((l) => l.field) }
          : {}),
       ...(pair.oneParentLevels
+         ? { oneParentLevels: pair.oneParentLevels }
+         : {}),
+      // A stored computed child field need not be null on a childless
+      // parent's null-extended row, so a sum of one reads that row: at the
+      // leaf as above it.
+      ...(pair.childStoredDimensions.length > 0
          ? {
-              oneParentLevels: pair.oneParentLevels,
               computedFields: pair.childStoredDimensions.map(
                  (d) => `${pair.join}.${d}`,
               ),
            }
          : {}),
+      ...(pair.levelPresent?.some((p) => p !== undefined)
+         ? { levelPresentFields: pair.levelPresent.map((p) => p?.field) }
+         : {}),
+      ...(pair.leafKeyChecked ? { leafKeyChecked: true } : {}),
       ...(pair.block
          ? { otherRecords: pair.block.others.map((o) => o.join) }
          : {}),
@@ -2555,6 +2568,8 @@ function blockPaths(
  * leaf re-declared over that level's rows. `lane` picks the block a table of
  * several inlined paths is read for (its first, otherwise). Undefined when
  * the table does not store what the plan says (a column missing).
+ * `leafKeyChecked` says whether the run that wrote the table recorded the
+ * leaf's key unique and never null, for the leaf source's sourceID.
  */
 function pairRerootOf(
    plan: MaterializePlan,
@@ -2569,6 +2584,7 @@ function pairRerootOf(
       field: unknown,
       column: { name: string; type: string },
    ) => BigIntegerRead | undefined = () => undefined,
+   leafKeyChecked: (sourceID: string) => boolean = () => false,
 ): PairReroot | undefined {
    const blocks = plan.pairBlocks;
    const block = blocks
@@ -2716,16 +2732,48 @@ function pairRerootOf(
          others,
       };
    }
-   // A measure over one level above the leaf is re-declared over that
-   // level's rows; one at the leaf reads every row as it stands, and one
-   // reading several levels (or anything else) is left as it is, so a query
-   // that reads it is answered live (pair_flat_query.ts).
+   // Each level of the path has a row where its primary key, read through
+   // the record, is not null: the test Malloy makes of a joined source's own
+   // rows (malloydata/malloy#3208). Declared only where the build checked
+   // that key unique and never null, so the test fails on a childless row's
+   // null-extended row alone: a level above the leaf on every build (its
+   // check fails the build), the leaf only where its recorded check passed.
    const path = {
       join: block.join,
       hops: (block.hops ?? []).map((h) => h.join),
    };
    const leaf = 1 + path.hops.length;
+   const levelKeys = [
+      { key: block.childKey, sourceID: block.childSourceID },
+      ...(block.hops ?? []).map((h) => ({ key: h.key, sourceID: h.sourceID })),
+   ];
+   const leafChecked = leafKeyChecked(levelKeys[leaf - 1].sourceID);
+   const levelPresent: ({ field: string; keyPath: string[] } | undefined)[] =
+      levelKeys.map(({ key }, i) => {
+         const level = i + 1;
+         const columns =
+            level === 1 ? own.childColumns : (own.hops ?? [])[i - 1]?.columns;
+         if (!columns?.some((c) => c.name === key)) return undefined;
+         if (level === leaf && !leafChecked) return undefined;
+         const names = [path.join, ...path.hops.slice(0, i)];
+         return {
+            field: fresh(`__${names.join("__")}__present`),
+            keyPath: [...names, key],
+         };
+      });
+   // A measure over one level is re-declared over that level's rows: above
+   // the leaf under its flag, and at any level of the path under its
+   // presence field where it needs one (it counts, or sums a value not null
+   // on a childless row's null-extended row). One at the leaf that needs
+   // none reads every row as it stands. One reading several levels, one that
+   // needs a presence field it cannot have (none declared, or a `min` or
+   // `max` beside the count), or anything else, is left as it is, so a query
+   // that reads it is answered live (pair_flat_query.ts).
    const levels = pairMeasureLevels(sourceFields, path);
+   const presence = pairMeasurePresence(sourceFields, {
+      ...path,
+      computedFields: childStoredDimensions.map((d) => `${block.join}.${d}`),
+   });
    const parentMeasures: PairMeasure[] = [];
    for (const f of sourceFields as {
       name?: unknown;
@@ -2736,7 +2784,11 @@ function pairRerootOf(
       const level = levels.get(name);
       if (!level || level.size !== 1) continue;
       const only = [...level][0];
-      if (only >= leaf) continue;
+      const present =
+         only > 0 &&
+         presence.get(name) === "needed" &&
+         levelPresent[only - 1] !== undefined;
+      if (only === leaf && !present) continue;
       // A private measure cannot be renamed by an extension; a public one
       // that reads it carries the flag to it.
       if (f.accessModifier === "private") continue;
@@ -2749,8 +2801,16 @@ function pairRerootOf(
             ? { access: "internal" as const }
             : {}),
          ...(only > 0 ? { level: only } : {}),
+         ...(present ? { present: true as const } : {}),
       });
    }
+   // Only a level a re-declared measure reads its presence field at
+   // declares one: no query can name it.
+   const presentUsed = levelPresent.map((p, i) =>
+      parentMeasures.some((m) => m.present && m.level === i + 1)
+         ? p
+         : undefined,
+   );
    return {
       join: block.join,
       parentRowColumn: { name: block.parentRowColumn, type: parentRow },
@@ -2764,6 +2824,10 @@ function pairRerootOf(
       ...(block.oneParentLevels && block.oneParentLevels.length > 0
          ? { oneParentLevels: block.oneParentLevels }
          : {}),
+      ...(presentUsed.some((p) => p !== undefined)
+         ? { levelPresent: presentUsed }
+         : {}),
+      ...(leafChecked ? { leafKeyChecked: true as const } : {}),
       ...(blockReroot ? { block: blockReroot } : {}),
       ...(own.access ? { access: own.access } : {}),
    };
