@@ -23,6 +23,8 @@
  *   `queryableSources` in publisher.json, per `.malloynb` file, per source
  *   that declares `#(filter)` annotations, and per measure that declares
  *   `#@ preaggregate` (`service/deprecated/*`).
+ * - A startup: each deprecated setting name in use, a variable, flag or file
+ *   key the configuration design renamed, as `config:<old name>` (server.ts).
  *
  * Lazily created for the same reason as {@link ./query_cap_metrics}.
  */
@@ -44,7 +46,8 @@ export type DeprecatedFeature =
    | "filter_params"
    | "bypass_filters"
    | "package_patch"
-   | "environment_reload";
+   | "environment_reload"
+   | `config:${string}`;
 
 const counter = lazyCounter(
    "publisher_deprecated_usage_total",

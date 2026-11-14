@@ -13,9 +13,12 @@ import {
 import { logger } from "./logger";
 import { defaultOpenAiBaseUrl } from "./retrieval/llm/openai_compatible";
 import {
+   describeSource,
    referencedVariable,
+   REGISTRY,
    settings,
    Settings,
+   type SettingKey,
    type SettingValue,
 } from "./settings";
 import type {
@@ -454,18 +457,18 @@ export interface EmbeddingConfig {
 const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
 const DEFAULT_EMBEDDING_API_BASE = "https://api.openai.com/v1";
 
-type FileFirstEmbeddingKey =
+type EmbeddingFileKey =
    | "retrieval.embedding.model"
    | "retrieval.embedding.baseUrl"
    | "retrieval.embedding.dimensions";
 
 /**
- * A `retrieval.embedding` key the file gives ahead of its variable. With no
- * `file`, because the `retrieval` block was rejected, the file's value is set
- * aside for the variable's, as it was before the registry: a block the server
+ * A `retrieval.embedding` key the file can give. With no `file`, because the
+ * `retrieval` block was rejected, the file's value is set aside for a lower
+ * source's, or the default, as it was before the registry: a block the server
  * refused must not choose where the embedding key is sent.
  */
-function embeddingValue<K extends FileFirstEmbeddingKey>(
+function embeddingValue<K extends EmbeddingFileKey>(
    key: K,
    file: RetrievalEmbeddingConfig | undefined,
 ): SettingValue<K> | undefined {
@@ -476,6 +479,23 @@ function embeddingValue<K extends FileFirstEmbeddingKey>(
       .shadowed(key)
       .find((shadowed) => shadowed.source.kind !== "file");
    return variable?.value as SettingValue<K> | undefined;
+}
+
+/**
+ * A Google or Vertex embedding key: from a flag, a current variable
+ * (`PUBLISHER_RETRIEVAL_EMBEDDING_*`) or the file, never from `EMBEDDING_MODEL`,
+ * `EMBEDDING_API_BASE` or `EMBEDDING_DIMENSIONS`. Those were only ever the
+ * OpenAI-compatible provider's, and a leftover `EMBEDDING_API_BASE` would send
+ * the Google key, and the text embedded, to that endpoint.
+ */
+function googleEmbeddingValue<K extends EmbeddingFileKey>(
+   key: K,
+): SettingValue<K> | undefined {
+   if (!fromOldVariable(key)) return settings.get(key);
+   const file = settings
+      .shadowed(key)
+      .find((shadowed) => shadowed.source.kind === "file");
+   return file?.value as SettingValue<K> | undefined;
 }
 
 /**
@@ -503,9 +523,9 @@ export const getEmbeddingConfig = (
    }
    const apiKey = envKey || "ollama";
 
-   // model, baseUrl and dimensions come from the file before their variables,
-   // as the registry records (retrieval.embedding.*, `fileFirst`), unless the
-   // block was rejected.
+   // model, baseUrl and dimensions come from a flag, a variable or the file,
+   // with one precedence; the provider's default applies when none gives one.
+   // A rejected block's file values are set aside.
    const rawBase = embeddingValue("retrieval.embedding.baseUrl", file);
    const baseUrl = (
       rawBase ||
@@ -562,14 +582,15 @@ export function getEmbeddingSettings(
    if (provider === "google" || provider === "vertex") {
       const apiKey = settings.get("retrieval.embedding.apiKey") || undefined;
       if (provider === "google" && !apiKey) return null;
-      if (!file?.model) return null;
+      const model = googleEmbeddingValue("retrieval.embedding.model");
+      if (!model) return null;
       return {
          provider,
-         model: file.model,
-         dimensions: file.dimensions,
-         baseUrl: file.baseUrl,
-         projectId: file.projectId,
-         location: file.location,
+         model,
+         dimensions: googleEmbeddingValue("retrieval.embedding.dimensions"),
+         baseUrl: googleEmbeddingValue("retrieval.embedding.baseUrl"),
+         projectId: file?.projectId,
+         location: file?.location,
          // Vertex authenticates with Application Default Credentials.
          apiKey: provider === "google" ? apiKey : undefined,
          minSimilarity: embeddingMinSimilarity(),
@@ -613,7 +634,7 @@ const hostOf = (url: string): string => {
  *
  * - a provider that needs a key is named but `EMBEDDING_API_KEY` is unset, so
  *   semantic search is off.
- * - a file value overrides a different `EMBEDDING_*` variable, and a changed
+ * - a variable or flag overrides a different value in the file, and a changed
  *   model or dimensions re-embeds every package.
  *
  * A base URL is shown as its host only: the URL can carry credentials.
@@ -640,55 +661,59 @@ export function embeddingStartupNotices(
    }
    const reembeds =
       "Changing the model or its dimensions re-embeds every package.";
-   const envModel = fromVariable("retrieval.embedding.model");
-   if (file.model && envModel && envModel !== file.model) {
+   const model = overriddenFileValue("retrieval.embedding.model");
+   if (model) {
       notices.push({
          level: "info",
-         message: `retrieval.embedding.model "${file.model}" in publisher.config.json overrides EMBEDDING_MODEL "${envModel}". ${reembeds}`,
+         message: `${model.by} "${model.value}" overrides retrieval.embedding.model "${model.file}" in publisher.config.json. ${reembeds}`,
       });
    }
-   const envDimensions = fromVariable("retrieval.embedding.dimensions");
+   const dimensions = overriddenFileValue("retrieval.embedding.dimensions");
+   if (dimensions) {
+      notices.push({
+         level: "info",
+         message: `${dimensions.by} ${dimensions.value} overrides retrieval.embedding.dimensions ${dimensions.file} in publisher.config.json. ${reembeds}`,
+      });
+   }
+   const base = overriddenFileValue("retrieval.embedding.baseUrl");
    if (
-      file.dimensions !== undefined &&
-      envDimensions !== undefined &&
-      String(envDimensions) !== String(file.dimensions)
+      base &&
+      String(base.value).replace(/\/+$/, "") !==
+         String(base.file).replace(/\/+$/, "")
    ) {
       notices.push({
          level: "info",
-         message: `retrieval.embedding.dimensions ${file.dimensions} in publisher.config.json overrides EMBEDDING_DIMENSIONS ${envDimensions}. ${reembeds}`,
-      });
-   }
-   const envBase = fromVariable("retrieval.embedding.baseUrl");
-   if (
-      file.baseUrl &&
-      typeof envBase === "string" &&
-      envBase.replace(/\/+$/, "") !== file.baseUrl.replace(/\/+$/, "")
-   ) {
-      notices.push({
-         level: "info",
-         message: `retrieval.embedding.baseUrl (host "${hostOf(file.baseUrl)}") in publisher.config.json overrides EMBEDDING_API_BASE (host "${hostOf(envBase)}").`,
+         message: `${base.by} (host "${hostOf(String(base.value))}") overrides retrieval.embedding.baseUrl (host "${hostOf(String(base.file))}") in publisher.config.json.`,
       });
    }
    return notices;
 }
 
-/** A variable's value that the file's value overrides, if one was given. */
-function fromVariable(
+/**
+ * The file's value of an embedding setting that a variable or flag overrides
+ * with a different one, and the name that overrides it.
+ */
+function overriddenFileValue(
    key:
       | "retrieval.embedding.model"
       | "retrieval.embedding.dimensions"
       | "retrieval.embedding.baseUrl",
-): unknown {
-   return settings
+): { by: string; value: unknown; file: unknown } | undefined {
+   const source = settings.source(key);
+   if (source.kind !== "env" && source.kind !== "flag") return undefined;
+   const file = settings
       .shadowed(key)
-      .find((shadowed) => shadowed.source.kind === "env")?.value;
+      .find((shadowed) => shadowed.source.kind === "file");
+   const value = settings.get(key);
+   if (!file || String(file.value) === String(value)) return undefined;
+   return { by: source.name, value, file: file.value };
 }
 
 /**
  * The LLM settings in force, or `null` when every LLM feature is off. On iff
  * `retrieval.llm.provider` is set and either `LLM_API_KEY` is present or the
- * provider needs none (Ollama, Vertex). The key is an environment variable and
- * never a file entry. An ambient `OPENAI_API_KEY`-style variable is not read,
+ * provider needs none (Ollama, Vertex). The key is a variable, or in the file
+ * one `${VAR}` reference, never a literal. An ambient `OPENAI_API_KEY`-style variable is not read,
  * for the reason {@link getEmbeddingConfig} gives.
  */
 export function getLlmSettings(file?: RetrievalLlmConfig): LlmSettings | null {
@@ -1114,7 +1139,10 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
             `--config path not found: ${explicitPath}. Using default empty config.`,
          );
       }
-      return { environments: [] };
+      // With no file, the retrieval block can still come from flags and
+      // variables.
+      const retrieval = retrievalInForce(undefined);
+      return { ...(retrieval ? { retrieval } : {}), environments: [] };
    }
    const publisherConfigPath = resolved.path;
    if (resolved.isBundledDefault) {
@@ -1187,7 +1215,7 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       "publisher.config.json",
    );
 
-   const retrieval = parseRetrievalConfig(
+   const retrieval = retrievalInForce(
       processedConfig && typeof processedConfig === "object"
          ? (processedConfig as { retrieval?: unknown }).retrieval
          : undefined,
@@ -1267,6 +1295,160 @@ export const getSemanticIndexMaxEntities = (serverRoot: string): number => {
       throw error;
    }
 };
+
+/** The `retrieval` block's leaves that the block's parser reads; not its secrets. */
+const RETRIEVAL_LEAVES = REGISTRY.filter(
+   (entry) =>
+      entry.key.startsWith("retrieval.") &&
+      entry.kind !== "structured" &&
+      !entry.secret,
+);
+
+/** Whether a setting's value came from one of today's variables, not its derived one. */
+function fromOldVariable(key: SettingKey): boolean {
+   const source = settings.source(key);
+   return (
+      source.kind === "env" &&
+      (REGISTRY.find((entry) => entry.key === key)?.aliases.env ?? []).includes(
+         source.name,
+      )
+   );
+}
+
+/** The leaves a Google or Vertex embedding provider takes from the file or a current name only. */
+const OPENAI_COMPATIBLE_LEAVES: readonly string[] = [
+   "retrieval.embedding.model",
+   "retrieval.embedding.baseUrl",
+   "retrieval.embedding.dimensions",
+];
+
+/**
+ * The `retrieval` block as one object from every source: the file's block,
+ * with each leaf a flag or variable gives laid over it, by the one precedence.
+ * A leaf that is null in the file is unset, as for every setting. A Google or
+ * Vertex embedding provider takes no leaf from `EMBEDDING_MODEL`,
+ * `EMBEDDING_API_BASE` or `EMBEDDING_DIMENSIONS` (see
+ * {@link googleEmbeddingValue}); those are returned as `ignored`. A section
+ * left empty, and a block left empty, are absent, so the example config's
+ * block of unset leaves is no block. Undefined when neither the file nor a
+ * flag or variable gives any of it.
+ */
+export function assembleRetrieval(file: unknown): {
+   block: unknown;
+   ignored: ReadonlySet<string>;
+} {
+   const ignored = new Set<string>();
+   // Not an object: the parser says so, naming the file's value.
+   if (file !== undefined && file !== null && !isPlainObject(file)) {
+      return { block: file, ignored };
+   }
+   const block = (file ? structuredClone(file) : {}) as Record<string, unknown>;
+   // Every leaf, the keys included: null is unset for each.
+   for (const leaf of REGISTRY.filter(
+      (entry) =>
+         entry.key.startsWith("retrieval.") && entry.kind !== "structured",
+   )) {
+      const pathInBlock = leaf.key.split(".").slice(1);
+      const parent = nodeAt(block, pathInBlock.slice(0, -1));
+      const last = pathInBlock[pathInBlock.length - 1];
+      if (parent && parent[last] === null) delete parent[last];
+   }
+   for (const [section, value] of Object.entries(block)) {
+      if (isPlainObject(value) && Object.keys(value).length === 0) {
+         delete block[section];
+      }
+   }
+   let overlaid = false;
+   // The provider first: it decides which variables the others may come from.
+   const ordered = [...RETRIEVAL_LEAVES].sort(
+      (a, b) =>
+         Number(!a.key.endsWith(".provider")) -
+         Number(!b.key.endsWith(".provider")),
+   );
+   for (const leaf of ordered) {
+      const key = leaf.key as SettingKey;
+      const kind = settings.source(key).kind;
+      if (kind !== "flag" && kind !== "env") continue;
+      const pathInBlock = leaf.key.split(".").slice(1);
+      if (OPENAI_COMPATIBLE_LEAVES.includes(leaf.key) && fromOldVariable(key)) {
+         const provider = nodeAt(block, ["embedding"])?.provider;
+         if (provider === "google" || provider === "vertex") {
+            ignored.add(leaf.key);
+            continue;
+         }
+      }
+      const parent = nodeAt(block, pathInBlock.slice(0, -1), true);
+      // A section the file holds as something other than an object is the
+      // parser's to refuse, with the file's value.
+      if (!parent) continue;
+      parent[pathInBlock[pathInBlock.length - 1]] = settings.get(key);
+      overlaid = true;
+   }
+   if (!overlaid && Object.keys(block).length === 0) {
+      return { block: undefined, ignored };
+   }
+   return { block, ignored };
+}
+
+/**
+ * The validated `retrieval` block in force, assembled by
+ * {@link assembleRetrieval}. A failure names, after the parser's message, the
+ * source of each field given in the section it cites, so a variable that
+ * switched `provider` is found beside the file's other fields.
+ */
+function retrievalInForce(file: unknown): RetrievalConfig | undefined {
+   const { block, ignored } = assembleRetrieval(file);
+   try {
+      return parseRetrievalConfig(block);
+   } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      const sections = new Set(
+         [...error.message.matchAll(/\bretrieval\.([a-zA-Z]+)/g)].map(
+            (match) => `retrieval.${match[1]}.`,
+         ),
+      );
+      const given = RETRIEVAL_LEAVES.filter(
+         (leaf) =>
+            [...sections].some((section) => leaf.key.startsWith(section)) &&
+            settings.isSet(leaf.key as SettingKey),
+      ).map((leaf) => {
+         const from = describeSource(settings.source(leaf.key as SettingKey));
+         return ignored.has(leaf.key)
+            ? `${leaf.key} from ${from}, which a google or vertex provider does not read`
+            : `${leaf.key} from ${from}`;
+      });
+      if (given.length === 0) throw error;
+      throw new Error(`${error.message} Given: ${given.join("; ")}.`);
+   }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The object at `pathInBlock` under `block`; with `create`, made where it is
+ * missing. Undefined where something other than an object is in the way.
+ */
+function nodeAt(
+   block: Record<string, unknown>,
+   pathInBlock: readonly string[],
+   create = false,
+): Record<string, unknown> | undefined {
+   let node = block;
+   for (const part of pathInBlock) {
+      const next = node[part];
+      if (next === undefined || next === null) {
+         if (!create) return undefined;
+         node[part] = {};
+         node = node[part] as Record<string, unknown>;
+         continue;
+      }
+      if (!isPlainObject(next)) return undefined;
+      node = next;
+   }
+   return node;
+}
 
 /**
  * The validated `retrieval` block of publisher.config.json, or undefined when

@@ -32,11 +32,13 @@ export class SettingError extends Error {
       readonly expected: string,
       readonly got: unknown,
       readonly secret = false,
+      /** What probably set the value, where the type alone would mislead. */
+      hint?: string,
    ) {
       super(
          `${key} from ${describeSource(source)}: expected ${expected}, got ${
             secret ? "(set)" : formatGot(got)
-         }`,
+         }${hint ? `. ${hint}` : ""}`,
       );
       this.name = "SettingError";
    }

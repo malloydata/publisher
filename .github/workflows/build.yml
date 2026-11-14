@@ -353,8 +353,8 @@ jobs:
           # nothing, so a release built from an unchecked ref is not covered.
           env_json=$(docker inspect malloy-publisher:smoke-test \
             --format='{{json .Config.Env}}')
-          echo "$env_json" | jq -e 'index("PUBLISHER_NO_MCP_CONFIG=1")' >/dev/null \
-            || { echo "✗ Image does not set PUBLISHER_NO_MCP_CONFIG=1"; exit 1; }
+          echo "$env_json" | jq -e 'index("PUBLISHER_MCP_CONFIG_FILE_ENABLED=false")' >/dev/null \
+            || { echo "✗ Image does not set PUBLISHER_MCP_CONFIG_FILE_ENABLED=false"; exit 1; }
           echo "✓ .mcp.json creation suppressed in the image"
           # The server runs as uid 1000, and the USER must stay numeric:
           # Kubernetes' runAsNonRoot cannot verify a named user. A new final
