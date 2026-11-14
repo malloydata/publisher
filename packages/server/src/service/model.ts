@@ -76,7 +76,7 @@ import {
    summarizeQueryAccess,
    type QueryAudit,
 } from "./access_record";
-import { type ServeBinding } from "./materialization/serve/materialization_serve_transform";
+import { type ServeBinding } from "./materialization/domain/serve_binding";
 import { deserializeError } from "../package_load/package_load_pool";
 import type { SerializedModel } from "../package_load/protocol";
 import { decodeSerializedModel } from "../package_load/protocol_decode";

@@ -63,10 +63,7 @@ import {
    type MaterializedTableCatalog,
    type PlannedTable,
 } from "./serve/query_path";
-import {
-   deriveServeBindings,
-   type ServeBinding,
-} from "./serve/materialization_serve_transform";
+import { deriveServeBindings, type ServeBinding } from "./domain/serve_binding";
 import { groupAliasesByName, planSourceIds } from "./domain/source_aliases";
 import {
    SERVED_COPY_WARNING_CODE,

@@ -44,7 +44,7 @@ import {
 import { InstructedBuild } from "./instructed_build";
 import { ManifestCommitter } from "./manifest_committer";
 import { splitManifestEntries } from "./manifest_loader";
-import { deriveServeBindings } from "../serve/materialization_serve_transform";
+import { deriveServeBindings } from "../domain/serve_binding";
 import { storedKeyChecksOf } from "../plan/rollup_plan";
 import type { BuildEnvironment } from "./materialization_run_support";
 import { SourceBuilder } from "./source_build";

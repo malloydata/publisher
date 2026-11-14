@@ -79,7 +79,7 @@ import {
 import { viewNoteTexts } from "../plan/persisted_view_compile";
 import { SourceMap } from "../text/source_map";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
-import type { ServeBinding } from "./materialization_serve_transform";
+import type { ServeBinding } from "../domain/serve_binding";
 import type { MaterializedTableCatalog } from "./query_path";
 import { fieldNotes } from "../text/field_notes";
 import {

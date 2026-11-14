@@ -18,11 +18,11 @@ import { fileURLToPath } from "url";
 import { logger } from "../../../logger";
 import { recordStoredColumnTypeMismatch } from "../../../materialization_metrics";
 import { evaluateManifestFreshness } from "../domain/freshness";
+import { narrowSchemaToPublic } from "./bindings";
 import {
    bindingServesModelSource,
-   narrowSchemaToPublic,
    type ServeBinding,
-} from "./materialization_serve_transform";
+} from "../domain/serve_binding";
 import {
    authorModelLiftContext,
    type DerivedSourceDef,

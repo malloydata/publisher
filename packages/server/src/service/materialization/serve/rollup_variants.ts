@@ -172,12 +172,8 @@ import {
    getMaterializeEnabled,
    getMaterializeGatedSources,
 } from "../../../config";
-import {
-   boundTablePath,
-   buildVirtualMap,
-   sqlReadsTable,
-   type ServeBinding,
-} from "./materialization_serve_transform";
+import { boundTablePath, buildVirtualMap, sqlReadsTable } from "./bindings";
+import { type ServeBinding } from "../domain/serve_binding";
 import type { ServedCopyJoinBasis } from "./served_copy_serve";
 import { isDeclineOf, LegDecline } from "../domain/leg_decline";
 import type { MaterializedTableCatalog } from "./query_path";

@@ -10,7 +10,6 @@ import type { PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import { MaterializationEligibilityError } from "../../../errors";
 import { logger } from "../../../logger";
-import { malloyGivenToApi, type MalloyGiven } from "../../given";
 import {
    recordStaleUpstreamEntry,
    recordStorageTableRetained,
@@ -36,7 +35,6 @@ import type { components } from "../../../api";
 import { getPersistStorageMode } from "../../../config";
 import { resolvePartitionColumns } from "../plan/persist_partition";
 import { escapeSQL } from "../../connection";
-import { type ServeShapeGiven } from "../serve/materialization_serve_transform";
 import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
 
 import type { ApiConnection } from "../../model";
@@ -746,28 +744,6 @@ export function manifestExcludingStorage(
  * tier is off.
  */
 export { declaredStorage };
-
-/**
- * The author model's given surface (inheritance through imports already
- * collapsed), for the chained build's transient model. A given whose type
- * cannot be rendered is dropped, not guessed: text reading it then fails to
- * compile, where a guessed type could compile a silently coercing predicate.
- */
-export function chainedBuildGivens(
-   persistSource: PersistSource,
-): ServeShapeGiven[] {
-   const out: ServeShapeGiven[] = [];
-   for (const given of persistSource._model?.givens?.values() ?? []) {
-      const api = malloyGivenToApi(given as unknown as MalloyGiven);
-      if (!api.name || !api.type) continue;
-      out.push({
-         name: api.name,
-         type: api.type,
-         defaultText: typeof api.default === "string" ? api.default : undefined,
-      });
-   }
-   return out;
-}
 
 /**
  * The columns this source's table is laid out by, for a build about to run.

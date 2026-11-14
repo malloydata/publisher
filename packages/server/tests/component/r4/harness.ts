@@ -78,11 +78,8 @@ import {
    compilerBuildId,
    presentAs,
 } from "../../../src/service/materialization/plan/addressing";
-import {
-   buildVirtualMap,
-   deriveServeBindings,
-   type ServeBinding,
-} from "../../../src/service/materialization/serve/materialization_serve_transform";
+import { buildVirtualMap } from "../../../src/service/materialization/serve/bindings";
+import { deriveServeBindings, type ServeBinding } from "../../../src/service/materialization/domain/serve_binding";
 import {
    groupAliasesByName,
    planSourceIds,

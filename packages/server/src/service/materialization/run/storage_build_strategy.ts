@@ -13,21 +13,24 @@ import { errorCodeOf } from "./error_code";
 import {
    recordStoredColumnTypeMismatch,
    recordChainedStorageBuild,
+   recordServeShapeTypeFallback,
 } from "../../../materialization_metrics";
 import { errMessage } from "../../../utils";
 import type { ApiConnection } from "../../model";
 import type { QueryMetadata } from "../../query_metadata";
 import { withStatementUsage } from "../../statement_usage";
 import {
-   buildVirtualMap,
    bindingServesModelSource,
    deriveServeBindings,
-   missingPersistedTables,
-   reportLeftOutColumns,
    type ServeBinding,
-} from "../serve/materialization_serve_transform";
+} from "../domain/serve_binding";
 import { authorModelLiftContext } from "../text/author_model";
-import { declarableColumns } from "../stored_column_types";
+import {
+   declarableColumns,
+   duckdbTypeToMalloyType,
+   type UndeclarableColumn,
+} from "../stored_column_types";
+import { quoteManifestTablePath } from "../../quoting";
 import { reachPersisted } from "../text/source_map";
 import {
    extensionOverStoredModel,
@@ -852,7 +855,17 @@ export class StorageBuildStrategy
                }),
             ),
             downstreamName: plan.buildSourceName,
-            virtualMap: buildVirtualMap([binding]),
+            virtualMap: new Map([
+               [
+                  destinationName,
+                  new Map([
+                     [
+                        binding.virtualHandle,
+                        quoteManifestTablePath(binding.tablePath, "duckdb"),
+                     ],
+                  ]),
+               ],
+            ]),
             physicalTableName,
             partitionColumns: partitionColumnsForBuild(persistSource),
             environmentPath: environment.getEnvironmentPath(),
@@ -934,5 +947,41 @@ function upstreamPlacement(
    return (
       `'${name}' is not materialized in destination ` +
       `'${destinationName}' for this build`
+   );
+}
+
+function reportLeftOutColumns(
+   sourceName: string,
+   leftOut: readonly UndeclarableColumn[],
+): void {
+   if (leftOut.length === 0) return;
+   for (const c of leftOut) {
+      const mapped = duckdbTypeToMalloyType(c.type);
+      recordServeShapeTypeFallback(
+         "unmapped" in mapped ? mapped.unmapped : "unrecognized",
+      );
+   }
+   logger.warn(
+      "Stored columns no Malloy type declaration reads faithfully were left out of the serve shape; queries reading them answer live",
+      { sourceName, columns: leftOut.map((c) => `${c.name} ${c.type}`) },
+   );
+}
+
+/**
+ * Which stored tables a walk's `persisted` names stand for, and whether each is
+ * available to a build: the names sharing a table (`aliasesBySourceName`, from
+ * {@link groupAliasesByName} over the plan) are one table, present when ANY of
+ * them is among `bound`. Returns the names whose table is not.
+ */
+export function missingPersistedTables(
+   persisted: readonly string[],
+   aliasesBySourceName: Record<string, readonly string[]>,
+   bound: ReadonlySet<string>,
+): string[] {
+   return persisted.filter(
+      (name) =>
+         !(aliasesBySourceName[name] ?? [name]).some((alias) =>
+            bound.has(alias),
+         ),
    );
 }

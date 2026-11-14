@@ -94,7 +94,7 @@ interface FieldLike {
  * happens to fail compiling such a reference; the storage tier plans from
  * compiled contents and would not, so the rule lives here for both.)
  *
- * Mirrors `isAccessRestricted` in materialization_serve_transform.ts, which drops
+ * Mirrors `isAccessRestricted` in serve/bindings.ts, which drops
  * hidden fields, joins and views from the serve shape for the same reason.
  */
 function isAccessRestricted(f: FieldLike): boolean {

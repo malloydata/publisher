@@ -232,7 +232,7 @@ export function basePersistNamespace(
 /**
  * A field the source does not publicly expose.
  *
- * Mirrors `isAccessRestricted` in materialization_serve_transform.ts and
+ * Mirrors `isAccessRestricted` in serve/bindings.ts and
  * preaggregation_validation.ts, and fails CLOSED: anything not exactly `public`
  * is hidden, so a future modifier kind is refused by default. No modifier at
  * all is public.

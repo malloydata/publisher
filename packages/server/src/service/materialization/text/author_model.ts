@@ -119,7 +119,7 @@ interface SourceRange {
    end: { line: number; character: number };
 }
 
-export interface SourceLocation {
+interface SourceLocation {
    url: string;
    range: SourceRange;
 }

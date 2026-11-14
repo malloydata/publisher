@@ -3,7 +3,7 @@
 
 import type { QueryMaterializer, VirtualMap } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
-import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
+import type { ServeBinding } from "./materialization/domain/serve_binding";
 import type { BuildManifest } from "./materialization/domain/types";
 import type { GraftScope } from "./gate_classification";
 import type { RouteDecision } from "./query_router";

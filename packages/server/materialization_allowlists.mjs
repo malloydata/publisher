@@ -51,8 +51,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.3",
    "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/persist_source_fields":
       "2g.3",
-   "service/materialization/run/materialization_run_support.ts -> service/materialization/serve/materialization_serve_transform":
-      "R",
    "service/materialization/run/materialization_service.ts -> service/materialization/plan/build_plan":
       "2g.3",
    "service/materialization/run/materialization_service.ts -> service/materialization/plan/build_plan_compile":
@@ -71,8 +69,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.3",
    "service/materialization/run/storage_build_strategy.ts -> service/materialization/plan/build_file_generator":
       "2g.3",
-   "service/materialization/run/storage_build_strategy.ts -> service/materialization/serve/materialization_serve_transform":
-      "R",
    "service/materialization/run/table_ownership.ts -> service/materialization/plan/build_plan":
       "2g.3",
    "service/materialization/run/table_ownership.ts -> service/materialization/plan/persist_source_fields":
@@ -147,8 +143,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.2",
    "service/model.ts -> service/materialization/plan/preaggregation_validation":
       "2g.2",
-   "service/model.ts -> service/materialization/serve/materialization_serve_transform":
-      "2g.2",
    "service/model.ts -> service/materialization/serve/query_path": "2g.2",
    "service/model.ts -> service/materialization/serve/rollup_variants": "2g.2",
    "service/model.ts -> service/materialization/serve/serve_verdict": "2g.2",
@@ -168,8 +162,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.3",
    "service/package.ts -> service/materialization/plan/persist_annotation_validation":
       "2g.3",
-   "service/query_serving.ts -> service/materialization/serve/materialization_serve_transform":
-      "2g.2",
    "service/query_serving.ts -> service/materialization/serve/query_path":
       "2g.2",
    "service/query_serving.ts -> service/materialization/serve/rollup_variants":
@@ -198,10 +190,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/materialization/plan/persist_source_fields.ts -> logger": "2g.3",
    "service/materialization/plan/persisted_view_compile.ts -> logger": "2g.3",
    "service/materialization/plan/rollup_compile.ts -> logger": "2g.3",
-   "service/materialization/serve/materialization_serve_transform.ts -> logger":
-      "R",
-   "service/materialization/serve/materialization_serve_transform.ts -> materialization_metrics":
-      "R",
    "service/materialization/serve/rollup_variants.ts -> logger": "2g.2",
    "service/materialization/serve/served_copy_serve.ts -> logger": "2g.2",
    "service/materialization/serve/storage_bindings.ts -> logger": "2g.2",
@@ -250,7 +238,6 @@ export const MATERIALIZATION_HEADER_ALLOWLIST = {
    "service/materialization/run/storage_table_load.ts": "5",
    "service/materialization/run/table_claims.ts": "5",
    "service/materialization/run/table_ownership.ts": "5",
-   "service/materialization/serve/materialization_serve_transform.ts": "5",
 };
 
 /** H2: ticket numbers, phase or step labels and dates in comments, per file: the count allowed, and the step that removes them. */
@@ -329,10 +316,6 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
       step: "5",
    },
    "service/materialization/serve/join_rollup.ts": { count: 6, step: "5" },
-   "service/materialization/serve/materialization_serve_transform.ts": {
-      count: 2,
-      step: "5",
-   },
    "service/materialization/serve/rollup_variants.ts": { count: 3, step: "5" },
    "service/materialization/serve/serve_verdict.ts": { count: 8, step: "5" },
    "service/materialization/serve/served_copy.ts": { count: 3, step: "5" },

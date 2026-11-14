@@ -20,7 +20,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
-import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
+import type { ServeBinding } from "./materialization/domain/serve_binding";
 import { logger } from "../logger";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
 import { startMetricsHarness } from "../test_helpers/metrics_harness";

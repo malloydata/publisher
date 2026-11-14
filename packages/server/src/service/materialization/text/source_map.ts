@@ -107,7 +107,7 @@ interface IrModel {
  * The sourceID a `structRef` names: the reference itself, or the `sourceID` of
  * an embedded definition. Undefined for an inline source.
  */
-export function structRefSourceId(structRef: unknown): string | undefined {
+function structRefSourceId(structRef: unknown): string | undefined {
    if (typeof structRef === "string") return structRef;
    const sourceID = (structRef as { sourceID?: unknown } | null)?.sourceID;
    return typeof sourceID === "string" && sourceID.length > 0
@@ -344,7 +344,7 @@ interface PipelineReference {
  * Undefined when the pipeline nests past {@link MAX_PIPELINE_DEPTH}, which a
  * caller must treat as an unknown reference.
  */
-export function pipelineReferences(
+function pipelineReferences(
    pipeline: unknown,
 ): PipelineReference[] | undefined {
    const out: PipelineReference[] = [];

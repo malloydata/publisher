@@ -64,23 +64,11 @@ const ALLOWED: Record<string, Record<string, string>> = {
       "else if (!group.includes(source.name)) group.push(source.name);":
          "aliases grouped per address for rebinding by name in Malloy text",
    },
-   "serve/materialization_serve_transform.ts": {
+   "domain/serve_binding.ts": {
       "const sourceID = contents?.[binding.sourceName]?.sourceID;":
          "the model's own namespace, resolving a name to its sourceID",
       "...(aliasesBySourceName[entry.sourceName] ?? []).filter(":
          "aliases grouped per address for rebinding by name in Malloy text",
-      "const url = ctx.contents[lift.sourceName]?.location?.url;":
-         "the model's own namespace",
-      "dependsOn.set(b.sourceName, set);":
-         "orders one serve shape's bindings by the Malloy names they declare",
-      "if (!remaining.has(b.sourceName)) continue;":
-         "orders one serve shape's bindings by the Malloy names they declare",
-      "const ready = [...dependsOn.get(b.sourceName)!].every((d) =>":
-         "orders one serve shape's bindings by the Malloy names they declare",
-      "remaining.delete(b.sourceName);":
-         "orders one serve shape's bindings by the Malloy names they declare",
-      "if (remaining.has(b.sourceName)) {":
-         "orders one serve shape's bindings by the Malloy names they declare",
    },
    "serve/serve_verdict.ts": {
       "const storageBound = facts.boundStorageNames.has(source.name);":

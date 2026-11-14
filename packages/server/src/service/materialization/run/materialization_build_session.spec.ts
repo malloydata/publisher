@@ -28,13 +28,44 @@ import {
    writePartitionedTable,
    oneFileModel,
 } from "./materialization_build_session";
-import {
-   buildChainedStorageBuildModel,
-   buildVirtualMap,
-   type ServeBinding,
-} from "../serve/materialization_serve_transform";
+import { identifier } from "../../malloy_text";
+import { declarableColumns } from "../stored_column_types";
+import { buildVirtualMap } from "../serve/bindings";
+import { type ServeBinding } from "../domain/serve_binding";
 
 type ApiConnection = components["schemas"]["Connection"];
+
+/**
+ * A one-file model over stored parents, for the build session's own specs:
+ * each parent declared as a virtual source of its stored table (its
+ * declarable columns only), then the downstream as a persist source.
+ */
+function buildChainedStorageBuildModel(params: {
+   upstreams: ServeBinding[];
+   downstreamName: string;
+   downstreamDefText: string;
+   destinationName: string;
+   documentFlags?: string[];
+}): string {
+   const parents = params.upstreams.map((b) => {
+      const type = identifier(`${b.sourceName}__shape`);
+      const fields = declarableColumns(b.schema)
+         .declared.map((c) => `   ${identifier(c.name)}::${c.malloyType}`)
+         .join(",\n");
+      return (
+         `type: ${type} is {\n${fields}\n}\n` +
+         `source: ${identifier(b.sourceName)} is ${identifier(b.destinationName)}.virtual('${b.virtualHandle}')::${type}`
+      );
+   });
+   return [
+      ...(params.documentFlags ?? []),
+      "##! experimental { persistence virtual_source }",
+      ...parents,
+      `#@ persist storage="${params.destinationName}"`,
+      `source: ${params.downstreamDefText}`,
+      "",
+   ].join("\n");
+}
 
 describe("createIsolatedBuildSession (per-build instance isolation)", () => {
    // Multi-tenant safety regression guard. @malloydata/db-duckdb pools :memory:
@@ -418,7 +449,7 @@ describe("buildSourceIntoStorage bounds the incremental delta's session too", ()
 // catalog, with no file reopen). POSIX releases the handle promptly. The
 // stack-on-parent rebind mechanism's cross-platform correctness is pinned in-memory (no file) by
 // the "runs the downstream over the parent's stored rows" test in
-// materialization_serve_transform.spec.ts.
+// chained_storage_build.spec.ts.
 describe.skipIf(process.platform === "win32")(
    "buildDownstreamIntoStorage (stack-on-parent, real DuckDB)",
    () => {
