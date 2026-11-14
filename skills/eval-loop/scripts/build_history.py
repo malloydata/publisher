@@ -4,7 +4,8 @@
   python3 eval.py history --set <set-dir>
 
 Reads the runs in the set's workdir (including any pulled from the store,
-run_store.py) and writes <workdir>/packages/history-<set>: three CSVs, a model
+run_store.py) and the routines' result files, and writes
+<workdir>/packages/history-<set>: four CSVs, a model
 (history.malloy) and a report (history_report.malloy), then registers it on
 the truth server, as a run package is, because it names the questions' tags
 and verdicts.
@@ -38,6 +39,37 @@ RUN_COLUMNS = ["run", "kind", "version", "experiment", "started", "slice", "full
 VERSION_COLUMNS = ["version", "run", "passed", "decided", "vs", "fixed", "broke", "perf_run",
                    "p50_ms", "total_ms", "faster", "slower", "rows_changed", "total_ratio"]
 TAG_COLUMNS = ["run", "version", "experiment", "started", "tag", "passed", "decided"]
+ROUTINE_COLUMNS = ["label", "kind", "mode", "started", "finished", "exit", "reason", "run",
+                   "passed", "decided", "total_ms", "cost_usd", "keys_verified",
+                   "edits_tried", "edits_accepted", "branch"]
+
+
+def routine_rows(workdir: pathlib.Path) -> list[dict[str, Any]]:
+    """One row per routine result file: what the routine did, in one line."""
+    import json
+    out = []
+    for f in sorted((workdir / "routines").glob("*.json")):
+        try:
+            r = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        n, imp = r.get("number") or {}, r.get("improve") or {}
+        cost = n.get("costUsd") or {}
+        edits = imp.get("edits") or []
+        out.append({"label": r.get("label"), "kind": r.get("kind"), "mode": r.get("mode"),
+                    "started": r.get("started"), "finished": r.get("finished"),
+                    "exit": r.get("exit"), "reason": r.get("reason"), "run": r.get("run"),
+                    "passed": n.get("passed"), "decided": n.get("decided"),
+                    "total_ms": n.get("totalMs"),
+                    # The run, its judging and diagnosis, and every edit an improve tried.
+                    "cost_usd": (round(sum(v or 0 for v in cost.values())
+                                       + (imp.get("costUsd") or 0), 4) if cost or imp else None),
+                    "keys_verified": r.get("keysVerified", True if r.get("kind") == "quality" else None),
+                    "edits_tried": len(edits) if imp else None,
+                    "edits_accepted": sum(e.get("outcome") == "accepted" for e in edits) if imp else None,
+                    "branch": imp.get("branch")})
+    out.sort(key=lambda x: x["started"] or "")
+    return out
 
 
 def version_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -84,11 +116,14 @@ def build(cfg: config.Config, out: pathlib.Path) -> dict[str, int]:
     write_csv(data / "runs.csv", runs, RUN_COLUMNS)
     write_csv(data / "versions.csv", versions, VERSION_COLUMNS)
     write_csv(data / "tag_scores.csv", tags, TAG_COLUMNS)
+    routines = routine_rows(cfg.workdir())
+    write_csv(data / "routines.csv", routines, ROUTINE_COLUMNS)
     for name in ("publisher.json", "history.malloy", "history_report.malloy"):
         shutil.copy(TEMPLATE / name, out / name)
     stamp_version(out / "publisher.json")   # a rebuild publishes as a new version
     shutil.copytree(TEMPLATE / "public", out / "public", dirs_exist_ok=True)
-    return {"runs": len(runs), "versions": len(versions), "tag rows": len(tags)}
+    return {"runs": len(runs), "versions": len(versions), "tag rows": len(tags),
+            "routines": len(routines)}
 
 
 def main(argv: list[str] | None = None) -> int:

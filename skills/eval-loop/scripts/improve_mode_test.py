@@ -29,7 +29,8 @@ class FakeRoutine:
         self.cfg, self.label, self.on, self.ran = cfg, label, on, []
         self.s = ["--set", str(cfg.set_dir)]
         self.run_dir = cfg.workdir() / "runs" / label
-        self.a = argparse.Namespace(max_turns="40", parallel="4", max_edits=1)
+        self.a = argparse.Namespace(max_turns="40", parallel="4", max_edits=1, max_cost_usd=None)
+        self.result = {}
 
     def do(self, name, *args):
         self.ran.append((name, args))
@@ -98,9 +99,41 @@ class Mode(unittest.TestCase):
             return 0 if accepted else 1
         return {"improve": improve, "accept": accept}
 
-    def go(self, **kw):
+    def go(self, cap=None, spent=None, **kw):
         R = FakeRoutine(self.cfg, "night", self.steps(**kw))
+        R.a.max_cost_usd = cap
+        if spent is not None:
+            R.result = {"number": {"costUsd": {"answerer": spent, "judge": None}}}
         return im.improve_quality(R), R
+
+    def test_each_edit_says_what_it_cost_the_agent_and_its_two_runs(self):
+        on = self.steps()
+        improve = on["improve"]
+
+        def priced(*args):
+            code = improve(*args)
+            d = self.run / "artifacts" / "clusters" / "night:c1"
+            (d / "result.json").write_text(json.dumps(
+                {"edit": "say what net sales excludes", "cost_usd": 0.5}))
+            return code
+
+        def run(*args):
+            label = args[args.index("--label") + 1]
+            d = self.root / "w" / "runs" / label
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "run.json").write_text(json.dumps({"answererCostUsd": 0.75, "judgeCostUsd": 0.25}))
+            return 0
+        R = FakeRoutine(self.cfg, "night", {**on, "improve": priced, "run": run})
+        r = im.improve_quality(R)
+        self.assertEqual((r["edits"][0]["costUsd"], r["costUsd"]), (2.5, 2.5))
+
+    def test_a_night_already_at_the_cap_tries_no_edit_and_says_why(self):
+        r, R = self.go(cap=2, spent=2.5)
+        self.assertEqual((r["edits"], r["branch"]), ([], None))
+        self.assertIn("stopped before edit 1 of 1: $2.50 spent, at or over --max-cost-usd 2",
+                      r["capped"])
+        self.assertNotIn("improve", [n.split()[0] for n, _ in R.ran])
+        self.assertEqual(sh(self.repo, "branch", "--list", "eval/night"), "")
 
     # ------------------------------------------------------------- the cases
 

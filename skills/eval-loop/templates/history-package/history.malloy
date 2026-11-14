@@ -3,6 +3,32 @@
 // because a set with no replays leaves a file header-only, which DuckDB would
 // otherwise read as text.
 
+#(doc) One routine: a quality or speed run, in run or improve mode, and what it did. Read from the routine's result file.
+source: routines is duckdb.sql("""
+  select * from read_csv('data/routines.csv', header = true, columns = {
+    'label': 'VARCHAR', 'kind': 'VARCHAR', 'mode': 'VARCHAR', 'started': 'TIMESTAMP',
+    'finished': 'TIMESTAMP', 'exit': 'INTEGER', 'reason': 'VARCHAR', 'run': 'VARCHAR',
+    'passed': 'INTEGER', 'decided': 'INTEGER', 'total_ms': 'DOUBLE', 'cost_usd': 'DOUBLE',
+    'keys_verified': 'BOOLEAN', 'edits_tried': 'INTEGER', 'edits_accepted': 'INTEGER',
+    'branch': 'VARCHAR'})
+""") extend {
+  dimension:
+    #(doc) What the exit code means: whether the number can be used.
+    outcome is pick 'done' when exit = 0
+      pick 'a step failed' when exit = 1
+      pick 'could not start' when exit = 3
+      pick 'done, needs a look' when exit = 4
+      pick 'no number' when exit = 5
+      else 'unknown'
+  #(doc) Every routine, newest first: its number, what it cost, the edits it left and where.
+  view: latest is {
+    group_by: started, label, kind, mode, outcome, passed, decided, total_ms, cost_usd,
+      edits_tried, edits_accepted, branch, reason
+    order_by: started desc
+    limit: 30
+  }
+}
+
 #(doc) One run: an answer run, a slice of one, a retrieval replay or a query replay.
 source: runs is duckdb.sql("""
   select * from read_csv('data/runs.csv', header = true, columns = {

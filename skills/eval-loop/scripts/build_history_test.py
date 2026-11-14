@@ -64,5 +64,33 @@ class History(unittest.TestCase):
         self.assertIn("##| artifact", (out / "history_report.malloy").read_text())
 
 
+    def test_each_routine_is_one_row_saying_what_it_did(self):
+        rd = self.root / "w" / "routines"
+        rd.mkdir(parents=True)
+        (rd / "q1.json").write_text(json.dumps({
+            "label": "q1", "kind": "quality", "mode": "improve", "started": "2026-11-02T07:00:00",
+            "exit": 0, "reason": "9 of 12 passed. 2 of 2 accepted", "run": "q1",
+            "number": {"passed": 9, "decided": 12, "costUsd": {"answerer": 1.0, "judge": 0.5,
+                                                              "diagnose": None}},
+            "improve": {"branch": "eval/q1", "costUsd": 2.0, "edits": [{"outcome": "accepted"},
+                                                       {"outcome": "rejected"}]}}))
+        (rd / "s1.json").write_text(json.dumps({
+            "label": "s1", "kind": "speed", "mode": "run", "started": "2026-11-01T07:00:00",
+            "exit": 4, "reason": "1 query errored", "number": {"totalMs": 4180}}))
+        (rd / "broken.json").write_text("{")
+        out = self.root / "pkg"
+        build_history.build(self.cfg, out)
+        rows = read(out / "data" / "routines.csv")
+        self.assertEqual([r["label"] for r in rows], ["s1", "q1"])          # oldest first
+        q = rows[1]
+        self.assertEqual((q["passed"], q["decided"], q["cost_usd"], q["edits_tried"],
+                          q["edits_accepted"], q["branch"], q["keys_verified"]),
+                         ("9", "12", "3.5", "2", "1", "eval/q1", "true"))
+        s = rows[0]
+        self.assertEqual((s["exit"], s["total_ms"], s["edits_tried"], s["keys_verified"]),
+                         ("4", "4180", "", ""))
+        self.assertIn('"routines -> latest"', (out / "history_report.malloy").read_text())
+
+
 if __name__ == "__main__":
     unittest.main()

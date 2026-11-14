@@ -335,6 +335,24 @@ def improve_speed(R: Any) -> dict[str, Any]:
                        "the replay found no source an edit would speed up")
 
 
+def edit_cost(R: Any, issue: dict[str, Any], runs: list[str]) -> float:
+    """What one edit cost in model calls: the improving agent, then each
+    candidate run's answering and judging. A replay costs nothing."""
+    total = 0.0
+    cluster = R.run_dir / "artifacts" / "clusters" / issue["issue_id"].replace("/", "_")
+    try:
+        total += json.loads((cluster / "result.json").read_text()).get("cost_usd") or 0
+    except (OSError, ValueError):
+        pass
+    for r in runs:
+        try:
+            m = json.loads((R.cfg.workdir() / "runs" / r / "run.json").read_text())
+        except (OSError, ValueError):
+            continue
+        total += (m.get("answererCostUsd") or 0) + (m.get("judgeCostUsd") or 0)
+    return round(total, 4)
+
+
 def repo_not_ready(repo: pathlib.Path) -> str | None:
     """Why improve mode cannot leave edits in `repo`, or None."""
     if git(repo, "rev-parse", "--is-inside-work-tree").stdout.strip() != "true":
@@ -370,9 +388,21 @@ def on_a_branch(R: Any, found: list[dict[str, Any]], try_one: Any, nothing: str)
     if git(repo, "checkout", "-q", "-b", branch).returncode != 0:
         return {"edits": [], "why": f"the branch {branch} could not be made; it may already exist"}
     edits: list[dict[str, Any]] = []
+    # The cap covers the night, not only the run: checked before each edit,
+    # so the last edit can run past it by at most what one edit costs.
+    cap = getattr(R.a, "max_cost_usd", None)
+    spent = sum(v or 0 for v in ((R.result.get("number") or {}).get("costUsd") or {}).values())
+    capped = None
     try:
         for k, issue in enumerate(issues, 1):
-            edits.append(try_one(R, repo, issue, k))
+            if cap is not None and spent >= cap:
+                capped = (f"stopped before edit {k} of {len(issues)}: ${spent:.2f} spent, at or "
+                          f"over --max-cost-usd {cap:g}")
+                break
+            e = try_one(R, repo, issue, k)
+            e["costUsd"] = edit_cost(R, issue, e.get("runs") or [])
+            spent += e["costUsd"]
+            edits.append(e)
     finally:
         moved = git(repo, "rev-parse", "HEAD").stdout.strip() != base
         git(repo, "checkout", "-q", start)
@@ -380,4 +410,6 @@ def on_a_branch(R: Any, found: list[dict[str, Any]], try_one: Any, nothing: str)
             git(repo, "branch", "-q", "-D", branch)
     return {"branch": branch if moved else None, "base": base, "edits": edits,
             "accepted": sum(e["outcome"] == "accepted" for e in edits),
-            "measured": sum(e["outcome"] in ("accepted", "rejected") for e in edits)}
+            "measured": sum(e["outcome"] in ("accepted", "rejected") for e in edits),
+            "costUsd": round(sum(e["costUsd"] for e in edits), 4),
+            **({"capped": capped} if capped else {})}

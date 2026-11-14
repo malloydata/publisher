@@ -115,9 +115,11 @@ tries three clusters, each on top of the last accepted one; the default is
 one, so a night's change in score has one cause.
 
 It needs the model's repository to have nothing uncommitted anywhere in it,
-and tries no edit if it does. It costs the run, one improving agent per edit,
-and two runs of the edit's cases. `--max-cost-usd` covers the run only: a run
-that reached it is not improved on.
+and checks before the run starts, so a dirty repository costs nothing (exit 3).
+It costs the run, one improving agent per edit, and two runs of the edit's
+cases. `--max-cost-usd` covers all of it: no edit is tried once the run and the
+edits so far have reached it. It is checked before each edit, so the last edit
+can pass it by what one edit costs. Each edit's cost is in the result file.
 
 A routine shares its run last, after the diagnosis is written into it, and
 writes what happened to `<workdir>/routines/<label>.json`: the kind, the
@@ -145,7 +147,9 @@ the answerers, the judge and the diagnosis each cost.
 | 5 | The run did not finish, stopped at the cost cap, or more than half its cases are voided, so there is no number. |
 
 `eval.py versions` shows how each version scored and how fast its queries
-ran. `eval.py history` builds the same as a page.
+ran. `eval.py history` builds the same as a page, which opens with one line per
+routine: its kind and mode, its number, whether the number can be used, what it
+cost with its edits, and the branch any accepted edit is on.
 
 ## Alone, or as a team
 

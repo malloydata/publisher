@@ -130,8 +130,17 @@ def quality_number(run: pathlib.Path, set_dir: pathlib.Path | None = None) -> di
 
 def improve_said(imp: dict[str, Any]) -> str:
     """One sentence on what the improve half left behind."""
+    said = improve_outcome(imp)
+    if imp.get("edits"):
+        said += f". The edits cost ${imp.get('costUsd') or 0:.2f}"
+        if imp.get("capped"):
+            said += f". {imp['capped'][0].upper()}{imp['capped'][1:]}"
+    return said
+
+
+def improve_outcome(imp: dict[str, Any]) -> str:
     if not imp.get("edits"):
-        return f"No edit was tried: {imp.get('why')}"
+        return f"No edit was tried: {imp.get('capped') or imp.get('why')}"
     n, tried = imp.get("accepted", 0), len(imp["edits"])
     if imp.get("branch") and n:
         return (f"{n} of {tried} edit(s) accepted, on the branch {imp['branch']}. Nothing is "
@@ -406,9 +415,11 @@ def main(argv: list[str] | None = None) -> int:
                          "queries, one JSON object per line with `query` and optionally "
                          "`count`, `modelPath`, `givens`. The day's queries from a host's logs")
     ap.add_argument("--max-cost-usd", type=float, default=None,
-                    help="quality only: stop answering once answerers have cost this "
-                         "much (no number), and skip the diagnosis when the run and "
-                         "its judging already reached it")
+                    help="stop answering once answerers have cost this much (no number), "
+                         "skip the diagnosis when the run and its judging already reached "
+                         "it, and in improve mode try no further edit once the run and the "
+                         "edits so far reached it. Checked before each edit, so the last "
+                         "edit can pass it by what one edit costs")
     ap.add_argument("--max-turns", default="40")
     ap.add_argument("--parallel", default="4")
     a = ap.parse_args(argv)

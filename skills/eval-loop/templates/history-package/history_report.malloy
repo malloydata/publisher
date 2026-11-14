@@ -1,6 +1,8 @@
 ##" Every run of one eval set: how each package version scored and ran.
 ##| artifact { layout=linear title="Eval history"
   tiles=[
+    routines_intro { kind=text },
+    "routines -> latest",
     intro { kind=text },
     "versions -> by_version",
     tags { kind=text },
@@ -12,6 +14,15 @@
 }
 |##
 import "history.malloy"
+
+##|(markdown) routines_intro
+## What each routine did
+
+One row per `eval.py routine`, newest first. `outcome` says whether its
+number can be used. An improve routine leaves each accepted edit on `branch`,
+ready for a pull request; nothing is pushed or published. `reason` is the
+routine's own one-line account, from its result file.
+|##
 
 ##|(markdown) intro
 ## 1. By package version

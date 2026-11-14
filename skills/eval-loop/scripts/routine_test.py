@@ -250,6 +250,16 @@ class Kinds(unittest.TestCase):
         code, ran, _, _ = self.go("quality", {"verify": 3})
         self.assertEqual((code, ran[-1]), (routine.STEP_FAILED, "verify"))
 
+    def test_the_improve_sentence_names_the_edits_cost_and_the_cap(self):
+        said = routine.improve_said({"branch": "eval/n", "accepted": 1, "measured": 1,
+                                     "edits": [{"outcome": "accepted"}], "costUsd": 3.25,
+                                     "capped": "stopped before edit 2 of 2: $9.00 spent"})
+        self.assertEqual(said, "1 of 1 edit(s) accepted, on the branch eval/n. Nothing is pushed "
+                               "or published: open a pull request from it. The edits cost $3.25. "
+                               "Stopped before edit 2 of 2: $9.00 spent")
+        self.assertEqual(routine.improve_said({"edits": [], "capped": "stopped before edit 1 of 1"}),
+                         "No edit was tried: stopped before edit 1 of 1")
+
     def test_the_kind_is_required(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             routine.main(["--set", str(self.set)])
