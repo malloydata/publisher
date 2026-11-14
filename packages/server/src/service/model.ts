@@ -1405,28 +1405,30 @@ export class Model {
     * author file needs no flag) would 400 every query here. A model without
     * the flag has no persisted source for Malloy to substitute, so nothing it
     * reads is lost. Presence only, decided as Malloy decides it.
+    *
+    * `modelDef` is the model the run compiles against: this file's, or a
+    * notebook cell's own (each cell's imports decide its flag).
     */
    private manifestIfPersistent(
       manifest: BuildManifest | undefined,
+      modelDef: ModelDef | undefined = this.modelDef,
    ): BuildManifest | undefined {
-      const modelDef = this.modelDef;
       if (!manifest || !modelDef) return undefined;
-      if (this.persistenceFlagMemo?.modelDef !== modelDef) {
-         this.persistenceFlagMemo = {
-            modelDef,
-            persistent: routeHasKey(
-               new Annotations(modelAnnotations(modelDef)),
-               "!",
-               "experimental",
-               "persistence",
-            ),
-         };
+      let persistent = this.persistenceFlagMemo.get(modelDef);
+      if (persistent === undefined) {
+         persistent = routeHasKey(
+            new Annotations(modelAnnotations(modelDef)),
+            "!",
+            "experimental",
+            "persistence",
+         );
+         this.persistenceFlagMemo.set(modelDef, persistent);
       }
-      return this.persistenceFlagMemo.persistent ? manifest : undefined;
+      return persistent ? manifest : undefined;
    }
 
-   /** {@link manifestIfPersistent}'s answer for the model it was read from. */
-   private persistenceFlagMemo?: { modelDef: ModelDef; persistent: boolean };
+   /** {@link manifestIfPersistent}'s answer for each model it was read from. */
+   private readonly persistenceFlagMemo = new WeakMap<ModelDef, boolean>();
 
    /**
     * `manifest` with the persisted views' table entries removed (see
@@ -4963,9 +4965,14 @@ export class Model {
             const cellMaxRows = getMaxQueryRows();
             const cellMaxBytes = getMaxResponseBytes();
             // The freshness-filtered manifest minus rollups (a notebook has no
-            // companion).
-            const buildManifest = this.withoutPreaggregateEntries(
-               this.resolveFreshBuildManifest(),
+            // companion), and none for a cell whose model lacks the
+            // persistence flag: Malloy refuses a non-empty manifest there, so
+            // one table bound for another model would fail every such cell.
+            const buildManifest = this.manifestIfPersistent(
+               this.withoutPreaggregateEntries(
+                  this.resolveFreshBuildManifest(),
+               ),
+               cell.modelDef ?? this.modelDef,
             );
             // See filterGivensToModelSurface.
             const cellSurfaceGivens = this.governor.filterGivensToModelSurface(

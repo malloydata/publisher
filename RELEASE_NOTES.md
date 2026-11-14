@@ -144,12 +144,21 @@ docs/materialization.md, "Stored column types follow the model, not the warehous
 
 A wrong answer is fixed, with the default settings as well as under the v1 cutover. After a host binds a build manifest, a query on a `#@ persist` source whose colocated table was past its freshness window (`freshness.fallback` `live` or `fail`) could still read that table, while the path report said `servedBy: live`. With the default `PUBLISHER_V1_SERVED_COPY=off` this happened when the stale table's only fresh neighbours were `#@ preaggregate` rollups or persisted views; under `on` it happened to every such table, and `shadow` compared against that answer. Such a query is now answered live, as its fallback says.
 
+## [Unreleased] — A `.malloynb` cell over a model without the persistence flag runs beside a bound table
+
+A legacy `.malloynb` notebook cell failed with "A non-empty `buildManifest` was supplied, but the model is missing `##! experimental.persistence`" whenever its package had a colocated `#@ persist` table bound and the cell's model did not import a model that carries the flag. A cell now gets the bound tables only when its own model carries the flag, as a query on a model already did.
+
+## [Unreleased] — `/compile`'s SQL preview no longer names a table past its freshness window
+
+With `includeSql`, `POST …/models/{path}/compile` and the `compile_model` MCP tool previewed SQL against every bound colocated table, including one past its freshness window that execution no longer reads. The preview now uses the same freshness-filtered manifest as execution, so its SQL reads the base table where the query would. A table within its window is still previewed.
+
 ## [Unreleased] — In development: join-to-rollup checks the querying source's primary key, and counts beside a re-pointed join as live does
 
 Behind `PUBLISHER_MATERIALIZE` (off by default). Two wrong answers from a joined source's `#(preaggregate)` rollup read through a join are fixed, and each now equals live.
 
 - **A declared `primary_key` the data breaks.** A join read as a `join_many` (`flights` with `primary_key: id` and `join_many: segments on segments.flight_id = id`) was served on the declared key alone. With `id` repeated, a rollup row was read once per row sharing it (10 against live's 5); with an `id` NULL, the variant counted a row live skips (6 against 5). Each build of the rollup now also checks every source in the package that reads it through such a join, grouping that source's rows on its primary key, and records whether a value repeats or is NULL, in the same run record as the `join_one` key check, carried and forgotten with the rollup's table the same way. Unique and never NULL is served; repeated, NULL, or not on record (a table a control plane's manifest binds, a check that could not run) answers live. A repeat or NULL is logged at build. Through a rollup in a `storage=` destination, read beside the querying source's stored table there, the stored table's own build checks the key over the rows it holds, under the same rules. A querying source whose `where:` reads a given, with or without a default, is not checked through a colocated rollup, since a check compiled once would read the given's default rows rather than each caller's, and is answered live.
 - **A count through another `join_many` beside a re-pointed join.** Reading `segments` at its key as a `join_one` hid its fan-out from Malloy, which then wrote another `join_many`'s `count()` as `COUNT(1)` and counted a flight with no certs as one cert (6 against live's 4). Malloy 0.0.438 (malloydata/malloy#3208, in this release) counts that flight as no certs whichever way it writes the count, so such a query is served from the rollup and equals live.
+
 ## [Unreleased] — In development: a pair table's middle sums beside the leaf, and incremental refresh for paths and blocks
 
 Behind `PUBLISHER_MATERIALIZE` (off by default). Two pair-table gaps close (materialization v2 known limitation 9):
