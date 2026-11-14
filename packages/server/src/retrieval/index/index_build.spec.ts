@@ -80,6 +80,25 @@ describe("doc parts by rules", () => {
       });
    });
 
+   it("keeps a link, a quoted value and Malloy code inside their sentence", () => {
+      const example = 'Example: run: orders -> { where: country = "U.S." }';
+      expect(splitDocByRules(`Amount. ${example}`)).toEqual({
+         what: "Amount.",
+         values: [],
+         rules: [],
+         examples: [example],
+      });
+      expect(splitDocByRules('Channel. Values: "Really? yes", "No".')).toEqual({
+         what: "Channel.",
+         values: ["Really? yes", "No"],
+         rules: [],
+         examples: [],
+      });
+      expect(splitDocByRules("Link to https://example.com/?q=x.").what).toBe(
+         "Link to https://example.com/?q=x.",
+      );
+   });
+
    it("does not read a prose colon as a list", () => {
       expect(
          listItems("Note: the amount is gross of tax and of shipping fees"),
@@ -104,6 +123,58 @@ describe("doc parts by the model", () => {
       "Order amount in dollars. Exclude test orders when summing.",
       "City name.",
    ];
+
+   it("preserves ASCII admission and uses Unicode for non-ASCII docs", async () => {
+      const sent = [
+         "Bestellbetrag in Euro. Über alle Währungen nie summieren.",
+         "Importe del pedido. ¿Incluye impuestos?",
+         "Сумма заказа в рублях. Исключайте тестовые заказы.",
+         "Ποσό παραγγελίας. Εξαιρέστε τις δοκιμαστικές παραγγελίες.",
+         "注文金額です。テスト注文は除外してください。",
+         "مبلغ الطلب. استبعد طلبات الاختبار.",
+         '"注文金額です。" "テスト注文は除外してください。"',
+         "Сумма заказа. **Исключайте тестовые заказы.**",
+         // A control: `sentencesOf` already finds two sentences here.
+         "Amount. (exclude test orders.)",
+         // Known limitation of the per-doc non-ASCII guard.
+         "Größe laut https://example.com/?q=x.",
+      ];
+      const notSent = [
+         "Сумма заказа в рублях.",
+         "注文金額です。",
+         // One sentence under the fixed "en" locale: Greek's ends one at ";".
+         "Ποσό παραγγελίας; Εξαιρέστε τις δοκιμαστικές.",
+         // Unicode ends a sentence inside each of these ASCII docs.
+         "Link to https://example.com/?q=x.",
+         'Example: run: orders -> { where: country = "U.S." }',
+         "Uses a ?? b as default",
+         "Run: orders -> { group_by: a; aggregate: b }",
+      ];
+      const chat = scriptedChat((prompt) =>
+         JSON.stringify({
+            results: numberedLines(prompt).map(([index, what]) => ({
+               index,
+               what,
+            })),
+         }),
+      );
+      const out = await resolveDocParts({
+         docs: [...sent, ...notSent],
+         llm: {
+            db,
+            environmentName: "env",
+            packageName: "p",
+            chat: chat.model,
+            instructions: "split",
+            concurrency: 1,
+            budget: new SyncRequestBudget(10),
+         },
+      });
+      expect(
+         chat.prompts.flatMap((p) => numberedLines(p).map(([, line]) => line)),
+      ).toEqual(sent);
+      expect(out.longDocs).toBe(sent.length);
+   });
 
    it("sends only multi-sentence docs, keeps the reply, and reuses it on the next build", async () => {
       const chat = scriptedChat((prompt) => {
