@@ -21,4 +21,9 @@ COPY --chown=1000:1000 . /usr/src/app
 
 USER 1000:1000
 
+# Nothing in this container serves: it idles so CI can `exec` test runs into it,
+# so there is no process whose health a check could report. NONE says so
+# explicitly, rather than leaving a check that would always read unhealthy.
+HEALTHCHECK NONE
+
 CMD [ "tail", "-f", "/dev/null" ]

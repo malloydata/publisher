@@ -390,6 +390,19 @@ ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/rds-global-bundle.pem
 # 4040); this just makes them discoverable.
 EXPOSE 4000 4040
 
+# Healthy while the server answers queries: `serving`, or `throttled`, where
+# memory back-pressure refuses new package loads but queries are still
+# answered. `initializing` and `draining` are not healthy. start-period covers a
+# first boot that loads every configured package (the same 90 s as
+# docker-compose.example.yml), so a slow start reads as "starting", not
+# "unhealthy". The port follows PUBLISHER_PORT; a `--port` passed by overriding
+# CMD is not seen here, so set PUBLISHER_PORT instead, or override the check.
+# Docker and Compose act on this; Kubernetes ignores it and uses its own probes,
+# which should hit the same endpoint.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${PUBLISHER_PORT:-4000}/api/v0/status" \
+        | grep -Eq '"operationalState":"(serving|throttled)"' || exit 1
+
 # Pass --server_root explicitly so the zero-arg bundled-default trigger
 # in server.ts (added for `npx @malloy-publisher/server` UX) does NOT fire
 # inside the production container. Without this, a Docker image launched
