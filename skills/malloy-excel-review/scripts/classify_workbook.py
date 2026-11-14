@@ -5265,7 +5265,28 @@ CONNECTORS = ["Sql.Database", "Sql.Databases", "PostgreSQL.Database", "MySQL.Dat
               "SharePoint.Files", "SharePoint.Tables", "AnalysisServices.Database", "Folder.Files", "Json.Document",
               "Parquet.Document", "Access.Database", "Db2.Database", "Web.Page", "OData.Feed", "Salesforce.Data"]
 _CRED_RE = re.compile(r"""(?i)\b(?:password|pwd)\s*=\s*(?:"[^"]+"|'[^']+'|\{[^}]+\}|[^;\s"'{][^;]*)""")
-_MASHUP_ROOT = re.compile(r"""\A\s*(?:<\?xml[^>]*\?>\s*)?(?:<!--(?:(?!-->).)*-->\s*)*<(?:[\w.-]+:)?DataMashup[\s>/]""", re.S)
+_MASHUP_TAG = re.compile(r"<(?:[\w.-]+:)?DataMashup[\s>/]")
+
+
+def is_mashup_root(head):
+    # A scan, not one regex: the prolog is untrusted and a comment-skipping regex invites backtracking.
+    def skip_space(i):
+        while i < len(head) and head[i].isspace():
+            i += 1
+        return i
+
+    i = skip_space(0)
+    if head.startswith("<?xml", i):
+        end = head.find(">", i)
+        if end < 0 or head[end - 1] != "?":
+            return False
+        i = skip_space(end + 1)
+    while head.startswith("<!--", i):
+        end = head.find("-->", i + 4)
+        if end < 0:
+            return False
+        i = skip_space(end + 3)
+    return bool(_MASHUP_TAG.match(head, i))
 
 
 def read_mashup(pkg, name, data):
@@ -5379,7 +5400,7 @@ def external_inventory(pkg, rep, ext_pivots):
             continue
         ext["custom_xml_parts"] += 1
         data = pkg.read(n)
-        if data is None or not _MASHUP_ROOT.match(decode_head(data, 4096).lstrip("\ufeff")):
+        if data is None or not is_mashup_root(decode_head(data, 4096).lstrip("\ufeff")):
             continue
         dm = guarded(pkg, n, lambda: read_mashup(pkg, n, data), {"queries": 0, "connectors": {}, "embedded_credential": False,
                                                                     "rejected": ["parse_error"], "records": [], "secrets": {}})

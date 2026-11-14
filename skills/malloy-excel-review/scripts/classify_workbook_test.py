@@ -3807,9 +3807,19 @@ class LinearTimeOnHostileText(Tmp):
 
     def test_a_run_of_empty_comments_before_the_mashup_root_is_linear(self):
         head = "<!---->" * 500 + "<x/>"
-        self.timed(lambda: cw._MASHUP_ROOT.match(head))
-        self.assertIsNotNone(cw._MASHUP_ROOT.match("<!-- a --> <!-- b --><DataMashup xmlns='x'>"))
-        self.assertIsNone(cw._MASHUP_ROOT.match(head))
+        self.timed(lambda: cw.is_mashup_root(head))
+        self.timed(lambda: cw.is_mashup_root("<!--" + "--><!--" * self.N))
+        self.assertTrue(cw.is_mashup_root("<!-- a --> <!-- b --><DataMashup xmlns='x'>"))
+        self.assertFalse(cw.is_mashup_root(head))
+
+    def test_the_mashup_root_prolog_is_read_as_xml_reads_it(self):
+        yes = ["<DataMashup>", " \n<dm:DataMashup xmlns:dm='x'/>", "<?xml version='1.0'?>\n<DataMashup ",
+               "<?xml version='1.0'?><!-- c --><!----><DataMashup>", "<!-- a -- b --><DataMashup/", "<!--> --><DataMashup>"]
+        no = ["<DataMashupX>", "<x/><DataMashup>", "<?xml version='1.0'><DataMashup>", "<!-- open <DataMashup>", "<?xml x='1'?><?xml x='1'?><DataMashup>", "<DataMashup"]
+        for s in yes:
+            self.assertTrue(cw.is_mashup_root(s), s)
+        for s in no:
+            self.assertFalse(cw.is_mashup_root(s), s)
 
     def test_quoted_string_scanners_are_linear(self):
         for s in ('"' * self.N, '"a' * (self.N // 2), '"a""' * (self.N // 4)):
