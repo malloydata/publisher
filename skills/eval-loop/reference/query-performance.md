@@ -62,6 +62,30 @@ built in the source's own warehouse reads null, the same as a live one, so use
 the binding in `run.json`, not `servedFrom`, to say a colocated persist was in
 force.
 
+### Time what people ran
+
+The stored queries are what the eval set asks. What costs money is what people
+run, and how often. `--queries <file>` replays a workload file in place of
+`--from`: one JSON object per line.
+
+```json
+{"query": "run: order_items -> by_category", "count": 412}
+{"query": "run: order_items -> { group_by: status; aggregate: total_sales }", "count": 3, "modelPath": "storefront.malloy"}
+```
+
+`query` is the Malloy. `count` is how many times it ran (default 1), and
+`modelPath`, `givens` and `qid` are optional. The same query on two lines is
+one query whose counts add. A query with no `qid` is named by a hash of its
+text, givens and model, so it has the same name in tomorrow's file and two
+days' replays compare query by query. A host's logs are the usual source; a
+host may ship a skill that writes the file.
+
+Every replay reports `weighted_ms` beside `total_ms`: each query's time by its
+count, in total and per source. That is the number to rank on. A 90 ms query
+that ran once costs less than a 10 ms query that ran forty times.
+`eval.py routine --kind speed --queries <file>` runs the whole speed routine
+over the file.
+
 ## 2. What counts as slow
 
 Set it in `eval.toml`. It is not part of the set, so it does not move
@@ -111,6 +135,11 @@ queries got faster or slower and how many changed rows.
 `performance` component turns slow queries into findings, grouped by the source
 they read, so one materialization fixes one group.
 
+With no `budget_ms` nothing is slow, and one finding is still made:
+`HOT-SOURCE` names the unpersisted source that takes at least 30% of the
+replay's time, counted by how often each query ran. It is read off the replay,
+before anything is built, and it is where to look first.
+
 ## 5. Improve, and accept
 
 The edit is a `#@ persist` or `#@ preaggregate` on the source a group reads, made
@@ -137,6 +166,30 @@ To read it, or hand it to someone, package the replays, baseline first:
 builds `speed-perf-02` on the truth server: a report of the timings per replay
 and per source, and an app with each query's time before and after, any query
 whose rows changed listed first.
+
+### Unattended
+
+`eval.py routine --kind speed --mode improve` does all of section 5 with
+nobody watching, for the finding whose source costs most (`--max-edits` of
+them). `PERSIST-NOT-BUILT` and `LIVE-FALLBACK` are skipped: they need a build
+or a look at the server, not an edit.
+
+1. One agent adds the `#@ persist` or `#@ preaggregate`. It is told nobody
+   will answer, so it does not wait for approval.
+2. The edit is committed on a new branch, `eval/<label>`, then served and
+   built as an experiment beside the main package.
+3. The night's own replay is replayed against it twice.
+4. It is accepted only if both replays say the same: no stored answer's rows
+   changed, none now errors, no query is slower, at least one is faster, and
+   the total is faster by more than the band. Two replays, because one
+   replay's total moves by itself.
+5. An accepted edit stays on the branch, with the time saved and the build it
+   costs on each refresh in its commit message. A rejected one is taken off.
+   Either way the attempt is a line in `attempts.jsonl` on that branch.
+
+The approval the attended flow asks for up front still happens. It is the
+merge: nothing is published, and the commit message puts the two numbers a
+person needs side by side.
 
 Checkpoint as for any edit: a commit naming the replay's run id. Publishing it
 as a new package version puts the speedup in `eval.py versions`.

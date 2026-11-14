@@ -64,5 +64,43 @@ class Findings(unittest.TestCase):
         self.assertEqual(len(issues), 4)
 
 
+class HotSource(unittest.TestCase):
+    """With no budget set nothing is slow, and the costliest source is still named."""
+
+    def setUp(self):
+        self.run = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.run, ignore_errors=True)
+
+    def findings(self, rows, persisted=()):
+        (self.run / "run.json").write_text(json.dumps({
+            "phase": "query-replay", "budgetMs": None,
+            "materialization": {"persistSources": list(persisted), "bound": True}}))
+        (self.run / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return {i["issue_id"]: i for i in pf.findings(self.run)}
+
+    def test_the_source_most_of_the_time_goes_to_is_named_by_how_often_its_queries_ran(self):
+        # `items` is slower per query; `orders` ran forty times.
+        rows = [{**row("a", "orders", 10, False), "count": 40}, row("b", "items", 90, False)]
+        got = self.findings(rows)
+        self.assertEqual(list(got), ["perf-hot-orders"])
+        i = got["perf-hot-orders"]
+        self.assertEqual((i["primary_code"], i["qids"], i["evidence"]["weightedMs"]),
+                         ("HOT-SOURCE", ["a"], 400.0))
+        self.assertIn("82%", i["diagnosis"])
+
+    def test_a_source_that_is_already_persisted_is_not(self):
+        rows = [{**row("a", "orders", 10, False), "count": 40}, row("b", "items", 90, False)]
+        self.assertEqual(self.findings(rows, persisted=["orders"]), {})
+
+    def test_time_spread_thin_across_sources_names_none(self):
+        rows = [row(str(n), f"s{n}", 10, False) for n in range(5)]      # 20% each
+        self.assertEqual(self.findings(rows), {})
+
+    def test_a_query_whose_source_cannot_be_read_is_left_out(self):
+        self.assertEqual(self.findings([row("a", None, 500, False)]), {})
+
+
 if __name__ == "__main__":
     unittest.main()

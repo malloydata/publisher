@@ -13,6 +13,11 @@ No answering agent and no judge run. The queries come from `--from`:
   a query replay  the same queries that replay ran, so two replays always
                   time the same work
 
+or from `--queries <file>`, a workload file: one JSON object per line with
+`query` and optionally `count`, `modelPath`, `givens`, `qid`. That is for the
+queries people ran, from a host's logs. Each query's `count` weighs it in
+`weighted_ms`, the total by how often each query ran.
+
 Each query is sent over REST once as a warm-up and then `--repeats` times. The
 warm-up is not counted: the first call after a load compiles the model.
 
@@ -93,12 +98,50 @@ def source_of(query: str | None) -> str | None:
     return name
 
 
+def workload(path: pathlib.Path, default_model: str | None) -> list[dict[str, Any]]:
+    """The queries of a workload file: what people actually ran, from a host's logs.
+
+    One JSON object per line: `query` (Malloy), and optionally `modelPath`,
+    `givens`, `count` (how many times it ran, default 1) and `qid`. The same
+    query, givens and model on two lines is one query whose counts add. With no
+    `qid` a query is named by a hash of those three, so the same query has the
+    same name in tomorrow's file and the two replays compare.
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for n, line in enumerate(path.read_text().splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except ValueError:
+            raise SystemExit(f"Invalid {path}:{n}: expected one JSON object per line, got "
+                             f"{line[:60]!r}. Fix: write each query as "
+                             f'{{"query": "run: ...", "count": 3}}') from None
+        if not isinstance(r, dict) or not isinstance(r.get("query"), str) or not r["query"].strip():
+            raise SystemExit(f"Invalid {path}:{n}: expected an object with a `query` string. "
+                             f'Fix: {{"query": "run: orders -> by_month"}}')
+        model = r.get("modelPath") or default_model
+        key = json.dumps([r["query"], r.get("givens"), model], sort_keys=True)
+        qid = r.get("qid") or "wl-" + hashlib.sha256(key.encode()).hexdigest()[:10]
+        count = r.get("count", 1)
+        if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+            raise SystemExit(f"Invalid count on {path}:{n}: expected a whole number of 1 or "
+                             f"more, got {count!r}. Fix: leave it out for a query that ran once")
+        if qid in merged:
+            merged[qid]["count"] += count
+        else:
+            merged[qid] = {"qid": qid, "tags": r.get("tags") or [], "query": r["query"],
+                           "givens": r.get("givens"), "modelPath": model, "count": count,
+                           "source": source_of(r["query"])}
+    return sorted(merged.values(), key=lambda q: q["qid"])
+
+
 def queries_from(run: pathlib.Path, default_model: str | None) -> list[dict[str, Any]]:
     """The queries to replay, one per case, from an answer run or a query replay."""
     meta = json.loads((run / "run.json").read_text())
     if meta.get("phase") == PHASE:
         return [{**{k: r.get(k) for k in ("qid", "tags", "query", "givens", "modelPath")},
-                 "source": source_of(r.get("query"))}
+                 "count": r.get("count") or 1, "source": source_of(r.get("query"))}
                 for r in ledger.read_jsonl(run / "results.jsonl")]
     paths: dict[str, Any] = {}
     for e in ledger.read_jsonl(run / "events.jsonl"):
@@ -145,6 +188,7 @@ def time_one(q: dict[str, Any], a: argparse.Namespace, version: str | None) -> d
              for _ in range(a.repeats + 1)]
     row: dict[str, Any] = {k: q.get(k) for k in ("qid", "tags", "query", "givens",
                                                  "modelPath", "source")}
+    row["count"] = q.get("count") or 1
     errors = [c["error"] for c in calls if c["error"]]
     if errors:
         row.update(error=errors[0], rows_sha=None, n_rows=None, median_ms=None)
@@ -193,6 +237,9 @@ def summarize(rows: list[dict[str, Any]], budget_ms: int | None) -> dict[str, An
                                                                "slow": 0})
         s["queries"] += 1
         s["total_ms"] = round(s["total_ms"] + r["median_ms"], 1)
+        # What the source costs the people using it: each query's time by how
+        # often it ran. Equal to total_ms when no query carries a count.
+        s["weighted_ms"] = round(s.get("weighted_ms", 0.0) + r["median_ms"] * (r.get("count") or 1), 1)
         s["slow"] += bool(r.get("slow"))
     return {
         "queries": len(rows),
@@ -201,6 +248,8 @@ def summarize(rows: list[dict[str, Any]], budget_ms: int | None) -> dict[str, An
         "p95_ms": percentile(med, 0.95),
         "max_ms": max(med) if med else None,
         "total_ms": round(sum(med), 1) if med else None,
+        "weighted_ms": round(sum(r["median_ms"] * (r.get("count") or 1) for r in ok), 1)
+        if ok else None,
         "budget_ms": budget_ms,
         "slow": sorted(r["qid"] for r in ok if r.get("slow")),
         "served_from_storage": sum(1 for r in ok if "storage" in r["served_from"]),
@@ -348,7 +397,14 @@ def resolve(a: argparse.Namespace) -> config.Config:
     a.band = a.latency_band or cfg.get("performance", "latency_band")
     a.budget_ms = a.budget_ms or cfg.get("performance", "budget_ms")
     runs = cfg.workdir() / "runs"
-    a.from_run = run_path(runs, a.from_run, "--from")
+    if bool(a.from_run) == bool(a.queries):
+        raise SystemExit("Invalid arguments: expected exactly one of --from <run> and "
+                         "--queries <file>. Fix: --from for an eval run's or a replay's "
+                         "queries, --queries for a file of logged ones")
+    if a.from_run:
+        a.from_run = run_path(runs, a.from_run, "--from")
+    elif not a.queries.is_file():
+        raise SystemExit(f"no workload file at {a.queries}")
     if a.baseline:
         a.baseline = run_path(runs, a.baseline, "--baseline")
     if a.out is None:
@@ -397,9 +453,16 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
     if held:
         raise SystemExit(f"{a.out} already holds a run ({', '.join(held)}). "
                          "Fix: pass a new --label or --out.")
-    src_meta = json.loads((a.from_run / "run.json").read_text())
-    default_model = a.model_path or src_meta.get("modelPath") or cfg.set_meta.get("targetModelPath")
-    queries = queries_from(a.from_run, default_model)
+    if a.queries:
+        default_model = a.model_path or cfg.set_meta.get("targetModelPath")
+        queries = workload(a.queries, default_model)
+        origin = a.queries
+    else:
+        src_meta = json.loads((a.from_run / "run.json").read_text())
+        default_model = (a.model_path or src_meta.get("modelPath")
+                         or cfg.set_meta.get("targetModelPath"))
+        queries = queries_from(a.from_run, default_model)
+        origin = a.from_run
     picked = None
     if a.slice or a.tag:
         picked = slices.narrow(a, a.set_dir, ledger.read_jsonl(a.set_dir / "cases.jsonl"),
@@ -407,7 +470,7 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
     if a.only:
         queries = [q for q in queries if q["qid"] in set(a.only)]
     if not queries:
-        raise SystemExit(f"{a.from_run}: no passing case with a query to replay"
+        raise SystemExit(f"{origin}: no passing case with a query to replay"
                          + (" in this slice." if a.only else "."))
     missing = [q["qid"] for q in queries if not q.get("modelPath")]
     if missing:
@@ -451,7 +514,7 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
     pins: dict[str, Any] = {
         "runId": a.out.name, "label": a.label, "target": "local", "answererModel": None,
         "phase": PHASE, "started": started, "status": status,
-        "packageVersion": version, "fromRun": a.from_run.name,
+        "packageVersion": version, "fromRun": origin.name,
         "setName": cfg.set_meta.get("name") or cfg.set_name,
         "datasetVersion": cfg.set_meta.get("datasetVersion"),
         "datasetSha": ledger.dataset_sha(a.set_dir),
@@ -473,7 +536,7 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
     s = summary
     base = (version or {}).get("baseVersion")
     shown = vid or (f"{base} (unpublished)" if base else "working copy")
-    print(f"\nquery replay of {a.from_run.name}: {s['queries']} queries, {s['errors']} errors, "
+    print(f"\nquery replay of {origin.name}: {s['queries']} queries, {s['errors']} errors, "
           f"version {shown}")
     print(f"p50 {s['p50_ms']} ms   p95 {s['p95_ms']} ms   max {s['max_ms']} ms   "
           f"total {s['total_ms']} ms" + (f"   over {a.budget_ms} ms: {len(s['slow'])}"
@@ -498,9 +561,13 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
-    ap.add_argument("--from", dest="from_run", required=True,
+    ap.add_argument("--from", dest="from_run", default=None,
                     help="the run whose queries to replay: an answer run (its passing cases) "
                          "or another query replay (the same queries). A label or a directory")
+    ap.add_argument("--queries", type=pathlib.Path, default=None,
+                    help="a workload file in place of --from: one JSON object per line with "
+                         "`query`, and optionally `modelPath`, `givens`, `count` and `qid`. "
+                         "For the queries people ran, taken from a host's logs")
     ap.add_argument("--baseline", default=None,
                     help="an earlier query replay to compare with, query by query")
     ap.add_argument("--label", default=None,

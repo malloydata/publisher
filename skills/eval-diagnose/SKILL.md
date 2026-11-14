@@ -300,6 +300,7 @@ without spawning an agent, one issue per source the queries read, component
 | `PERSIST-NOT-BUILT` | a query reads a persisted source with no bound table, slow or not: build and replay again before editing anything | model |
 | `SLOW-QUERY` | a query's median is over `budget_ms`, and neither of the above applies | model |
 | `LIVE-FALLBACK` | `servedFrom: live_fallback`: a `storage=` table failed at query time and the query ran live | model |
+| `HOT-SOURCE` | the unpersisted source that takes at least 30% of the replay's time, each query counted as often as it ran, when no code above names it. Nothing is over a budget, so nothing is wrong: it is where a persist would pay most, if one pays at all | model |
 
 Before proposing a persist for a `SLOW-QUERY` group, read the source's build
 cost and history (the `malloy-materialization` skill, `reference/tuning.md`). A

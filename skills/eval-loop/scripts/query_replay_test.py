@@ -67,7 +67,7 @@ class Queries(unittest.TestCase):
              "source": "a", "median_ms": 3}) + "\n")
         self.assertEqual(qr.queries_from(d, None), [
             {"qid": "q", "tags": None, "query": "run: a -> b", "givens": {"g": 1},
-             "modelPath": "m.malloy", "source": "a"}])
+             "modelPath": "m.malloy", "count": 1, "source": "a"}])
 
     def test_source_of(self):
         self.assertEqual(qr.source_of("  run: order_items -> {\n group_by: x }"), "order_items")
@@ -291,6 +291,49 @@ class Replay(unittest.TestCase):
         self.assertIn("every query errored", out)
         self.assertEqual(json.loads((d / "run.json").read_text())["status"], "aborted")
         self.assertIsNone(ri.record(ri.set_runs(qr.config.load(self.set)), "perf"))
+
+    def test_a_workload_file_is_replayed_and_its_counts_weigh_the_total(self):
+        wl = self.root / "day.jsonl"
+        wl.write_text('{"query": "run: orders -> a", "count": 3}\n'
+                      '\n'
+                      '{"query": "run: items -> b", "modelPath": "other.malloy"}\n'
+                      '{"query": "run: orders -> a", "count": 2}\n')
+        out = io.StringIO()
+        with unittest.mock.patch.object(qr, "package_version", return_value={"id": "1.0.0"}), \
+                unittest.mock.patch.object(qr, "materialization_state", return_value={}), \
+                contextlib.redirect_stdout(out):
+            code = qr.main(["--set", str(self.set), "--queries", str(wl), "--label", "day-1",
+                            "--publisher", self.url, "--model-path", "m.malloy"])
+        self.assertEqual(code, 0)
+        d = self.root / "w" / "runs" / "day-1"
+        rows = [json.loads(x) for x in (d / "results.jsonl").read_text().splitlines()]
+        by_query = {r["query"]: r for r in rows}
+        self.assertEqual(len(rows), 2)                                # the repeat merged
+        self.assertEqual(by_query["run: orders -> a"]["count"], 5)
+        self.assertEqual(by_query["run: items -> b"]["modelPath"], "other.malloy")
+        self.assertTrue(all(r["qid"].startswith("wl-") for r in rows))
+        s = json.loads((d / "summary.json").read_text())
+        self.assertEqual((s["total_ms"], s["weighted_ms"]), (24.0, 72.0))   # 12 ms each: 5 + 1
+        self.assertEqual(s["by_source"]["orders"]["weighted_ms"], 60.0)
+        self.assertEqual(json.loads((d / "run.json").read_text())["fromRun"], "day.jsonl")
+        # the same file tomorrow names its queries the same, so the two compare
+        again = qr.workload(wl, "m.malloy")
+        self.assertEqual(sorted(q["qid"] for q in again), sorted(r["qid"] for r in rows))
+
+    def test_a_workload_line_that_is_not_a_query_is_named_with_the_fix(self):
+        wl = self.root / "bad.jsonl"
+        for text, said in (('{"q": "x"}\n', "`query` string"), ("not json\n", "one JSON object per line"),
+                           ('{"query": "run: a -> b", "count": 0}\n', "count")):
+            wl.write_text(text)
+            with self.assertRaises(SystemExit) as e:
+                qr.workload(wl, None)
+            self.assertIn(said, str(e.exception))
+
+    def test_from_and_queries_are_one_or_the_other(self):
+        for extra in ([], ["--from", "base", "--queries", "x"]):
+            with self.assertRaises(SystemExit) as e:
+                qr.main(["--set", str(self.set), "--publisher", self.url, *extra])
+            self.assertIn("exactly one of --from", str(e.exception))
 
     def test_a_replay_records_what_the_tables_cost_and_shows_the_baselines(self):
         one = {"builds": [{"source": "orders", "rows": 9, "buildMs": 400, "scannedBytes": None}]}

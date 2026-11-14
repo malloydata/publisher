@@ -189,7 +189,7 @@ here.
 
 ### A speed edit (component `performance`)
 
-An issue from a query replay (`SLOW-QUERY`, `PERSIST-REFUSED`) is a speed gap,
+An issue from a query replay (`SLOW-QUERY`, `HOT-SOURCE`, `PERSIST-REFUSED`) is a speed gap,
 not a wrong answer. Its edit is a `#@ persist` or a `#@ preaggregate` on the
 source the issue names, or a fix to the refusal the build plan reported. Write
 it with the `malloy-materialization` skill (in the `modeling` manifest group, not
@@ -203,6 +203,10 @@ Two differences from every other edit here:
    user's call. Show the annotation, the issue's queries and their times, and
    the source's build cost from its materialization history. Make the edit only
    when they say yes. `PERSIST-NOT-BUILT` needs no edit at all: build and replay.
+   The one exception is a run whose prompt says nobody is here to ask (the
+   routine's improve mode): then make the edit. It is measured as an
+   experiment, left on a branch with its speedup and its build cost in the
+   commit message, and approved by whoever merges it.
 2. **It changes no name and no doc.** Keep it that way. A speed edit that also
    renames or redocuments something is two edits; split them.
 

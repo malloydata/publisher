@@ -13,6 +13,10 @@ model's annotations), with the codes skill:eval-diagnose defines:
   PERSIST-NOT-BUILT  a query reads a persisted source with no bound table
   SLOW-QUERY         a query's median is over `budget_ms`, and neither of the above
   LIVE-FALLBACK      `servedFrom: live_fallback`: the stored table failed and the query ran live
+  HOT-SOURCE         the source the replay spent most of its time on, when it is
+                     not persisted and none of the above names it. Over no
+                     budget, so nothing is wrong: it is where a persist would
+                     pay most, if one pays at all
 
 The issues are appended to the replay's events.jsonl, replacing any this script
 wrote before, so it can be re-run.
@@ -84,7 +88,51 @@ def findings(run: pathlib.Path) -> list[dict[str, Any]]:
                        "live. Read the server log's storage lines before the model."),
             severity="medium", confidence="high", diagnosedBy=BY,
             evidence={"source": src}))
+    hot = hot_source(rows, persisted | refused, {(i.get("evidence") or {}).get("source")
+                                                 for i in out})
+    if hot:
+        src, ms, share, qids = hot
+        out.append(ledger.event(
+            "issue", issue_id=f"perf-hot-{src}", qids=qids,
+            primary_code="HOT-SOURCE", component="performance", owner="model",
+            diagnosis=(f"`{src}` takes {share:.0%} of the replay's time ({ms:g} ms across "
+                       f"{len(qids)} quer{'y' if len(qids) == 1 else 'ies'}, each counted as "
+                       f"often as it ran) and is not persisted. No query is over a budget. "
+                       f"Candidate: persist or preaggregate it, if the time saved is worth a "
+                       f"build on every refresh."),
+            severity="low", confidence="medium", diagnosedBy=BY,
+            evidence={"source": src, "weightedMs": ms, "share": round(share, 3)}))
     return out
+
+
+HOT_SHARE = 0.3
+
+
+def hot_source(rows: list[dict[str, Any]], persisted: set[str], named: set[Any]
+               ) -> tuple[str, float, float, list[str]] | None:
+    """The unpersisted source with the largest share of the replay's time, when
+    that share is at least HOT_SHARE and no other finding names it.
+
+    Time is each query's median by how often it ran (`count`, 1 unless the
+    replay came from a workload file). A query whose source could not be read
+    off its text is left out: there is nothing to annotate.
+    """
+    cost: dict[str, float] = {}
+    qids: dict[str, list[str]] = {}
+    for r in rows:
+        src = r.get("source")
+        ms = (r.get("median_ms") or 0) * (r.get("count") or 1)
+        if src:
+            cost[src] = cost.get(src, 0.0) + ms
+            qids.setdefault(src, []).append(r["qid"])
+    total = sum((r.get("median_ms") or 0) * (r.get("count") or 1) for r in rows)
+    if not cost or total <= 0:
+        return None
+    src = max(cost, key=lambda s: (cost[s], s))
+    share = cost[src] / total
+    if src in persisted or src in named or share < HOT_SHARE:
+        return None
+    return src, round(cost[src], 1), share, sorted(qids[src])
 
 
 def write(run: pathlib.Path) -> list[dict[str, Any]]:

@@ -204,7 +204,8 @@ def rows_transcripts(run: pathlib.Path, events: list[dict]) -> list[dict]:
 
 TIMING_COLUMNS = ("run_id", "qid", "tags", "source", "model_path", "query", "givens",
                   "median_ms", "min_ms", "max_ms", "round_trip_ms", "timing", "served_from",
-                  "query_cost_bytes", "rows_sha", "n_rows", "unstable_rows", "slow", "error")
+                  "query_cost_bytes", "rows_sha", "n_rows", "unstable_rows", "slow", "error",
+                  "count")
 
 
 def rows_timings(run: pathlib.Path, meta: dict[str, Any]) -> list[dict]:

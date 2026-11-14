@@ -184,5 +184,102 @@ class Mode(unittest.TestCase):
         self.assertIn("nothing the model's repository owns", r["why"])
 
 
+class Base(unittest.TestCase):
+    """The temporary repository and set both modes are tested in."""
+    setUp, tearDown, issue = Mode.setUp, Mode.tearDown, Mode.issue
+
+
+class Speed(Base):
+    def setUp(self):
+        super().setUp()
+        ev = [{"kind": "issue", "issue_id": "perf-hot-orders", "qids": ["a"], "owner": "model",
+               "component": "performance", "primary_code": "HOT-SOURCE",
+               "evidence": {"source": "orders"}},
+              {"kind": "issue", "issue_id": "perf-items", "qids": ["b"], "owner": "model",
+               "component": "performance", "primary_code": "SLOW-QUERY",
+               "evidence": {"source": "items"}},
+              {"kind": "issue", "issue_id": "perf-events", "qids": ["c"], "owner": "model",
+               "component": "performance", "primary_code": "PERSIST-NOT-BUILT",
+               "evidence": {"source": "events"}}]
+        (self.run / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in ev))
+        (self.run / "summary.json").write_text(json.dumps({"by_source": {
+            "orders": {"weighted_ms": 400.0, "total_ms": 10.0},
+            "items": {"weighted_ms": 90.0, "total_ms": 90.0},
+            "events": {"weighted_ms": 900.0}}}))
+
+    def recorded(self):
+        """The attempts committed on the branch the routine left."""
+        text = sh(self.repo, "show", "eval/night:evals/attempts.jsonl")
+        return [json.loads(x) for x in text.splitlines()]
+
+    def compare(self, **kw):
+        return {"compare": {"rows_changed": [], "broke": [], "slower": [],
+                            "faster": [{"qid": "a"}], "total_ratio": 0.4,
+                            "total_before_ms": 400.0, "total_after_ms": 160.0, **kw},
+                "build": {"tables": 1, "build_ms": 30}}
+
+    def test_the_costliest_source_an_edit_can_help_is_first(self):
+        # `events` costs most and needs a build, not an edit.
+        self.assertEqual([i["issue_id"] for i in im.speed_issues(self.run)],
+                         ["perf-hot-orders", "perf-items"])
+
+    def test_a_speed_up_is_two_replays_that_agree(self):
+        ok = self.compare()
+        self.assertEqual(im.speed_verdict([ok, ok], 0.2), (True, {}))
+        self.assertIn("twice", im.speed_verdict([ok], 0.2)[1])
+        for bad, rule in ((self.compare(rows_changed=["a"]), "rows held (replay 2)"),
+                          (self.compare(slower=[{"qid": "b"}]), "nothing slower (replay 2)"),
+                          (self.compare(total_ratio=0.9), "faster (replay 2)"),
+                          (self.compare(faster=[]), "faster (replay 2)"),
+                          ({"build": None}, "compared (replay 2)")):
+            accepted, failed = im.speed_verdict([ok, bad], 0.2)
+            self.assertFalse(accepted)
+            self.assertIn(rule, failed)
+
+    def go(self, summary):
+        def improve(*args):
+            d = self.run / "artifacts" / "clusters" / "perf-hot-orders"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "result.json").write_text(json.dumps({"edit": "persist orders_by_month"}))
+            (d / "edit.patch").write_text("+#@ persist name=\"orders_by_month\"\n")
+            (self.repo / "pkg" / "m.malloy").write_text("#@ persist\nsource: orders is t\n")
+            return 0
+
+        def replay(*args):
+            d = self.root / "w" / "runs" / args[args.index("--label") + 1]
+            d.mkdir(parents=True)
+            (d / "summary.json").write_text(json.dumps(summary))
+            (d / "run.json").write_text(json.dumps({"latencyBand": 0.2}))
+            return 1 if summary["compare"]["rows_changed"] else 0
+        R = FakeRoutine(self.cfg, "night", {"improve": improve, "query-replay": replay})
+        return im.improve_speed(R), R
+
+    def test_an_accepted_speed_edit_is_built_replayed_twice_and_kept_with_its_cost(self):
+        r, R = self.go(self.compare())
+        self.assertEqual((r["accepted"], r["branch"]), (1, "eval/night"))
+        self.assertEqual([n.split()[0] for n, _ in R.ran],
+                         ["improve", "experiment", "query-replay", "query-replay", "stop"])
+        self.assertIn("--unattended", R.ran[0][1])
+        replay = R.ran[2][1]
+        self.assertEqual((replay[replay.index("--from") + 1], replay[replay.index("--baseline") + 1],
+                          replay[replay.index("--experiment") + 1]), ("night", "night", "night-c1"))
+        body = sh(self.repo, "log", "-1", "--format=%B", "eval/night")
+        self.assertIn("total 400.0 -> 160.0 ms", body)
+        self.assertIn("It builds 1 table(s) in 30 ms on each refresh", body)
+        row = self.recorded()[-1]
+        self.assertEqual((row["outcome"], row["issueIds"], row["effect"]["totalAfterMs"]),
+                         ("accepted", ["perf-hot-orders"], 160.0))
+
+    def test_a_speed_edit_that_changes_rows_is_taken_off_and_recorded(self):
+        r, _ = self.go(self.compare(rows_changed=["a"]))
+        self.assertEqual(r["edits"][0]["outcome"], "rejected")
+        self.assertIn("rows held", r["edits"][0]["why"])
+        self.assertEqual(sh(self.repo, "show", "eval/night:pkg/m.malloy"), "source: orders is t")
+        self.assertEqual(self.recorded()[-1]["outcome"], "rejected")
+        self.assertEqual(sh(self.repo, "status", "--porcelain"), "")
+        # the line is on the branch, for the pull request, and not left behind here
+        self.assertEqual(attempts.read(self.cfg.set_dir), [])
+
+
 if __name__ == "__main__":
     unittest.main()

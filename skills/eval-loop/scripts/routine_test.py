@@ -166,6 +166,14 @@ class Kinds(unittest.TestCase):
         self.assertEqual(replay[replay.index("--from") + 1], str(self.work / "runs" / "old-perf"))
         self.assertEqual(replay[replay.index("--baseline") + 1], "record")
 
+    def test_speed_times_a_workload_file_when_given_one(self):
+        _, _, _, calls = self.go("speed", None,
+                                 {"query-replay": lambda: self.replay_run(self.run_dir)},
+                                 "--queries", "/logs/day.jsonl")
+        replay = next(c for c in calls if c[0] == "query-replay")
+        self.assertEqual(replay[replay.index("--queries") + 1], "/logs/day.jsonl")
+        self.assertNotIn("--from", replay)
+
     def test_speed_with_nothing_to_time_cannot_start(self):
         code, ran, r, _ = self.go("speed")
         self.assertEqual((code, ran), (3, ["check"]))

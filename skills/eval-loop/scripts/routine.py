@@ -32,6 +32,11 @@ acceptance rules decide. An accepted edit is left as a commit on the branch
 eval/<label> in the model's repository; a rejected one is taken off and
 recorded. Nothing is pushed or published (improve_mode.py).
 
+For speed, `--mode improve` tries a `#@ persist` or `#@ preaggregate` on the
+source that costs most, builds it as an experiment, replays twice, and keeps
+it only if both replays show the same rows and a faster total. `--queries
+<file>` times a file of logged queries in place of the stored ones.
+
 `--max-cost-usd` bounds a quality routine's model spend: answering stops once
 answerers have cost that much, and a run that reached it is not diagnosed.
 
@@ -146,6 +151,7 @@ def speed_number(run: pathlib.Path) -> dict[str, Any]:
     c = s.get("compare") or {}
     return {"queries": s.get("queries"), "errors": s.get("errors"),
             "p50Ms": s.get("p50_ms"), "p95Ms": s.get("p95_ms"), "totalMs": s.get("total_ms"),
+            "weightedMs": s.get("weighted_ms"),
             "slow": s.get("slow") or [],
             "build": ({"tables": b["tables"], "buildMs": b["build_ms"],
                        "scannedBytes": b["scanned_bytes"], "rows": b["rows"]}
@@ -292,11 +298,17 @@ class Routine:
         if code != 0:
             return STEP_FAILED, f"stopped at check (exit {code}); nothing after it ran"
         source, compared = speed_source(self.cfg)
-        if source is None:
+        # The day's logged queries when given: what people ran, counted as
+        # often as they ran it. Compared with the record by query, so a query
+        # in both days' files is timed against itself.
+        workload = (("--queries", self.a.queries) if self.a.queries
+                    else ("--from", source) if source else ())
+        if not workload:
             return CANNOT_START, ("no run to take queries from: a speed routine times the "
                                   "queries of passing answers. Fix: run "
-                                  "`eval.py routine --kind quality` once first")
-        code = self.do("query-replay", "query-replay", *self.s, "--from", source,
+                                  "`eval.py routine --kind quality` once first, or pass "
+                                  "--queries <a file of logged queries>")
+        code = self.do("query-replay", "query-replay", *self.s, *workload,
                        *(("--baseline", "record") if compared else ()),
                        "--label", self.label, "--no-share")
         status = read_json(self.run_dir / "run.json").get("status")
@@ -314,6 +326,10 @@ class Routine:
                 return STEP_FAILED, f"stopped at {name} (exit {code}); nothing after it ran"
         self.share()
         said = f"{n['queries']} queries in {n['totalMs']} ms"
+        if self.a.mode == "improve":
+            import improve_mode
+            self.result["improve"] = imp = improve_mode.improve_speed(self)
+            said += ". " + improve_said(imp)
         c = n["compare"] or {}
         if c.get("rowsChanged") or c.get("broke"):
             # After an edit meant to change answers this is expected. Either way
@@ -360,6 +376,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="default: <kind>-<UTC date and time>")
     ap.add_argument("--serve", action="store_true",
                     help="start the servers this kind needs, and stop the ones it started")
+    ap.add_argument("--queries", default=None,
+                    help="speed only: a workload file to time in place of the stored "
+                         "queries, one JSON object per line with `query` and optionally "
+                         "`count`, `modelPath`, `givens`. The day's queries from a host's logs")
     ap.add_argument("--max-cost-usd", type=float, default=None,
                     help="quality only: stop answering once answerers have cost this "
                          "much (no number), and skip the diagnosis when the run and "

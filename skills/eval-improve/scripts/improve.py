@@ -138,6 +138,21 @@ EXPERIMENT_SYNC = """{python} {experiment_py} sync {name} --set {set_dir} --dir 
 
 SYNC_HELPER = "sync_and_reload.sh"
 
+# For a run nobody is watching. The skill tells a speed edit to wait for the
+# user's yes, because a persisted table costs a build on every refresh. Here
+# the yes comes later and from the right place: the edit is measured and left
+# on a branch, and a person merges it or does not.
+UNATTENDED = """
+NOBODY IS HERE TO ASK
+
+This run is unattended. Do not wait for approval and do not ask a question:
+nobody will answer. Where the skill says to propose an edit and wait for the
+user, make the edit instead. It is not published: it is measured as an
+experiment beside the main package and left on a branch, and a person approves
+it by merging that branch. If you would not make the edit without asking,
+make none and say why in `disagreement`.
+"""
+
 
 def served_version(rest_url: str | None, environment: str,
                    package: str) -> str | None:
@@ -225,7 +240,7 @@ probe you run afterwards is testing the old model. This covers a package skill
 under skills/ as well as a .malloy file: both are part of the hash.
 
 One edit for the cluster's shared root cause, not one per case.
-
+{unattended}
 READ THE CLUSTER'S `sufficiency` BEFORE YOU EDIT
 
 It reports whether the diagnosis was PROBED, worst case across the cluster's
@@ -426,6 +441,7 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
                                  "sufficiency", "diagnosis", "evidence")},
                                indent=2),
             cases=json.dumps(members, indent=2)[:8000],
+            unattended=UNATTENDED if getattr(a, "unattended", False) else "",
             prior=attempts.brief(attempts.relevant(a.prior, issue.get("qids", [])))[:6000],
             cases_file=(a.set_dir / "cases.jsonl").resolve()),
         skills=["eval-improve", *a.role_skills], skills_root=a.roots,
@@ -511,6 +527,10 @@ def run(argv: list[str] | None, started: dict[str, Any]) -> int:
                          "the agent probe that. Works on a server that "
                          "publishes versions, where --watch-mode and the "
                          "sync do not, and leaves the main package alone")
+    ap.add_argument("--unattended", action="store_true",
+                    help="tell the agent nobody will answer a question or approve "
+                         "an edit: it makes the edit, which is then measured and "
+                         "left on a branch for a person to merge")
     ap.add_argument("--model", default="opus", help="the modeling agent")
     ap.add_argument("--environment", default=None)
     ap.add_argument("--package", default=None)
@@ -641,7 +661,9 @@ def run(argv: list[str] | None, started: dict[str, Any]) -> int:
             status[e["issue_id"]] = e["status"]
     issues = [e for e in events if e.get("kind") == "issue"
               and e.get("owner") in ("model", "package-skill")
-              and status.get(e["issue_id"]) == "open"]
+              # An issue with no status event is open: the speed findings of
+              # a query replay are written without one.
+              and status.get(e["issue_id"], "open") == "open"]
     if a.only:
         want = {x.strip() for x in a.only.split(",")}
         issues = [i for i in issues if i["issue_id"] in want]
