@@ -59,7 +59,7 @@ const DECLINES = {
    { reason: SkipReason; warnedCode?: string }
 >;
 
-export type LegDeclineCode = keyof typeof DECLINES;
+type LegDeclineCode = keyof typeof DECLINES;
 
 /** The served copy's own codes. */
 export type ServedCopyDeclineCode = Extract<
@@ -68,7 +68,7 @@ export type ServedCopyDeclineCode = Extract<
 >;
 
 /** The leg a code belongs to, by its prefix. */
-export type DecliningLeg = "rollup" | "view" | "served_copy";
+type DecliningLeg = "rollup" | "view" | "served_copy";
 
 /**
  * A leg that did not answer one query: expected, so logged quietly. Its

@@ -176,7 +176,7 @@ export function orderByPartitionColumns(
 }
 
 /** {@link orderByPartitionColumns}, for order terms already rendered as SQL. */
-export function orderByExpressions(
+function orderByExpressions(
    selectSQL: string,
    expressions: readonly string[],
 ): string {

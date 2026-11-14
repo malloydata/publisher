@@ -36,7 +36,7 @@ import type { KeyUniqueness } from "../types";
 import { declineOfCode } from "./leg_decline";
 
 export type ApiQueryPath = components["schemas"]["QueryPath"];
-export type ApiQueryShape = components["schemas"]["QueryShape"];
+type ApiQueryShape = components["schemas"]["QueryShape"];
 type ApiCandidate = components["schemas"]["QueryPathCandidate"];
 type ApiNearby = components["schemas"]["QueryPathNearby"];
 type ApiServer = components["schemas"]["QueryPathServer"];
@@ -136,7 +136,7 @@ export interface StorageTable {
 }
 
 /** A rollup this model's pre-aggregation plans. */
-export interface ModelRollup {
+interface ModelRollup {
    rollupSourceName: string;
    baseSourceName: string;
    baseSourceID?: string;
@@ -669,7 +669,7 @@ function ownVerdictExplains(
  * text, which can carry a refusal's detail; that stays on the package's
  * warnings and its status.
  */
-export function verdictWarningMessage(reason: string): string {
+function verdictWarningMessage(reason: string): string {
    switch (reason) {
       case "storage_mode":
          return "Built into storage, but the server's storage mode routes no query to it, so its queries are answered live.";

@@ -9,7 +9,7 @@ import {
    flatPairQueryVerdict,
    pairConditionReads,
    pairMeasureLevels,
-   pairQueryReadsChild,
+   pairQueryReadLevel,
 } from "./pair_flat_query";
 
 const model = `source: segments is duckdb.sql("select 1 as seg_id, 1 as flight_id, 2.0 as miles") extend {
@@ -118,7 +118,16 @@ const flat = `source: flights is duckdb.sql("select 1 as id, 'AA' as carrier, 3.
     child_view is { group_by: carrier; aggregate: seg_total }
 }`;
 
-describe("pairQueryReadsChild and flatPairQueryVerdict", () => {
+/** Whether a query reads through the join, as flatPairQueryVerdict asks. */
+function readsChild(
+   query: Parameters<typeof pairQueryReadLevel>[0],
+   source: Parameters<typeof pairQueryReadLevel>[1],
+): boolean | undefined {
+   const level = pairQueryReadLevel(query, source, "segments");
+   return level === undefined ? undefined : level > 0;
+}
+
+describe("pairQueryReadLevel and flatPairQueryVerdict", () => {
    const pair = {
       join: "segments",
       parentRowField: "pr",
@@ -133,7 +142,7 @@ describe("pairQueryReadsChild and flatPairQueryVerdict", () => {
       };
       const source = prepared._modelDef.contents.flights as never;
       return {
-         child: pairQueryReadsChild(prepared._query, source, "segments"),
+         child: readsChild(prepared._query, source),
          verdict: flatPairQueryVerdict(prepared._query, source, pair),
       };
    };
@@ -201,10 +210,9 @@ source: long_leg_flights is flights extend { where: segments.miles > 1 }`;
          _modelDef: { contents: Record<string, unknown> };
       };
       expect(
-         pairQueryReadsChild(
+         readsChild(
             prepared._query,
             prepared._modelDef.contents.long_leg_flights as never,
-            "segments",
          ),
       ).toBe(true);
    });
@@ -212,7 +220,7 @@ source: long_leg_flights is flights extend { where: segments.miles > 1 }`;
    it("fails closed on a query it cannot read", () => {
       const source = { fields: [{ name: "carrier", type: "string" }] };
       expect(
-         pairQueryReadsChild(
+         readsChild(
             {
                pipeline: [
                   {
@@ -222,12 +230,9 @@ source: long_leg_flights is flights extend { where: segments.miles > 1 }`;
                ],
             },
             source,
-            "segments",
          ),
       ).toBeUndefined();
-      expect(
-         pairQueryReadsChild({ pipeline: [] }, source, "segments"),
-      ).toBeUndefined();
+      expect(readsChild({ pipeline: [] }, source)).toBeUndefined();
       expect(flatPairQueryVerdict({ pipeline: [] }, source, pair).kind).toBe(
          "refused",
       );

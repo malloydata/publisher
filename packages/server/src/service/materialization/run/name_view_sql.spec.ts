@@ -3,7 +3,6 @@
 
 import { describe, expect, it } from "bun:test";
 import {
-   isNameViewComment,
    NAME_VIEW_MARK,
    nameViewComment,
    nameViewDialectSupported,
@@ -75,7 +74,7 @@ describe("the name= view's comment mark", () => {
          `${NAME_VIEW_MARK}  owner=o target=t`,
          `prefix ${markOf("t")}`,
       ]) {
-         expect(isNameViewComment(comment)).toBe(false);
+         expect(parseNameViewComment(comment)).toBeUndefined();
       }
    });
 });

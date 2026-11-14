@@ -256,7 +256,7 @@ const staleBindingsWithheld = lazyCounter(
    "Storage serve bindings withheld from a routed query because the freshness gate found them stale; each one is read live instead. Until now staleness was visible only as a later live read.",
 );
 
-export interface ServedCopyHost {
+interface ServedCopyHost {
    modelPath(): string;
    modelDef(): unknown;
    /**
@@ -3199,7 +3199,7 @@ function declaresBlocks(def: unknown): boolean {
  * case-fold (see {@link storedColumnsWithAccess}): what the source's own text
  * drops or renames away after the build.
  */
-export function unnamedStoredColumns(
+function unnamedStoredColumns(
    schema: readonly { name: string; type: string }[],
    fields: readonly unknown[] | undefined,
 ): { name: string; type: string }[] {

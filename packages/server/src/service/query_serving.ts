@@ -130,7 +130,7 @@ export type RoutedExtra =
  * (G3) apply to it. A `storage=` table waits for the managed-tier review
  * (`materialize.gatedSources`), so an answer reading one, or none, does not.
  */
-export function readsOnlyColocatedTables(extra: RoutedExtra): boolean {
+function readsOnlyColocatedTables(extra: RoutedExtra): boolean {
    return (
       extra.kind === "storage" &&
       extra.via === "served_copy" &&

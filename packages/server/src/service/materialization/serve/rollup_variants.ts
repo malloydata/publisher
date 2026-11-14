@@ -186,10 +186,10 @@ import { queryShapeOf } from "./query_path";
 type VirtualMap = Map<string, Map<string, string>>;
 
 /** The query was not on a source with rollups: the leg does not apply. */
-export class NoRollupForQuery extends Error {}
+class NoRollupForQuery extends Error {}
 
 /** What the variant reads from the model that owns it. */
-export interface RollupVariantHost {
+interface RollupVariantHost {
    modelPath(): string;
    modelDef(): unknown;
    serveDestinationConfig(): (() => MalloyConfig) | undefined;
@@ -205,7 +205,7 @@ export interface RollupVariantHost {
 }
 
 /** A rollup's answer, for the router. */
-export interface RollupAnswer {
+interface RollupAnswer {
    runnable: QueryMaterializer;
    /** The rollup that answered: its name, for the path report. */
    rollupSourceName: string;
@@ -2036,7 +2036,7 @@ function isFresh(b: ServeBinding, now: Date): boolean {
 }
 
 /** The rollup's own `sourceID`, as its build companion declares it. */
-export function rollupSourceID(plan: RollupVariantPlan): string | undefined {
+function rollupSourceID(plan: RollupVariantPlan): string | undefined {
    const declared = splitSourceID(plan.baseSourceID);
    const companion = declared ? rollupCompanionURLOf(declared.url) : undefined;
    return companion ? `${plan.rollupSourceName}@${companion.href}` : undefined;
@@ -2346,7 +2346,7 @@ function liveEntryPointGates(
  * dimensions, so filtering its groups equals filtering the base's rows
  * (table 1).
  */
-export function proveGates(
+function proveGates(
    plan: RollupVariantPlan,
    query: Pick<RollupQuery, "gates" | "sourceID" | "struct">,
    routed: Awaited<ReturnType<typeof readPreparedQuery>>,
@@ -2522,7 +2522,7 @@ function planSwitches(): string {
  * same `sourceID`, fields and filters; an inline extension (`orders extend {
  * … } -> …`) changes one of them and stays unnamed.
  */
-export function importedSourceName(
+function importedSourceName(
    structRef: unknown,
    modelDef: { contents?: Record<string, unknown> } | undefined,
 ): string | undefined {

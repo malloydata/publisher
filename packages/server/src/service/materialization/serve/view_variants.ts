@@ -93,7 +93,7 @@ import { LegDecline } from "./leg_decline";
 type VirtualMap = Map<string, Map<string, string>>;
 
 /** What the leg reads from the model that owns it. */
-export interface ViewVariantHost {
+interface ViewVariantHost {
    modelPath(): string;
    modelDef(): ModelDef | undefined;
    modelMaterializer(): ModelMaterializer | undefined;
@@ -103,7 +103,7 @@ export interface ViewVariantHost {
 }
 
 /** A persisted view's answer, for the router. */
-export interface ViewAnswer {
+interface ViewAnswer {
    runnable: QueryMaterializer;
    /** The view's table: its address, tier and as-of. */
    table: ViewTable;

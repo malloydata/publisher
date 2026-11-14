@@ -73,7 +73,7 @@ export interface StoredColumnTypeMismatch {
  *   would rewrite every table's column type for nothing.
  * - `json`, `sql native`, arrays and records: no faithful scalar target.
  */
-export const BUILD_CAST_TARGETS: Readonly<Record<string, string>> = {
+const BUILD_CAST_TARGETS: Readonly<Record<string, string>> = {
    string: "VARCHAR",
    boolean: "BOOLEAN",
    date: "DATE",
@@ -239,7 +239,7 @@ export interface BuildCastOptions {
 }
 
 /** The DuckDB type a declared Malloy type is cast to at build, or undefined. */
-export function buildCastTarget(
+function buildCastTarget(
    declaredType: string,
    options: BuildCastOptions = {},
 ): string | undefined {
@@ -741,7 +741,7 @@ export function nativeTypeLookup(
 }
 
 /** Whether a compiled field is a number Malloy types with the `bigint` subtype. */
-export function isBigIntegerField(field: unknown): boolean {
+function isBigIntegerField(field: unknown): boolean {
    const f = (field ?? {}) as { type?: unknown; numberType?: unknown };
    return f.type === "number" && f.numberType === "bigint";
 }
