@@ -45,6 +45,7 @@ import {
    buildSQLOf,
    plannedSources,
    projectToPublicColumns,
+   publicColumnNames,
 } from "../plan/build_plan";
 import {
    bigQueryQueryLabelValue,
@@ -1158,6 +1159,14 @@ export async function planChainedDownstream(params: {
    downstreamName: string;
    virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
    connections: FixedConnectionMap;
+   /**
+    * The planned source a recompute of the downstream builds. A chained
+    * build whose downstream lacks one of its public columns (a column read
+    * through a definition left out of a stored upstream, as a `select: *`
+    * does) is a shape it could not carry: stored, the table would answer
+    * with fewer columns than live. Absent: not checked.
+    */
+   recomputes?: PersistSource;
 }): Promise<{ sql: string; downstream: PersistSource }> {
    const { model: build, downstreamName } = params;
    const virtualMap = new Map(
@@ -1224,6 +1233,27 @@ export async function planChainedDownstream(params: {
             `rebound parents don't provide).`,
       });
    }
+   if (params.recomputes) {
+      let expected: string[] = [];
+      let built: string[] = [];
+      try {
+         expected = publicColumnNames(params.recomputes);
+         built = publicColumnNames(downstream);
+      } catch {
+         // An unknown surface is refused where the table is projected to it.
+      }
+      const has = new Set(built);
+      const lost = expected.filter((c) => !has.has(c));
+      if (lost.length > 0) {
+         throw new MaterializationEligibilityError({
+            message:
+               `Chained build model of '${downstreamName}' over the rebound ` +
+               `parents lacks ${lost.length === 1 ? "a column" : "columns"} ` +
+               `a recompute writes (${lost.map((c) => `'${c}'`).join(", ")}), ` +
+               `read through a definition no stored upstream carries`,
+         });
+      }
+   }
    // The CTAS runs on a read-write session on the destination, as a
    // same-catalog build does, so the same rule holds: only SQL Malloy
    // generated. The rebound parents are virtual, so this reads the
@@ -1270,6 +1300,8 @@ export async function buildDownstreamIntoStorage(params: {
    connectionName?: string;
    /** The downstream source's Malloy name, to locate it in the transient plan. */
    downstreamName: string;
+   /** See planChainedDownstream's `recomputes`. */
+   recomputes?: PersistSource;
    /** connection → handle → quoted physical path for the upstream virtuals. */
    virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
    /** Logical, unquoted physical table path for the downstream's own table. */
@@ -1327,6 +1359,7 @@ export async function buildDownstreamIntoStorage(params: {
          model,
          downstreamName,
          virtualMap,
+         ...(params.recomputes ? { recomputes: params.recomputes } : {}),
          connections: new FixedConnectionMap(
             new Map([[connectionName, session]]),
             connectionName,

@@ -509,6 +509,39 @@ source: by_raw is daily -> {
          ).toEqual([{ n: 0 }]);
       });
 
+      it("declines a downstream that would store fewer columns than a recompute writes", async () => {
+         const chain = await planChain(`${RAW}
+#@ persist storage="lake"
+source: daily is raw -> {
+  group_by: d, cat
+  aggregate: total is amt.sum()
+} extend {
+  join_one: r is raw on r.d = d
+  dimension: raw_cat is r.cat
+  dimension: loud_cat is upper(cat)
+}
+
+#@ persist storage="lake"
+source: every is daily -> { select: * }
+`);
+         await writeLake(chain.dir, DAILY_ROWS);
+         // `raw_cat` reads the join left out over the stored parent, so the
+         // stacked `select: *` would lack it; a recompute writes it.
+         const { error } = await stack(
+            chain,
+            "every",
+            parentEntry(chain, "daily"),
+         );
+         expect(error).toBeInstanceOf(ChainedShapeNotCarriedError);
+         expect((error as Error).message).toContain("'raw_cat'");
+         expect(
+            await readLake(
+               chain.dir,
+               "SELECT count(*)::INTEGER AS n FROM information_schema.tables WHERE table_name = 'every_t'",
+            ),
+         ).toEqual([{ n: 0 }]);
+      });
+
       it("names a parent with no table in this destination, before compiling anything", async () => {
          const chain = await planChain(CHAIN);
          const { error, models } = await stack(chain, "monthly", {});

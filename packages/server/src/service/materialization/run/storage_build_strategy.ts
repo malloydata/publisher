@@ -762,6 +762,9 @@ export class StorageBuildStrategy
             },
             connectionName: text.connection,
             downstreamName: text.downstreamName,
+            // A recompute writes the planned source's public columns; a
+            // stacked table must hold each of them.
+            recomputes: persistSource,
             virtualMap: text.virtualMap,
             physicalTableName,
             partitionColumns: partitionColumnsForBuild(persistSource),
@@ -862,6 +865,7 @@ export class StorageBuildStrategy
                }),
             ),
             downstreamName: plan.buildSourceName,
+            recomputes: persistSource,
             virtualMap: new Map([
                [
                   destinationName,

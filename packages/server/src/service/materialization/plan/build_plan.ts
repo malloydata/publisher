@@ -265,7 +265,7 @@ function planDynamicFields(
  * not read as "nothing to narrow". Empty throws too — it means everything
  * the build SQL projects is hidden.
  */
-function publicColumnNames(persistSource: PersistSource): string[] {
+export function publicColumnNames(persistSource: PersistSource): string[] {
    let names: string[];
    try {
       names = persistSource._explore.intrinsicFields
