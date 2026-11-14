@@ -143,6 +143,16 @@
             "pairLevel": 0,
             "queryName": "flights__mat__pair_key",
             "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"id\",\n     COUNT(1) as \"matches\"\n  FROM public.pfx_flights as base\n  GROUP BY 1\n)\nSELECT \n   base.\"id\" as \"id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"id\" IS NULL\nLIMIT 1\n"
+          },
+          {
+            "connectionName": "orders_pg",
+            "join": "segments",
+            "joinedSourceID": "segments@<hammer>/pfx/pfx.malloy",
+            "keyColumn": "seg_id",
+            "pairLevel": 1,
+            "queryName": "flights__mat__pair_leaf_key__segments",
+            "recordOnly": true,
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"seg_id\" as \"seg_id\",\n     COUNT(1) as \"matches\"\n  FROM public.pfx_segments as base\n  GROUP BY 1\n)\nSELECT \n   base.\"seg_id\" as \"seg_id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"seg_id\" IS NULL\nLIMIT 1\n"
           }
         ],
         "zoneFreeRows": true
@@ -250,6 +260,16 @@
             "pairLevel": 0,
             "queryName": "flights_full__mat__pair_key",
             "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"id\" as \"id\",\n     COUNT(1) as \"matches\"\n  FROM public.pfx_flights as base\n  GROUP BY 1\n)\nSELECT \n   base.\"id\" as \"id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"id\" IS NULL\nLIMIT 1\n"
+          },
+          {
+            "connectionName": "orders_pg",
+            "join": "segments",
+            "joinedSourceID": "segments@<hammer>/pfx/pfx.malloy",
+            "keyColumn": "seg_id",
+            "pairLevel": 1,
+            "queryName": "flights_full__mat__pair_leaf_key__segments",
+            "recordOnly": true,
+            "sql": "WITH __stage0 AS (\n  SELECT \n     base.\"seg_id\" as \"seg_id\",\n     COUNT(1) as \"matches\"\n  FROM public.pfx_segments as base\n  GROUP BY 1\n)\nSELECT \n   base.\"seg_id\" as \"seg_id\"\nFROM __stage0 as base\nWHERE (base.\"matches\">1) or base.\"seg_id\" IS NULL\nLIMIT 1\n"
           }
         ],
         "zoneFreeRows": true

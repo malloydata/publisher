@@ -76,8 +76,15 @@
  * an aggregate through the join reads every row, a childless parent's
  * null-extended row included. Live reads that row for a `min` or `max`, and,
  * since malloydata/malloy#3208, skips it for a `count()`, `sum` or `avg`, so
- * the served copy declines those unless they read a stored column, null
- * there (`pair_flat_query.ts`, known limitation 40).
+ * the served copy re-declares a measure through the join that counts, or
+ * sums a value not null on that row, over the rows where the joined
+ * source's stored key is not null, as live does. That test needs the key
+ * unique and never null on a row of the joined source, which the build
+ * checks ({@link pairKeyChecks}): a level above the leaf on every build, the
+ * leaf by a check that never fails the build and is recorded beside the
+ * table. Without a passing record, and for an aggregate written in the query
+ * rather than in a measure, the served copy declines (`pair_flat_query.ts`,
+ * known limitation 40).
  *
  * What reads through the join_many on the source itself is not stored (a
  * dimension through it has one value per pair, not per parent): the served
@@ -541,6 +548,14 @@ export interface InlineUniquenessCheck {
     * (empty for the source).
     */
    pairLevel?: number;
+   /**
+    * Set on a pair table's leaf key check ({@link pairKeyChecks}): it never
+    * fails the build. An auto-run runs it once the table is written and
+    * records what it found beside the table (unique and never null, under
+    * {@link joinedSourceID}); the served copy re-declares a count through the
+    * path over the leaf's key only where that record passed.
+    */
+   recordOnly?: true;
 }
 
 /**
@@ -2952,9 +2967,16 @@ function pairWatermarkCalculation(
  * level's row flag marks one row per distinct key down to that level, so two
  * rows of one key (or two null keys) share one flagged row, where live
  * aggregates that level over each row: a parent measure, and a middle-level
- * measure beside a deeper level, would come out wrong. A one-hop table of one
- * block checks only the source's key. The leaf needs no check: its aggregates
- * read every row.
+ * measure beside a deeper level, would come out wrong.
+ *
+ * The leaf's key is checked too, but never fails the build
+ * ({@link InlineUniquenessCheck.recordOnly}): its sums of stored columns and
+ * its `min`s and `max`es read every row as they stand. A count through the
+ * path, or a sum of a value not null on a childless parent's row, is served
+ * over the rows whose leaf key is not null, which are the leaf's own rows only
+ * where the key is never null on one; and a key held twice by one parent's
+ * children could store two equal children as one row, which a count would
+ * then count once.
  */
 function pairKeyChecks(
    pair: MaterializePair,
@@ -2998,6 +3020,18 @@ function pairKeyChecks(
             pairLevel: k + 1,
             ...on,
          });
+      });
+      const hops = p.hops ?? [];
+      const last = hops[hops.length - 1];
+      const leafNames = [p.join, ...hops.map((h) => h.join)];
+      out.push({
+         join: leafNames.join("."),
+         keyColumn: last?.key ?? p.childKey,
+         queryName: `${build}__pair_leaf_key__${leafNames.join("__")}`,
+         joinedSourceID: last?.sourceID ?? p.childSourceID,
+         pairLevel: leafNames.length,
+         recordOnly: true,
+         ...on,
       });
    }
    return out;

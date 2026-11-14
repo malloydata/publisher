@@ -750,6 +750,9 @@ export class PackageMaterialization {
       if (!next) return;
       this.freshnessEntries = next;
       this.tableCatalogCache = undefined;
+      // A colocated pair table's leaf key check rides on its serve binding
+      // (`primaryKeys`, known limitation 40): push the bindings without it.
+      this.refreshColocatedServeBindings();
    }
 
    /**
@@ -2479,11 +2482,19 @@ function servedCopyProblemMessage(
 }
 
 /** The colocated bindings' identity, to push only when they change. */
+/** A binding's recorded key checks, in a stable order. */
+function primaryKeysSignature(keys: ServeBinding["primaryKeys"]): string {
+   return Object.entries(keys ?? {})
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([id, unique]) => `${id}=${unique}`)
+      .join(",");
+}
+
 function colocatedSignature(bindings: readonly ServeBinding[]): string {
    return bindings
       .map(
          (b) =>
-            `${b.sourceIDs?.join(",")}@${b.destinationName}/${b.virtualHandle}/${b.tablePath}/${b.freshAsOf ?? ""}/${b.freshnessWindowSeconds ?? ""}/${b.freshnessFallback ?? ""}`,
+            `${b.sourceIDs?.join(",")}@${b.destinationName}/${b.virtualHandle}/${b.tablePath}/${b.freshAsOf ?? ""}/${b.freshnessWindowSeconds ?? ""}/${b.freshnessFallback ?? ""}/${primaryKeysSignature(b.primaryKeys)}`,
       )
       .sort()
       .join("|");
