@@ -33,6 +33,7 @@
 import type { components } from "../../../api";
 import type { ConsideredVariant } from "../../query_router";
 import type { KeyUniqueness } from "../types";
+import { forEachFieldPath } from "../../governance/ir/array_query";
 
 export type ApiQueryPath = components["schemas"]["QueryPath"];
 export type ApiQueryShape = components["schemas"]["QueryShape"];
@@ -1168,27 +1169,22 @@ function resolvePath(
    return found;
 }
 
-/** Every `{ node: "field", path }` reference in an expression, as a dotted path. */
+/**
+ * Every `{ node: "field", path }` reference in an expression, as a dotted
+ * path; one inside an array query is re-rooted under its array.
+ */
 function fieldPathsIn(e: unknown): string[] {
    const out: string[] = [];
-   const walk = (n: unknown) => {
-      if (!n || typeof n !== "object") return;
-      if (Array.isArray(n)) {
-         for (const item of n) walk(item);
-         return;
-      }
-      const node = n as { node?: unknown; path?: unknown };
-      if (node.node === "field" && Array.isArray(node.path)) {
-         const path = (node.path as unknown[]).join(".");
-         if (!out.includes(path)) out.push(path);
-         return;
-      }
-      for (const [key, value] of Object.entries(n)) {
-         // A function's per-dialect templates, not this call's arguments.
-         if (key === "overload" || key === "at") continue;
-         walk(value);
-      }
-   };
-   walk(e);
+   forEachFieldPath(
+      e,
+      (path) => {
+         const dotted = path.join(".");
+         if (!out.includes(dotted)) out.push(dotted);
+      },
+      // A function's per-dialect templates, not this call's arguments.
+      { skipKeys: FIELD_PATH_SKIPPED_KEYS },
+   );
    return out;
 }
+
+const FIELD_PATH_SKIPPED_KEYS = new Set(["overload", "at"]);
