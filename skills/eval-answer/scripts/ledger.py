@@ -65,11 +65,27 @@ EVENTS: dict[str, dict[str, set[str]]] = {
         "optional": {"question_sha", "servedRevision", "n_get_context",
                      "n_execute", "n_execute_errors", "host_tool_uses",
                      "mcp_tool_uses", "final_query_source",
-                     "final_givens",
+                     "final_givens", "final_model_path",
                      "reported_calls", "contaminated", "contamination_reasons",
                      "input_tokens", "output_tokens", "cache_read_tokens",
                      "cache_write_tokens", "skills_invoked",
-                     "cost_usd", "num_turns", "wall_seconds", "run_error", "at"},
+                     "cost_usd", "num_turns", "wall_seconds", "run_error",
+                     "recovered_from",
+                     # False when the SOURCE of this attempt could not carry
+                     # the agent's prose at all -- a transcript rebuilt from a
+                     # host's request logs, where only the tool calls were
+                     # logged. That is not the same fact as an empty
+                     # `answer_text`, which says the agent produced no prose,
+                     # and the two must not be confused: one is a limit of the
+                     # measurement and the other is a result. Absent means the
+                     # source could carry prose, which is every spawned run.
+                     "answer_captured",
+                     # The packages this attempt's answered queries ran
+                     # against, as `environment/package@version` (no `@` when
+                     # the call named no version). Written from the calls, so a
+                     # logged session that used three packages says three, and
+                     # a run's own --scope cannot stand in for it.
+                     "queriedPackages", "at"},
     },
     "tool_call": {
         "required": _CASE | {"tool"},
@@ -95,10 +111,17 @@ EVENTS: dict[str, dict[str, set[str]]] = {
         # searched for and drops a target that carried none. Without it the
         # bare-target rate is not recomputable from a run directory, only from
         # transcripts, and transcripts get pruned.
-        "optional": {"targets", "target_shapes", "scopes", "rankedSummary",
+        # `search_targets` is the request's targets as sent -- type, text and
+        # any example_values, one row each -- which is what a golden's
+        # `searchTargets` is scored against target by target
+        # (score_targets.py). `targets` and `target_shapes` each keep half.
+        "optional": {"targets", "target_shapes", "search_targets", "scopes",
+                     "rankedSummary",
                      "error", "traceId",
                      "query", "modelPath", "givens", "filterParams",
                      "retrieval_mode",
+                     # Where an execute_query ran, from its own arguments.
+                     "environment", "package", "version",
                      "at"},
     },
     "score": {
@@ -147,7 +170,12 @@ EVENTS: dict[str, dict[str, set[str]]] = {
         "required": {"issue_ids", "files", "diffSummary", "probes", "edit"},
         "optional": {"qids", "editTier", "disagreement", "compiled",
                      "patchPath", "meaningChanged", "goldenSuspect",
-                     "goldenAudit", "improvedBy", "at"},
+                     "goldenAudit", "improvedBy", "at",
+                     # What a script found in the diff itself: a case's answer
+                     # stated in it (golden_leak.py), the rejected attempt that
+                     # made this same edit (attempts.py), and the hash the two
+                     # are matched by.
+                     "goldenLeak", "duplicateOf", "patchSha"},
     },
     "acceptance_check": {
         "required": {"decision", "baselineRunId", "finalRunIds",
@@ -199,6 +227,38 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 # is the HARNESS's, not the model's. Both leave the denominator
                 # and both suppress the pass rate (`incomplete` below).
                 "truncated", "contaminated",
+                # The cases answered a second time because the first attempt
+                # was truncated or contaminated (`run --recover`). A run that
+                # still lists a case above after that is `complete` with the
+                # case left out of its rate, when at most half are voided.
+                "recovered",
+                # Why an `aborted` run stopped: `four_strikes` (four
+                # consecutive attempts errored or found the server dead) or
+                # `max_cost` (answerers reached --max-cost-usd).
+                "abortReason",
+                # What diagnosing this run cost: every per-case agent and the
+                # clustering call. Written by diagnose.py, so a run's whole
+                # model spend can be read off its run.json.
+                "diagnoseCostUsd",
+                # Where this run's attempts CAME FROM. `spawned` is an
+                # answerer this harness ran; `logs` is a transcript rebuilt
+                # from a host's request logs for a session that ran elsewhere.
+                # `sourceTier` says how much that source could carry: `T1`
+                # tool calls only, `T2` plus the agent's prose, `T3` plus the
+                # host-side tool log that makes contamination decidable. A run
+                # that cannot say which it was cannot be compared with one that
+                # can, and a T1 run has no pass rate to quote at all.
+                "source", "sourceTier", "queriedPackages",
+                # The cases this run was limited to, when it was: the slice's
+                # name, its tags, and the qids it resolved to on the day, so a
+                # later edit to slices.json cannot change what this run meant.
+                "slice",
+                # Which package version answered, the same shape for a local
+                # Publisher and a host: {id, contentHash, latest, served,
+                # baseVersion}. `id` null is an unpublished working copy.
+                # `packageVersionMovedTo` names the version that took over as
+                # latest mid-run, which leaves the run `incomplete`.
+                "packageVersion", "packageVersionMovedTo",
                 "callBudget", "status", "answererSkills",
                 "answererCostUsd", "judgeCostUsd", "goldenCheck",
                 # The run whose attempts this run's answerer cost was COPIED
@@ -221,7 +281,19 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 # How the package's own skills reached the answerer, and a hash
                 # of the tree they came from. Two runs can differ ONLY in
                 # guidance, and without these the ledger cannot tell them apart.
-                "packageSkillsMode", "packageSkillsSha"} | RUN_RECOMMENDED
+                "packageSkillsMode", "packageSkillsSha",
+                # A set published as a versioned bundle: the version it was
+                # published under and the sha256 of that bundle's manifest
+                # file, so a run names the exact copy it read. Written by
+                # retrieval_replay.py when given. `mcpHeaderNames` are the
+                # names (never the values) of extra headers the requests
+                # carried, since a header can change what the server returns.
+                "setVersion", "setManifestSha256", "mcpHeaderNames",
+                # A query replay (eval-loop's query_replay.py): the run its
+                # queries came from, how it timed them, and what the package
+                # persisted and had built when it ran.
+                "fromRun", "repeats", "budgetMs", "latencyBand",
+                "materialization"} | RUN_RECOMMENDED
 
 
 def dataset_sha(set_dir: pathlib.Path) -> str | None:
@@ -406,14 +478,17 @@ def validate_run(run_dir: pathlib.Path) -> tuple[list[str], list[str]]:
             cfg = {}
         for f in sorted(RUN_REQUIRED - cfg.keys()):
             errors.append(f"run.json: missing {f!r}")
-        # A probe run has no judge, no answerer and no re-executed
-        # predictions, so the judge and model pins can never be filled for it.
-        # Warning about them anyway is noise that teaches readers to skip
-        # warnings, which is worse than not checking.
+        # A probe run or a retrieval replay has no judge, no answerer and no
+        # re-executed predictions, so the judge and model pins can never be
+        # filled for it. Warning about them anyway is noise that teaches
+        # readers to skip warnings, which is worse than not checking. A replay
+        # loads no skills either, so it has no skills version to pin.
         recommended = RUN_RECOMMENDED
-        if cfg.get("phase") == "probe":
+        if cfg.get("phase") in ("probe", "replay"):
             recommended = recommended - {"judgeModel", "judgeVersion",
                                          "modelSha", "answererManifest"}
+        if cfg.get("phase") == "replay":
+            recommended = recommended - {"skillsVersion"}
         for f in sorted(recommended - cfg.keys()):
             warnings.append(f"run.json: no {f!r} -- this run cannot anchor "
                             f"a comparison on that pin")

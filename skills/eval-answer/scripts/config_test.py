@@ -10,7 +10,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import config  # noqa: E402
 
-TOUR = config.CLONE / "examples" / "storefront" / "evals" / "storefront-tour"
+TOUR = config.CLONE / "examples" / "storefront-evals" / "storefront-tour"
 
 
 def make_set(files: dict[str, str]) -> pathlib.Path:
@@ -111,6 +111,22 @@ class Within(unittest.TestCase):
             self.skipTest("this filesystem is case-sensitive")
         self.assertTrue(config.within(root / "pkg" / "t", root / "PKG"))
         self.assertTrue(config.within(root / "PKG" / "t", root / "pkg"))
+
+
+class Performance(unittest.TestCase):
+    def test_defaults_and_values(self):
+        cfg = config.load(make_set({"eval.toml": "[performance]\nbudget_ms = 2000\n"}))
+        self.assertEqual((cfg.get("performance", "budget_ms"), cfg.get("performance", "repeats"),
+                          cfg.get("performance", "latency_band")), (2000, 5, 0.2))
+        self.assertIsNone(config.load(make_set({})).get("performance", "budget_ms"))
+
+    def test_bad_values_say_what_was_expected(self):
+        for text, expect in (("budget_ms = 0", "at least 1"),
+                             ("repeats = true", "at least 1"),
+                             ("latency_band = 20", "between 0 and 1")):
+            with self.assertRaises(config.ConfigError) as e:
+                config.load(make_set({"eval.toml": f"[performance]\n{text}\n"}))
+            self.assertIn(expect, str(e.exception))
 
 
 class Formats(unittest.TestCase):

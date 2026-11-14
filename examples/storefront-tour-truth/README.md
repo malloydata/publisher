@@ -1,7 +1,7 @@
 # storefront-tour-truth
 
 Truth package for the `storefront-tour` eval set in
-[`../storefront/evals/storefront-tour`](../storefront/evals/storefront-tour).
+[`../storefront-evals/storefront-tour`](../storefront-evals/storefront-tour).
 `truth.malloy` holds one source per raw table `storefront.malloy` reads, and no
 modelling: no measures, no joins, no labels. Every golden's `canonicalQuery`
 runs here.
@@ -34,12 +34,12 @@ you forget.
 
 ## Serving it
 
-The set's [README](../storefront/evals/storefront-tour/README.md) has the
+The set's [README](../storefront-evals/storefront-tour/README.md) has the
 commands in context. In short, on a server of its own, then re-derive:
 
 ```bash
 python3 skills/eval-answer/scripts/verify_goldens.py \
-    --set examples/storefront/evals/storefront-tour \
+    --set examples/storefront-evals/storefront-tour \
     --publisher http://localhost:4881 --environment truth
 ```
 

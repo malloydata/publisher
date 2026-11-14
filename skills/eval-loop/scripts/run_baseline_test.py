@@ -3,6 +3,8 @@
 credited with, which retriever answered, what was actually re-executed, and
 when an attempt is unjudgeable."""
 import argparse
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -282,6 +284,127 @@ class ReExecution(unittest.TestCase):
         self.assertEqual((got["notJudged"], got["missing"]), (0, 1))
 
 
+class DeriveAttemptFromATranscript(unittest.TestCase):
+    """`derive_attempt` is the entry point a transcript uses, whoever made it.
+
+    It calls no model and no server, so a transcript rebuilt from a host's
+    request logs is scored by exactly the code that scores a spawned one. These
+    pin the seam: what the provenance line changes, and what it does not.
+    """
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.a = argparse.Namespace(
+            target="local", hosted_tools=(), set_dir=self.tmp / "set",
+            answerer_skills=[])
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def transcript(self, *, prov=None, text="42 orders."):
+        events = []
+        if prov is not None:
+            events.append(prov)
+        events.append({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t1",
+             "name": "mcp__publisher__execute_query",
+             "input": {"query": "run: orders -> by_month",
+                       "modelPath": "m.malloy"}}]}})
+        events.append({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1",
+             "content": [{"type": "text", "text": "{}"}]}]}})
+        if text:
+            events.append({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": text}]}})
+        return events
+
+    def derive(self, events):
+        return rb.derive_attempt(events, {"qid": "q"}, self.a, self.tmp, 1.0)
+
+    def test_a_spawned_transcript_defaults_to_captured_and_logged(self):
+        att = self.derive(self.transcript())
+        self.assertTrue(att["answer_captured"])
+        self.assertTrue(att["host_log"])
+        self.assertEqual(att["answer_text"], "42 orders.")
+
+    def test_a_rebuilt_transcript_declares_what_its_source_lacked(self):
+        att = self.derive(self.transcript(
+            prov={"type": "provenance", "answer_captured": False,
+                  "host_log": False},
+            text=""))
+        self.assertFalse(att["answer_captured"])
+        self.assertFalse(att["host_log"])
+
+    def test_the_tool_calls_survive_the_missing_prose(self):
+        # The whole point of the tier: no answer, but the query and the model
+        # path are there, so retrieval and construction are still scorable.
+        att = self.derive(self.transcript(
+            prov={"type": "provenance", "answer_captured": False,
+                  "host_log": False},
+            text=""))
+        self.assertTrue(att["submitted"])
+        self.assertEqual(att["final_query"], "run: orders -> by_month")
+        self.assertEqual(att["final_model_path"], "m.malloy")
+        self.assertEqual(att["n_execute"], 1)
+
+    def test_no_host_log_means_no_breaches_rather_than_a_clean_bill(self):
+        # Running the isolation checks over a transcript that has no init
+        # event reported "no init event: cannot verify what the answerer held"
+        # as a BREACH -- which is the opposite of what it says. It landed in
+        # the contamination histogram beside real breaches, voided the verdict
+        # with reason `contaminated`, and printed "isolation breached" about a
+        # session where nothing was breached and nothing was checked.
+        att = self.derive(self.transcript(
+            prov={"type": "provenance", "answer_captured": False,
+                  "host_log": False}, text=""))
+        self.assertEqual(att["breaches"], [])
+        self.assertFalse(att["host_log"])
+
+    def test_a_spawned_transcript_still_reports_a_missing_init_event(self):
+        # The check above must not weaken the spawned case, where an absent
+        # init event really does mean the granted toolset is unverifiable.
+        att = self.derive(self.transcript())
+        self.assertTrue(any("init event" in b for b in att["breaches"]))
+
+    def test_the_provenance_line_is_not_counted_as_a_turn(self):
+        with_prov = self.derive(self.transcript(
+            prov={"type": "provenance", "answer_captured": True,
+                  "host_log": True}))
+        without = self.derive(self.transcript())
+        self.assertEqual(with_prov["host_tool_uses"],
+                         without["host_tool_uses"])
+
+
+class RunProvenance(unittest.TestCase):
+    """A run is only as quotable as its poorest source."""
+
+    def test_all_spawned_is_spawned_t3(self):
+        self.assertEqual(rb.run_provenance([{}, {}]), ("spawned", "T3"))
+
+    def test_one_logged_attempt_makes_the_run_logs(self):
+        # A mixed run cannot be read as a spawned one.
+        src, tier = rb.run_provenance(
+            [{}, {"host_log": False, "answer_captured": True}])
+        self.assertEqual(src, "logs")
+
+    def test_the_tier_is_the_weakest_not_the_most_common(self):
+        # Reporting T2 for a set where one session kept no prose puts a pass
+        # rate on a denominator that silently excluded it.
+        _src, tier = rb.run_provenance([
+            {"host_log": False, "answer_captured": True},
+            {"host_log": False, "answer_captured": True},
+            {"host_log": False, "answer_captured": False}])
+        self.assertEqual(tier, "T1")
+
+    def test_logged_with_prose_throughout_is_t2(self):
+        _src, tier = rb.run_provenance([
+            {"host_log": False, "answer_captured": True}])
+        self.assertEqual(tier, "T2")
+
+    def test_no_attempts_at_all_does_not_claim_a_logged_run(self):
+        self.assertEqual(rb.run_provenance([]), ("spawned", "T3"))
+
+
 class JudgeGate(unittest.TestCase):
     """The gate decides what is unjudgeable, and it is not `submitted`."""
 
@@ -307,6 +430,30 @@ class JudgeGate(unittest.TestCase):
         v = self.judge({"answer_text": "", "submitted": False})
         self.assertEqual(v["reason"], "not_submitted")
         self.assertIsNone(v["verdict"])
+
+    def test_a_source_that_recorded_no_prose_is_refused_not_judged(self):
+        # The agent may have answered perfectly; the logs simply did not keep
+        # it. Judging the empty string against the golden would score a limit
+        # of the measurement as a wrong answer.
+        v = self.judge({"answer_text": "", "submitted": True,
+                        "answer_captured": False})
+        self.assertEqual(v["reason"], "no_answer_captured")
+        self.assertIsNone(v["verdict"])
+
+    def test_that_refusal_outranks_an_unestablished_golden(self):
+        # Establishing the key would not make this attempt judgeable, so the
+        # reason names the blocker that cannot be cleared.
+        v = self.judge({"answer_text": "", "submitted": True,
+                        "answer_captured": False},
+                       golden={"status": "provisional", "value": 1})
+        self.assertEqual(v["reason"], "no_answer_captured")
+
+    def test_an_agent_that_said_nothing_is_still_judged(self):
+        # `answer_captured` absent is the spawned case: the transcript COULD
+        # have carried prose and carried none, which is a result about the
+        # agent and belongs to the judge.
+        v = self.judge({"answer_text": "", "submitted": True})
+        self.assertEqual(v["reason"], "no_saved_verdict")
 
     def test_prose_with_no_query_is_still_judged(self):
         # A confident refusal on an answerable case has to be scorable, or the
@@ -735,6 +882,21 @@ class AnUnreadableVerdictIsNotLost(unittest.TestCase):
                       mcp=None)
         self.assertIs(run.call_args.kwargs["retry_when"], rb.no_events)
 
+    def test_builtins_become_the_only_cli_tools_and_lose_read_without_skills(self):
+        def argv(**kw):
+            with mock.patch.object(rb, "run_cli",
+                                   return_value=([], "", "", 1, 0.0)) as run:
+                rb.claude("q", str(pathlib.Path(__file__).parent), "sonnet",
+                          mcp=None, **kw)
+            cmd = run.call_args.args[0]
+            return cmd[cmd.index("--tools") + 1:] if "--tools" in cmd else None
+        self.assertIsNone(argv())
+        got = argv(builtins=("Read", "Skill"))
+        self.assertEqual(got[:2], ["Read", "Skill"])
+        got = argv(builtins=("Read", "Skill"), skills=False)
+        self.assertEqual(got[0], "Skill")
+        self.assertNotIn("Read", got[:1])
+
     def test_unparseable_prose_is_retried(self):
         self.assertTrue(rb.judge_unusable([{"type": "assistant"}],
                                           "The answer looks right to me."))
@@ -771,6 +933,15 @@ class AnUnreadableVerdictIsNotLost(unittest.TestCase):
         body = self.summary()
         self.assertIn("unreadable    0", body)
 
+    def test_golden_search_targets_print_their_three_lines(self):
+        import score_targets
+        s = score_targets.summarise([])
+        self.assertNotIn("search targets", self.summary(targets=s))
+        s.update(attempts=1, golden_targets=2, covered=1, never_asked=1)
+        body = self.summary(targets=s)
+        self.assertIn("1. asked?     1 of 2 golden targets asked for", body)
+        self.assertIn("3. correct?", body)
+
     def test_an_aborted_arm_suppresses_the_pass_rate(self):
         # The four-strikes abort fires, `run.json` says `aborted`, and the
         # headline still printed a percentage. Live: `passed 0 of 4 decided
@@ -790,11 +961,24 @@ class AnUnreadableVerdictIsNotLost(unittest.TestCase):
         self.assertNotIn("(50%)", body)   # 4 of 8 would have printed this
 
     def test_it_names_the_command_that_finishes_the_arm(self):
-        # Four cases, not a whole arm: the answers already paid for are kept
-        # and only the truncated ones are re-run, at twice the cap.
+        # The answers already paid for are kept and only the voided cases are
+        # answered again. The command this replaced (`--from ... --only ...
+        # --max-turns 60`) re-scored the cut-off transcripts and answered
+        # nothing: `--from` implies `--rebuild`.
         body = self.summary(truncated=["cq-05", "cq-01"], max_turns=30)
-        self.assertIn("--only cq-01,cq-05", body)
-        self.assertIn("--max-turns 60", body)
+        self.assertIn("eval.py run --set s --label r --rebuild --recover", body)
+        self.assertNotIn("--from", body)
+
+    def test_cases_voided_after_a_second_attempt_are_left_out_and_the_rate_prints(self):
+        body = self.summary(truncated=["cq-01"], left_out=True, recovered=["cq-01", "cq-02"])
+        self.assertIn("(50%)", body)
+        self.assertIn("1 voided after a second attempt, left out of the rate", body)
+        self.assertNotIn("INCOMPLETE", body)
+        self.assertIn("recovered     2 answered a second time", body)
+        self.assertNotIn("--rebuild --recover", body)   # already tried
+
+    def test_an_aborted_arm_is_never_left_out(self):
+        self.assertIn("INCOMPLETE", self.summary(aborted=True, left_out=True))
 
     def test_a_contaminated_case_suppresses_it_too(self):
         body = self.summary(contaminated=["cq-03"])
@@ -1144,6 +1328,28 @@ class ResolveConfig(unittest.TestCase):
         self.assertIsNone(a.truth_publisher)
         self.assertIsNone(a.truth_environment)
 
+    def test_two_truth_servers_are_refused(self):
+        d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n')
+        with self.assertRaises(SystemExit) as e:
+            rb.resolve_config(self.ns(d, out=d / "o",
+                                      truth_publisher="http://localhost:4881",
+                                      truth_mcp_url="https://h/mcp"))
+        self.assertIn("--truth-mcp-url and --truth-publisher name two truth "
+                      "servers", str(e.exception))
+
+    def test_a_truth_server_from_eval_toml_also_counts(self):
+        d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n[truth]\n')
+        with self.assertRaises(SystemExit) as e:
+            rb.resolve_config(self.ns(d, out=d / "o",
+                                      truth_mcp_url="https://h/mcp"))
+        self.assertIn("[truth] section of eval.toml", str(e.exception))
+
+    def test_a_hosted_truth_alone_is_accepted(self):
+        d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n')
+        a = self.ns(d, out=d / "o", truth_mcp_url="https://h/mcp")
+        rb.resolve_config(a)
+        self.assertIsNone(a.truth_publisher)
+
     def test_a_platform_run_never_takes_its_organization_from_the_file(self):
         d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n')
         with self.assertRaises(SystemExit) as e:
@@ -1268,6 +1474,46 @@ class UsageFields(unittest.TestCase):
         self.assertEqual(set(rb.usage_fields(None).values()), {None})
 
 
+class QueriedPackages(unittest.TestCase):
+    """What an attempt actually queried, read off its calls."""
+
+    def test_each_answered_package_once_in_first_use_order(self):
+        calls = [
+            {"tool": "execute_query", "environment": "samples",
+             "package": "storefront", "error": None},
+            {"tool": "get_context", "error": None},
+            {"tool": "execute_query", "environment": "samples",
+             "package": "ecommerce", "version": "0.0.58", "error": None},
+            {"tool": "execute_query", "environment": "samples",
+             "package": "storefront", "error": None}]
+        self.assertEqual(rb.queried_packages(calls),
+                         ["samples/storefront", "samples/ecommerce@0.0.58"])
+
+    def test_a_failed_query_measured_nothing_there(self):
+        calls = [{"tool": "execute_query", "environment": "samples",
+                  "package": "orders", "error": "compile_error"}]
+        self.assertEqual(rb.queried_packages(calls), [])
+
+    def test_derive_attempt_reads_where_each_query_ran(self):
+        events = [
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "q1",
+                 "name": "mcp__publisher__execute_query",
+                 "input": {"environment": "samples", "package": "storefront",
+                           "model_path": "m.malloy", "query": "run: x -> {}"}}]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "q1",
+                 "content": [{"type": "text", "text": "{}"}]}]}}]
+        with tempfile.TemporaryDirectory() as d:
+            a = argparse.Namespace(target="local", hosted_tools=(),
+                                   set_dir=pathlib.Path(d) / "set",
+                                   answerer_skills=[])
+            att = rb.derive_attempt(events, {"qid": "c1"}, a,
+                                    pathlib.Path(d), None)
+        self.assertEqual(att["queried_packages"], ["samples/storefront"])
+        self.assertEqual(att["calls"][0]["package"], "storefront")
+
+
 class RunSummary(unittest.TestCase):
     """The end-of-run report is three layers, and the order is the point.
 
@@ -1293,6 +1539,54 @@ class RunSummary(unittest.TestCase):
 
     def index_of(self, lines, needle):
         return next(i for i, l in enumerate(lines) if needle in l)
+
+    def test_by_tag_counts_decided_verdicts_under_every_tag(self):
+        cases = [{"qid": "a", "tags": ["join"]}, {"qid": "b", "tags": ["join", "rank"]},
+                 {"qid": "c", "tags": ["rank"]}, {"qid": "d", "tags": ["join"]}]
+        scored = {"a": {"verdict": "match"}, "b": {"verdict": "no_match"},
+                  "c": {"verdict": "match"}, "d": {"verdict": "near_match"}}
+        by_tag = rb.tag_breakdown(cases, scored)
+        self.assertEqual(by_tag, {"join": (1, 2), "rank": (1, 2)})
+        self.assertIn("  by tag        join 1/2, rank 1/2", self.lines(by_tag=by_tag))
+
+    def test_by_tag_is_withheld_with_the_headline_on_an_incomplete_arm(self):
+        body = "\n".join(self.lines(by_tag={"join": (1, 2)}, truncated=["q1"]))
+        self.assertNotIn("by tag", body)
+
+    def test_a_logged_run_does_not_blame_skills_it_never_granted(self):
+        body = "\n".join(self.lines(
+            source="logs", skill_uses={"attempts": 3, "with_skill": 0}))
+        self.assertNotIn("none of the granted skills was read", body)
+        self.assertIn("not measured  logged sessions ran with the host's skills",
+                      body)
+
+    def test_a_logged_run_names_the_packages_that_answered_it(self):
+        body = "\n".join(self.lines(source="logs", queried={
+            "samples/storefront": 2, "samples/ecommerce": 1}))
+        self.assertIn("queried       samples/storefront (2), samples/ecommerce (1)",
+                      body)
+        self.assertIn("answered from more than one package", body)
+
+    def test_a_logged_run_does_not_call_unreported_retrieval_lexical(self):
+        body = "\n".join(self.lines(source="logs",
+                                     retrieval_mode="unreported"))
+        self.assertNotIn("Local retrieval degrades to lexical", body)
+        self.assertIn("do not say which retriever ranked them", body)
+
+    def test_a_spawned_run_keeps_both_warnings(self):
+        body = "\n".join(self.lines(
+            retrieval_mode="lexical",
+            skill_uses={"attempts": 3, "with_skill": 0}))
+        self.assertIn("none of the granted skills was read", body)
+        self.assertIn("Local retrieval degrades to lexical", body)
+
+    def test_a_doubted_golden_still_says_who_declared_it(self):
+        # The loop variable once shared the name of the `source` parameter.
+        body = "\n".join(self.lines(
+            source="logs",
+            doubted=[("q1", "verified_wrong", "note", "set")]))
+        self.assertIn("(the set declares)", body)
+        self.assertIn("not measured  logged sessions", body)
 
     def test_a_consumed_coverage_report_is_named_not_pointed_at(self):
         # With a report given, "not measured here" is false and must not print.
@@ -2032,6 +2326,22 @@ class AnErroredGetContextIsUnmeasured(unittest.TestCase):
         self.assertIsNotNone(call["rankedSummary"])
         self.assertIsNone(call["error"])
 
+    def test_the_targets_are_recorded_as_sent(self):
+        # score_targets.py pairs these one by one with a golden's
+        # `searchTargets`; `targets` alone drops the bare target and the type
+        # of each one becomes part of a string.
+        use = self.use("t1")
+        use["input"] = {"search_targets": [
+            {"target_type": "measure", "search_text": "revenue"},
+            {"target_type": "source"}]}
+        body = json.dumps({"sources": [{"name": "orders", "relevance": 0.9}]})
+        got = self.rebuild([("assistant", [use]),
+                            ("user", [self.res("t1", body, False)])])
+        [call] = got["calls"]
+        self.assertEqual(call["search_targets"], [
+            {"target_type": "measure", "search_text": "revenue"},
+            {"target_type": "source", "search_text": None}])
+
 
 class NothingIsDefinedBelowTheMainGuard(unittest.TestCase):
     """CI runs this file as a script, `python3 <file>`, and `unittest.main()`
@@ -2402,6 +2712,178 @@ class RowsGoldenInAFile(unittest.TestCase):
         self.assertFalse(rb.renders_goldens(ns(no_judge=True)))
         self.assertFalse(rb.renders_goldens(ns(rebuild=True)))
         self.assertTrue(rb.renders_goldens(ns(rebuild=True, rejudge=True)))
+
+
+
+class VersionPin(unittest.TestCase):
+    """Which package version answered, and the refusals that keep that true."""
+
+    def ns(self, **kw):
+        base = dict(target="publisher", target_version=None, publisher="http://x",
+                    environment="e", package="p")
+        base.update(kw)
+        return argparse.Namespace(**base)
+
+    def pin(self, pv, base=None, **kw):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        if base:
+            (tmp / "publisher.json").write_text(json.dumps({"version": base}))
+        with mock.patch.object(rb, "package_version", return_value=pv), \
+                mock.patch.object(rb, "served_package_dir", return_value=tmp):
+            return rb.version_pin(self.ns(**kw))
+
+    def test_a_working_copy_records_no_id_and_its_base_version(self):
+        self.assertEqual(self.pin({"id": None}, base="1.4.0"),
+                         {"id": None, "contentHash": None, "latest": None,
+                          "served": "publisher", "baseVersion": "1.4.0"})
+
+    def test_a_published_latest_is_recorded_with_its_hash(self):
+        got = self.pin({"id": "1.4.0", "latest": True, "contentHash": "abc"},
+                       target_version="1.4.0")
+        self.assertEqual((got["id"], got["contentHash"], got["latest"]), ("1.4.0", "abc", True))
+
+    def test_a_version_that_is_not_latest_is_refused_with_the_fix(self):
+        with self.assertRaises(SystemExit) as e:
+            self.pin({"id": "1.4.0", "latest": True}, target_version="1.3.0")
+        msg = str(e.exception)
+        self.assertIn("got 1.3.0 while latest is 1.4.0", msg)
+        self.assertIn('packages/p/latest {"version": "1.3.0"}', msg)
+
+    def test_a_version_on_an_unversioned_package_is_refused(self):
+        with self.assertRaises(SystemExit) as e:
+            self.pin({"id": None}, target_version="1.0.0")
+        self.assertIn("PUBLISHER_PACKAGE_VERSIONING=on", str(e.exception))
+
+    def test_an_unreadable_server_records_nothing_unless_a_version_was_asked_for(self):
+        self.assertIsNone(self.pin({}))
+        with self.assertRaises(SystemExit):
+            self.pin({}, target_version="1.0.0")
+
+    def test_a_platform_run_records_its_target_version(self):
+        self.assertEqual(rb.version_pin(self.ns(target="platform", target_version="0.0.58")),
+                         {"id": "0.0.58", "served": "platform"})
+
+    def test_latest_moving_mid_run_is_named(self):
+        a = self.ns()
+        with mock.patch.object(rb, "package_version", return_value={"id": "1.5.0"}):
+            self.assertEqual(rb.version_moved(a, {"id": "1.4.0"}), "1.5.0")
+        with mock.patch.object(rb, "package_version", return_value={"id": "1.4.0"}):
+            self.assertIsNone(rb.version_moved(a, {"id": "1.4.0"}))
+        # A working copy has no published version to move away from.
+        self.assertIsNone(rb.version_moved(a, {"id": None}))
+
+
+class Recovery(unittest.TestCase):
+    """`--recover`: a voided case is answered once more, and what that makes the run."""
+
+    def setUp(self):
+        self.out = pathlib.Path(tempfile.mkdtemp())
+        self.art = self.out / "artifacts"
+        self.a = argparse.Namespace(out=self.out, max_turns=30, parallel=2,
+                                    rebuild=True, rejudge=False)
+        self.cases = [{"qid": q} for q in ("ok", "cut", "dirty", "ok2")]
+        self.attempts = {
+            "ok": {"qid": "ok", "cost_usd": 0.1},
+            "ok2": {"qid": "ok2", "cost_usd": 0.1},
+            "cut": {"qid": "cut", "error": "error_max_turns", "cost_usd": 0.5, "num_turns": 31},
+            "dirty": {"qid": "dirty", "breaches": ["server unreachable before the attempt"]}}
+        for q in self.attempts:
+            (self.art / q).mkdir(parents=True)
+            (self.art / q / "answerer.jsonl").write_text("first\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.out, ignore_errors=True)
+
+    def recover(self, result=None, dead=False):
+        seen = {}
+
+        def answer(case, a, art):
+            seen[case["qid"]] = (a.max_turns, a.rebuild)
+            (art / case["qid"]).mkdir(parents=True, exist_ok=True)
+            if not dead:
+                (art / case["qid"] / "answerer.jsonl").write_text("second\n")
+            return dict((result or {}).get(case["qid"], {"qid": case["qid"], "cost_usd": 0.2}))
+        with mock.patch.object(rb, "run_answerer", side_effect=answer), \
+                contextlib.redirect_stdout(io.StringIO()):
+            done = rb.recover_voided(self.cases, self.attempts, self.a, self.art)
+        return done, seen
+
+    def test_why_an_attempt_is_voided(self):
+        self.assertEqual([rb.voided_reason(self.attempts[q]) for q in ("ok", "cut", "dirty")],
+                         [None, "truncated", "contaminated"])
+
+    def test_only_voided_cases_are_answered_again_fresh_and_a_truncated_one_at_double_the_cap(self):
+        done, seen = self.recover()
+        self.assertEqual(done, ["cut", "dirty"])
+        # rebuild is off for the second attempt: on, it would re-read the
+        # cut-off transcript and answer nothing.
+        self.assertEqual(seen, {"cut": (60, False), "dirty": (30, False)})
+
+    def test_the_first_attempt_is_kept_outside_artifacts_with_why_and_its_cost(self):
+        self.recover()
+        self.assertEqual((self.out / "voided" / "cut" / "answerer.jsonl").read_text(), "first\n")
+        marker = rb.recovery_marker(self.out, "cut")
+        self.assertEqual((marker["reason"], marker["cost_usd"], marker["max_turns"]),
+                         ("truncated", 0.5, 60))
+        self.assertEqual(self.attempts["cut"]["recovered_from"], marker)
+        self.assertNotIn("voided", [d.name for d in self.art.iterdir()])
+
+    def test_a_case_is_answered_twice_at_most(self):
+        again = {"cut": {"qid": "cut", "error": "error_max_turns"}}
+        self.recover(again)
+        done, seen = self.recover(again)
+        self.assertEqual((done, seen), ([], {}))
+
+    def test_an_attempt_no_answerer_started_for_is_not_a_second_attempt(self):
+        # The server was down. The first attempt goes back where it was, so a
+        # rebuild still finds the case and it can be recovered once it is up.
+        done, _ = self.recover(dead=True)
+        self.assertEqual(done, [])
+        self.assertEqual((self.art / "cut" / "answerer.jsonl").read_text(), "first\n")
+        self.assertFalse((self.out / "voided").exists())
+        self.assertNotIn("recovered_from", self.attempts["cut"])
+        done, _ = self.recover()
+        self.assertEqual(done, ["cut", "dirty"])
+
+    def test_more_than_half_voided_is_the_harness_and_nothing_is_answered_again(self):
+        self.attempts["ok"]["breaches"] = ["PublishPlugin"]
+        done, seen = self.recover()
+        self.assertEqual((done, seen), ([], {}))
+        self.assertFalse((self.out / "voided").exists())
+
+    def test_the_attempt_event_says_it_was_recovered(self):
+        att = {"submitted": True, "final_query": None, "n_get_context": 0, "n_execute": 0,
+               "n_execute_errors": 0, "host_tool_uses": 0, "transcriptPath": None,
+               "answer_text": "x", "recovered_from": {"reason": "truncated"}}
+        e = rb.attempt_event({"qid": "cut", "question": "q"}, att, "baseline", {})
+        self.assertEqual(e["recovered_from"], {"reason": "truncated"})
+        del att["recovered_from"]
+        self.assertNotIn("recovered_from",
+                         rb.attempt_event({"qid": "cut", "question": "q"}, att, "baseline", {}))
+
+    def test_the_cost_cap_stops_a_run_only_while_cases_remain(self):
+        f = rb.over_cost_cap
+        self.assertFalse(f(100.0, None, 1, 10))     # no cap
+        self.assertFalse(f(4.99, 5.0, 1, 10))
+        self.assertTrue(f(5.0, 5.0, 1, 10))
+        self.assertFalse(f(9.0, 5.0, 10, 10))       # the last case is in: nothing to stop
+
+    def test_what_may_be_left_out(self):
+        f = rb.may_leave_out
+        self.assertTrue(f(["a"], ["a", "b"], 4))
+        self.assertFalse(f(["a"], [], 4))                     # no second attempt yet
+        self.assertFalse(f(["a", "b"], ["a"], 4))             # one of them has had none
+        self.assertFalse(f(["a", "b", "c"], ["a", "b", "c"], 4))   # more than half
+        self.assertTrue(f(["a", "b"], ["a", "b"], 4))         # exactly half
+        self.assertFalse(f([], [], 4))
+
+    def test_the_status_a_run_records(self):
+        f = rb.run_status
+        self.assertEqual(f(False, None, [], False), "complete")
+        self.assertEqual(f(False, None, ["a"], False), "incomplete")
+        self.assertEqual(f(False, None, ["a"], True), "complete")
+        self.assertEqual(f(False, "1.0.1", ["a"], True), "incomplete")   # latest moved
+        self.assertEqual(f(True, None, ["a"], True), "aborted")
 
 
 if __name__ == "__main__":

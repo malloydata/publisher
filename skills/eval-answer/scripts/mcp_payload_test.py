@@ -11,7 +11,7 @@ are now `delivered, wrong` and `not retrieved`.
 """
 import unittest
 
-from mcp_payload import entity_hits, entity_ids, search_terms
+from mcp_payload import entity_hits, entity_ids, search_targets, search_terms
 
 FLAT = {"results": [
     {"kind": "measure", "name": "total_sales_2022", "source": "order_items",
@@ -109,6 +109,23 @@ class SearchTerms(unittest.TestCase):
     def test_a_request_with_no_terms_yields_none(self):
         self.assertEqual(search_terms({"scopes": [{"package": "ecommerce"}]}), [])
         self.assertEqual(search_terms({"query": "  "}), [])
+
+
+class SearchTargets(unittest.TestCase):
+    def test_every_target_is_kept_as_sent_including_a_bare_one(self):
+        # `search_terms` drops the bare target and flattens the rest; this is
+        # the request target by target, which score_targets pairs with goldens.
+        self.assertEqual(
+            search_targets({"search_targets": [
+                {"target_type": "dimension", "search_text": " category ",
+                 "example_values": ["Outerwear"]},
+                {"target_type": "source"}]}),
+            [{"target_type": "dimension", "search_text": "category",
+              "example_values": ["Outerwear"]},
+             {"target_type": "source", "search_text": None}])
+
+    def test_the_query_string_convention_has_no_targets(self):
+        self.assertEqual(search_targets({"query": "total sales"}), [])
 
 
 class EntityIds(unittest.TestCase):

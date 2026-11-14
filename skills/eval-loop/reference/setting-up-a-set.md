@@ -2,7 +2,7 @@
 
 # Setting up a set on your own model
 
-`examples/storefront/evals/storefront-tour` is a finished set. This is the path
+`examples/storefront-evals/storefront-tour` is a finished set. This is the path
 to one of your own: which files a set needs, what writes each one, and the
 order they go in. Every command is `python3 skills/eval-loop/scripts/eval.py`,
 run from the Publisher clone, unless it names another script.
@@ -15,9 +15,10 @@ ready when it prints `ready: nothing blocks a run`.
 
 - A Malloy package with a `publisher.json`, in a git repository. Git is how a
   run pins the model it measured and how an improve step is rolled back.
-- A built Publisher clone (`bun install && bun run build`; Bun is needed only
-  to build, the scripts run it with Node), Python 3.11+, and a Java runtime for
-  the SDK build.
+- Python 3.11+ and Node.js 20+. With no built Publisher clone, `serve` runs
+  the published server through npx, at the release `[paths] publisher_version`
+  pins (pin it, so every run of the set is answered by the same server). A
+  built clone (`bun install && bun run build`) is used when there is one.
 - `EMBEDDING_API_KEY` exported, for semantic retrieval. Without it the model
   server ranks lexically and says so on start.
 
@@ -81,6 +82,11 @@ filters by hand, as its header says, and nothing else. Then set
 A set of criteria goldens or bare questions needs no truth package; `check`
 notes its absence and moves on.
 
+On a hosted target, publish the truth package on the host instead, outside the
+answerer's workspace, and verify with `--truth-mcp-url`
+(`reference/replaying-a-logged-session.md`, "Number keys against a hosted truth
+package").
+
 ## 4. Write eval.toml
 
 ```toml
@@ -91,16 +97,63 @@ repo        = "<path to the model package>"   # relative to this file
 port        = 4811
 mcp_port    = 4812
 
+versioning  = true     # the server's default; false installs edits in place
+
 [truth]                  # only with a truth package; an empty [truth] takes 4881/4882
 environment = "truth"
 package_dir = "<path to the truth package>"
 port        = 4881
 mcp_port    = 4882
+
+[paths]
+publisher_version = "0.12.6"   # the server npx runs when there is no built clone
+
+[store]                  # optional: where a team shares finished runs
+path = "<a shared folder outside the repository>"
 ```
+
+With versioning on (the server's default) the package is published as the
+immutable version its `publisher.json` names, so every run records the real
+version it measured and `eval.py versions` lines runs up by it. An edit is
+then a version bump and `eval.py publish`, or an experiment
+(`eval.py experiment start`), which needs no bump. `versioning = false`
+installs each publish in place, and runs record the `publisher.json` version
+as "unpublished". `[store]` is in `sharing-runs.md`.
 
 `package` here and `targetPackage` in `set.json` must name the same package.
 Where both are set, `eval.toml` wins, and `check` refuses the set until they
 agree.
+
+### A model on a hosted platform, served locally
+
+When the package and its connections live on a hosted platform, a local
+Publisher can serve it with the connections proxied through the host. The
+host's CLI usually does this. The harness does not start that server, so name its
+address instead of its ports:
+
+```toml
+[model]
+environment = "<env the local server names>"
+package     = "<package name>"
+repo        = "<path to the package>"
+publisher   = "http://localhost:4900"
+mcp_url     = "http://127.0.0.1:4940/mcp"
+
+[truth]
+environment = "<env>"
+package_dir = "<path to the truth package>"
+publisher   = "http://localhost:4950"      # a second local server, for the truth package alone
+```
+
+Where no second server can run, leave `[truth]` out. A quality routine then
+scores against the keys as stored and says in its result that they were not
+re-derived (`keysVerified: false`), so a key that drifted with the data goes
+uncaught until a run that has a truth server.
+
+Start both servers before a run. `check` notes a role named by address and does
+not ask who holds its ports, and there is no `eval.py serve` for that role. The
+truth package's sources read the same warehouse tables through the same proxy,
+so it needs no data of its own.
 
 Pick ports nothing else on the machine holds; `check` names any that are taken.
 Every later step reads them from this file, so change them here rather than
@@ -123,10 +176,23 @@ never as a pass.
 
 An imported value is `provisional`, and a provisional golden takes no verdict.
 `--promote` marks one `verified` only when it re-derived cleanly through the
-truth package AND a second, differently shaped derivation exists: a
-`golden.verification` block, or `gold/<qid>.json` holding `verifyRows`
-(`reference/ledger-schema.md`, the `golden` row, says what the second one must
-vary).
+truth package AND a second, differently shaped derivation agrees with it.
+
+Write the second derivation into the case, and `--promote` does the rest:
+
+```json
+"verification": {"primaryAxis": "group by zone name through the join",
+                 "variesAxis": "group by raw location id, no join",
+                 "verifyQuery": "run: t_trips -> { group_by: PULocationID; aggregate: revenue is total_amount.sum(); ... }"}
+```
+
+It runs `verifyQuery` on the truth server, writes both queries and their rows
+to `gold/<qid>.json`, and promotes only when the two agree on every column they
+share, row by row (numbers within a millionth). Name the checked column the
+same in both; give each query its own route to it (`reference/ledger-schema.md`,
+the `golden` row, says what the second one must vary). A `golden.verification`
+block with no query, or a `gold/<qid>.json` written by hand, still counts, as
+it did before.
 
 ```bash
 eval.py verify --set <set> --promote
@@ -141,10 +207,34 @@ on the golden, so a reader sees a person stood behind it rather than a query.
 
 ```bash
 eval.py run --set <set> --label smoke --only <qid>[,<qid>...] --max-turns 40   # a case or two first
-eval.py run --set <set> --label baseline-01 --max-turns 40
-eval.py diagnose --set <set> --label baseline-01
-eval.py package --set <set> --label baseline-01
+eval.py routine --kind quality --set <set> --label baseline-01   # run, diagnose, package, history
+eval.py routine --kind speed --set <set> --label baseline-01-perf   # time its passing queries
 ```
+
+That first full run is the set's first record. From here, `team-workflow.md`
+is the day-to-day loop.
+
+## 8. Two agents to run it on a schedule
+
+A package can declare agents in its `publisher.json` (the `malloy-define-agent` skill has the format).
+`examples/storefront` ships two that run this loop, each with one task per
+mode:
+
+| Agent | `nightly-run` | `nightly-improve` |
+|---|---|---|
+| `quality-optimizer` | `routine --kind quality`: the pass rate | `--mode improve`: one edit for the largest cluster, left on a branch if accepted |
+| `latency-cost-optimizer` | `routine --kind speed`: the queries' time and the build cost | `--mode improve`: one materialization for the costliest source, left on a branch if both replays show it faster |
+
+Copy `agents/quality-optimizer/` and `agents/latency-cost-optimizer/` and
+their two entries in `publisher.json` into your package, and change the set's
+path in each `instructions.md`. They are briefs, not machinery: a definition
+adds instructions to a session and grants no tool, so an agent that adopts
+one needs a shell, Python, the skills' scripts on disk and the `claude` CLI
+already. They carry no copy of the eval skills, which every Publisher serves.
+Publisher lists the schedules and runs none: whatever host adopts the agent
+decides when a task runs. Each task says what to do when the host has a skill
+of its own for fetching the day's logs or saving a run, and what to do when it
+has none.
 
 Then `reference/running-a-run.md` for what the run prints and how to read it,
 and `skill:eval-report` for the write-up.

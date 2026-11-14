@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures as futures
+import copy
 import hashlib
 import json
 import os
@@ -199,11 +200,14 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
 import config  # noqa: E402
 import golden_rows  # noqa: E402
 import ledger  # noqa: E402
+import slices  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from mcp_payload import (doc_tokens, entity_hits,  # noqa: E402
-                         entity_ids, search_terms, target_shapes)
+                         entity_ids, search_targets, search_terms,
+                         target_shapes)
 from publisher_rest import (package_identity, package_skill_names,  # noqa: E402
-                            served_model_path, served_package_dir, try_query)
+                            package_version, served_model_path,
+                            served_package_dir, try_query)
 from score_retrieval import (  # noqa: E402
     cascade, coverage_report_summary, load_coverage_report, score_case,
     summarise)
@@ -214,6 +218,7 @@ from check_must_not_use import judge_note as must_not_use_note  # noqa: E402
 import verify_goldens  # noqa: E402
 import verify_definitions  # noqa: E402
 import check_findable  # noqa: E402
+import score_targets  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from agent_harness import (ALWAYS_BLOCKED, NO_EDITS, NO_SHELL,  # noqa: E402
@@ -719,6 +724,7 @@ def _raw_result_text(block: dict[str, Any]) -> str:
 
 def claude(prompt: str, cwd: str, model: str, *, mcp: str | None,
            tools: tuple[str, ...] = (), denied: tuple[str, ...] = (),
+           builtins: tuple[str, ...] | None = None,
            turns: int = 30,
            effort: str | None = None, timeout: int = 900,
            skills: bool = True, retry: int = 2,
@@ -743,6 +749,16 @@ def claude(prompt: str, cwd: str, model: str, *, mcp: str | None,
     # only add: there is no path here that widens the fence.
     blocked = tuple(dict.fromkeys((*blocked, *denied)))
     cmd += ["--disallowedTools", *blocked]
+    # `builtins` names the CLI's own tools the session may hold, and no others
+    # exist in it. The deny-list above can only name tools that were known when
+    # it was written, and the CLI keeps adding them: `Artifact`, the Task*
+    # family and `PublishPlugin` each arrived later and, unlisted, flagged
+    # every attempt of a run contaminated (`PublishPlugin` all 12 of a
+    # storefront run on CLI 2.1.322). An allowlist does not go stale that way.
+    # MCP tools are not built-ins, so this leaves them to `tools`.
+    if builtins is not None:
+        names = [b for b in builtins if skills or b != "Read"]
+        cmd += ["--tools", *(names or [""])]
     if effort:
         cmd += ["--effort", effort]
     # Unconditional, for the reason spelled out in `agent_harness.spawn_agent`:
@@ -897,8 +913,12 @@ def retrieval_error_message(reason: str | None) -> str:
 
 
 def mcp_call(url: str, tool: str, arguments: dict[str, Any],
-             timeout: int = 60) -> Any:
+             timeout: int = 60,
+             headers: dict[str, str] | None = None) -> Any:
     """One MCP `tools/call`, returning the tool's parsed JSON payload.
+
+    `headers` are added to the request as given (an auth header for a server
+    that needs one, say). Nothing here supplies or stores a credential.
 
     Stateless streamable HTTP, so the reply is either a JSON body or one SSE
     `data:` frame; both are accepted because which one arrives is the
@@ -917,7 +937,8 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any],
     req = urllib.request.Request(
         url, data=body.encode(), method="POST",
         headers={"Content-Type": "application/json",
-                 "Accept": "application/json, text/event-stream"})
+                 "Accept": "application/json, text/event-stream",
+                 **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         raw = r.read().decode()
     if raw.lstrip().startswith("event:") or "\ndata: " in raw:
@@ -1011,7 +1032,10 @@ def retrieval_probe(a: argparse.Namespace) -> tuple[str | None, str | None]:
     waiting for something that cannot arrive.
     """
     try:
-        payload = mcp_call(a.mcp_url, "get_context", probe_arguments(a))
+        # `mcp_headers` is set by retrieval_replay.py, whose requests carry
+        # extra headers; an answer run's namespace has none.
+        payload = mcp_call(a.mcp_url, "get_context", probe_arguments(a),
+                           headers=getattr(a, "mcp_headers", None))
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise AuthRequired(e.code, a.mcp_url) from e
@@ -1722,6 +1746,26 @@ def evidence_lines(evidence: dict | None) -> list[str]:
     return lines
 
 
+def tag_breakdown(cases: list[dict[str, Any]],
+                  scored: dict[str, dict[str, Any]]) -> dict[str, tuple[int, int]]:
+    """tag -> (passed, decided), over the same `scored` verdicts as the headline.
+
+    Decided means `match` or `no_match`, as in the headline, so the tag rows
+    add up to it wherever every case carries one tag. A case with several tags
+    counts under each.
+    """
+    out: dict[str, list[int]] = {}
+    for c in cases:
+        v = (scored.get(c["qid"]) or {}).get("verdict")
+        if v not in ("match", "no_match"):
+            continue
+        for t in c.get("tags") or []:
+            row = out.setdefault(t, [0, 0])
+            row[0] += v == "match"
+            row[1] += 1
+    return {t: (p, d) for t, (p, d) in sorted(out.items())}
+
+
 def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   attempted: int, decided: int, passed: int, near: int,
                   human: int, doubted: list, vetoed: list, alt_path: int,
@@ -1729,6 +1773,8 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   truncated: list[str] | None = None,
                   contaminated: list[str] | None = None,
                   aborted: bool = False,
+                  left_out: bool = False,
+                  recovered: list[str] | None = None,
                   contamination_reasons: dict[str, int] | None = None,
                   max_turns: int | None = None,
                   retrieval_mode: str, tally: dict, rs: dict,
@@ -1736,7 +1782,11 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   evidence: dict | None = None,
                   coverage_report: dict | None = None,
                   cascade: dict | None = None,
-                  skill_uses: dict | None = None) -> list[str]:
+                  skill_uses: dict | None = None,
+                  targets: dict | None = None,
+                  source: str = "spawned",
+                  queried: dict[str, int] | None = None,
+                  by_tag: dict[str, tuple[int, int]] | None = None) -> list[str]:
     """The end-of-run report, in three layers.
 
     A run produces four different kinds of fact and they used to arrive in one
@@ -1769,8 +1819,16 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
     # beside it and do not: the first is a dataset state that an arm cannot
     # fix, and the second already has a retry.
     trunc, contam = list(truncated or []), list(contaminated or [])
-    incomplete = len(trunc) + len(contam) + bool(aborted)
+    # `left_out`: each voided case was answered a second time and at most half
+    # are voided still. The rate is then over cases that have a verdict, with
+    # the rest named, which is a number somebody earned. Without the second
+    # attempt it is still withheld.
+    incomplete = (0 if left_out and not aborted
+                  else len(trunc) + len(contam) + bool(aborted))
     pct = f" ({100 * passed / decided:.0f}%)" if decided else ""
+    if left_out and (trunc or contam) and not aborted:
+        pct += (f"  -- {len(trunc) + len(contam)} voided after a second attempt, "
+                f"left out of the rate")
     if incomplete:
         why = ", ".join(
             ["the arm ABORTED"] * bool(aborted)
@@ -1805,10 +1863,12 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
         lines += [f"  truncated     {len(trunc)} (hit the turn cap{cap}; not "
                   f"judged, and not evidence about the model)",
                   f"                {', '.join(sorted(trunc))}",
-                  f"                re-run just these, at a higher cap:",
-                  f"                  --from {out.name} --out <new-run> "
-                  f"--only {','.join(sorted(trunc))} "
-                  f"--max-turns {(max_turns or 30) * 2}"]
+                  *([f"                answer them again in place, at double "
+                     f"the cap:",
+                     f"                  eval.py run --set {set_dir} --label "
+                     f"{out.name} --rebuild --recover"] if not left_out else
+                    [f"                each was answered twice; raise --max-turns "
+                     f"for the set, or read why the case needs so many"])]
     if contam:
         lines += [f"  contaminated  {len(contam)} (isolation breached; the "
                   f"judge's verdict is kept as judge_verdict and withheld)",
@@ -1816,6 +1876,15 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
         for reason, n in sorted((contamination_reasons or {}).items(),
                                 key=lambda kv: (-kv[1], kv[0])):
             lines += [f"                {n}x {reason}"]
+    if recovered:
+        lines += [f"  recovered     {len(recovered)} answered a second time "
+                  f"(first attempts kept under voided/)",
+                  f"                {', '.join(sorted(recovered))}"]
+    if by_tag and not incomplete:
+        # Per tag, so a slice's movement shows against the kind of question it
+        # targets. Withheld with the headline on an incomplete arm, for the
+        # same reason.
+        lines += ["  by tag        " + ", ".join(f"{t} {p}/{d}" for t, (p, d) in by_tag.items())]
     lines += [
              f"  cost          ${answerer_cost:.2f} answerer"
              + (f" + ${judge_cost:.2f} judge" if judge_cost else "")]
@@ -1830,8 +1899,9 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
         # longer attributes all of them to the judge.
         lines += ["", f"! {len(doubted)} golden(s) not believed. "
                       f"Dataset issues, NOT model failures:"]
-        for qid, status, note, source in doubted:
-            whose = "the set declares" if source == "set" else "the judge says"
+        for qid, status, note, declared_by in doubted:
+            whose = ("the set declares" if declared_by == "set"
+                     else "the judge says")
             lines += [f"    {status:15s} {qid}  ({whose})",
                       f"      {note or '(no note)'}"]
         lines += ["  Route via the golden side door in skill:eval-loop before "
@@ -1843,11 +1913,32 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
         for qid, hits in vetoed:
             lines += [f"    {qid}: {'; '.join(hits)}"]
 
-    lines += skill_lines(skill_uses)
+    if source == "logs":
+        # The session ran in the host's own agent, with the host's skills.
+        # This harness granted it none, so "none of the granted skills was
+        # read" would describe a run that never happened.
+        lines += ["", "SKILLS",
+                  "  not measured  logged sessions ran with the host's skills, "
+                  "not ones this harness granted"]
+        # What the run actually measured, since --scope did not bind it.
+        if queried:
+            lines += ["", "PACKAGES",
+                      "  queried       " + ", ".join(
+                          f"{k} ({n})" for k, n in sorted(
+                              queried.items(), key=lambda kv: (-kv[1], kv[0])))]
+            if len(queried) > 1:
+                lines += ["                ! the same set was answered from "
+                          "more than one package, so a verdict describes the "
+                          "package that answered it, not one model"]
+    else:
+        lines += skill_lines(skill_uses)
     lines += evidence_lines(evidence)
 
     lines += ["", "COVERAGE & RETRIEVAL"]
     lines += cascade_lines(cascade)
+    # Per golden search target, when the set names any (score_targets.py).
+    # Empty otherwise, so a set without `searchTargets` prints what it did.
+    lines += score_targets.summary_lines(targets) if targets else []
     lines += [f"  retrieval     {retrieval_mode} (semantic {tally['semantic']},"
               f" lexical {tally['lexical']},"
               f" indexing {tally.get('indexing', 0)}, error {tally.get('error', 0)},"
@@ -1858,6 +1949,11 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   "misses. This run does not measure retrieval; wait for the "
                   "index to be ready and re-run. flip_table.py refuses a pair "
                   "with an arm like this."]
+    elif retrieval_mode != "semantic" and source == "logs":
+        lines += ["                the host's logged responses do not say "
+                  "which retriever ranked them. That is the host's record, "
+                  "not a local fallback to lexical; flip_table.py still "
+                  "refuses to pair it with a semantic arm."]
     elif retrieval_mode != "semantic":
         lines += ["                ! not a semantic run. Local retrieval "
                   "degrades to lexical without an embedding key, and comparing "
@@ -1926,7 +2022,7 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
     lines += ["", "DEEP DIVE",
               "  A run directory is JSONL, which is a record, not a report.",
               "  Diagnose the failures, then build the report: a Malloy",
-              "  package with notebooks/eval_run.malloy for the aggregate",
+              "  package with run_report.malloy for the aggregate",
               "  tables and an HTML app for the case matrix. The builder",
               "  refuses a run with no diagnosis, then registers the report",
               "  on the truth server and prints both of its URLs:",
@@ -2149,11 +2245,34 @@ def parse_scope(scope: str, target_version: str | None
     return env.strip(), pkg.strip(), version, notes
 
 
-def run_answerer(case: dict[str, Any], a: argparse.Namespace,
-                 art: pathlib.Path) -> dict[str, Any]:
+# The transcript line a rebuilt transcript carries to declare what its source
+# could and could not record. Absent from anything the CLI produces, so its
+# absence is the spawned case and needs no flag.
+PROVENANCE = "provenance"
+
+
+# A server that never answered. Returned instead of an attempt so the caller can
+# tell "the environment failed" from "the agent answered badly", which is the
+# distinction `skill:eval-loop` stops a run over.
+SERVER_DEAD = "server_dead"
+
+
+def capture_answerer(case: dict[str, Any], a: argparse.Namespace,
+                     d: pathlib.Path) -> tuple[list[dict[str, Any]], float | None]:
+    """The answerer's transcript, either spawned fresh or read back from disk.
+
+    Split from `derive_attempt` so that a transcript this harness did NOT
+    produce can be scored by the same code. `--rebuild` already proved the two
+    halves separate; this only names the seam, so that a transcript synthesised
+    from a host's request logs (`fetch_transcripts.py`) enters at exactly the
+    point a spawned one does and every consumer downstream is unchanged.
+
+    Raises `RuntimeError(SERVER_DEAD)` rather than returning a sentinel: there
+    is no transcript in that case, and a caller that forgot to check would
+    otherwise derive an attempt from an empty event list and record it as an
+    agent that said nothing.
+    """
     qid = case["qid"]
-    d = art / qid
-    d.mkdir(parents=True, exist_ok=True)
 
     if a.rebuild:
         # Re-derive the ledger from a transcript already on disk. The parser is
@@ -2170,11 +2289,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         if not wait_alive(a):
             # No spawn: a refusal produced by a dead server is not evidence
             # about the model, and it would still cost a model call.
-            return {"qid": qid, "submitted": False, "final_query": None,
-                    "answer_text": "", "calls": [], "error": "server_dead",
-                    "n_get_context": 0, "n_execute": 0, "n_execute_errors": 0,
-                    "host_tool_uses": 0, "transcriptPath": None,
-                    "breaches": ["server unreachable before the attempt"]}
+            raise RuntimeError(SERVER_DEAD)
         platform = a.target == "platform"
         server = a.hosted_mcp_server if platform else "publisher"
         # The workspace holds the answerer's skills and nothing else, and it is
@@ -2207,12 +2322,41 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
             # arm is covered by `isolation_breaches`, which RECORDS whatever it
             # was granted rather than pretending to have denied it.
             denied=answer_denied(a),
+            builtins=tuple(sorted(ANSWERER_ALLOWED)),
             turns=a.max_turns, effort=a.effort, timeout=a.timeout,
             skills=bool(a.answerer_skills))
         elapsed = round(time.time() - t0, 1)
         (d / "answerer.jsonl").write_text(
             "".join(json.dumps(e) + "\n" for e in events))
         shutil.rmtree(work, ignore_errors=True)
+
+    return events, elapsed
+
+
+def derive_attempt(events: list[dict[str, Any]], case: dict[str, Any],
+                   a: argparse.Namespace, art: pathlib.Path,
+                   elapsed: float | None) -> dict[str, Any]:
+    """One attempt, derived from a transcript. Calls no model and no server.
+
+    Pure with respect to the transcript: everything it reports is read out of
+    `events`, which is what lets `--rebuild` re-derive a run for free and lets a
+    log-sourced transcript be scored identically. Where a source cannot supply a
+    field the transcript would have carried, the answer is a null the ledger
+    already understands, never a zero.
+    """
+    qid = case["qid"]
+    d = art / qid
+    d.mkdir(parents=True, exist_ok=True)
+
+    # A transcript this harness spawned carries no provenance line, and the
+    # defaults below are its defaults: the CLI's stream can carry prose, and a
+    # host-side tool log existed, so contamination is decidable. A transcript
+    # rebuilt from a host's request logs says otherwise on this line, and
+    # saying it IN the transcript is what keeps `derive_attempt` pure over its
+    # input and keeps `--rebuild` deriving the same ledger a year later.
+    prov = next((e for e in events
+                 if e.get("type") == PROVENANCE), {})
+    host_log = bool(prov.get("host_log", True))
 
     calls, answer, queries = [], [], []
     query_givens: list[dict[str, Any] | None] = []
@@ -2263,7 +2407,12 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                             # no text, so the bare-target rate -- the whole of
                             # the "enumerates instead of searching" argument --
                             # could not be recomputed from a run directory.
-                            "target_shapes": target_shapes(c["input"])}
+                            "target_shapes": target_shapes(c["input"]),
+                            # The targets as sent, one row each, so a golden's
+                            # `searchTargets` can be paired with them
+                            # (score_targets.py). The two fields above each
+                            # keep only half of a target.
+                            "search_targets": search_targets(c["input"])}
                     elif (name.endswith("malloy_executeQuery")
                             or name.endswith("__execute_query")):
                         n_exec += 1
@@ -2294,19 +2443,29 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         # resolve outside the one that declares it, so the two
                         # kept as parallel lists drift the moment the answer
                         # and the last probe are different calls.
+                        inp = c["input"]
                         pending[c["id"]] = {"tool": "execute_query",
                                             "targets": None,
                                             "query": q,
                                             "modelPath": (
-                                                c["input"].get("modelPath")
-                                                or c["input"].get("model_path")),
+                                                inp.get("modelPath")
+                                                or inp.get("model_path")),
                                             # Runtime filters the answerer
                                             # scoped this query with. They are
                                             # an argument beside the text, so
                                             # the text alone is a different
                                             # (unfiltered) query.
                                             "givens": as_givens(
-                                                c["input"].get("givens"))}
+                                                inp.get("givens")),
+                                            # Where it ran, from its own
+                                            # arguments. A logged session is not
+                                            # bound to the run's --scope: one
+                                            # question in a real pull was
+                                            # answered from three packages.
+                                            "environment": inp.get("environment"),
+                                            "package": inp.get("package"),
+                                            "version": (inp.get("version")
+                                                        or inp.get("version_id"))}
                     else:
                         # The CLI ships ~17 skills of its own (batch, loop,
                         # code-review, dataviz ...) that no flag removes from
@@ -2403,6 +2562,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
     final_givens = _givens_of(final_query, [
         c for c in calls if c.get("tool") == "execute_query" and c.get("query")
     ]) if final_query else None
+    queried = queried_packages(calls)
 
     return {
         "qid": qid,
@@ -2418,6 +2578,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         "final_query_source": final_source,
         "final_model_path": final_path,
         "final_givens": final_givens,
+        "queried_packages": queried,
         "answer_text": text,
         "n_get_context": n_get,
         "n_execute": n_exec,
@@ -2431,13 +2592,190 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         "wall_seconds": elapsed,
         "error": res.get("subtype") if res.get("is_error") else None,
         "calls": calls,
-        "breaches": isolation_breaches(
-            events, answer_tools(a))
-        + path_breaches(events, a.set_dir)
-        + [f"invoked a skill outside the manifest: {sk}"
-           for sk in sorted(set(foreign_skills))],
+        # Empty when there was no host log to check, which is NOT the same as
+        # a clean one and must not be recorded as one: `contaminated` becomes
+        # "unknown" instead, from `host_log` below. Running the checks anyway
+        # reported "no init event: cannot verify what the answerer held" as a
+        # BREACH, which is the opposite of what it says -- it lands in the
+        # contamination histogram beside real ones, voids the verdict with
+        # reason `contaminated`, and prints "isolation breached" about a
+        # session where nothing was breached and nothing was checked.
+        "breaches": ([] if not host_log else
+                     isolation_breaches(events, answer_tools(a))
+                     + path_breaches(events, a.set_dir)
+                     + [f"invoked a skill outside the manifest: {sk}"
+                        for sk in sorted(set(foreign_skills))]),
         "transcriptPath": str((d / "answerer.jsonl").relative_to(art.parent)),
+        # Facts about the SOURCE, not about the agent. Kept apart from
+        # `answer_text` and `breaches` because an empty answer and an
+        # unrecorded one are different claims, and so are a clean host log and
+        # no host log at all.
+        "answer_captured": bool(prov.get("answer_captured", True)),
+        "host_log": host_log,
     }
+
+
+def run_answerer(case: dict[str, Any], a: argparse.Namespace,
+                 art: pathlib.Path) -> dict[str, Any]:
+    """Answer one case and derive its attempt. The composition of the two above."""
+    qid = case["qid"]
+    d = art / qid
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        events, elapsed = capture_answerer(case, a, d)
+    except RuntimeError as exc:
+        if str(exc) != SERVER_DEAD:
+            raise
+        return {"qid": qid, "submitted": False, "final_query": None,
+                "answer_text": "", "calls": [], "error": SERVER_DEAD,
+                "n_get_context": 0, "n_execute": 0, "n_execute_errors": 0,
+                "host_tool_uses": 0, "transcriptPath": None,
+                "breaches": ["server unreachable before the attempt"]}
+    return derive_attempt(events, case, a, art, elapsed)
+
+
+# ------------------------------------------------------------------ recovery
+
+def voided_reason(att: dict[str, Any]) -> str | None:
+    """Why this attempt can carry no verdict, or None when it can.
+
+    The two harness-owned exclusions: an answer cut off at the turn cap, and
+    one whose isolation broke. Neither is evidence about the model, which is
+    the only reason answering it again is not answer-shopping.
+    """
+    if att.get("error") == "error_max_turns":
+        return "truncated"
+    if att.get("breaches"):
+        return "contaminated"
+    return None
+
+
+def recovery_marker(out: pathlib.Path, qid: str) -> dict[str, Any] | None:
+    """What a recovered case's first attempt was, kept beside its transcript."""
+    try:
+        return json.loads((out / "voided" / qid / "recovered.json").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def recover_voided(cases: list[dict[str, Any]], attempts: dict[str, dict[str, Any]],
+                   a: argparse.Namespace, art: pathlib.Path) -> list[str]:
+    """Answer each voided case once more, and return the qids answered again.
+
+    A truncated case gets double the turn cap: the cap is a harness setting,
+    and the same cap would cut it off at the same place. A contaminated case
+    gets the same settings: a server that dropped recovers, and a harness
+    fault (a tool the CLI added, a path into the key) breaches again and stays
+    voided, which is the right outcome.
+
+    Once per case, ever. The first attempt moves to <run>/voided/<qid>/ with a
+    recovered.json naming why and what it cost, so nothing is lost and a case
+    that already has one is not tried a third time. It is outside artifacts/
+    because a rebuild walks that directory for cases.
+
+    Not when more than half the cases are voided. That is a broken harness, and
+    paying for every case again would measure the same fault.
+    """
+    todo = [(c, voided_reason(attempts[c["qid"]])) for c in cases]
+    todo = [(c, why) for c, why in todo
+            if why and not (a.out / "voided" / c["qid"]).exists()]
+    if not todo:
+        return []
+    if 2 * len(todo) > len(cases):
+        print(f"  ! {len(todo)} of {len(cases)} cases are voided. That is the harness, "
+              f"not the cases, so none is answered again. Read the reasons below.",
+              flush=True)
+        return []
+    print(f"recovering {len(todo)} voided case(s), once each", flush=True)
+
+    def again(c: dict[str, Any], why: str) -> dict[str, Any] | None:
+        qid, first = c["qid"], attempts[c["qid"]]
+        b = copy.copy(a)
+        b.rebuild = b.rejudge = False
+        if why == "truncated":
+            b.max_turns = (a.max_turns or 30) * 2
+        kept = a.out / "voided" / qid
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        if (art / qid).exists():
+            shutil.move(str(art / qid), str(kept))
+        else:
+            kept.mkdir()
+        marker = {"reason": why, "cost_usd": first.get("cost_usd"),
+                  "num_turns": first.get("num_turns"),
+                  "breaches": first.get("breaches") or [],
+                  "max_turns": b.max_turns}
+        (kept / "recovered.json").write_text(json.dumps(marker, indent=1) + "\n")
+        try:
+            att = run_answerer(c, b, art)
+        except Exception as e:
+            att = {"qid": qid, "submitted": False, "final_query": None,
+                   "answer_text": "", "calls": [], "error": str(e)[:200],
+                   "n_get_context": 0, "n_execute": 0, "n_execute_errors": 0,
+                   "host_tool_uses": 0, "transcriptPath": None}
+        if not (art / qid / "answerer.jsonl").exists():
+            # No answerer ran (the server was down, or the spawn failed), so
+            # this was not a second attempt. Put the first one back: it keeps
+            # its place in the run, and the case can still be recovered once.
+            shutil.rmtree(art / qid, ignore_errors=True)
+            (kept / "recovered.json").unlink()
+            shutil.move(str(kept), str(art / qid))
+            return None
+        att["recovered_from"] = marker
+        return att
+
+    done = []
+    with futures.ThreadPoolExecutor(max_workers=a.parallel) as ex:
+        fut = {ex.submit(again, c, why): (c, why) for c, why in todo}
+        for f in futures.as_completed(fut):
+            c, why = fut[f]
+            att = f.result()
+            if att is None:
+                print(f"  {c['qid']}: was {why}, and no answerer could be started. "
+                      f"Left as it was", flush=True)
+                continue
+            attempts[c["qid"]] = att
+            now = voided_reason(att)
+            print(f"  {c['qid']}: was {why}, now "
+                  f"{now + ' again' if now else 'answered'}", flush=True)
+            done.append(c["qid"])
+    if (a.out / "voided").is_dir() and not any((a.out / "voided").iterdir()):
+        (a.out / "voided").rmdir()
+    return sorted(done)
+
+
+def over_cost_cap(spent: float, cap: float | None, done: int, total: int) -> bool:
+    """Has the run spent its cap with cases still to answer?
+
+    Not once the last case is in: there is nothing left to stop, and aborting
+    a run that finished would throw its number away for nothing.
+    """
+    return cap is not None and spent >= cap and done < total
+
+
+def may_leave_out(still: list[str], recovered: list[str], n_cases: int) -> bool:
+    """May the cases still voided be left out of the rate, and the run recorded?
+
+    Only when every one of them has had its second attempt, and at most half
+    the cases are voided. More than half is the harness, and has no number.
+    Read off the attempts, not off `--recover`, so a later `--rebuild` or
+    `--rejudge` of a recovered run reaches the same answer without the flag.
+    """
+    return bool(still and 2 * len(still) <= n_cases
+                and all(q in recovered for q in still))
+
+
+def run_status(aborted: bool, moved: Any, still: list[str], left_out: bool) -> str:
+    """`complete`, `incomplete` or `aborted`, for run.json.
+
+    A run whose voided cases each had a second attempt is `complete` with
+    those cases named: its rate is over the cases that have a verdict, and a
+    comparison sets the named ones aside (flip_table reads both lists).
+    Leaving it `incomplete` meant one case that would not finish stopped the
+    record moving for good.
+    """
+    if aborted:
+        return "aborted"
+    return "incomplete" if (moved or (still and not left_out)) else "complete"
 
 
 JUDGE_PROMPT = """/eval-judge
@@ -2525,6 +2863,45 @@ AGREEMENT = (
     r"identical to the golden",
     r"correct filter and value",
 )
+
+
+def queried_packages(calls: list[dict[str, Any]]) -> list[str]:
+    """`environment/package@version` for each package an attempt's ANSWERED
+    queries ran against, in first-use order.
+
+    A call that named no version is written without `@`: it ran against
+    whatever the workspace pinned at that moment, and the call does not say
+    which. A failed call is left out, because it measured nothing there.
+    """
+    out: list[str] = []
+    for c in calls:
+        if c.get("tool") != "execute_query" or c.get("error") \
+                or not c.get("package"):
+            continue
+        name = (f"{c['environment']}/" if c.get("environment") else "") \
+            + c["package"] + (f"@{c['version']}" if c.get("version") else "")
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def run_provenance(attempts) -> tuple[str, str]:
+    """`source` and `sourceTier` for a whole run, from its attempts.
+
+    The tier is the WEAKEST any attempt had, not the best or the most common: a
+    run is only as quotable as its poorest source, and reporting T2 for a set
+    where half the sessions kept no prose would put a pass rate on a
+    denominator that silently excluded them. One logged attempt likewise makes
+    the run `logs`, because a mixed run cannot be read as a spawned one.
+    """
+    rows = list(attempts)
+    if not rows:
+        return "spawned", "T3"
+    logged = [r for r in rows if not r.get("host_log", True)]
+    if not logged:
+        return "spawned", "T3"
+    return "logs", ("T1" if any(not r.get("answer_captured", True)
+                                for r in rows) else "T2")
 
 
 def contradicts(reason: str, verdict: str | None) -> bool:
@@ -2625,6 +3002,73 @@ def prior_judge_cost(out: pathlib.Path) -> float | None:
     always None, which is the version of this that silently does nothing.
     """
     return prior_run_json(out).get("judgeCostUsd")
+
+
+def base_version(package_dir: pathlib.Path | None) -> str | None:
+    """`version` from the served package's publisher.json, or None."""
+    try:
+        v = json.loads((package_dir / "publisher.json").read_text()).get("version")
+    except (TypeError, OSError, ValueError, AttributeError):
+        return None
+    return v if isinstance(v, str) and v else None
+
+
+def version_pin(a: argparse.Namespace) -> dict[str, Any] | None:
+    """The `packageVersion` block for run.json: which package version answered.
+
+    The same shape for both targets, so runs on a laptop and runs on a host
+    line up by version. On a local Publisher it is read from the server
+    (`publisher_rest.package_version`), and `--target-version` must name the
+    version serving `latest`, because the local MCP tools cannot pin one: the
+    answerer gets `latest` whatever the run asks for. An unversioned package
+    records `id: null` and the `baseVersion` its publisher.json names, which is
+    a working copy, not a published version.
+    """
+    if a.target == "platform":
+        return ({"id": a.target_version, "served": "platform"}
+                if a.target_version else None)
+    pv = package_version(a.publisher, a.environment, a.package)
+    if not pv:
+        if a.target_version:
+            raise SystemExit(
+                f"--target-version {a.target_version}: could not read the package's "
+                f"versions from {a.publisher}. Fix: check the server is up, or "
+                f"drop --target-version to score the working copy.")
+        return None
+    if a.target_version and pv.get("id") is None:
+        raise SystemExit(
+            f"Invalid --target-version on '{a.package}': expected a published "
+            f"version, got a package with none. Fix: start the server with "
+            f"PUBLISHER_PACKAGE_VERSIONING=on and publish the package "
+            f"(POST /api/v0/environments/{a.environment}/packages with its "
+            f"location), or drop --target-version to score the working copy.")
+    if a.target_version and pv["id"] != a.target_version:
+        raise SystemExit(
+            f"Invalid --target-version on '{a.package}': expected the version "
+            f"serving latest, got {a.target_version} while latest is {pv['id']}. "
+            f"The local MCP tools cannot pin a version, so this run would score "
+            f"{pv['id']}. Fix: PUT /api/v0/environments/{a.environment}/packages/"
+            f"{a.package}/latest {{\"version\": \"{a.target_version}\"}}, or pass "
+            f"--target-version {pv['id']}.")
+    block = {"id": pv.get("id"), "contentHash": pv.get("contentHash"),
+             "latest": pv.get("latest"), "served": "publisher"}
+    base = base_version(served_package_dir(a.publisher, a.environment, a.package))
+    if base:
+        block["baseVersion"] = base
+    return block
+
+
+def version_moved(a: argparse.Namespace, pin: dict[str, Any] | None) -> str | None:
+    """The version now serving `latest`, when it is not the one the run started on.
+
+    Checked after the answers, because the answerer reaches whatever is
+    `latest` at each call: a publish or a promotion mid-run splits one arm
+    across two versions, and nothing in the attempts would show it.
+    """
+    if a.target == "platform" or not pin or not pin.get("id"):
+        return None
+    now = package_version(a.publisher, a.environment, a.package).get("id")
+    return now if now and now != pin["id"] else None
 
 
 def prior_run_json(out: pathlib.Path) -> dict[str, Any]:
@@ -2980,6 +3424,23 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
                 "reason": f"environment_failure: {att['error']}"[:200],
                 "confidence": None}
 
+    # The SOURCE of this attempt could not carry the agent's prose. A
+    # transcript rebuilt from a host's request logs holds the tool calls and
+    # nothing else, so there is no answer to compare against the golden and
+    # there never will be for this attempt -- re-running the judge cannot
+    # help. Distinct from `not_submitted`, which says the agent produced
+    # nothing: here the agent may have answered perfectly and the logs simply
+    # did not record it.
+    #
+    # Checked BEFORE the golden refusal because it is the more fundamental
+    # blocker: establishing the key would not make this attempt judgeable.
+    # What such an attempt still supports is retrieval scoring, which reads
+    # the tool calls alone and takes a null verdict without complaint
+    # (`score_retrieval.UNSCORED`). What it does NOT support is a pass rate.
+    if att.get("answer_captured") is False:
+        return {"verdict": None, "reason": "no_answer_captured",
+                "confidence": None}
+
     # `not_submitted` means the attempt produced NOTHING to judge: no prose and
     # no query. An attempt with prose and no query is judged, and against a
     # golden that holds a value an answer containing none of it is `no_match`
@@ -3208,6 +3669,15 @@ def resolve_config(a: argparse.Namespace) -> config.Config:
     a.publisher = a.publisher or cfg.model_publisher()
     a.truth_publisher = a.truth_publisher or cfg.truth_publisher()
     a.truth_environment = a.truth_environment or cfg.get("truth", "environment")
+    # Two truth servers is a refusal, as in verify_goldens: the golden check
+    # would quietly pick one, and run.json could not say which it re-derived
+    # against.
+    if getattr(a, "truth_mcp_url", None) and a.truth_publisher:
+        raise SystemExit(
+            f"--truth-mcp-url and --truth-publisher name two truth servers "
+            f"({a.truth_mcp_url} and {a.truth_publisher}); pass one. A "
+            f"--truth-publisher you did not pass comes from the [truth] "
+            f"section of eval.toml.")
     a.skills_root = a.skills_root or cfg.get("paths", "skills_root")
     if a.out is None:
         runs = cfg.workdir() / "runs"
@@ -3236,6 +3706,9 @@ def attempt_event(c: dict[str, Any], att: dict[str, Any], phase: str | None,
         # The runtime parameters the final query ran under.
         # Without them a replay of final_query runs unscoped.
         final_givens=att.get("final_givens"),
+        # The model file the final query was sent to. A query replay
+        # runs it there; null means the run's default model path.
+        final_model_path=att.get("final_model_path"),
         # The revision that actually answered. Documented
         # as "package revision actually queried" and left
         # None until now, so nothing could tell an attempt
@@ -3248,8 +3721,15 @@ def attempt_event(c: dict[str, Any], att: dict[str, Any], phase: str | None,
         mcp_tool_uses=att.get("mcp_tool_uses"),
         skills_invoked=att.get("skills_invoked") or [],
         reported_calls=att["n_get_context"] + att["n_execute"],
-        contaminated=bool(att.get("breaches")),
+        # "unknown" is the contract's word for "no host log exists", which is
+        # exactly a transcript rebuilt from request logs: the server saw the
+        # MCP calls and could not have seen a Read of a gold CSV. Writing
+        # False there would claim a check that never ran.
+        contaminated=(bool(att.get("breaches"))
+                      if att.get("host_log", True) else "unknown"),
         contamination_reasons=att.get("breaches") or [],
+        answer_captured=att.get("answer_captured", True),
+        queriedPackages=att.get("queried_packages") or [],
         input_tokens=att.get("input_tokens"),
         output_tokens=att.get("output_tokens"),
         cache_read_tokens=att.get("cache_read_tokens"),
@@ -3259,6 +3739,9 @@ def attempt_event(c: dict[str, Any], att: dict[str, Any], phase: str | None,
         wall_seconds=att.get("wall_seconds"),
         answer_text=att.get("answer_text"),
         run_error=att.get("error"),
+        # Present only on a case answered a second time: why the first attempt
+        # was voided, what it cost, and the turn cap this one ran under.
+        **({"recovered_from": att["recovered_from"]} if att.get("recovered_from") else {}),
         transcriptPath=att["transcriptPath"])
 
 
@@ -3309,9 +3792,10 @@ def main(argv: list[str] | None = None) -> int:
                          "hosted server exposes; the server prefix is added. "
                          f"Default: {','.join(HOSTED_TOOLS_DEFAULT)}")
     ap.add_argument("--target-version", default=None,
-                    help="platform only: the published package version the "
-                         "workspace serves. Required, because a platform run "
-                         "pins the version it queried, not a local snapshot")
+                    help="the published package version under test. Required "
+                         "on a platform target. On a local Publisher it must be "
+                         "the version serving latest (the local MCP cannot pin "
+                         "one), and the run is refused if latest moves")
     ap.add_argument("--scope", default=None, metavar="ENV/PACKAGE[@VERSION]",
                     help="platform only: the one package the answerer is told "
                          "to scope every call to, as environment/package, and "
@@ -3407,6 +3891,14 @@ def main(argv: list[str] | None = None) -> int:
                          "has no route to, and that server names its "
                          "environments independently. Default: [truth] "
                          "environment in the set's eval.toml")
+    ap.add_argument("--truth-mcp-url", default=None,
+                    help="platform target: re-derive goldens against a truth "
+                         "package PUBLISHED ON THE HOST, through this MCP URL "
+                         "and the --hosted-mcp-server login. Needs "
+                         "--truth-organization and --truth-environment")
+    ap.add_argument("--truth-organization", default=None,
+                    help="with --truth-mcp-url: the organization publishing "
+                         "the truth package")
     ap.add_argument("--truth-publisher", default=None,
                     help="the Publisher serving the set's truthPackage, for the "
                          "pre-run golden check. Default: the [truth] server in "
@@ -3446,6 +3938,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=None,
                     help="how many to process; each one spawns a real agent. Omit for no limit. 0 means zero, not unlimited.")
     ap.add_argument("--only", default=None, help="comma-separated qids")
+    slices.add_arguments(ap)
     ap.add_argument("--phase", default="baseline")
     ap.add_argument("--no-judge", action="store_true")
     ap.add_argument("--rebuild", action="store_true",
@@ -3460,9 +3953,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rejudge", action="store_true",
                     help="reuse the saved answers but score them again, for a "
                          "judge or rubric change. Implies --rebuild")
+    ap.add_argument("--max-cost-usd", type=float, default=None,
+                    help="stop starting answerers once they have cost this "
+                         "much. Attempts already running finish, so the run "
+                         "can pass it by up to --parallel cases. The run is "
+                         "then aborted: it has no number and is not shared")
+    ap.add_argument("--recover", action="store_true",
+                    help="answer each truncated or contaminated case once more "
+                         "(a truncated one at double --max-turns), keeping the "
+                         "first attempt under voided/. With --rebuild it "
+                         "finishes a run that ended incomplete, in place. A run "
+                         "with at most half its cases still voided is then "
+                         "recorded, with those cases left out of the score")
     a = ap.parse_args(argv)
     cfg = resolve_config(a)
     imply_flags(a)
+    # A slice becomes `--only` here, before anything reads `a.only` (the
+    # coverage check, the rebuild, the case list), and run.json records it.
+    a.slice_used = (slices.narrow(a, a.set_dir, read_jsonl(a.set_dir / "cases.jsonl"))
+                    if (a.slice or a.tag) else None)
     # Resolved once here rather than per attempt: the answerer's granted tool
     # list is part of what a run measured, so it must not vary within a run.
     a.hosted_tools = hosted_tools(
@@ -3617,9 +4126,20 @@ def main(argv: list[str] | None = None) -> int:
     # target there may not be one, and then it is skipped and said so.
     golden_check = "skipped"
     truth = a.truth_publisher or (a.publisher if a.target != "platform" else None)
+    hosted_truth = None
+    if getattr(a, "truth_mcp_url", None):
+        if not (a.truth_organization and a.truth_environment):
+            raise SystemExit("--truth-mcp-url needs --truth-organization and "
+                             "--truth-environment: where the truth package is "
+                             "published")
+        hosted_truth = {"mcp_url": a.truth_mcp_url,
+                        "server": a.hosted_mcp_server,
+                        "organization": a.truth_organization,
+                        "environment": a.truth_environment,
+                        "workdir": a.out / ".truth"}
     if a.rebuild:
         golden_check = "not run (rebuild)"
-    elif truth and not a.skip_golden_check:
+    elif (truth or hosted_truth) and not a.skip_golden_check:
         print("checking goldens against the truth package")
         # The truth server is a SEPARATE server and names its environments
         # however it likes; assuming it reuses the model server's environment
@@ -3645,7 +4165,8 @@ def main(argv: list[str] | None = None) -> int:
                                   target_package=a.package,
                                   quiet=True,
                                   definitions=(pathlib.Path(a.definitions)
-                                               if a.definitions else None))
+                                               if a.definitions else None),
+                                  hosted=hosted_truth)
         # The audits run with or without a truth package, so their findings are
         # read on BOTH paths. Taking the skip branch and dropping `findings`
         # put the set-name lint -- the check a truthPackage-less set most needs
@@ -3683,9 +4204,15 @@ def main(argv: list[str] | None = None) -> int:
         golden_check = "skipped by --skip-golden-check"
     else:
         print("  ! no truth server for a golden check on a platform target "
-              "(--truth-publisher); goldens are taken as they stand")
+              "(--truth-mcp-url for one published on the host, or "
+              "--truth-publisher for a local one); goldens are taken as they "
+              "stand")
 
     served_identity = package_identity(a.publisher, a.environment, a.package)
+    if a.target != "platform" and a.target_version:
+        a.target_version, notes = _strip_v(a.target_version, "--target-version")
+        for n in notes:
+            print(f"  ! {n}")
     resolve_package_skills(
         a, prior_run_json(a.from_run or a.out) if answers_exist else None)
     set_meta = {}
@@ -3852,14 +4379,20 @@ def main(argv: list[str] | None = None) -> int:
     # and spends nothing on judging, and `run_config` does not carry the
     # previous judging spend forward. Read at the end, this is already gone.
     prior_judge = prior_judge_cost(a.out)
+    # Which version answered. A re-score did not answer anything now, so it
+    # keeps the version its answers came from rather than reading today's.
+    version_block = ((prior_run_json(a.from_run or a.out).get("packageVersion")
+                      if answers_exist else None)
+                     or (None if answers_exist else version_pin(a)))
     (a.out / "run.json").write_text(json.dumps(ledger.run_config(
         retrievalGate=retrieval_gate,
         coverageReport=coverage_report,
         runId=a.out.name, label=label, target=a.target,
         targetVersion=a.target_version,
+        packageVersion=version_block,
         scope=a.scope if a.target == "platform" else None,
         answererModel=a.model, judgeModel=a.judge_model,
-        effort=a.effort, phase=a.phase,
+        effort=a.effort, phase=a.phase, slice=a.slice_used,
         # The answerer's cap, pinned with the rest. `eval-loop` step 6 says to
         # freeze the call budget for the whole arm and this is it; until now it
         # was a flag that left no trace, so a run could not be compared with a
@@ -3934,6 +4467,7 @@ def main(argv: list[str] | None = None) -> int:
     # on attempts nobody will trust. eval-loop mandates this; the harness
     # had no such check until 2026-09-02.
     strikes, aborted = 0, False
+    spent, abort_reason = 0.0, None
     with futures.ThreadPoolExecutor(max_workers=a.parallel) as ex:
         fut = {ex.submit(run_answerer, c, a, art): c for c in cases}
         for i, f in enumerate(futures.as_completed(fut), 1):
@@ -3955,21 +4489,45 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [{i}/{len(cases)}] {flag} {c['qid']} "
                   f"({att.get('n_get_context',0)}gc/{att.get('n_execute',0)}eq "
                   f"{att.get('wall_seconds','?')}s)", flush=True)
+            spent += att.get("cost_usd") or 0
             if strikes >= 4 and not aborted:
-                aborted = True
+                aborted, abort_reason = True, "four_strikes"
                 ex.shutdown(wait=False, cancel_futures=True)
                 print("  !! four consecutive failed or dead attempts -- aborting "
                       "the run; the remaining cases were not attempted",
                       flush=True)
                 break
+            if over_cost_cap(spent, a.max_cost_usd, i, len(cases)) and not aborted:
+                aborted, abort_reason = True, "max_cost"
+                ex.shutdown(wait=False, cancel_futures=True)
+                print(f"  !! answerers have cost ${spent:.2f}, at or over "
+                      f"--max-cost-usd {a.max_cost_usd:g}, with {len(cases) - i} "
+                      f"case(s) not finished -- aborting the run; no more are "
+                      f"started", flush=True)
+                break
     if aborted:
         cases = [c for c in cases if c["qid"] in attempts]
+
+    recovered = (recover_voided(cases, attempts, a, art)
+                 if a.recover and not aborted else [])
+    # A rebuild re-derives each attempt from its transcript, which does not
+    # say the case was answered twice. The marker beside the first attempt does.
+    for qid, att in attempts.items():
+        if "recovered_from" not in att:
+            marker = recovery_marker(a.out, qid)
+            if marker:
+                att["recovered_from"] = marker
+    # A case answered again in this pass has no saved verdict to reuse, so on a
+    # rebuild it is judged fresh while the rest keep theirs.
+    fresh = copy.copy(a)
+    fresh.rebuild = fresh.rejudge = False
 
     verdicts: dict[str, dict[str, Any]] = {}
     if not a.no_judge:
         print("judging")
         with futures.ThreadPoolExecutor(max_workers=a.parallel) as ex:
-            fut = {ex.submit(run_judge, c, attempts[c["qid"]], a, art, rubric,
+            fut = {ex.submit(run_judge, c, attempts[c["qid"]],
+                             fresh if c["qid"] in recovered else a, art, rubric,
                              case_model_src(a, c, model_src), reexec): c
                    for c in cases}
             for i, f in enumerate(futures.as_completed(fut), 1):
@@ -4088,7 +4646,10 @@ def main(argv: list[str] | None = None) -> int:
     conf = sum(1 for v in scored.values() if v.get("verdict") in
                ("match", "no_match"))
     human = sum(1 for v in scored.values() if v.get("verdict") == "needs_human")
-    cost = sum(a.get("cost_usd") or 0 for a in attempts.values())
+    # A recovered case was paid for twice, and the run spent both.
+    cost = sum((a.get("cost_usd") or 0)
+               + ((a.get("recovered_from") or {}).get("cost_usd") or 0)
+               for a in attempts.values())
     # Printed rather than left in the ledger: a doubted answer key sends the
     # next agent to fix a model that is already right, and the whole point of
     # asking the judge was to catch that before anyone acts on the run.
@@ -4169,18 +4730,36 @@ def main(argv: list[str] | None = None) -> int:
             contamination_reasons[reason] = \
                 contamination_reasons.get(reason, 0) + 1
 
+    # Every case answered twice, in this pass or an earlier one, and whether
+    # what is still voided may be left out of the rate.
+    recovered_all = sorted(q for q, x in attempts.items() if x.get("recovered_from"))
+    still = truncated + contaminated
+    left_out = may_leave_out(still, recovered_all, len(cases))
+
+    # Read off the attempts before the summary, which words its warnings by
+    # where the answers came from.
+    source, tier = run_provenance(attempts.values())
+    queried: dict[str, int] = {}
+    for att in attempts.values():
+        for pkg in att.get("queried_packages") or []:
+            queried[pkg] = queried.get(pkg, 0) + 1
+
     for line in summary_lines(
             out=a.out, set_dir=a.set_dir, events_n=len(events),
             attempted=len(cases), decided=conf, passed=ok, near=near,
             human=human, doubted=doubted, vetoed=vetoed, alt_path=alt,
             unscorable=unscorable, unparseable=unparseable,
             truncated=truncated, contaminated=contaminated, aborted=aborted,
+            left_out=left_out, recovered=recovered_all,
             contamination_reasons=contamination_reasons,
             max_turns=a.max_turns,
             retrieval_mode=mode, tally=tally, rs=rs, evidence=evidence,
             coverage_report=coverage_report, cascade=funnel,
-            skill_uses=skill_uses,
+            skill_uses=skill_uses, source=source, queried=queried,
+            by_tag=tag_breakdown(cases, scored),
             answerer_cost=cost, judge_cost=judge_cost,
+            targets=score_targets.summarise(score_targets.score(
+                events, {c["qid"]: c for c in cases})),
 ):
         print(line)
 
@@ -4195,7 +4774,8 @@ def main(argv: list[str] | None = None) -> int:
     # read as corrupt artifacts.
     judged_qids = {q for q, v in verdicts.items()
                    if not (v.get("reason") or "").startswith("golden_")
-                   and v.get("reason") != "not_submitted"}
+                   and v.get("reason") not in ("not_submitted",
+                                               "no_answer_captured")}
     # Whose money `answererCostUsd` is. A re-judge and a `--from` copy the
     # source run's attempt events verbatim, `cost_usd` included, so the new run
     # reports answerer spend for a run in which no answerer executed -- one
@@ -4212,7 +4792,25 @@ def main(argv: list[str] | None = None) -> int:
     # again. Found by writing a report off a rebuilt run and having the cost
     # line disagree with the arm that produced the verdicts.
     judge_kept, judge_carried = carry_judge_cost(judge_cost, prior_judge)
-    ledger.update_run(a.out, answererCostUsd=round(cost, 4),
+    # Where the answers came from, read off the attempts rather than taken from
+    # a flag, so it describes what was actually scored. Written here and not
+    # with the opening pins because it is not knowable until the transcripts
+    # have been read: a `--rebuild` over a directory somebody else filled does
+    # not know what filled it.
+    # A logged run did not answer from --scope. Leaving the scope's version as
+    # the pin would claim one model version answered sessions that, measured,
+    # ran on three different packages; the attempts carry what each one used.
+    if source == "logs":
+        ledger.update_run(a.out, targetVersion=None, packageVersion=None,
+                          queriedPackages=sorted(queried))
+    moved = None if answers_exist else version_moved(a, version_block)
+    if moved:
+        print(f"\n! latest moved from {version_block['id']} to {moved} during "
+              f"this run. Its answers came from two package versions, so its "
+              f"scores belong to neither. Re-run with nothing publishing.")
+        ledger.update_run(a.out, packageVersionMovedTo=moved)
+    ledger.update_run(a.out, source=source, sourceTier=tier,
+                      answererCostUsd=round(cost, 4),
                       answererCostCopiedFrom=copied_from,
                       judgeCostCopiedFrom=copied_from if judge_carried else None,
                       judgeCostUsd=round(judge_kept, 4),
@@ -4223,6 +4821,7 @@ def main(argv: list[str] | None = None) -> int:
                                        "gold_note": note, "declaredBy": src}
                                       for q, st, note, src in doubted],
                       truncated=truncated, contaminated=contaminated,
+                      recovered=recovered_all,
                       # `incomplete` beside `complete` and `aborted`: the arm
                       # ran to the end and still cannot report a rate, which is
                       # a different state from both. Recorded rather than only
@@ -4231,12 +4830,12 @@ def main(argv: list[str] | None = None) -> int:
                       # because `flip_table.py` reads `truncated` and
                       # `contaminated` off this file to name which cases one
                       # arm left unscored that the other scored.
-                      status=("aborted" if aborted
-                              else "incomplete" if (truncated or contaminated)
-                              else "complete"))
+                      abortReason=abort_reason,
+                      status=run_status(aborted, moved, still, left_out))
     # An aborted arm wrote a partial ledger and said so in run.json; it did not
-    # do what was asked, and a caller reading 0 would treat it as an arm.
-    return 1 if aborted else 0
+    # do what was asked, and a caller reading 0 would treat it as an arm. A run
+    # split across two package versions is refused the same way.
+    return 1 if (aborted or moved) else 0
 
 
 if __name__ == "__main__":

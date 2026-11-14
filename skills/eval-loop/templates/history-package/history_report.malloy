@@ -1,0 +1,48 @@
+##" Every run of one eval set: how each package version scored and ran.
+##| artifact { layout=linear title="Eval history"
+  tiles=[
+    routines_intro { kind=text },
+    "routines -> latest",
+    intro { kind=text },
+    "versions -> by_version",
+    tags { kind=text },
+    "tag_scores -> by_tag",
+    recent_runs { kind=text },
+    "runs -> recent",
+    "tag_scores -> tag_by_run"
+  ]
+}
+|##
+import "history.malloy"
+
+##|(markdown) routines_intro
+## What each routine did
+
+One row per `eval.py routine`, newest first. `outcome` says whether its
+number can be used. An improve routine leaves each accepted edit on `branch`,
+ready for a pull request; nothing is pushed or published. `reason` is the
+routine's own one-line account, from its result file.
+|##
+
+##|(markdown) intro
+## 1. By package version
+
+Each version's newest full answer run and newest query replay. `fixed` and
+`broke` count cases that flipped against the version before, over the cases
+both runs could be compared on. A version with no full run shows its replay
+only. Rebuilt from the runs by `eval.py history`, so it is never edited.
+|##
+
+##|(markdown) tags
+## 2. By tag
+
+Pass rate per tag across the answer runs here. The lowest tags are where a
+slice is worth working on: fix the slice, then confirm on the whole set.
+|##
+
+##|(markdown) recent_runs
+## 3. Recent runs
+
+Every run, newest first, with the experiment it belongs to. "main" is the
+package itself; an experiment is served beside it (`eval.py experiment`).
+|##

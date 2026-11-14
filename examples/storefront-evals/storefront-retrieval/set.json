@@ -1,0 +1,8 @@
+{
+  "name": "storefront-retrieval",
+  "description": "24 get_context requests over the bundled storefront package, each labelled with the fields it should return, for retrieval_replay.py. Thirteen questions: ten from storefront-tour, one that needs a field reached through a join, and two the model cannot answer (shipping cost, warehouse), which carry no label. Each tour question is sent twice: as the question itself for every search target, and as one short phrase per field written from the field's #(doc). There are no goldens; this set measures retrieval only.",
+  "datasetVersion": 1,
+  "targetModelPath": "storefront.malloy",
+  "targetPackage": "storefront",
+  "sourceNote": "Written by hand for retrieval_replay.py. The labels started as storefront-tour's expectedEntities and differ from them where a retrieval label must name a field the model defines (README.md)."
+}

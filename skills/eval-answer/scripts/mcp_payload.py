@@ -186,6 +186,36 @@ def target_shapes(tool_input: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def search_targets(tool_input: dict[str, Any]) -> list[dict[str, Any]]:
+    """The `search_targets` the answerer sent, one row per target, as sent.
+
+    `search_terms` flattens each target to `"measure: revenue"` and drops one
+    with no text; `target_shapes` keeps the type and loses the text. Neither
+    can be compared target by target against a golden's `searchTargets`, and
+    both lose `example_values`. This keeps the three fields a golden target
+    names, in the request's own order, so `score_targets.py` can pair each
+    golden target with what the agent actually asked for.
+
+    `example_values` is kept when the host's get_context accepts it.
+    Publisher's does not, so on Publisher it is only ever absent.
+    """
+    out: list[dict[str, Any]] = []
+    for t in tool_input.get("search_targets") or []:
+        if not isinstance(t, dict):
+            continue
+        text = t.get("search_text") or t.get("text")
+        row: dict[str, Any] = {
+            "target_type": t.get("target_type") or "?",
+            "search_text": text.strip() if isinstance(text, str) and text.strip()
+            else None}
+        values = t.get("example_values")
+        if isinstance(values, list) and values:
+            row["example_values"] = [v for v in values
+                                     if isinstance(v, (str, int, float))]
+        out.append(row)
+    return out
+
+
 def entity_id(kind: str, source: str | None, name: str) -> str:
     """The `kind:source:name` id, minted in one place.
 

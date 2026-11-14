@@ -15,7 +15,8 @@ import flip_table as ft  # noqa: E402
 
 
 def write_run(root: pathlib.Path, name: str, scores: dict[str, str],
-              **cfg) -> pathlib.Path:
+              revisions: dict[str, int] | None = None,
+              shas: dict[str, str] | None = None, **cfg) -> pathlib.Path:
     d = root / name
     d.mkdir(parents=True)
     base = {"runId": name, "target": "publisher", "answererModel": "sonnet",
@@ -25,12 +26,14 @@ def write_run(root: pathlib.Path, name: str, scores: dict[str, str],
     base.update(cfg)
     (d / "run.json").write_text(json.dumps(base))
     lines = [json.dumps({"kind": "score", "qid": q, "sample": None,
-                         "phase": "baseline", "verdict": v, "reason": ""})
+                         "phase": "baseline", "verdict": v, "reason": "",
+                         "golden_revision": (revisions or {}).get(q)})
              for q, v in scores.items()]
     lines += [json.dumps({"kind": "attempt", "qid": q, "sample": None,
                           "phase": "baseline", "cost_usd": 0.1,
                           "submitted": True, "final_query": "run: x",
-                          "answer_text": "a", "transcriptPath": "t"})
+                          "answer_text": "a", "transcriptPath": "t",
+                          "question_sha": (shas or {}).get(q)})
               for q in scores]
     (d / "events.jsonl").write_text("\n".join(lines) + "\n")
     return d
@@ -140,6 +143,79 @@ class Main(unittest.TestCase):
         self.assertEqual(self.run_main("--a", str(a), "--b", str(b)), 1)
 
 
+class Slice(unittest.TestCase):
+    """A targeted run compared against the same cases of a stored full run."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.set = self.tmp / "set"
+        self.set.mkdir()
+        cases = [{"qid": "q1", "tags": ["join"]}, {"qid": "q2", "tags": ["join"]},
+                 {"qid": "q3", "tags": ["time"]}]
+        (self.set / "cases.jsonl").write_text("".join(json.dumps(c) + "\n" for c in cases))
+        (self.set / "slices.json").write_text('{"joins": {"tags": ["join"]}}')
+        self.full = write_run(self.tmp, "full", {"q1": "no_match", "q2": "match", "q3": "match"})
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_main(self, *args: str) -> tuple[int, str]:
+        argv, out = sys.argv, io.StringIO()
+        sys.argv = ["flip_table.py", *args]
+        try:
+            with contextlib.redirect_stdout(out):
+                return ft.main(), out.getvalue()
+        finally:
+            sys.argv = argv
+
+    def test_without_a_slice_a_subset_run_is_refused(self):
+        part = write_run(self.tmp, "part", {"q1": "match", "q2": "match"})
+        self.assertEqual(self.run_main("--a", str(self.full), "--b", str(part))[0], 1)
+
+    def test_a_slice_limits_both_runs_to_its_cases(self):
+        part = write_run(self.tmp, "part", {"q1": "match", "q2": "match"})
+        code, out = self.run_main("--a", str(self.full), "--b", str(part),
+                                  "--set", str(self.set), "--slice", "joins")
+        self.assertEqual(code, 0)
+        self.assertIn("limited to joins: 2 case(s)", out)
+        self.assertIn("2 cases, 2 scored in both", out)
+        self.assertIn("flipped                  1", out)
+
+    def test_a_run_missing_part_of_the_slice_is_refused(self):
+        part = write_run(self.tmp, "part", {"q1": "match"})
+        code, out = self.run_main("--a", str(self.full), "--b", str(part),
+                                  "--set", str(self.set), "--tag", "join")
+        self.assertEqual(code, 1)
+        self.assertIn("part: q2", out)
+
+    def test_a_slice_needs_the_set(self):
+        self.assertEqual(self.run_main("--a", str(self.full), "--b", str(self.full),
+                                       "--slice", "joins")[0], 2)
+
+    def test_a_case_whose_key_moved_is_set_aside_not_flipped(self):
+        a = write_run(self.tmp, "ra", {"q1": "no_match", "q2": "match"},
+                      revisions={"q1": 1, "q2": 1}, shas={"q1": "x", "q2": "y"})
+        b = write_run(self.tmp, "rb", {"q1": "match", "q2": "match"},
+                      revisions={"q1": 2, "q2": 1}, shas={"q1": "x", "q2": "y"})
+        code, out = self.run_main("--a", str(a), "--b", str(b))
+        self.assertEqual(code, 0)
+        self.assertIn("q1: golden revision 1 -> 2", out)
+        self.assertIn("1 cases, 1 scored in both", out)
+        self.assertIn("flipped                  0", out)
+
+    def test_a_slice_band_says_it_is_only_for_that_slice(self):
+        part = write_run(self.tmp, "part", {"q1": "match", "q2": "match"})
+        _, out = self.run_main("--a", str(self.full), "--b", str(part), "--set", str(self.set),
+                               "--slice", "joins", "--calibration")
+        self.assertIn("Slice: `joins`, 2 cases. Quote this band only for runs of this same slice", out)
+
+    def test_an_unrecorded_field_is_not_a_difference(self):
+        self.assertEqual(ft.incomparable({"q": {"question_sha": "x", "golden_revision": None}},
+                                         {"q": {"question_sha": None, "golden_revision": 3}}), {})
+        self.assertEqual(ft.incomparable({"q": {"question_sha": "x"}}, {"q": {"question_sha": "z"}}),
+                         {"q": "question x -> z"})
+
+
 class Calibration(unittest.TestCase):
     def test_block_names_every_pin_and_the_flip_count(self):
         cfg = {"datasetVersion": 13, "judgeVersion": 4, "rubricSha": "abc",
@@ -216,6 +292,16 @@ class CompletenessNote(unittest.TestCase):
         self.assertIn("q2", body)
         # The caveat that is actually true: the dropped cases are the long ones.
         self.assertIn("BECAUSE it ran long", body)
+
+    def test_a_near_match_is_named_and_not_blamed_on_truncation(self):
+        A = self.verdicts(q1=("match", True), q2=("near_match", None))
+        B = self.verdicts(q1=("match", True), q2=("match", True))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ft.completeness_note({}, {}, "arm-a", "arm-b", A, B)
+        body = out.getvalue()
+        self.assertIn("(1 near_match): q2", body)
+        self.assertNotIn("truncates", body)
 
     def test_the_answerer_model_is_already_a_pin(self):
         # Not this note's job, and worth pinning so nobody adds a second
@@ -347,3 +433,31 @@ class DisagreementSet(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PinReport(unittest.TestCase):
+    def test_a_model_edit_with_its_version_bump_is_one_change(self):
+        a = {"modelGitSha": "aaa", "packageVersion": {"baseVersion": "1.0.0"}}
+        b = {"modelGitSha": "bbb", "packageVersion": {"baseVersion": "1.1.0"}}
+        text = "\n".join(ft.pin_report(a, b))
+        self.assertIn("Only the model changed", text)
+        self.assertNotIn("More than one", text)
+
+    def test_one_other_pin_is_named(self):
+        text = "\n".join(ft.pin_report({"judgeModel": "sonnet"}, {"judgeModel": "opus"}))
+        self.assertIn("Only judgeModel changed", text)
+
+    def test_the_model_and_another_pin_together_cannot_be_attributed(self):
+        text = "\n".join(ft.pin_report({"modelGitSha": "a", "judgeModel": "sonnet"},
+                                        {"modelGitSha": "b", "judgeModel": "opus"}))
+        self.assertIn("More than one thing changed", text)
+
+    def test_a_set_edit_is_compared_case_by_case_not_a_second_change(self):
+        text = "\n".join(ft.pin_report({"modelGitSha": "a", "datasetSha": "s1"},
+                                        {"modelGitSha": "b", "datasetSha": "s2"}))
+        self.assertIn("Only the model changed", text)
+        self.assertIn("set aside", text)
+        self.assertNotIn("More than one", text)
+
+    def test_identical_arms_say_nothing(self):
+        self.assertEqual(ft.pin_report({"modelGitSha": "a"}, {"modelGitSha": "a"}), [])

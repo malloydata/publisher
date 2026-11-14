@@ -1,0 +1,41 @@
+##" One or more query replays over one evaluation set: how fast, and what changed.
+##| artifact { layout=linear title="Speed run"
+  tiles=[
+    intro { kind=text },
+    "timings -> by_run",
+    comparing { kind=text },
+    "comparisons -> summary",
+    "comparisons -> blocked_queries",
+    "comparisons -> per_query",
+    where_time_goes { kind=text },
+    "timings -> by_source",
+    "timings -> slowest"
+  ]
+}
+|##
+import "speed_run.malloy"
+
+##|(markdown) intro
+## 1. Each replay
+
+A query replay re-runs the query behind every passing answer and times it, with
+no agent and no judge. `total_ms` is the sum of each query's median. Read the
+version beside it: a replay of an unbuilt persist times the live query.
+|##
+
+##|(markdown) comparing
+## 2. Against the baseline
+
+The first replay is the baseline. Rows come first: any query in `blocked_queries`
+changed its answer, and a speed edit with one there is not accepted. Speed counts
+only over queries whose rows held, and only past the replay's band. Before
+trusting a small change, compare two replays of the same version: that gap is
+the noise on this machine.
+|##
+
+##|(markdown) where_time_goes
+## 3. Where the time goes
+
+Time per source tells you which one a `#@ persist` or `#@ preaggregate` would
+pay off on. The slowest queries are the ones a diagnose finding names.
+|##

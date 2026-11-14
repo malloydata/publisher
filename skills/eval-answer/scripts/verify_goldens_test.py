@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 import unittest.mock
 
@@ -770,6 +771,38 @@ class Promotion(unittest.TestCase):
         self.assertIsNone(promotion_blocker(self.case(**self.SECOND), s))
 
 
+    def test_a_verify_query_is_run_and_recorded_and_promotes_when_it_agrees(self):
+        case = self.case(verification={"primaryAxis": "a", "variesAxis": "b",
+                                       "verifyQuery": "run: t -> other_route"})
+        with unittest.mock.patch.object(verify_goldens, "try_query",
+                                        return_value=([{"x": 42.0000000001, "id": 7}], None)):
+            r, stored = self.run_promote(case)
+        self.assertEqual(r["promoted"], ["q1"])
+        gold = json.loads((self.tmp / "gold" / "q1.json").read_text())
+        self.assertEqual((gold["agreement"]["agree"], gold["verifyRows"][0]["id"]), (True, 7))
+
+    def test_a_verify_query_that_disagrees_blocks_promotion(self):
+        case = self.case(verification={"primaryAxis": "a", "variesAxis": "b",
+                                       "verifyQuery": "run: t -> other_route"})
+        with unittest.mock.patch.object(verify_goldens, "try_query",
+                                        return_value=([{"x": 40}], None)):
+            r, stored = self.run_promote(case)
+        self.assertEqual(r["promoted"], [])
+        self.assertEqual(stored["golden"]["status"], "provisional")
+        self.assertIn("disagree", r["promotionNotes"][0])
+
+
+class RowsAgree(unittest.TestCase):
+    def test_only_shared_columns_are_compared(self):
+        ok, note = verify_goldens.rows_agree([{"zone": "JFK", "rev": 1.0}],
+                                             [{"loc": 132, "rev": 1.0}])
+        self.assertTrue(ok)
+        self.assertIn("rev", note)
+
+    def test_no_shared_column_and_a_row_count_mismatch_do_not_agree(self):
+        self.assertFalse(verify_goldens.rows_agree([{"a": 1}], [{"b": 1}])[0])
+        self.assertFalse(verify_goldens.rows_agree([{"a": 1}], [{"a": 1}, {"a": 2}])[0])
+
 
 class RequiredAndAcceptableOverlap(unittest.TestCase):
     def test_an_id_in_both_lists_is_reviewed_once(self):
@@ -1398,6 +1431,75 @@ class RowsGoldenInAFile(unittest.TestCase):
         self.assertEqual(status, "error")
         self.assertIn("gold/none.csv", detail)
 
+
+class HostedTruth(unittest.TestCase):
+    """A truth package published on a host, reached through hosted_query."""
+
+    HOSTED = {"mcp_url": "u", "server": "s", "organization": "o",
+              "environment": "e", "workdir": pathlib.Path("/tmp")}
+
+    def args(self):
+        return argparse.Namespace(publisher=None, environment="e",
+                                  truth_package="shop-truth",
+                                  truth_model="truth.malloy", rewrite=False,
+                                  hosted=self.HOSTED)
+
+    def case(self, value):
+        return {"qid": "q", "golden": {"kind": "scalar", "status": "verified",
+                                       "canonicalQuery": "run: t -> {}",
+                                       "value": value}}
+
+    def test_the_value_check_goes_to_the_host_not_a_publisher(self):
+        with unittest.mock.patch.object(
+                verify_goldens, "hosted_truth_query",
+                return_value=([{"n": 42}], None)) as hq, \
+                unittest.mock.patch.object(verify_goldens, "try_query") as tq:
+            status, _detail, _rows = verify_goldens.check_value(
+                self.case({"n": 42}), self.args())
+        self.assertEqual(status, "ok")
+        hq.assert_called_once()
+        tq.assert_not_called()
+
+    def test_a_host_value_that_differs_is_drift(self):
+        with unittest.mock.patch.object(verify_goldens, "hosted_truth_query",
+                                        return_value=([{"n": 41}], None)):
+            status, _d, _r = verify_goldens.check_value(
+                self.case({"n": 42}), self.args())
+        self.assertEqual(status, "diff")
+
+    def test_a_cut_page_is_an_error_not_rows(self):
+        # Compared against the first N rows of a longer result, a golden would
+        # pass or fail on the cut.
+        fake = types.SimpleNamespace(
+            Target=lambda **kw: kw,
+            query=lambda *a, **k: ([{"n": 1}], True, None))
+        with unittest.mock.patch.dict(sys.modules, {"hosted_query": fake}):
+            rows, err = verify_goldens.hosted_truth_query(
+                self.HOSTED, "p", "m", "run: t -> {}")
+        self.assertEqual(rows, [])
+        self.assertIn("row limit", err)
+
+    def test_a_host_error_is_returned_as_the_error(self):
+        fake = types.SimpleNamespace(
+            Target=lambda **kw: kw,
+            query=lambda *a, **k: ([], False, "403 forbidden"))
+        with unittest.mock.patch.dict(sys.modules, {"hosted_query": fake}):
+            _rows, err = verify_goldens.hosted_truth_query(
+                self.HOSTED, "p", "m", "run: t -> {}")
+        self.assertEqual(err, "403 forbidden")
+
+    def test_a_truth_package_that_is_the_package_under_test_is_refused(self):
+        self.assertTrue(verify_goldens.hosted_isolation_findings(
+            "ecommerce", "ecommerce"))
+        self.assertEqual(verify_goldens.hosted_isolation_findings(
+            "ecommerce-truth", "ecommerce"), [])
+
+    def test_the_cli_refuses_two_truth_servers(self):
+        with self.assertRaises(SystemExit):
+            verify_goldens.main(["--set", "s", "--publisher", "http://x",
+                                 "--truth-mcp-url", "u",
+                                 "--truth-organization", "o",
+                                 "--environment", "e"])
 
 if __name__ == "__main__":
     unittest.main()

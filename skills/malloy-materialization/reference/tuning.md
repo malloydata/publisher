@@ -53,6 +53,12 @@ Look across several runs, not one: the pattern over the recent history (how ofte
 
 - **For `storage=` tables, how queries were routed.** `publisher_storage_serve_routing_total{outcome, origin}` on the metrics endpoint counts queries answered from the store (`storage`) against ones that degraded (`live_fallback`, `runtime_live_fallback`), and each query response's `servedFrom` says it per query. Nothing equivalent exists for a table built in the source's own warehouse: there, "rarely queried" is a judgement from the model and the user's knowledge, not a measured metric. Say so when it matters.
 
+**Proving a persist changed no answer.** When the package has an evaluation
+set, run the queries behind its passing answers before and after the edit, time
+them, and compare their rows: a persist that changes any row is wrong however
+much faster it is. Publisher's eval tooling does this as a query replay. It backs
+a recommendation with measured times on real questions.
+
 ## Step 3: Analyze and recommend
 
 Weigh rebuild cost against query benefit. Common findings:

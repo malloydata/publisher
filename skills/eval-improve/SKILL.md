@@ -187,6 +187,56 @@ new modeling mistake. `improve.py` installs it with the rest of the `modeling`
 manifest group, so it is loaded alongside this skill rather than reached from
 here.
 
+### A speed edit (component `performance`)
+
+An issue from a query replay (`SLOW-QUERY`, `HOT-SOURCE`, `PERSIST-REFUSED`) is a speed gap,
+not a wrong answer. Its edit is a `#@ persist` or a `#@ preaggregate` on the
+source the issue names, or a fix to the refusal the build plan reported. Write
+it with the `malloy-materialization` skill (in the `modeling` manifest group, not
+the `eval` group), which covers the annotation, chaining,
+and the access-filter cases where a persist must not be added at all.
+
+Two differences from every other edit here:
+
+1. **Propose it, then wait for the user.** A persisted table costs storage and
+   a rebuild on every refresh, and whether that is worth the speedup is the
+   user's call. Show the annotation, the issue's queries and their times, and
+   the source's build cost from its materialization history. Make the edit only
+   when they say yes. `PERSIST-NOT-BUILT` needs no edit at all: build and replay.
+   The one exception is a run whose prompt says nobody is here to ask (the
+   routine's improve mode): then make the edit. It is measured as an
+   experiment, left on a branch with its speedup and its build cost in the
+   commit message, and approved by whoever merges it.
+2. **It changes no name and no doc.** Keep it that way. A speed edit that also
+   renames or redocuments something is two edits; split them.
+
+Its acceptance is a query replay, not an answer run (`skill:eval-loop`,
+`reference/query-performance.md`).
+
+### Read what was already tried, and keep the answer out of the edit
+
+Your prompt carries the attempts already made on this set, from
+`<set>/attempts.jsonl`: each edit put to the acceptance check, whether it was
+accepted, and the rule it failed if not. Read them before Step 3.
+
+- Do not make a rejected edit again, and do not make it again in other words.
+  If the rejection names a regression, your edit has to be one that could not
+  cause it. If you think the rejection was noise, say so in `disagreement` and
+  make no edit: a person decides that, not a second attempt.
+- An accepted edit is already in the model. Build on it.
+
+Two things about your diff are checked by a script when you finish, and
+either one stops the acceptance check until a person has looked:
+
+- **It states a case's answer.** A number in a line you added that equals a
+  number in any case's key (five significant digits or more), or a golden
+  query pasted whole. A doc says what a field MEANS and how it is computed. It
+  does not say what it currently adds up to. A value in a doc passes the case
+  that asks for it and teaches the model nothing, and it is wrong by next
+  month.
+- **It is the same edit as a rejected attempt**, compared by the lines it adds
+  and removes.
+
 ## Step 4: Check what your edit did to the answer key
 
 An edit that changes what a field *means* can silently invalidate goldens for

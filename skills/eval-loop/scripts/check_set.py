@@ -117,7 +117,11 @@ def check_truth(cfg: config.Config) -> tuple[list[str], list[str]]:
         # By path, not by resolved target: init_truth_package links the model's
         # data directory in, and a link whose target is outside the package is
         # what makes the ref resolve once served.
-        if ".." in pathlib.PurePath(ref).parts or not (src.parent / ref).exists():
+        # A glob (DuckDB reads `data/trips-*.parquet` as every match) exists
+        # when anything matches it, not when a file of that literal name does.
+        found = (any(src.parent.glob(ref)) if any(c in ref for c in "*?[")
+                 else (src.parent / ref).exists())
+        if ".." in pathlib.PurePath(ref).parts or not found:
             problems.append(
                 f"{src.name}: {conn}.table('{ref}') resolves to nothing once "
                 f"served: Publisher serves a copy of the package, so a "
@@ -135,6 +139,14 @@ def check_ports(cfg: config.Config) -> tuple[list[str], list[str]]:
         if clash:
             problems.append(clash)
     for role in roles:
+        named = cfg.get(role, "publisher")
+        if named:
+            # Somebody else's server (a `cred dev`, a shared host): eval.py
+            # serve does not bind this role's ports, so who holds them is not
+            # this set's business.
+            notes.append(f"{role}: {named}, named in {cfg.file_hint} and not "
+                         f"started by `eval.py serve {role}`")
+            continue
         for key in ("port", "mcp_port"):
             port = cfg.get(role, key)
             if not serve.listening(port):
@@ -172,15 +184,36 @@ def report(set_dir: pathlib.Path) -> tuple[list[str], list[str]]:
     p, n = check_ports(cfg)
     problems += p
     notes += n
+    store = cfg.get("store", "path")
+    repo = cfg.get("model", "repo")
+    if store and repo:
+        top = git_toplevel(pathlib.Path(repo))
+        if top and config.within(pathlib.Path(store), top):
+            problems.append(f"[store] path {store} is inside the model's git repository "
+                            f"{top}. Runs hold the answer key and grow with every run, so "
+                            f"they never go in git. Fix: a folder outside {top}")
     old = cfg.set_dir / "runs"
     if old.is_dir() and any(old.iterdir()):
         notes.append(f"{old} holds runs from before runs moved to the workdir; "
                      f"nothing reads them now. Move them to "
                      f"{cfg.workdir() / 'runs'} to compare against them")
     if cfg.publisher_dir() is None:
-        problems.append("no built Publisher in this clone. Fix: `bun install "
-                        "&& bun run build`, or set [paths] publisher_dir")
+        version = cfg.get("paths", "publisher_version")
+        pin = ("" if version else ". Pin it with [paths] publisher_version, so "
+               "every run of this set is answered by the same server")
+        notes.append(f"no built Publisher clone: `serve` runs the published "
+                     f"server, npx @malloy-publisher/server@{version or 'latest'}{pin}")
     return problems, notes
+
+
+def git_toplevel(path: pathlib.Path) -> pathlib.Path | None:
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        return pathlib.Path(out) if out else None
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
 
 
 def main(argv: list[str] | None = None) -> int:

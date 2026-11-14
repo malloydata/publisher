@@ -94,7 +94,16 @@ class WhatAnImportedKeyMayClaim(unittest.TestCase):
         got = findings(case(golden={"status": "provisional", "kind": "scalar",
                                     "value": 1830000}))
         self.assertEqual(len(got), 1)
-        self.assertIn('Fix: `"value": {"answer": 1830000}`', got[0])
+        self.assertIn('Fix: `"value": {"<column>": 1830000}`', got[0])
+
+    def test_a_one_row_list_is_refused_with_that_row_as_the_fix(self):
+        # The rows a query returns, pasted whole: the fix is the row itself,
+        # which already names the column. "answer" there failed the value
+        # check, which pairs by the query's own column name.
+        got = findings(case(golden={"status": "provisional", "kind": "scalar",
+                                    "value": [{"orders": 54571}]}))
+        self.assertEqual(len(got), 1)
+        self.assertIn('Fix: `"value": {"orders": 54571}`', got[0])
 
     def test_an_explicit_null_value_is_not_a_value(self):
         # How the ecommerce set's four refusal cases say "no number".
@@ -149,6 +158,56 @@ class WhatIsReportedNotFailed(unittest.TestCase):
                  expectedEntities={"required": ["field:orders:late_count"]})
         self.assertEqual(findings(c), [])
         self.assertEqual(review(c), [])
+
+
+class SearchTargets(unittest.TestCase):
+    """Optional golden search targets: shape only, never existence."""
+
+    def test_a_case_without_them_is_unchanged(self):
+        self.assertEqual(findings(case()), [])
+
+    def test_a_well_formed_target_is_silent(self):
+        c = case(searchTargets=[
+            {"target_type": "measure", "search_text": "revenue",
+             "expectedEntities": {
+                 "required": ["measure:order_items:total_sales"]}},
+            {"target_type": "dimension", "search_text": "category",
+             "expectedEntities": {
+                 "requiredAnyOf": [["dimension:order_items:category",
+                                    "dimension:products:category"]]}},
+            {"target_type": "source"}])
+        self.assertEqual(findings(c), [])
+
+    def test_a_type_the_server_rejects_is_a_finding(self):
+        f = findings(case(searchTargets=[{"target_type": "metric",
+                                          "search_text": "revenue"}]))
+        self.assertIn("searchTargets[1]: `target_type` is 'metric'", f[0])
+
+    def test_a_group_written_as_a_string_is_a_finding(self):
+        f = findings(case(searchTargets=[
+            {"target_type": "measure", "search_text": "revenue",
+             "expectedEntities": {"requiredAnyOf": ["measure:a:b"]}}]))
+        self.assertIn("a `requiredAnyOf` group is str", f[0])
+
+    def test_an_id_that_is_not_kind_source_name_is_a_finding(self):
+        f = findings(case(searchTargets=[
+            {"target_type": "measure", "search_text": "revenue",
+             "expectedEntities": {"required": ["total_sales"]}}]))
+        self.assertIn("'total_sales' is not a kind:source:name id", f[0])
+
+    def test_a_key_the_targets_own_type_cannot_return_is_a_finding(self):
+        f = findings(case(searchTargets=[
+            {"target_type": "dimension", "search_text": "revenue",
+             "expectedEntities": {"required": ["measure:order_items:total_sales"]}}]))
+        self.assertIn("a `dimension` target can never return "
+                      "measure:order_items:total_sales", f[0])
+
+    def test_a_group_with_one_returnable_member_is_fine(self):
+        self.assertEqual(findings(case(searchTargets=[
+            {"target_type": "measure", "search_text": "margin rate",
+             "expectedEntities": {"requiredAnyOf": [[
+                 "measure:order_items:margin_rate",
+                 "view:order_items:brand_performance"]]}}])), [])
 
 
 class AMalformedSealIsItsOwnFinding(unittest.TestCase):

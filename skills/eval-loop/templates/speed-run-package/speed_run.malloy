@@ -1,0 +1,90 @@
+// Semantic model over one or more query replays (eval-loop query_replay.py).
+//
+// Grain: `timings` is one row per (run, query). `comparisons` is one row per
+// (baseline run, later run, query): the first replay given to the builder is
+// the baseline, and every later replay is compared with it by the replay's own
+// rule (query_replay.compare), so this model never re-decides faster or slower.
+
+#(doc) One query replay: which model version it timed, how, and its headline numbers.
+source: runs is duckdb.table('data/runs.csv') extend {
+  primary_key: run_id
+  #(doc) Stable run identifier, also its label.
+  dimension: run is run_id
+  measure:
+    #(doc) Number of replays.
+    run_count is count()
+}
+
+#(doc) One query in one replay: its median time, where it was served from, and whether its rows matched.
+source: timings is duckdb.table('data/timings.csv') extend {
+  join_one: runs on run_id = runs.run_id
+  measure:
+    #(doc) Number of timed queries.
+    query_count is count()
+    #(doc) Sum of every query's median time, in ms. The replay's total.
+    total_ms is median_ms.sum()
+    #(doc) Mean of the per-query medians, in ms.
+    avg_ms is median_ms.avg()
+    #(doc) Queries whose median was over the run's budget.
+    slow_queries is count() { where: slow = true }
+    #(doc) Queries that returned an error.
+    error_queries is count() { where: error is not null }
+    #(doc) Queries answered from a storage-tier table.
+    from_storage is count() { where: served_from ~ '%storage%' }
+
+  view: by_run is {
+    group_by: run_id, runs.version, runs.started
+    aggregate: query_count, total_ms, avg_ms, slow_queries, error_queries
+    order_by: started
+  }
+  view: by_source is {
+    group_by: run_id, source_name
+    aggregate: query_count, total_ms, slow_queries
+    order_by: run_id, total_ms desc
+  }
+  view: slowest is {
+    group_by: run_id, qid, source_name
+    aggregate: median is median_ms.max(), worst is max_ms.max()
+    order_by: median desc
+    limit: 15
+  }
+}
+
+#(doc) One query compared between the baseline replay and a later one. verdict is faster, slower, within_band, rows_changed, broke, fixed, unstable or query_changed.
+// Typed explicitly: a single replay leaves this file header-only, and DuckDB
+// would read every column of an empty CSV as text.
+source: comparisons is duckdb.sql("""
+  select * from read_csv('data/comparisons.csv', header = true, columns = {
+    'baseline_run': 'VARCHAR', 'run_id': 'VARCHAR', 'qid': 'VARCHAR', 'source_name': 'VARCHAR',
+    'verdict': 'VARCHAR', 'before_ms': 'DOUBLE', 'after_ms': 'DOUBLE', 'ratio': 'DOUBLE'})
+""") extend {
+  measure:
+    #(doc) Queries compared.
+    compared is count()
+    faster is count() { where: verdict = 'faster' }
+    slower is count() { where: verdict = 'slower' }
+    within_band is count() { where: verdict = 'within_band' }
+    #(doc) Queries whose rows changed, or that broke: a speed change must not change an answer, so any of these blocks.
+    blocking is count() { where: verdict = 'rows_changed' or verdict = 'broke' }
+    #(doc) Total median time before, over queries whose rows held, in ms.
+    before_total_ms is before_ms.sum() { where: verdict = 'faster' or verdict = 'slower' or verdict = 'within_band' }
+    #(doc) Total median time after, over the same queries, in ms.
+    after_total_ms is after_ms.sum() { where: verdict = 'faster' or verdict = 'slower' or verdict = 'within_band' }
+    #(doc) After over before, over queries whose rows held. Below 1 is faster.
+    total_ratio is after_ms.sum() { where: verdict = 'faster' or verdict = 'slower' or verdict = 'within_band' }
+      / nullif(before_ms.sum() { where: verdict = 'faster' or verdict = 'slower' or verdict = 'within_band' }, 0)
+
+  view: summary is {
+    group_by: baseline_run, run_id
+    aggregate: compared, faster, slower, within_band, blocking, before_total_ms, after_total_ms, total_ratio
+  }
+  view: blocked_queries is {
+    where: verdict = 'rows_changed' or verdict = 'broke'
+    group_by: baseline_run, run_id, qid, verdict
+  }
+  view: per_query is {
+    group_by: baseline_run, run_id, qid, source_name, verdict
+    aggregate: before is before_ms.max(), after is after_ms.max(), ratio_after_over_before is ratio.max()
+    order_by: ratio_after_over_before
+  }
+}

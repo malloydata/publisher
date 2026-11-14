@@ -150,11 +150,13 @@ For each `get_context` call, load the stored retrieval trace by the `traceId` on
 
 - **Asked:** every retrieval utterance, target types, scopes, and result counts,
   in order.
-- **Returned:** for each needed entity, whether it appeared, its best
-  within-target rank, and under which utterance. Read this off the
-  `rankedSummary` on the attempt's `tool_call` events (its `targets` list
-  carries per-target ranks); the full trace body is behind your host's
-  trace lookup.
+- **Returned:** for each needed entity, whether it appeared, its relevance,
+  and under which utterance. Read this off the `rankedSummary` on the
+  attempt's `tool_call` events: `hits[].matched_targets` names the search
+  texts that matched each entity, and `search_targets` is what the call sent.
+  Where the case has golden `searchTargets`, `score_targets.py` has already
+  paired them (`skill:eval-answer`, step 4). The full trace body is behind
+  your host's trace lookup.
   Count from the trace, never from recollection.
 - **Used:** sources and fields the final query referenced, and needed entities
   that were returned and then unused.
@@ -285,6 +287,27 @@ also model-definition: the field may compute correctly while its doc is false,
 and an agent that trusts the doc answers wrongly without ever failing a query.
 Probe the claim before writing the issue.
 
+### performance (a query replay, not an answer)
+
+A query replay (`skill:eval-loop`, `reference/query-performance.md`) has
+timings instead of verdicts. `diagnose.py --run <replay>` writes its findings
+without spawning an agent, one issue per source the queries read, component
+`performance`:
+
+| Code | When | Owner |
+|---|---|---|
+| `PERSIST-REFUSED` | a query reads a source whose `#@ persist` the build plan refuses | model |
+| `PERSIST-NOT-BUILT` | a query reads a persisted source with no bound table, slow or not: build and replay again before editing anything | model |
+| `SLOW-QUERY` | a query's median is over `budget_ms`, and neither of the above applies | model |
+| `LIVE-FALLBACK` | `servedFrom: live_fallback`: a `storage=` table failed at query time and the query ran live | model |
+| `HOT-SOURCE` | the unpersisted source that takes at least 30% of the replay's time, each query counted as often as it ran, when no code above names it. Nothing is over a budget, so nothing is wrong: it is where a persist would pay most, if one pays at all | model |
+
+Before proposing a persist for a `SLOW-QUERY` group, read the source's build
+cost and history (the `malloy-materialization` skill, `reference/tuning.md`). A
+source that takes longer to build than all its queries take to run, or that
+changes every hour, may be cheaper left live. Say so in the issue rather than
+proposing the edit.
+
 ## Step 3: Read the failure shape
 
 | Signature | Look here |
@@ -402,6 +425,26 @@ are fixable in the model repo, so both are checkpointed and rolled back by the
 same git commit. They are still separate owners, because the edit they license
 is different and the acceptance check treats them differently: a model edit
 changes what the data means, a package-skill edit changes what the agent is told.
+
+**Propose a slice per cluster.** The fix for a cluster is tested on a slice,
+not the whole set (`reference/running-a-run.md` in `skill:eval-loop`, "Which
+run to reach for"). For each cluster, write a slice into the set's
+`slices.json`:
+
+- the cluster's failing cases;
+- a few PASSING cases that carry the same tags, so a fix that only fits the
+  failing wording shows up as a broken pass;
+- a `description` naming the cluster's issue id.
+
+Prefer `{"qids": [...]}` here: a tag slice changes when someone re-tags a
+case, and the acceptance check needs its cases fixed before any verdict
+exists. Tag the cluster's cases with the behaviour they share, so the next
+cluster like it can be found by tag.
+
+Say which run tests the fix. A cluster whose cases fail at
+`get_context/retrieval` (the field never came back) is tested by a retrieval
+replay of that slice (`eval.py replay --slice <name>`): minutes, no agent. Only
+a cluster that fails after retrieval delivered the field needs answer runs.
 
 `owner: agent-skill` findings go back into the shared analysis or
 phrase-detection skill, outside this loop. Retrieval findings go to the tool.

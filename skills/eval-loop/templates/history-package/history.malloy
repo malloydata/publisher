@@ -1,0 +1,95 @@
+// Semantic model over every run of one eval set. Rebuilt from the runs, never
+// edited: build_history.py writes the CSVs, and each column is typed here
+// because a set with no replays leaves a file header-only, which DuckDB would
+// otherwise read as text.
+
+#(doc) One routine: a quality or speed run, in run or improve mode, and what it did. Read from the routine's result file.
+source: routines is duckdb.sql("""
+  select * from read_csv('data/routines.csv', header = true, columns = {
+    'label': 'VARCHAR', 'kind': 'VARCHAR', 'mode': 'VARCHAR', 'started': 'TIMESTAMP',
+    'finished': 'TIMESTAMP', 'exit': 'INTEGER', 'reason': 'VARCHAR', 'run': 'VARCHAR',
+    'passed': 'INTEGER', 'decided': 'INTEGER', 'total_ms': 'DOUBLE', 'cost_usd': 'DOUBLE',
+    'keys_verified': 'BOOLEAN', 'edits_tried': 'INTEGER', 'edits_accepted': 'INTEGER',
+    'branch': 'VARCHAR'})
+""") extend {
+  dimension:
+    #(doc) What the exit code means: whether the number can be used.
+    outcome is pick 'done' when exit = 0
+      pick 'a step failed' when exit = 1
+      pick 'could not start' when exit = 3
+      pick 'done, needs a look' when exit = 4
+      pick 'no number' when exit = 5
+      else 'unknown'
+  #(doc) Every routine, newest first: its number, what it cost, the edits it left and where.
+  view: latest is {
+    group_by: started, label, kind, mode, outcome, passed, decided, total_ms, cost_usd,
+      edits_tried, edits_accepted, branch, reason
+    order_by: started desc
+    limit: 30
+  }
+}
+
+#(doc) One run: an answer run, a slice of one, a retrieval replay or a query replay.
+source: runs is duckdb.sql("""
+  select * from read_csv('data/runs.csv', header = true, columns = {
+    'run': 'VARCHAR', 'kind': 'VARCHAR', 'version': 'VARCHAR', 'experiment': 'VARCHAR',
+    'started': 'TIMESTAMP', 'slice': 'VARCHAR', 'full': 'BOOLEAN', 'passed': 'INTEGER',
+    'decided': 'INTEGER', 'cases': 'INTEGER', 'p50_ms': 'DOUBLE', 'total_ms': 'DOUBLE',
+    'slow': 'INTEGER', 'dataset_version': 'INTEGER', 'status': 'VARCHAR'})
+""") extend {
+  dimension:
+    #(doc) "main" for the main line, else the experiment's name.
+    line is coalesce(experiment, 'main')
+  measure:
+    run_count is count()
+    #(doc) Passes over decided verdicts (match against no_match), summed over runs.
+    pass_rate is passed.sum() / nullif(decided.sum(), 0)
+
+  view: recent is {
+    group_by: run, kind, line, version, started, slice
+    aggregate: passed is passed.sum(), decided is decided.sum(), total_ms is total_ms.max()
+    order_by: started desc
+    limit: 30
+  }
+}
+
+#(doc) One package version: its newest full answer run and newest query replay, and the change from the version before.
+source: versions is duckdb.sql("""
+  select * from read_csv('data/versions.csv', header = true, columns = {
+    'version': 'VARCHAR', 'run': 'VARCHAR', 'passed': 'INTEGER', 'decided': 'INTEGER',
+    'vs': 'VARCHAR', 'fixed': 'INTEGER', 'broke': 'INTEGER', 'perf_run': 'VARCHAR',
+    'p50_ms': 'DOUBLE', 'total_ms': 'DOUBLE', 'faster': 'INTEGER', 'slower': 'INTEGER',
+    'rows_changed': 'INTEGER', 'total_ratio': 'DOUBLE'})
+""") extend {
+  measure:
+    pass_rate is passed.sum() / nullif(decided.sum(), 0)
+  view: by_version is {
+    group_by: version, run, vs, perf_run
+    aggregate: pass_rate, passed is passed.sum(), decided is decided.sum(), fixed is fixed.sum(),
+      broke is broke.sum(), p50_ms is p50_ms.max(), total_ms is total_ms.max(),
+      faster is faster.sum(), slower is slower.sum(), rows_changed is rows_changed.sum()
+    order_by: version desc
+  }
+}
+
+#(doc) One tag in one answer run: how many of the run's cases carrying that tag passed.
+source: tag_scores is duckdb.sql("""
+  select * from read_csv('data/tag_scores.csv', header = true, columns = {
+    'run': 'VARCHAR', 'version': 'VARCHAR', 'experiment': 'VARCHAR', 'started': 'TIMESTAMP',
+    'tag': 'VARCHAR', 'passed': 'INTEGER', 'decided': 'INTEGER'})
+""") extend {
+  dimension: line is coalesce(experiment, 'main')
+  measure:
+    pass_rate is passed.sum() / nullif(decided.sum(), 0)
+  #(doc) Pass rate per tag, in the newest runs first: where a slice to work on is.
+  view: by_tag is {
+    group_by: tag
+    aggregate: pass_rate, passed is passed.sum(), decided is decided.sum()
+    order_by: pass_rate
+  }
+  view: tag_by_run is {
+    group_by: run, line, version, started, tag
+    aggregate: pass_rate, passed is passed.sum(), decided is decided.sum()
+    order_by: started desc, tag
+  }
+}

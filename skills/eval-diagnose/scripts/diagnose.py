@@ -61,6 +61,7 @@ from agent_harness import (NO_EDITS, NO_SHELL, default_manifest,  # noqa: E402
                            manifest_skills, skills_roots, spawn_agent)
 import config  # noqa: E402
 import ledger  # noqa: E402
+import slices  # noqa: E402
 import cluster_failures  # noqa: E402
 import golden_rows  # noqa: E402
 import score_retrieval  # noqa: E402
@@ -634,6 +635,16 @@ def select_cases(events: list[dict[str, Any]],
             # says which, and none of them is a model failure.
             exclude(f"unscored ({e.get('reason') or 'no reason recorded'})",
                     qid)
+        elif case.get("split") == "test":
+            # Never diagnosed, and no flag makes it so. `test` is the split the
+            # reported number comes from: a diagnosis of one of its failures is
+            # read by the improve step, and then the number has been tuned on.
+            # Holdout can be spent by choice (--include-holdout); this cannot.
+            if verdict == "match":
+                excluded_passes.setdefault(
+                    "test, never diagnosed", []).append(qid)
+            else:
+                exclude("test, never diagnosed", qid)
         elif case.get("split") == "holdout" and not include_holdout:
             # Ahead of the verdict checks, beside contamination and for the
             # same reason: what split a case is on does not depend on how it
@@ -741,6 +752,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--retries", type=int, default=2)
     ap.add_argument("--only", default=None, help="comma-separated qids")
+    slices.add_arguments(ap)
     ap.add_argument("--verdicts", default="no_match",
                     help="comma-separated verdicts to diagnose. A near_match "
                          "that is STABLE across two arms is a coverage "
@@ -847,8 +859,16 @@ def main(argv: list[str] | None = None) -> int:
               "may not be the version this run measured. Pass --target-version "
               "or --scope ENV/PACKAGE@VERSION.")
 
+    if run_meta.get("phase") == "query-replay":
+        # Timings, not verdicts: every finding is read off the replay, so no
+        # agent runs and none of the flags above apply.
+        import perf_findings
+        perf_findings.report(a.run, perf_findings.write(a.run))
+        return 0
+
     events = read_jsonl(a.run / "events.jsonl")
     cases = {c["qid"]: c for c in read_jsonl(a.set_dir / "cases.jsonl")}
+    slices.narrow(a, a.set_dir, list(cases.values()))
     codes = skill_codes()
 
     # Dev failures only. A holdout case the improve step never saw is the only
@@ -1063,6 +1083,7 @@ def main(argv: list[str] | None = None) -> int:
     invalid = [i for i in good if i.get("_invalid")]
     spend = sum(i.get("cost_usd") or 0 for i in issues) + \
         (clusters.get("_cost_usd") or 0)
+    ledger.update_run(a.run, diagnoseCostUsd=round(spend, 4))
     print(f"\n{len(good)}/{len(to_diagnose)} diagnosed, "
           f"{len(clusters.get('clusters', []))} clusters, "
           f"{len(new) // 2} issues in {ev_path}")

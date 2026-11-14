@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -409,6 +410,84 @@ class ReloadReceipt(unittest.TestCase):
         self.assertIn("reload failed (HTTP 400)", out)
         self.assertIn("bad.malloy: refused", out)
         self.assertNotIn("stale", out)
+
+
+class WhatTheImproverIsToldAndWhatItsDiffIsCheckedFor(unittest.TestCase):
+    """One cluster, with the agent faked as a function that edits the model."""
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.model = self.root / "model"
+        self.model.mkdir()
+        (self.model / "m.malloy").write_text("source: orders is t extend {\n  measure: n is count()\n}\n")
+        for cmd in (["init", "-q"], ["add", "."],
+                    ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"]):
+            subprocess.run(["git", *cmd], cwd=self.model, check=True, capture_output=True)
+        self.set = self.root / "set"
+        self.set.mkdir()
+        self.cases = {"q1": {"qid": "q1", "question": "net sales?",
+                             "golden": {"kind": "value", "value": 464861.37}}}
+        self.prompt = None
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def improve(self, added: str, prior=(), experiment=None):
+        def agent(prompt, **kw):
+            self.prompt = prompt
+            self.helper = (self.model / improve.SYNC_HELPER).read_text()
+            f = self.model / "m.malloy"
+            f.write_text(f.read_text().replace("  measure: n", added + "\n  measure: n"))
+            return types.SimpleNamespace(text="done", json={"edit": "doc"}, cost_usd=0.1,
+                                         wall_seconds=1, attempts=1, error=None)
+        a = argparse.Namespace(
+            rest_url="http://x", environment="e", package="p", watch_mode=True, server_root=None,
+            model_dir=self.model, set_dir=self.set, role_skills=[], roots=[], model="opus",
+            mcp_url="http://x/mcp", max_turns=5, timeout=5, retries=0, isolate=True, force=False,
+            prior=list(prior), experiment=experiment)
+        a.keys, a.golden_queries = improve.golden_keys(self.cases, self.set)
+        with mock.patch.object(improve, "spawn_agent", side_effect=agent), \
+                mock.patch.object(improve, "verify_goldens", return_value={"ran": True, "clean": True}):
+            return improve.improve_cluster({"issue_id": "r:c1", "qids": ["q1"]}, self.cases, a,
+                                       self.root / "run" / "artifacts")
+
+    def test_an_edit_that_states_the_answer_is_reported(self):
+        r = self.improve("  #(doc) Net sales, about 464,861 last year")
+        self.assertEqual([(x["qid"], x["kind"]) for x in r["goldenLeak"]], [("q1", "value")])
+
+    def test_an_honest_edit_is_not(self):
+        r = self.improve("  #(doc) Net sales. Excludes returned lines.")
+        self.assertEqual((r["goldenLeak"], r["duplicateOf"]), ([], None))
+        self.assertTrue(r["patchSha"])
+
+    def test_the_agent_is_shown_what_was_tried_and_a_repeat_of_a_rejected_edit_is_named(self):
+        first = self.improve("  #(doc) Net sales. Excludes returned lines.")
+        patch = (self.root / "run" / first["patchPath"]).read_text()
+        shutil.rmtree(self.root / "run")
+        rejected = improve.attempts.row(
+            what="doc net sales", outcome="rejected", baseline="b", candidates=["a", "b2"],
+            targets=["q1"], failed={"no regression": "keep in a"},
+            effect={"targets": 1, "targetsFixed": 1, "regressions": ["keep in a"]}, diff=patch)
+        r = self.improve("  #(doc) Net sales. Excludes returned lines.", prior=[rejected])
+        self.assertIn("REJECTED", self.prompt)
+        self.assertIn("rejected because: no regression: keep in a", self.prompt)
+        self.assertEqual(r["duplicateOf"]["what"], "doc net sales")
+
+    def test_with_an_experiment_the_agents_helper_republishes_the_working_tree(self):
+        self.improve("  #(doc) Net sales.", experiment="imp1")
+        self.assertIn("experiment.py", self.helper)
+        self.assertIn(f"sync imp1 --set {self.set.resolve()} --dir {self.model.resolve()}",
+                      self.helper)
+        self.assertNotIn("reload=true", self.helper)
+        # and without one it is the reload, as before
+        shutil.rmtree(self.root / "run")
+        self.improve("  #(doc) Net sales, again.")
+        self.assertIn("reload=true", self.helper)
+        self.assertNotIn("experiment.py", self.helper)
+
+    def test_with_nothing_tried_the_prompt_says_so(self):
+        self.improve("  #(doc) Net sales.")
+        self.assertIn("(none recorded for this set)", self.prompt)
 
 
 if __name__ == "__main__":
