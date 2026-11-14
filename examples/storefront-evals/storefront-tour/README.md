@@ -56,12 +56,15 @@ serve a copy of the package without `skills/` and run a second arm with
 `--package <that copy> --package-skills off`; `off` refuses while the server
 still serves package skills.
 
-The same guide is why two keys accept a second basis. Asked for the top category
-by revenue, or for the best customers, an agent following the guide may leave
-out cancelled and returned lines and say so. The guide tells it to do exactly
+The same guide is why three keys accept a second basis. Asked for the top category
+by revenue, for the revenue from a signup cohort, or for the best customers, an
+agent following the guide may leave out cancelled and returned lines and say so. The guide tells it to do exactly
 that when the question does not say ("Decide which one the question wants, and
 say which you used"), so `top-category` also accepts Outerwear at about
-$422,373. "Total spend" does say which, so `top-customer-spend` does not.
+$422,373, and `signup-cohort-2025` also accepts about $445,319. "Total spend"
+does say which, so `top-customer-spend` does not. An improve run doubted that
+key too (2026-11-13), and it stands: on the other basis the top customer is a
+different person, and "total" rules that basis out.
 
 `best-customers` is stricter. The model does not define "best", so the key
 wants the agent to say so: ask which definition the business wants, or show who
