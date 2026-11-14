@@ -259,7 +259,3 @@ The Dockerfile creates `/etc/publisher/` as an empty directory outside the appli
 ## The CI Dockerfile (`docker/Dockerfile.ci`)
 
 `docker/Dockerfile.ci` exists for the CI integration-test path (referenced from the repo's `docker-compose.yml`). It is **not** the production image and should not be used for deployment. Production users build the root [`Dockerfile`](../../Dockerfile).
-
-## Deprecated build paths
-
-`docker/production.docker` and `docker/malloy-samples.docker` are leftover from a previous Docker layout. They are not built by CI, are not referenced by any current workflow, and produce a different image than what is deployed. Don't use them — build the root [`Dockerfile`](../../Dockerfile) instead. They will be removed in a follow-up cleanup PR.

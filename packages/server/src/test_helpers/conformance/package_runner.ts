@@ -111,8 +111,9 @@ export function withSwitch(materialize: Switch): () => void {
 /**
  * Pools kept for the rest of the run, one per set of settings a pool was made
  * under. Reusing them, rather than spawning a worker per case, keeps a run's
- * worker count down: Bun 1.3 keeps most of a stopped worker's memory, which
- * ran Windows CI out of memory.
+ * worker count down, which makes the run faster. Under Bun 1.3, which kept most
+ * of a stopped worker's memory, it also kept Windows CI from running out of
+ * memory; Bun 1.4.4 returns that memory.
  */
 const poolsBySettings = new Map<string, PackageLoadPool>();
 
