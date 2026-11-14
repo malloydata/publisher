@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Bun 1.4.4: a respawned package-load worker no longer leaks its memory
+
+Publisher now builds, tests and ships on Bun 1.4.4, up from 1.3.13. The Docker image's base is `oven/bun:1.4.4-slim`, and building from a clone needs Bun 1.4.4 or newer (`engines.bun` is now `>=1.4.4`). Running the published package with `npx` still needs only Node.js 20 or newer.
+
+Bun 1.3 kept most of a worker thread's memory after the worker exited: about 78 MB of committed memory per worker on Windows, and a few MB on macOS and Linux. The package-load pool replaces a worker that timed out or crashed, so a long-running server that hit timeouts or crashes grew with each replacement. On Bun 1.4.4 that memory is returned. Over 60 worker spawn-and-shutdown cycles, a Windows runner grew from 0.28 to 5.8 GB on Bun 1.3.13 and stayed between 0.09 and 0.42 GB on Bun 1.4.4. The lockfile format is unchanged.
+
 ## [0.13.0] — A `storage=` table is served only to the definition that built it
 
 A wrong answer is fixed. A `storage=` manifest entry whose content address (`sourceEntityId`) none of the package's sources has was still served to the one source of its name. In an unversioned package, an author who edited a `#@ persist storage=` source under its old name and restarted (which restores the latest run's tables), or bound a host manifest from before the edit, was answered from the old definition's rows. Such an entry now serves nothing, and the source answers live until its own table is built, as a colocated table and every published version already were. Every entry Publisher writes carries the address it computes, so a manifest it built for the current definition is unaffected.
