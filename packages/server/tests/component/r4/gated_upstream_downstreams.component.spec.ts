@@ -209,7 +209,8 @@ const sameOutcome = (live: Outcome, served: Outcome): string | undefined => {
  * `#(access_filter)` and `#(authorize)` upstreams, by `name:tier:reason`.
  * A v1 `storage=` downstream is refused in every shape but the annotated
  * join (the deep scan's documented gap; a join does not carry the gate live
- * either, so the table equals live). A downstream that inherits a row filter
+ * either, so the table equals live), and the v1 colocated one, whose table is
+ * the refused plain join's. A downstream that inherits a row filter
  * (`af`, `xf`) is refused in every form, so no table holds every caller's
  * rows that nothing reads.
  */
@@ -217,7 +218,13 @@ function expectedGateRefusals(gated: boolean): string[] {
    const out: string[] = [];
    for (const g of ["af", "az", "xf"]) {
       for (const s of SHAPES) {
-         if (s === "ajoin") continue;
+         if (s === "ajoin") {
+            // The v1 colocated annotated join shares its table (one address:
+            // the same SQL) with the plain join, which is refused, so it is
+            // refused too: the bind serves no source on that address.
+            out.push(`${g}_pc_${s}:colocated:authorize`);
+            continue;
+         }
          out.push(`${g}_ps_${s}:storage:authorize`);
          // A gate reached only through a join is never the entry point's own.
          if (s === "join") {
@@ -377,6 +384,26 @@ for (const gated of [false, true]) {
             (r) => r.name === "af_pc_sel",
          )?.message;
          expect(message).toContain("reads an #(access_filter) row-level gate");
+      });
+
+      it("builds no v1 colocated table it shares with a refused source, and answers its callers live", () => {
+         const built = fixture.built.map((b) => b.name);
+         const plan = loader.pkg.getBuildPlan() as unknown as {
+            refusedSources?: Record<string, { name: string; message: string }>;
+         };
+         for (const g of ["af", "az", "xf"]) {
+            const name = `${g}_pc_ajoin`;
+            expect([name, built.includes(name)]).toEqual([name, false]);
+            const message = Object.values(plan.refusedSources ?? {}).find(
+               (r) => r.name === name,
+            )?.message;
+            expect(message).toContain(`shares its table with '${g}_`);
+            for (const i of CALLERS.keys()) {
+               const out = served.get(`${name}#${i}`)!;
+               if ("error" in out) throw new Error(`${name}: ${out.error}`);
+               expect([name, out.answer.servedBy]).toEqual([name, "live"]);
+            }
+         }
       });
 
       it("still builds and serves the gated downstreams it can read: an annotated join, an authorize lock, an extend over a given", () => {
