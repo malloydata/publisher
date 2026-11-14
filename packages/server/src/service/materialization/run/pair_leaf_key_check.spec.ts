@@ -25,7 +25,7 @@ import {
    type PackageMaterializationOwner,
 } from "../package_materialization";
 import type { ServeBinding } from "../serve/materialization_serve_transform";
-import type { BuildInstruction, ManifestEntry } from "../types";
+import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import {
    INLINE_UNIQUENESS_KEY,
    keyUniquenessAt,

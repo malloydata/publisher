@@ -341,9 +341,9 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
    },
    "service/materialization/serve/rollup_variants.ts": { count: 3, step: "5" },
    "service/materialization/serve/serve_verdict.ts": { count: 8, step: "5" },
-   "service/materialization/serve/served_copy.ts": { count: 1, step: "5" },
+   "service/materialization/serve/served_copy.ts": { count: 3, step: "5" },
    "service/materialization/serve/served_copy_serve.ts": {
-      count: 6,
+      count: 7,
       step: "5",
    },
    "service/materialization/serve/storage_bindings.ts": { count: 1, step: "5" },
