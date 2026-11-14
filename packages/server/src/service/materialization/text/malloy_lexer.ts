@@ -7,6 +7,11 @@
  * joins across connections (plan/cross_connection_joins.ts). It knows only
  * brackets, words, strings and comments, which is all a statement-level edit
  * needs; it never parses Malloy.
+ *
+ * Its token API is internal to text/ and the module's text readers; a lexer
+ * that cannot read the text returns undefined.
+ *
+ * Pure.
  */
 
 /** One lexical token, at the bracket depth it sits at. */

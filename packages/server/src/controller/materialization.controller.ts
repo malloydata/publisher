@@ -8,7 +8,7 @@ import {
    BuildInstruction,
    LedgerEntry,
    ManifestReference,
-} from "../service/materialization/types";
+} from "../service/materialization/domain/types";
 import { MaterializationService } from "../service/materialization/run/materialization_service";
 import type { WarehouseReach } from "../service/materialization/run/materialization_run_support";
 import { VersionRef } from "../service/identity";

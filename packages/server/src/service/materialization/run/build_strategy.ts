@@ -6,7 +6,7 @@ import type {
    Manifest,
    PersistSource,
 } from "@malloydata/malloy";
-import type { BuildInstruction, ManifestEntry } from "../types";
+import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import type { QueryMetadata } from "../../query_metadata";
 import type { sourceIncrementalRefresh } from "./incremental_build";
 import type { SwapDependents } from "./name_view";

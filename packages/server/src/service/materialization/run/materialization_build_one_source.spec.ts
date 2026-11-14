@@ -5,7 +5,7 @@ import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as sinon from "sinon";
 import { logger } from "../../../logger";
-import { BuildInstruction } from "../types";
+import { BuildInstruction } from "../domain/types";
 import { linesMentioning } from "../../../test_helpers/log_lines";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import {

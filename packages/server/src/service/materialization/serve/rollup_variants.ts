@@ -128,9 +128,9 @@ import {
    sourceFieldJoinReads,
    type QueryLevelFacts,
 } from "../../governance/ir/prepared_query";
-import type { BuildManifest } from "../types";
-import { evaluateManifestFreshness } from "../run/freshness";
-import { persistBlankedFiles } from "../persist_blanking";
+import type { BuildManifest } from "../domain/types";
+import { evaluateManifestFreshness } from "../domain/freshness";
+import { persistBlankedFiles } from "../text/persist_blanking";
 import {
    packageRelativeSourceID,
    rollupCompanionURLOf,
@@ -143,7 +143,7 @@ import {
    rollupGateEnforcedAtRead,
    type RollupVariantPlan,
 } from "../plan/rollup_plan";
-import { SourceMap } from "../plan/source_map";
+import { SourceMap } from "../text/source_map";
 import {
    authorNameImports,
    relativeImport,
@@ -165,7 +165,7 @@ import {
 } from "../../gate_classification";
 import { enforcedGatesOf, type EnforcedGates } from "../../access_record";
 import { sameGateSet } from "../../governance/query_governor";
-import { fieldNotes, noteSource } from "../field_notes";
+import { fieldNotes, noteSource } from "../text/field_notes";
 import { timeframeRestatements, typeDeclaration } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import {
@@ -179,7 +179,7 @@ import {
    type ServeBinding,
 } from "./materialization_serve_transform";
 import type { ServedCopyJoinBasis } from "./served_copy_serve";
-import { isDeclineOf, LegDecline } from "./leg_decline";
+import { isDeclineOf, LegDecline } from "../domain/leg_decline";
 import type { MaterializedTableCatalog } from "./query_path";
 import { queryShapeOf } from "./query_path";
 

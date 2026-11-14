@@ -42,7 +42,7 @@ import { installSettings } from "../../../test_helpers/settings_env";
 import { storageDestinationRoot } from "../../connection_config";
 import { collectModelBuildPlan, emptyBuildPlanParts } from "../plan/build_plan";
 import { authorModelLiftContext } from "../serve/materialization_serve_transform";
-import type { ManifestEntry } from "../types";
+import type { ManifestEntry } from "../domain/types";
 import * as session from "./materialization_build_session";
 import {
    chainedPlanFacts,

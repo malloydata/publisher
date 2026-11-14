@@ -3,7 +3,7 @@
 
 import { Manifest } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
-import type { ManifestEntry } from "../types";
+import type { ManifestEntry } from "../domain/types";
 import {
    manifestExcludingStorage,
    manifestForCompiler,

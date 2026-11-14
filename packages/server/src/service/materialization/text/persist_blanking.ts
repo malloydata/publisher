@@ -5,7 +5,7 @@
  * The author's files with every SOURCE-level `#@` note blanked, for a
  * generated companion that must read the rows a live query reads, never a
  * source's own stored table: a `#@ persist` view's build and serve variant
- * (P14) and a `#(preaggregate)` rollup's (#6293) both compile over it.
+ * and a `#(preaggregate)` rollup's both compile over it.
  *
  * The spans are the compiler's own (each note's `at.range`), never a text
  * search. Each is checked before it is blanked: it lies on one line, it holds
@@ -18,12 +18,14 @@
  *
  * Neutral ground for the materialization legs (plan/ and serve/ both import
  * it); keep its imports to the lexer, the source map and the overlay key.
+ *
+ * Pure: the caller hands it the file reader.
  */
 
-import { routeOfNote } from "../annotation_reader";
-import { overlayKey } from "../overlay_key";
+import { routeOfNote } from "../../annotation_reader";
+import { overlayKey } from "../../overlay_key";
 import { lexAll, offsetOf } from "./malloy_lexer";
-import { SourceMap } from "./plan/source_map";
+import { SourceMap } from "./source_map";
 
 /** A zero-based range, as a note's `at.range` carries it. */
 interface NoteRange {

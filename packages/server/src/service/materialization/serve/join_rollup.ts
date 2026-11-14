@@ -61,7 +61,7 @@
  * (`CONTRACT`), since the rollup carries none.
  */
 
-import type { SourceJoin } from "../plan/source_map";
+import type { SourceJoin } from "../text/source_map";
 import type { RollupVariantPlan } from "../plan/rollup_plan";
 import type { MeasureExpr } from "../plan/rollup_measure_grammar";
 import type {

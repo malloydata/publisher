@@ -16,7 +16,7 @@ import {
 import { describe, expect, it } from "bun:test";
 import { MaterializationEligibilityError } from "../../../errors";
 import { plannedSources } from "../plan/build_plan";
-import { reachPersisted } from "../plan/source_map";
+import { reachPersisted } from "../text/source_map";
 import {
    buildChainedStorageBuildModel,
    documentFlagLines,

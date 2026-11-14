@@ -18,7 +18,7 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { SourceMap } from "../plan/source_map";
+import { SourceMap } from "../text/source_map";
 import { refinesUnfilteredBase } from "./served_copy_serve";
 
 let duckdb: DuckDBConnection;

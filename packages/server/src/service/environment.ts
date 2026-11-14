@@ -52,7 +52,10 @@ import {
    assertSafeRelativeModelPath,
    safeJoinUnderRoot,
 } from "../path_safety";
-import { FreshnessManifest, ManifestEntry } from "./materialization/types";
+import {
+   FreshnessManifest,
+   ManifestEntry,
+} from "./materialization/domain/types";
 import { errMessage } from "../utils";
 import {
    buildEnvironmentMalloyConfig,
@@ -92,7 +95,7 @@ import {
    type TaggedLogMessage,
 } from "./compile_source";
 import { type OverlayFile } from "./request_overlay";
-import { destinationSchemaOf } from "./materialization/run/storage_table_path";
+import { destinationSchemaOf } from "./materialization/domain/storage_table_path";
 
 export {
    COMPILE_SCOPES,

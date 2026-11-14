@@ -98,7 +98,7 @@ import {
    BuildPlan,
    FreshnessManifest,
    ManifestEntry,
-} from "./materialization/types";
+} from "./materialization/domain/types";
 import { errMessage, ignoreDotfiles } from "../utils";
 import { packageResource } from "../api_resource";
 import { isPackageInlineFieldsEnabled } from "../config";

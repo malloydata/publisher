@@ -80,7 +80,7 @@ import {
    DEFAULT_DESTINATION_SCHEMA,
    destinationSchemaOf,
    storageTablePath,
-} from "./storage_table_path";
+} from "../domain/storage_table_path";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
 
 type ApiConnection = components["schemas"]["Connection"];

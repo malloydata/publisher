@@ -47,7 +47,7 @@ import {
    createModelRuntime,
    type ModelConnectionInput,
 } from "../../model_runtime";
-import { SourceMap } from "../plan/source_map";
+import { SourceMap } from "../text/source_map";
 import { givenReadingFilterTerms } from "../plan/persist_dynamic_terms";
 import {
    hiddenAccess,
@@ -55,7 +55,7 @@ import {
    type MaterializePlan,
 } from "../plan/build_file_generator";
 import { rollingWindowsOf } from "../plan/rolling_window";
-import { evaluateManifestFreshness } from "../run/freshness";
+import { evaluateManifestFreshness } from "../domain/freshness";
 import {
    bigIntegerReadOf,
    bigIntegerReads,
@@ -94,7 +94,7 @@ import {
    type DerivedSourceDef,
    type ServeBinding,
 } from "./materialization_serve_transform";
-import { fieldNotes } from "../field_notes";
+import { fieldNotes } from "../text/field_notes";
 import {
    buildServedCopy,
    declaredBaseName,
@@ -116,8 +116,8 @@ import {
    type TraceMode,
 } from "./served_copy_containment";
 import { logger } from "../../../logger";
-import { lexAll, offsetOf } from "../malloy_lexer";
-import { confirmedAncestors, keptAncestorChain } from "../kept_ancestors";
+import { lexAll, offsetOf } from "../text/malloy_lexer";
+import { confirmedAncestors, keptAncestorChain } from "../text/kept_ancestors";
 import { classificationFindingsBySource } from "../../classification_findings";
 import {
    readSourceClassifications,
@@ -130,7 +130,7 @@ import {
    leaveOutCrossConnectionJoins,
    type LeftOutDefinition,
 } from "../plan/cross_connection_joins";
-import { LegDecline, type ServedCopyDeclineCode } from "./leg_decline";
+import { LegDecline, type ServedCopyDeclineCode } from "../domain/leg_decline";
 
 type VirtualMap = Map<string, Map<string, string>>;
 

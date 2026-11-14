@@ -19,7 +19,7 @@ import {
    ResourceRepository,
 } from "../../../storage/DatabaseInterface";
 import { errMessage } from "../../../utils";
-import { MaterializationStatus } from "../types";
+import { MaterializationStatus } from "../domain/types";
 import { VALID_TRANSITIONS } from "./materialization_run_support";
 import { errorCodeOf } from "./error_code";
 import { runFailureReported } from "./run_telemetry";

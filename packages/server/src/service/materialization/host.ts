@@ -16,8 +16,12 @@ import type {
 import type { EnvironmentName, PackageName, VersionRef } from "../identity";
 import type { ApiConnection } from "../model";
 import type { ServingReader } from "../versions/materialization_scope";
-import type { BuildPlanPackage } from "./plan/build_plan";
-import type { BuildPlan, FreshnessManifest, ManifestEntry } from "./types";
+import type { BuildPlanPackage } from "./domain/plan_input";
+import type {
+   BuildPlan,
+   FreshnessManifest,
+   ManifestEntry,
+} from "./domain/types";
 
 /** The package surface a run reads: its plan, its metadata, its connections. */
 interface MaterializationPackage extends BuildPlanPackage {

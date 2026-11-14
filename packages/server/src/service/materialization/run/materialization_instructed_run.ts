@@ -22,7 +22,7 @@ import type {
    ManifestEntry,
    RefusedSource,
    SourceFailure,
-} from "../types";
+} from "../domain/types";
 import { errMessage } from "../../../utils";
 import {
    getPersistCollisionEnforce,

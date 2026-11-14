@@ -19,7 +19,11 @@ import {
 } from "../../../materialization_metrics";
 import type { CompiledBuildPlan } from "../plan/build_plan";
 import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../plan/persisted_view";
-import type { BuildInstruction, BuildPlan, ManifestEntry } from "../types";
+import type {
+   BuildInstruction,
+   BuildPlan,
+   ManifestEntry,
+} from "../domain/types";
 import type { BuildRetryable } from "./build_failure_class";
 import { BilledReadNotCapturedError } from "./materialization_build_session";
 

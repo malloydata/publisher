@@ -79,3 +79,46 @@ is how a local authoring loop talks to a hosted environment.
 | **[packages/sdk](../packages/sdk/)** | React component library the Console is built from (internal — see above). |
 | **[packages/app](../packages/app/)** | Reference implementation and production-ready data exploration tool built with the SDK. |
 | **[packages/python-client](../packages/python-client/)** | Auto-generated Python SDK for the REST API. |
+
+## Materialization inside the server
+
+Materialization (`packages/server/src/service/materialization/`) builds stored tables from a
+package's declarations and answers a query from them only when the answer equals live. It is five
+layers with one direction of import, checked by the server's lint:
+
+```mermaid
+flowchart BT
+  subgraph pure["Pure: no I/O, logger, metrics, config or clock"]
+    D["domain/<br/>the shared vocabulary and its rules"]
+    T["text/<br/>Malloy text in and out"]
+  end
+  IR["governance/ir"]
+  P["plan/<br/>declarations to table plans"]
+  R["run/<br/>builds, commit, reclaim"]
+  S["serve/<br/>bindings, legs, verdicts"]
+  F["index.ts and the package facade"]
+  Q["query pipeline"]
+  T --> D
+  T --> IR
+  P --> T
+  P --> D
+  P --> IR
+  R --> T
+  R --> D
+  S --> T
+  S --> D
+  F --> P
+  F --> R
+  F --> S
+  Q --> F
+```
+
+`plan/`, `run/` and `serve/` never import one another, and the rest of the server imports only the
+module's `index.ts` and `domain/`. One stored table has three lifecycle values: what should exist
+(planned), what a run built (a manifest entry, the wire type), and what a query may read (a binding).
+A run commits one manifest; serving reads it through three legs (a persisted view called exactly, a
+rollup, and the served copy, the author's source re-rooted on its stored table) and answers live
+whenever none of them can prove the same answer.
+
+The module's [README](../packages/server/src/service/materialization/README.md) has the glossary, and
+each layer's README lists its modules and what reads them.

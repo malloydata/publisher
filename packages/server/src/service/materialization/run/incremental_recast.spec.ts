@@ -14,7 +14,7 @@ import { join } from "path";
 import { logger } from "../../../logger";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import { plannedSources } from "../plan/build_plan";
-import type { BuildInstruction } from "../types";
+import type { BuildInstruction } from "../domain/types";
 import type { IncrementalLineage } from "./incremental_apply";
 import {
    columnsARebuildWouldRecast,

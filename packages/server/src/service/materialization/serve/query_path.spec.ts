@@ -21,7 +21,7 @@ import {
    queryShapeOf,
    type StorageTable,
 } from "./query_path";
-import { sourceChain } from "../plan/source_map";
+import { sourceChain } from "../text/source_map";
 
 const shape = {
    sourceName: "daily",

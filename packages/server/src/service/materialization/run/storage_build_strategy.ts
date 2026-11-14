@@ -35,7 +35,7 @@ import {
    type ServeBinding,
    type SourceLocation,
 } from "../serve/materialization_serve_transform";
-import { reachPersisted } from "../plan/source_map";
+import { reachPersisted } from "../text/source_map";
 import {
    extensionOverStoredModel,
    type MaterializeParent,
@@ -47,7 +47,7 @@ import {
    storageBuildCasts,
    storedColumnTypeMismatches,
 } from "../stored_column_types";
-import { BuildInstruction, ManifestEntry } from "../types";
+import { BuildInstruction, ManifestEntry } from "../domain/types";
 import type { BuildStrategy } from "./build_strategy";
 import {
    ledgerFields,
@@ -83,7 +83,10 @@ import {
    wrongTierDetail,
 } from "./materialization_run_support";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
-import { destinationSchemaOf, storageTablePath } from "./storage_table_path";
+import {
+   destinationSchemaOf,
+   storageTablePath,
+} from "../domain/storage_table_path";
 
 /** What a `storage=` build of one source starts from. */
 export interface StorageBuildRequest {

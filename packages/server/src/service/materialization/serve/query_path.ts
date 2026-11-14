@@ -32,9 +32,9 @@
 
 import type { components } from "../../../api";
 import type { ConsideredVariant } from "../../query_router";
-import type { KeyUniqueness } from "../types";
+import type { KeyUniqueness } from "../domain/types";
 import { forEachFieldPath } from "../../governance/ir/array_query";
-import { declineOfCode } from "./leg_decline";
+import { declineOfCode } from "../domain/leg_decline";
 
 export type ApiQueryPath = components["schemas"]["QueryPath"];
 type ApiQueryShape = components["schemas"]["QueryShape"];

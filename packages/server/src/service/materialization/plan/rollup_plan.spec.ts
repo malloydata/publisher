@@ -12,7 +12,7 @@ import {
 import { installSettings } from "../../../test_helpers/settings_env";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { InMemoryURLReader, SingleConnectionRuntime } from "@malloydata/malloy";
-import { persistBlankedFiles } from "../persist_blanking";
+import { persistBlankedFiles } from "../text/persist_blanking";
 import {
    generateRollupBuildFile,
    planModelRollups,
@@ -24,7 +24,7 @@ import {
    type RollupVariantPlan,
 } from "./rollup_plan";
 import { emitMeasureExpr } from "./rollup_measure_grammar";
-import { SourceMap } from "./source_map";
+import { SourceMap } from "../text/source_map";
 
 const connection = new DuckDBConnection("duckdb", ":memory:");
 afterAll(async () => {

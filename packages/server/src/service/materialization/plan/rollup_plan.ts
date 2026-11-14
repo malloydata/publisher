@@ -111,7 +111,7 @@ import {
    type MeasureRefusal,
    type Reaggregate,
 } from "./rollup_measure_grammar";
-import type { SourceMap, SourceNode } from "./source_map";
+import type { SourceMap, SourceNode } from "../text/source_map";
 
 /** The route `#(preaggregate)` is on. */
 const PREAGGREGATE_ROUTE = "preaggregate";

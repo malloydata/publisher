@@ -11,7 +11,7 @@ import {
    DestinationNotFoundError,
    internalErrorToHttpError,
 } from "../../../errors";
-import { BuildInstruction } from "../types";
+import { BuildInstruction } from "../domain/types";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import {
    buildEnvironmentStub,

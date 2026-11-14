@@ -13,7 +13,7 @@ import {
    versionedTableName,
    versionTableSuffix,
 } from "../../versions/materialization_scope";
-import type { BuildInstruction, ManifestEntry } from "../types";
+import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import {
    colocatedNameViewSite,
    pointNameView,

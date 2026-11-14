@@ -2,14 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Materialization domain types: the build protocol's wire shapes (kept in sync
- * with the OpenAPI spec via the generated `api.ts`), the Malloy-facing build
- * manifest, and the freshness-aware manifest the serve path binds. They used to
- * live in `storage/DatabaseInterface.ts`, which still re-exports them for the
- * store; domain code imports them from here.
+ * The build protocol's types: the wire shapes (generated from the OpenAPI
+ * spec into `api.ts`), the Malloy-facing build manifest, and the
+ * freshness-aware manifest entry the serve path binds, with the few pure
+ * readers of an entry (a legacy failed entry, a bound table's schema).
+ *
+ * Imported across the module and by the store, which re-exports them from
+ * `storage/DatabaseInterface.ts`.
+ *
+ * Pure.
  */
 
-import { components } from "../../api";
+import { components } from "../../../api";
 
 // Wire types for the build protocol.
 export type MaterializationStatus =

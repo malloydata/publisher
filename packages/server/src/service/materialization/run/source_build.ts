@@ -17,8 +17,8 @@ import {
    resolveQueryMetadata,
 } from "../plan/build_plan";
 import { authorModelLiftContext } from "../serve/materialization_serve_transform";
-import { reachPersisted } from "../plan/source_map";
-import { BuildInstruction, ManifestEntry } from "../types";
+import { reachPersisted } from "../text/source_map";
+import { BuildInstruction, ManifestEntry } from "../domain/types";
 import type { BuildStrategy, ColocatedBuildRequest } from "./build_strategy";
 import { ColocatedCtasStrategy } from "./colocated_build_strategy";
 import {

@@ -48,9 +48,9 @@ import {
    projectToPublicColumns,
 } from "../plan/build_plan";
 import { declaredStorage } from "../plan/persist_source_fields";
-import { reachPersisted } from "../plan/source_map";
+import { reachPersisted } from "../text/source_map";
 import { authorModelLiftContext } from "../serve/materialization_serve_transform";
-import type { ManifestEntry } from "../types";
+import type { ManifestEntry } from "../domain/types";
 import {
    chainedPlanFacts,
    readAuthorFile,

@@ -6,7 +6,7 @@ import type {
    Materialization,
    ResourceRepository,
 } from "../../storage/DatabaseInterface";
-import type { ManifestEntry } from "../materialization/types";
+import type { ManifestEntry } from "../materialization/domain/types";
 
 /**
  * Who owns the tables a published version's materializations build, decided

@@ -10,7 +10,7 @@ import { errMessage } from "../../../utils";
 import { quoteTablePath } from "../../quoting";
 import type { CompiledBuildPlan } from "../plan/build_plan";
 import { deriveAnnotationFields } from "../plan/persist_source_fields";
-import { isLegacyFailedEntry, type ManifestEntry } from "../types";
+import { isLegacyFailedEntry, type ManifestEntry } from "../domain/types";
 import {
    nameViewDialectSupported,
    nameViewProbeSql,
@@ -26,7 +26,7 @@ import {
    type NameViewContext,
    type NameViewSite,
 } from "./name_view";
-import type { BuildInstruction } from "../types";
+import type { BuildInstruction } from "../domain/types";
 
 /**
  * Who owns a table an auto-run writes at a name the author chose.

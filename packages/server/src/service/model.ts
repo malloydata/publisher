@@ -80,7 +80,7 @@ import { type ServeBinding } from "./materialization/serve/materialization_serve
 import { deserializeError } from "../package_load/package_load_pool";
 import type { SerializedModel } from "../package_load/protocol";
 import { decodeSerializedModel } from "../package_load/protocol_decode";
-import { BuildManifest } from "./materialization/types";
+import { BuildManifest } from "./materialization/domain/types";
 import {
    modelAnnotations,
    ownModelAnnotations,
@@ -227,7 +227,7 @@ import {
 } from "./materialization/serve/served_copy_serve";
 import { type ApiQueryPath } from "./materialization/serve/query_path";
 import { PersistedViewServe } from "./materialization/serve/view_variants";
-import { sourceChain } from "./materialization/plan/source_map";
+import { sourceChain } from "./materialization/text/source_map";
 import type { ViewServeVerdict } from "./materialization/serve/serve_verdict";
 
 export type { ModelConnectionInput, ModelType } from "./model_runtime";

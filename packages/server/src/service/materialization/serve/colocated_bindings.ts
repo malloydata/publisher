@@ -35,7 +35,10 @@ import {
    type StoredColumn,
    storedColumnsOfOutput,
 } from "../stored_column_types";
-import type { FreshnessAwareManifestEntry, FreshnessManifest } from "../types";
+import type {
+   FreshnessAwareManifestEntry,
+   FreshnessManifest,
+} from "../domain/types";
 import type { ServeBinding } from "./materialization_serve_transform";
 
 /** What a binding reads of a build-plan source. */

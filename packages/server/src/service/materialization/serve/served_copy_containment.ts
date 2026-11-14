@@ -23,7 +23,7 @@
  * failures with it.
  */
 
-import { offsetOf } from "../malloy_lexer";
+import { offsetOf } from "../text/malloy_lexer";
 import { overlayKey } from "../../overlay_key";
 import {
    errorProblems,

@@ -16,7 +16,7 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../../../test_helpers/metrics_harness";
-import type { BuildInstruction, ManifestEntry } from "../types";
+import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import { errorCodeOf } from "./error_code";
 import { BilledReadNotCapturedError } from "./materialization_build_session";
 import {
