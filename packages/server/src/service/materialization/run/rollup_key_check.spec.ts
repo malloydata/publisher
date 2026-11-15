@@ -1018,10 +1018,10 @@ describe("the rollup key record, bound for serving", () => {
       });
       await committer.autoLoad(
          {
-            reloadAllModelsForPackage: async (_p, manifest) => {
-               bound = manifest;
+            loadRunManifest: async ({ colocated }) => {
+               bound = colocated;
+               return { loaded: true };
             },
-            bindPackageStorageServeBindings: async () => {},
          },
          "pkg",
          {
@@ -1047,9 +1047,9 @@ describe("the rollup key record, bound for serving", () => {
       });
       await committer.autoLoad(
          {
-            reloadAllModelsForPackage: async () => {},
-            bindPackageStorageServeBindings: async (_p, entries) => {
-               storage = entries;
+            loadRunManifest: async (params) => {
+               storage = params.storage;
+               return { loaded: true };
             },
          },
          "pkg",

@@ -148,7 +148,7 @@ interface TableState {
     * since its only other name is a physical storage path.
     */
    tableId?: string;
-   kind: "materialized" | "rollup" | "view";
+   kind: "materialized" | "rollup" | "view" | "query";
    tier: "storage" | "colocated";
    /** Built and bound, but withheld by its freshness window. */
    stale: boolean;
@@ -234,9 +234,11 @@ export interface QueryPathInput {
    rollupMember?: string;
    /**
     * The table of the persisted view the query calls (`#@ persist` on a view,
-    * P14), when it calls one: tried before every other table (R1).
+    * P14), or of the persisted named query it calls (`kind: "query"`), when
+    * it calls one: tried before every other table (R1).
     */
    view?: {
+      kind?: "query";
       tableId?: string;
       tier: "storage" | "colocated";
       built: boolean;
@@ -430,12 +432,14 @@ function viewTableDecision(
    onChain: ReadonlySet<string>,
 ): ApiQueryPath | undefined {
    const { considered, markUsed, skip } = tally;
-   const viewDecision = decided.get("view");
+   const viewDecision = decided.get(
+      input.view?.kind === "query" ? "query" : "view",
+   );
    if (input.view) {
       const t: TableState = {
          key: `persisted-view/${input.view.tableId ?? ""}`,
          ...(input.view.tableId ? { tableId: input.view.tableId } : {}),
-         kind: "view",
+         kind: input.view.kind ?? "view",
          tier: input.view.tier,
          stale: input.view.stale,
          unbuilt: !input.view.built,

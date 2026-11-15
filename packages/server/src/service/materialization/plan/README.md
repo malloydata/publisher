@@ -12,13 +12,13 @@ One `TablePlan` per planned table (`domain/table_plans.ts`), in
 build target, its declaring model, its classified gate, its stored-table key
 check, and its kind, fixed by the planner that made it:
 
-| Kind          | Planned by                                                             | Carries               |
-| ------------- | ---------------------------------------------------------------------- | --------------------- |
-| `persist`     | the v1 walk (`collectModelBuildPlan`)                                  | nothing more          |
-| `materialize` | `materialize_plan.ts`, compiled by `materialize_compile.ts`            | its `MaterializePlan` |
-| `pair`        | the same, for an inlined join_many                                     | its `MaterializePlan` |
-| `rollup`      | `rollup_plan.ts` and the v1 synthesis, compiled by `rollup_compile.ts` | its rollup plan       |
-| `view`        | `persisted_view.ts`, compiled by `persisted_view_compile.ts`           | nothing more          |
+| Kind          | Planned by                                                                             | Carries               |
+| ------------- | -------------------------------------------------------------------------------------- | --------------------- |
+| `persist`     | the v1 walk (`collectModelBuildPlan`)                                                  | nothing more          |
+| `materialize` | `materialize_plan.ts`, compiled by `materialize_compile.ts`                            | its `MaterializePlan` |
+| `pair`        | the same, for an inlined join_many                                                     | its `MaterializePlan` |
+| `rollup`      | `rollup_plan.ts` and the v1 synthesis, compiled by `rollup_compile.ts`                 | its rollup plan       |
+| `view`        | `persisted_view.ts` (a view or a named query), compiled by `persisted_view_compile.ts` | nothing more          |
 
 Nothing downstream derives a kind: the build, its telemetry, eligibility and
 the wire projection read it off the table. A declaration that is not planned
@@ -64,8 +64,9 @@ package load keeps, which crosses the load worker as plain data.
 | `materialize_stored_chain.ts`          | The text a chained `storage=` extension table builds from in its destination                                                                                  | the companion compiler, the `storage=` build                                     |
 | `materialize_compile.ts`               | Compiling the `#(materialize)` companion and judging each declaration                                                                                         | the build plan                                                                   |
 | `v1_build_companion.ts`                | The build copy for a v1 `#@ persist` model without the persistence flag                                                                                       | the build plan                                                                   |
-| `persisted_view.ts`                    | `#@ persist` on a view: its declaration and refusals                                                                                                          | the build plan, `model.ts` (for the view leg), run telemetry                     |
-| `persisted_view_compile.ts`            | Compiling the persisted-view companion                                                                                                                        | the build plan                                                                   |
+| `persisted_view.ts`                    | `#@ persist` on a view or a named query: its declaration, refusals and companion text                                                                         | the build plan, `model.ts` (for the view and query legs), run telemetry          |
+| `persisted_query.ts`                   | `#@ persist` on a named query: reading the declarations, its key findings and its warning                                                                     | the build plan, `persisted_view.ts`                                              |
+| `persisted_view_compile.ts`            | Compiling the persisted-view companion, and judging each view and named query                                                                                 | the build plan                                                                   |
 | `rollup_plan.ts`                       | `#(preaggregate)` rollups: grain, measures, key checks                                                                                                        | the build plan, `model.ts` (for the rollup leg), the instructed build            |
 | `rollup_compile.ts`                    | Compiling the `#(preaggregate)` companion                                                                                                                     | the build plan                                                                   |
 | `rollup_measure_grammar.ts`            | Which measures a rollup can store and merge                                                                                                                   | the rollup plan                                                                  |
@@ -77,9 +78,12 @@ package load keeps, which crosses the load worker as plain data.
 
 ## Dependency rule
 
-May import: `domain/`, `text/`, `governance/ir`. Must not import `run/`,
-`serve/` or `service/model.ts` (rule R7), and plan, run and serve never
-import one another (R8). The edges that remain are listed, each with the step
+Of materialization's layers, it may import `domain/`, `text/` and
+`governance/ir`; it also reads server modules outside materialization (the
+configuration, the annotation reader, the gate classification and the like).
+It must not import `run/`, `serve/` or `service/model.ts` (rule R7), and
+plan, run and serve never import one another (R8); its logging and metrics
+are being moved out (H5). The edges that remain are listed, each with the step
 that removes it, in `materialization_allowlists.mjs`.
 
 ## Where things are added

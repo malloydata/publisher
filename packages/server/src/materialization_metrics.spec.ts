@@ -370,7 +370,13 @@ describe("materialization_metrics", () => {
 // value is a reviewed change to these lists (Step 4 specification).
 describe("the routing and bind label vocabularies", () => {
    it("names exactly the route counter's legs, outcomes and reasons", () => {
-      expect([...ROUTE_LEGS]).toEqual(["view", "rollup", "served", "live"]);
+      expect([...ROUTE_LEGS]).toEqual([
+         "view",
+         "query",
+         "rollup",
+         "served",
+         "live",
+      ]);
       expect([...ROUTE_OUTCOMES]).toEqual(["used", "skipped", "fallback"]);
       expect([...ROUTE_REASONS]).toEqual([
          "NONE",

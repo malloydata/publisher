@@ -139,3 +139,37 @@ describe("a report write onto a link planted in the package", () => {
       expect(fs.existsSync(path.join(root, "rpt_b.malloy"))).toBe(false);
    });
 });
+
+describe("a report write through a directory link that goes out of the package and back", () => {
+   it("is refused the same way whether the outside directory exists or not", async () => {
+      const { env, served, root } = await installed();
+      fs.mkdirSync(path.join(served, "sub"));
+      fs.mkdirSync(path.join(root, "present"));
+      const answers: string[] = [];
+      for (const which of ["present", "absent_"]) {
+         const through = path.join(root, which);
+         const link = path.join(served, "rpt");
+         fs.rmSync(link, { force: true });
+         fs.symlinkSync(
+            `${through}/${path.relative(through, path.join(served, "sub"))}`,
+            link,
+         );
+         let error: unknown;
+         try {
+            await env.writeModelFileTransactional(
+               "pkg",
+               "rpt/r.malloy",
+               '## artifact { layout=linear }\nimport "../ok.malloy"\n',
+               () => {},
+               async () => undefined,
+            );
+         } catch (e) {
+            error = e;
+         }
+         expect(error).toBeInstanceOf(InvalidModelPathError);
+         answers.push((error as Error).message);
+      }
+      expect(answers[0]).toBe(answers[1]);
+      expect(fs.existsSync(path.join(served, "sub", "r.malloy"))).toBe(false);
+   });
+});

@@ -82,6 +82,12 @@ export function packageRelativeText(
    const name = pathModule.basename(pathModule.resolve(packagePath));
    // A drive letter, and a Windows path's case, are not significant.
    const flags = windows ? "gi" : "g";
+   // A path's tail. On POSIX a backslash is part of a name (`a\b.csv`)
+   // except before a quote, so an escaped quote after the path (`'\''`, as
+   // Malloy spells a string) stays outside it.
+   const tail = windows
+      ? "[^\\s'\"`<>|*?:]*"
+      : "(?:[^\\s'\"`<>|*?:\\\\]|\\\\(?!'))*";
    // Longest first, so a URL is taken whole before the path inside it.
    let out = text;
    for (const spelling of [...spellings].sort((a, b) => b.length - a.length)) {
@@ -89,8 +95,10 @@ export function packageRelativeText(
       const root = `(?<![\\w./\\\\-])${escapeRegExp(spelling)}`;
       // A file under the directory: its path from there, `/`-separated.
       out = out.replace(
-         new RegExp(`${root}[\\\\/]([^\\s'"\`<>|*?:]*)`, flags),
-         (_whole, rest: string) => rest.split("\\").join("/"),
+         new RegExp(`${root}[\\\\/](${tail})`, flags),
+         // Windows separators read as `/`; a POSIX name keeps its backslash.
+         (_whole, rest: string) =>
+            windows ? rest.split("\\").join("/") : rest,
       );
       // The directory itself, where nothing under it is named: by its name.
       out = out.replace(new RegExp(`${root}(?![\\w.-])`, flags), name);

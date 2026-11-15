@@ -22,6 +22,7 @@ import type {
    BuildPlan,
    FreshnessManifest,
    ManifestEntry,
+   RunManifestLoad,
 } from "./domain/types";
 
 /** The package surface a run reads: its plan, its metadata, its connections. */
@@ -127,6 +128,17 @@ export interface MaterializationEnvironment {
    registerVersionBuild(packageName: string, versionId: string): () => void;
    versionBuildsSettled(packageName: string, versionId: string): Promise<void>;
 
+   /**
+    * Load an auto-run's manifest into the slot it built and run `commit`, all
+    * under that slot's lock (see Environment.loadRunManifest).
+    */
+   loadRunManifest(params: {
+      packageName: string;
+      versionId?: string;
+      colocated: FreshnessManifest;
+      storage: Record<string, ManifestEntry>;
+      commit: (outcome: RunManifestLoad) => Promise<void>;
+   }): Promise<RunManifestLoad>;
    /** Bind a freshly built colocated manifest into a slot's models. */
    reloadAllModelsForPackage(
       packageName: string,

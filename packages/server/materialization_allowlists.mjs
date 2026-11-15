@@ -268,7 +268,6 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
 export const MATERIALIZATION_UNIMPORTED_EXPORTS = {
    "service/materialization/run/incremental_apply.ts#IncrementalStepReasonCode":
       "2g.4",
-   "service/materialization/run/incremental_build.ts#planSourceRefresh": "2g.4",
    "service/materialization/run/table_ownership.ts#OWNED_TABLE_MARK": "2g.4",
 };
 /** Annotation payload reads outside plan/declaration.ts, per file. */
