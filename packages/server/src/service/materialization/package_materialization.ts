@@ -1197,6 +1197,27 @@ export class PackageMaterialization {
          let poolFailed = false;
          try {
             workerPlan = await derive();
+            // The files on disk now carry an invalid annotation (a save the
+            // load refused): that plan is not this package's, so the
+            // re-derivation fails, keeping what serves, and no run builds it.
+            const invalid = workerPlan?.ok
+               ? invalidFindingsText(
+                    (workerPlan.outcome.annotationFindings ?? []).map(
+                       relaxedCollision,
+                    ),
+                 )
+               : "";
+            if (invalid) {
+               workerPlan = {
+                  ok: false,
+                  error:
+                     "The package's files carry an invalid materialization " +
+                     `annotation, which its load refused: ${invalid}`,
+                  durationMs: 0,
+                  digestSkipped: [],
+                  eligibilityRefused: {},
+               };
+            }
          } catch (err) {
             poolFailed = true;
             workerPlan = {
@@ -2153,14 +2174,7 @@ export class PackageMaterialization {
     * annotation Publisher cannot build is a `*-not-built` warning instead.
     */
    formatInvalidAnnotations(): string {
-      const lines = this.annotationFindings
-         .filter((finding) => finding.tier === "malformed")
-         .map(
-            (finding) =>
-               `${finding.model ? `${finding.model}: ` : ""}${finding.message}` +
-               (finding.rewrite ? `; ${finding.rewrite}` : "") +
-               ` [${finding.code}]`,
-         );
+      const lines = invalidFindingLines(this.annotationFindings);
       if (getPersistCollisionEnforce()) {
          const collisions = this.persistenceCollisionWarnings();
          if (collisions.length > 0) {
@@ -2353,6 +2367,27 @@ function relaxedCollision(
          " is not built, so the source is served live: ",
       ),
    };
+}
+
+/** Each `malformed` finding as a load failure's line, with its code. */
+function invalidFindingLines(
+   findings: readonly PackageAnnotationFinding[],
+): string[] {
+   return findings
+      .filter((finding) => finding.tier === "malformed")
+      .map(
+         (finding) =>
+            `${finding.model ? `${finding.model}: ` : ""}${finding.message}` +
+            (finding.rewrite ? `; ${finding.rewrite}` : "") +
+            ` [${finding.code}]`,
+      );
+}
+
+/** {@link invalidFindingLines}, one per line, or "" when there is none. */
+function invalidFindingsText(
+   findings: readonly PackageAnnotationFinding[] | undefined,
+): string {
+   return invalidFindingLines(findings ?? []).join("\n");
 }
 
 /** See PackageMaterialization's entry-point index. */

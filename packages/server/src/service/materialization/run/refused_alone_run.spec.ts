@@ -154,4 +154,20 @@ describe("a run beside a source refused alone", () => {
          await rows("run: base -> { select: k, who; order_by: k }"),
       );
    });
+
+   it("refuses a run over files the load refused: a save that broke an annotation is never built", async () => {
+      // The package loaded; then a save gave a source an invalid annotation,
+      // which its reload refuses, so it serves the model from before.
+      fs.writeFileSync(
+         path.join(envPath, "pa", "model.malloy"),
+         MODEL.replace("#@ persist\n", '#@ persist nmae="t"\n'),
+      );
+      await expect(
+         env.getPackage(parsePackageName("pa"), true),
+      ).rejects.toThrow("[persist-unknown-key]");
+      const run = await build();
+      expect(run.status).toBe("FAILED");
+      expect(run.error).toContain("its files carry");
+      expect(await tables()).toEqual([]);
+   });
 });

@@ -9,6 +9,7 @@ import {
    PackageVersionError,
 } from "../../../errors";
 import { logger } from "../../../logger";
+import { getPersistCollisionEnforce } from "../../../config";
 import { MaterializationMode } from "../../../materialization_metrics";
 import {
    Materialization,
@@ -704,7 +705,41 @@ export class MaterializationService {
          // A `#@ persist` source Malloy's build walk did not plan fails the
          // package's load (`persist-not-materializable`), so a package that
          // reaches a run has none: one source's mistake never refuses the
-         // whole run.
+         // whole run. What can reach one is the files on disk changed since
+         // the load: a save the load refused (the package serves its last
+         // good model, stale). The run builds from those files, so it is
+         // refused until they are fixed, rather than build what the load
+         // refused.
+         // A version's files never change; only the unversioned package a
+         // reload replaces can be stale.
+         const stale =
+            versionId === undefined
+               ? (environment.getStaleCompileErrors?.().get(packageName) as
+                    | { message?: string }
+                    | undefined)
+               : undefined;
+         const invalid = (compiled.annotationFindings ?? []).filter(
+            (f) =>
+               f.tier === "malformed" &&
+               // Under the operator's opt-out a collision is refused alone.
+               (f.code !== "materialization-table-collision" ||
+                  getPersistCollisionEnforce()),
+         );
+         if (stale || invalid.length > 0) {
+            throw new BadRequestError(
+               `Package ${packageName} is not built: its files carry ` +
+                  (invalid.length > 0
+                     ? `an invalid materialization annotation, which its load refuses:\n${invalid
+                          .map(
+                             (f) =>
+                                `${f.model ? `${f.model}: ` : ""}${f.message} [${f.code}]`,
+                          )
+                          .join("\n")}`
+                     : `a change its last reload refused, so it serves an ` +
+                       `older model: ${stale?.message ?? "see its load error"}`) +
+                  `\nFix the files and reload the package, then run again.`,
+            );
+         }
 
          // Assembled BEFORE the instructions because skip-if-unchanged consults
          // it: an incremental source is exempt from the carry-forward below.
