@@ -52,11 +52,31 @@ const AUTO_LOAD_TIMEOUT_MS = 10 * 60 * 1000;
 /** What each failed step leaves serving, for the run's `error`. */
 const NOT_SERVED_CONSEQUENCE: Record<string, string> = {
    reload:
-      "the package keeps the models it had, until its next reload or restart binds this run's manifest",
+      "the package's models were not recompiled with this run's tables until its next reload or restart (or, for a published version, a rebind from the store) binds this run's manifest",
    bind: "the run's colocated tables are served and its stored ones are not, until the package's next reload or restart binds this run's manifest",
    timeout:
-      "what the package serves is undecided until the load finishes, or its next reload or restart binds this run's manifest",
+      "what the package serves is undecided until the load finishes, or its next reload or restart binds this run's manifest; a hung reload holds the package's lock until it returns, so the package's reloads, publishes and PATCHes wait (queries do not)",
 };
+
+/**
+ * Whether a run may rebind its own version from the store once it is
+ * MANIFEST_FILE_READY, given what its load recorded: not after a load that
+ * timed out, which may still hold the version's lock, so the rebind would wait
+ * on it and the run would never settle.
+ */
+export function rebindsOwnVersionAfter(
+   served: Record<string, unknown> | undefined,
+): boolean {
+   return served?.autoLoadStep !== "timeout";
+}
+
+/** Count a run's load outcome once, when it is first decided. */
+function recordServed(served: Served): void {
+   if (served.metadata.autoLoad === "loaded") recordAutoLoadOutcome("success");
+   else if (served.metadata.autoLoad === "failed") {
+      recordAutoLoadOutcome("failure");
+   }
+}
 
 /** A load that did not take: the step, its error, and the record's `error`. */
 function notServed(step: string, error: string): Served {
@@ -135,7 +155,7 @@ export class ManifestCommitter {
       metadata: Record<string, unknown>,
       serve?: (finish: (served: Served) => Promise<void>) => Promise<void>,
       serveTimeoutMs: number = AUTO_LOAD_TIMEOUT_MS,
-   ): Promise<void> {
+   ): Promise<Record<string, unknown>> {
       const manifest: BuildManifestResult = {
          builtAt: new Date().toISOString(),
          entries,
@@ -146,10 +166,20 @@ export class ManifestCommitter {
       await this.deps.lifecycle.transition(id, "MANIFEST_ROWS_READY", {
          manifest,
       });
-      let finished = false;
-      const finish = async (served: Served = NOT_SERVED): Promise<void> => {
-         if (finished) return;
-         finished = true;
+      // The first call writes; every later one (a late finish after a timeout,
+      // the catch below, the trailing call) awaits that same write, so a write
+      // that throws is rethrown to each of them and the run settles FAILED.
+      let finishing: Promise<void> | undefined;
+      let final: Served = NOT_SERVED;
+      const finish = (served: Served = NOT_SERVED): Promise<void> => {
+         if (finishing === undefined) {
+            final = served;
+            recordServed(served);
+            finishing = finishOnce(served);
+         }
+         return finishing;
+      };
+      const finishOnce = async (served: Served): Promise<void> => {
          // Keep the superseded-table marks another run left on this record
          // while it was MANIFEST_ROWS_READY (markSuperseded, markHeldElsewhere),
          // read and written under the same table lock they are made under.
@@ -191,7 +221,6 @@ export class ManifestCommitter {
                timedOut,
             ]);
             if (settled === "timeout") {
-               recordAutoLoadOutcome("failure");
                await finish(
                   notServed(
                      "timeout",
@@ -200,13 +229,15 @@ export class ManifestCommitter {
                );
             }
          } catch (err) {
-            recordAutoLoadOutcome("failure");
+            // A load that threw before it finished; or the final write, which
+            // this rethrows.
             await finish(notServed("reload", errMessage(err)));
          } finally {
             clearTimeout(timer);
          }
       }
       await finish();
+      return final.metadata;
    }
 
    /**
@@ -282,7 +313,6 @@ export class ManifestCommitter {
          storage: storageEntries,
          commit: async (outcome) => {
             if (outcome.loaded) {
-               recordAutoLoadOutcome("success");
                logger.info("Auto-run: loaded manifest into package models", {
                   packageName,
                   entryCount: Object.keys(manifestEntries).length,
@@ -290,7 +320,6 @@ export class ManifestCommitter {
                await finish({ metadata: { autoLoad: "loaded" } });
                return;
             }
-            recordAutoLoadOutcome("failure");
             logger.warn(
                "Auto-run: failed to load manifest into package models",
                {

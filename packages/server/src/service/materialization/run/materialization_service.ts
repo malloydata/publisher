@@ -61,6 +61,7 @@ import {
 import { InstructedBuild, tableSiteContext } from "./instructed_build";
 import {
    ManifestCommitter,
+   rebindsOwnVersionAfter,
    referenceManifestToEntries,
 } from "./manifest_committer";
 import type { EligibilityTier } from "./materialization_instructed_run";
@@ -998,7 +999,7 @@ export class MaterializationService {
          const sourcesRefused =
             Object.keys(derivedRefused).length + instructedRefused;
          const durationMs = Date.now() - startedAt;
-         await this.commitManifest(
+         const served = await this.commitManifest(
             id,
             entries,
             failures,
@@ -1069,7 +1070,11 @@ export class MaterializationService {
                     ),
          );
 
-         if (!orchestrated && versionId !== undefined) {
+         if (
+            !orchestrated &&
+            versionId !== undefined &&
+            rebindsOwnVersionAfter(served)
+         ) {
             await this.committer.rebindOwnVersionIfMoved(
                environmentName,
                packageName,
@@ -1237,7 +1242,7 @@ export class MaterializationService {
    /** See {@link ManifestCommitter.commit}. */
    private commitManifest(
       ...args: Parameters<ManifestCommitter["commit"]>
-   ): Promise<void> {
+   ): ReturnType<ManifestCommitter["commit"]> {
       return this.committer.commit(...args);
    }
 

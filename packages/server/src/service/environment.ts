@@ -1934,8 +1934,8 @@ export class Environment {
     * from the database at startup, the one place the restore ran before
     * versions existed (see {@link restoreUnversionedFromLocalStore}).
     */
-   public restoreUnversionedBindingsFromLocalStore(): void {
-      this.restoreUnversionedFromLocalStore = true;
+   public restoreUnversionedBindingsFromLocalStore(restore = true): void {
+      this.restoreUnversionedFromLocalStore = restore;
    }
 
    /**

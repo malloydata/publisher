@@ -1,12 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { beforeEach, describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it, spyOn } from "bun:test";
+import * as metrics from "../../../materialization_metrics";
 import { MaterializationUpdate } from "../../../storage/DatabaseInterface";
 import { MaterializationStatus } from "../domain/types";
 import { makeMaterialization } from "../../../test_helpers/materialization_test_fixtures";
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
 import type { MaterializationService } from "./materialization_service";
+import { rebindsOwnVersionAfter } from "./manifest_committer";
 
 /**
  * How a run's manifest is committed, loaded into the package models, and read
@@ -341,6 +343,63 @@ describe("commitManifest", () => {
       expect(final?.error).toContain("Built, but not served");
    });
 
+   it("rethrows a final write that fails, so the run settles FAILED rather than staying MANIFEST_ROWS_READY", async () => {
+      let status = "PENDING" as MaterializationStatus;
+      ctx.repository.getMaterializationById.callsFake(async () =>
+         makeMaterialization({ status }),
+      );
+      ctx.repository.updateMaterialization.callsFake(
+         async (_id: string, update: MaterializationUpdate) => {
+            if (update.status === "MANIFEST_FILE_READY") {
+               throw new Error("disk full");
+            }
+            if (update.status) status = update.status;
+            return makeMaterialization({ status });
+         },
+      );
+      // Through the load's own finish, and with no load at all.
+      for (const serve of [
+         async (finish: (s: Served) => Promise<void>) =>
+            finish({ metadata: { autoLoad: "loaded" } }),
+         undefined,
+      ]) {
+         status = "PENDING";
+         await expect(
+            manifestMethods(ctx.service).commitManifest(
+               "mat-1",
+               healthy,
+               {},
+               { mode: "auto" },
+               serve,
+            ),
+         ).rejects.toThrow("disk full");
+         // Left for the run's catch, which moves it to FAILED.
+         expect(status as string).toBe("MANIFEST_ROWS_READY");
+      }
+   });
+
+   it("counts a load's outcome once: a timed-out load's late success is not counted", async () => {
+      const counted = spyOn(metrics, "recordAutoLoadOutcome");
+      try {
+         let lateFinish: ((s: Served) => Promise<void>) | undefined;
+         await manifestMethods(ctx.service).commitManifest(
+            "mat-1",
+            healthy,
+            {},
+            { mode: "auto" },
+            (finish) => {
+               lateFinish = finish;
+               return new Promise<void>(() => {});
+            },
+            20,
+         );
+         await lateFinish?.({ metadata: { autoLoad: "loaded" } });
+         expect(counted.mock.calls).toEqual([["failure"]]);
+      } finally {
+         counted.mockRestore();
+      }
+   });
+
    it("settles a load that hangs as timed out, and ignores its late finish", async () => {
       let lateFinish: ((s: Served) => Promise<void>) | undefined;
       await manifestMethods(ctx.service).commitManifest(
@@ -363,6 +422,23 @@ describe("commitManifest", () => {
       });
       await lateFinish?.({ metadata: { autoLoad: "loaded" } });
       expect(finals()).toHaveLength(1);
+   });
+});
+
+describe("rebindsOwnVersionAfter", () => {
+   it("rebinds after a load that took, failed or was not run, but not after one that timed out", () => {
+      expect(rebindsOwnVersionAfter({ autoLoad: "loaded" })).toBe(true);
+      expect(
+         rebindsOwnVersionAfter({ autoLoad: "failed", autoLoadStep: "reload" }),
+      ).toBe(true);
+      expect(rebindsOwnVersionAfter({})).toBe(true);
+      expect(rebindsOwnVersionAfter(undefined)).toBe(true);
+      expect(
+         rebindsOwnVersionAfter({
+            autoLoad: "failed",
+            autoLoadStep: "timeout",
+         }),
+      ).toBe(false);
    });
 });
 

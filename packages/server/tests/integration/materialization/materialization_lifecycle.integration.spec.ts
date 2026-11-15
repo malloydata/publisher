@@ -453,11 +453,10 @@ describe("Materialization REST API: single-call (E2E)", () => {
          "a reload sent while the manifest loads waits, then binds this run's manifest, not the one before",
          async () => {
             const { environmentStore } = await bootMainServer();
-            (
-               await environmentStore.getEnvironment(
-                  parseEnvironmentName(PROJECT_NAME),
-               )
-            ).restoreUnversionedBindingsFromLocalStore();
+            const environment = await environmentStore.getEnvironment(
+               parseEnvironmentName(PROJECT_NAME),
+            );
+            environment.restoreUnversionedBindingsFromLocalStore();
             await fetch(`${baseUrl}${API}?reload=true`);
             const hold = holdNextLoad();
             let id = "";
@@ -482,6 +481,7 @@ describe("Materialization REST API: single-call (E2E)", () => {
                expect(built.status).toBe("MANIFEST_FILE_READY");
                expect(await executedSql()).not.toContain("data/orders.csv");
             } finally {
+               environment.restoreUnversionedBindingsFromLocalStore(false);
                hold.release();
                hold.restore();
                if (id) await dropRun(id);
