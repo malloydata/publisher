@@ -1,4 +1,4 @@
--- hammer/04-partition-without-storage-is-refused/pws/pws.malloy: build plan
+-- hammer/04-partition-on-a-colocated-persist-is-refused/pws/pws.malloy: build plan
 -- Addresses are computed with a fixed connection digest (golden-digest:<connection>),
 -- so they move exactly when the SQL or the folded layout moves.
 

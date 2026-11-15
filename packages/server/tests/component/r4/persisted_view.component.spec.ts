@@ -94,7 +94,6 @@ describe("R4: a persisted view answers its exact call, equal to live", () => {
          "run: flights -> by_carrier -> { aggregate: total is n.sum() }",
          true,
       ],
-      ["a nested view, colocated", "run: flights -> nested", false],
    ];
    for (const [label, malloy, storage] of served) {
       it(`serves ${label} from the view's table, equal to live`, async () => {
@@ -146,6 +145,9 @@ describe("R4: a persisted view answers its exact call, equal to live", () => {
          undefined,
       ],
       ["a view that is not persisted", "run: flights -> plain", undefined],
+      // Its nest's stored rows cannot be rebuilt exactly (a `select:` nest's
+      // duplicates, an empty nest), so the leg declines it.
+      ["a nested view, colocated", "run: flights -> nested", "MISSING_FIELD"],
       [
          "a caller's redefinition of the source",
          "source: flights2 is flights\nrun: flights2 -> by_carrier",

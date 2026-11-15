@@ -63,9 +63,11 @@ function withoutReferenceIds(value: unknown): unknown {
 /** The storage destination every `storage=` source in the fixture names. */
 export const LAKE = "lake";
 
-/** A served field as the wire carries it: name, type (timeframe included) and annotations. */
+/** A served field as the wire carries it: name, kind, type (timeframe included) and annotations. */
 export interface WireField {
    name: string;
+   /** `dimension` or `measure`, as Malloy's result schema reports it. */
+   kind?: string;
    type: unknown;
    annotations: string[];
 }
@@ -79,6 +81,8 @@ export interface Answer {
    servedBy: string;
    /** `served_copy` when the served copy on `virtual` answered. */
    via?: string;
+   /** The view leg's skip, when it considered the query and declined it. */
+   viewSkip?: { reason?: string; detail?: string };
 }
 
 /** What querying a package produced: an answer, or the error it threw. */
@@ -265,6 +269,7 @@ export async function loadFixture(
                rows: result.compactResult as unknown as Row[],
                fields: (result.result?.schema?.fields ?? []).map((f) => ({
                   name: f.name,
+                  kind: (f as { kind?: string }).kind,
                   // A nest's fields carry annotations too, with the same
                   // per-compile reference id.
                   type: withoutReferenceIds((f as { type?: unknown }).type),
@@ -281,6 +286,7 @@ export async function loadFixture(
                ...(result.path?.servedBy?.via
                   ? { via: result.path.servedBy.via }
                   : {}),
+               ...viewSkipOf(result.path?.considered),
             },
          };
       } catch (error) {
@@ -533,4 +539,22 @@ function declaredColumnsFor(
          (f) => f.expressionType === undefined || f.expressionType === "scalar",
       ),
    );
+}
+
+/** The view leg's entry in a path report's `considered`, when it skipped. */
+function viewSkipOf(considered: readonly unknown[] | undefined): {
+   viewSkip?: { reason?: string; detail?: string };
+} {
+   const skip = (considered ?? []).find(
+      (c) =>
+         (c as { kind?: unknown }).kind === "view" &&
+         (c as { outcome?: unknown }).outcome === "skipped",
+   ) as { reason?: unknown; detail?: unknown } | undefined;
+   if (!skip) return {};
+   return {
+      viewSkip: {
+         ...(typeof skip.reason === "string" ? { reason: skip.reason } : {}),
+         ...(typeof skip.detail === "string" ? { detail: skip.detail } : {}),
+      },
+   };
 }
