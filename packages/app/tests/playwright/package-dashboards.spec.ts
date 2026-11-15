@@ -2,33 +2,30 @@
 // SPDX-License-Identifier: MIT
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import path from "path";
-import { fileURLToPath } from "url";
 import {
    closeFilter,
    expectFilterValue,
    filterButton,
    openFilter,
 } from "./helpers/filters";
-import { tmpName } from "./helpers/fixtures";
-import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
+import {
+   publishPackageEnv,
+   serverFixture,
+   type PackageEnv,
+} from "./helpers/packageEnv";
 
 /**
  * The dashboard viewer, end to end in a browser: the Reports section on the
  * package page, the control row the manifest's given specs produce, URL-carried
  * filter state, Apply mode, and the composite tile grid.
  *
- * Runs against its own environment built from the server's dashboards fixture
- * rather than the bundled examples, which declare no dashboards. Registered in
- * `beforeAll` through the same REST call a user would make and removed after,
- * so the suite leaves the server as it found it.
+ * Runs against the server's dashboards fixtures rather than the bundled
+ * examples, which declare no dashboards. Each is a throwaway copy published as
+ * a version in an environment of its own (see publishPackageEnv), browsed on
+ * the version's own routes and removed after, so the suite leaves the server
+ * as it found it.
  */
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURE = path.resolve(
-   __dirname,
-   "../../../server/tests/fixtures/dashboards-test",
-);
 const PKG = "dashboards-test";
 /**
  * Linear `.malloy` reports beside copies of the orders model, its givens and
@@ -36,58 +33,44 @@ const PKG = "dashboards-test";
  * drill from a `run:` cell. A package of its own, so the dashboards-test
  * listings other specs pin stay as they are.
  */
-const LINEAR_FIXTURE = path.resolve(
-   __dirname,
-   "../../../server/tests/fixtures/linear-reports-ui",
-);
 const LINEAR_PKG = "linear-reports-ui";
 
-let env: string;
-let baseURL: string;
+let dash: PackageEnv;
+let linear: PackageEnv;
 
 test.describe("package-dashboards", () => {
    // Playwright requires the first argument to be a destructuring pattern even
    // when no fixture is wanted, so the empty pattern is load-bearing here.
    // eslint-disable-next-line no-empty-pattern
    test.beforeAll(async ({}, testInfo) => {
-      baseURL = testInfo.project.use.baseURL ?? "http://localhost:4000";
-      env = tmpName("dashboards");
-      const res = await fetch(`${baseURL}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: env,
-            packages: [
-               { name: PKG, location: FIXTURE },
-               { name: LINEAR_PKG, location: LINEAR_FIXTURE },
-            ],
-            connections: [],
-         }),
-      });
-      test.skip(
-         res.status === 405 || res.status === 403,
-         "publisher is read-only",
+      const baseURL = testInfo.project.use.baseURL ?? "http://localhost:4000";
+      dash = await publishPackageEnv(
+         baseURL,
+         "dashboards",
+         serverFixture(PKG),
+         PKG,
       );
-      expect(res.ok, await res.text()).toBe(true);
+      linear = await publishPackageEnv(
+         baseURL,
+         "linear",
+         serverFixture(LINEAR_PKG),
+         LINEAR_PKG,
+      );
    });
 
    test.afterAll(async () => {
-      if (!env || !baseURL) return;
-      await fetch(`${baseURL}/api/v0/environments/${env}`, {
-         method: "DELETE",
-      }).catch(() => undefined);
+      await dash?.dispose();
+      await linear?.dispose();
    });
 
    const openDashboard = async (page: Page, slug: string) => {
-      await page.goto(`/${env}/${PKG}/dashboards/${slug}`);
+      await page.goto(`/${dash.path}/dashboards/${slug}`);
    };
 
-   test("the package page lists dashboards and notebooks as artifacts, each once, with New on the heading row", async ({
+   test("the package page lists dashboards and notebooks as artifacts, each once", async ({
       page,
    }) => {
-      await gotoHome(page);
-      await openEnvironment(page, env);
-      await openPackage(page, env, PKG);
+      await page.goto(`/${dash.path}`);
 
       await expect(
          page.getByRole("heading", { name: "Reports", level: 6, exact: true }),
@@ -109,9 +92,10 @@ test.describe("package-dashboards", () => {
       await expect(
          artifacts.getByRole("button", { name: /Orders in a window/ }),
       ).toHaveCount(1);
+      // A published version takes no new report, so the section offers none.
       await expect(
          artifacts.getByRole("button", { name: "Add report", exact: true }),
-      ).toBeVisible();
+      ).toHaveCount(0);
       await expect(
          page.getByRole("button", { name: /Business Overview/ }),
       ).toBeVisible();
@@ -133,14 +117,12 @@ test.describe("package-dashboards", () => {
 
       await page.getByRole("button", { name: /Business Overview/ }).click();
       await expect(page).toHaveURL(
-         new RegExp(`/${env}/${PKG}/dashboards/overview$`),
+         new RegExp(`/${dash.path}/dashboards/overview$`),
       );
    });
 
    test("both lists are ordered by the name they show", async ({ page }) => {
-      await gotoHome(page);
-      await openEnvironment(page, env);
-      await openPackage(page, env, PKG);
+      await page.goto(`/${dash.path}`);
       await expect(
          page.getByRole("heading", { name: "Reports", level: 6, exact: true }),
       ).toBeVisible({ timeout: 60_000 });
@@ -245,7 +227,7 @@ test.describe("package-dashboards", () => {
       await expect(page).toHaveURL(/[?&]BRAND=Nike/);
 
       // And that link restores the control on a cold load.
-      await page.goto(`/${env}/${PKG}/dashboards/overview?BRAND=Nike`);
+      await page.goto(`/${dash.path}/dashboards/overview?BRAND=Nike`);
       await expectFilterValue(page, "Brand", "Nike");
    });
 
@@ -259,7 +241,7 @@ test.describe("package-dashboards", () => {
       // link kept its tracking tag depended on whether the reader had opened that
       // dashboard before.
       await page.goto(
-         `/${env}/${PKG}/dashboards/overview?BRAND=Nike&utm_campaign=spring`,
+         `/${dash.path}/dashboards/overview?BRAND=Nike&utm_campaign=spring`,
       );
       await expect(
          page.getByRole("heading", { name: "Business Overview" }),
@@ -287,7 +269,7 @@ test.describe("package-dashboards", () => {
       // stuck in the address bar, silently re-applying to anyone opening the
       // link.
       await page.goto(
-         `/${env}/${PKG}/dashboards/overview?BRAND=Nike&utm_campaign=spring`,
+         `/${dash.path}/dashboards/overview?BRAND=Nike&utm_campaign=spring`,
       );
       await expect(
          page.getByRole("heading", { name: "Business Overview" }),
@@ -582,7 +564,7 @@ test.describe("package-dashboards", () => {
       {
          name: "linear report",
          open: async (page: Page) => {
-            await page.goto(`/${env}/${LINEAR_PKG}/brands`);
+            await page.goto(`/${linear.path}/brands`);
             await expect(
                page.getByRole("heading", { name: "Brands", level: 1 }).first(),
             ).toBeVisible({ timeout: 60_000 });
@@ -652,7 +634,7 @@ test.describe("package-dashboards", () => {
 
       // The slug becomes the route and the clicked value becomes the given.
       await expect(page).toHaveURL(
-         new RegExp(`/${env}/${PKG}/dashboards/overview\\?BRAND=Nike$`),
+         new RegExp(`/${dash.path}/dashboards/overview\\?BRAND=Nike$`),
       );
       // Arriving seeded means arriving filtered, so the destination's control
       // shows the drilled value.
@@ -748,7 +730,7 @@ test.describe("package-dashboards", () => {
          .click();
 
       await expect(page).toHaveURL(
-         new RegExp(`/${env}/${PKG}/dashboards/regions\\?REGION=EU$`),
+         new RegExp(`/${dash.path}/dashboards/regions\\?REGION=EU$`),
       );
       // regions is autorun=false, and a drill arrives applied rather than
       // pending: the point of a drill is to land on the filtered view.
@@ -785,7 +767,7 @@ test.describe("package-dashboards", () => {
          .click();
 
       const seeded = new RegExp(
-         `/${env}/${PKG}/dashboards/regions\\?REGION=EU$`,
+         `/${dash.path}/dashboards/regions\\?REGION=EU$`,
       );
       await expect(page).toHaveURL(seeded);
       // Asserted again AFTER the destination has rendered, because the first
@@ -804,7 +786,7 @@ test.describe("package-dashboards", () => {
       // The payoff of declaring drill on the dimension: `brands.malloy` says
       // nothing about drill, but its cell groups by `brand_name`, so the same
       // click path works with no report-specific code.
-      await page.goto(`/${env}/${LINEAR_PKG}/brands`);
+      await page.goto(`/${linear.path}/brands`);
       await expect(
          page.getByRole("heading", { name: "Brands", level: 1 }).first(),
       ).toBeVisible({ timeout: 60_000 });
@@ -818,7 +800,7 @@ test.describe("package-dashboards", () => {
          .click();
 
       await expect(page).toHaveURL(
-         new RegExp(`/${env}/${LINEAR_PKG}/dashboards/overview\\?BRAND=Nike$`),
+         new RegExp(`/${linear.path}/dashboards/overview\\?BRAND=Nike$`),
       );
       await expect(
          page.getByRole("heading", { name: "Business Overview" }),
@@ -833,7 +815,7 @@ test.describe("package-dashboards", () => {
       page,
    }) => {
       // `orders-since.malloy` carries `autorun=false` in its artifact tag.
-      await page.goto(`/${env}/${LINEAR_PKG}/orders-since`);
+      await page.goto(`/${linear.path}/orders-since`);
       await expect(
          page.getByRole("heading", { name: "Orders since" }),
       ).toBeVisible({ timeout: 60_000 });
@@ -871,7 +853,7 @@ test.describe("package-dashboards", () => {
       await expect(count("6")).toBeHidden();
 
       // And the link restores the value on a cold load.
-      await page.goto(`/${env}/${LINEAR_PKG}/orders-since?SINCE=2024-03-01`);
+      await page.goto(`/${linear.path}/orders-since?SINCE=2024-03-01`);
       await expectFilterValue(page, "Ordered since", "Mar 1, 2024");
    });
 
@@ -879,7 +861,7 @@ test.describe("package-dashboards", () => {
       page,
    }) => {
       // `orders-start.malloy` carries `givens { SINCE=@2024-03-01 }` in its tag.
-      await page.goto(`/${env}/${LINEAR_PKG}/orders-start`);
+      await page.goto(`/${linear.path}/orders-start`);
       await expectFilterValue(page, "Ordered since", "Mar 1, 2024", 60_000);
 
       // Applied, not merely displayed: two of the six orders are in the window.
@@ -891,7 +873,7 @@ test.describe("package-dashboards", () => {
       expect(page.url()).not.toContain("SINCE=");
 
       // A link overrides the file, so a shared URL shows the sender's view.
-      await page.goto(`/${env}/${LINEAR_PKG}/orders-start?SINCE=2024-01-01`);
+      await page.goto(`/${linear.path}/orders-start?SINCE=2024-01-01`);
       await expectFilterValue(page, "Ordered since", "Jan 1, 2024", 60_000);
       await expect(count("6")).toBeVisible({ timeout: 30_000 });
    });
@@ -899,7 +881,7 @@ test.describe("package-dashboards", () => {
    test("a linear report's cell drills into the report itself", async ({
       page,
    }) => {
-      await page.goto(`/${env}/${LINEAR_PKG}/brands`);
+      await page.goto(`/${linear.path}/brands`);
       await expect(
          page.getByRole("heading", { name: "Brands", level: 1 }).first(),
       ).toBeVisible({ timeout: 60_000 });
@@ -917,7 +899,7 @@ test.describe("package-dashboards", () => {
       // Filtering in place is a URL change, not a navigation: still the
       // report, now with the given set.
       await expect(page).toHaveURL(
-         new RegExp(`/${env}/${LINEAR_PKG}/brands\\?REGION=EU$`),
+         new RegExp(`/${linear.path}/brands\\?REGION=EU$`),
       );
       await expectFilterValue(page, "Region", "EU");
    });
@@ -931,9 +913,7 @@ test.describe("package-dashboards", () => {
       test("lists notebooks by title, the way it lists dashboards", async ({
          page,
       }) => {
-         await gotoHome(page);
-         await openEnvironment(page, env);
-         await openPackage(page, env, PKG);
+         await page.goto(`/${dash.path}`);
 
          await expect(
             page.getByRole("heading", {
@@ -957,14 +937,14 @@ test.describe("package-dashboards", () => {
 
          await titled.click();
          await expect(page).toHaveURL(
-            new RegExp(`/${env}/${PKG}/orders-since.malloynb$`),
+            new RegExp(`/${dash.path}/orders-since.malloynb$`),
          );
       });
 
       test("reads `## autorun=false` and `## givens { … }`", async ({
          page,
       }) => {
-         await page.goto(`/${env}/${PKG}/orders-since.malloynb`);
+         await page.goto(`/${dash.path}/orders-since.malloynb`);
          await expect(
             page.getByRole("heading", { name: "Orders since" }),
          ).toBeVisible({ timeout: 60_000 });
@@ -972,7 +952,7 @@ test.describe("package-dashboards", () => {
             page.getByRole("button", { name: "Apply" }),
          ).toBeVisible();
 
-         await page.goto(`/${env}/${PKG}/orders-start.malloynb`);
+         await page.goto(`/${dash.path}/orders-start.malloynb`);
          await expectFilterValue(page, "Ordered since", "Mar 1, 2024", 60_000);
          await expect(page).toHaveURL(/[?&]SINCE=2024-03-01/);
       });

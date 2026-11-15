@@ -1,0 +1,30 @@
+// fixture: persist-multi-level: files generated while serving
+
+// ==== <pkg>/multi_level.malloy
+##! experimental.persistence
+
+##! experimental { virtual_source }
+type: orders_rollup__served is {
+   category_count::number
+}
+type: orders_base__served is {
+   category::string,
+   total_amount::number
+}
+
+source: raw_orders is duckdb.table('data/orders.csv')
+
+// Upstream persist source: an aggregate over the base CSV.
+#@ persist name="orders_base"
+source: orders_base is duckdb.virtual('54d09a855ffdde69ba0ad3118d97631e8b6a42e40ec038c4b4e52846cc821315')::orders_base__served extend {
+  internal rename:
+    total_amount__stored is total_amount
+  dimension:
+    total_amount is total_amount__stored::"HUGEINT"
+}
+
+// Downstream persist source: references the persist upstream `orders_base`.
+// A per-unit build of `orders_rollup` alone must REFERENCE orders_base's
+// materialized table (via referenceManifest) rather than recompute it live.
+#@ persist name="orders_rollup"
+source: orders_rollup is duckdb.virtual('f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9')::orders_rollup__served

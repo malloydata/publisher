@@ -50,7 +50,27 @@ const fullModel = {
    authorizeWarnings: ["w"],
    renderTagResults: [{ label: "v" }],
    preaggregateCompanion: {},
+   entities: plannedEntities(),
 };
+
+/** A well-formed entities plan for `m.malloy`, with `overrides`. */
+function plannedEntities(overrides: Record<string, unknown> = {}) {
+   return {
+      status: "planned",
+      relativePath: "m.malloy",
+      packageRoot: "/pkg",
+      provisional: false,
+      untaken: [],
+      givens: [],
+      sourceInfos: [],
+      metadata: [{ sourceName: "x", leading: [], trailing: [], joins: [] }],
+      entities: [],
+      findings: [],
+      fingerprintFailures: [],
+      durationMs: 1,
+      ...overrides,
+   };
+}
 
 describe("decodeSerializedModel", () => {
    it("returns a well-formed model as the same object, preserving aliasing", () => {
@@ -60,6 +80,21 @@ describe("decodeSerializedModel", () => {
       expect(decoded).toBe(model as never);
       const def = decoded.modelDef as { a: unknown; b: unknown };
       expect(def.a).toBe(def.b);
+   });
+
+   it("accepts a failed entities plan", () => {
+      expect(() =>
+         decodeSerializedModel({
+            modelPath: "m.malloy",
+            modelType: "model",
+            entities: {
+               status: "failed",
+               relativePath: "m.malloy",
+               packageRoot: "/pkg",
+               error: "boom",
+            },
+         }),
+      ).not.toThrow();
    });
 
    it("accepts a minimal model and a failed one", () => {
@@ -115,6 +150,55 @@ describe("decodeSerializedModel", () => {
             notebookCells: [{ type: "code" }],
          },
          /notebook cell without a code\/markdown type and text/,
+      ],
+      [
+         "an entities plan with an unknown status",
+         {
+            modelPath: "m.malloy",
+            modelType: "model",
+            entities: plannedEntities({ status: "done" }),
+         },
+         /entities plan with status "done"; expected "planned" or "failed"/,
+      ],
+      [
+         "an entities plan for another model",
+         {
+            modelPath: "m.malloy",
+            modelType: "model",
+            entities: plannedEntities({ relativePath: "other.malloy" }),
+         },
+         /entities plan for "other.malloy"/,
+      ],
+      [
+         "an entities plan whose entities are not an array",
+         {
+            modelPath: "m.malloy",
+            modelType: "model",
+            entities: plannedEntities({ entities: {} }),
+         },
+         /entities plan whose entities is of kind object; expected array/,
+      ],
+      [
+         "an entities plan with a malformed source",
+         {
+            modelPath: "m.malloy",
+            modelType: "model",
+            entities: plannedEntities({ metadata: [{ sourceName: "x" }] }),
+         },
+         /entities plan with a source that is not/,
+      ],
+      [
+         "a failed entities plan without an error",
+         {
+            modelPath: "m.malloy",
+            modelType: "model",
+            entities: {
+               status: "failed",
+               relativePath: "m.malloy",
+               packageRoot: "/pkg",
+            },
+         },
+         /failed entities plan without an error/,
       ],
       [
          "a compilationError without a message",

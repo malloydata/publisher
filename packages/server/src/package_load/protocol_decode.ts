@@ -81,7 +81,81 @@ const OPTIONAL_MODEL_FIELDS: ReadonlyArray<[keyof SerializedModel, Expect]> = [
    ["authorizeWarnings", "string[]"],
    ["renderTagResults", "array"],
    ["preaggregateCompanion", "object"],
+   ["entities", "object"],
 ];
+
+/** The arrays a planned `SerializedModel.entities` carries. */
+const PLANNED_ENTITIES_ARRAYS = [
+   "untaken",
+   "givens",
+   "sourceInfos",
+   "metadata",
+   "entities",
+   "findings",
+   "fingerprintFailures",
+] as const;
+
+/**
+ * Check a model's entities plan: its status, that it is this model's, and the
+ * kinds of the fields the main thread resolves it by.
+ */
+function checkEntitiesPlan(
+   where: string,
+   modelPath: string,
+   plan: Record<string, unknown>,
+): void {
+   if (plan.status !== "planned" && plan.status !== "failed") {
+      throw new PackageLoadProtocolError(
+         `${where} has an entities plan with status ${JSON.stringify(plan.status) ?? "undefined"}; expected "planned" or "failed"`,
+      );
+   }
+   if (plan.relativePath !== modelPath) {
+      throw new PackageLoadProtocolError(
+         `${where} has an entities plan for ${JSON.stringify(plan.relativePath) ?? "undefined"}`,
+      );
+   }
+   if (typeof plan.packageRoot !== "string") {
+      throw new PackageLoadProtocolError(
+         `${where} has an entities plan without a packageRoot`,
+      );
+   }
+   if (plan.status === "failed") {
+      if (typeof plan.error !== "string") {
+         throw new PackageLoadProtocolError(
+            `${where} has a failed entities plan without an error`,
+         );
+      }
+      return;
+   }
+   if (
+      typeof plan.provisional !== "boolean" ||
+      typeof plan.durationMs !== "number"
+   ) {
+      throw new PackageLoadProtocolError(
+         `${where} has an entities plan without provisional and durationMs`,
+      );
+   }
+   for (const field of PLANNED_ENTITIES_ARRAYS) {
+      if (!Array.isArray(plan[field])) {
+         throw new PackageLoadProtocolError(
+            `${where} has an entities plan whose ${field} is of kind ${kindOf(plan[field])}; expected array`,
+         );
+      }
+   }
+   for (const source of plan.metadata as unknown[]) {
+      if (
+         !isRecord(source) ||
+         typeof source.sourceName !== "string" ||
+         !Array.isArray(source.leading) ||
+         !Array.isArray(source.trailing) ||
+         !Array.isArray(source.joins)
+      ) {
+         throw new PackageLoadProtocolError(
+            `${where} has an entities plan with a source that is not { sourceName, leading[], trailing[], joins[] }`,
+         );
+      }
+   }
+}
 
 /**
  * Check one model's envelope and return it, typed, as the same object.
@@ -138,6 +212,9 @@ export function decodeSerializedModel(raw: unknown): SerializedModel {
             );
          }
       }
+   }
+   if (isRecord(raw.entities)) {
+      checkEntitiesPlan(where, raw.modelPath, raw.entities);
    }
    if (isRecord(raw.compilationError)) {
       const { name, message } = raw.compilationError;

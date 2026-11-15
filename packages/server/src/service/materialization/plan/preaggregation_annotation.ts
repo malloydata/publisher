@@ -51,7 +51,7 @@
  * 400.
  */
 
-import { Annotations } from "@malloydata/malloy";
+import { placementOf, readNotes } from "./declaration";
 import { isSpliceableNamespace } from "./preaggregation_namespace";
 import type { LogMessage } from "@malloydata/malloy";
 
@@ -211,10 +211,7 @@ export function readPreaggregateAnnotation(
 
       let tag;
       try {
-         const parsed = new Annotations(
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            { notes: [note.raw] } as any,
-         ).parseAsTag("@");
+         const parsed = readNotes([note.raw], "@");
          tag = parsed.tag;
          parseLog.push(...parsed.log);
       } catch {
@@ -248,15 +245,21 @@ export function readPreaggregateAnnotation(
          }
          namespace = candidate;
       }
-      // Same precedence as `grain`, bound to THIS line's grain.
-      const storageText =
-         tag.text("preaggregate", "storage") ?? tag.text("storage");
+      // The placement rule (declaration.ts), bound to THIS line's grain. The
+      // NAME is not validated here: which destinations exist is a deployment
+      // fact, so an unknown one is refused downstream by the
+      // storage-destination resolver.
+      const placed = placementOf(tag, "preaggregate");
       let storage: string | undefined;
-      if (storageText !== undefined) {
-         const candidate = storageText.trim();
-         // Empty is refused, per the strictness rule. The NAME is not validated
-         // here: which destinations exist is a deployment fact, so an unknown one
-         // is refused downstream by the storage-destination resolver.
+      const placedIn =
+         "refused" in placed
+            ? ""
+            : placed.placement.tier === "storage"
+              ? placed.placement.destination
+              : undefined;
+      if (placedIn !== undefined) {
+         const candidate = placedIn;
+         // Empty refuses this line's rollup alone, with a warning.
          if (candidate === "") {
             errors.push({
                kind: "empty_storage",

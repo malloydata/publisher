@@ -247,6 +247,28 @@ export class MaterializationRepository {
       return updated;
    }
 
+   /**
+    * Settle, as FAILED with `error`, every run a previous process left
+    * unsettled, freeing the slots they held (`active_key`). Called once when
+    * the store opens: one Publisher process owns its store and a run's abort
+    * controller lives only in that process's memory, so every non-terminal row
+    * found then belongs to a process that is gone and nothing will ever settle
+    * it. One statement, so no row is left half-settled. Returns the runs it
+    * settled.
+    */
+   async failInterrupted(error: string): Promise<Materialization[]> {
+      const placeholders = ACTIVE_STATUSES.map(() => "?").join(", ");
+      const iso = new Date().toISOString();
+      const rows = await this.db.all<Row>(
+         `UPDATE materializations
+             SET status = 'FAILED', active_key = NULL, error = ?, completed_at = ?, updated_at = ?
+           WHERE status IN (${placeholders})
+           RETURNING *`,
+         [error, iso, iso, ...ACTIVE_STATUSES],
+      );
+      return rows.map(mapRow);
+   }
+
    async deleteById(id: string): Promise<void> {
       await this.db.run("DELETE FROM materializations WHERE id = ?", [id]);
    }

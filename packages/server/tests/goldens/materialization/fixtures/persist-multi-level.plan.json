@@ -1,0 +1,114 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "orders_base@<pkg>/multi_level.malloy": [],
+          "orders_rollup@<pkg>/multi_level.malloy": [
+            "orders_base@<pkg>/multi_level.malloy"
+          ]
+        },
+        "order": [
+          "orders_base@<pkg>/multi_level.malloy",
+          "orders_rollup@<pkg>/multi_level.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "orders_base@<pkg>/multi_level.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "orders_rollup@<pkg>/multi_level.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders_base@<pkg>/multi_level.malloy": "multi_level.malloy",
+      "orders_rollup@<pkg>/multi_level.malloy": "multi_level.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders_base@<pkg>/multi_level.malloy"
+            },
+            {
+              "dependsOn": [
+                "orders_base@<pkg>/multi_level.malloy"
+              ],
+              "sourceID": "orders_rollup@<pkg>/multi_level.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders_base@<pkg>/multi_level.malloy": {
+        "annotationFields": {
+          "name": "orders_base"
+        },
+        "columns": [
+          {
+            "name": "category",
+            "type": "string"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "multi_level.malloy",
+        "name": "orders_base",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "54d09a855ffdde69ba0ad3118d97631e8b6a42e40ec038c4b4e52846cc821315",
+        "sourceID": "orders_base@<pkg>/multi_level.malloy",
+        "sql": "sha256:9ef1424a8fa233c7"
+      },
+      "orders_rollup@<pkg>/multi_level.malloy": {
+        "annotationFields": {
+          "name": "orders_rollup"
+        },
+        "columns": [
+          {
+            "name": "category_count",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "multi_level.malloy",
+        "name": "orders_rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9",
+        "sourceID": "orders_rollup@<pkg>/multi_level.malloy",
+        "sql": "sha256:a64e6c9f91637058"
+      }
+    }
+  }
+}

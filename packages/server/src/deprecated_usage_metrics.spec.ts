@@ -29,6 +29,7 @@ import { registerDeprecatedRoutes } from "./routes/deprecated";
 import { QuerySlots } from "./query_concurrency";
 import { registerLegacyRoutes, type LegacyControllerSet } from "./server-old";
 import { recordDeprecatedFormatUsage } from "./service/deprecated/lints";
+import type { DeprecatedPersistAnnotation } from "./service/deprecated/persist_annotations";
 import {
    declaredDeprecatedManifestKeys,
    recordDeprecatedManifestKeys,
@@ -334,6 +335,32 @@ describe("publisher_deprecated_usage_total", () => {
       });
    });
 
+   describe("GET /environments/{env}?reload=true", () => {
+      it("marks a reload deprecated and counts it; a plain read is neither", async () => {
+         const seen: boolean[] = [];
+         const app = buildRouteApp({
+            environmentStore: {
+               getEnvironment: async (_name: unknown, reload?: boolean) => {
+                  seen.push(reload === true);
+                  return { serialize: () => ({ name: "env" }) } as never;
+               },
+            } as never,
+         });
+         const reload = await request(app).get(
+            "/api/v0/environments/env?reload=true",
+         );
+         expect(reload.status).toBe(200);
+         expect(reload.headers["deprecation"]).toBe("true");
+
+         const plain = await request(app).get("/api/v0/environments/env");
+         expect(plain.status).toBe(200);
+         expect(plain.headers["deprecation"]).toBeUndefined();
+
+         expect(seen).toEqual([true, false]);
+         expect(await used("environment_reload")).toBe(1);
+      });
+   });
+
    describe("the #(filter) request fields", () => {
       const res = () => ({ setHeader: () => undefined });
 
@@ -372,18 +399,37 @@ describe("publisher_deprecated_usage_total", () => {
       expect(await used("queryable_sources")).toBe(1);
    });
 
-   it("counts each .malloynb file and each source declaring #(filter)", async () => {
-      const model = (filtered: string[]) =>
-         ({ declaredFilterSourceNames: () => filtered }) as unknown as Model;
+   it("counts each .malloynb file, each source declaring #(filter), and each measure declaring #@ preaggregate", async () => {
+      const model = (
+         filtered: string[],
+         persist: DeprecatedPersistAnnotation[] = [],
+      ) =>
+         ({
+            declaredFilterSourceNames: () => filtered,
+            declaredDeprecatedPersistAnnotations: () => persist,
+         }) as unknown as Model;
+      // Counted with materialization v2 off (the default), where the
+      // #@ preaggregate warning is not shown: the count is the evidence for
+      // when to show it.
       recordDeprecatedFormatUsage(
          new Map([
             ["a.malloynb", model([])],
             ["b.malloynb", model([])],
-            ["base.malloy", model(["orders", "items"])],
+            [
+               "base.malloy",
+               model(
+                  ["orders", "items"],
+                  [
+                     { kind: "preaggregate", source: "orders", measure: "a" },
+                     { kind: "preaggregate", source: "orders", measure: "b" },
+                  ],
+               ),
+            ],
             ["other.malloy", model([])],
          ]),
       );
       expect(await used("malloynb")).toBe(2);
       expect(await used("filter_annotation")).toBe(2);
+      expect(await used("preaggregate_annotation")).toBe(2);
    });
 });

@@ -1,0 +1,124 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "two_stage@<pkg>/m.malloy": []
+        },
+        "order": [
+          "two_stage@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "two_stage@<pkg>/m.malloy": {
+        "buildSourceName": "two_stage__mat",
+        "columns": [
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "customers",
+            "computed": false,
+            "dimension": "customers"
+          },
+          {
+            "column": "t2",
+            "computed": false,
+            "dimension": "t2"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "two_stage",
+          "storage": "lake"
+        },
+        "sourceID": "two_stage@<pkg>/m.malloy",
+        "sourceName": "two_stage",
+        "storedColumns": [
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "customers",
+            "type": "BIGINT"
+          },
+          {
+            "name": "t2",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "two_stage@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "two_stage@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "two_stage@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "two_stage@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "two_stage",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "customers",
+            "type": "number"
+          },
+          {
+            "name": "t2",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "two_stage",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "2c9a41b07b97b53c525b3357ea2ac18d040c22dc82548fe282a2d81b9ea3a549",
+        "sourceID": "two_stage@<pkg>/m.malloy",
+        "sql": "sha256:dff08601e9628dd5"
+      }
+    }
+  }
+}

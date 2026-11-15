@@ -407,6 +407,41 @@
       ]
     }
   },
+  "BuildPlanRefreshingError": {
+    "class": "BuildPlanRefreshingError",
+    "http": {
+      "status": 503,
+      "json": {
+        "code": 503,
+        "message": "build plan is being re-derived",
+        "reason": "BUILD_PLAN_REFRESHING"
+      },
+      "headers": {
+        "Retry-After": "5"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "build plan is being re-derived",
+      "suggestions": [
+        "Retry in a few seconds: the build plan is being re-derived after a connection change."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "build plan is being re-derived",
+      "suggestions": [
+        "Retry in a few seconds: the build plan is being re-derived after a connection change."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
   "NotImplementedError": {
     "class": "NotImplementedError",
     "http": {
@@ -1954,6 +1989,44 @@
       ]
     }
   },
+  "WarehouseRecomputeRefusedError": {
+    "class": "WarehouseRecomputeRefusedError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "Internal server error."
+      },
+      "logged": true,
+      "logs": [
+        [
+          "error",
+          "Unhandled internal error"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: Failed to materialize source 'rollup' into storage destination 'lake': its only build recomputes its stored upstreams from the source warehouse, and the build instructions refuse that (warehouseReach: refuse): 'rollup' reads the source warehouse (regions) through 'via'",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Failed to materialize source 'rollup' into storage destination 'lake': its only build recomputes its stored upstreams from the source warehouse, and the build instructions refuse that (warehouseReach: refuse): 'rollup' reads the source warehouse (regions) through 'via'",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "PublisherConfigError": {
     "class": "PublisherConfigError",
     "http": {
@@ -2418,6 +2491,74 @@
       ]
     }
   },
+  "WriteConflictError (FILE_EXISTS)": {
+    "class": "WriteConflictError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "file exists",
+        "reason": "FILE_EXISTS"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: file exists",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: file exists",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "InstalledFromLocationError": {
+    "class": "InstalledFromLocationError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "installed from gs://b/p.zip; a reload would discard the change",
+        "reason": "PACKAGE_INSTALLED_FROM_LOCATION"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "installed from gs://b/p.zip; a reload would discard the change",
+      "suggestions": [
+        "This is not transient: retrying fails the same way while the package is installed from a location.",
+        "Make the change in the package's source at that location and reload the package, or publish it as a version."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: installed from gs://b/p.zip; a reload would discard the change",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "WriteRolledBackError": {
     "class": "WriteRolledBackError",
     "http": {
@@ -2472,6 +2613,39 @@
     },
     "mcpSetup": {
       "message": "An unexpected internal error occurred during executeQuery (Setup).: the restore failed",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "ConnectionSaveError": {
+    "class": "ConnectionSaveError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "Environment \"env\" was updated, but the server could not save connection(s) \"pg\"."
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: Environment \"env\" was updated, but the server could not save connection(s) \"pg\".",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Environment \"env\" was updated, but the server could not save connection(s) \"pg\".",
       "suggestions": [
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."

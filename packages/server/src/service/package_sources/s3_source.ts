@@ -19,6 +19,19 @@ export function isS3URL(location: string): boolean {
    return location.startsWith("s3://");
 }
 
+/**
+ * Stream an object's body to `filePath`, settling when the file is written.
+ * Awaited, so an error mid-transfer (the network, the disk) rejects the
+ * download rather than surfacing as an unhandled rejection.
+ */
+async function writeBody(
+   body: { transformToWebStream(): ReadableStream },
+   filePath: string,
+): Promise<void> {
+   const file = fs.createWriteStream(filePath);
+   await body.transformToWebStream().pipeTo(Writable.toWeb(file));
+}
+
 /** Every object under an S3 prefix, or one archive extracted. */
 export class S3PackageSource implements PackageSource {
    /** `client` builds the S3 client on first use, so construction does no I/O. */
@@ -52,12 +65,7 @@ export class S3PackageSource implements PackageSource {
                `Environment ${environmentName} not found in ${s3Path}`,
             );
          }
-         const file = fs.createWriteStream(zipFilePath);
-         item.Body.transformToWebStream().pipeTo(Writable.toWeb(file));
-         await new Promise<void>((resolve, reject) => {
-            file.on("error", reject);
-            file.on("finish", resolve);
-         });
+         await writeBody(item.Body, zipFilePath);
 
          await unzipEnvironment(zipFilePath);
          logger.info(`Downloaded S3 zip file ${s3Path} to ${absoluteDirPath}`);
@@ -104,12 +112,7 @@ export class S3PackageSource implements PackageSource {
             if (!item.Body) {
                return;
             }
-            const file = fs.createWriteStream(absoluteFilePath);
-            item.Body.transformToWebStream().pipeTo(Writable.toWeb(file));
-            await new Promise<void>((resolve, reject) => {
-               file.on("error", reject);
-               file.on("finish", resolve);
-            });
+            await writeBody(item.Body, absoluteFilePath);
          }),
       );
       logger.info(`Downloaded S3 directory ${s3Path} to ${absoluteDirPath}`);

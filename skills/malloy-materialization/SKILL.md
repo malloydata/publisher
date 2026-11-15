@@ -17,15 +17,53 @@ This file is the core. The details live beside it, one topic per file, and each 
 
 - `reference/annotation.md` - the `#@ persist` tag: what can carry it, the name rules, identity and reuse, readers of a persisted source, and every option with where it is explained.
 - `reference/policy.md` - the `publisher.json` block: `scope`, `queryMetadata`, and where the rules are enforced.
-- `reference/storage.md` - building into a **storage destination** (`storage=`), `partition=`, where a given may sit, which sources that tier refuses, and how a stored table is served.
+- `reference/storage.md` - building into a **storage destination** (`storage=`), where a given may sit, which sources that tier refuses, and how a stored table is served.
 - `reference/chaining.md` - one stored source built **over another stored source**: what makes it reuse the parent's table or recompute from the warehouse, and how to read which happened.
 - `reference/refresh.md` - keeping a table current: `freshness`, `schedule`, and `refresh="incremental"`.
 - `reference/access-filter.md` - persisting a `#(access_filter)`-gated source, and the bound on a stale access decision.
 - `reference/tuning.md` - reading the materialization history to decide what to persist, stop persisting, or reschedule (recommendations only).
 
+## v1 or v2: which spelling to write
+
+Publisher has two spellings. **v1** is `#@ persist` on a source and `#@ preaggregate` on a measure, and every server reads it. **v2** is `#(materialize)` on a source and `#(preaggregate)` on a measure, on by default behind the server switch `PUBLISHER_MATERIALIZE` (`false` turns it off; the switch is removed one release after the default ships). Since the v1 cutover both are served the same way: a stored table by the served copy (the author's own files with each stored source re-rooted on its table), a rollup by the rollup leg, so a query reads a table only when the path report says so. Everything else in this skill describes v1 unless it says otherwise.
+
+**Pick by what the server runs, then by where the table goes:**
+
+| The server | A table in a storage destination | A table in the source's own warehouse | A rollup on a measure |
+|---|---|---|---|
+| `PUBLISHER_MATERIALIZE` on | `#(materialize) storage="lake"` (needs `PERSIST_STORAGE_MODE=on` too) | `#(materialize)`, or `#(materialize) name="schema.table"` to name and place it | `#(preaggregate) grain=["a", "b"]` |
+| switch off (the default) | `#@ persist name="..." storage="lake"` | `#@ persist name="..."` | `#@ preaggregate grain="a, b"` |
+
+So for new work, write v2 where the server has the switch on, and v1 where it is off. One exception: a source with a row-level gate (`#(authorize)`, `#(access_filter)`) is built as `#(materialize)` only with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on as well; otherwise keep it on `#@ persist`. Ask whoever runs the server if you cannot tell; the startup log lists `materialize.enabled=true from PUBLISHER_MATERIALIZE` when it is on. **With the switch off, `#(materialize)` is ignored with no warning at all** (no build, no serve verdict, answered live), and `#(preaggregate)` is only an `annotation-near-miss` warning, so a v2 annotation on a v1 server looks exactly like a build that never ran.
+
+```malloy
+// v2, switch on: no ##! experimental.persistence needed in this file
+#(materialize) name="east_orders" storage="lake"
+source: east_orders is orders_base extend {
+  where: region = 'east'
+  measure: order_count is count()
+}
+
+source: sales is orders_base extend {
+  #(preaggregate) grain=["category"]
+  #(preaggregate) grain=["category", "region"]
+  measure: revenue is amount.sum()
+}
+```
+
+What is different about v2, briefly:
+
+- **It stores the source as written** - every dimension (computed, private and internal ones too) with its `where:` applied, not a query's output - so a plain `extend` over a table is fine and needs no `-> { select: * }`. Keys are closed: `name`, `storage`, `refresh`, `watermark`, `merge_key`, `freshness.*`, `queryMetadata.*`, `inline`. Any other key refuses the publish (`materialize-unknown-key`; the retired `partition=` is `materialize-retired-key`).
+- **The base must not declare measures, views or joins**, unless the base is materialized too. A `#(materialize)` source that inherits one is built but never read: `served-copy-not-served` ("This source inherits fields ..."), serve verdict `live` / `served_copy`, every query live. Build over a base with none (as above), or keep the query shape (`orders -> { select: * } extend { ... }`) and declare the measures after it.
+- **Joins are references by default.** `inline=["j"]` stores a join_one as `j__<field>` columns, or a join_many as a pair table; an incremental pair table names a watermark on each side, `watermark=["updated_at", "j.updated_at"]`.
+- **`#@ persist` on a view and `#@ -persist` on a reader are the same in both.** A persisted view is built only with the switch on. `#@ preaggregate` is deprecated (a `deprecated-preaggregate-annotation` warning with the switch on; it still builds).
+- **Confirm it the v2 way.** The package's serve verdicts (`GET .../packages/{pkg}/status`, `serveVerdicts`) read `serves`; a query's path report reads `servedBy.kind: "materialized"` with `via: "served_copy"` (a rollup: `kind: "rollup"`; a persisted view: `kind: "view"`). `manifestBindingStatus` does not cover v2 tables.
+
+**Existing v1 code is not wrong**, and moving it is optional. When asked to move it, follow `docs/materialization-migration.md` in the Publisher repository: one v1 spelling at a time, a dry-run publish (`POST .../packages?dryRun=true`) to read the warnings and serve verdicts, a build (every migrated source rebuilds once, because its content address moves), then the path report and a served-versus-live comparison against an opted-out reader (`#@ -persist source: x_live is x extend {}`, declared in a model file, not in the query text). Keep the v1 source's `name=` when you move it: an unversioned or `scope: "package"` package's table stays at that name (the package's own runs wrote it). Without `name=`, a v2 table is `<source>__p<hash>` (the package's suffix), and on BigQuery a colocated `#(materialize)` then is not built: give it a dataset-qualified `name=`. Under `scope: "version"` a `name=` keeps its schema or dataset and its last segment takes the version's suffix, and no view is ever made at `name=`.
+
 ## The recipe (get this right and it just works)
 
-1. **`##! experimental.persistence` on every `.malloy` file that declares a persist source.** Either form enables it:
+1. **`##! experimental.persistence` on every `.malloy` file that declares a `#@ persist` source** (a file whose only materializations are v2 `#(materialize)` needs none). Either form enables it:
    - `##! experimental.persistence`, or
    - `##! experimental { access_modifiers, sql_functions, persistence }` (add `persistence` to the existing list).
 
@@ -37,10 +75,11 @@ This file is the core. The details live beside it, one topic per file, and each 
    source: my_rollup is some_source -> { group_by: ...; aggregate: ... }
    ```
    - **Only `query_source` and `sql_select` sources are persistable** - a `-> { ... }` pipeline or a `conn.sql("...")`, including one refined by a trailing `extend { ... }`. A `#@ persist` on a *plain* `extend` over a bare `conn.table(...)` is **refused, not ignored**: the package warns, and every run that covers it fails naming the source, so a whole-package run builds nothing until you fix it. Persist a query source instead (`source: x is raw -> { where: ...; select: * }`).
-   - **Quote the name, once.** A bare `name=my_table` fails the package load with `persist annotation name must be quoted`; a name quoted inside the quotes silently serves live. The target's container must already exist and be writable by the connection.
-   - **The name is not the identity.** A persist source is identified by a content address of its connection, SQL and partition layout, so a rebuild with unchanged logic reuses the table and two sources with the same body share one. An `extend` of a persisted source reads the same table and is not a second build target.
+   - **Quote the name, once.** A bare `name=my_table` fails the package load with `persist annotation name must be quoted`; a name quoted *inside* the quotes (`name="\"My Table\""`) also fails the load, as not a plain identifier path. Publisher quotes each segment itself, so mixed case and reserved words need no extra quoting. The target's container must already exist and be writable by the connection.
+   - **The name is not the identity.** A persist source is identified by a content address of its connection and SQL, so a rebuild with unchanged logic reuses the table and two sources with the same body share one. An `extend` of a persisted source reads the same table and is not a second build target.
+   - **A `name=` is one table on its schema, whichever package asks.** Publisher's own builds name a table with no `name=` after the source plus a hash of the environment and package (`orders__p3f9c2a1b`), so packages sharing a schema never collide. A `name=` is used as written and marked as its package's; if another package already holds it, that source's build is refused (`table-owned-elsewhere` in the run's failures) and it answers live. Give it a different `name=`.
 
-   The name rules, bound arguments, `#@ -persist`, and every option (`storage=`, `partition=`, `refresh=`, `freshness.*`, `queryMetadata.*`) are in `reference/annotation.md`.
+   The name rules, bound arguments, `#@ -persist`, and every option (`storage=`, `refresh=`, `freshness.*`, `queryMetadata.*`) are in `reference/annotation.md`.
 
 3. **Package persistence policy in `publisher.json`** (all optional):
    ```jsonc
@@ -87,7 +126,7 @@ A query response's `servedFrom` field does not answer this question for a table 
 Symptom: no table was built and the source still recomputes on every query. Check, in order:
 
 0. **Did a build actually run?** On a standalone Publisher, publish/load does **not** build - run `malloy-pub materialize` (or enable the scheduler). "Publishes fine, no table" is the *expected* standalone state, not a model bug. On a hosted deployment the build is automatic but best-effort, so a failure is silent - look for a `FAILED` run, and for a ready run with `failures`.
-1. **Did the run fail, or lose this source?** A `FAILED` run's `error` names what stopped it. A ready run's `manifest.failures` names each source that did not build, and `metadata.refusedSources` each one the gate refused, with the reason to act on. The package flags some of these before any run: an unbuildable persist source appears in its warnings, and `GET …/packages/{pkg}/build-plan` lists the sources a run will build and the ones it will refuse. A `#@ persist` on a non-persistable source fails every run that covers it, naming the source.
+1. **Did the run fail, or lose this source?** A `FAILED` run's `error` names what stopped it. A ready run's `manifest.failures` names each source that did not build, and `metadata.refusedSources` each one the gate refused, with the reason to act on. The package flags some of these before any run: an unbuildable persist source appears in its warnings, and `GET …/packages/{pkg}/build-plan` lists the sources a run will build, the ones it will refuse, and under `omittedSources` any the planner itself failed on (a code per source, or under `omittedFiles` a file whose sources it could not name; the server log has the error). A `#@ persist` on a non-persistable source fails every run that covers it, naming the source.
 2. **The declaring model is missing the persistence flag** and nothing flagged imports it: skipped without any warning, the run succeeds, the source is simply absent from what was built. Add the flag to the declaring file.
 3. **An unquoted persist name** - a bare `name=foo` **always** stops the load with `persist annotation name must be quoted`. (If you got *no* error at all, it isn't this.)
 4. **The package was reloaded** after the build (a saved file under watch mode counts). The tables exist and the run reads ready; the binding is gone. Run a build. And if a watched edit failed to compile, the server keeps serving the **old** model and its binding, and records the error under `staleCompileErrors` on `/status` - so "still bound" after an edit can mean the edit never took.
@@ -107,11 +146,11 @@ If **even this** doesn't build after a real run, the problem is package-wide: re
 - **Flag every file that declares a persist source** - a flagless model nothing flagged imports is skipped without a warning.
 - **A `#@ persist` on a plain `extend` over `conn.table(...)` fails the run** - every run that covers it, naming the source.
 - **A tag doesn't build** - only an explicit run, the standalone scheduler, or a hosted control plane does.
-- **Quote the name, once** - bare stops the load; double-quoted silently serves live.
+- **Quote the name, once** - bare stops the load, and so does a name with quotes inside it; Publisher quotes each segment for you.
 - **A ready run can still have lost a source** - read `manifest.failures` and `metadata.refusedSources`.
 - **A reload unbinds; a restart rebinds** - run a build before trusting a timing.
 - **Reuse is by content address, not by name** - `--force-refresh` and every scheduler fire defeat it.
 - **Removing a persist source does not drop its table** - `delete materialization --drop-tables` drops what no other ready run names, and serving reverts to live in place.
-- **A given inside the persisted query is refused; in the source's own `extend` block it is applied per caller** - `reference/storage.md`.
+- **A given inside the persisted query is refused; in the source's own `extend` block it is applied per caller; inherited from a base it is refused and the source answers live** - `reference/storage.md`.
 - **A join to a non-persisted source, or a nested column, serves live for the queries that touch it** - the source's own fields still serve from the table.
 - **A `#(access_filter)`-gated source freezes its gating column when persisted** - `storage=` and `#@ preaggregate` refuse it outright; `reference/access-filter.md`.

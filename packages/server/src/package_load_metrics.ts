@@ -153,16 +153,13 @@ export function recordEntitiesFindings(reasons: readonly string[]): void {
  * What the extraction leaves out of a load's entities rather than failing it:
  * a model file whose extraction threw (it reports an error instead), an
  * `#(index)` dimension whose fingerprint query did not compile (it reports no
- * fingerprint), or a model whose part of the query surface could not be read.
+ * fingerprint).
  */
-export type EntitiesDegradation =
-   | "file_extract_failed"
-   | "fingerprint_failed"
-   | "surface_read_failed";
+export type EntitiesDegradation = "file_extract_failed" | "fingerprint_failed";
 
 const entitiesDegraded = lazyCounter(
    "publisher_package_entities_degraded_total",
-   "Parts of a load's entities the extraction left out instead of failing the load. Label: kind (file_extract_failed, fingerprint_failed, surface_read_failed).",
+   "Parts of a load's entities the extraction left out instead of failing the load. Label: kind (file_extract_failed, fingerprint_failed).",
 );
 
 export function recordEntitiesDegraded(kind: EntitiesDegradation): void {

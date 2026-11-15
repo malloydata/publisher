@@ -1,0 +1,150 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "by_customer@<pkg>/m.malloy": []
+        },
+        "order": [
+          "by_customer@<pkg>/m.malloy"
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "by_customer@<pkg>/m.malloy": [],
+          "by_customer_plus@<pkg>/plus.malloy": []
+        },
+        "order": [
+          "by_customer@<pkg>/m.malloy",
+          "by_customer_plus@<pkg>/plus.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "by_customer@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "by_customer_plus@<pkg>/plus.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "by_customer@<pkg>/m.malloy": "plus.malloy",
+      "by_customer_plus@<pkg>/plus.malloy": "plus.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "by_customer@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "by_customer@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "by_customer_plus@<pkg>/plus.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "by_customer@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "by_customer"
+        },
+        "columns": [
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "seg_up",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "plus.malloy",
+        "name": "by_customer",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973",
+        "sourceID": "by_customer@<pkg>/m.malloy",
+        "sql": "sha256:1cc0ba9fe5de6ddc"
+      },
+      "by_customer_plus@<pkg>/plus.malloy": {
+        "annotationFields": {
+          "name": "by_customer"
+        },
+        "columns": [
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "seg_up",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "plus.malloy",
+        "name": "by_customer_plus",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973",
+        "sourceID": "by_customer_plus@<pkg>/plus.malloy",
+        "sql": "sha256:1cc0ba9fe5de6ddc"
+      }
+    }
+  }
+}

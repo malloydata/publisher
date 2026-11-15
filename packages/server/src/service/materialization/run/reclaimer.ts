@@ -19,15 +19,25 @@ import {
    writeTargetsIn,
 } from "../../versions/materialization_scope";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
-import { ManifestEntry } from "../types";
+import { ManifestEntry } from "../domain/types";
 import { dropStorageTable } from "./materialization_build_session";
 import {
+   backupSuffix,
    BuildEnvironment,
    connectionMetadataLayers,
    redactConnectionSecrets,
    stagingSuffix,
    tableKeyOf,
 } from "./materialization_run_support";
+import {
+   dropLeftoverNameViews,
+   heldByOwnNameView,
+   nameViewsIn,
+   type RecordedNameView,
+} from "./leftover_name_views";
+import { packageOwner } from "./table_mark_sql";
+import { ownedElsewhere } from "./table_ownership";
+import { atTableSite } from "./table_site";
 import type { RunLifecycle } from "./run_lifecycle";
 
 /** A physical table's key for drop bookkeeping: where it lives, and its name. */
@@ -125,7 +135,7 @@ function dropRunSQLOptions(
 }
 
 /** A drop of a run's manifest entries; see {@link Reclaimer.dropManifestEntries}. */
-export type DropManifestEntries = Reclaimer["dropManifestEntries"];
+type DropManifestEntries = Reclaimer["dropManifestEntries"];
 
 /**
  * Giving back what materializations built: the tables of a deleted run, of a
@@ -299,7 +309,32 @@ export class Reclaimer {
          Object.values(entries),
          stillReferenced,
          await this.connectionResolverFor(environment, packageName, m.version),
+         await this.recordedNameViews(environmentId, packageName, [m]),
       );
+   }
+
+   /**
+    * The `name=` views an earlier release recorded making, on `runs` and on
+    * every other run of the package (a run that carried a table forward did
+    * not record its view again), for the drop to clean up
+    * (leftover_name_views.ts); undefined when none did.
+    */
+   private async recordedNameViews(
+      environmentId: string,
+      packageName: string,
+      runs: Materialization[],
+   ): Promise<RecordedNameView[] | undefined> {
+      const listed =
+         (await this.repository.listMaterializations(
+            environmentId,
+            packageName,
+         )) ?? [];
+      const ids = new Set(runs.map((m) => m.id));
+      const recorded = [
+         ...runs,
+         ...listed.filter((m) => !ids.has(m.id)),
+      ].flatMap((m) => nameViewsIn(m.metadata));
+      return recorded.length > 0 ? recorded : undefined;
    }
 
    /**
@@ -369,10 +404,55 @@ export class Reclaimer {
       entries: ManifestEntry[],
       stillReferenced: Set<string>,
       connectionFor: (name: string) => Promise<MalloyConnection | undefined>,
+      // The `name=` views earlier releases recorded, dropped with the tables
+      // they read (leftover_name_views.ts).
+      nameViews?: RecordedNameView[],
    ): Promise<ManifestEntry[]> {
       const m = { id: materializationId };
       const connectionCache = new Map<string, MalloyConnection>();
       const owed: ManifestEntry[] = [];
+      const cachedConnection = async (name: string) => {
+         const cached = connectionCache.get(name);
+         if (cached) return cached;
+         const resolved = await connectionFor(name);
+         if (resolved) connectionCache.set(name, resolved);
+         return resolved;
+      };
+      const viewContext = {
+         connectionFor: cachedConnection,
+         destinationFor: (name: string) =>
+            destinationForCleanup(environment, name),
+         // Read only when a view's site is reached: a drop that never
+         // reaches one never asks.
+         get environmentPath() {
+            return environment.getEnvironmentPath();
+         },
+         runOptions: (name: string) =>
+            dropRunSQLOptions(
+               environment,
+               name,
+               environmentName,
+               packageName,
+               m.id,
+            ),
+      };
+      // A table's DROP that fails because this package's own `name=` view
+      // holds its name: an earlier release replaced the table with the view,
+      // so the table is gone and its entry is retired, not owed. Probed only
+      // after a failed drop.
+      const owner = packageOwner(environmentName, packageName);
+      const replacedByOwnView = (entry: ManifestEntry) =>
+         heldByOwnNameView(
+            {
+               connectionName: entry.connectionName ?? "",
+               ...(entry.storageDestinationName
+                  ? { storageDestinationName: entry.storageDestinationName }
+                  : {}),
+            },
+            entry.physicalTableName,
+            owner,
+            viewContext,
+         );
       for (const entry of entries) {
          const connectionName = entry.connectionName;
          const physicalTableName = entry.physicalTableName;
@@ -397,6 +477,38 @@ export class Reclaimer {
             continue;
          }
 
+         // A table another package has marked as its own since this run
+         // built it (it holds that package's `name=` now) is no longer this
+         // package's to drop. Retired, not owed (table_ownership.ts).
+         const markedBy = await atTableSite(
+            {
+               connectionName,
+               ...(entry.storageDestinationName
+                  ? { storageDestinationName: entry.storageDestinationName }
+                  : {}),
+            },
+            viewContext,
+            (site) => ownedElsewhere(site, physicalTableName, owner),
+         ).catch(() => undefined);
+         if (markedBy !== undefined) {
+            logger.warn(
+               "Skipping drop: another package has built and marked this table since",
+               {
+                  materializationId: m.id,
+                  physicalTableName,
+                  destination: destForKey,
+                  markedBy,
+               },
+            );
+            continue;
+         }
+
+         // Before the table: a Postgres view refuses its table's drop, and a
+         // view left reading a dropped table answers nothing.
+         if (nameViews) {
+            await dropLeftoverNameViews(entry, nameViews, owner, viewContext);
+         }
+
          // A storage= table lives in the destination, not the source warehouse,
          // and needs a READ-WRITE attach (the serve attach is read-only). A
          // failure is logged and the sweep continues.
@@ -410,12 +522,23 @@ export class Reclaimer {
                continue;
             }
             try {
-               await dropStorageTable({
-                  destinationName: entry.storageDestinationName,
-                  destinationConnection,
-                  physicalTableName,
-                  environmentPath: environment.getEnvironmentPath(),
-               });
+               try {
+                  await dropStorageTable({
+                     destinationName: entry.storageDestinationName,
+                     destinationConnection,
+                     physicalTableName,
+                     environmentPath: environment.getEnvironmentPath(),
+                     // Where an earlier release's `name=` view replacement
+                     // kept the table until its run committed, as a crash
+                     // or a failed restore may have left it.
+                     alsoDrop: [
+                        `${physicalTableName}${backupSuffix(entry.sourceEntityId)}`,
+                     ],
+                  });
+               } catch (err) {
+                  if (!(await replacedByOwnView(entry))) throw err;
+                  logRetiredByView(m.id, physicalTableName);
+               }
                recordDropTables("success", "storage");
                logger.info("Dropped materialized storage table on delete", {
                   materializationId: m.id,
@@ -441,17 +564,13 @@ export class Reclaimer {
          }
 
          try {
-            let connection = connectionCache.get(connectionName);
+            const connection = await cachedConnection(connectionName);
             if (!connection) {
-               connection = await connectionFor(connectionName);
-               if (!connection) {
-                  logger.info(
-                     "Skipping drop: the table lived in an unloaded version's in-memory duckdb",
-                     { materializationId: m.id, physicalTableName },
-                  );
-                  continue;
-               }
-               connectionCache.set(connectionName, connection);
+               logger.info(
+                  "Skipping drop: the table lived in an unloaded version's in-memory duckdb",
+                  { materializationId: m.id, physicalTableName },
+               );
+               continue;
             }
             // Quoted as buildOneSource quoted it, so what built also drops.
             const dialect = connection.dialectName;
@@ -463,17 +582,30 @@ export class Reclaimer {
                packageName,
                m.id,
             );
-            await connection.runSQL(
-               `DROP TABLE IF EXISTS ${quoteTablePath(
-                  physicalTableName,
-                  dialect,
-               )}`,
-               dropOptions,
-            );
+            try {
+               await connection.runSQL(
+                  `DROP TABLE IF EXISTS ${quoteTablePath(
+                     physicalTableName,
+                     dialect,
+                  )}`,
+                  dropOptions,
+               );
+            } catch (err) {
+               if (!(await replacedByOwnView(entry))) throw err;
+               logRetiredByView(m.id, physicalTableName);
+            }
             // A crash between staging-create and rename can leave this behind.
             await connection.runSQL(
                `DROP TABLE IF EXISTS ${quoteTablePath(
                   `${physicalTableName}${stagingSuffix(entry.sourceEntityId)}`,
+                  dialect,
+               )}`,
+               dropOptions,
+            );
+            // And a crash between the swap's two renames, the previous copy.
+            await connection.runSQL(
+               `DROP TABLE IF EXISTS ${quoteTablePath(
+                  `${physicalTableName}${backupSuffix(entry.sourceEntityId)}`,
                   dialect,
                )}`,
                dropOptions,
@@ -701,6 +833,11 @@ export class Reclaimer {
          packageName,
          versionId,
       );
+      const nameViews = await this.recordedNameViews(
+         environmentId,
+         packageName,
+         runs,
+      );
       for (const m of runs) {
          const owed = await this.deps.dropManifestEntries(
             environment,
@@ -710,6 +847,7 @@ export class Reclaimer {
             reclaimableEntries(m),
             stillReferenced,
             connectionFor,
+            nameViews,
          );
          await this.repository.deleteMaterialization(m.id);
          if (owed.length > 0) {
@@ -802,4 +940,15 @@ export class Reclaimer {
          }
       }
    }
+}
+
+/** A table whose name this package's own `name=` view now holds: not owed. */
+function logRetiredByView(
+   materializationId: string,
+   physicalTableName: string,
+): void {
+   logger.info(
+      "Skipped drop: a name= view this package made in an earlier release replaced the table, which is gone",
+      { materializationId, physicalTableName },
+   );
 }

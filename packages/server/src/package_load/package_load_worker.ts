@@ -13,6 +13,7 @@
  * `new Worker(...)` does not load the whole server module graph.
  */
 import {
+   type CacheManager,
    contextOverlay,
    type BuildManifestEntry,
    type Connection,
@@ -49,6 +50,14 @@ import { isReportEligiblePath, readReportTagOfText } from "../service/report";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { PackageManifestError } from "../errors";
 import { deserializeError, serializeError } from "./error_wire";
+import {
+   compileOrder,
+   dataStylesForModel,
+   jobFiles,
+   ModelCacheView,
+   modelFileTexts,
+   type JobFiles,
+} from "./job_files";
 import { translatorMalloyError } from "../service/translator_error";
 import { extractCheckedModel } from "../service/model_load_checks";
 import { modelInfoOf } from "../service/model_info";
@@ -59,11 +68,16 @@ import {
    PackageScope,
    materializationWithQueryMetadata,
    parsePackageMaterialization,
+   queryBoundaryActive,
    queryMetadataParseWarnings,
    resolveExplores,
    resolvePackageQueryMetadata,
    resolvePackageScope,
 } from "../service/package_manifest";
+import {
+   type ModelEntitiesPlan,
+   planModelFileEntities,
+} from "../service/entities/plan";
 import {
    type PackageRetrievalSettings,
    ignoredRetrievalWarnings,
@@ -77,11 +91,7 @@ import {
    type EligibilityRefusalReason,
 } from "../materialization_metrics";
 import { logger } from "../logger";
-import {
-   tryCompileSynthesizedPreaggregation,
-   type SynthesizedPreaggregation,
-   type SynthesizedRuntimeFactory,
-} from "../service/materialization/plan/preaggregation_compile";
+import type { SynthesizedRuntimeFactory } from "../service/materialization";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
@@ -803,6 +813,8 @@ function filterModelPaths(allRelative: string[]): string[] {
 function captureReadText(inner: { readURL: (url: URL) => Promise<string> }): {
    reader: { readURL: (url: URL) => Promise<string> };
    textFor: (url: URL) => string | undefined;
+   /** Every `file:` text read so far, by absolute path. */
+   fileTexts: () => Map<string, string>;
 } {
    const texts = new Map<string, string>();
    return {
@@ -815,6 +827,30 @@ function captureReadText(inner: { readURL: (url: URL) => Promise<string> }): {
          },
       },
       textFor: (url: URL) => texts.get(url.toString()),
+      fileTexts: () => {
+         const byPath = new Map<string, string>();
+         for (const [href, text] of texts) {
+            if (href.startsWith("file:")) {
+               byPath.set(fileURLToPath(href), text);
+            }
+         }
+         return byPath;
+      },
+   };
+}
+
+/** `reader`, with `overlay`'s files (by URL) read in place of the ones it holds. */
+function overlaidReader(
+   reader: { readURL: (url: URL) => Promise<string> },
+   overlay: ReadonlyMap<string, string>,
+): { readURL: (url: URL) => Promise<string> } {
+   return {
+      readURL: (url: URL) => {
+         const text = overlay.get(url.href) ?? overlay.get(url.toString());
+         return text !== undefined
+            ? Promise.resolve(text)
+            : reader.readURL(url);
+      },
    };
 }
 
@@ -823,10 +859,12 @@ function jobRuntime(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
    urlReader: { readURL: (url: URL) => Promise<string> },
+   cacheManager?: CacheManager,
 ): Runtime {
    return new Runtime({
       urlReader,
       config: malloyConfig,
+      cacheManager,
       buildManifest:
          job.buildManifest !== undefined && job.buildManifest !== null
             ? {
@@ -847,11 +885,42 @@ function buildRuntimeForModel(
    runtime: Runtime;
    urlReader: HackyDataStylesAccumulator;
    textFor: (url: URL) => string | undefined;
+   fileTexts: () => Map<string, string>;
 } {
-   const { reader, textFor } = captureReadText(makeWorkerUrlReader(job));
+   const { reader, textFor, fileTexts } = captureReadText(
+      makeWorkerUrlReader(job),
+   );
    const urlReader = new HackyDataStylesAccumulator(reader);
    const runtime = jobRuntime(job, malloyConfig, urlReader);
-   return { runtime, urlReader, textFor };
+   return { runtime, urlReader, textFor, fileTexts };
+}
+
+/**
+ * A `.malloy` model's Runtime over the load's shared files and model cache
+ * (see job_files.ts).
+ */
+function sharedRuntimeForModel(
+   job: LoadPackageRequest,
+   malloyConfig: MalloyConfig,
+   files: JobFiles,
+   modelURL: URL,
+): {
+   runtime: Runtime;
+   textFor: (url: URL) => string | undefined;
+   fileTexts: (dependencies: unknown) => Map<string, string>;
+} {
+   const runtime = jobRuntime(
+      job,
+      malloyConfig,
+      files.reader,
+      new ModelCacheView(files, modelURL.toString()),
+   );
+   return {
+      runtime,
+      textFor: (url: URL) => files.texts.get(url.toString()),
+      fileTexts: (dependencies: unknown) =>
+         modelFileTexts(files, modelURL.toString(), dependencies),
+   };
 }
 
 /**
@@ -881,6 +950,11 @@ interface LoadContext {
    planStart?: number;
    /** A model reached its plan parts past the soft deadline; the main thread derives the plan. */
    planLeftToMainThread: boolean;
+   /**
+    * Plan entities with the boundary's descents taken provisionally: the
+    * manifest declares a query boundary (see `BoundaryDescents`).
+    */
+   provisionalEntities: boolean;
 }
 
 async function compileMalloyModel(
@@ -888,6 +962,7 @@ async function compileMalloyModel(
    malloyConfig: MalloyConfig,
    modelPath: string,
    load: LoadContext,
+   files: JobFiles,
 ): Promise<SerializedModel> {
    const compileStart = performance.now();
    const fullPath = path.join(job.packagePath, modelPath);
@@ -895,10 +970,9 @@ async function compileMalloyModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
-   const { runtime, urlReader, textFor } = buildRuntimeForModel(
-      job,
-      malloyConfig,
-   );
+   const shared = sharedRuntimeForModel(job, malloyConfig, files, modelURL);
+   const { textFor, fileTexts } = shared;
+   const runtime = shared.runtime;
    const mm = runtime.loadModel(modelURL, { importBaseURL });
    const compiled = await mm.getModel();
    const modelDef = compiled._modelDef;
@@ -917,6 +991,12 @@ async function compileMalloyModel(
          queries,
          sources,
       });
+   const entities = await planEntitiesForMainThread(job, malloyConfig, load, {
+      relativePath: modelPath,
+      absolutePath: fullPath,
+      model: compiled,
+      texts: fileTexts(modelDef.dependencies),
+   });
 
    return {
       modelPath,
@@ -936,14 +1016,65 @@ async function compileMalloyModel(
       // DocumentLocation out of them is cutting the same snapshot the
       // coordinates were computed against. See SerializedModel.
       modelSourceText: textFor(modelURL),
-      dataStyles: urlReader.getHackyAccumulatedDataStyles(),
+      dataStyles: dataStylesForModel(
+         files,
+         modelURL.toString(),
+         modelDef.dependencies,
+      ),
       compileDurationMs,
       problems: job.collectProblems ? compiled.problems : undefined,
       authorizeWarnings:
          warnings.length > 0 ? warnings.map((w) => w.message) : undefined,
       renderTagResults,
       preaggregateCompanion,
+      entities,
    };
+}
+
+/**
+ * Plan one compiled model's entities for the main thread, which then only
+ * resolves the plan against the package's query route. Before the soft
+ * deadline only, like the rest of the work done for the main thread: past it,
+ * the main thread plans the model itself. Never throws (a failed plan says so).
+ */
+async function planEntitiesForMainThread(
+   job: LoadPackageRequest,
+   malloyConfig: MalloyConfig,
+   load: LoadContext,
+   file: {
+      relativePath: string;
+      absolutePath: string;
+      model: Awaited<ReturnType<ModelMaterializer["getModel"]>>;
+      /** Every file the compile read, by absolute path. */
+      texts: Map<string, string>;
+   },
+): Promise<ModelEntitiesPlan | undefined> {
+   if (!job.withEntities || load.failed) return undefined;
+   if (performance.now() >= load.softDeadline) return undefined;
+   // The text the model compiled from, as the main thread would read it.
+   let text = file.texts.get(file.absolutePath);
+   if (text === undefined) {
+      try {
+         text = await fs.promises.readFile(file.absolutePath, "utf8");
+      } catch {
+         return undefined;
+      }
+      file.texts.set(file.absolutePath, text);
+   }
+   return planModelFileEntities(
+      {
+         relativePath: file.relativePath,
+         absolutePath: file.absolutePath,
+         model: file.model,
+         text,
+      },
+      {
+         packageRoot: job.packagePath,
+         connections: malloyConfig.connections,
+         provisional: load.provisionalEntities,
+         texts: file.texts,
+      },
+   );
 }
 
 /**
@@ -1021,36 +1152,22 @@ async function prepareForMainThread(
 
    // The runtime the companion compiles in: the model's own, reading the
    // synthesized model's text from the overlay.
-   const companionRuntime: SynthesizedRuntimeFactory = async (overlay) => {
-      const files = makeWorkerUrlReader(job);
-      return {
-         runtime: jobRuntime(job, malloyConfig, {
-            readURL: (url: URL) => {
-               const text = overlay.get(url.href);
-               return text !== undefined
-                  ? Promise.resolve(text)
-                  : files.readURL(url);
-            },
-         }),
-         importBaseURL,
-      };
-   };
-   // One compile serves both the main thread and the plan, since a build
-   // manifest is read only at query prepare. Undefined when not wanted or
-   // left to the main thread; null when there is no usable rollup.
-   const companion: SynthesizedPreaggregation | null | undefined =
+   const companionRuntime: SynthesizedRuntimeFactory = async (overlay) => ({
+      runtime: jobRuntime(
+         job,
+         malloyConfig,
+         overlaidReader(makeWorkerUrlReader(job), overlay),
+      ),
+      importBaseURL,
+   });
+   // A v1 rollup is the rollup leg's (G4), so no composite companion is
+   // compiled: null ("no usable rollup") whenever the plan or the main
+   // thread would have asked for one, so the plan is still made here.
+   const companion: null | undefined =
       (job.withPreaggregateCompanions || wantsPlan) &&
       !load.failed &&
       !pastDeadline()
-         ? ((await tryCompileSynthesizedPreaggregation({
-              packagePath: job.packagePath,
-              modelPath,
-              contents: model.model._modelDef.contents as Record<
-                 string,
-                 unknown
-              >,
-              getRuntime: companionRuntime,
-           })) ?? null)
+         ? null
          : undefined;
 
    // Rechecked, since another model may have left the plan to the main
@@ -1071,7 +1188,6 @@ async function prepareForMainThread(
             malloyModel: model.model,
             runtime: model.runtime,
             getRuntime: companionRuntime,
-            synthesized: companion,
          });
          load.planParts?.set(modelPath, parts);
       } catch (error) {
@@ -1089,12 +1205,11 @@ async function prepareForMainThread(
 
    return {
       renderTagResults,
+      // No composite companion is compiled any more (G4): `{}` says so.
       preaggregateCompanion:
          !job.withPreaggregateCompanions || companion === undefined
             ? undefined
-            : companion
-              ? { modelDef: companion.model._modelDef }
-              : {},
+            : {},
    };
 }
 
@@ -1161,10 +1276,17 @@ async function compileOneModel(
    malloyConfig: MalloyConfig,
    modelPath: string,
    load: LoadContext,
+   files: JobFiles,
 ): Promise<SerializedModel> {
    try {
       if (modelPath.endsWith(MODEL_FILE_SUFFIX)) {
-         return await compileMalloyModel(job, malloyConfig, modelPath, load);
+         return await compileMalloyModel(
+            job,
+            malloyConfig,
+            modelPath,
+            load,
+            files,
+         );
       }
       if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
          return await compileNotebookModel(job, malloyConfig, modelPath);
@@ -1244,12 +1366,34 @@ async function loadPackage(
       modelOrder: new Map(modelPaths.map((modelPath, i) => [modelPath, i])),
       failed: false,
       planLeftToMainThread: false,
+      provisionalEntities: queryBoundaryActive(packageMetadata),
    };
-   const models = await Promise.all(
-      modelPaths.map((modelPath) =>
-         compileOneModel(job, malloyConfig, modelPath, load),
-      ),
+   const files = jobFiles(makeWorkerUrlReader(job));
+   const { waitsOn } = await compileOrder(
+      job.packagePath,
+      modelPaths,
+      files.reader,
+      files.imported,
    );
+   // Each model starts once the package files it imports have compiled, so
+   // their translations are in the cache; the rest overlaps as it used to.
+   // compileOneModel reports a failure in-band, so a failed import still lets
+   // its importers start.
+   const compiles = new Map<string, Promise<SerializedModel>>();
+   const compile = (modelPath: string): Promise<SerializedModel> => {
+      let started = compiles.get(modelPath);
+      if (!started) {
+         started = Promise.allSettled(
+            (waitsOn.get(modelPath) ?? []).map(compile),
+         ).then(() =>
+            compileOneModel(job, malloyConfig, modelPath, load, files),
+         );
+         compiles.set(modelPath, started);
+      }
+      return started;
+   };
+   // In the package's model order, as the main thread reads them.
+   const models = await Promise.all(modelPaths.map(compile));
 
    const compileEnd = performance.now();
    const schemaFetchDurationMs = schemaWait.waitMs;
@@ -1260,6 +1404,7 @@ async function loadPackage(
       modelPaths,
       load,
       packageMetadata.materialization ?? null,
+      packageMetadata.scope,
    );
    const loadEnd = performance.now();
    return {
@@ -1279,6 +1424,8 @@ async function loadPackage(
          schemaFetchDurationMs,
          schemaFetchCount,
          schemaCacheHits,
+         translationsStored: files.stats.stored,
+         translationsReused: files.stats.reused,
       },
       buildPlan,
    };
@@ -1294,6 +1441,7 @@ async function finishWorkerBuildPlan(
    modelPaths: string[],
    load: LoadContext,
    materializationConfig: WirePackageMaterialization | null,
+   scope?: string | null,
 ): Promise<WorkerBuildPlan | undefined> {
    if (!load.planParts || load.failed || load.planLeftToMainThread) {
       return undefined;
@@ -1327,6 +1475,7 @@ async function finishWorkerBuildPlan(
       const outcome = deriveBuildPlanOutcome(
          { ...parts, connectionDigests },
          materializationConfig,
+         scope,
       );
       return {
          ok: true,

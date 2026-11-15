@@ -176,6 +176,22 @@ def init_decision(root: pathlib.Path, reinit: bool,
                    f"publisher.config.json")
 
 
+def watch_note(watch_env: str | None, seed: bool) -> str | None:
+    """The warning for --watch-env on a start that does not seed, or None.
+
+    An environment is mounted in place only when it is first loaded from the
+    config, so on a preserved root a package already published stays a
+    version: the flag sets PUBLISHER_WATCH and changes nothing an edit
+    reaches.
+    """
+    if not watch_env or seed:
+        return None
+    return (f"  ! --watch-env {watch_env} on a preserved server root: a package "
+            f"this root already published stays an immutable version, so an "
+            f"edit never reaches it. Pass --reinit too, unless the root was "
+            f"first served with --watch-env")
+
+
 # One ranking call, unscoped, is what kicks the embedding sync.
 #
 # RANKING, because the marker and the sync both hang off the ranking path: a
@@ -458,6 +474,14 @@ def main(argv: list[str] | None = None) -> int:
                     "With --role, the role's mcp_port in eval.toml, as --port")
     ap.add_argument("--allow-proxy", action="store_true")
     ap.add_argument("--trace-retrieval", action="store_true")
+    ap.add_argument("--watch-env", metavar="ENV",
+                    help="serve ENV in watch mode (PUBLISHER_WATCH): its local "
+                         "packages are mounted in place, so an edit is read on "
+                         "reload, which eval-improve needs. Without it each "
+                         "package is a published version, which no edit "
+                         "reaches. The mount is decided when the environment "
+                         "is first loaded, so add --reinit to switch a server "
+                         "root that is already serving")
     ap.add_argument("--reinit", action="store_true",
                     help="drop the store and re-read publisher.config.json. "
                          "Needed after a config edit -- a new environment or a "
@@ -565,8 +589,13 @@ def main(argv: list[str] | None = None) -> int:
         env["PUBLISHER_ALLOW_PROXY_CONNECTIONS"] = "true"
     if a.trace_retrieval:
         env["PUBLISHER_MCP_TRACE"] = "retrieval"
+    if a.watch_env:
+        env["PUBLISHER_WATCH"] = a.watch_env
     seed, why = init_decision(root, a.reinit, changed)
     print(why)
+    stale_watch = watch_note(a.watch_env, seed)
+    if stale_watch:
+        print(stale_watch)
     note = retrieval_note(env) if a.role != "truth" else None
     if note:
         print(note)

@@ -105,7 +105,7 @@ Two tools, in this order.
 
 A search takes exactly one `scopes` entry, because retrieval is indexed per package. With no `search_targets`, `get_context` lists instead: no arguments lists the environments, `environment` lists that environment's packages, a package in `scopes` lists its sources, and a source lists its fields. A level with only one choice is entered, so on a server with one package a call with no arguments returns its sources.
 
-Use the names it returns exactly. Do not invent environments, packages, sources, or fields. A field reached through a join is named by its full dotted path; pass it verbatim rather than rebuilding it.
+Use the names it returns exactly. Do not invent environments, packages, sources, or fields. A field reached through a join is named by its full dotted path; pass it verbatim rather than rebuilding it. A member of a record column is also named by its dotted path (`delivery.city`), and is not a join. A member of a repeated record has `relationship: "many"`: grouping by it gives a group per element value, and the groups can add up to more than the total. An array of plain values is listed as `tags.each`, its values, also `many`.
 
 ## 2. Run the query
 
@@ -114,7 +114,7 @@ A retrieval response is a `sources` array. Each entry's `source_info.resource_id
 - a named view or query: pass its `name` as `queryName` (with the card's `resource_id.source` as `sourceName` for a view), or
 - an ad-hoc query: pass Malloy code as `query`.
 
-The result is JSON. Charts and reports defined in the package render in the Publisher UI at http://localhost:4000.
+The result is JSON. Charts and reports defined in the package render in the Publisher UI at http://localhost:4000. To put a whole report in front of the user rather than answer from it, call `list_reports` for the package's report paths, then `show_report` with one: a host that supports MCP Apps (Claude Desktop, claude.ai) draws it in the conversation, and every client gets its Console address. Never call `report_api`; it is the panel's own tool.
 
 ## 3. When you need Malloy syntax
 
@@ -138,7 +138,7 @@ No `.malloy` files in the workspace? The user can say "model my data" and `mallo
 This is a catalogue of what exists, not of what is loaded. A host that installs one group (`analysis`, `modeling`, `eval` or `governance`) takes that group's skills alone, so a name below may not be installed. The names are plain text, not `skill:` references, for that reason.
 
 - **Answering and presenting:** `malloy-analysis` (a data question, or open-ended exploration), `malloy-phrase-detection` (turn a question into search targets for `get_context`), `malloy-queries` (query syntax and compile errors), `malloy-charts` (chart choice, renderer tags, scale rules), `malloy-reports` (a saved report: a `.malloy` file with an `## artifact` tag at the package root, laid out as a grid, which is a dashboard, or linear, which is a notebook), `malloy-analysis-report` (combine queries you already ran into a report), `malloy-dashboards` and `malloy-notebooks` (the old names of `malloy-reports`, kept as pointers to it), `malloy-source-unreachable` (a source missing from discovery, or a query refused with a 404 or 403), `malloy-html-data-apps` (in-package HTML data apps: design, runtime, embedding).
-- **Modeling, in order:** `malloy-modeling` (the driver), `malloy-discover` (silent data discovery, prior art), `malloy-define` (scope, source plan, field definitions), `malloy-model` (write and curate the `.malloy` files), `malloy-document` (`#(doc)` tags), `malloy-model-as-you-go` (grow the model from answered questions), `malloy-gotchas-modeling` (mistakes to avoid, and fixing compile errors in a model), `malloy-review` (review existing Malloy), `malloy-lookml-review` and `malloy-powerbi-review` (prior-art adapters).
+- **Modeling, in order:** `malloy-modeling` (the driver), `malloy-discover` (silent data discovery, prior art), `malloy-define` (scope, source plan, field definitions), `malloy-model` (write and curate the `.malloy` files), `malloy-document` (`#(doc)` tags), `malloy-model-as-you-go` (grow the model from answered questions), `malloy-gotchas-modeling` (mistakes to avoid, and fixing compile errors in a model), `malloy-review` (review existing Malloy), `malloy-lookml-review`, `malloy-powerbi-review` and `malloy-excel-review` (prior-art adapters).
 - **Serving a package:** `malloy-publish` (move a finished model into a served package), `malloy-materialization` (persist an expensive source, and tune what to persist and when), `malloy-define-agent` (declare an agent in a package: layout, limits, instructions that work unattended), `malloy-run-agent` (adopt an agent a package declares, only when the user names it).
 - **Checking a package against an access policy** (the `governance` group): `malloy-classify` (propose each field's data class from the policy and the values, for approval), `malloy-compliance-review` (turn the policy into a register of checks, run it against the served package, report and attest).
 - **Evaluating a model** (the `eval` group, which neither `analysis` nor `modeling` includes): `eval-loop` (the loop), `eval-answer`, `eval-judge`, `eval-diagnose`, `eval-improve`, `eval-import`, `eval-report`.

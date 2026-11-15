@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { GivenValue } from "@malloydata/malloy";
+import { recordAnnotationFindings } from "../materialization_metrics";
 import { type CompiledDocument } from "./compile_document";
 import { isUnderPublicDir, reportWritePathProblem } from "./report";
 import {
@@ -39,6 +40,10 @@ import {
 } from "../errors";
 import { getPersistStorageMode, isPackageInlineFieldsEnabled } from "../config";
 import { logger } from "../logger";
+import {
+   withoutAbsolutePaths,
+   withPackageRelativeErrors,
+} from "../package_relative_text";
 import { redactPgSecrets } from "../pg_helpers";
 import {
    mergeConnectionUpdate,
@@ -51,7 +56,10 @@ import {
    assertSafeRelativeModelPath,
    safeJoinUnderRoot,
 } from "../path_safety";
-import { FreshnessManifest, ManifestEntry } from "./materialization/types";
+import {
+   FreshnessManifest,
+   ManifestEntry,
+} from "./materialization/domain/types";
 import { errMessage } from "../utils";
 import {
    buildEnvironmentMalloyConfig,
@@ -60,6 +68,7 @@ import {
    InternalConnection,
 } from "./connection";
 import {
+   getStaticConnectionAttributes,
    storageDestinationRoot,
    processStorageDestinations,
    processStorageDestinationsOrThrow,
@@ -73,6 +82,7 @@ import {
 import { ApiConnection } from "./model";
 import { Package } from "./package";
 import { applyLoadGates } from "./package_load_gates";
+import { resolvePatchedSettings } from "./package_patch";
 import { environmentResource, packageResource } from "../api_resource";
 import { parsePackageName, type PackageName, VersionRef } from "./identity";
 import {
@@ -89,7 +99,7 @@ import {
    type TaggedLogMessage,
 } from "./compile_source";
 import { type OverlayFile } from "./request_overlay";
-import { destinationSchemaOf } from "./materialization/run/storage_table_path";
+import { destinationSchemaOf } from "./materialization/domain/storage_table_path";
 
 export {
    COMPILE_SCOPES,
@@ -97,7 +107,12 @@ export {
    type CompileScope,
    type TaggedLogMessage,
 } from "./compile_source";
+import {
+   backoffAfter,
+   type ConfiguredPublishRetry,
+} from "./configured_publish_retry";
 import { VersionRegistry, VersionService } from "./versions/version_service";
+import { getPackageLoadWorkerCount } from "../package_load/package_load_pool";
 import { readManifestVersion, VersionStore } from "./versions/version_store";
 import {
    ownedVersionOf,
@@ -117,7 +132,7 @@ import {
  * Dot-prefixed so anything that walks an environment for packages never finds
  * a half-downloaded or superseded copy.
  */
-const STAGING_DIR_NAME = ".staging";
+export const STAGING_DIR_NAME = ".staging";
 const RETIRED_DIR_NAME = ".retired";
 
 // Binding happens before a package is SERVING, so a slow manifest store must
@@ -168,6 +183,18 @@ const getPackageAdmissionRejectionsCounter = lazyCounter(
 export function resetAdmissionTelemetryForTesting(): void {
    resetInstrumentsForTesting();
 }
+
+/**
+ * Judges a metadata PATCH under the package lock: `body` against `target`,
+ * the metadata of the tree it is applied to, and `previous`, that of the
+ * package an install replaces (absent for a metadata update, and when nothing
+ * was resident). Returns the body to apply, or throws to refuse it.
+ */
+export type AdmitUpdate = (
+   body: ApiPackage,
+   target: ApiPackage,
+   previous: ApiPackage | undefined,
+) => ApiPackage;
 
 /** The publisher.json fields a metadata write may set. */
 type PackageManifestUpdate = {
@@ -300,6 +327,59 @@ export type PackageListingOptions = {
    operational?: boolean;
 };
 
+/**
+ * At most this many build plans re-derive at once after a connection edit:
+ * two, and never more than the load pool has workers, so with the default
+ * single worker they run one at a time (each at background priority, behind
+ * publishes and reloads; see LoadPackageJob.background).
+ */
+function planRefreshConcurrency(): number {
+   return Math.max(1, Math.min(2, getPackageLoadWorkerCount()));
+}
+
+/**
+ * The connection names an edit changed: added, removed, or with a different
+ * digest-relevant configuration. A connection that carries a `fingerprint` is
+ * digested by that fingerprint alone (applyConnectionFingerprint in
+ * connection.ts), so when both sides carry one only the fingerprints are
+ * compared: rotating a secret behind a stable fingerprint moves no address and
+ * re-derives nothing. Without a fingerprint the stored config is compared
+ * whole (secrets included), since a connector's own digest may read any of it.
+ *
+ * This assumes the host changes a connection's fingerprint whenever a setting
+ * changes what its builds compile to (its project, database or default
+ * schema, which decide how Malloy resolves a table name): such a change moves
+ * the build SQL, and so the address, under a stable fingerprint, and a
+ * fingerprint-only comparison would not re-derive it.
+ */
+export function changedConnectionNames(
+   before: readonly ApiConnection[],
+   after: readonly ApiConnection[],
+): Set<string> {
+   const digestInput = (c: ApiConnection): string =>
+      c.fingerprint ? `fingerprint:${c.fingerprint}` : JSON.stringify(c);
+   const byName = (list: readonly ApiConnection[]) =>
+      new Map(list.map((c) => [c.name ?? "", c]));
+   const previous = byName(before);
+   const next = byName(after);
+   const changed = new Set<string>();
+   for (const [name, config] of next) {
+      const prior = previous.get(name);
+      if (!prior) {
+         changed.add(name);
+      } else if (prior.fingerprint && config.fingerprint) {
+         if (prior.fingerprint !== config.fingerprint) changed.add(name);
+      } else if (digestInput(prior) !== digestInput(config)) {
+         changed.add(name);
+      }
+   }
+   for (const name of previous.keys()) {
+      if (!next.has(name)) changed.add(name);
+   }
+   changed.delete("");
+   return changed;
+}
+
 export class Environment {
    private packages: Map<string, Package> = new Map();
    /**
@@ -308,6 +388,16 @@ export class Environment {
     * getPackage's lock-free fast path does not serve them until it settles.
     */
    private unversionedReadsHeld = new Set<string>();
+   /** See {@link setConfiguredPublishRetry}. */
+   private readonly configuredPublishRetries = new Map<
+      string,
+      ConfiguredPublishRetry
+   >();
+   /** A retry in flight, per package, shared by the callers waiting on it. */
+   private readonly configuredPublishRetriesRunning = new Map<
+      string,
+      Promise<void>
+   >();
    /**
     * The version rules for this environment's packages, bound by the
     * EnvironmentStore once the environment has a registry row. Versioned
@@ -330,6 +420,36 @@ export class Environment {
     * lifecycle phase, because a reload runs while the previous copy serves.
     */
    private readonly loadsInFlight = new PackageLoadTracker();
+   /** Bumped by every connection edit that can move content addresses. */
+   private connectionGeneration = 0;
+   /** The connections the latest edit changed, for the refresh's log lines. */
+   private lastChangedConnections: string[] = [];
+   /** Packages waiting to re-derive their build plan (see schedulePlanRefresh). */
+   private readonly planRefreshQueue = new Set<Package>();
+   /** Re-derivations running now, bounded by planRefreshConcurrency(). */
+   private planRefreshesRunning = 0;
+   /** Queued packages whose plan a failed re-derivation left unavailable. */
+   private readonly planRefreshRetrying = new Set<Package>();
+   /**
+    * Per package, failed re-derivations in a row and the timer of the next
+    * retry (backoffAfter: 2s doubling to 60s). Cleared when one succeeds.
+    */
+   private readonly planRefreshBackoff = new Map<
+      Package,
+      { failures: number; timer?: ReturnType<typeof setTimeout> }
+   >();
+   /**
+    * Set once this environment is closed (deleted, or the server is shutting
+    * down): no re-derivation is queued or retried after it, so a timer cannot
+    * fire against a package whose files are gone.
+    */
+   private planRefreshesClosed = false;
+   /**
+    * Every environment not yet closed, for {@link cancelAllPlanRefreshes}.
+    * Weak, so an environment nobody closes (a test's) can still be collected.
+    */
+   private static readonly openEnvironments = new Set<WeakRef<Environment>>();
+   private readonly openEnvironmentRef = new WeakRef<Environment>(this);
    private malloyConfig: EnvironmentMalloyConfig;
    private connectionMutex = new Mutex();
    private retiredConnectionGenerations =
@@ -356,6 +476,18 @@ export class Environment {
     * against it. An explicit set makes it authoritative again.
     */
    private destinationsAuthoritative = true;
+   /**
+    * The connection counterpart of {@link destinationsAuthoritative}: false
+    * when the list is a fallback (the config standing in for a missing
+    * directory, or a reload from config) or torn down, so the database sync
+    * must not prune stored connections against it. Only a wholesale
+    * replacement of the list (an environment create or PATCH carrying
+    * `connections`, or a restore from the stored rows) makes it authoritative
+    * again. Adding, updating or deleting one connection edits one entry of
+    * whatever list is in memory, so it leaves the flag as it was: a fallback
+    * list with one connection added is still a fallback.
+    */
+   private connectionsAuthoritative = true;
    private environmentPath: string;
    private environmentName: string;
    // Resolves a package's latest persisted manifest entries (both tiers), so
@@ -430,6 +562,7 @@ export class Environment {
       this.environmentName = environmentName;
       this.environmentPath = environmentPath;
       this.lifecycle = new PackageLifecycle(environmentName);
+      Environment.openEnvironments.add(this.openEnvironmentRef);
       this.malloyConfig = malloyConfig;
       this.apiConnections = apiConnections;
       this.destinations = [];
@@ -499,6 +632,8 @@ export class Environment {
             );
 
             this.updateConnections(nextMalloyConfig);
+            // A wholesale replacement: the list is now the desired state.
+            this.connectionsAuthoritative = true;
 
             logger.info(
                `Successfully updated connections for environment ${this.environmentName}`,
@@ -602,6 +737,19 @@ export class Environment {
             // when none), resolved through the registry.
             versionedPackage: async (name, version, underLock) => {
                if (!this.versionService) return undefined;
+               // See getPackage: a refused configured package is published
+               // again before it compiles, outside the lock its first version
+               // takes.
+               // Only the default resolution: a request naming a version
+               // that does not exist answers 404 without publishing.
+               if (
+                  !underLock &&
+                  version.requested() === undefined &&
+                  !this.packages.has(name) &&
+                  this.configuredPublishRetries.has(name)
+               ) {
+                  await this.retryConfiguredPublish(name);
+               }
                if (
                   this.packages.has(name) &&
                   (underLock || version.requested() === undefined)
@@ -719,6 +867,23 @@ export class Environment {
       _package.setServeDestinationConfig(() =>
          this.getStorageDestinationMalloyConfig(),
       );
+      // Live too: a destination configured after the load clears its
+      // publish warning (P13) with no reload.
+      _package.setDeploymentFacts({
+         destinationNames: () =>
+            this.destinationsAuthoritative
+               ? this.destinations.flatMap((d) => (d.name ? [d.name] : []))
+               : undefined,
+         connectionCanHoldTable: (connectionName) => {
+            if (!this.connectionsAuthoritative) return undefined;
+            const connection = this.apiConnections.find(
+               (c) => c.name === connectionName,
+            );
+            return connection
+               ? getStaticConnectionAttributes(connection.type)?.canPersist
+               : undefined;
+         },
+      });
       // Live, like the config: a destination list swap needs no reload.
       _package.setServeDestinationSchema((destinationName) =>
          destinationSchemaOf(
@@ -768,19 +933,184 @@ export class Environment {
          // Memoized serve shapes hold the retired generation's connections but
          // are keyed on the binding set, which this does not change; left in
          // place, every routed query would quietly fall back to live.
-         this.invalidateServeShapes();
+         this.invalidateCompiledLegs();
+      }
+   }
+
+   /**
+    * After a connection edit, re-derive the build plan of every loaded package
+    * and loaded version whose persist sources build on a changed connection
+    * (see {@link Package.markBuildPlanStale}): a content address folds in its
+    * connection's digest, so the edit can move it. A package whose plan does
+    * not touch a changed connection is left alone; one whose plan is
+    * unavailable is re-derived, since its connections are unknown.
+    */
+   private refreshBuildPlans(changed: ReadonlySet<string>): void {
+      if (changed.size === 0) return;
+      this.connectionGeneration++;
+      this.lastChangedConnections = [...changed].sort();
+      const loaded = [
+         ...this.packages.values(),
+         ...(this.versionService?.cache.entries() ?? []).map(([, , v]) => v),
+      ];
+      for (const _package of loaded) {
+         if (Environment.planUsesAny(_package, changed)) {
+            this.schedulePlanRefresh(_package);
+         }
+      }
+   }
+
+   private static planUsesAny(
+      _package: Package,
+      changed: ReadonlySet<string>,
+   ): boolean {
+      const names = _package.planConnectionNames();
+      if (names === null) return true;
+      for (const name of names) if (changed.has(name)) return true;
+      return false;
+   }
+
+   /**
+    * Mark `_package`'s plan stale at once, so readers wait for it, and queue
+    * its re-derivation. Queued once however many edits land before it starts
+    * (it reads the connections as they are when it runs), and run at most
+    * PLAN_REFRESH_CONCURRENCY at a time, so one edit never recompiles every
+    * package together.
+    */
+   private schedulePlanRefresh(
+      _package: Package,
+      changedConnections: Iterable<string> = this.lastChangedConnections,
+   ): void {
+      if (this.planRefreshesClosed) return;
+      _package.markBuildPlanStale(changedConnections);
+      // This edit's refresh supersedes a pending retry.
+      const backoff = this.planRefreshBackoff.get(_package);
+      if (backoff?.timer) clearTimeout(backoff.timer);
+      if (backoff) backoff.timer = undefined;
+      if (this.planRefreshQueue.has(_package)) return;
+      this.planRefreshQueue.add(_package);
+      this.pumpPlanRefreshes();
+   }
+
+   /**
+    * After a failed re-derivation, retry it with backoff: a transient failure
+    * (a load-worker timeout or crash) must not leave the package refusing runs
+    * until someone reloads it. A retry does not mark the plan stale, so
+    * readers get the 409 at once rather than wait; it stops once the package
+    * is reloaded, replaced or deleted (it is then not a loaded copy).
+    */
+   private schedulePlanRetry(_package: Package): void {
+      if (this.planRefreshesClosed) return;
+      const backoff = this.planRefreshBackoff.get(_package) ?? { failures: 0 };
+      backoff.failures++;
+      if (backoff.timer) clearTimeout(backoff.timer);
+      backoff.timer = setTimeout(() => {
+         backoff.timer = undefined;
+         if (this.planRefreshesClosed) return;
+         if (!this.isLoadedCopy(_package)) {
+            this.planRefreshBackoff.delete(_package);
+            return;
+         }
+         if (!_package.isBuildPlanUnavailable()) return;
+         if (this.planRefreshQueue.has(_package)) return;
+         this.planRefreshRetrying.add(_package);
+         this.planRefreshQueue.add(_package);
+         this.pumpPlanRefreshes();
+      }, backoffAfter(backoff.failures));
+      backoff.timer.unref?.();
+      this.planRefreshBackoff.set(_package, backoff);
+   }
+
+   /** Whether `_package` is the copy this environment serves (unversioned or a cached version). */
+   private isLoadedCopy(_package: Package): boolean {
+      if (this.packages.get(_package.getPackageName()) === _package)
+         return true;
+      return (this.versionService?.cache.entries() ?? []).some(
+         ([, , version]) => version === _package,
+      );
+   }
+
+   private pumpPlanRefreshes(): void {
+      if (this.planRefreshesClosed) return;
+      while (
+         this.planRefreshesRunning < planRefreshConcurrency() &&
+         this.planRefreshQueue.size > 0
+      ) {
+         const [next] = this.planRefreshQueue;
+         this.planRefreshQueue.delete(next);
+         const retryFailed = this.planRefreshRetrying.delete(next);
+         this.planRefreshesRunning++;
+         const connections = this.lastChangedConnections;
+         next
+            .refreshBuildPlan({ retryFailed })
+            .then((derived) => {
+               if (derived) {
+                  const backoff = this.planRefreshBackoff.get(next);
+                  if (backoff?.timer) clearTimeout(backoff.timer);
+                  this.planRefreshBackoff.delete(next);
+                  return;
+               }
+               if (!next.lastBuildPlanRefreshFailedTransiently()) {
+                  // The plan compute itself failed (a model that no longer
+                  // compiles, a connection that does not resolve): it fails
+                  // the same way until the model or a connection changes, and
+                  // either re-derives it, so no retry loop recompiles it.
+                  const backoff = this.planRefreshBackoff.get(next);
+                  if (backoff?.timer) clearTimeout(backoff.timer);
+                  this.planRefreshBackoff.delete(next);
+                  logger.warn(
+                     "Build plan could not be re-derived after a connection change; run creation answers 409 until the next connection edit or a reload",
+                     {
+                        environmentName: this.environmentName,
+                        packageName: next.getPackageName(),
+                        versionId: next.getVersionId(),
+                        changedConnections: connections,
+                     },
+                  );
+                  return;
+               }
+               this.schedulePlanRetry(next);
+               logger.warn(
+                  "Build plan could not be re-derived after a connection change (the load pool failed); run creation answers 409 and the re-derivation is retried with backoff",
+                  {
+                     environmentName: this.environmentName,
+                     packageName: next.getPackageName(),
+                     versionId: next.getVersionId(),
+                     changedConnections: connections,
+                     failures: this.planRefreshBackoff.get(next)?.failures,
+                  },
+               );
+            })
+            .catch((err: unknown) => {
+               // Not expected (refreshBuildPlan resolves false on failure),
+               // but an unexpected throw retries the same way.
+               this.schedulePlanRetry(next);
+               logger.warn(
+                  "Build plan re-derivation after a connection change failed",
+                  {
+                     environmentName: this.environmentName,
+                     packageName: next.getPackageName(),
+                     changedConnections: connections,
+                     error: errMessage(err),
+                  },
+               );
+            })
+            .finally(() => {
+               this.planRefreshesRunning--;
+               this.pumpPlanRefreshes();
+            });
       }
    }
 
    /** Drop every loaded model's memoized serve shape; the next query recompiles. */
-   private invalidateServeShapes(): void {
+   private invalidateCompiledLegs(): void {
       for (const _package of this.packages.values()) {
-         _package.invalidateServeShapes();
+         _package.invalidateCompiledLegs();
       }
       // Loaded versions too: they compiled against the destinations that just
       // changed.
       for (const [, , version] of this.versionService?.cache.entries() ?? []) {
-         version.invalidateServeShapes();
+         version.invalidateCompiledLegs();
       }
    }
 
@@ -800,6 +1130,16 @@ export class Environment {
    /** See {@link destinationsAuthoritative}. */
    public hasAuthoritativeStorageDestinations(): boolean {
       return this.destinationsAuthoritative;
+   }
+
+   /** The connection list is a best guess; see {@link connectionsAuthoritative}. */
+   public markConnectionsUnknown(): void {
+      this.connectionsAuthoritative = false;
+   }
+
+   /** See {@link connectionsAuthoritative}. */
+   public hasAuthoritativeConnections(): boolean {
+      return this.connectionsAuthoritative;
    }
 
    /**
@@ -1142,6 +1482,7 @@ export class Environment {
             archiveStatus: row.archiveStatus,
             status: this.describePackageStatus(packageName, row.versionId),
             ...loaded?.getOperationalFields(),
+            ...servingVerdicts(loaded),
          };
       }
       const resident = this.packages.get(packageName);
@@ -1159,6 +1500,7 @@ export class Environment {
          resource,
          status: this.describePackageStatus(packageName),
          ...resident?.getOperationalFields(),
+         ...servingVerdicts(resident),
       };
    }
 
@@ -1171,7 +1513,28 @@ export class Environment {
       packageName: string,
       fn: () => Promise<T>,
    ): Promise<T> {
-      return this.loadsInFlight.track(packageName, fn);
+      // A load or publish that a connection edit overtook derived its plan
+      // under the old connections: re-derive it, and the package's other
+      // loaded copies, once it lands (see refreshBuildPlans).
+      const generation = this.connectionGeneration;
+      return this.loadsInFlight.track(packageName, fn).then((result) => {
+         if (this.connectionGeneration !== generation) {
+            const changed = new Set(this.lastChangedConnections);
+            const loaded = [
+               ...(result instanceof Package ? [result] : []),
+               ...[this.packages.get(packageName)],
+               ...(this.versionService?.cache.entries() ?? [])
+                  .filter(([name]) => name === packageName)
+                  .map(([, , version]) => version),
+            ];
+            for (const _package of new Set(loaded)) {
+               if (_package && Environment.planUsesAny(_package, changed)) {
+                  this.schedulePlanRefresh(_package);
+               }
+            }
+         }
+         return result;
+      });
    }
 
    /**
@@ -1730,6 +2093,7 @@ export class Environment {
          const { tableNameManifest, storageEntries } = splitManifestEntries(
             rawEntries,
             `local store (package ${packageName})`,
+            true,
          );
          if (Object.keys(tableNameManifest).length > 0) {
             pkg.bindColocatedServeManifest(tableNameManifest);
@@ -2081,27 +2445,31 @@ export class Environment {
          sourceLocation: string | null;
       },
    ): Promise<Package> {
-      const loaded = await Package.create(
-         this.environmentName,
-         packageName,
-         versionPath,
-         () => this.malloyConfig.malloyConfig,
-      );
-      this.attachDestinationServeConfig(loaded);
-      // The version's serving state lives on its registry row, not in its
-      // immutable publisher.json: where it came from, which version it is,
-      // and the manifest it is bound to.
-      loaded.setPackageMetadata({
-         ...loaded.getPackageMetadata(),
-         versionId: version.versionId,
-         ...(version.sourceLocation
-            ? { location: version.sourceLocation }
-            : {}),
-         manifestLocation: version.manifestPath,
+      // A failed load names the version's files package-relative, as a
+      // failed reload does, never this server's version folder.
+      return withPackageRelativeErrors(versionPath, async () => {
+         const loaded = await Package.create(
+            this.environmentName,
+            packageName,
+            versionPath,
+            () => this.malloyConfig.malloyConfig,
+         );
+         this.attachDestinationServeConfig(loaded);
+         // The version's serving state lives on its registry row, not in its
+         // immutable publisher.json: where it came from, which version it is,
+         // and the manifest it is bound to.
+         loaded.setPackageMetadata({
+            ...loaded.getPackageMetadata(),
+            versionId: version.versionId,
+            ...(version.sourceLocation
+               ? { location: version.sourceLocation }
+               : {}),
+            manifestLocation: version.manifestPath,
+         });
+         await this.bindManifestIfConfigured(loaded);
+         await this.rebindServeBindingsFromLocalStore(loaded);
+         return loaded;
       });
-      await this.bindManifestIfConfigured(loaded);
-      await this.rebindServeBindingsFromLocalStore(loaded);
-      return loaded;
    }
 
    /**
@@ -2321,6 +2689,22 @@ export class Environment {
                requested,
             );
             if (versioned) return versioned.loaded;
+            // A configured package whose boot publish was refused: publish it
+            // again now, which serves it or answers why it still cannot. Only
+            // for the default resolution: a request naming a version that does
+            // not exist answers 404 without publishing anything.
+            if (
+               requested === undefined &&
+               !this.packages.has(packageName) &&
+               this.configuredPublishRetries.has(packageName)
+            ) {
+               await this.retryConfiguredPublish(packageName);
+               const published = await this.versionService.getLoaded(
+                  packageName,
+                  requested,
+               );
+               if (published) return published.loaded;
+            }
          }
       }
       // Lock-free fast path: `Package` references are immutable, and
@@ -2397,18 +2781,27 @@ export class Environment {
                this.environmentPath,
                packageName,
             );
-            const _package = await Package.create(
-               this.environmentName,
-               packageName,
+            // The load failure is the caller's answer and the package's
+            // status: it names the package's files package-relative, never
+            // where this server keeps them, binding included.
+            const _package = await withPackageRelativeErrors(
                packagePath,
-               () => this.malloyConfig.malloyConfig,
+               async () => {
+                  const created = await Package.create(
+                     this.environmentName,
+                     packageName,
+                     packagePath,
+                     () => this.malloyConfig.malloyConfig,
+                  );
+                  this.attachDestinationServeConfig(created);
+                  await this.commitLoadedPackage(packageName, created, {
+                     bindServeState: true,
+                     replaces: existingPackage,
+                     reportSurfaceChange: true,
+                  });
+                  return created;
+               },
             );
-            this.attachDestinationServeConfig(_package);
-            await this.commitLoadedPackage(packageName, _package, {
-               bindServeState: true,
-               replaces: existingPackage,
-               reportSurfaceChange: true,
-            });
             logger.debug(`Successfully loaded package ${packageName}`);
 
             return _package;
@@ -2467,6 +2860,10 @@ export class Environment {
          }
       }
       this.packages.set(packageName, pkg);
+      // Counted here, when a loaded package is accepted and served: once per
+      // load, after every gate and publish check, so a refused publish and a
+      // PATCH that re-runs the gates count nothing.
+      recordAnnotationFindings(pkg.annotationFindingWarnings());
       this.notifyPackageLoaded(pkg);
       // Serving, and a package that failed earlier is fixed without a restart.
       this.transition(packageName, { type: "loaded" });
@@ -2562,6 +2959,12 @@ export class Environment {
           * record one).
           */
          update?: ApiPackage;
+         /**
+          * Judges `update` under the lock, against the tree just loaded and
+          * the package it replaces, as the lock holder sees them: returns the
+          * body to apply, or throws to refuse it (the swap rolls back).
+          */
+         admit?: AdmitUpdate;
       } = {},
    ): Promise<Package> {
       assertSafePackageName(packageName);
@@ -2604,7 +3007,10 @@ export class Environment {
       options: {
          validate?: (pkg: Package) => string | undefined;
          readVersion: boolean;
-         describe: (pkg: Package, versionId: string | undefined) => T;
+         describe: (
+            pkg: Package,
+            versionId: string | undefined,
+         ) => T | Promise<T>;
       },
    ): Promise<T> {
       assertSafePackageName(packageName);
@@ -2638,7 +3044,10 @@ export class Environment {
       options: {
          validate?: (pkg: Package) => string | undefined;
          readVersion: boolean;
-         describe: (pkg: Package, versionId: string | undefined) => T;
+         describe: (
+            pkg: Package,
+            versionId: string | undefined,
+         ) => T | Promise<T>;
       },
    ): Promise<T> {
       const stagingPath = await this.stageDownload(packageName, downloader);
@@ -2656,7 +3065,8 @@ export class Environment {
             { dryRun: true },
          );
          try {
-            return options.describe(pkg, versionId);
+            // Awaited here: a preview compiles against the staged files.
+            return await options.describe(pkg, versionId);
          } finally {
             // Never served, so nothing is in flight on its connections.
             await Environment.releasePackageConnections(
@@ -2727,8 +3137,18 @@ export class Environment {
          { dryRun: options.dryRun },
       );
       this.attachDestinationServeConfig(pkg);
-      // Publish, update and dry run only (reload passes no validator).
-      const validationMsg = validate?.(pkg);
+      // Publish, update and dry run only (reload passes no validator). A
+      // validator refuses by returning why (400) or by throwing its own error.
+      let validationMsg: string | undefined;
+      try {
+         validationMsg = validate?.(pkg);
+      } catch (error) {
+         await Environment.releasePackageConnections(
+            pkg,
+            `refused load of ${packageName}`,
+         );
+         throw error;
+      }
       if (validationMsg) {
          await Environment.releasePackageConnections(
             pkg,
@@ -2757,7 +3177,7 @@ export class Environment {
       packageName: string,
       downloader: (stagingPath: string) => Promise<void>,
       validate: ((pkg: Package) => string | undefined) | undefined,
-      options: { update?: ApiPackage },
+      options: { update?: ApiPackage; admit?: AdmitUpdate },
    ): Promise<Package> {
       const stagingPath = await this.stageDownload(packageName, downloader);
 
@@ -2802,6 +3222,23 @@ export class Environment {
             });
          }
 
+         // The body as admitted under this lock hold, against the tree just
+         // loaded and the package it replaces: after the validator, so a
+         // request the publish checks refuse is answered 400 first.
+         let update = options.update;
+         const validateAndAdmit = (pkg: Package): string | undefined => {
+            const refused = validate?.(pkg);
+            if (refused) return refused;
+            if (update !== undefined && options.admit) {
+               update = options.admit(
+                  update,
+                  pkg.getPackageMetadata(),
+                  oldPackage?.getPackageMetadata(),
+               );
+            }
+            return undefined;
+         };
+
          let newPackage: Package;
          try {
             await fs.promises.rename(stagingPath, canonicalPath);
@@ -2811,13 +3248,13 @@ export class Environment {
             newPackage = await this.loadStagedTree(
                packageName,
                canonicalPath,
-               validate,
+               validateAndAdmit,
                { dryRun: false },
             );
             // The body's listing decides what the gates judge, so a refusal
             // here rolls the swap back rather than 400ing a tree already live.
-            const gateMsg = options.update
-               ? await this.gatesRefuseUnder(newPackage, options.update)
+            const gateMsg = update
+               ? await this.gatesRefuseUnder(newPackage, update)
                : "";
             if (gateMsg) {
                throw new BadRequestError(gateMsg);
@@ -2850,8 +3287,8 @@ export class Environment {
 
          // Same lock hold: as a separate step, a delete queued behind the
          // swap could run first and the update would 404 for completed work.
-         if (options.update !== undefined) {
-            await this._updatePackageLocked(packageName, options.update, {
+         if (update !== undefined) {
+            await this._updatePackageLocked(packageName, update, {
                recordLocation: true,
                regated: true,
             });
@@ -3280,7 +3717,18 @@ export class Environment {
       }
    }
 
-   public async updatePackage(packageName: string, body: ApiPackage) {
+   public async updatePackage(
+      packageName: string,
+      body: ApiPackage,
+      options: {
+         /**
+          * Judges `body` under the lock, against the metadata the update
+          * applies to (`previous` is absent): returns the body to apply, or
+          * throws to refuse it with nothing changed.
+          */
+         admit?: AdmitUpdate;
+      } = {},
+   ) {
       assertSafePackageName(packageName);
       // An install downloads before taking the lock, so a PATCH arriving then
       // would land on the copy about to be swapped away. Wait for loads in
@@ -3289,6 +3737,7 @@ export class Environment {
       return this.withPackageLock(packageName, () =>
          this._updatePackageLocked(packageName, body, {
             recordLocation: false,
+            admit: options.admit,
          }),
       );
    }
@@ -3303,14 +3752,10 @@ export class Environment {
       body: ApiPackage,
    ): Promise<string> {
       const existing = pkg.getPackageMetadata();
-      const explores =
-         body.explores !== undefined
-            ? body.explores.map(normalizeModelPath)
-            : existing.explores;
-      const queryableSources =
-         body.queryableSources != null
-            ? body.queryableSources
-            : existing.queryableSources;
+      const { explores, queryableSources } = resolvePatchedSettings(
+         body,
+         existing,
+      );
       const listing = (e?: string[], q?: string) =>
          JSON.stringify([e ?? null, q ?? "declared"]);
       if (
@@ -3331,8 +3776,10 @@ export class Environment {
    /** Apply a metadata PATCH to a loaded package. Caller holds the package mutex. */
    private async _updatePackageLocked(
       packageName: string,
-      body: ApiPackage,
+      requested: ApiPackage,
       options: {
+         /** See updatePackage: judged here, against what this apply reads. */
+         admit?: AdmitUpdate;
          /**
           * Record the body's `location` as the install location. True only
           * for an install; a PATCH naming a new location is a reinstall.
@@ -3349,48 +3796,37 @@ export class Environment {
       // `setPackageMetadata` replaces the whole object, so omitted fields
       // carry over; a wiped `explores` would silently serve every model.
       const existing = _package.getPackageMetadata();
+      // Under the lock and against this metadata, so a PATCH racing another
+      // is judged against what the first one left, not what it read before.
+      const body = options.admit
+         ? options.admit(requested, existing, undefined)
+         : requested;
       // Normalized as the worker normalizes on-disk explores, so publish and
       // reload agree.
       const normalizedExplores = body.explores?.map(normalizeModelPath);
-      const explores =
-         normalizedExplores !== undefined
-            ? normalizedExplores
-            : existing.explores;
-      const queryableSources =
-         body.queryableSources != null
-            ? body.queryableSources
-            : existing.queryableSources;
       // An explicit null clears it, reverting to live.
       const manifestLocation =
          body.manifestLocation !== undefined
             ? body.manifestLocation
             : existing.manifestLocation;
-      // `scope` and `materialization` apply when provided and are otherwise
-      // preserved; a schedule change re-arms the scheduler on its next tick.
-      // Null counts as omitted, so a client serializing unset fields as null
-      // neither trips the policy gate below (failing an orchestrated run) nor
-      // resets the policy. `manifestLocation` differs: null there clears.
+      // The settings a reload would lose resolve in one place, which the
+      // refusal of a change a reload discards reads too. `scope` and
+      // `materialization` apply when provided and are otherwise preserved; a
+      // schedule change re-arms the scheduler on its next tick. Null counts
+      // as omitted, so a client serializing unset fields as null neither
+      // trips the policy gate below (failing an orchestrated run) nor resets
+      // the policy. `manifestLocation` differs: null there clears.
       const scopeProvided = body.scope != null;
       const materializationProvided = body.materialization != null;
       const editingPolicy = scopeProvided || materializationProvided;
-      const scope = scopeProvided ? body.scope : existing.scope;
-      // Preserved the same way (null = omitted; the clear is an empty bag),
-      // resolved once across both wire homes and written to both: the serve
-      // path reads the canonical field and the build path the block, so they
-      // must not disagree.
-      const queryMetadata =
-         body.queryMetadata ??
-         body.materialization?.queryMetadata ??
-         existing.queryMetadata ??
-         existing.materialization?.queryMetadata ??
-         null;
-      const materializationBase = materializationProvided
-         ? body.materialization
-         : existing.materialization;
-      const materialization =
-         materializationBase || queryMetadata !== null
-            ? { ...(materializationBase ?? {}), queryMetadata }
-            : materializationBase;
+      const {
+         description,
+         explores,
+         queryableSources,
+         scope,
+         queryMetadata,
+         materialization,
+      } = resolvePatchedSettings(body, existing);
       // Judged before the listing goes live, so a query meanwhile is served
       // under the old one. Only a change to what is queryable re-runs them.
       const gateMsg = options.regated
@@ -3401,8 +3837,7 @@ export class Environment {
       // orchestrator identifies the package by. An empty string is a value.
       _package.setPackageMetadata({
          name: body.name != null ? body.name : existing.name,
-         description:
-            body.description != null ? body.description : existing.description,
+         description,
          resource: body.resource != null ? body.resource : existing.resource,
          location:
             options.recordLocation && body.location != null
@@ -3520,6 +3955,139 @@ export class Environment {
    }
 
    /**
+    * How to publish a configured package again after its boot-time publish
+    * was refused. A refused publish places nothing, so without it the package
+    * had no files at all: `/compile` could not report why it failed, a
+    * failure that clears on its own (a table created after boot) could never
+    * recover, and every request answered a misleading "manifest does not
+    * exist". Its next access runs this instead: a publish that now succeeds
+    * serves the version, and one that still fails answers its own error.
+    * `fingerprint` reads the location's model files cheaply, so a change to
+    * them retries at once whatever the backoff (configured_publish_retry.ts).
+    */
+   public setConfiguredPublishRetry(
+      packageName: string,
+      publish: () => Promise<unknown>,
+      fingerprint?: () => Promise<string | undefined>,
+   ): void {
+      this.configuredPublishRetries.set(packageName, {
+         publish,
+         fingerprint,
+         failures: 0,
+         notBefore: 0,
+      });
+   }
+
+   /**
+    * Record a configured package whose boot publish was refused and that can
+    * NOT be published again: a remote location, whose mount is removed after
+    * boot. Its reads answer the boot publish's own error (as a local package's
+    * do after a failed retry) instead of "Package manifest … does not exist",
+    * and never publish; it waits for the next `--init`.
+    */
+   public setConfiguredPublishRefused(
+      packageName: string,
+      error: unknown,
+   ): void {
+      this.configuredPublishRetries.set(packageName, {
+         publish: () => Promise.reject(error),
+         failures: 1,
+         notBefore: Number.POSITIVE_INFINITY,
+         lastError: error,
+      });
+   }
+
+   /**
+    * {@link retryConfiguredPublish} for callers that resolve a version before
+    * they read the package (a materialization run). Resolves at once when the
+    * package is loaded, has no refused publish to retry, or the caller names a
+    * version (only the default resolution publishes).
+    */
+   public async publishRefusedConfiguredPackage(
+      packageName: string,
+      requestedVersion?: string,
+   ): Promise<void> {
+      if (requestedVersion !== undefined) return;
+      if (this.packages.has(packageName)) return;
+      if (!this.configuredPublishRetries.has(packageName)) return;
+      if (this.versionService) {
+         const loaded = await this.versionService.getLoaded(packageName);
+         if (loaded) return;
+      }
+      await this.retryConfiguredPublish(packageName);
+   }
+
+   /**
+    * Run a refused configured package's publish again (see
+    * {@link setConfiguredPublishRetry}). One run at a time per package; the
+    * callers waiting on it share its outcome. Between failures it backs off
+    * (configured_publish_retry.ts), answering the last failure without
+    * publishing unless the package's files changed. Holds no package lock: a
+    * package's first version takes that lock itself, and a delete waits for a
+    * running retry before it takes the lock (see deletePackage). Resolves when
+    * there is nothing to retry or the retry published a version; rejects with
+    * the publish's own error otherwise.
+    */
+   private async retryConfiguredPublish(packageName: string): Promise<void> {
+      const entry = this.configuredPublishRetries.get(packageName);
+      if (!entry) return;
+      let running = this.configuredPublishRetriesRunning.get(packageName);
+      if (!running) {
+         const fingerprint = await entry.fingerprint?.();
+         // Re-read after the await: another caller may have started one.
+         running = this.configuredPublishRetriesRunning.get(packageName);
+         if (!running) {
+            const changed =
+               fingerprint !== undefined &&
+               fingerprint !== entry.lastFingerprint;
+            if (Date.now() < entry.notBefore && !changed) {
+               throw entry.lastError;
+            }
+            running = this.runConfiguredPublish(
+               packageName,
+               entry,
+               fingerprint,
+            );
+            this.configuredPublishRetriesRunning.set(packageName, running);
+         }
+      }
+      await running;
+   }
+
+   private async runConfiguredPublish(
+      packageName: string,
+      entry: ConfiguredPublishRetry,
+      fingerprint: string | undefined,
+   ): Promise<void> {
+      try {
+         await entry.publish();
+         if (this.configuredPublishRetries.get(packageName) === entry) {
+            this.configuredPublishRetries.delete(packageName);
+            this.transition(packageName, { type: "clearProblems" });
+         }
+      } catch (error) {
+         entry.failures += 1;
+         entry.notBefore = Date.now() + backoffAfter(entry.failures);
+         entry.lastError = error;
+         entry.lastFingerprint = fingerprint;
+         if (this.configuredPublishRetries.get(packageName) === entry) {
+            // The location mounted; its package did not load. A load error,
+            // so /status names the real cause, replacing the boot record.
+            this.transition(packageName, { type: "clearProblems" });
+            this.transition(packageName, {
+               type: "recordLoadError",
+               message: redactPgSecrets(
+                  error instanceof Error ? error.message : String(error),
+               ),
+            });
+         }
+         throw error;
+      } finally {
+         this.configuredPublishRetriesRunning.delete(packageName);
+      }
+   }
+
+   /**
     * Record a runtime add that failed before the package could serve, for
     * /status. Skipped while the name is registered (a failed re-install
     * rolled back, so nothing failed). Names are the caller's, so the record
@@ -3531,6 +4099,7 @@ export class Environment {
 
    /** Forget any recorded failure for a package, whatever its cause. */
    private clearPackageLoadFailure(packageName: string): void {
+      this.configuredPublishRetries.delete(packageName);
       this.transition(packageName, { type: "clearProblems" });
    }
 
@@ -3554,7 +4123,7 @@ export class Environment {
 
    /** Every change to a package's phase or problems goes through here. */
    private transition(packageName: string, event: PackageLifecycleEvent): void {
-      this.lifecycle.apply(packageName, event);
+      this.lifecycle.apply(packageName, callerVisibleEvent(event));
    }
 
    public async deletePackage(
@@ -3577,6 +4146,14 @@ export class Environment {
       } = {},
    ): Promise<void> {
       assertSafePackageName(packageName);
+      // A refused configured package's retry: forgotten first, so none starts
+      // from here on, then awaited, so one already publishing lands before
+      // this delete removes it rather than after (which would bring the
+      // package back). Outside the lock, which that publish takes itself.
+      this.configuredPublishRetries.delete(packageName);
+      await this.configuredPublishRetriesRunning
+         .get(packageName)
+         ?.catch(() => {});
       // The versions a delete of a versioned package removed. Each is then
       // cleaned up as deleting that version alone is: its own running
       // auto-runs stopped and its own tables reclaimed, in the background.
@@ -3610,9 +4187,23 @@ export class Environment {
                );
                this.transition(packageName, { type: "unregister" });
             } else {
+               // Registered but never loaded (configured at boot, not yet
+               // listed): it goes as a loaded one does, registration and
+               // folder, or the next listing loads and serves it again. One
+               // whose load failed is already unregistered, and keeps its
+               // folder as before.
+               let retiredPath: string | null = null;
+               if (this.lifecycle.phaseOf(packageName) === "configured") {
+                  retiredPath = await this.retirePackageDirectory(packageName);
+                  this.transition(packageName, { type: "unregister" });
+                  await fs.promises
+                     .rm(this.installRecordPath(packageName), { force: true })
+                     .catch(() => {});
+               }
                // Not loaded, and no versions: its rows go under the lock too,
                // so a first versioned publish cannot land between.
                await options.removeRecords?.();
+               if (retiredPath) this.removeRetiredInBackground(retiredPath);
             }
             return;
          }
@@ -3636,29 +4227,7 @@ export class Environment {
             _package.getMalloyConfig().shutdown("close"),
          );
 
-         // Rename aside under the lock; the slow recursive remove is deferred.
-         const canonicalPath = safeJoinUnderRoot(
-            this.environmentPath,
-            packageName,
-         );
-         const retiredPath = this.allocateRetiredPath(packageName);
-         let renamed = false;
-         try {
-            await fs.promises.mkdir(path.dirname(retiredPath), {
-               recursive: true,
-            });
-            await fs.promises.rename(canonicalPath, retiredPath);
-            renamed = true;
-         } catch (err) {
-            logger.error(
-               "Error renaming package directory to retired during unload",
-               {
-                  error: err,
-                  environmentName: this.environmentName,
-                  packageName,
-               },
-            );
-         }
+         const retiredPath = await this.retirePackageDirectory(packageName);
 
          this.packages.delete(packageName);
          this.transition(packageName, { type: "unregister" });
@@ -3669,18 +4238,7 @@ export class Environment {
          // waited for it must find the package gone, rows and all.
          await options.removeRecords?.();
 
-         if (renamed) {
-            setImmediate(() => {
-               void fs.promises
-                  .rm(retiredPath, { recursive: true, force: true })
-                  .catch((err) => {
-                     logger.warn(
-                        `Failed to clean up retired package directory ${retiredPath}`,
-                        { error: err },
-                     );
-                  });
-            });
-         }
+         if (retiredPath) this.removeRetiredInBackground(retiredPath);
       });
       // The delete is committed; cleaning up must not turn it into a failure.
       for (const versionId of deletedVersions) {
@@ -3695,6 +4253,54 @@ export class Environment {
             });
          }
       }
+   }
+
+   /**
+    * Rename a deleted package's directory aside, under the caller's lock, so
+    * the slow recursive remove can be deferred. Null when there was nothing
+    * to rename (a configured package whose location never mounted) or the
+    * rename failed.
+    */
+   private async retirePackageDirectory(
+      packageName: string,
+   ): Promise<string | null> {
+      const canonicalPath = safeJoinUnderRoot(
+         this.environmentPath,
+         packageName,
+      );
+      const retiredPath = this.allocateRetiredPath(packageName);
+      try {
+         await fs.promises.mkdir(path.dirname(retiredPath), {
+            recursive: true,
+         });
+         await fs.promises.rename(canonicalPath, retiredPath);
+         return retiredPath;
+      } catch (err) {
+         if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+            logger.error(
+               "Error renaming package directory to retired during unload",
+               {
+                  error: err,
+                  environmentName: this.environmentName,
+                  packageName,
+               },
+            );
+         }
+         return null;
+      }
+   }
+
+   private removeRetiredInBackground(retiredPath: string): void {
+      setImmediate(() => {
+         void fs.promises
+            .rm(retiredPath, { recursive: true, force: true })
+            .catch((err) => {
+               logger.warn(
+                  `Failed to clean up retired package directory ${retiredPath}`,
+                  { error: err },
+               );
+            });
+      });
    }
 
    /**
@@ -3727,7 +4333,16 @@ export class Environment {
    ): void {
       const previousMalloyConfig = this.malloyConfig;
       this.malloyConfig = malloyConfig;
+      const previousConnections = this.apiConnections;
       this.apiConnections = malloyConfig.apiConnections;
+      if (previousMalloyConfig !== malloyConfig) {
+         this.refreshBuildPlans(
+            changedConnectionNames(previousConnections, this.apiConnections),
+         );
+      }
+      // Deliberately leaves connectionsAuthoritative alone: ConnectionService
+      // calls this for a single-connection edit, which does not make a
+      // fallback list the desired state. See {@link connectionsAuthoritative}.
 
       if (previousMalloyConfig !== malloyConfig) {
          this.retireConnectionGeneration(
@@ -3762,7 +4377,36 @@ export class Environment {
       }
    }
 
+   /**
+    * Stop every pending and future build-plan re-derivation and retry for this
+    * environment. Called when it is closed; a re-derivation already running
+    * finishes, but nothing is queued or retried after it.
+    */
+   public cancelPlanRefreshes(): void {
+      this.planRefreshesClosed = true;
+      for (const backoff of this.planRefreshBackoff.values()) {
+         if (backoff.timer) clearTimeout(backoff.timer);
+      }
+      this.planRefreshBackoff.clear();
+      this.planRefreshQueue.clear();
+      this.planRefreshRetrying.clear();
+      Environment.openEnvironments.delete(this.openEnvironmentRef);
+   }
+
+   /**
+    * {@link cancelPlanRefreshes} for every open environment: the server's
+    * graceful shutdown, so no retry timer fires while it exits.
+    */
+   public static cancelAllPlanRefreshes(): void {
+      for (const ref of [...Environment.openEnvironments]) {
+         const environment = ref.deref();
+         if (environment) environment.cancelPlanRefreshes();
+         else Environment.openEnvironments.delete(ref);
+      }
+   }
+
    public async closeAllConnections(): Promise<void> {
+      this.cancelPlanRefreshes();
       // Package configs (each with its own sandbox `duckdb`) first, or hard
       // unload leaks their handles.
       const packageReleases = await Promise.allSettled(
@@ -3809,6 +4453,8 @@ export class Environment {
       await this.releaseAllRetiredConnectionGenerations();
 
       this.apiConnections = [];
+      // Torn down: as for destinations, not a list to prune against.
+      this.connectionsAuthoritative = false;
 
       logger.info(
          `Closed all connections for environment ${this.environmentName}`,
@@ -3897,4 +4543,50 @@ export function extractPreambleFromSource(content: string): string {
    }
 
    return preambleLines.join("\n").trimEnd();
+}
+
+/**
+ * A loaded package's serve verdicts, for its serving state; nothing when it is
+ * not loaded or materializes nothing.
+ */
+function servingVerdicts(pkg: Package | undefined): {
+   serveVerdicts?: ReturnType<Package["getServeVerdicts"]>;
+} {
+   if (!pkg) return {};
+   try {
+      const verdicts = pkg.getServeVerdicts();
+      return verdicts.length > 0 ? { serveVerdicts: verdicts } : {};
+   } catch (error) {
+      logger.warn("Could not compute serve verdicts", {
+         error: error instanceof Error ? error.message : String(error),
+      });
+      return {};
+   }
+}
+
+/**
+ * `event` with the message it records (a load, mount or stale-reload error,
+ * read back by /status `loadErrors`, MCP `get_status` and `list_packages`)
+ * naming no server path. A load error is already package-relative; this is
+ * the backstop for every other record, such as a configured location that
+ * did not mount.
+ */
+function callerVisibleEvent(
+   event: PackageLifecycleEvent,
+): PackageLifecycleEvent {
+   switch (event.type) {
+      case "recordLoadError":
+      case "recordMountError":
+         return { ...event, message: withoutAbsolutePaths(event.message) };
+      case "reloadFailed":
+         return {
+            ...event,
+            stale: {
+               ...event.stale,
+               message: withoutAbsolutePaths(event.stale.message),
+            },
+         };
+      default:
+         return event;
+   }
 }

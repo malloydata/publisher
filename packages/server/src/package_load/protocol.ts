@@ -34,6 +34,7 @@
  * fail-closed deny.
  */
 
+import type { SerializedNotebookCell } from "./notebook_cell_wire";
 import type { EligibilityRefusalReason } from "../materialization_metrics";
 import type { BuildPlanOutcome } from "../service/materialization/plan/build_plan";
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
@@ -43,6 +44,7 @@ import type {
 } from "../service/package_manifest";
 import type { PackageRetrievalSettings } from "../service/package_retrieval_settings";
 import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
+import type { ModelEntitiesPlan } from "../service/entities/plan";
 
 /**
  * Version of this wire protocol. The worker stamps it on every
@@ -51,8 +53,11 @@ import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys"
  * revision fails its load loudly instead of being hydrated through a blind
  * cast. Bump it whenever a change to these shapes would make an older or newer
  * peer misread a message.
+ *
+ * 2: `SerializedModel.entities`, the model's entities plan
+ * (`LoadPackageRequest.withEntities`).
  */
-export const PACKAGE_LOAD_PROTOCOL_VERSION = 1;
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 2;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -125,6 +130,12 @@ export interface LoadPackageRequest {
     * that serve the package; a compile preview does not serve it.
     */
    withPreaggregateCompanions?: boolean;
+   /**
+    * Plan each `.malloy` model's entities for the main thread to resolve (see
+    * SerializedModel.entities). Set by the loads that compute the package's
+    * entities: a load that serves it, and the package-scope compile.
+    */
+   withEntities?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -187,22 +198,17 @@ export interface SerializedModel {
     * thread compiles it.
     */
    preaggregateCompanion?: { modelDef?: unknown };
+   /**
+    * The model's entities, planned before its sources' queryability is known
+    * (`service/entities/plan.ts`); the main thread resolves it against the
+    * query route. Absent when not asked for (`withEntities`), when the model
+    * did not compile, or when the work budget ran out first: the main thread
+    * then plans it itself.
+    */
+   entities?: ModelEntitiesPlan;
 }
 
-export interface SerializedNotebookCell {
-   type: "code" | "markdown";
-   /** Raw cell text. */
-   text: string;
-   /**
-    * The cell's ModelDef at its point in the `extendModel` chain, hydrated by
-    * the main thread so cell-level queries compile in the right scope.
-    */
-   cellModelDef?: unknown;
-   /** The cell's final QueryDef, hydrated by the main thread without recompiling. */
-   cellQueryDef?: unknown;
-   newSources?: unknown[];
-   queryInfo?: unknown;
-}
+export type { SerializedNotebookCell } from "./notebook_cell_wire";
 
 export interface LoadPackageResult {
    type: "load-package-result";
@@ -250,6 +256,10 @@ export interface LoadPackageResult {
       schemaFetchCount: number;
       /** Schema requests answered from the worker's own cache. */
       schemaCacheHits?: number;
+      /** Translations the load stored for its models' imports (#1566). */
+      translationsStored?: number;
+      /** Imports answered from a translation the load had stored. */
+      translationsReused?: number;
    };
    /**
     * Present when `computeBuildPlan` was set and every model compiled and

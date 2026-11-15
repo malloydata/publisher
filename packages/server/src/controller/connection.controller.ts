@@ -44,6 +44,7 @@ import { validateDuckdbApiSurface } from "../service/connection_config";
 import { assertSingleSelect } from "../service/single_select";
 import { ConnectionService } from "../service/connection_service";
 import {
+   columnsOfSchema,
    getSchemasForConnection,
    listTablesForSchema,
    validateAzureUrl,
@@ -530,10 +531,8 @@ export class ConnectionController {
          return {
             source: JSON.stringify(source),
             resource: tablePath,
-            columns: (source.fields || []).map((f) => ({
-               name: f.name,
-               type: f.type,
-            })),
+            // A record column is followed by its members, as in a listing.
+            columns: columnsOfSchema(source.fields),
          };
       } catch (error) {
          // Where most not-founds land: every driver but BigQuery rejects

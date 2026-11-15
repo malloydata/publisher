@@ -1,0 +1,40 @@
+// conformance: an extend block that drops and re-hides stored columns [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence access_modifiers }
+##! experimental { virtual_source }
+type: rehidden__served is {
+   id::number,
+   segment::string,
+   home_region::string
+}
+type: dropped__served is {
+   id::number,
+   region::string,
+   amount::number,
+   status::string
+}
+
+import "raw.malloy"
+
+#@ persist name="dropped"
+source: dropped is duckdb.virtual('8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792')::dropped__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"BIGINT"
+  except: status
+  measure: total is amount.sum()
+}
+
+#@ persist name="rehidden"
+source: rehidden is duckdb.virtual('d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e')::rehidden__served extend {
+  rename: region_raw is home_region
+} include { internal: region_raw; public: * } extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"BIGINT"
+  measure: n is count()
+  measure: west_n is count() { where: region_raw = 'west' }
+}

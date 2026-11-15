@@ -1,0 +1,221 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders_all@<hammer>/qts/qts.malloy": [],
+          "vis_all@<hammer>/qts/qts.malloy": [],
+          "visible_orders@<hammer>/qts/qts.malloy": []
+        },
+        "order": [
+          "orders_all@<hammer>/qts/qts.malloy",
+          "visible_orders@<hammer>/qts/qts.malloy",
+          "vis_all@<hammer>/qts/qts.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "orders_all@<hammer>/qts/qts.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "vis_all@<hammer>/qts/qts.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "visible_orders@<hammer>/qts/qts.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders_all@<hammer>/qts/qts.malloy": "qts.malloy",
+      "vis_all@<hammer>/qts/qts.malloy": "qts.malloy",
+      "visible_orders@<hammer>/qts/qts.malloy": "qts.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders_all@<hammer>/qts/qts.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "visible_orders@<hammer>/qts/qts.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "vis_all@<hammer>/qts/qts.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders_all@<hammer>/qts/qts.malloy": {
+        "annotationFields": {
+          "name": "qts_orders_all",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "list_id",
+            "type": "number"
+          },
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "org_id",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "qts.malloy",
+        "name": "orders_all",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "cc23d682c888b6f522ba261b7951ef52145a1b30b3f1b532ac237c9b5bed7777",
+        "sourceID": "orders_all@<hammer>/qts/qts.malloy",
+        "sql": "sha256:cbcfddef425b157c",
+        "strippedTerms": [
+          {
+            "code": "org_id = $ORG_ID",
+            "givens": [
+              "ORG_ID"
+            ]
+          }
+        ]
+      },
+      "vis_all@<hammer>/qts/qts.malloy": {
+        "annotationFields": {
+          "name": "qts_vis_all",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "list_id",
+            "type": "number"
+          },
+          {
+            "name": "org_id",
+            "type": "number"
+          },
+          {
+            "name": "user_id",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "qts.malloy",
+        "name": "vis_all",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "078aa0b9c4af42d0dbfe0de503073ec707e9dfd2ebd4b9d37772740cee5ae011",
+        "sourceID": "vis_all@<hammer>/qts/qts.malloy",
+        "sql": "sha256:3d3c25c8b8dfb8da",
+        "strippedTerms": [
+          {
+            "code": "org_id = $ORG_ID",
+            "givens": [
+              "ORG_ID"
+            ]
+          }
+        ]
+      },
+      "visible_orders@<hammer>/qts/qts.malloy": {
+        "annotationFields": {
+          "name": "qts_orders_all",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "list_id",
+            "type": "number"
+          },
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "org_id",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "joinedTerms": [
+          {
+            "alias": "vis",
+            "source": "vis_all",
+            "terms": [
+              {
+                "code": "org_id = $ORG_ID",
+                "givens": [
+                  "ORG_ID"
+                ]
+              }
+            ]
+          }
+        ],
+        "modelPath": "qts.malloy",
+        "name": "visible_orders",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "cc23d682c888b6f522ba261b7951ef52145a1b30b3f1b532ac237c9b5bed7777",
+        "sourceID": "visible_orders@<hammer>/qts/qts.malloy",
+        "sql": "sha256:cbcfddef425b157c",
+        "strippedTerms": [
+          {
+            "code": "org_id = $ORG_ID",
+            "givens": [
+              "ORG_ID"
+            ]
+          },
+          {
+            "code": "vis.user_id = $USER_ID",
+            "givens": [
+              "USER_ID"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

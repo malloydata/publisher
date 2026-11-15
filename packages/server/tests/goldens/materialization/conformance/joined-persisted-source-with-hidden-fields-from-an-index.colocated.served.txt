@@ -1,0 +1,47 @@
+// conformance: joined persisted source with hidden fields, from an index [colocated]: files generated while serving
+
+// ==== <pkg>/dims.malloy
+##! experimental { persistence access_modifiers }
+##! experimental { virtual_source }
+type: customer_dim__served is {
+   id::number,
+   segment::string,
+   home_region::string
+}
+
+import "raw.malloy"
+
+#@ persist name="customer_dim"
+source: customer_dim is duckdb.virtual('d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e')::customer_dim__served include { internal: home_region; public: * } extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"BIGINT"
+  primary_key: id
+  private measure: west_rows is count() { where: home_region = 'west' }
+  measure: west_n is west_rows + 0
+}
+
+// ==== <pkg>/facts.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: order_facts__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   amount::number
+}
+
+import "raw.malloy"
+import "dims.malloy"
+
+#@ persist name="order_facts"
+source: order_facts is duckdb.virtual('f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee')::order_facts__served extend {
+  internal rename:
+    id__stored is id
+    customer_id__stored is customer_id
+  dimension:
+    id is id__stored::"BIGINT"
+    customer_id is customer_id__stored::"BIGINT"
+  join_one: c is customer_dim on customer_id = c.id
+}

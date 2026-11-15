@@ -14,18 +14,22 @@ import {
    InMemoryURLReader,
    Runtime,
 } from "@malloydata/malloy";
-import { beforeAll, describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it, spyOn } from "bun:test";
+import * as gatePolicy from "../domain/gate_policy";
 import { MaterializationEligibilityError } from "../../../errors";
 import { deriveAnnotationFields, plannedSources } from "./build_plan";
 import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
    assertTierEligible,
+   gateEnforcedAtRead,
    READ_ONLY_DIALECTS,
 } from "./materialization_eligibility";
+import { installSettings } from "../../../test_helpers/settings_env";
+import type { PersistSourceGateOutcome } from "./persist_source_fields";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import {
-   classifyDynamicTerms,
+   admitGivenPositions,
    readTimeDynamicTerms,
 } from "./persist_dynamic_terms";
 
@@ -156,19 +160,6 @@ source: mz_given_outside is base -> { select: * } extend { where: tenant = $tena
       expect(plan.terms).toEqual([
          { code: "tenant = $tenant", givens: ["tenant"], columns: ["tenant"] },
       ]);
-      expect(plan.partitionColumns).toEqual([]);
-   });
-
-   it("resolves partition= into the plan the build lays the table out with", async () => {
-      const sources = await persistSources(`##! experimental.persistence
-source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#@ persist name="mz_part" storage=lake partition="region"
-source: mz_part is base -> { select: * }`);
-      const plan = assertMaterializationEligible(
-         sources.mz_part,
-         deriveAnnotationFields(sources.mz_part),
-      );
-      expect(plan.partitionColumns).toEqual(["region"]);
    });
 
    it("refuses a source protected by its own #(authorize) gate", async () => {
@@ -474,7 +465,7 @@ source: mixed is raw -> { select: * } extend {
   where: org_id = $ORG_ID
   dimension: flagged is org_id = $ORG_ID
 }`);
-      expect(classifyDynamicTerms(sources.mixed).ok).toBe(false);
+      expect(admitGivenPositions(sources.mixed).ok).toBe(false);
       // Still names the column the source is actually scoped by.
       expect(
          readTimeDynamicTerms(sources.mixed).flatMap((t) => t.columns),
@@ -652,6 +643,118 @@ source: by_category is orders -> {
          }),
       );
       expect(asRollup.message).toContain("#@ preaggregate");
+   });
+
+   describe("a gate enforced at read (R3)", () => {
+      const R3_ON = {
+         PUBLISHER_MATERIALIZE: "true",
+         PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+      };
+      const withEnv = <T>(env: Record<string, string>, run: () => T): T => {
+         const { restore } = installSettings({ env });
+         try {
+            return run();
+         } finally {
+            restore();
+         }
+      };
+      const inputs = (
+         sourceID: string,
+         outcome: PersistSourceGateOutcome = {
+            classification: "row_level",
+            attributed: true,
+         },
+         materialized = true,
+      ) => ({
+         materializePlans: materialized ? { [sourceID]: {} } : {},
+         sourceGateOutcomes: { [sourceID]: outcome },
+      });
+
+      it("admits a #(materialize) source's own row-level gate to the storage tier only with the switch on", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         withEnv(R3_ON, () =>
+            assertTierEligible(source, true, inputs(source.sourceID)),
+         );
+         const envs: Record<string, string>[] = [
+            {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+            // With the v1 cutover off, the gated switch needs the materialize
+            // switch (under the cutover it applies alone).
+            {
+               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+            },
+         ];
+         for (const env of envs) {
+            const refused = withEnv(env, () =>
+               refusal(() =>
+                  assertTierEligible(source, true, inputs(source.sourceID)),
+               ),
+            );
+            expect(refused.reason).toBe("authorize");
+         }
+      });
+
+      it("keeps refusing what the served copy cannot enforce: a #@ persist source, an unproven or joined gate", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         for (const plan of [
+            // `#@ persist storage=`: the v1 serve shape may read its table.
+            inputs(id, undefined, false),
+            inputs(id, { classification: "rejected", attributed: true }),
+            // A gate reached only through a join is not the entry point's.
+            inputs(id, { classification: "row_level", attributed: false }),
+            { materializePlans: { [id]: {} } },
+         ]) {
+            expect(withEnv(R3_ON, () => gateEnforcedAtRead(id, plan))).toBe(
+               false,
+            );
+            const refused = withEnv(R3_ON, () =>
+               refusal(() => assertTierEligible(source, true, plan)),
+            );
+            expect(refused.reason).toBe("authorize");
+         }
+      });
+
+      it("never admits a row filter the source inherits: the served copy cannot graft it", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         const plan = inputs(id, {
+            classification: "row_level",
+            attributed: true,
+            inheritedRowFilter: true,
+         });
+         // Asked by the build, the serve bind and the host-instructed build.
+         expect(withEnv(R3_ON, () => gateEnforcedAtRead(id, plan))).toBe(false);
+         const refused = withEnv(R3_ON, () =>
+            refusal(() => assertTierEligible(source, true, plan)),
+         );
+         expect(refused.reason).toBe("authorize");
+         expect(refused.message).toContain(
+            "reads an #(access_filter) row-level gate from a source it derives from",
+         );
+      });
+
+      it("lifts only the gate refusal: every other storage check still runs", async () => {
+         const source = (
+            await persistSources(`##! experimental { persistence givens }
+given: GROUPS :: number[]
+given: REGION :: string
+#(access_filter) org_id in $GROUPS
+source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
+
+#@ persist storage="lake"
+source: mine is orders -> { select: * } extend { dimension: r is $REGION }`)
+         ).mine;
+         const refused = withEnv(R3_ON, () =>
+            refusal(() =>
+               assertTierEligible(source, true, inputs(source.sourceID)),
+            ),
+         );
+         expect(refused.reason).not.toBe("authorize");
+      });
    });
 
    it("runs the storage gate for a storage source", async () => {
@@ -1030,19 +1133,64 @@ source: reads_measure is offers_measure -> {
          MaterializationEligibilityError,
       );
 
-      // And the same shape with the given only where it is applied at read stays
-      // admitted, so the fallback is not a blanket refusal.
-      const readTimeOnly = {
-         name: "read_time_only",
-         _sourceDef: {
-            query: { pipeline: [{}] },
-            filterList: [{ node: "filterCondition", e: { node: "given" } }],
-            fields: [{ name: "d", e: { node: "given" } }],
+      // And the same shape with the given only where it is applied at read
+      // (a term the source's own statement writes) stays admitted, so the
+      // fallback is not a blanket refusal.
+      const url = "file:///m.malloy";
+      const at = (line: number) => ({
+         url,
+         range: {
+            start: { line, character: 0 },
+            end: { line, character: 5 },
          },
-      } as unknown as PersistSource;
+      });
+      const readTimeOnly = (located: boolean) =>
+         ({
+            name: "read_time_only",
+            _sourceDef: {
+               ...(located
+                  ? {
+                       location: {
+                          url,
+                          range: {
+                             start: { line: 0, character: 0 },
+                             end: { line: 5, character: 0 },
+                          },
+                       },
+                    }
+                  : {}),
+               query: { pipeline: [{}] },
+               filterList: [
+                  {
+                     node: "filterCondition",
+                     e: { node: "given" },
+                     ...(located
+                        ? {
+                             refSummary: {
+                                givenUsage: [{ id: "G", at: at(2) }],
+                             },
+                          }
+                        : {}),
+                  },
+               ],
+               fields: [{ name: "d", e: { node: "given" } }],
+            },
+         }) as unknown as PersistSource;
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(readTimeOnly),
+         assertColocatedPersistNotAuthorizeGated(readTimeOnly(true)),
       ).not.toThrow();
+      // A read-time term that cannot be placed in the source's own statement
+      // fails closed: it may be inherited, which the read would not re-apply.
+      let refusal: unknown;
+      try {
+         assertColocatedPersistNotAuthorizeGated(readTimeOnly(false));
+      } catch (error) {
+         refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(MaterializationEligibilityError);
+      expect((refusal as { reason?: string }).reason).toBe(
+         "inherited_where_with_given",
+      );
    });
 
    it("refuses when the compiled definition cannot be read at all", () => {
@@ -1246,5 +1394,35 @@ describe("read-only dialect (colocated persist)", () => {
       expect(() =>
          assertColocatedPersistNotAuthorizeGated(source),
       ).not.toThrow();
+   });
+});
+
+describe("gateEnforcedAtRead's tier", () => {
+   // The policy's materialize row does not read the tier today, so a wrong
+   // tier would pass every table test; this pins what the predicate asks.
+   it("asks the gate policy for a #(materialize) table's own tier", () => {
+      const spy = spyOn(gatePolicy, "tableKeepsGates");
+      try {
+         const id = "s@m.malloy";
+         const gate = { classification: "row_level", attributed: true };
+         for (const [persist, tier] of [
+            [{ storage: "lake" }, "storage"],
+            [{}, "colocated"],
+            [undefined, "colocated"],
+         ] as const) {
+            spy.mockClear();
+            gateEnforcedAtRead(id, {
+               materializePlans: { [id]: { persist } },
+               sourceGateOutcomes: { [id]: gate },
+            } as never);
+            expect(spy).toHaveBeenCalledTimes(1);
+            expect(spy.mock.calls[0][0]).toMatchObject({
+               kind: "materialize",
+               tier,
+            });
+         }
+      } finally {
+         spy.mockRestore();
+      }
    });
 });

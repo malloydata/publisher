@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { localPackageFingerprint } from "./configured_publish_retry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
 import * as fs from "fs";
@@ -25,6 +26,7 @@ import {
    PUBLISHER_DATA_DIR,
 } from "../constants";
 import {
+   ConnectionSaveError,
    EnvironmentNotFoundError,
    FrozenConfigError,
    messageWithFilesystemCause,
@@ -34,6 +36,7 @@ import {
 import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
 import { redactPgSecrets } from "../pg_helpers";
+import { lazyCounter } from "../telemetry";
 import { assertSafePackageName, safeJoinUnderRoot } from "../path_safety";
 import {
    type ConnectionRecord,
@@ -42,13 +45,18 @@ import {
 } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { extractErrorDataFromError, validateAzureUrl } from "./db_utils";
-import { Environment, type PackageListingOptions } from "./environment";
+import {
+   Environment,
+   STAGING_DIR_NAME,
+   type PackageListingOptions,
+} from "./environment";
 import { formatPublishRejections } from "./publish_checks";
 import type { Package } from "./package";
 import { environmentResource } from "../api_resource";
 import { type EnvironmentName, parseEnvironmentName } from "./identity";
 import { VersionStore } from "./versions/version_store";
 import { storageBindingResolverFor } from "./versions/materialization_scope";
+import { withRollupKeyRecords } from "./materialization/run/inline_uniqueness";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { SERVER_VERSION } from "../version";
 import type {
@@ -75,6 +83,76 @@ type ApiConnection = components["schemas"]["Connection"];
 type LoadError = NonNullable<
    components["schemas"]["ServerStatus"]["loadErrors"]
 >[number];
+
+/**
+ * The connection rows one sync could not bring in line with memory. Each was
+ * logged where it failed; this is what the caller surfaces afterwards.
+ */
+interface ConnectionSaveFailures {
+   /** Connections whose row could not be written: lost on a restart. */
+   unsaved: string[];
+   /** Removed connections whose row could not be deleted: back on a restart. */
+   unremoved: string[];
+   /** The stored rows could not be listed, so none were pruned. */
+   unlisted: boolean;
+}
+
+function hasConnectionSaveFailures(failures: ConnectionSaveFailures): boolean {
+   return (
+      failures.unsaved.length > 0 ||
+      failures.unremoved.length > 0 ||
+      failures.unlisted
+   );
+}
+
+/**
+ * The answer to a sync whose connection rows did not all save. Composed here,
+ * from connection names only: the storage error itself is logged, not sent.
+ */
+function connectionSaveError(
+   environmentName: string,
+   failures: ConnectionSaveFailures,
+): ConnectionSaveError {
+   const quote = (names: string[]) => names.map((n) => `"${n}"`).join(", ");
+   const problems: string[] = [];
+   if (failures.unsaved.length > 0) {
+      problems.push(
+         `could not save connection(s) ${quote(failures.unsaved)}, which serve now but will be missing after a restart`,
+      );
+   }
+   if (failures.unremoved.length > 0) {
+      problems.push(
+         `could not delete removed connection(s) ${quote(failures.unremoved)}, which will return after a restart`,
+      );
+   }
+   if (failures.unlisted) {
+      problems.push(
+         "could not read its stored connections, so any connection this change removed will return after a restart",
+      );
+   }
+   return new ConnectionSaveError(
+      `Environment "${environmentName}" was updated, but the server ${problems.join("; and ")}. Retry the change to save them.`,
+      [...failures.unsaved, ...failures.unremoved],
+   );
+}
+
+/**
+ * What triggered an environment's sync to the database: a `request` that
+ * changed it (create, PATCH), the `boot` load, or a read that loaded it
+ * (`load`) or reloaded it (`reload`) from config. Only a `request` fails when
+ * a connection row does not save (see addEnvironmentToDatabase).
+ */
+type EnvironmentSyncPath = "request" | "boot" | "load" | "reload";
+
+/**
+ * Environment syncs whose connection rows did not all save. Counted because
+ * anywhere but a request (at boot, or on a read that loaded the environment)
+ * nothing else reports it off-box: the environment loads and serves.
+ */
+const connectionSaveFailureCounter = lazyCounter(
+   "publisher_connection_save_failures_total",
+   "Environment syncs to the database whose connection rows did not all save, so the connections in memory will differ after a restart. Label: path ('request'|'boot'|'load'|'reload').",
+);
 
 function validateEnvironmentAzureUrls(environment: ApiEnvironment): void {
    for (const conn of environment.connections || []) {
@@ -263,6 +341,11 @@ export class EnvironmentStore
     */
    private initError: string | null = null;
    private environmentMutexes = new Map<string, Mutex>();
+   /**
+    * Read in the constructor, not after storage opens: write paths check it
+    * before they wait for initialization, so a write during a slow first
+    * boot (or after a failed one) must already see `frozenConfig`.
+    */
    public publisherConfigIsFrozen: boolean;
    /**
     * Read once: the MCP server registers its tools per request, and must not
@@ -306,6 +389,7 @@ export class EnvironmentStore
       );
       this.mcpIncludeHiddenFilesAndSources =
          isMcpIncludeHiddenFilesAndSources();
+      this.publisherConfigIsFrozen = isPublisherConfigFrozen();
 
       for (const envName of settings.get("watchEnvironments")) {
          this.inPlaceEnvs.add(envName);
@@ -495,61 +579,144 @@ export class EnvironmentStore
 
    /**
     * Publish each configured package as the version its publisher.json
-    * declares (see addConfiguredEnvironment). One that cannot be published
-    * (no version, a refused check, a conflict) is recorded as that package's
-    * load error, as a configured package that does not mount is, and the
-    * others still load.
+    * declares (see addConfiguredEnvironment). A local location (a directory
+    * or a .zip) is published straight from where it is, so it is copied
+    * once. The remote ones (GitHub, gs://, s3://) are mounted first, by the
+    * loop an unversioned environment mounts its packages with
+    * (loadEnvironmentIntoDisk), into a folder under the environment's
+    * `.staging`: a location holding several packages is downloaded once, with
+    * labelled progress, and one that does not mount is recorded as that
+    * package's load error. Each is then published from its mount. A server
+    * stopped mid-mount leaves that folder behind, and the next boot's sweep of
+    * `.staging` removes it (Environment.sweepStaleInstallDirs), whether that
+    * boot reads the config or restores from the database. A package that
+    * cannot be published (no version, a refused check, a conflict) is recorded
+    * as its load error too, and the others still load.
     */
    private async publishConfiguredPackages(
       environment: Environment,
       packages: ProcessedEnvironment["packages"],
    ): Promise<void> {
+      if (packages.length === 0) return;
       const environmentName = environment.getEnvironmentName();
       const versions = environment.getVersionService();
-      for (const configured of packages) {
-         try {
-            if (!versions) {
-               throw new Error(
-                  "package versions are not available in this environment",
-               );
-            }
-            // A relative or `~/` location is the config's, resolved against
-            // its folder as an unversioned load resolves it (resolveLocalPath).
-            // downloadPackageInto stages only an absolute local path, and the
-            // recorded source location has to name the same folder when a
-            // later boot restores the version from it.
-            const location = isLocalPath(configured.location)
-               ? this.resolveLocalPath(configured.location)
-               : configured.location;
-            await versions.publish(
-               configured.name,
-               (stagingPath) =>
-                  this.downloadPackageInto(
-                     environmentName,
-                     configured.name,
-                     location,
-                     stagingPath,
-                  ),
-               {
-                  sourceLocation: location,
-                  promotion: getVersionPromotionMode(),
-                  validate: (loaded) => formatPublishRejections(loaded),
-               },
-            );
-         } catch (error) {
-            const message = redactPgSecrets(
-               error instanceof Error ? error.message : String(error),
-            );
-            logger.error(
-               `Failed to publish configured package "${configured.name}" as a version; skipping it`,
-               {
+      const remote = packages.filter((p) => !isLocalPath(p.location));
+      // Dot-prefixed, so no package's own staging (`<pkg>-<uuid>`) shares it.
+      const mountRoot = safeJoinUnderRoot(
+         environment.getEnvironmentPath(),
+         STAGING_DIR_NAME,
+         `.configured-${crypto.randomUUID()}`,
+      );
+      try {
+         let mountErrors: ReadonlyMap<string, string> = new Map();
+         if (remote.length > 0) {
+            try {
+               ({ mountErrors } = await this.loadEnvironmentIntoDisk(
                   environmentName,
-                  packageName: configured.name,
-                  error: message,
-               },
-            );
-            environment.setPackageMountError(configured.name, message);
+                  remote,
+                  mountRoot,
+               ));
+            } catch (error) {
+               // Nothing could be staged (the environment's folder refused
+               // the staging folder, say): each remote package is a load
+               // error, as a location that does not mount is, and the
+               // environment serves.
+               const failed = new Map<string, string>();
+               this.recordMountFailure(
+                  error,
+                  mountRoot,
+                  remote.map((p) => p.name),
+                  failed,
+               );
+               mountErrors = failed;
+            }
          }
+         for (const configured of packages) {
+            const mountError = mountErrors.get(configured.name);
+            if (mountError !== undefined) {
+               environment.setPackageMountError(configured.name, mountError);
+               continue;
+            }
+            try {
+               if (!versions) {
+                  throw new Error(
+                     "package versions are not available in this environment",
+                  );
+               }
+               // A relative or `~/` location is the config's, resolved against
+               // its folder (resolveLocalPath), so a later boot that restores
+               // the version from its recorded source location finds the same
+               // folder.
+               const local = isLocalPath(configured.location);
+               const sourceLocation = local
+                  ? this.resolveLocalPath(configured.location)
+                  : configured.location;
+               const fetchFrom = local
+                  ? sourceLocation
+                  : safeJoinUnderRoot(mountRoot, configured.name);
+               const publish = () =>
+                  versions.publish(
+                     configured.name,
+                     (stagingPath) =>
+                        this.downloadPackageInto(
+                           environmentName,
+                           configured.name,
+                           fetchFrom,
+                           stagingPath,
+                        ),
+                     {
+                        sourceLocation,
+                        promotion: getVersionPromotionMode(),
+                        validate: (loaded) => formatPublishRejections(loaded),
+                     },
+                  );
+               try {
+                  await publish();
+               } catch (error) {
+                  // A refused publish places nothing. A local location can be
+                  // read again, so the package's next access publishes it
+                  // again (Environment.setConfiguredPublishRetry); a remote
+                  // one's mount is removed below, so its reads answer this
+                  // error until the next --init.
+                  if (local) {
+                     environment.setConfiguredPublishRetry(
+                        configured.name,
+                        publish,
+                        () => localPackageFingerprint(sourceLocation),
+                     );
+                  } else {
+                     environment.setConfiguredPublishRefused(
+                        configured.name,
+                        error,
+                     );
+                  }
+                  throw error;
+               }
+            } catch (error) {
+               const message = redactPgSecrets(
+                  error instanceof Error ? error.message : String(error),
+               );
+               logger.error(
+                  `Failed to publish configured package "${configured.name}" as a version; skipping it`,
+                  {
+                     environmentName,
+                     packageName: configured.name,
+                     error: message,
+                  },
+               );
+               environment.setPackageMountError(configured.name, message);
+            }
+         }
+      } finally {
+         await fs.promises
+            .rm(mountRoot, { recursive: true, force: true })
+            .catch((error) =>
+               logger.warn("Could not remove a package staging folder", {
+                  environmentName,
+                  stagingRoot: mountRoot,
+                  error,
+               }),
+            );
       }
    }
 
@@ -615,8 +782,12 @@ export class EnvironmentStore
                   true,
                   // The config is only a fallback for a missing directory:
                   // its empty destination list must not prune destinations
+                  // registered over the API, nor its connections the ones
                   // registered over the API.
-                  { storageDestinationsAreFallback: true },
+                  {
+                     storageDestinationsAreFallback: true,
+                     connectionsAreFallback: true,
+                  },
                );
 
                await repository.updateEnvironment(dbEnvironment.id, {
@@ -708,6 +879,9 @@ export class EnvironmentStore
       try {
          await this.storageManager.initialize(reInit);
 
+         // Re-read from the same settings the constructor read, so a store
+         // built before its settings were installed (as tests do) still
+         // starts with the value in force.
          this.publisherConfigIsFrozen = isPublisherConfigFrozen();
 
          const environmentManifest =
@@ -856,7 +1030,11 @@ export class EnvironmentStore
       // A version of a `scope: version` package reads only its own runs;
       // everything else reads the package's shared runs.
       environment.setStorageBindingResolver(
-         storageBindingResolverFor(repository, environmentId),
+         storageBindingResolverFor(
+            repository,
+            environmentId,
+            withRollupKeyRecords,
+         ),
       );
       this.attachHooks(environment, VERSION_HOOKS);
       environment.bindVersions(repository, environmentId, {
@@ -942,8 +1120,21 @@ export class EnvironmentStore
       );
    }
 
+   /**
+    * Mirror an environment into the database. Every step runs even when an
+    * earlier one could not save a connection row, because memory has already
+    * changed and a skipped package sync would bring the environment back with
+    * no packages after a restart. A connection that did not save is surfaced
+    * only after all of them. Only a `request` that changed the environment
+    * (a create or PATCH) fails, with a {@link ConnectionSaveError} naming it.
+    * At `boot`, and on a `load` or `reload` from config that a read triggered,
+    * the environment still loads and the failure is logged and counted: at
+    * boot nothing is waiting for an answer, and a read changed nothing a
+    * retry of it could save.
+    */
    public async addEnvironmentToDatabase(
       environment: Environment,
+      { syncPath = "request" }: { syncPath?: EnvironmentSyncPath } = {},
    ): Promise<void> {
       if (!environment) {
          logger.error("Cannot sync: environment is null or undefined");
@@ -966,7 +1157,11 @@ export class EnvironmentStore
       // not leave it without them.
       await this.bindVersionRegistry(environment, dbEnvironment.id);
 
-      await this.addConnections(environment, dbEnvironment.id, repository);
+      const connectionFailures = await this.addConnections(
+         environment,
+         dbEnvironment.id,
+         repository,
+      );
       await this.syncStorageDestinations(
          environment,
          dbEnvironment.id,
@@ -974,7 +1169,23 @@ export class EnvironmentStore
       );
       await this.addPackages(environment, dbEnvironment.id, repository);
 
-      logger.info(`Synced environment "${environmentName}" to database`);
+      if (!hasConnectionSaveFailures(connectionFailures)) {
+         logger.info(`Synced environment "${environmentName}" to database`);
+         return;
+      }
+      connectionSaveFailureCounter().add(1, {
+         path: syncPath,
+      });
+      const error = connectionSaveError(environmentName, connectionFailures);
+      if (syncPath === "request") throw error;
+      logger.error(
+         `Loaded environment "${environmentName}", but its connections did not all save to the database`,
+         {
+            environmentName,
+            connections: error.connectionNames,
+            message: error.message,
+         },
+      );
    }
 
    public async deleteEnvironmentFromDatabase(
@@ -1132,43 +1343,114 @@ export class EnvironmentStore
       }
    }
 
+   /**
+    * Mirror an environment's connection list into the database so it survives
+    * a restart. The list has replace semantics (an environment PATCH replaces
+    * it wholesale), so rows the environment no longer holds are deleted too:
+    * a left-behind row would resurrect a removed connection on the next load,
+    * which restores connections from these rows.
+    *
+    * A failed row write does not stop the others, nor the rest of the sync:
+    * the in-memory list has already changed, so each step still mirrors what
+    * it can. The failures come back for the caller to surface once every
+    * step has run (see {@link addEnvironmentToDatabase}).
+    *
+    * Runs under the environment's connection lock, which ConnectionService
+    * holds while it writes a connection's row and then its in-memory entry.
+    * Unlocked, a connection added between this snapshot of the list and the
+    * listing of stored rows would have its fresh row pruned: it would serve
+    * until the restart and then be gone. No caller holds the lock here, and
+    * it is taken before any package lock, per the order Environment declares.
+    */
    private async addConnections(
       environment: Environment,
       environmentId: string,
       repository: ReturnType<typeof this.storageManager.getRepository>,
-   ): Promise<void> {
-      try {
-         const connections = environment.listApiConnections();
-         for (const conn of connections) {
-            if (!conn.name) {
-               logger.warn("Skipping connection with undefined name");
-               continue;
-            }
+   ): Promise<ConnectionSaveFailures> {
+      return environment.runConnectionUpdateExclusive(() =>
+         this.reconcileConnectionRows(environment, environmentId, repository),
+      );
+   }
 
+   private async reconcileConnectionRows(
+      environment: Environment,
+      environmentId: string,
+      repository: ReturnType<typeof this.storageManager.getRepository>,
+   ): Promise<ConnectionSaveFailures> {
+      const environmentName = environment.metadata?.name;
+      const failures: ConnectionSaveFailures = {
+         unsaved: [],
+         unremoved: [],
+         unlisted: false,
+      };
+      const kept = new Set<string>();
+      for (const conn of environment.listApiConnections()) {
+         if (!conn.name) {
+            logger.warn("Skipping connection with undefined name");
+            continue;
+         }
+         kept.add(conn.name);
+         try {
             const existingConn = await repository.getConnectionByName(
                environmentId,
                conn.name,
             );
-
             if (existingConn) {
                await this.updateConnection(conn, environmentId, repository);
             } else {
                await this.addConnection(conn, environmentId, repository);
             }
+         } catch (err: unknown) {
+            logger.error(
+               `Could not save connection "${conn.name}" of environment "${environmentName}"`,
+               extractErrorDataFromError(err),
+            );
+            failures.unsaved.push(conn.name);
          }
-      } catch (err: unknown) {
-         const error = err as Error;
-         const environmentName = environment.metadata?.name;
-         logger.error(
-            `Error syncing connections for "${environmentName}":`,
-            error,
-         );
       }
+
+      // Prune only against a list that IS the desired state, as for
+      // destinations: a fallback list (the config standing in for a missing
+      // directory) would delete every connection registered over the API.
+      if (!environment.hasAuthoritativeConnections()) {
+         logger.warn(
+            `Not reconciling stored connections for "${environmentName}": the in-memory list is a fallback, not the desired state`,
+         );
+         return failures;
+      }
+
+      let stored: Awaited<ReturnType<typeof repository.listConnections>>;
+      try {
+         stored = await repository.listConnections(environmentId);
+      } catch (err: unknown) {
+         logger.error(
+            `Could not list the stored connections of environment "${environmentName}", so none it removed were deleted`,
+            extractErrorDataFromError(err),
+         );
+         failures.unlisted = true;
+         return failures;
+      }
+      for (const row of stored) {
+         if (kept.has(row.name)) continue;
+         try {
+            await repository.deleteConnection(row.id);
+            logger.info(
+               `Removed connection ${row.name} from environment ${environmentName}`,
+            );
+         } catch (err: unknown) {
+            logger.error(
+               `Could not delete removed connection "${row.name}" of environment "${environmentName}"`,
+               extractErrorDataFromError(err),
+            );
+            failures.unremoved.push(row.name);
+         }
+      }
+      return failures;
    }
 
    /**
     * Mirror an environment's destination list into the database so it
-    * survives a restart. Unlike {@link addConnections} it also deletes rows the
+    * survives a restart. Like {@link addConnections} it also deletes rows the
     * environment no longer holds: the list has replace semantics, so a
     * left-behind row would resurrect a removed destination on the next load.
     */
@@ -1655,18 +1937,30 @@ export class EnvironmentStore
                },
             );
          }
-         return await this.addEnvironment({
-            name: environmentName,
-            resource: environmentResource(environmentName),
-            connections: environmentConfig?.connections || [],
-            // Only asserted when the config declares destinations: an empty
-            // list reads as "clear them", wiping API-registered ones on reload.
-            ...(environmentConfig?.storageDestinations?.length
-               ? {
-                    storageDestinations: environmentConfig.storageDestinations,
-                 }
-               : {}),
-         });
+         return await this.addEnvironment(
+            {
+               name: environmentName,
+               resource: environmentResource(environmentName),
+               connections: environmentConfig?.connections || [],
+               // Only asserted when the config declares destinations: an empty
+               // list reads as "clear them", wiping API-registered ones on reload.
+               ...(environmentConfig?.storageDestinations?.length
+                  ? {
+                       storageDestinations:
+                          environmentConfig.storageDestinations,
+                    }
+                  : {}),
+            },
+            false,
+            // The config's list (empty for an environment created over the
+            // API) is not a request to delete stored connections.
+            {
+               connectionsAreFallback: true,
+               // A read: a connection row that does not save is logged and
+               // counted, not answered with a 500 the caller cannot act on.
+               syncPath: reload ? "reload" : "load",
+            },
+         );
       });
    }
 
@@ -1674,15 +1968,28 @@ export class EnvironmentStore
     * `storageDestinationsAreFallback` marks the payload's destinations as a best
     * guess, so the database sync must not prune against them. It is a parameter
     * because this method syncs before it returns.
+    *
+    * `syncPath` decides how a connection row that did not save is surfaced
+    * (see {@link addEnvironmentToDatabase}). It defaults from
+    * `skipInitialization`, which only the boot paths (the config load and the
+    * database restore) set: `boot` there, where the environment must still
+    * load, and `request`, a failed request, otherwise. A read that loads or
+    * reloads from config passes its own.
     */
    public async addEnvironment(
       environment: ApiEnvironment,
       skipInitialization: boolean = false,
       {
          storageDestinationsAreFallback = false,
+         // The same for connections: the sync must not prune stored rows
+         // against the payload's list.
+         connectionsAreFallback = false,
          // The config's packages are published as versions once the
          // environment exists (see addConfiguredEnvironment), not loaded here.
          configuredPackagesPublished = false,
+         syncPath = (skipInitialization
+            ? "boot"
+            : "request") as EnvironmentSyncPath,
       } = {},
    ) {
       if (!skipInitialization) {
@@ -1704,7 +2011,12 @@ export class EnvironmentStore
          if (storageDestinationsAreFallback) {
             updatedEnvironment.markStorageDestinationsUnknown();
          }
-         await this.addEnvironmentToDatabase(updatedEnvironment);
+         if (connectionsAreFallback) {
+            updatedEnvironment.markConnectionsUnknown();
+         }
+         await this.addEnvironmentToDatabase(updatedEnvironment, {
+            syncPath,
+         });
          return updatedEnvironment;
       }
       const environmentManifest =
@@ -1762,7 +2074,12 @@ export class EnvironmentStore
       if (storageDestinationsAreFallback) {
          newEnvironment.markStorageDestinationsUnknown();
       }
-      await this.addEnvironmentToDatabase(newEnvironment);
+      if (connectionsAreFallback) {
+         newEnvironment.markConnectionsUnknown();
+      }
+      await this.addEnvironmentToDatabase(newEnvironment, {
+         syncPath,
+      });
 
       return newEnvironment;
    }
@@ -1932,16 +2249,25 @@ export class EnvironmentStore
       }
    }
 
+   /**
+    * Mount an environment's packages, each at `<targetRoot>/<name>`:
+    * `targetRoot` is the environment's own folder when its packages are served
+    * from where they are mounted, or a staging folder they are published from
+    * (publishConfiguredPackages).
+    */
    private async loadEnvironmentIntoDisk(
       environmentName: string,
       packages: ApiEnvironment["packages"],
+      targetRoot?: string,
    ) {
       assertSafePackageName(environmentName);
-      const absoluteTargetPath = safeJoinUnderRoot(
-         this.serverRootPath,
-         PUBLISHER_DATA_DIR,
-         environmentName,
-      );
+      const absoluteTargetPath =
+         targetRoot ??
+         safeJoinUnderRoot(
+            this.serverRootPath,
+            PUBLISHER_DATA_DIR,
+            environmentName,
+         );
       const mountErrors = new Map<string, string>();
 
       await fs.promises.mkdir(absoluteTargetPath, { recursive: true });
@@ -2225,8 +2551,12 @@ export class EnvironmentStore
             `Failed to ${selected.action} "${selected.subject}"`,
             errorData,
          );
+         // A local location is a path on this server: the answer names the
+         // package instead. A remote one (a URL) is the caller's own text.
          throw new PackageNotFoundError(
-            `Failed to ${selected.action}: ${selected.subject}`,
+            selected.source === this.packageSources.local
+               ? `Failed to ${selected.action} for package "${packageName}"`
+               : `Failed to ${selected.action}: ${selected.subject}`,
             { cause: error },
          );
       }

@@ -1,0 +1,196 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "dim_c@<pkg>/m.malloy": [],
+          "fact_joined@<pkg>/joined.malloy": [],
+          "fact_s@<pkg>/m.malloy": []
+        },
+        "order": [
+          "dim_c@<pkg>/m.malloy",
+          "fact_s@<pkg>/m.malloy",
+          "fact_joined@<pkg>/joined.malloy"
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "dim_c@<pkg>/m.malloy": [],
+          "fact_s@<pkg>/m.malloy": []
+        },
+        "order": [
+          "dim_c@<pkg>/m.malloy",
+          "fact_s@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "dim_c@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "fact_joined@<pkg>/joined.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "fact_s@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "dim_c@<pkg>/m.malloy": "m.malloy",
+      "fact_joined@<pkg>/joined.malloy": "joined.malloy",
+      "fact_s@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "dim_c@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "fact_s@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "fact_joined@<pkg>/joined.malloy"
+            }
+          ]
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "dim_c@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "fact_s@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "dim_c@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "dim_colocated"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "segment",
+            "type": "string"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "dim_c",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280",
+        "sourceID": "dim_c@<pkg>/m.malloy",
+        "sql": "sha256:81fe99d466a9c86b"
+      },
+      "fact_joined@<pkg>/joined.malloy": {
+        "annotationFields": {
+          "name": "fact_stored",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "joined.malloy",
+        "name": "fact_joined",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee",
+        "sourceID": "fact_joined@<pkg>/joined.malloy",
+        "sql": "sha256:21e13ad9d9bed26f"
+      },
+      "fact_s@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "fact_stored",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "fact_s",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee",
+        "sourceID": "fact_s@<pkg>/m.malloy",
+        "sql": "sha256:21e13ad9d9bed26f"
+      }
+    }
+  }
+}

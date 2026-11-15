@@ -124,8 +124,41 @@ interface JobContext {
    timeout: ReturnType<typeof setTimeout>;
 }
 
+/**
+ * How long a background job may wait behind foreground jobs before a free
+ * worker takes it anyway, so sustained user load never starves a connection
+ * edit's re-derivation (whose readers would otherwise answer 503 forever).
+ */
+export const BACKGROUND_JOB_MAX_WAIT_MS = 30_000;
+
+/**
+ * Which queued job a free worker takes: the oldest background job once it has
+ * waited {@link BACKGROUND_JOB_MAX_WAIT_MS}, otherwise the oldest foreground
+ * job, or the oldest background job when no foreground job waits (see
+ * LoadPackageJob.background). A job without `enqueuedAt` never ages.
+ */
+export function nextQueuedJobIndex(
+   queue: readonly {
+      request: { background?: boolean };
+      enqueuedAt?: number;
+   }[],
+   now: number = Date.now(),
+   maxBackgroundWaitMs: number = BACKGROUND_JOB_MAX_WAIT_MS,
+): number {
+   const background = queue.findIndex((q) => q.request.background);
+   const waitedSince =
+      background >= 0 ? queue[background].enqueuedAt : undefined;
+   if (waitedSince !== undefined && now - waitedSince >= maxBackgroundWaitMs) {
+      return background;
+   }
+   const foreground = queue.findIndex((q) => !q.request.background);
+   return foreground >= 0 ? foreground : 0;
+}
+
 interface QueuedJob {
    request: LoadPackageJob;
+   /** When it was queued, for {@link nextQueuedJobIndex}'s aging. */
+   enqueuedAt?: number;
    resolve: (result: LoadPackageOutcome) => void;
    reject: (err: Error) => void;
 }
@@ -177,6 +210,14 @@ export interface LoadPackageJob {
    computeBuildPlan?: boolean;
    /** See {@link LoadPackageRequest.withPreaggregateCompanions}. */
    withPreaggregateCompanions?: boolean;
+   /** See {@link LoadPackageRequest.withEntities}. */
+   withEntities?: boolean;
+   /**
+    * Background work (a connection edit's build-plan re-derivation): stays on
+    * this thread's queue behind every foreground job, so a publish or reload
+    * waits for at most the background job already running, never a backlog.
+    */
+   background?: boolean;
 }
 
 /**
@@ -290,6 +331,11 @@ export class PackageLoadPool {
       return this.workers.filter((w) => !w.exited).length;
    }
 
+   /** Test-only: whether shutdown() has been called. */
+   get isShutDownForTests(): boolean {
+      return this.shuttingDown;
+   }
+
    /**
     * Submit a package for off-thread load. Per-model compile failures come
     * back inside the outcome (`model.compilationError`); the Promise rejects
@@ -300,7 +346,7 @@ export class PackageLoadPool {
          throw new Error("PackageLoadPool is shutting down");
       }
       return new Promise<LoadPackageOutcome>((resolve, reject) => {
-         this.queue.push({ request, resolve, reject });
+         this.queue.push({ request, resolve, reject, enqueuedAt: Date.now() });
          this.tryDispatch();
       });
    }
@@ -348,7 +394,7 @@ export class PackageLoadPool {
       while (this.queue.length > 0) {
          const worker = this.findIdleOrSpawnable();
          if (!worker) return; // saturated; wait for a job to finish
-         const qj = this.queue.shift();
+         const [qj] = this.queue.splice(nextQueuedJobIndex(this.queue), 1);
          if (!qj) return;
          void this.dispatchToWorker(worker, qj);
       }
@@ -422,6 +468,7 @@ export class PackageLoadPool {
          collectProblems: qj.request.collectProblems,
          computeBuildPlan: qj.request.computeBuildPlan,
          withPreaggregateCompanions: qj.request.withPreaggregateCompanions,
+         withEntities: qj.request.withEntities,
          mainThreadWorkBudgetMs: this.mainThreadWorkBudgetMs,
       };
       pw.worker.postMessage(message);
@@ -933,7 +980,13 @@ const defaultUrlReader = {
 
 let singleton: PackageLoadPool | null = null;
 
+/** Test-only: what makes the pool when there is none; see the setter below. */
+let poolFactoryForTests: (() => PackageLoadPool) | undefined;
+
 export function getPackageLoadPool(): PackageLoadPool {
+   if (singleton === null && poolFactoryForTests) {
+      singleton = poolFactoryForTests();
+   }
    if (singleton === null) {
       const n = getPackageLoadWorkerCount();
       singleton = new PackageLoadPool(n);
@@ -945,12 +998,27 @@ export function getPackageLoadPool(): PackageLoadPool {
    return singleton;
 }
 
-/** Test-only: replace the singleton (and shut down the previous one). */
+/**
+ * Test-only: replace the singleton, and shut down the previous one unless
+ * `keep` holds it (a test helper that reuses pools; see freshLoadPool).
+ */
 export async function __setPackageLoadPoolForTests(
    pool: PackageLoadPool | null,
+   keep?: ReadonlySet<PackageLoadPool>,
 ): Promise<void> {
-   if (singleton && singleton !== pool) {
+   if (singleton && singleton !== pool && !keep?.has(singleton)) {
       await singleton.shutdown();
    }
    singleton = pool;
+}
+
+/**
+ * Test-only: make the pool, when there is none, with `factory` rather than a
+ * new one. It runs at the first load after the pool was cleared, so it sees
+ * the settings that load runs under.
+ */
+export function __setPackageLoadPoolFactoryForTests(
+   factory: (() => PackageLoadPool) | undefined,
+): void {
+   poolFactoryForTests = factory;
 }

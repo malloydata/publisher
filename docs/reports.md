@@ -950,20 +950,21 @@ old Console link `/<env>/<pkg>/dashboards/<name>` or `/notebooks/<name>` still o
 opens at its path, and otherwise a unique basename redirects to the report's path. All of these are removed
 in a later release; use `…/reports`.
 
-After editing a report file, `GET …/packages/<pkg>?reload=true` recompiles the package in place, and a
-reload that fails to compile leaves the previously compiled model serving. [AGENTS.md](../AGENTS.md) §6
-covers the edit loop and watch mode.
+After editing a report file in a watched environment (`--watch-env`), `GET …/packages/<pkg>?reload=true`
+recompiles the package in place, and a reload that fails to compile leaves the previously compiled model
+serving. By default every other package is a published version, which is immutable: a reload returns it
+unchanged, so an edited report ships as a new version. [AGENTS.md](../AGENTS.md) §6 covers the edit loop and watch mode.
 
 <a id="the-write-path"></a>
 
 ### The write path
 
 `PUT …/models/{path}`, body `{"source": "…", "expectedHash": "<sha256 of the text you read>"}`, writes a
-report into the package and reloads it. One rule for both layouts:
+report into a package mounted in place (a watched environment) and reloads it. One rule for both layouts:
 
 - **Create** (omit `expectedHash`) at any `.malloy` path in the package that does not exist yet, outside
   `public/` and never at the root `index.malloy`. Missing directories are created inside the package. The
-  text must carry an artifact tag. A file already at that path answers `409`.
+  text must carry an artifact tag. A file already at that path answers `409` with `reason` `FILE_EXISTS`.
 - **Replace** (with `expectedHash`) only a file with an artifact tag: a report the package serves, or a
   tagged file it refuses as one (a retired cell-format file, a `kind=` tag), so that file can be rewritten
   as tiles in place. The endpoint cannot overwrite a model, an untagged file, a `.malloynb` or `index.malloy`, wherever they live.
@@ -973,6 +974,12 @@ report into the package and reloads it. One rule for both layouts:
   restored if the reload does not take it or the file is not then a served report. A text that declares a
   real `#(authorize)` or `#(access_filter)` gate outside prose is refused with `400`: gates live in the model.
 - `403` under `frozenConfig`.
+- `409` with `reason` `PACKAGE_IS_VERSIONED` for a package with published versions, which by default is every
+  package outside a watched environment: a version is immutable. Add the report to the package's source, bump
+  `version` in its `publisher.json`, and publish it again. With versioning off, a package installed from a
+  `location` (a publish over the API that named one) answers `409` with `reason`
+  `PACKAGE_INSTALLED_FROM_LOCATION` instead: a reload fetches it again and replaces its files, so a report
+  written into it would be lost. Only `FILE_EXISTS` means another path may be free.
 
 Two reports may share a basename in different directories; there is no name-collision `409`.
 
@@ -1247,6 +1254,35 @@ never takes a model given's name, and give the reader `<DashboardView literalRea
 tile reads by its `tile.query`, so a tile filtered that way is not marked as ignoring them. `hiddenGivens` names givens the host sets itself, which get no control, and `givens` carries their
 values. A gate whose given the request did not send denies, so a host that never sends them sees every tile on a
 gated source as restricted.
+
+## Showing one in a conversation
+
+An agent shows a report to a person with two MCP tools: `list_reports` for a package's report paths, then
+`show_report` with one of them, and optionally starting filter values:
+
+```json
+{ "environmentName": "examples", "packageName": "storefront", "path": "overview.malloy",
+  "givens": { "CATEGORY": "Outerwear" } }
+```
+
+A host that supports [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) (Claude Desktop and
+claude.ai among them) draws the report in the conversation, as the Console's reader draws it: the filter row,
+every tile, the click menu with Show rows, and `# drill` click-through, where a drill to another report opens it
+in the same panel with Back to return. "Open in Publisher" takes the report and its current filter values to the
+Console. A host that draws no panel shows the tool's text, which names the report, its tiles and filters, and
+its Console address.
+
+The panel holds no credentials and fetches nothing itself. Its reads (the report, its tiles' queries, the
+filter suggestions) go back through the host as calls to `report_api`, an app-only tool that answers them
+through the same controllers as the REST routes. A report therefore runs in a panel under the same
+`#(authorize)` gates, row filters, givens and access record as in the Console, for the caller the MCP request
+carries. Its script loads from the REST server, at `MCP_APP_ORIGIN` (default `http://localhost:{port}`); set it
+to the address a host's browser reaches that server at. The panel offers no CSV download, which a sandboxed
+frame cannot start; the Console does.
+
+A host's sandbox typically refuses `eval`. Charts draw there through Vega's interpreter, chosen automatically
+when the page refuses it; scatter charts and the three maps do not yet (`@malloydata/render` compiles their
+expressions), and show an error card in the panel where the Console draws them.
 
 ## Where reports stop
 

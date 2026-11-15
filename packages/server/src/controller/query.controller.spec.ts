@@ -121,6 +121,35 @@ describe("QueryController.getQuery", () => {
       },
    );
 
+   // A REST body is untyped: a non-string reached the model and answered 500.
+   it.each([
+      ["query", { query: { text: "run: s -> { group_by: a }" } }],
+      ["query", { query: 42 }],
+      ["sourceName", { sourceName: ["s"] }],
+      ["queryName", { queryName: { name: "q" } }],
+   ])(
+      "refuses a non-string %s with a 400 naming it, before touching the environment",
+      async (field, body) => {
+         const { controller, getEnvironment } = controllerWith();
+         const error = await run(
+            controller,
+            body as unknown as Partial<QueryRequest>,
+         ).catch((e) => e);
+         expect(error).toBeInstanceOf(BadRequestError);
+         expect(error.message).toBe(`${field} must be a string`);
+         expect(getEnvironment.called).toBe(false);
+      },
+   );
+
+   it("still reads a null query as absent", async () => {
+      const { controller, runQuery } = controllerWith();
+      await run(controller, {
+         query: null as unknown as string,
+         queryName: "q",
+      });
+      expect(runQuery.called).toBe(true);
+   });
+
    it("answers a missing model with a plain 404", async () => {
       const { controller } = controllerWith({ model: false });
       const error = await run(controller).catch((e) => e);

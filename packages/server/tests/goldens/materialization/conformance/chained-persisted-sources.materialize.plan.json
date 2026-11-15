@@ -1,0 +1,308 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "orders_base@<pkg>/base.malloy": [],
+          "orders_rollup@<pkg>/base.malloy": []
+        },
+        "order": [
+          "orders_base@<pkg>/base.malloy",
+          "orders_rollup@<pkg>/base.malloy"
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "orders_rollup_x@<pkg>/rollup.malloy": []
+        },
+        "order": [
+          "orders_rollup_x@<pkg>/rollup.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "orders_base@<pkg>/base.malloy": {
+        "buildSourceName": "orders_base__mat",
+        "columns": [
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "total_amount",
+            "computed": false,
+            "dimension": "total_amount"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "orders_base",
+          "storage": "lake"
+        },
+        "sourceID": "orders_base@<pkg>/base.malloy",
+        "sourceName": "orders_base",
+        "storedColumns": [
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "total_amount",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "orders_rollup@<pkg>/base.malloy": {
+        "buildSourceName": "orders_rollup__mat",
+        "columns": [
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "regions",
+            "computed": false,
+            "dimension": "regions"
+          },
+          {
+            "column": "t",
+            "computed": false,
+            "dimension": "t"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "orders_rollup",
+          "storage": "lake"
+        },
+        "sourceID": "orders_rollup@<pkg>/base.malloy",
+        "sourceName": "orders_rollup",
+        "storedColumns": [
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "regions",
+            "type": "BIGINT"
+          },
+          {
+            "name": "t",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "orders_rollup_x@<pkg>/rollup.malloy": {
+        "buildSourceName": "orders_rollup_x__mat",
+        "columns": [
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "statuses",
+            "computed": false,
+            "dimension": "statuses"
+          },
+          {
+            "column": "t",
+            "computed": false,
+            "dimension": "t"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "orders_rollup_x",
+          "storage": "lake"
+        },
+        "sourceID": "orders_rollup_x@<pkg>/rollup.malloy",
+        "sourceName": "orders_rollup_x",
+        "storedColumns": [
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "statuses",
+            "type": "BIGINT"
+          },
+          {
+            "name": "t",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "orders_base@<pkg>/base.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "orders_rollup@<pkg>/base.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "orders_rollup_x@<pkg>/rollup.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders_base@<pkg>/base.malloy": "base.malloy",
+      "orders_rollup@<pkg>/base.malloy": "base.malloy",
+      "orders_rollup_x@<pkg>/rollup.malloy": "rollup.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders_base@<pkg>/base.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "orders_rollup@<pkg>/base.malloy"
+            }
+          ]
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders_rollup_x@<pkg>/rollup.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders_base@<pkg>/base.malloy": {
+        "annotationFields": {
+          "name": "orders_base",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "base.malloy",
+        "name": "orders_base",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "8c2bf9a494a8b47b9c6c6a775e60743cfd4d9aff10c10303af8020ffa8b5b370",
+        "sourceID": "orders_base@<pkg>/base.malloy",
+        "sql": "sha256:5538f2bdc4e828f4"
+      },
+      "orders_rollup@<pkg>/base.malloy": {
+        "annotationFields": {
+          "name": "orders_rollup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "regions",
+            "type": "number"
+          },
+          {
+            "name": "t",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "base.malloy",
+        "name": "orders_rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "885c3a22adcd8bbaf839648f46134db6cfa303fb7775d64d4823cc2c419da9fe",
+        "sourceID": "orders_rollup@<pkg>/base.malloy",
+        "sql": "sha256:48fed4362a0c903e"
+      },
+      "orders_rollup_x@<pkg>/rollup.malloy": {
+        "annotationFields": {
+          "name": "orders_rollup_x",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "statuses",
+            "type": "number"
+          },
+          {
+            "name": "t",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "rollup.malloy",
+        "name": "orders_rollup_x",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "8c121a419b30f0213986a811a8456baaf58a05e2036b4f6d49e49c490f2cb390",
+        "sourceID": "orders_rollup_x@<pkg>/rollup.malloy",
+        "sql": "sha256:e75658791c5f0750"
+      }
+    }
+  }
+}

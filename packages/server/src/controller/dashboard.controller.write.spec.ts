@@ -12,6 +12,8 @@ import {
    WriteConflictError,
    WriteRollbackFailedError,
    WriteRolledBackError,
+   InstalledFromLocationError,
+   internalErrorToHttpError,
 } from "../errors";
 import { resetReportMetricsForTest } from "../report_metrics";
 import {
@@ -67,6 +69,8 @@ function harness(
       reloadedNotes?: string[];
       /** A refusal the environment raises once the lock is held (a link leading outside). */
       writeRefusal?: Error;
+      /** The location the package was installed from, if any (its install record). */
+      installedFrom?: string;
    } = {},
 ) {
    const model = {
@@ -81,6 +85,10 @@ function harness(
          },
    };
    const pkg = {
+      getPackageMetadata: () => ({
+         name: "pkg",
+         location: options.installedFrom,
+      }),
       getModel: sinon.stub().returns(model),
       // A report, served or (a grid one with no tiles yet) not.
       isReport: () =>
@@ -481,8 +489,8 @@ describe("ReportController.putReportSource", () => {
       ).rejects.toBeInstanceOf(WriteConflictError);
    });
 
-   // A conflict, never a 400, whatever is there: a caller choosing a name
-   // (`createDocument`) retries on 409 alone.
+   // A conflict, never a 400, whatever is there, with reason FILE_EXISTS: a
+   // caller choosing a name (`createDocument`) tries the next on that alone.
    it.each([
       ["a report", BEFORE, true],
       ["a model", "source: a is duckdb.sql('select 1')\n", false],
@@ -490,13 +498,52 @@ describe("ReportController.putReportSource", () => {
       "refuses to create over %s when no expectedHash is sent",
       async (_name, current, loadedReport) => {
          const { controller } = harness({ current, loadedReport });
-         await expect(
-            controller.putReportSource("env", "pkg", PATH, {
-               source: AFTER,
-            }),
-         ).rejects.toBeInstanceOf(WriteConflictError);
+         const refusal = controller.putReportSource("env", "pkg", PATH, {
+            source: AFTER,
+         });
+         await expect(refusal).rejects.toBeInstanceOf(WriteConflictError);
+         const error = (await refusal.catch((e: Error) => e)) as Error;
+         expect(internalErrorToHttpError(error, { log: false })).toMatchObject({
+            status: 409,
+            json: { reason: "FILE_EXISTS" },
+         });
       },
    );
+
+   it("answers a stale expectedHash with 409 and no reason, never FILE_EXISTS", async () => {
+      const { controller } = harness({ current: "## artifact { } changed" });
+      const error = (await controller
+         .putReportSource("env", "pkg", PATH, {
+            source: AFTER,
+            expectedHash: contentHashOf(BEFORE),
+         })
+         .catch((e: Error) => e)) as Error;
+      const answer = internalErrorToHttpError(error, { log: false });
+      expect(answer.status).toBe(409);
+      expect("reason" in answer.json).toBe(false);
+   });
+
+   it("refuses a write to a package installed from a location, which a reload would discard (409)", async () => {
+      const { controller, environment } = harness({
+         current: BEFORE,
+         installedFrom: "gs://bucket/pkg.zip",
+      });
+      const refusal = controller.putReportSource("env", "pkg", PATH, {
+         source: AFTER,
+         expectedHash: contentHashOf(BEFORE),
+      });
+      await expect(refusal).rejects.toThrow(
+         /installed from gs:\/\/bucket\/pkg\.zip.*reload/,
+      );
+      await expect(refusal).rejects.toBeInstanceOf(InstalledFromLocationError);
+      const error = (await refusal.catch((e: Error) => e)) as Error;
+      expect(internalErrorToHttpError(error, { log: false })).toMatchObject({
+         status: 409,
+         json: { reason: "PACKAGE_INSTALLED_FROM_LOCATION" },
+      });
+      expect(environment.compileSource.called).toBe(false);
+      expect(environment.writeModelFileTransactional.called).toBe(false);
+   });
 
    it("refuses text that does not compile, and writes nothing", async () => {
       const { controller, environment } = harness({

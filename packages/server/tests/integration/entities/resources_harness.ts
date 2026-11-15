@@ -18,7 +18,10 @@ import { startRestE2E } from "../../harness/rest_e2e";
 export type Reply = { status: number; json: Record<string, unknown> };
 
 export type ResourcesEnv = {
-   /** A package directory with `publisher.json` (`name` plus `manifest`) and `files`. */
+   /**
+    * A package directory with `publisher.json` (`name`, version 1.0.0 unless
+    * `manifest` says otherwise, plus `manifest`) and `files`.
+    */
    writePackage(
       name: string,
       files: Record<string, string>,
@@ -62,7 +65,7 @@ export async function startResourcesEnv(
          const dir = fs.mkdtempSync(path.join(tempDir, `${name}-`));
          fs.writeFileSync(
             path.join(dir, "publisher.json"),
-            JSON.stringify({ name, ...manifest }),
+            JSON.stringify({ name, version: "1.0.0", ...manifest }),
          );
          for (const [file, text] of Object.entries(files)) {
             fs.writeFileSync(path.join(dir, file), text);

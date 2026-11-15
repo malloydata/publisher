@@ -5,7 +5,7 @@ import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as sinon from "sinon";
 import { logger } from "../../../logger";
-import { BuildInstruction } from "../types";
+import { BuildInstruction } from "../domain/types";
 import { linesMentioning } from "../../../test_helpers/log_lines";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import {
@@ -56,7 +56,6 @@ describe("buildOneSource", () => {
                s: unknown,
                i: BuildInstruction,
                c: unknown,
-               d: Record<string, string>,
                m: Manifest,
                env: unknown,
                built: Record<string, unknown>,
@@ -67,7 +66,6 @@ describe("buildOneSource", () => {
          source,
          instruction,
          connection,
-         { duckdb: "dig" },
          manifest,
          {
             getApiConnection: () => {
@@ -106,6 +104,8 @@ describe("buildOneSource", () => {
       });
 
       const bags = runSQL.getCalls().map((c) => c.args[1]?.queryMetadata);
+      // The staging drop, the CTAS, the swap, and the read of the built
+      // table's column types (colocated_native_types.ts).
       expect(bags).toHaveLength(4);
       for (const bag of bags) {
          expect(bag).toEqual({
@@ -155,11 +155,14 @@ describe("buildOneSource", () => {
       const entry = await callBuildOneSource({ runSQL }, "orders_v1");
 
       const sql = runSQL.getCalls().map((c) => c.args[0] as string);
+      // DuckDB: the served table is dropped and replaced in one transaction,
+      // so no reader finds the name missing.
       expect(sql).toEqual([
          'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
-         'DROP TABLE IF EXISTS "orders_v1"',
-         'ALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1"',
+         'BEGIN TRANSACTION;\nDROP TABLE IF EXISTS "orders_v1";\nALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1";\nCOMMIT;',
+         // Then the built table's column types (colocated_native_types.ts).
+         'DESCRIBE "orders_v1"',
       ]);
       expect(entry.physicalTableName).toBe("orders_v1");
       expect(entry.sourceEntityId).toBe("abcdef1234567890");
@@ -183,8 +186,11 @@ describe("buildOneSource", () => {
       expect(sql).toEqual([
          'DROP TABLE IF EXISTS "MY_SCHEMA"."orders_v1_abcdef123456"',
          'CREATE TABLE "MY_SCHEMA"."orders_v1_abcdef123456" AS (SELECT * FROM t)',
-         'DROP TABLE IF EXISTS "MY_SCHEMA"."orders_v1"',
+         // Snowflake: renamed aside, the new table renamed in, the old dropped.
+         'ALTER TABLE "MY_SCHEMA"."orders_v1" RENAME TO "MY_SCHEMA"."orders_v1_oabcdef12345"',
          'ALTER TABLE "MY_SCHEMA"."orders_v1_abcdef123456" RENAME TO "MY_SCHEMA"."orders_v1"',
+         'DROP TABLE IF EXISTS "MY_SCHEMA"."orders_v1_oabcdef12345"',
+         "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders_v1') AND lower(table_schema) = lower('MY_SCHEMA') ORDER BY ordinal_position",
       ]);
       // The manifest keeps the logical name the control plane sent.
       expect(entry.physicalTableName).toBe("MY_SCHEMA.orders_v1");
@@ -201,6 +207,9 @@ describe("buildOneSource", () => {
       );
 
       const sql = runSQL.getCalls().map((c) => c.args[0] as string);
+      expect(sql[2]).toBe(
+         "ALTER TABLE `mydataset`.`orders_v1` RENAME TO `orders_v1_oabcdef12345`",
+      );
       expect(sql[3]).toBe(
          "ALTER TABLE `mydataset`.`orders_v1_abcdef123456` RENAME TO `orders_v1`",
       );
@@ -274,8 +283,10 @@ describe("buildOneSource", () => {
       expect(sql).toEqual([
          "DROP TABLE IF EXISTS `ds`.`orders_v1_abcdef123456`",
          "CREATE TABLE `ds`.`orders_v1_abcdef123456` AS (SELECT * FROM t)",
-         "DROP TABLE IF EXISTS `ds`.`orders_v1`",
+         "ALTER TABLE `ds`.`orders_v1` RENAME TO `orders_v1_oabcdef12345`",
          "ALTER TABLE `ds`.`orders_v1_abcdef123456` RENAME TO `orders_v1`",
+         "DROP TABLE IF EXISTS `ds`.`orders_v1_oabcdef12345`",
+         "SELECT column_name, data_type FROM `ds`.INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'orders_v1' ORDER BY ordinal_position",
       ]);
       expect(entry.physicalTableName).toBe("ds.orders_v1");
    });
@@ -331,7 +342,6 @@ describe("buildOneSource", () => {
             realization: "COPY",
          }, // no destination ⇒ colocated
          { runSQL },
-         { duckdb: "dig" },
          manifest,
          {
             getApiConnection: () => {
@@ -441,7 +451,6 @@ describe("buildOneSource reports upstreamReuse from the manifest it substituted 
          source,
          instruction,
          { runSQL: sinon.stub().resolves(undefined) },
-         { duckdb: "dig" },
          manifest,
          {
             getApiConnection: () => ({}),

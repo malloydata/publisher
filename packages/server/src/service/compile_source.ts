@@ -34,8 +34,20 @@ import {
 } from "../path_safety";
 import { UNCODED_REPORT_FINDING } from "../report_metrics";
 import { lazyCounter } from "../telemetry";
+import {
+   callerVisibleText,
+   OUTSIDE_PACKAGE,
+   packageRelativeText,
+   withPackageRelativeErrors,
+} from "../package_relative_text";
 import { URL_READER } from "../utils";
-import { assertNoCallerAuthorizeAnnotation } from "./authorize";
+import {
+   ANNOTATION_GATE_NEAR_MISS_CODE,
+   ANNOTATION_NEAR_MISS_CODE,
+   annotationNearMisses,
+   authoredNotes,
+} from "./annotation_near_miss";
+import { assertNoCallerAuthorizeAnnotation, gateNearMissOf } from "./authorize";
 import type { CallerRegion } from "./caller_joins";
 import { compileDocument, type CompiledDocument } from "./compile_document";
 import {
@@ -240,9 +252,19 @@ export async function compileSource(
    assertValidCompileRequest(request);
    const compileIn = async (versioned: Package | undefined) => {
       const ctx = await openCompileContext(host, request, versioned);
-      if (scope === "package") return compilePackageDryRun(ctx);
-      if (scope === "file") return compileFile(ctx);
-      return compileAppend(ctx);
+      // The diagnostics, and a refusal, name the package's files
+      // package-relative, never where this server keeps them.
+      const result = await withPackageRelativeErrors(ctx.packagePath, () => {
+         if (scope === "package") return compilePackageDryRun(ctx);
+         if (scope === "file") return compileFile(ctx);
+         return compileAppend(ctx);
+      });
+      return {
+         ...result,
+         problems: result.problems.map((problem) =>
+            packageRelativeProblem(problem, ctx.packagePath),
+         ),
+      };
    };
    // A published version compiles in its own folder with no lock: its files
    // never change.
@@ -256,6 +278,39 @@ export async function compileSource(
    return host.withPackageLock(packageName, async () =>
       compileIn(await host.versionedPackage(packageName, versionId, true)),
    );
+}
+
+/**
+ * `problem` as a caller may read it: its message naming the package's files
+ * package-relative, and its `at.url` a package file's path relative to the
+ * package root, decoded (`sub dir/a b.malloy`, not `sub%20dir/…`), or
+ * {@link OUTSIDE_PACKAGE} for a file outside the package.
+ */
+function packageRelativeProblem(
+   problem: TaggedLogMessage,
+   packagePath: string,
+): TaggedLogMessage {
+   const at = (problem as { at?: { url?: string } }).at;
+   return {
+      ...problem,
+      message: callerVisibleText(problem.message, packagePath),
+      ...(at?.url !== undefined && {
+         at: { ...at, url: callerVisibleUrl(at.url, packagePath) },
+      }),
+   } as TaggedLogMessage;
+}
+
+function callerVisibleUrl(url: string, packagePath: string): string {
+   if (!url.toLowerCase().startsWith("file:")) {
+      return callerVisibleText(url, packagePath);
+   }
+   const relative = packageRelativeText(url, packagePath);
+   if (relative.toLowerCase().startsWith("file:")) return OUTSIDE_PACKAGE;
+   try {
+      return decodeURIComponent(relative);
+   } catch {
+      return relative;
+   }
 }
 
 /** The argument checks every scope runs before taking the package lock. */
@@ -443,15 +498,18 @@ async function openCompileContext(
    if (!documentCandidate) await runEarlyGate();
 
    // The package's MalloyConfig (borrowed; the package lifecycle releases it)
-   // and bound build manifest, so compile sees the same duckdb and the same
-   // persist routing as execution — otherwise includeSql would show
-   // base-table SQL that diverges from what runs.
+   // and its freshness-filtered build manifest, so compile sees the same
+   // duckdb and the same persist routing as execution: otherwise includeSql
+   // would show base-table SQL that diverges from what runs, or name a table
+   // past its window that execution no longer reads. The package dry-run
+   // keeps the bound entries, as the reload it mirrors does.
    const boundManifestEntries = pkg.getBuildManifestEntries();
+   const freshManifestEntries = pkg.getFreshBuildManifest();
    const runtime = new Runtime({
       urlReader: interceptingReader,
       config: pkg.getMalloyConfig(),
-      buildManifest: boundManifestEntries
-         ? { entries: boundManifestEntries, strict: false }
+      buildManifest: freshManifestEntries
+         ? { entries: freshManifestEntries, strict: false }
          : undefined,
    });
 
@@ -980,11 +1038,17 @@ async function compileVirtualFile(
          scope === "append"
             ? []
             : notebookLintProblems(modelName, fullSource, virtualUri);
+      // The near-miss scan, so the editor warns where the package will; for a
+      // whole file only, like the lint. Malloy's own `malformed-route` is
+      // already in `model.problems`.
+      const nearMissProblems: LogMessage[] =
+         scope === "append" ? [] : nearMissLogMessages(model._modelDef);
       return {
          problems: tagProblems([
             ...model.problems,
             ...(readerProblem ? [readerProblem] : []),
             ...lintProblems,
+            ...nearMissProblems,
          ]),
          sql,
       };
@@ -1180,6 +1244,8 @@ async function loadPackageInWorker(ctx: CompileContext) {
          defaultConnectionName: "duckdb",
          buildManifest: ctx.boundManifestEntries,
          collectProblems: true,
+         // The lint below reports the entities' findings, as a reload does.
+         withEntities: true,
          replacement:
             source === undefined ? undefined : { modelPath: modelName, source },
          ...(ctx.overlay
@@ -1267,4 +1333,34 @@ function warningAsProblem(
          : warning.message,
       code,
    } as LogMessage;
+}
+
+/**
+ * The near-miss scan's findings on a compiled file: a misspelled gate as an
+ * error, since the load refuses it, and every other near miss as a warning.
+ */
+export function nearMissLogMessages(modelDef: ModelDef): LogMessage[] {
+   const notes = authoredNotes(modelDef);
+   const gates: LogMessage[] = notes.flatMap((note) => {
+      const message = gateNearMissOf(note.text);
+      return message === undefined
+         ? []
+         : [
+              {
+                 message,
+                 severity: "error" as const,
+                 code: ANNOTATION_GATE_NEAR_MISS_CODE,
+                 ...(note.at ? { at: note.at } : {}),
+              } as LogMessage,
+           ];
+   });
+   const warnings = annotationNearMisses(notes)
+      .filter((finding) => finding.code === ANNOTATION_NEAR_MISS_CODE)
+      .map((finding) => ({
+         message: `${finding.message}; ${finding.rewrite}`,
+         severity: "warn" as const,
+         code: finding.code,
+         ...(finding.at ? { at: finding.at } : {}),
+      }));
+   return [...gates, ...warnings];
 }

@@ -11,6 +11,7 @@ import {
    PUBLISHER_CONFIG_NAME,
 } from "./constants";
 import { logger } from "./logger";
+import type { GateSwitches } from "./service/materialization/domain/gate_policy";
 import { defaultOpenAiBaseUrl } from "./retrieval/llm/openai_compatible";
 import {
    referencedVariable,
@@ -152,7 +153,7 @@ export type PublisherConfig = {
 };
 
 /**
- * `PUBLISHER_PACKAGE_VERSIONING`: `on` or `off` (the default). A TRANSITION
+ * `PUBLISHER_PACKAGE_VERSIONING`: `on` (the default) or `off`. A TRANSITION
  * flag, read from the environment only, and checked in one place: the publish
  * from a location. Off, that publish installs the package in place as before
  * versions; on, it publishes the version its publisher.json declares and
@@ -272,6 +273,19 @@ export const getDuckDBMemoryLimit = (): string | undefined => {
 };
 
 /**
+ * Threads each Publisher-owned DuckDB instance starts with, unless its
+ * connection sets its own `threads`, as DuckDB's option string; undefined
+ * under `off`, which leaves DuckDB's one-thread-per-core default. A default,
+ * not opt-in like the memory limit: DuckDB sizes its pool per INSTANCE, so N
+ * instances start N pools of one thread per core, and enough of them exhaust
+ * the process's threads and abort it. See docs/configuration.md.
+ */
+export const getDuckDBThreads = (): string | undefined => {
+   const raw = settings.get("duckdb.threads");
+   return raw.toLowerCase() === "off" ? undefined : raw;
+};
+
+/**
  * Bytes DuckLake buffers per column before flushing a Parquet row group
  * (`PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES`, e.g. `16MB`); unset issues
  * nothing on attach. Write memory scales with table WIDTH and sits outside
@@ -294,29 +308,6 @@ export const getDuckLakeRowGroupSizeBytes = (): string | undefined =>
  */
 export const getDuckLakeTargetFileSizeBytes = (): string | undefined =>
    settings.get("ducklake.targetFileSizeBytes");
-
-/**
- * How many rows the appender buffers before a partitioned storage build flushes
- * them to the partition files (`partitioned_write_flush_threshold`,
- * `PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`). Default 8192 rows. `off` turns
- * the whole partitioned-insert treatment off -- this threshold, the ordered
- * insert and the single appender thread together -- and leaves DuckDB's own
- * behaviour, which is the one the treatment exists to avoid; it is the escape
- * hatch for a source that built fine before, at the cost of the sort.
- *
- * A partitioned COPY buffers rows per partition per thread inside the buffer
- * manager, so this term fails as `failed to pin block`. The threshold bounds
- * rows buffered before a flush; the per-partition up-front cost is bounded by
- * the ordered, single-threaded insert (`orderByPartitionColumns` in
- * service/materialization/run/materialization_build_session.ts). Neither half suffices alone. See
- * docs/configuration.md.
- */
-export const DEFAULT_PARTITIONED_WRITE_FLUSH_THRESHOLD = 8192;
-
-export const getPartitionedWriteFlushThreshold = (): number | undefined => {
-   const raw = settings.get("duckdb.partitionedWriteFlushThreshold");
-   return raw.toLowerCase() === "off" ? undefined : Number(raw);
-};
 
 /**
  * Directory DuckDB spills to. A materialization build overrides this with its
@@ -373,17 +364,11 @@ export function assertDuckDBResourceConfig(): void {
             `size like "256MB", got "${targetFileSizeBytes}"`,
       );
    }
-   const flushThreshold = settings.get("duckdb.partitionedWriteFlushThreshold");
-   if (
-      flushThreshold.toLowerCase() !== "off" &&
-      !/^[1-9]\d{0,8}$/.test(flushThreshold)
-   ) {
-      // At most nine digits: above a billion rows the bound is
-      // indistinguishable from `off`, so a larger value is a typo.
+   const threads = settings.get("duckdb.threads");
+   if (threads.toLowerCase() !== "off" && !/^[1-9]\d{0,3}$/.test(threads)) {
       throw new Error(
-         `Invalid value for PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: expected a ` +
-            `row count like "8192" (up to nine digits), or "off" to turn the ` +
-            `partitioned-insert bounds off, got "${flushThreshold}"`,
+         `Invalid value for PUBLISHER_DUCKDB_THREADS: expected a thread count ` +
+            `like "4", or "off" for DuckDB's one-per-core default, got "${threads}"`,
       );
    }
    const tempDirectory = getDuckDBTempDirectory();
@@ -888,13 +873,69 @@ export const getPersistStorageMode = (): PersistStorageMode =>
    settings.get("persist.storageMode");
 
 /**
+ * Whether a `storage=` source's destination is folded into its content
+ * address (materialization v2's P12), from
+ * `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` (default `false`). Turning
+ * it on re-addresses every `storage=` table once, so it is a scheduled rollout.
+ */
+export const getPersistAddressIncludesDestination = (): boolean =>
+   settings.get("persist.addressIncludesDestination");
+
+/**
+ * Whether materialization v2 is on: `#(materialize)` and `#(preaggregate)` read,
+ * built and served, from `PUBLISHER_MATERIALIZE` (default `true`). `false`
+ * opts out, and the build plan is exactly what it was without it. The setting
+ * is removed one release after this default ships.
+ */
+export const getMaterializeEnabled = (): boolean =>
+   settings.get("materialize.enabled");
+
+/**
+ * Whether the served copy may answer a query through a row-level gate, with
+ * the gate grafted on it (materialization v2's R3), from
+ * `PUBLISHER_MATERIALIZE_GATED_SOURCES` (default `false`). The served copy
+ * reads every v1 table (the v1 cutover), so this switch alone decides.
+ */
+export const getMaterializeGatedSources = (): boolean =>
+   settings.get("materialize.gatedSources");
+
+/**
+ * Whether a `storage=` rollup over a gated base may be read past its gate.
+ * No setting turns it on until the managed-tier review; only a test does
+ * ({@link allowGatedStorageRollupsForTests}).
+ */
+let gatedStorageRollupsReviewed = false;
+
+/**
+ * For tests only: let `storage=` rollups over gated bases be built and read
+ * (behind `materialize.gatedSources`), as they will be once the managed-tier
+ * review passes. Returns the restore.
+ */
+export function allowGatedStorageRollupsForTests(on = true): () => void {
+   const before = gatedStorageRollupsReviewed;
+   gatedStorageRollupsReviewed = on;
+   return () => {
+      gatedStorageRollupsReviewed = before;
+   };
+}
+
+/**
+ * The switches gate keeping reads, read once at a shell and passed to the
+ * policy (`materialization/domain/gate_policy.ts`).
+ */
+export const gateSwitches = (): GateSwitches => ({
+   materialize: getMaterializeEnabled(),
+   gatedSources: getMaterializeGatedSources(),
+   gatedStorageRollupsReviewed,
+});
+
+/**
  * Whether a within-package persist-target COLLISION (two distinct persist
  * sources resolving to the same physical table in the same destination) is a
- * hard publish rejection, from `PERSIST_COLLISION_ENFORCE` (default `false`).
- *
- * Warn-only by default because existing packages may carry a latent
- * collision; set `true` only after remediating them, so routine re-publishes
- * do not break. Load is ALWAYS warn-only; the flag governs publish only.
+ * hard publish (and build) rejection, from `PERSIST_COLLISION_ENFORCE`
+ * (default `true`). `false` opts out, for a deployment whose existing packages
+ * carry a latent collision it cannot fix yet: the collision is then a warning,
+ * and still never served from (`sharedTables`). Load is ALWAYS warn-only.
  */
 export const getPersistCollisionEnforce = (): boolean =>
    settings.get("persist.collisionEnforcementEnabled");
@@ -1161,7 +1202,7 @@ export const isPackageInlineFieldsEnabled = (): boolean =>
 
 /**
  * Whether a publish from a location publishes versions
- * (`PUBLISHER_PACKAGE_VERSIONING=on`; off when unset).
+ * (`PUBLISHER_PACKAGE_VERSIONING`, on unless set to `off`).
  */
 export const isVersioningEnabled = (): boolean =>
    settings.get("packageVersioning") === "on";

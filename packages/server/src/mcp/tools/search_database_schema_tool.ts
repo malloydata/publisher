@@ -11,9 +11,11 @@ import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
-import type {
-   RankingMode,
-   SchemaTableEntity,
+import { quotedIdentifier, stringLiteral } from "../../service/malloy_text";
+import {
+   capColumns,
+   type RankingMode,
+   type SchemaTableEntity,
 } from "../../retrieval/index/schema_index";
 import type { RetrievalService } from "../../retrieval/service";
 import { parseEnvironmentName } from "../../service/identity";
@@ -100,23 +102,6 @@ type SearchDatabaseSchemaParams = z.infer<
 >;
 
 /**
- * Escape a Malloy string literal. Malloy escapes with a backslash, not by
- * doubling the quote as SQL does, so `o'brien` needs `\'`.
- */
-function escapeMalloyString(value: string): string {
-   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-}
-
-/**
- * Quote an identifier, always: a bare reserved word (`table`, `source`) does
- * not compile. Backslash is escaped first so the backtick's escape is not
- * doubled, and a trailing backslash cannot swallow the closing backtick.
- */
-function malloyIdentifier(name: string): string {
-   return `\`${name.replace(/\\/g, "\\\\").replace(/`/g, "\\`")}\``;
-}
-
-/**
  * The ready-to-paste `source:` line for a table. `resource` keeps its
  * qualification exactly as introspection produced it; only quoting is added.
  */
@@ -125,9 +110,9 @@ export function malloySourceSnippet(
    resource: string,
    tableName: string,
 ): string {
-   const alias = malloyIdentifier(tableName);
-   const connection = malloyIdentifier(connectionName);
-   return `source: ${alias} is ${connection}.table('${escapeMalloyString(resource)}') extend { }`;
+   const alias = quotedIdentifier(tableName);
+   const connection = quotedIdentifier(connectionName);
+   return `source: ${alias} is ${connection}.table(${stringLiteral(resource)}) extend { }`;
 }
 
 /**
@@ -270,7 +255,7 @@ function toResponseTable(
               ),
            }
          : {}),
-      columns: entity.columns.slice(0, options.maxColumns),
+      columns: capColumns(entity.columns, options.maxColumns),
       columnCount: entity.columns.length,
       ...(options.score !== undefined ? { score: options.score } : {}),
    };
@@ -291,7 +276,7 @@ Supply what you know, omit the rest. No arguments lists the environments and the
 - Read warnings: they name anything omitted or ignored.
 
 ## Response
-JSON: tables (connectionName, schemaName, tableName, tablePath, malloySource, columns, columnCount, and score on a search), plus totalAvailable and returned. A search adds matched and ranking; a listing adds nextOffset when more remain, to pass back as offset.
+JSON: tables (connectionName, schemaName, tableName, tablePath, malloySource, columns (a record's members follow it as delivery.city), columnCount, and score on a search), plus totalAvailable and returned. A search adds matched and ranking; a listing adds nextOffset when more remain, to pass back as offset.
 
 ## Worked example
 Start with no arguments and follow what it names. For connection "warehouse", schema "sales":
@@ -729,7 +714,11 @@ async function describeTableTier(
       ),
       totalAvailable: entities.length,
       returned: entities.length,
-      ...withWarnings([...warnings, ...unpastableWarning(entities)]),
+      ...withWarnings([
+         ...warnings,
+         ...unreadMembersWarning(matching),
+         ...unpastableWarning(entities),
+      ]),
    });
 }
 
@@ -759,7 +748,10 @@ async function listTablesTier(
    const entities = allTables.map((t) =>
       toEntity(t, connectionName, schemaName),
    );
-   const warnings: string[] = [...ignoredWarning];
+   const warnings: string[] = [
+      ...ignoredWarning,
+      ...unreadMembersWarning(allTables),
+   ];
 
    // An empty schema is not necessarily an empty database: DuckDB over data
    // files addresses them by path, registering none. Say so.
@@ -841,7 +833,7 @@ async function listTablesTier(
    ).length;
    if (capped > 0) {
       warnings.push(
-         `${capped} table(s) have more than ${MAX_COLUMNS_PER_TABLE} columns; only the first ${MAX_COLUMNS_PER_TABLE} are shown. Pass tableName to see all columns of one table.`,
+         `${capped} table(s) have more than ${MAX_COLUMNS_PER_TABLE} columns; ${MAX_COLUMNS_PER_TABLE} are shown, the table's own columns before record members such as delivery.city. Pass tableName to see all columns of one table.`,
       );
    }
 
@@ -880,6 +872,20 @@ function resolveProvider() {
       );
       return null;
    }
+}
+
+/**
+ * Says how many tables have record columns whose members this listing could
+ * not read (`membersUnread`), so a member name that matches nothing is not
+ * taken to mean the table lacks it.
+ */
+function unreadMembersWarning(tables: { membersUnread?: boolean }[]): string[] {
+   const unread = tables.filter((t) => t.membersUnread).length;
+   return unread > 0
+      ? [
+           `${unread} table(s) have record columns whose members could not be read this time, so their columns list only the top-level ones and a member name such as delivery.city may not match. Calling again may read them.`,
+        ]
+      : [];
 }
 
 /** Map an introspected ApiTable onto the entity the ranking layer indexes. */

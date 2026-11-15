@@ -6889,9 +6889,6 @@ components:
         - DYNAMIC_PROJECTION
         - DYNAMIC_JOIN
         - DYNAMIC_JOINED_WHERE
-        - PARTITION_WITHOUT_STORAGE
-        - PARTITION_COLUMN_UNKNOWN
-        - PARTITION_COLUMN_NOT_PUBLIC
         - MERGE_KEY_SCOPE_UNRESOLVED
         - PREAGGREGATE_OVER_DYNAMIC_SOURCE
         - AUTHORIZE
@@ -6926,8 +6923,7 @@ components:
           $ref: "#/components/schemas/RefusalReason"
           description: "Why the source is refused, decided at compile time: `FREE_PARAMETER`; `AUTHORIZE`; four that say where a
             given the build could not strip sits (`GIVEN_IN_PERSISTED_QUERY`, `DYNAMIC_PROJECTION`, `DYNAMIC_JOIN`,
-            `DYNAMIC_JOINED_WHERE`); three that name an unusable `partition=` (`PARTITION_WITHOUT_STORAGE`,
-            `PARTITION_COLUMN_UNKNOWN`, `PARTITION_COLUMN_NOT_PUBLIC`); `MERGE_KEY_SCOPE_UNRESOLVED` (a `merge_key=`
+            `DYNAMIC_JOINED_WHERE`); `MERGE_KEY_SCOPE_UNRESOLVED` (a `merge_key=`
             whose caller scope cannot be expressed over the stored table's own columns);
             `PREAGGREGATE_OVER_DYNAMIC_SOURCE` (a rollup whose base is scoped by a given); and `READ_ONLY_DIALECT` (a
             colocated `#@ persist` on a dialect that cannot create tables). `GIVEN_IN_PERSISTED_QUERY` means the build

@@ -1,0 +1,137 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "big_orders@<hammer>/cmz/cmz.malloy": []
+        },
+        "order": [
+          "big_orders@<hammer>/cmz/cmz.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "big_orders@<hammer>/cmz/cmz.malloy": {
+        "buildSourceName": "big_orders__mat",
+        "columns": [
+          {
+            "column": "order_id",
+            "computed": false,
+            "dimension": "order_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "tier",
+            "computed": true,
+            "dimension": "tier",
+            "zoneFree": true
+          }
+        ],
+        "persist": {
+          "name": "cmz_big"
+        },
+        "sourceID": "big_orders@<hammer>/cmz/cmz.malloy",
+        "sourceName": "big_orders",
+        "storedColumns": [
+          {
+            "name": "order_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "tier",
+            "type": "VARCHAR"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "big_orders@<hammer>/cmz/cmz.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "big_orders@<hammer>/cmz/cmz.malloy": "cmz.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "big_orders@<hammer>/cmz/cmz.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "big_orders@<hammer>/cmz/cmz.malloy": {
+        "annotationFields": {
+          "name": "cmz_big"
+        },
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "tier",
+            "type": "string"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cmz.malloy",
+        "name": "big_orders",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "61bfdd2aa3526c6a1a6379b588dff6e28f0707b1802f70e133c77b4ad602a2d4",
+        "sourceID": "big_orders@<hammer>/cmz/cmz.malloy",
+        "sql": "sha256:2a60d89b48ac8017"
+      }
+    }
+  }
+}

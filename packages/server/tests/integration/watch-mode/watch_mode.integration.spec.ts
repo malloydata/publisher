@@ -357,8 +357,9 @@ describe("Watch-mode copy semantics without --watch-env (E2E)", () => {
    });
 
    it("mounts a local-dir package as a copy (decoupled from the source)", () => {
-      // No --watch-env: the package is copied into publisher_data, so it is a
-      // real directory and does not resolve back to the source.
+      // No --watch-env: the package is published into publisher_data as the
+      // version its publisher.json declares, so it is a real directory and
+      // does not resolve back to the source.
       expect(fs.lstatSync(server!.mountedPkgPath).isSymbolicLink()).toBe(false);
       expect(fs.realpathSync(server!.mountedPkgPath)).not.toBe(
          fs.realpathSync(server!.srcDir),

@@ -14,7 +14,7 @@
  *   same content again, in any form, is placement (200, nothing written);
  *   other content under that version is 409 VERSION_CONFLICT, and the first
  *   content keeps serving;
- * - with it off (the default), a tree with no version: 200 every time, each
+ * - with it off, a tree with no version: 200 every time, each
  *   publish replacing the package in place, as every publish from a location
  *   did before versions.
  *
@@ -263,7 +263,7 @@ describe("publishing from each kind of location, over HTTP", () => {
    }, 180_000);
 
    afterEach(() => {
-      setVariable(FLAG, undefined);
+      setVariable(FLAG, "off");
    });
 
    afterAll(async () => {
@@ -316,7 +316,7 @@ describe("publishing from each kind of location, over HTTP", () => {
          });
 
          it("versioning off, no version: 200 every time, each publish replacing the package in place", async () => {
-            setVariable(FLAG, undefined);
+            setVariable(FLAG, "off");
             const name = `${kind.slug}-unversioned`;
             const first = await publish(
                name,

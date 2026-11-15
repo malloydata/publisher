@@ -272,22 +272,27 @@ source: f is duckdb.sql("SELECT 1 as x")
 
    // ── refused persist sources reach the author ──────────────────────────
 
-   // `partition=` with no `storage=`: refused by the colocated gate, which is the
-   // gate a plain `#@ persist` is evaluated against. Chosen because it needs no
-   // storage destination to resolve, so the refusal is the only thing under test.
-   const PARTITION_WITHOUT_STORAGE_MODEL = `##! experimental.persistence
+   // A given in the persisted query, with no `storage=`: refused by the
+   // colocated gate, which is the gate a plain `#@ persist` is evaluated
+   // against. Chosen because it needs no storage destination to resolve, so the
+   // refusal is the only thing under test.
+   const GIVEN_IN_QUERY_MODEL = `##! experimental.persistence
+##! experimental.givens
 
-#@ persist name="p_table" partition="x"
-source: p is duckdb.sql("SELECT 1 as x")
+given: tenant :: string is 'acme'
+source: base is duckdb.sql("SELECT 1 AS x, 'acme' AS tenant")
+
+#@ persist name="p_table"
+source: p is base -> { where: tenant = $tenant; aggregate: c is count() }
 `;
 
    it(
       "surfaces a refused persist source on the package warnings",
       async () => {
-         const pkg = await loadPackage(PARTITION_WITHOUT_STORAGE_MODEL);
+         const pkg = await loadPackage(GIVEN_IN_QUERY_MODEL);
          const warnings = pkg.getPackageMetadata().warnings ?? [];
          const refusal = warnings.find((w) =>
-            w.message?.includes("'partition=' is declared without 'storage='"),
+            w.message?.includes("persisted query references a given"),
          );
          expect(refusal).toBeDefined();
          // The source the author named, so the finding is attributable to a line
@@ -295,7 +300,7 @@ source: p is duckdb.sql("SELECT 1 as x")
          expect(refusal!.subject).toBe("p");
          expect(refusal!.model).toBe("model.malloy");
          // The remedy the gate authored, carried rather than re-worded.
-         expect(refusal!.message).toContain("drop 'partition='");
+         expect(refusal!.message).toContain("Keep the given OUT");
       },
       { timeout: 30000 },
    );
@@ -303,7 +308,7 @@ source: p is duckdb.sql("SELECT 1 as x")
    it(
       "warns about a refused source even though the build plan omits it",
       async () => {
-         const pkg = await loadPackage(PARTITION_WITHOUT_STORAGE_MODEL);
+         const pkg = await loadPackage(GIVEN_IN_QUERY_MODEL);
          const plan = pkg.getBuildPlan();
          // A storage/colocated refusal means ABSENCE from `sources` — so the plan
          // itself carries no trace of the annotation, and the warning is the only
@@ -318,9 +323,7 @@ source: p is duckdb.sql("SELECT 1 as x")
          ).toBe(true);
          expect(
             (pkg.getPackageMetadata().warnings ?? []).some((w) =>
-               w.message?.includes(
-                  "'partition=' is declared without 'storage='",
-               ),
+               w.message?.includes("persisted query references a given"),
             ),
          ).toBe(true);
       },
@@ -428,18 +431,18 @@ source: b is duckdb.sql("SELECT 2 as y")
    );
 
    it(
-      "gates the publish rejection behind PERSIST_COLLISION_ENFORCE",
+      "refuses the publish by default; PERSIST_COLLISION_ENFORCE=false opts out",
       async () => {
          const pkg = await loadPackage(COLLIDING_MODEL);
-         // Default: warn-only, so the publish gate string is empty.
+         // Default: the collision is a publish rejection, naming the opt-out.
          withSettings({}, () => {
-            expect(pkg.formatPersistenceCollisionRejections()).toBe("");
+            const rejection = pkg.formatPersistenceCollisionRejections();
+            expect(rejection).toContain('"dup"');
+            expect(rejection).toContain("PERSIST_COLLISION_ENFORCE=false");
          });
-         // Enforced: the collision becomes a publish rejection.
-         withSettings({ env: { PERSIST_COLLISION_ENFORCE: "true" } }, () => {
-            expect(pkg.formatPersistenceCollisionRejections()).toContain(
-               '"dup"',
-            );
+         // Opted out: warn-only, so the publish gate string is empty.
+         withSettings({ env: { PERSIST_COLLISION_ENFORCE: "false" } }, () => {
+            expect(pkg.formatPersistenceCollisionRejections()).toBe("");
          });
       },
       { timeout: 30000 },

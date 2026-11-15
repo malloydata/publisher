@@ -29,6 +29,7 @@ import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { mkdtempSync } from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -37,7 +38,9 @@ import { Model } from "./model";
 import type { FilterParams } from "./filter";
 import { QueryPrivileges } from "./model_query_request";
 
-const TEST_DIR = path.join(os.tmpdir(), "filter-bypass-tests");
+// Unique per run: a fixed path makes concurrent runs collide on the
+// database file's lock.
+const TEST_DIR = mkdtempSync(path.join(os.tmpdir(), "filter-bypass-tests-"));
 const TEST_DB_DIR = path.join(TEST_DIR, "db");
 const TEST_DB_PATH = path.join(TEST_DB_DIR, "test.duckdb");
 const TEST_PKG_DIR = path.join(TEST_DIR, "pkg");

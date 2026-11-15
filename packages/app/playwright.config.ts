@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { defineConfig, devices } from "@playwright/test";
+import { AUTHORING_ENVS } from "./tests/playwright/helpers/authoringEnvs";
 
 /**
  * Playwright config for the Publisher React app.
@@ -73,6 +74,13 @@ export default defineConfig({
               // downloads fixture packages, marks ready when done).
               command: "npm run start:init",
               cwd: "../../",
+              // The suite runs with package versioning on: every package is
+              // an immutable published version, except in the environments
+              // the authoring specs write into, which are mounted in place.
+              env: {
+                 PUBLISHER_PACKAGE_VERSIONING: "on",
+                 PUBLISHER_WATCH: AUTHORING_ENVS.join(","),
+              },
               url: `${BASE_URL}/api/v0/status`,
               reuseExistingServer: true,
               timeout: 300_000,

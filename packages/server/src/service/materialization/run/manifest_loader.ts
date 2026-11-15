@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
 import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
 import * as fs from "fs/promises";
@@ -10,8 +11,9 @@ import { logger } from "../../../logger";
 import {
    FreshnessManifest,
    isLegacyFailedEntry,
+   type KeyUniqueness,
    ManifestEntry,
-} from "../types";
+} from "../domain/types";
 
 type WireBuildManifest = components["schemas"]["BuildManifest"];
 
@@ -106,6 +108,9 @@ export async function fetchManifestEntries(
 export function splitManifestEntries(
    entries: Record<string, ManifestEntry>,
    source: string,
+   // Only a bind from Publisher's own store reads a rollup key record
+   // (withRollupKeyRecords); a host's manifest is never trusted with one.
+   readKeyUniqueness = false,
 ): FetchedManifest {
    const tableNameManifest: FreshnessManifest = {};
    const storageEntries: Record<string, ManifestEntry> = {};
@@ -129,7 +134,17 @@ export function splitManifestEntries(
          continue;
       }
       if (entry.storageDestinationName) {
-         storageEntries[sourceEntityId] = entry;
+         // The internal key record only from the local store
+         // (withRollupKeyRecords); a host's entry never brings one.
+         const { keyUniqueness: _unread, ...plain } = entry as ManifestEntry & {
+            keyUniqueness?: unknown;
+         };
+         const keyUniqueness = readKeyUniqueness
+            ? keyUniquenessOnEntry(entry)
+            : undefined;
+         storageEntries[sourceEntityId] = keyUniqueness
+            ? ({ ...plain, keyUniqueness } as ManifestEntry)
+            : plain;
          continue;
       }
       tableNameManifest[sourceEntityId] = {
@@ -138,7 +153,37 @@ export function splitManifestEntries(
          dataAsOf: entry.dataAsOf,
          freshnessWindowSeconds: entry.freshnessWindowSeconds,
          freshnessFallback: entry.freshnessFallback,
+         ...boundSchemaOf(entry.schema),
+         ...boundNativeSchemaOf(entry.nativeSchema),
+         // Set only by a bind from the local store (withRollupKeyRecords);
+         // a host's manifest never carries it.
+         ...(readKeyUniqueness && keyUniquenessOnEntry(entry)
+            ? { keyUniqueness: keyUniquenessOnEntry(entry) }
+            : {}),
       };
    }
    return { tableNameManifest, storageEntries };
+}
+
+/** The internal rollup key record a local-store entry may carry. */
+function keyUniquenessOnEntry(entry: ManifestEntry): KeyUniqueness | undefined {
+   const k = (entry as { keyUniqueness?: Partial<KeyUniqueness> })
+      .keyUniqueness;
+   if (!k) return undefined;
+   const own =
+      typeof k.keyColumn === "string" && typeof k.unique === "boolean"
+         ? { keyColumn: k.keyColumn, unique: k.unique }
+         : undefined;
+   const parentKeys =
+      k.parentKeys && typeof k.parentKeys === "object"
+         ? Object.fromEntries(
+              Object.entries(k.parentKeys).filter(
+                 ([, unique]) => typeof unique === "boolean",
+              ),
+           )
+         : {};
+   const anyParent = Object.keys(parentKeys).length > 0;
+   return own || anyParent
+      ? { ...(own ?? {}), ...(anyParent ? { parentKeys } : {}) }
+      : undefined;
 }

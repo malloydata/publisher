@@ -1,10 +1,21 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { PersistSource } from "@malloydata/malloy";
+import type {
+   BuildTarget,
+   ConnectionBuild,
+   PersistSource,
+} from "@malloydata/malloy";
 import { Materialization } from "../storage/DatabaseInterface";
-import { BuildInstruction, BuildPlan } from "../service/materialization/types";
-import { CompiledBuildPlan } from "../service/materialization/plan/build_plan";
+import {
+   BuildInstruction,
+   BuildPlan,
+} from "../service/materialization/domain/types";
+import {
+   CompiledBuildPlan,
+   setTestAddressForTarget,
+   plannedSources,
+} from "../service/materialization/plan/build_plan";
 
 /**
  * Shared fixtures for the materialization unit specs (service, controller,
@@ -113,6 +124,9 @@ function fakeTagFromTree(tree: FakeTagTree) {
          const node = walk(at);
          return typeof node === "string" ? node : undefined;
       },
+      has(...at: string[]): boolean {
+         return walk(at) !== undefined;
+      },
       tag(...at: string[]) {
          const node = walk(at);
          return node !== undefined && typeof node === "object"
@@ -179,7 +193,7 @@ export function fakeSource(opts: {
     * `buildManifest` that resolves upstream persist references — so a test can
     * assert what physical name a downstream build sees for its upstream.
     */
-   onGetSQL?: (sqlOpts: unknown) => void;
+   onGetSQL?: (sqlOpts: unknown) => string | void;
    /**
     * The compiled `_sourceDef` the materialization-eligibility gate walks
     * (parameters/givens). Defaults to an empty def (eligible); the gate only
@@ -194,13 +208,14 @@ export function fakeSource(opts: {
    columns?: string[];
    /**
     * The compiled model's `_modelDef`, for the walk that finds a source's
-    * stored upstreams (`reachedPersistedSources`). Absent, the walk finds
+    * stored upstreams (`reachPersisted` in plan/source_map). Absent, the walk finds
     * nothing, as for a source with no persisted upstream.
     */
    modelDef?: unknown;
 }): PersistSource {
    const fields = opts.annotationFields;
-   return {
+   const sql = opts.sql ?? "SELECT 1";
+   const source = {
       name: opts.name,
       sourceID: opts.name,
       ...(opts.modelDef !== undefined
@@ -216,12 +231,9 @@ export function fakeSource(opts: {
             isAtomicField: () => true,
          })),
       },
-      makeBuildId: () => opts.sourceEntityId,
-      getSQL: (sqlOpts?: unknown) => {
-         opts.onGetSQL?.(sqlOpts);
-         return opts.sql ?? "SELECT 1";
-      },
       annotations: {
+         // No notes, so `parseRouteTag` drops nothing and calls `parseAsTag`.
+         forRoute: () => [],
          parseAsTag: () => ({
             tag: fakeTagFromTree(
                tagTree({
@@ -233,6 +245,7 @@ export function fakeSource(opts: {
          }),
       },
       modelAnnotations: {
+         forRoute: () => [],
          parseAsTag: () => ({
             tag: fakeTagFromTree(
                tagTree({
@@ -244,6 +257,30 @@ export function fakeSource(opts: {
          }),
       },
    } as unknown as PersistSource;
+   // The build target the source maps onto, recorded the way a real plan
+   // records it (plannedSources), keyed by the test's chosen address; its
+   // build SQL reports the manifest it was asked for, as getSQL() once did.
+   const target = {
+      buildId: opts.sourceEntityId,
+      connectionName: opts.connectionName ?? "duckdb",
+      sql,
+      buildSQL: (manifest: unknown) => {
+         // A string return stands for the SQL Malloy renders for this
+         // manifest, for a test whose assertion depends on what it reads.
+         return opts.onGetSQL?.({ buildManifest: manifest }) ?? sql;
+      },
+      readsGivens: false,
+      dependsOn: [],
+      sources: [source],
+   } as unknown as BuildTarget;
+   setTestAddressForTarget(target, opts.sourceEntityId);
+   plannedSources({
+      connections: [
+         { connectionName: target.connectionName, targets: [target] },
+      ] as unknown as ConnectionBuild[],
+      unbuildable: [],
+   });
+   return source;
 }
 
 /**

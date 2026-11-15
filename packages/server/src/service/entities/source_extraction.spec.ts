@@ -2960,14 +2960,9 @@ function fakeDimensionField(name: string, taglines: string[] = []): Field {
    return {
       name,
       parentExplore: {
-         // ``isFieldHidden`` walks the parent's tag tree; an empty
-         // tagParse keeps the field non-hidden.
-         tagParse: () => ({
-            tag: {
-               array: () => undefined,
-               text: () => undefined,
-            },
-         }),
+         // ``isFieldHidden`` reads the parent's taglines; none keeps the field
+         // non-hidden.
+         getTaglines: () => [],
       },
       // No location → ``extractCodeFromEntity`` returns "" → the
       // ``is name`` detection in ``isMalloyDefined`` fails → type

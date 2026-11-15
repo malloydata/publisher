@@ -1,0 +1,100 @@
+{
+  "problems": [
+    {
+      "reason": "reroot_not_compiled",
+      "sourceName": "m_broken"
+    },
+    {
+      "reason": "reroot_not_compiled",
+      "sourceName": "e_broken"
+    },
+    {
+      "reason": "reroot_not_compiled",
+      "sourceName": "i_broken"
+    }
+  ],
+  "queries": [
+    {
+      "equalToLive": true,
+      "fieldTypes": [
+        [
+          "org",
+          {
+            "kind": "string_type"
+          }
+        ],
+        [
+          "total",
+          {
+            "kind": "number_type"
+          }
+        ]
+      ],
+      "query": "the kept re-root",
+      "servedFrom": "storage",
+      "servedVia": "served_copy"
+    },
+    {
+      "equalToLive": true,
+      "fieldTypes": [
+        [
+          "org",
+          {
+            "kind": "string_type"
+          }
+        ],
+        [
+          "total",
+          {
+            "kind": "number_type",
+            "subtype": "integer"
+          }
+        ]
+      ],
+      "query": "the broken re-root",
+      "servedFrom": null,
+      "servedVia": null
+    },
+    {
+      "equalToLive": true,
+      "fieldTypes": [
+        [
+          "segment",
+          {
+            "kind": "string_type"
+          }
+        ],
+        [
+          "total",
+          {
+            "kind": "number_type",
+            "subtype": "integer"
+          }
+        ]
+      ],
+      "query": "an inlined join's broken re-root",
+      "servedFrom": null,
+      "servedVia": null
+    },
+    {
+      "equalToLive": true,
+      "fieldTypes": [
+        [
+          "org",
+          {
+            "kind": "string_type"
+          }
+        ],
+        [
+          "top",
+          {
+            "kind": "number_type"
+          }
+        ]
+      ],
+      "query": "an extension table's broken re-root",
+      "servedFrom": "storage",
+      "servedVia": "served_copy"
+    }
+  ]
+}

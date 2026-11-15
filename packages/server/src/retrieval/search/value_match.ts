@@ -161,7 +161,8 @@ export function filterStem(phrase: string): string | undefined {
    const words = tokensOf(normalizeText(phrase)).filter((w) => w.length >= 3);
    if (words.length === 0) return undefined;
    const longest = words.reduce((a, b) => (b.length > a.length ? b : a));
-   return longest.slice(0, 4);
+   // By code point: a cut through a surrogate pair is not a letter.
+   return Array.from(longest).slice(0, 4).join("");
 }
 
 /** Cosine of two vectors of the same length; 0 when either has no length. */

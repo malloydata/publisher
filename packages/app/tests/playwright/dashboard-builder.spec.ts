@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { expect, test, type Page } from "@playwright/test";
-import fs from "fs";
-import os from "os";
-import path from "path";
-import { fileURLToPath } from "url";
-import { tmpName } from "./helpers/fixtures";
+import {
+   registerPackageEnv,
+   serverFixture,
+   type PackageEnv,
+} from "./helpers/packageEnv";
 import { expectUnsaved, saveChanges } from "./helpers/save";
 
 /**
@@ -14,60 +14,37 @@ import { expectUnsaved, saveChanges } from "./helpers/save";
  * the Console's editor, edit its title, save it back into the package, reorder
  * the grid without a tile losing its chart, and set a tile's width from its edge.
  *
- * Runs against its own environment built from the server's dashboards
- * fixture, registered and removed the way `package-dashboards.spec` does it.
- * The fixture is copied to a temporary directory first, because saving writes
- * the dashboard file and the fixture in the repository is not the place for
- * that. A server that refuses the registration is read-only, and the builder's
- * browser-draft path is covered by the SDK's own tests instead.
+ * Runs against a throwaway copy of the server's dashboards fixture, mounted in
+ * place in an authoring environment (see registerPackageEnv), because saving
+ * writes the dashboard file: the fixture in the repository is not the place
+ * for that, and a published version takes no writes. A server that refuses
+ * the registration is read-only, and the builder's browser-draft path is
+ * covered by the SDK's own tests instead.
  */
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURE = path.resolve(
-   __dirname,
-   "../../../server/tests/fixtures/dashboards-test",
-);
 const PKG = "dashboards-test";
 
-let env: string;
-let baseURL: string;
-let location: string;
+let pe: PackageEnv;
 
 test.describe("dashboard-builder", () => {
    // eslint-disable-next-line no-empty-pattern
    test.beforeAll(async ({}, testInfo) => {
-      baseURL = testInfo.project.use.baseURL ?? "http://localhost:4000";
-      env = tmpName("builder");
-      location = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-builder-"));
-      fs.cpSync(FIXTURE, location, { recursive: true });
-      const res = await fetch(`${baseURL}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: env,
-            packages: [{ name: PKG, location }],
-            connections: [],
-         }),
-      });
-      test.skip(
-         res.status === 405 || res.status === 403,
-         "publisher is read-only",
+      pe = await registerPackageEnv(
+         testInfo.project.use.baseURL ?? "http://localhost:4000",
+         "builder",
+         serverFixture(PKG),
+         PKG,
       );
-      expect(res.ok, await res.text()).toBe(true);
    });
 
    test.afterAll(async () => {
-      if (env && baseURL)
-         await fetch(`${baseURL}/api/v0/environments/${env}`, {
-            method: "DELETE",
-         }).catch(() => undefined);
-      if (location) fs.rmSync(location, { recursive: true, force: true });
+      await pe?.dispose();
    });
 
    // The title is matched loosely because one test above saves a new one into
    // the package, and every test here opens the same dashboard.
    const openEditor = async (page: Page) => {
-      await page.goto(`/${env}/${PKG}/dashboards/tiled?edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/tiled?edit`);
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
@@ -103,7 +80,7 @@ test.describe("dashboard-builder", () => {
 
       // The save went into the package, so the next visit opens the edited
       // file itself: the new title, and nothing offering a browser draft.
-      await page.goto(`/${env}/${PKG}/dashboards/tiled?edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/tiled?edit`);
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });

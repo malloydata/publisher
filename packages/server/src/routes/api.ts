@@ -8,6 +8,7 @@
  * overlap (the `models/*?` routes), so keep it.
  */
 
+import { recordDeprecatedUsage } from "../deprecated_usage_metrics";
 import type { GivenValue } from "@malloydata/malloy";
 import type express from "express";
 import { readBypassAuthorize } from "../authorize_bypass_header";
@@ -255,8 +256,15 @@ function registerEnvironmentRoutes(
 
    app.get(
       env,
-      apiRoute(async (req) => {
+      apiRoute(async (req, res) => {
          const reload = booleanParam(req, "reload");
+         if (reload) {
+            // Deprecated: re-reads the config file's environment block. No
+            // client calls it, v1 has no environment reload, and removal waits
+            // on this count reading zero (#1540).
+            res.set("Deprecation", "true");
+            recordDeprecatedUsage("environment_reload");
+         }
          const environment = await environmentStore.getEnvironment(
             parseEnvironmentName(req.params.environmentName),
             reload,

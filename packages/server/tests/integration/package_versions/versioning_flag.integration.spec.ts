@@ -6,7 +6,7 @@
 /**
  * `PUBLISHER_PACKAGE_VERSIONING`, the transition flag, over HTTP.
  *
- * - Off (unset, the default): a publish from a location does what it did
+ * - Off: a publish from a location does what it did
  *   before versions, whatever the tree's publisher.json says. Each publish
  *   answers 200 and replaces the package in place; the package has no
  *   versions.
@@ -107,7 +107,7 @@ async function packageVersioning(): Promise<unknown> {
 
 describe("PUBLISHER_PACKAGE_VERSIONING", () => {
    beforeAll(async () => {
-      versioning(undefined);
+      versioning("off");
       root = fs.realpathSync(
          fs.mkdtempSync(path.join(os.tmpdir(), "versioning-flag-")),
       );
@@ -126,7 +126,7 @@ describe("PUBLISHER_PACKAGE_VERSIONING", () => {
    }, 180_000);
 
    afterEach(() => {
-      versioning(undefined);
+      versioning("off");
    });
 
    afterAll(async () => {
@@ -144,7 +144,7 @@ describe("PUBLISHER_PACKAGE_VERSIONING", () => {
       expect(await packageVersioning()).toBe("on");
    });
 
-   describe("off, the default", () => {
+   describe("off", () => {
       it("answers 200 every time and replaces the package, as before versions", async () => {
          const first = writePackage("plain-1", { name: "plain" }, 1);
          const published = await publish("plain", first);

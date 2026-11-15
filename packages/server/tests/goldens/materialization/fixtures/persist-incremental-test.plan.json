@@ -1,0 +1,3 @@
+{
+  "loadError": "#@ persist source \"daily_orders\" declares refresh=\"incremental\", which is not supported on dialect \"duckdb\". Incremental refresh reads a bounded watermark range out of the source and applies it transactionally, so it is enabled only where the publisher has proven both: postgres, snowflake, standardsql (BigQuery). Use refresh=\"full\" here; the supported set widens in a later release."
+}

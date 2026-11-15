@@ -229,6 +229,72 @@ class TruthEnvironment(unittest.TestCase):
 
 
 
+class ServedAsVersions(unittest.TestCase):
+    """The snapshot sync (`rsync --delete` onto the served folder) is safe only
+    over a copy. Over published versions it serves nothing and deletes them,
+    so it is refused."""
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def test_a_folder_of_versions_is_versions(self):
+        served = self.root / "pkg"
+        (served / "1.0.0").mkdir(parents=True)
+        (served / "1.0.0" / "publisher.json").write_text("{}")
+        self.assertTrue(improve.served_as_versions(served))
+
+    def test_a_copy_is_not(self):
+        served = self.root / "pkg"
+        served.mkdir()
+        (served / "publisher.json").write_text("{}")
+        self.assertFalse(improve.served_as_versions(served))
+
+    def test_a_watch_mount_is_not(self):
+        source = self.root / "src"
+        source.mkdir()
+        served = self.root / "pkg"
+        served.symlink_to(source, target_is_directory=True)
+        self.assertFalse(improve.served_as_versions(served))
+
+    def test_a_missing_folder_is_not(self):
+        self.assertFalse(improve.served_as_versions(self.root / "nothing"))
+
+
+class ServedVersion(unittest.TestCase):
+    """The server says whether it serves the package as a published version."""
+
+    def serve(self, body: bytes):
+        import http.server
+        import threading
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_port}"
+
+    def test_a_version_is_named(self):
+        base = self.serve(b'{"name": "ecommerce", "versionId": "1.0.0"}')
+        self.assertEqual(improve.served_version(base, "e", "ecommerce"), "1.0.0")
+
+    def test_a_watch_mounted_package_has_none(self):
+        base = self.serve(b'{"name": "ecommerce"}')
+        self.assertIsNone(improve.served_version(base, "e", "ecommerce"))
+
+    def test_a_server_that_cannot_be_asked_is_none(self):
+        self.assertIsNone(improve.served_version("http://127.0.0.1:9", "e", "p"))
+        self.assertIsNone(improve.served_version(None, "e", "p"))
+
+
 class ClusterMembers(unittest.TestCase):
     """The improver sees each case's key. A rows golden kept in
     `golden.path` used to reach it as no key at all."""

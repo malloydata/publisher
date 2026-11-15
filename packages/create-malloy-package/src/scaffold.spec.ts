@@ -211,9 +211,14 @@ describe("scaffold: default package", () => {
       }
    });
 
-   test("publisher.json is just the name", () => {
+   test("publisher.json is the name and a first version", () => {
+      // A server outside watch mode publishes the package as this version,
+      // and refuses a publisher.json that declares none.
       run();
-      expect(readJson("sales/publisher.json")).toEqual({ name: "sales" });
+      expect(readJson("sales/publisher.json")).toEqual({
+         name: "sales",
+         version: "0.1.0",
+      });
    });
 
    test("malloy-config.json points the editor at the package directory", () => {
@@ -1421,6 +1426,15 @@ describe("scaffold: .gitignore", () => {
       run();
       const ignored = fs.readFileSync(path.join(tmp, ".gitignore"), "utf8");
       expect(ignored).toContain("publisher.db*");
+   });
+
+   test("ignores .env files, where the docs tell users to keep secrets", () => {
+      run();
+      const rules = fs
+         .readFileSync(path.join(tmp, ".gitignore"), "utf8")
+         .split("\n");
+      expect(rules).toContain(".env");
+      expect(rules).toContain("*.env");
    });
 });
 

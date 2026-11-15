@@ -74,7 +74,7 @@ proves nothing about placement — the live path returns the same rows. A count 
 a name, since the name carries a grain digest.
 
 ```sql
-SELECT table_name FROM information_schema.tables WHERE table_name LIKE '%__preagg__%'
+SELECT table_name FROM information_schema.tables WHERE table_name LIKE '%__preagg__%' OR table_name LIKE '%__rollup__%'
 ```
 
 ## Query by category

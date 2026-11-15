@@ -221,11 +221,27 @@ function accessBase({
       environment: environmentName,
       package: packageName,
       modelPath,
-      ...(queryName ? { queryName } : {}),
-      ...(sourceName ? { requestedSource: sourceName } : {}),
+      // Only a string is recorded: a request carrying anything else is
+      // refused (see assertOptionalStrings) and recorded without it.
+      ...(typeof queryName === "string" && queryName ? { queryName } : {}),
+      ...(typeof sourceName === "string" && sourceName
+         ? { requestedSource: sourceName }
+         : {}),
       adHoc: Boolean(query),
       ...identity,
    };
+}
+
+/** Refuse a `query`, `sourceName` or `queryName` that is present but not a string. */
+function assertOptionalStrings(
+   command: Pick<QueryCommand, "query" | "sourceName" | "queryName">,
+): void {
+   for (const field of ["query", "sourceName", "queryName"] as const) {
+      const value: unknown = command[field];
+      if (value !== undefined && value !== null && typeof value !== "string") {
+         throw new BadRequestError(`${field} must be a string`);
+      }
+   }
 }
 
 export class QueryUseCase {
@@ -251,6 +267,10 @@ export class QueryUseCase {
          command.clientSignal,
          async (audit) => {
             if (options.precondition) throw options.precondition;
+            // The transports pass the request body's fields through as they
+            // arrived (MCP types them; REST does not): a non-string here is
+            // the caller's mistake, refused as a 400 inside the record.
+            assertOptionalStrings(command);
 
             let requestMetadata: QueryMetadata | undefined;
             let queryClass: QueryClass | undefined;

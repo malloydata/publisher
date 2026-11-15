@@ -238,6 +238,44 @@ source: s is duckdb.sql("""${COLUMNS}""") extend {
       expect(violations[0].fieldName).toBeUndefined();
    });
 
+   it("is reported by the file that declares the source, including a notebook cell", async () => {
+      const text = `##! experimental.persistence
+source: s is duckdb.sql("""${COLUMNS}""") extend {
+  #@ preaggregate grain="category"
+  dimension: cat is category
+}
+`;
+      const compiled = await loadTestModel(connections, text).getModel();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const contents = (compiled as any)._modelDef.contents;
+      const source = contents.s as { sourceID?: string };
+      const named = (url: string) => ({
+         s: { ...source, sourceID: `s@${url}` },
+      });
+      // Declared here: reported.
+      expect(
+         validateModelPreaggregation(
+            named("file:///pkg/model.malloy"),
+            "file:///pkg/model.malloy",
+         ).map((v) => v.code),
+      ).toEqual(["misplaced_on_dimension"]);
+      // Declared by another file this one imports: left to that file.
+      expect(
+         validateModelPreaggregation(
+            named("file:///pkg/model.malloy"),
+            "file:///pkg/index.malloy",
+         ),
+      ).toEqual([]);
+      // Declared in a notebook cell, which compiles as an internal://
+      // document: the notebook's own, so still reported.
+      expect(
+         validateModelPreaggregation(
+            named("internal://cell-1"),
+            "file:///pkg/report.malloynb",
+         ).map((v) => v.code),
+      ).toEqual(["misplaced_on_dimension"]);
+   });
+
    it("a dimension is told where the annotation actually goes", async () => {
       // A rejection is only useful if it says what to do instead.
       const violations = await validate(`  #@ preaggregate grain="category"

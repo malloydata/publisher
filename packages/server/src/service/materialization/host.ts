@@ -16,15 +16,30 @@ import type {
 import type { EnvironmentName, PackageName, VersionRef } from "../identity";
 import type { ApiConnection } from "../model";
 import type { ServingReader } from "../versions/materialization_scope";
-import type { BuildPlanPackage } from "./plan/build_plan";
-import type { BuildPlan, FreshnessManifest, ManifestEntry } from "./types";
+import type { BuildPlanPackage } from "./domain/plan_input";
+import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
+import type {
+   BuildPlan,
+   FreshnessManifest,
+   ManifestEntry,
+} from "./domain/types";
 
 /** The package surface a run reads: its plan, its metadata, its connections. */
-export interface MaterializationPackage extends BuildPlanPackage {
+interface MaterializationPackage extends BuildPlanPackage {
    getPackageName(): string;
    /** The published version this package is; undefined for an unversioned one. */
    getVersionId(): string | undefined;
    getBuildPlan(): BuildPlan | null;
+   /**
+    * Resolves once the plan reflects the current connections (a connection
+    * edit re-derives it). Optional: a stand-in package's plan never moves.
+    */
+   whenBuildPlanCurrent?(): Promise<void>;
+   /**
+    * Whether the plan could not be derived (at load, or re-derived after a
+    * connection edit). Optional, like whenBuildPlanCurrent.
+    */
+   isBuildPlanUnavailable?(): boolean;
    getPackageMetadata(): {
       scope?: string | null;
       manifestLocation?: string | null;
@@ -32,10 +47,24 @@ export interface MaterializationPackage extends BuildPlanPackage {
    };
    /** The publish-gate rejections the scheduler honours before it arms a cron. */
    persistencePolicyWarnings(): string[];
+   /**
+    * Drop the bound rollup key checks (known limitation 29) of the tables at
+    * these content addresses, which a run is about to write. Optional: a
+    * stand-in package binds none.
+    */
+   forgetKeyUniqueness?(sourceEntityIds: Iterable<string>): void;
+   /**
+    * The text a chained `storage=` build compiles on its destination alone:
+    * the request's downstream, with each stored upstream the request carries
+    * re-rooted as the served copy re-roots it, from those entries alone and
+    * never the package's bound tables. Optional: a stand-in package has no
+    * served copy, and its chained builds recompute.
+    */
+   chainBuildText?(request: ChainBuildRequest): ChainBuildText;
 }
 
 /** The part of an environment's version registry a run consults. */
-export interface MaterializationVersions {
+interface MaterializationVersions {
    resolve(
       packageName: string,
       rawVersionId?: unknown,
@@ -59,6 +88,15 @@ export interface MaterializationVersions {
  * where a source is READ, `getStorageDestination` where a table is WRITTEN.
  */
 export interface MaterializationEnvironment {
+   /**
+    * Publish again a configured package whose boot publish was refused, so a
+    * run resolves the version it makes (Environment.setConfiguredPublishRetry).
+    * Optional: a test double need not implement it.
+    */
+   publishRefusedConfiguredPackage?(
+      packageName: string,
+      requestedVersion?: string,
+   ): Promise<void>;
    getEnvironmentName(): string;
    getEnvironmentPath(): string;
    getApiConnection(connectionName: string): ApiConnection;
@@ -71,6 +109,12 @@ export interface MaterializationEnvironment {
       options?: { versionId?: VersionRef },
    ): Promise<MaterializationPackage>;
    getLoadedPackages(): MaterializationPackage[];
+   /**
+    * Whether the package serves a model older than its files, because its
+    * last reload did not compile (a `stale: true` load error). Optional: a
+    * test double's packages are never stale.
+    */
+   getStaleCompileErrors?(): ReadonlyMap<string, unknown>;
    withPackageLock<T>(packageName: string, fn: () => Promise<T>): Promise<T>;
 
    getVersionService(): MaterializationVersions | null;

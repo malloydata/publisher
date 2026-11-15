@@ -226,7 +226,13 @@ function routeOf(
       // is a route already, and says so.
       if (routeCap > 0) {
          if (!node.joinPath) return undefined;
-         const rel = node.relationship ? `, join_${node.relationship}` : "";
+         // The join's own kind, and a repeated record's member's `many`
+         // beside it, as routeOptionLine says it.
+         const rel = node.joinRelationship
+            ? `, join_${node.joinRelationship}; ${node.name.slice(node.joinPath.length + 1)} is many, one value per array element`
+            : node.relationship
+              ? `, join_${node.relationship}`
+              : "";
          const notes = [
             holdsNote(index, node.sourceKey),
             joinNote(index, node),
@@ -259,7 +265,13 @@ function routeOptionLine(index: FcjIndex, option: JudgeOption): string {
    const node = index.catalog.nodes.get(r.node)!;
    const from = index.catalog.sources.get(r.from)?.name ?? r.from;
    const holds = holdsNote(index, r.from);
-   return `[${option.number}] ${from}.${r.path.join(".")}.${node.name} (route from ${from} through ${r.path.join(".")}, join_${r.fanout}): only the ${node.source} rows ${from} reaches${holds ? ` (${holds})` : ""}`;
+   // The join's own kind, and a repeated record's member's `many` beside it:
+   // `join_many` would misname a join_one to `items.sku`.
+   const kind =
+      node.relationship === "many" && r.joinFanout !== "many"
+         ? `join_${r.joinFanout}; ${node.name} is many, one value per array element`
+         : `join_${r.fanout}`;
+   return `[${option.number}] ${from}.${r.path.join(".")}.${node.name} (route from ${from} through ${r.path.join(".")}, ${kind}): only the ${node.source} rows ${from} reaches${holds ? ` (${holds})` : ""}`;
 }
 
 /** Longest quoted doc sentence a route line carries. */

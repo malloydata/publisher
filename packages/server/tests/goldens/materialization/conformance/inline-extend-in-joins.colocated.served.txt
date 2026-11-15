@@ -1,0 +1,21 @@
+// conformance: inline extend in joins [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: by_customer__served is {
+   customer_id::number,
+   seg_up::string,
+   total::number,
+   n::number
+}
+
+import "raw.malloy"
+
+#@ persist name="by_customer"
+source: by_customer is duckdb.virtual('6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973')::by_customer__served extend {
+  internal rename:
+    customer_id__stored is customer_id
+  dimension:
+    customer_id is customer_id__stored::"BIGINT"
+}

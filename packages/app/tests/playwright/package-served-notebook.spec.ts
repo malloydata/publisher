@@ -23,7 +23,9 @@ test.describe("package-served-notebook", () => {
       await page.getByText("Category review", { exact: true }).click();
 
       await expect(page).toHaveURL(
-         new RegExp(`/${DEFAULT_ENV}/${PACKAGES.storefront}/category-review$`),
+         new RegExp(
+            `/${DEFAULT_ENV}/${PACKAGES.storefront}/latest/category-review$`,
+         ),
       );
       await expect(
          page.getByRole("heading", { name: "Category review", level: 1 }),
@@ -67,7 +69,7 @@ test.describe("package-served-notebook", () => {
       );
       await expect(page).toHaveURL(
          new RegExp(
-            `/${DEFAULT_ENV}/${PACKAGES.storefront}/category-review\\?CATEGORY=Jeans$`,
+            `/${DEFAULT_ENV}/${PACKAGES.storefront}/latest/category-review\\?CATEGORY=Jeans$`,
          ),
          { timeout: 30_000 },
       );
@@ -83,7 +85,7 @@ test.describe("package-served-notebook", () => {
          `/${DEFAULT_ENV}/${PACKAGES.storefront}/dashboards/overview`,
       );
       await expect(page).toHaveURL(
-         new RegExp(`/${DEFAULT_ENV}/${PACKAGES.storefront}/overview$`),
+         new RegExp(`/${DEFAULT_ENV}/${PACKAGES.storefront}/latest/overview$`),
          { timeout: 30_000 },
       );
    });

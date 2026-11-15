@@ -110,6 +110,15 @@ export type ErrorReason =
    // 409: the package's build plan could not be derived at load; a reload
    // derives it again, a retry does not.
    | "BUILD_PLAN_UNAVAILABLE"
+   // 503: the package's build plan is being re-derived after a connection
+   // change; retry after the Retry-After seconds.
+   | "BUILD_PLAN_REFRESHING"
+   // 409: the package is fetched again from the location it was installed
+   // from on reload, which would discard the write.
+   | "PACKAGE_INSTALLED_FROM_LOCATION"
+   // 409: a create-only report write found a file at the path; another name
+   // may be free.
+   | "FILE_EXISTS"
    // Package versions; each is raised only as a PackageVersionError, whose
    // reason fixes its status (see PACKAGE_VERSION_ERROR_STATUS).
    | PackageVersionErrorReason;
@@ -381,6 +390,8 @@ function bodyParserClientStatus(error: Error): number | undefined {
 /** What {@link internalErrorToHttpError} answers with. */
 export interface HttpErrorAnswer {
    status: number;
+   /** Headers to send with it, when the error's mapping names any. */
+   headers?: Record<string, string>;
    json: {
       code: number;
       message: string;
@@ -425,13 +436,16 @@ export function internalErrorToHttpError(
    const status = resolve(row.status, error);
    const message =
       row.message === undefined ? error.message : resolve(row.message, error);
+   const headers = row.headers?.(error);
    if (row.problems) {
       return {
          status,
+         ...(headers ? { headers } : {}),
          json: { code: status, message, problems: row.problems(error) },
       };
    }
-   return httpError(status, message, resolve(row.reason, error));
+   const answer = httpError(status, message, resolve(row.reason, error));
+   return headers ? { ...answer, headers } : answer;
 }
 
 function resolve<E, T>(value: T | ((error: E) => T), error: E): T {
@@ -465,6 +479,25 @@ export class BuildPlanUnavailableError extends Error {
    constructor(message: string) {
       super(message);
       this.name = "BuildPlanUnavailableError";
+   }
+}
+
+/**
+ * A package's build plan is being re-derived after a connection change and
+ * the wait for it passed its cap: answered 503 with Retry-After, rather than
+ * holding the request until the re-derivation finishes.
+ */
+export class BuildPlanRefreshingError extends Error {
+   get kind(): "build_plan_refreshing" {
+      return "build_plan_refreshing";
+   }
+
+   /** Seconds a caller should wait before retrying, sent as Retry-After. */
+   readonly retryAfterSeconds = 5;
+
+   constructor(message: string) {
+      super(message);
+      this.name = "BuildPlanRefreshingError";
    }
 }
 
@@ -890,11 +923,22 @@ export class ChainedUpstreamMissingError extends Error {
    }
 
    readonly missing: readonly string[];
+   /**
+    * Why each missing upstream could not be used, by name, when the thrower
+    * knows: lets a caller act on one cause (an entry at the wrong tier)
+    * without parsing the joined message.
+    */
+   readonly details?: readonly { name: string; detail: string }[];
 
-   constructor(missing: readonly string[], detail: string) {
+   constructor(
+      missing: readonly string[],
+      detail: string,
+      details?: readonly { name: string; detail: string }[],
+   ) {
       super(detail);
       this.name = "ChainedUpstreamMissingError";
       this.missing = missing;
+      if (details) this.details = details;
    }
 }
 
@@ -912,6 +956,30 @@ export class ChainedShapeNotCarriedError extends Error {
    constructor(detail: string) {
       super(detail);
       this.name = "ChainedShapeNotCarriedError";
+   }
+}
+
+/**
+ * A strict, orchestrated `storage=` build refused the warehouse recompute
+ * (ms2data/service#6756, publisher#1327): the source reaches the source
+ * warehouse through an intermediate no stored table stands in for, so its only
+ * build would recompute its stored upstreams from raw, and the orchestrator
+ * said `warehouseReach: "refuse"`. A property of the model and the
+ * instructions, so retrying the same ones fails the same way.
+ */
+export class WarehouseRecomputeRefusedError extends Error {
+   get kind(): "warehouse_recompute_refused" {
+      return "warehouse_recompute_refused";
+   }
+
+   constructor(sourceName: string, destinationName: string, reason: string) {
+      super(
+         `Failed to materialize source '${sourceName}' into storage ` +
+            `destination '${destinationName}': its only build recomputes its ` +
+            `stored upstreams from the source warehouse, and the build ` +
+            `instructions refuse that (warehouseReach: refuse): ${reason}`,
+      );
+      this.name = "WarehouseRecomputeRefusedError";
    }
 }
 
@@ -1078,15 +1146,40 @@ export class MaterializationConflictError extends Error {
    }
 }
 
-/** A write whose `expectedHash` no longer matches the file: someone else saved first. */
+/**
+ * A write that found the file other than the caller expected: someone else
+ * saved first (`expectedHash` no longer matches), or a create-only write
+ * found a file already at the path (`reason` FILE_EXISTS, so a caller
+ * choosing a name can tell it to try the next).
+ */
 export class WriteConflictError extends Error {
    get kind(): "write_conflict" {
       return "write_conflict";
    }
 
-   constructor(message: string) {
+   constructor(
+      message: string,
+      readonly reason?: "FILE_EXISTS",
+   ) {
       super(message);
       this.name = "WriteConflictError";
+   }
+}
+
+/**
+ * A write to a package installed from a `location`, which a reload would
+ * discard: a reload fetches the package again from there and replaces its
+ * files. 409, `reason` PACKAGE_INSTALLED_FROM_LOCATION. Interim, until package
+ * storage keeps server-side writes apart from the fetched copy (#1560).
+ */
+export class InstalledFromLocationError extends Error {
+   get kind(): "installed_from_location" {
+      return "installed_from_location";
+   }
+
+   constructor(message: string) {
+      super(message);
+      this.name = "InstalledFromLocationError";
    }
 }
 
@@ -1118,6 +1211,26 @@ export class WriteRollbackFailedError extends Error {
    constructor(message: string, options?: ErrorOptions) {
       super(message, options);
       this.name = "WriteRollbackFailedError";
+   }
+}
+
+/**
+ * An environment change that was applied, but whose connection rows could not
+ * all be saved: those connections serve now and are wrong after a restart.
+ * 500, the server's storage failing. The message is server-composed and names
+ * only the connections; each underlying failure was logged where it happened.
+ */
+export class ConnectionSaveError extends Error {
+   get kind(): "connection_save" {
+      return "connection_save";
+   }
+
+   constructor(
+      message: string,
+      readonly connectionNames: readonly string[],
+   ) {
+      super(message);
+      this.name = "ConnectionSaveError";
    }
 }
 
@@ -1263,6 +1376,7 @@ type PayloadTooLargeKind = "payload_too_large" | "response_unserializable";
 interface ErrorByKind {
    package_version: PackageVersionError;
    build_plan_unavailable: BuildPlanUnavailableError;
+   build_plan_refreshing: BuildPlanRefreshingError;
    not_implemented: NotImplementedError;
    bad_request: BadRequestError;
    invalid_argument: InvalidArgumentError;
@@ -1295,6 +1409,7 @@ interface ErrorByKind {
    materialization_eligibility: MaterializationEligibilityError;
    chained_upstream_missing: ChainedUpstreamMissingError;
    chained_shape_not_carried: ChainedShapeNotCarriedError;
+   warehouse_recompute_refused: WarehouseRecomputeRefusedError;
    publisher_config: PublisherConfigError;
    server_configuration: ServerConfigurationError;
    frozen_config: FrozenConfigError;
@@ -1305,8 +1420,10 @@ interface ErrorByKind {
    materialization_not_found: MaterializationNotFoundError;
    materialization_conflict: MaterializationConflictError;
    write_conflict: WriteConflictError;
+   installed_from_location: InstalledFromLocationError;
    write_rolled_back: WriteRolledBackError;
    write_rollback_failed: WriteRollbackFailedError;
+   connection_save: ConnectionSaveError;
    write_verify: WriteVerifyError;
    invalid_state_transition: InvalidStateTransitionError;
    service_unavailable: ServiceUnavailableError;
@@ -1342,6 +1459,7 @@ const ERROR_CLASSES: {
 } = {
    package_version: PackageVersionError,
    build_plan_unavailable: BuildPlanUnavailableError,
+   build_plan_refreshing: BuildPlanRefreshingError,
    not_implemented: NotImplementedError,
    bad_request: BadRequestError,
    invalid_argument: InvalidArgumentError,
@@ -1374,6 +1492,7 @@ const ERROR_CLASSES: {
    materialization_eligibility: MaterializationEligibilityError,
    chained_upstream_missing: ChainedUpstreamMissingError,
    chained_shape_not_carried: ChainedShapeNotCarriedError,
+   warehouse_recompute_refused: WarehouseRecomputeRefusedError,
    publisher_config: PublisherConfigError,
    server_configuration: ServerConfigurationError,
    frozen_config: FrozenConfigError,
@@ -1384,8 +1503,10 @@ const ERROR_CLASSES: {
    materialization_not_found: MaterializationNotFoundError,
    materialization_conflict: MaterializationConflictError,
    write_conflict: WriteConflictError,
+   installed_from_location: InstalledFromLocationError,
    write_rolled_back: WriteRolledBackError,
    write_rollback_failed: WriteRollbackFailedError,
+   connection_save: ConnectionSaveError,
    write_verify: WriteVerifyError,
    invalid_state_transition: InvalidStateTransitionError,
    service_unavailable: ServiceUnavailableError,
@@ -1472,11 +1593,13 @@ export interface ErrorMapping<E> {
    /** The HTTP body's message; the error's own when absent. */
    message?: string | ((error: E) => string);
    /** The HTTP body's `reason`, for a caller that branches on it. */
-   reason?: ErrorReason | ((error: E) => ErrorReason);
+   reason?: ErrorReason | ((error: E) => ErrorReason | undefined);
    /** Logged server-side by the HTTP mapping (unless the caller passed `log: false`). */
    log?: LogLine | ((error: E) => LogLine | undefined);
    /** The HTTP body also carries the compile problems. */
    problems?: (error: E) => HttpErrorAnswer["json"]["problems"];
+   /** Response headers to send with the error (Retry-After on a 503). */
+   headers?: (error: E) => Record<string, string>;
    mcp: McpAdvice<E>;
    mcpSetup?: McpSetupScope;
 }
@@ -1647,6 +1770,20 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       reason: "BUILD_PLAN_UNAVAILABLE",
       mcp: { advice: "internal" },
    },
+   build_plan_refreshing: {
+      status: 503,
+      reason: "BUILD_PLAN_REFRESHING",
+      headers: (error) => ({ "Retry-After": String(error.retryAfterSeconds) }),
+      // Transient: a connection edit's re-derivation is running. Retryable
+      // advice, not "internal", so an agent waits and retries.
+      mcp: {
+         advice: "fixed",
+         suggestions: [
+            "Retry in a few seconds: the build plan is being re-derived after a connection change.",
+         ],
+      },
+      mcpSetup: "package",
+   },
    // Otherwise reported as internal, and an agent retries it forever.
    connection_not_found: NOT_FOUND,
    storage_destination_not_found: {
@@ -1743,8 +1880,28 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    materialization_not_found: { status: 404, mcp: { advice: "internal" } },
    materialization_conflict: { status: 409, mcp: { advice: "internal" } },
    invalid_state_transition: { status: 409, mcp: { advice: "internal" } },
-   write_conflict: { status: 409, mcp: { advice: "internal" } },
+   write_conflict: {
+      status: 409,
+      reason: (error) => error.reason,
+      mcp: { advice: "internal" },
+   },
+   installed_from_location: {
+      status: 409,
+      reason: "PACKAGE_INSTALLED_FROM_LOCATION",
+      mcp: {
+         // Not transient, and not the model's fault: the message names where
+         // the change belongs.
+         advice: "fixed",
+         suggestions: [
+            "This is not transient: retrying fails the same way while the package is installed from a location.",
+            "Make the change in the package's source at that location and reload the package, or publish it as a version.",
+         ],
+      },
+   },
    write_rollback_failed: { status: 500, mcp: { advice: "internal" } },
+   // Answered with its message, which names only connections; each failure
+   // was logged where it happened, so it is not logged again here.
+   connection_save: { status: 500, mcp: { advice: "internal" } },
    // Logged once, where the rollback happened, with the cause.
    write_rolled_back: { status: 500, mcp: { advice: "internal" } },
    service_unavailable: BACK_PRESSURE,
@@ -1777,6 +1934,7 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    // No specific answer: a generalized 500, its detail only logged.
    chained_upstream_missing: UNHANDLED,
    chained_shape_not_carried: UNHANDLED,
+   warehouse_recompute_refused: UNHANDLED,
    publisher_config: UNHANDLED,
    write_verify: UNHANDLED,
    unknown: UNHANDLED,

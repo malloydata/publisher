@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { quoteTablePath } from "../../quoting";
-import { ManifestEntry } from "../types";
+import { ManifestEntry } from "../domain/types";
 import type { BuildStrategy, ColocatedBuildRequest } from "./build_strategy";
 import { warehouseDeltaTarget } from "./incremental_apply";
 import { refreshOneSourceIncrementally } from "./incremental_build";
@@ -37,7 +37,8 @@ export class IncrementalDeltaStrategy
          instruction,
          target: warehouseDeltaTarget({
             dialect,
-            runner: (sql) => connection.runSQL(sql, runOptions),
+            runner: (sql, options) =>
+               connection.runSQL(sql, { ...runOptions, ...options }),
             quotedTablePath: quoteTablePath(
                instruction.physicalTableName,
                dialect,

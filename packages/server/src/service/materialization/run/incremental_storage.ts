@@ -21,7 +21,7 @@ import type { FederatedSourceType } from "../../connection";
 import type { QueryMetadata } from "../../query_metadata";
 import { quoteIdentifier } from "../../quoting";
 import { errMessage } from "../../../utils";
-import { storageTablePath } from "./storage_table_path";
+import { storageTablePath } from "../domain/storage_table_path";
 
 /**
  * The delta target for a source materialized into a `storage=` destination — the
@@ -67,9 +67,9 @@ export function storageDeltaTarget(params: {
    lineage: IncrementalLineage;
    persistSource: PersistSource;
    /**
-    * The manifest-resolved build SQL (`PersistSource.getSQL()`), deliberately NOT
-    * its public-column projection: that is applied outermost here so the delta's
-    * columns are byte-identical to the seed's.
+    * The manifest-resolved build SQL (the target's `buildSQL()`), deliberately
+    * NOT its public-column projection: that is applied outermost here so the
+    * delta's columns are byte-identical to the seed's.
     */
    buildSQL: string;
    queryMetadata?: QueryMetadata;

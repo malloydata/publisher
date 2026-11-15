@@ -36,6 +36,7 @@ import {
 import type { VersionService } from "../service/versions/version_service";
 import { versionManifestLocation } from "./manifest_location";
 import { changedFields } from "./versioned_patch";
+import { admitPatch } from "../service/package_patch";
 import { loadedPackage } from "./loaded_package";
 import {
    parseEnvironmentName,
@@ -306,12 +307,22 @@ export class PackageController {
          packageName,
          versionId,
       );
+      // A connection edit re-derives the plan; never hand out the old one.
+      await pkg.whenBuildPlanCurrent();
       if (pkg.isBuildPlanUnavailable()) {
          throw new BuildPlanUnavailableError(
-            `The build plan of package ${packageName} could not be derived at load. Reload the package to derive it again; retrying the read does not.`,
+            `The build plan of package ${packageName} could not be derived (at load, or after a connection change). Reload the package to derive it again; retrying the read does not.`,
          );
       }
-      return pkg.getBuildPlan() ?? { graphs: [], sources: {} };
+      return (
+         pkg.getBuildPlan() ?? {
+            graphs: [],
+            sources: {},
+            refusedSources: {},
+            omittedSources: [],
+            omittedFiles: [],
+         }
+      );
    }
 
    /**
@@ -540,11 +551,19 @@ export class PackageController {
                validate: (loaded) => formatPublishRejections(loaded),
                // A versioned publish refuses a tree with no valid version.
                readVersion: versioned,
-               describe: (pkg, versionId) => ({
-                  ...pkg.getPackageMetadata(),
-                  location: bodyLocation,
-                  ...(versionId !== undefined && { versionId }),
-               }),
+               describe: async (pkg, versionId) => {
+                  // What a publish would build and serve (#7090): the
+                  // verdicts, views checked, and the plan they come from.
+                  const serveVerdicts = await pkg.previewServeVerdicts();
+                  const buildPlan = pkg.getBuildPlan();
+                  return {
+                     ...pkg.getPackageMetadata(),
+                     location: bodyLocation,
+                     ...(versionId !== undefined && { versionId }),
+                     ...(buildPlan && { buildPlan }),
+                     ...(serveVerdicts.length > 0 && { serveVerdicts }),
+                  };
+               },
             },
          );
       } catch (error) {
@@ -627,7 +646,7 @@ export class PackageController {
                   body,
                );
             }
-            // Versioning off, the transition default: installed in
+            // Versioning off (PUBLISHER_PACKAGE_VERSIONING=off): installed in
             // place, as every publish from a location was before versions,
             // whatever its publisher.json declares. Versions already published
             // are not replaced.
@@ -811,6 +830,10 @@ export class PackageController {
          typeof body.location === "string" &&
          body.location !== "" &&
          body.location !== installedFrom;
+      // A change a reload would discard is refused (see admitPatch), judged
+      // under the package lock against the metadata the apply sees: for a
+      // reinstall, the tree it fetches, whose publisher.json is what a reload
+      // keeps, and the package it replaces.
       let result: ApiPackage;
       if (reinstall) {
          // Download to staging without the lock, then swap under it. Explores
@@ -832,11 +855,21 @@ export class PackageController {
                   pkg,
                   body.explores?.map(normalizeModelPath),
                ),
-            { update: body },
+            {
+               update: body,
+               admit: (update, fetched, previous) =>
+                  admitPatch(packageName, update, fetched, {
+                     location: bodyLocation,
+                     previous,
+                  }),
+            },
          );
          result = installed.getPackageMetadata();
       } else {
-         result = await environment.updatePackage(packageName, body);
+         result = await environment.updatePackage(packageName, body, {
+            admit: (update, resident) =>
+               admitPatch(packageName, update, resident),
+         });
       }
       await this.environmentStore.addPackageToDatabase(
          environmentName,

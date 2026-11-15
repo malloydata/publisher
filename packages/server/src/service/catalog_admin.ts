@@ -27,6 +27,9 @@ import {
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
    escapeSQL,
+   isDuckLakeInitRace,
+   tablePartitionKeys,
+   type PartitionKey,
 } from "./connection";
 import {
    cleanupStorageFiles,
@@ -178,6 +181,8 @@ export interface CatalogTable {
    name: string;
    columns: { name: string; type: string }[];
    rowCount?: number;
+   /** The partition spec in key order; empty when the table is not partitioned. */
+   partitionedBy: PartitionKey[];
 }
 
 export interface CatalogSnapshot {
@@ -321,6 +326,15 @@ export class CatalogAdmin {
             );
          }
       } catch (error) {
+         // Another create of this catalog, begun after the check above, made it
+         // first.
+         if (isDuckLakeInitRace(error)) {
+            throw new CatalogAdminError(
+               409,
+               "CATALOG_EXISTS",
+               `A DuckLake catalog named '${name}' already exists.`,
+            );
+         }
          throw this.redacted(error);
       } finally {
          await dispose();
@@ -400,11 +414,21 @@ export class CatalogAdmin {
             }[]
          ).map((c) => ({ name: c.column_name, type: c.column_type }));
          const estimate = found[0].estimated_size;
+         // Every catalog this API manages keeps its metadata in the schema
+         // named after it (see `ducklake`).
+         const partitionedBy = await tablePartitionKeys(
+            s,
+            name,
+            name,
+            schema,
+            table,
+         );
          return {
             schema,
             name: table,
             columns,
             ...(estimate == null ? {} : { rowCount: Number(estimate) }),
+            partitionedBy,
          };
       });
    }

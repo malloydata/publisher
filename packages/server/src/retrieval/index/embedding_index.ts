@@ -32,6 +32,8 @@ export interface EmbeddableEntity {
    joinTargetModelPath?: string;
    /** On a joined copy of a field: the join path that reaches it (`buyer.origin`). */
    joinPath?: string;
+   /** On a member of a record column: the record's path (see Entity.recordPath). */
+   recordPath?: string;
 }
 
 /**

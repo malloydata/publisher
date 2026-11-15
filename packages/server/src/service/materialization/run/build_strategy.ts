@@ -6,12 +6,12 @@ import type {
    Manifest,
    PersistSource,
 } from "@malloydata/malloy";
-import type { BuildInstruction, ManifestEntry } from "../types";
+import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import type { QueryMetadata } from "../../query_metadata";
 import type { sourceIncrementalRefresh } from "./incremental_build";
 
 /** A source's incremental refresh the run can act on: its context and lineage. */
-export type IncrementalRefreshTarget = NonNullable<
+type IncrementalRefreshTarget = NonNullable<
    ReturnType<typeof sourceIncrementalRefresh>
 >;
 
@@ -23,7 +23,8 @@ export type IncrementalRefreshTarget = NonNullable<
  *
  * - colocated: {@link IncrementalDeltaStrategy} advances an incremental
  *   table by a bounded delta, else {@link ColocatedCtasStrategy} rebuilds it
- *   by a staging CTAS and an atomic rename, in the source's own warehouse;
+ *   by a staging CTAS and a swap onto the served name (one transaction where
+ *   DDL is transactional), in the source's own warehouse;
  * - storage: {@link StorageBuildStrategy} builds into a `storage=` destination
  *   (its delta, when there is one, applies inside the destination session);
  * - instructed: {@link InstructedBuild} drives a run's instructions through
@@ -51,4 +52,9 @@ export interface ColocatedBuildRequest {
    >;
    /** The source's incremental refresh, when it declares one the run can act on. */
    incrementalRefresh?: IncrementalRefreshTarget;
+   /**
+    * Statements that drop this package's own leftover `name=` view at the
+    * name, run first in the swap's transaction (leftover_name_views.ts).
+    */
+   replacesView?: string[];
 }

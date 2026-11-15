@@ -11,6 +11,7 @@ import {
    getEmbeddingConfig,
    getMaxConcurrentQueries,
    getMaxQueryRows,
+   getMaterializeGatedSources,
    getMaxResponseBytes,
    getMemoryGovernorConfig,
    getPersistCollisionEnforce,
@@ -31,7 +32,7 @@ import {
    DEFAULT_QUERY_TIMEOUT_MS,
    PUBLISHER_CONFIG_NAME,
 } from "./constants";
-import { withSettings } from "./test_helpers/settings_env";
+import { installSettings, withSettings } from "./test_helpers/settings_env";
 
 describe("Config Environment Variable Substitution", () => {
    const testServerRoot = path.join(process.cwd(), "test-temp-config");
@@ -1594,9 +1595,9 @@ describe("PERSIST_COLLISION_ENFORCE", () => {
    const enforce = (value?: string) =>
       readWith("PERSIST_COLLISION_ENFORCE", value, getPersistCollisionEnforce);
 
-   it("defaults to warn-only when unset or empty", () => {
-      expect(enforce()).toBe(false);
-      expect(enforce("   ")).toBe(false);
+   it("enforces by default, when unset or empty", () => {
+      expect(enforce()).toBe(true);
+      expect(enforce("   ")).toBe(true);
    });
 
    it("enforces for every spelling of true an operator might use", () => {
@@ -1683,4 +1684,22 @@ describe("EMBEDDING_MIN_SIMILARITY", () => {
    it("names the variable and the range it takes in the error", () => {
       expect(() => config("2")).toThrow(invalid("2"));
    });
+});
+
+describe("getMaterializeGatedSources", () => {
+   const cases: [Record<string, string>, boolean][] = [
+      // The gated switch alone decides.
+      [{ PUBLISHER_MATERIALIZE_GATED_SOURCES: "true" }, true],
+      [{}, false],
+   ];
+   for (const [env, expected] of cases) {
+      it(`is ${expected} with ${JSON.stringify(env)}`, () => {
+         const { restore } = installSettings({ env });
+         try {
+            expect(getMaterializeGatedSources()).toBe(expected);
+         } finally {
+            restore();
+         }
+      });
+   }
 });
