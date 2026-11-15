@@ -23,7 +23,7 @@ jobs:
       fail-fast: false
       matrix:
         pair: ["126-vs-131", "126-vs-126", "126-vs-fixed"]
-        n: [4, 5, 6]
+        n: [7, 8, 9]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,7 +41,7 @@ jobs:
             ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
       - run: bun install --frozen-lockfile
       - name: Fixed candidate (the three fix branches merged in the runner)
-        if: ${{ matrix.pair == '126-vs-fixed' }}
+        if: ${{ false }}
         run: |
           git fetch origin fix/7795-load-gate-cpu fix/7795-served-copy-rebind fix/7795-status-snapshot
           git worktree add --detach "$RUNNER_TEMP/fixed" origin/main
@@ -61,7 +61,7 @@ jobs:
           case "$PAIR" in
             126-vs-131) cand="git:v0.13.1" ;;
             126-vs-126) cand="git:v0.12.6" ;;
-            126-vs-fixed) cand="$RUNNER_TEMP/fixed" ;;
+            126-vs-fixed) cand="git:dff819a09" ;;
           esac
           nproc; free -g
           bun tests/perf/main-thread/run.ts --baseline git:v0.12.6 --candidate "$cand" \
