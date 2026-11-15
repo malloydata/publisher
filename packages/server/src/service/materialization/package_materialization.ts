@@ -2266,15 +2266,15 @@ export class PackageMaterialization {
     * cross-package collisions need the host's global view.
     */
    persistenceCollisionWarnings(): string[] {
-      const sources = this.buildPlan?.sources
-         ? Object.values(this.buildPlan.sources)
-         : [];
       const targets = new Map<
          string,
          { name: string; destination: string; sources: Map<string, string> }
       >();
-      for (const source of sources) {
+      for (const [sourceID, source] of Object.entries(
+         this.buildPlan?.sources ?? {},
+      )) {
          // The one definition of a collision, shared with the serve refusal.
+         const materialize = this.materializePlans?.[sourceID];
          const {
             key,
             name: physicalName,
@@ -2283,6 +2283,15 @@ export class PackageMaterialization {
             source.annotationFields ?? {},
             source.name,
             source.connectionName,
+            {
+               ...(materialize
+                  ? { defaulted: !!materialize.nameDefaulted }
+                  : {}),
+               ...(source.dialect ? { dialect: source.dialect } : {}),
+               ...(this.owner.metadata().scope === "version"
+                  ? { versionScoped: true }
+                  : {}),
+            },
          );
          const bucket = targets.get(key) ?? {
             name: physicalName,

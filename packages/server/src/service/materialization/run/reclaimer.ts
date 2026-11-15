@@ -30,25 +30,15 @@ import {
    tableKeyOf,
 } from "./materialization_run_support";
 import {
-   atNameViewSite,
+   dropLeftoverNameViews,
    heldByOwnNameView,
    nameViewsIn,
-   nameViewSuccessors,
-   settleNameViewsBeforeDrop,
-   type NameViewRecord,
-} from "./name_view";
-import { nameViewOwner } from "./name_view_sql";
+   type RecordedNameView,
+} from "./leftover_name_views";
+import { packageOwner } from "./table_mark_sql";
 import { ownedElsewhere } from "./table_ownership";
+import { atTableSite } from "./table_site";
 import type { RunLifecycle } from "./run_lifecycle";
-
-/**
- * The `name=` views a sweep must settle before it drops their tables: those
- * the runs being dropped recorded, and where each could point instead.
- */
-interface NameViewsToSettle {
-   recorded: NameViewRecord[];
-   successorFor: (view: NameViewRecord) => NameViewRecord | undefined;
-}
 
 /** A physical table's key for drop bookkeeping: where it lives, and its name. */
 function tableKey(destination: string, physicalTableName: string): string {
@@ -319,35 +309,32 @@ export class Reclaimer {
          Object.values(entries),
          stillReferenced,
          await this.connectionResolverFor(environment, packageName, m.version),
-         await this.nameViewsToSettle(
-            environmentId,
-            packageName,
-            [m],
-            (other) => other.id !== m.id,
-         ),
+         await this.recordedNameViews(environmentId, packageName, [m]),
       );
    }
 
    /**
-    * The `name=` views `runs` recorded, and for each the newest table another
-    * committed run (among those `include` admits) points the same view at;
-    * undefined when the runs recorded none.
+    * The `name=` views an earlier release recorded making, on `runs` and on
+    * every other run of the package (a run that carried a table forward did
+    * not record its view again), for the drop to clean up
+    * (leftover_name_views.ts); undefined when none did.
     */
-   private async nameViewsToSettle(
+   private async recordedNameViews(
       environmentId: string,
       packageName: string,
       runs: Materialization[],
-      include: (other: Materialization) => boolean,
-   ): Promise<NameViewsToSettle | undefined> {
-      const recorded = runs.flatMap((m) => nameViewsIn(m.metadata));
-      if (recorded.length === 0) return undefined;
-      const others = (
+   ): Promise<RecordedNameView[] | undefined> {
+      const listed =
          (await this.repository.listMaterializations(
             environmentId,
             packageName,
-         )) ?? []
-      ).filter((o) => include(o) && o.status === "MANIFEST_FILE_READY");
-      return { recorded, successorFor: nameViewSuccessors(others) };
+         )) ?? [];
+      const ids = new Set(runs.map((m) => m.id));
+      const recorded = [
+         ...runs,
+         ...listed.filter((m) => !ids.has(m.id)),
+      ].flatMap((m) => nameViewsIn(m.metadata));
+      return recorded.length > 0 ? recorded : undefined;
    }
 
    /**
@@ -417,8 +404,9 @@ export class Reclaimer {
       entries: ManifestEntry[],
       stillReferenced: Set<string>,
       connectionFor: (name: string) => Promise<MalloyConnection | undefined>,
-      // The `name=` views to settle before their tables go (name_view.ts).
-      nameViews?: NameViewsToSettle,
+      // The `name=` views earlier releases recorded, dropped with the tables
+      // they read (leftover_name_views.ts).
+      nameViews?: RecordedNameView[],
    ): Promise<ManifestEntry[]> {
       const m = { id: materializationId };
       const connectionCache = new Map<string, MalloyConnection>();
@@ -449,20 +437,20 @@ export class Reclaimer {
             ),
       };
       // A table's DROP that fails because this package's own `name=` view
-      // holds its name: a later build replaced the table with the view
-      // (name_view.ts), so the table is gone and its entry is retired, not
-      // owed. Probed only after a failed drop.
-      const owner = nameViewOwner(environmentName, packageName);
+      // holds its name: an earlier release replaced the table with the view,
+      // so the table is gone and its entry is retired, not owed. Probed only
+      // after a failed drop.
+      const owner = packageOwner(environmentName, packageName);
       const replacedByOwnView = (entry: ManifestEntry) =>
          heldByOwnNameView(
             {
-               viewName: entry.physicalTableName,
-               owner,
                connectionName: entry.connectionName ?? "",
                ...(entry.storageDestinationName
                   ? { storageDestinationName: entry.storageDestinationName }
                   : {}),
             },
+            entry.physicalTableName,
+            owner,
             viewContext,
          );
       for (const entry of entries) {
@@ -492,7 +480,7 @@ export class Reclaimer {
          // A table another package has marked as its own since this run
          // built it (it holds that package's `name=` now) is no longer this
          // package's to drop. Retired, not owed (table_ownership.ts).
-         const markedBy = await atNameViewSite(
+         const markedBy = await atTableSite(
             {
                connectionName,
                ...(entry.storageDestinationName
@@ -518,12 +506,7 @@ export class Reclaimer {
          // Before the table: a Postgres view refuses its table's drop, and a
          // view left reading a dropped table answers nothing.
          if (nameViews) {
-            await settleNameViewsBeforeDrop(
-               entry,
-               nameViews.recorded,
-               nameViews.successorFor,
-               viewContext,
-            );
+            await dropLeftoverNameViews(entry, nameViews, owner, viewContext);
          }
 
          // A storage= table lives in the destination, not the source warehouse,
@@ -545,9 +528,9 @@ export class Reclaimer {
                      destinationConnection,
                      physicalTableName,
                      environmentPath: environment.getEnvironmentPath(),
-                     // Where a `name=` view's replacement keeps the table
-                     // until its run commits (name_view.ts), as a crash or
-                     // a failed restore may leave it.
+                     // Where an earlier release's `name=` view replacement
+                     // kept the table until its run committed, as a crash
+                     // or a failed restore may have left it.
                      alsoDrop: [
                         `${physicalTableName}${backupSuffix(entry.sourceEntityId)}`,
                      ],
@@ -850,11 +833,10 @@ export class Reclaimer {
          packageName,
          versionId,
       );
-      const nameViews = await this.nameViewsToSettle(
+      const nameViews = await this.recordedNameViews(
          environmentId,
          packageName,
          runs,
-         (other) => !reclaimed.has(other.id),
       );
       for (const m of runs) {
          const owed = await this.deps.dropManifestEntries(
@@ -966,7 +948,7 @@ function logRetiredByView(
    physicalTableName: string,
 ): void {
    logger.info(
-      "Skipped drop: a name= view this package made replaced the table, which is gone",
+      "Skipped drop: a name= view this package made in an earlier release replaced the table, which is gone",
       { materializationId, physicalTableName },
    );
 }
