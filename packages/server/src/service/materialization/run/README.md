@@ -85,9 +85,11 @@ A warehouse dialect is one table in two halves, keyed by Malloy's
    `postgres` and `snowflake` are spelled alike in both.
 
 The dialect-literal ratchet in `layer_rules.spec.ts` counts, in every module
-here, a dialect-named value compared to a string literal, and a registered
-dialect as a `case` label or opening a bracket (`case` labels are free in
-`run/warehouse_sql.ts` only). Each count is frozen in
+here, every string literal that is exactly a registered dialect (quoted any
+way, wherever it stands), every bare object key that is one (`{ postgres: 50
+}`), and a dialect-named value compared to any other string literal. Comments
+and type tests (`typeof x === "string"`) are not code, and `case` labels are
+free in `run/warehouse_sql.ts` only. Each count is frozen in
 `materialization_allowlists.mjs`, so a new one is a reviewed change. It reads
-names and spellings, not types: a dialect compared under another name, or
-held in a record keyed by dialect, is not counted.
+spellings, not types: a dialect built from parts, or read from a variable, is
+not counted.

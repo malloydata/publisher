@@ -12,8 +12,8 @@
  *    seam.
  *  - The five ratchets: annotation payload reads outside the declaration
  *    reader, reads of the compiler's IR outside governance/ir, clock reads in
- *    serve/ and domain/, a dialect literal (compared, a case label, or in a
- *    bracket) beyond what the dialect table allows, and a
+ *    serve/ and domain/, a registered dialect spelled as a string literal
+ *    or an object key (or a dialect compared to any literal), and a
  *    function over 200 lines.
  *
  * Every list lives in materialization_allowlists.mjs, each entry tagged with
@@ -334,30 +334,30 @@ describe("H4: every export has an importer", () => {
 // The five ratchets.
 // ---------------------------------------------------------------------------
 
-/** Non-comment code of a file, line by line, with string contents kept. */
+/**
+ * Non-comment code of a file, line by line, with string contents kept. The
+ * comments are read off the parsed file, each token's leading and trailing
+ * trivia, so a template literal or a regular expression cannot put a lone
+ * scanner out of step and leave a comment in, or blank code.
+ */
 function codeLines(file: string): string[] {
    const text = fs.readFileSync(file, "utf8");
    const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
    // Blank every comment, keeping line breaks so line numbers hold.
    const chars = text.split("");
-   const scanner = ts.createScanner(
-      ts.ScriptTarget.Latest,
-      false,
-      ts.LanguageVariant.Standard,
-      text,
-   );
-   void sf;
-   for (let k = scanner.scan(); k !== ts.SyntaxKind.EndOfFileToken; ) {
-      if (
-         k === ts.SyntaxKind.SingleLineCommentTrivia ||
-         k === ts.SyntaxKind.MultiLineCommentTrivia
-      ) {
-         for (let i = scanner.getTokenStart(); i < scanner.getTokenEnd(); i++) {
+   const blank = (ranges: ts.CommentRange[] | undefined) => {
+      for (const r of ranges ?? []) {
+         for (let i = r.pos; i < r.end; i++) {
             if (chars[i] !== "\n") chars[i] = " ";
          }
       }
-      k = scanner.scan();
-   }
+   };
+   const visit = (n: ts.Node): void => {
+      blank(ts.getLeadingCommentRanges(text, n.getFullStart()));
+      blank(ts.getTrailingCommentRanges(text, n.getEnd()));
+      for (const c of n.getChildren(sf)) visit(c);
+   };
+   visit(sf);
    return chars.join("").split("\n");
 }
 
@@ -390,27 +390,43 @@ const REGISTERED = Object.keys(CAPABILITIES).join("|");
 const TYPE_TEST =
    /typeof\s+[\w.]+\s*[!=]==?\s*["'`](string|undefined|object|number|boolean|function|symbol|bigint)["'`]/g;
 
-/** A dialect-named value compared to a string literal, either way round. */
-const DIALECT_COMPARISON =
-   /\b\w*[dD]ialect\w*\s*[!=]==?\s*["'`][a-z_]+["'`]|["'`][a-z_]+["'`]\s*[!=]==?\s*[\w.]*[dD]ialect\w*\b/;
-
-/** A registered dialect as a `case` label. */
-const DIALECT_CASE = new RegExp(`\\bcase\\s+["'\`](${REGISTERED})["'\`]`);
-
-/** A registered dialect opening a bracket: an array, a tuple, an index. */
-const DIALECT_BRACKET = new RegExp(`\\[\\s*["'\`](${REGISTERED})["'\`]`);
+/**
+ * A dialect-named value compared to a string literal that is not a registered
+ * dialect (one that is, is counted as a literal), either way round.
+ */
+const DIALECT_COMPARISON = new RegExp(
+   `\\b\\w*[dD]ialect\\w*\\s*[!=]==?\\s*["'\`](?!(?:${REGISTERED})["'\`])[a-z_]+["'\`]` +
+      `|["'\`](?!(?:${REGISTERED})["'\`])[a-z_]+["'\`]\\s*[!=]==?\\s*[\\w.]*[dD]ialect\\w*\\b`,
+);
 
 /**
- * How many dialect literals `lines` hold: comparisons, once type tests are
- * taken out, and, unless `caseLabels` allows them, `case` labels and bracketed
- * literals naming a registered dialect.
+ * A string literal exactly a registered dialect, quoted any way, whatever
+ * surrounds it: a comparison on any name, a `case` label, an element of an
+ * array or a set on any line, a type, an argument.
+ */
+const DIALECT_LITERAL = new RegExp(`["'\`](${REGISTERED})["'\`]`);
+
+/** A registered dialect as a bare object key (`{ postgres: 50 }`). */
+const DIALECT_KEY = new RegExp(`(?<![\\w$."'\`])(${REGISTERED})\\s*:(?!:)`);
+
+/** A registered dialect as a `case` label. */
+const DIALECT_CASE = new RegExp(`\\bcase\\s+["'\`](${REGISTERED})["'\`]`, "g");
+
+/**
+ * How many dialect literals `lines` hold, once type tests are taken out: every
+ * string literal that is exactly a registered dialect, every bare object key
+ * that is one, and every comparison of a dialect-named value to another
+ * literal. `caseLabels` frees `case` labels naming a registered dialect.
  */
 function dialectLiterals(lines: string[], caseLabels = false): number {
-   const code = lines.map((l) => l.replace(TYPE_TEST, ""));
+   const code = lines.map((l) => {
+      const line = l.replace(TYPE_TEST, "");
+      return caseLabels ? line.replace(DIALECT_CASE, "") : line;
+   });
    return (
       matchesIn(code, DIALECT_COMPARISON) +
-      matchesIn(code, DIALECT_BRACKET) +
-      (caseLabels ? 0 : matchesIn(code, DIALECT_CASE))
+      matchesIn(code, DIALECT_LITERAL) +
+      matchesIn(code, DIALECT_KEY)
    );
 }
 
@@ -503,8 +519,17 @@ describe("the ratchets", () => {
       expect(dialectLiterals([`case "snowflake":`])).toBe(1);
       expect(dialectLiterals([`case "snowflake":`], true)).toBe(0);
       expect(dialectLiterals([`new Set(["sqlserver"])`])).toBe(1);
-      // Only a registered dialect counts as a label or in a bracket.
-      expect(dialectLiterals([`case "bigquery":`, `["tsql", 1]`])).toBe(0);
+      // A literal counts wherever it is: a multi-line set, a later element,
+      // a comparison on a name that does not say dialect.
+      expect(dialectLiterals([`new Set([`, `   "postgres",`, `])`])).toBe(1);
+      expect(dialectLiterals([`["bigquery", "postgres"]`])).toBe(1);
+      expect(dialectLiterals([`d === 'postgres'`, "x(`trino`)"])).toBe(2);
+      // A bare object key counts; a property read or a longer word does not.
+      expect(dialectLiterals([`{ postgres: 50, mysql: 1 }`])).toBe(2);
+      expect(dialectLiterals([`a.postgres: 1`, `"postgres_x"`])).toBe(0);
+      // Only a registered dialect counts as a literal.
+      expect(dialectLiterals([`case "bigquery":`])).toBe(0);
+      expect(dialectLiterals([`if (dialect === "bigquery") {`])).toBe(1);
    });
 
    it("no function is over 200 lines", () => {

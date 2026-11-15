@@ -182,8 +182,6 @@ describe("the prefix shared with the control plane", () => {
          expect(leafBudget(d, false)).toBe(50);
       }
       expect(leafBudget("sqlserver", false)).toBe(115);
-      expect(leafBudget("tsql", false)).toBe(115);
-      expect(leafBudget("TSQL", false)).toBe(115);
       expect(leafBudget("DuckDB", false)).toBe(120);
       expect(leafBudget("unknown_dialect", false)).toBe(50);
       for (const d of ["duckdb", "snowflake", "standardsql", "databricks"]) {

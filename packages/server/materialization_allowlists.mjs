@@ -138,26 +138,74 @@ export const RATCHET_IR_READS = {};
 /** Clock reads in serve/ and domain/, per file. */
 export const RATCHET_CLOCK_READS = {};
 /**
- * Dialect literals, per file: a dialect compared to a string literal, and a
- * registered dialect as a `case` label (free in run/warehouse_sql.ts) or in a
- * bracket. Each entry is frozen (`table`): a count that grows is reviewed.
+ * Dialect literals, per file: every string literal that is exactly a
+ * registered dialect, every bare object key that is one, and a dialect-named
+ * value compared to any other string literal. `case` labels are free in
+ * run/warehouse_sql.ts only. Each entry is frozen (`table`): a count that
+ * grows is reviewed.
  */
 export const RATCHET_DIALECT_LITERALS = {
-   // The deny-list of dialects that cannot hold a table; agrees with
-   // `canPersist` (connection_config.ts), so it is not a capability.
+   // The dialect table itself: the DialectName union, its rows' keys, and
+   // standardsql's display name.
+   "service/materialization/domain/dialect.ts": { count: 19, step: "table" },
+   // The SQL half of the dialect table: its comparisons of a narrowed
+   // DialectName, CURRENT_SCHEMA_SQL's two keys and type, DuckDB's own
+   // literal in duckdbNameMatch, and Snowflake's in its query-tag and cost
+   // statements.
+   "service/materialization/run/warehouse_sql.ts": { count: 25, step: "table" },
+   // READ_ONLY_DIALECTS: a capability kept as a deny-list, so an unknown
+   // dialect is not refused.
    "service/materialization/plan/materialization_eligibility.ts": {
       count: 1,
       step: "table",
    },
-   // The passthrough's switch over a connection type (`FederatedSourceType`),
-   // whose `postgres` and `snowflake` share a dialect's spelling.
+   // Connection types (FederatedSourceType, the storage destination types),
+   // whose `postgres`, `snowflake` and `duckdb` share a dialect's spelling,
+   // and STORAGE_TARGET_DIALECT, the one dialect every destination speaks.
    "service/materialization/run/materialization_build_session.ts": {
+      count: 10,
+      step: "table",
+   },
+   // TABLE_PATH_OPTIONS, the incremental probe's per-dialect table-path
+   // decoding (four keys), and probePostgresVersion's own dialect.
+   "service/materialization/run/incremental_apply.ts": {
+      count: 5,
+      step: "table",
+   },
+   // The package-local DuckDB connection, by its connection name.
+   "service/materialization/run/reclaimer.ts": { count: 1, step: "table" },
+   // The read-cost record's engine label, not a dialect.
+   "service/materialization/run/build_read_cost.ts": {
       count: 2,
       step: "table",
    },
-   // The SQL half of the dialect table: its comparisons of a narrowed
-   // `DialectName`, beside its switches' free case labels.
-   "service/materialization/run/warehouse_sql.ts": { count: 18, step: "table" },
+   // A storage destination's DuckDB: identifiers and table paths quoted for
+   // it, and the compile stand-in's dialect.
+   "service/materialization/stored_column_types.ts": {
+      count: 1,
+      step: "table",
+   },
+   "service/materialization/plan/materialize_compile.ts": {
+      count: 1,
+      step: "table",
+   },
+   "service/materialization/run/storage_table_load.ts": {
+      count: 2,
+      step: "table",
+   },
+   "service/materialization/run/storage_build_strategy.ts": {
+      count: 1,
+      step: "table",
+   },
+   "service/materialization/serve/bindings.ts": { count: 1, step: "table" },
+   "service/materialization/serve/view_variants.ts": {
+      count: 1,
+      step: "table",
+   },
+   "service/materialization/serve/rollup_variants.ts": {
+      count: 2,
+      step: "table",
+   },
 };
 /** Functions over 200 lines, "<file>#<function>": step. */
 export const RATCHET_LONG_FUNCTIONS = {};

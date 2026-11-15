@@ -23,18 +23,7 @@
  */
 
 import { createHash } from "crypto";
-import { capabilitiesOf, type DialectName } from "./dialect";
-
-/**
- * A name a dialect's leaf budget is also looked up by: `tsql`, for SQL
- * Server. Malloy names SQL Server's dialect `sqlserver`, so no source carries
- * `tsql` today; a connection that reports it still gets SQL Server's budget.
- * Not a dialect of the dialect table (`domain/dialect.ts`), whose other
- * lookups do not read it.
- */
-const LEAF_BUDGET_ALIASES: ReadonlyMap<string, DialectName> = new Map([
-   ["tsql", "sqlserver"],
-]);
+import { capabilitiesOf } from "./dialect";
 
 /** A storage destination's budget. */
 const DESTINATION_LEAF_BUDGET = 120;
@@ -76,8 +65,7 @@ export function leafBudget(
    inDestination: boolean,
 ): number {
    if (inDestination) return DESTINATION_LEAF_BUDGET;
-   const name = (dialect ?? "").toLowerCase();
-   return capabilitiesOf(LEAF_BUDGET_ALIASES.get(name) ?? name).leafBudget;
+   return capabilitiesOf((dialect ?? "").toLowerCase()).leafBudget;
 }
 
 /** `s` without leading and trailing underscores. */
