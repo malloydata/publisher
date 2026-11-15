@@ -55,6 +55,7 @@ import {
    kindFromPlan,
 } from "../../../src/service/materialization/serve/bind";
 import { capturedNativeSchema } from "../../../src/service/materialization/run/colocated_native_types";
+import { capturedColocatedSchema } from "../../../src/service/materialization/run/colocated_build_strategy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
 import * as os from "os";
@@ -745,6 +746,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       string,
       {
          tableName: string;
+         schema?: { name: string; type: string }[];
          nativeSchema?: { name: string; type: string }[];
          keyUniqueness?: KeyUniqueness;
       }
@@ -817,9 +819,18 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             dialect: builder.dialectName,
             sourceName: source.name,
          });
+         // And its columns, read back as a colocated build reads them
+         // (colocated_build_strategy.ts), which its binding declares.
+         const schema = await capturedColocatedSchema({
+            connection: builder,
+            physicalTableName: table,
+            dialect: builder.dialectName,
+            sourceName: source.name,
+         });
          const leafKeys = await pairLeafKeys(source);
          colocatedMaterializeEntries[entityIdOf(source, i)] = {
             tableName: table,
+            ...(schema ? { schema } : {}),
             ...(nativeSchema ? { nativeSchema } : {}),
             ...(leafKeys ? { keyUniqueness: { parentKeys: leafKeys } } : {}),
          };

@@ -1355,7 +1355,7 @@ export class ServedCopyServe {
       if (plan) {
          const stored = materializedColumnsOf(subject, plan);
          if (!stored) return undefined;
-         ({ columns, inlinedJoins } = stored);
+         ({ columns, columnsLeftOut, inlinedJoins } = stored);
       } else {
          const stored = v1ColumnsOf(subject);
          if (!stored) return undefined;
@@ -2699,7 +2699,13 @@ interface RerootSubject {
 function materializedColumnsOf(
    subject: RerootSubject,
    plan: MaterializePlan,
-): { columns: ServedColumn[]; inlinedJoins: InlinedJoin[] } | undefined {
+):
+   | {
+        columns: ServedColumn[];
+        columnsLeftOut: string[];
+        inlinedJoins: InlinedJoin[];
+     }
+   | undefined {
    const { binding, node, sourceName, def, fieldsByName, timeframeOf } =
       subject;
    const { problems } = subject;
@@ -2717,11 +2723,24 @@ function materializedColumnsOf(
       def.fields as IrField[] | undefined,
    );
    const columns: ServedColumn[] = [];
+   const columnsLeftOut: string[] = [];
    for (const c of plan.columns) {
       // An inlined join's columns are read under the join's name
       // (inlinedJoinsOf, below), not as fields of the source.
       if (c.join !== undefined) continue;
       const type = stored.get(c.column);
+      // A column live types as warehouse-native (a UUID) has no stored
+      // spelling, so a colocated table's captured columns leave it out: it is
+      // left out here too, so only a query reading it answers live, as a
+      // `storage=` table's is (declarableColumns).
+      if (
+         type === undefined &&
+         isColocated(binding) &&
+         liveTypesAsNative(fieldsByName.get(c.dimension))
+      ) {
+         columnsLeftOut.push(c.column);
+         continue;
+      }
       // A build that stored a dimension under another name cannot be
       // read back as that field.
       if (type === undefined || c.column !== c.dimension) {
@@ -2807,7 +2826,7 @@ function materializedColumnsOf(
          return nativeCast ? { ...c, nativeCast } : c;
       }),
    }));
-   return { columns, inlinedJoins };
+   return { columns, columnsLeftOut, inlinedJoins };
 }
 
 /**
