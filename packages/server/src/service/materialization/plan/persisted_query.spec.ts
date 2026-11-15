@@ -194,6 +194,18 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE on", () => {
          reason: "current time",
       },
       {
+         name: "a query whose select: * reads a current-time dimension",
+         refused: `source: base is duckdb.sql("select 1 as n, timestamp '2026-01-01' as ts") extend { dimension: past is ts < now }\n#@ persist\nquery: q is base -> { select: * }\n`,
+         twin: `source: base is duckdb.sql("select 1 as n, timestamp '2026-01-01' as ts") extend { dimension: past is ts < @2025-01-01 }\n#@ persist\nquery: q is base -> { select: * }\n`,
+         reason: "current time",
+      },
+      {
+         name: "a query over a query-shaped source whose query reads the current time",
+         refused: `source: qb is duckdb.sql("select 1 as n, timestamp '2026-01-01' as ts") -> { where: ts > now - 30 days; select: * } extend { measure: c is count() }\n#@ persist\nquery: q is qb -> { group_by: n; aggregate: c }\n`,
+         twin: `source: qb is duckdb.sql("select 1 as n, timestamp '2026-01-01' as ts") -> { where: ts > @2025-01-01; select: * } extend { measure: c is count() }\n#@ persist\nquery: q is qb -> { group_by: n; aggregate: c }\n`,
+         reason: "current time",
+      },
+      {
          name: "a query whose source has its own given-reading where:",
          refused: `${GIVENS}source: base is ${TABLE} extend { where: tenant = $TENANT; measure: n is count() }\n#@ persist\nquery: q is base -> { group_by: carrier; aggregate: n }\n`,
          twin: `${GIVENS}source: base is ${TABLE} extend { where: tenant = 't1'; measure: n is count() }\n#@ persist\nquery: q is base -> { group_by: carrier; aggregate: n }\n`,

@@ -16,6 +16,7 @@ import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
 import { computeSourceEntityId, type TableFolds } from "./addressing";
 import {
+   assertBuildReadsNoCurrentTime,
    assertMaterializationEligible,
    assertRollupNameUnshared,
    assertTierEligible,
@@ -533,7 +534,7 @@ export function collectSourceEligibility(
 ): SourceEligibility {
    const eligible: string[] = [];
    const refused: Record<string, string> = {};
-   const gate = { collidingRollups: collidingRollups(compiled) };
+   const gate = tierGateInputs(compiled);
    const shared = sharedTables(compiled);
    for (const [sourceID, source] of Object.entries(compiled.sources)) {
       const sharing = shared.get(sourceID);
@@ -546,6 +547,8 @@ export function collectSourceEligibility(
          assertMaterializationEligible(source, deriveAnnotationFields(source), {
             gateEnforcedAtRead: gateEnforcedAtRead(sourceID, compiled, true),
          });
+         // A table built before this refusal existed is not served either.
+         assertBuildReadsNoCurrentTime(source, gate);
          eligible.push(sourceID);
       } catch (err) {
          refused[sourceID] = errMessage(err);
