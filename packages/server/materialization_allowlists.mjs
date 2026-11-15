@@ -280,16 +280,4 @@ export const RATCHET_DIALECT_LITERALS = {
    "service/materialization/stored_column_types.ts": { count: 2, step: "2l" },
 };
 /** Functions over 200 lines, "<file>#<function>": step. */
-export const RATCHET_LONG_FUNCTIONS = {
-   "service/materialization/run/instructed_build.ts#InstructedBuild.buildInstructedSource":
-      "2g.4",
-   "service/materialization/run/materialization_build_session.ts#buildSourceIntoStorage":
-      "2g.4",
-   "service/materialization/run/materialization_service.ts#MaterializationService.buildRun":
-      "2g.4",
-   "service/materialization/run/materialization_service.ts#MaterializationService.createMaterialization":
-      "2g.4",
-   "service/materialization/run/source_build.ts#SourceBuilder.build": "2g.4",
-   "service/materialization/run/storage_build_strategy.ts#StorageBuildStrategy.build":
-      "2g.4",
-};
+export const RATCHET_LONG_FUNCTIONS = {};

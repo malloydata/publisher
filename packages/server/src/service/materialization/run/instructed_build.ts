@@ -113,6 +113,98 @@ import {
 const COLOCATED = new ColocatedTier();
 const STORAGE = new StorageBuildStrategy();
 
+/**
+ * The key checks an auto-run runs over a table once it is written: a
+ * rollup's key and its query sources' keys, a pair table's leaf key, and a
+ * stored source's own key. Each records what it found; none fails the build.
+ */
+async function checkBuiltKeys(
+   run: InstructedRun,
+   persistSource: PersistSource,
+   graphConnectionName: string,
+   connection: MalloyConnection,
+   { instruction, orchestrated, sourceEntityId }: GatedSource,
+   entry: ManifestEntry,
+): Promise<void> {
+   const { compiled } = run;
+   // A rollup a join_one reads through its key (known limitation 29):
+   // check the key's uniqueness over the rows its build read, once the
+   // table is written. Auto-run only; never fails the build.
+   if (!orchestrated && run.uniqueness && !entry.storageDestinationName) {
+      await checkRollupKey(
+         run.uniqueness,
+         rollupKeyCheckOf(run.compiled, persistSource.sourceID),
+         connection,
+         persistSource.name,
+         sourceEntityId,
+         writtenTableIdentity(instruction, graphConnectionName),
+      );
+      // The query sources that read it through a join_many keyed on
+      // their primary key: that key unique and never NULL.
+      await checkParentKeys(
+         run.uniqueness,
+         rollupParentKeyChecksOf(run.compiled, persistSource.sourceID),
+         connection,
+         graphConnectionName,
+         persistSource.name,
+         sourceEntityId,
+         writtenTableIdentity(instruction, graphConnectionName),
+      );
+   }
+   // A rollup in a destination whose base a join reaches on a column
+   // other than its primary key: that key unique and never NULL, checked
+   // over the base's rows on its own connection.
+   if (!orchestrated && run.uniqueness && entry.storageDestinationName) {
+      await checkParentKeys(
+         run.uniqueness,
+         rollupParentKeyChecksOf(run.compiled, persistSource.sourceID),
+         connection,
+         graphConnectionName,
+         persistSource.name,
+         sourceEntityId,
+         writtenTableIdentity(instruction, graphConnectionName),
+      );
+   }
+   // A pair table (an inlined join_many): its leaf's key unique and never
+   // NULL, checked over the leaf source's rows on the source's own
+   // connection, which the served copy needs before it serves a count
+   // through the path (known limitation 40). Never fails the build.
+   if (!orchestrated && run.uniqueness) {
+      await checkPairLeafKeys(
+         run.uniqueness,
+         pairLeafKeyChecksOf(
+            compiled.tables[persistSource.sourceID]?.materialize,
+         ),
+         connection,
+         persistSource.name,
+         sourceEntityId,
+         writtenTableIdentity(instruction, graphConnectionName),
+      );
+   }
+   // A source stored in a destination, read there beside a joined
+   // source's rollup through a join keyed on its primary key (#1704):
+   // check that key over the rows its table holds.
+   if (!orchestrated && run.uniqueness && entry.storageDestinationName) {
+      await checkStoredKey(
+         run,
+         run.uniqueness,
+         persistSource,
+         entry,
+         sourceEntityId,
+      );
+   }
+}
+
+/** What an instructed source's gates hand its build. */
+interface GatedSource {
+   instruction: BuildInstruction;
+   orchestrated: boolean;
+   /** The source's CONTENT address, which keys the manifest. */
+   sourceEntityId: string;
+   /** The physical table it writes ({@link physicalTargetKey}). */
+   target: string;
+}
+
 /** sourceID -> the sourceIDs it reads, merged across every connection's build. */
 function upstreamsBySourceID(
    builds: CompiledBuildPlan["builds"],
@@ -532,17 +624,77 @@ export class InstructedBuild {
       graphConnectionName: string,
       connection: MalloyConnection,
    ): Promise<void> {
+      const gated = this.gateInstructedSource(
+         run,
+         persistSource,
+         graphConnectionName,
+      );
+      if (!gated) return;
+      const { instruction, sourceEntityId, target } = gated;
+      const { compiled } = run;
+      const entry = await this.buildGatedSource(
+         run,
+         persistSource,
+         graphConnectionName,
+         connection,
+         gated,
+      );
+      if (!entry) return;
+      run.builtSources.push(persistSource.name);
+      reportSourceBuilt(
+         {
+            kind: buildKindOf(compiled, persistSource.sourceID),
+            tier: entry.storageDestinationName ? "storage" : "colocated",
+            sourceEntityId,
+            sourceName: persistSource.name,
+            physicalTableName: instruction.physicalTableName,
+         },
+         entry,
+      );
+      run.entries[sourceEntityId] = entry;
+      run.builtAddresses.add(sourceEntityId);
+      await checkBuiltKeys(
+         run,
+         persistSource,
+         graphConnectionName,
+         connection,
+         gated,
+         entry,
+      );
+      run.writtenTargets.set(target, {
+         sourceEntityId,
+         sourceName: persistSource.name,
+      });
+      if (isReclaimableStorageTable(entry)) {
+         run.builtThisRun.push(entry);
+      } else if (entry.storageDestinationName) {
+         // Recorded, not logged: only a failed run leaves these behind.
+         run.retainedThisRun.push(entry);
+      }
+   }
+
+   /**
+    * The gates before one instructed source's build: its instruction, its
+    * eligibility, a colocated sibling's refusal, the storage re-assert, and
+    * another route to a table this run built or failed. What the build needs,
+    * or undefined when the source is not built (any refusal recorded).
+    */
+   private gateInstructedSource(
+      run: InstructedRun,
+      persistSource: PersistSource,
+      graphConnectionName: string,
+   ): GatedSource | undefined {
       const { compiled } = run;
       const resolved = resolveInstruction(
          run.index,
          persistSource,
          compiled.connectionDigests,
       );
-      if (!resolved) return;
+      if (!resolved) return undefined;
       const { instruction, orchestrated } = resolved;
 
       if (this.refuseIneligibleInstructedSource(run, persistSource, resolved)) {
-         return;
+         return undefined;
       }
 
       // The manifest is keyed by the CONTENT sourceEntityId (what Malloy
@@ -585,7 +737,7 @@ export class InstructedBuild {
                false,
             );
             run.heldBackBySibling = true;
-            return;
+            return undefined;
          }
       }
 
@@ -619,7 +771,7 @@ export class InstructedBuild {
             builtAs: written.sourceName,
             physicalTableName: instruction.physicalTableName,
          });
-         return;
+         return undefined;
       }
       // Another route to a table whose build failed this run: the same
       // content fails the same way, so the source takes that failure (its
@@ -638,9 +790,24 @@ export class InstructedBuild {
                method: "full",
             },
          );
-         return;
+         return undefined;
       }
+      return { instruction, orchestrated, sourceEntityId, target };
+   }
 
+   /**
+    * One gated source's build, guarded: its `name=` ownership, its inlined
+    * join_one checks, the build itself and its ownership mark. The entry it
+    * built, or undefined when it failed (its failure recorded).
+    */
+   private async buildGatedSource(
+      run: InstructedRun,
+      persistSource: PersistSource,
+      graphConnectionName: string,
+      connection: MalloyConnection,
+      { instruction, orchestrated, sourceEntityId, target }: GatedSource,
+   ): Promise<ManifestEntry | undefined> {
+      const { compiled } = run;
       // An auto-run's table at the author's own `name=`, which another
       // package on the same schema may hold (table_ownership.ts). Every other
       // auto-run name is the package's own by construction.
@@ -806,99 +973,11 @@ export class InstructedBuild {
                   : {}),
             },
          );
-         return;
+         return undefined;
       } finally {
          releaseOwnedName?.();
       }
-      run.builtSources.push(persistSource.name);
-      reportSourceBuilt(
-         {
-            kind: buildKindOf(compiled, persistSource.sourceID),
-            tier: entry.storageDestinationName ? "storage" : "colocated",
-            sourceEntityId,
-            sourceName: persistSource.name,
-            physicalTableName: instruction.physicalTableName,
-         },
-         entry,
-      );
-      run.entries[sourceEntityId] = entry;
-      run.builtAddresses.add(sourceEntityId);
-      // A rollup a join_one reads through its key (known limitation 29):
-      // check the key's uniqueness over the rows its build read, once the
-      // table is written. Auto-run only; never fails the build.
-      if (!orchestrated && run.uniqueness && !entry.storageDestinationName) {
-         await checkRollupKey(
-            run.uniqueness,
-            rollupKeyCheckOf(run.compiled, persistSource.sourceID),
-            connection,
-            persistSource.name,
-            sourceEntityId,
-            writtenTableIdentity(instruction, graphConnectionName),
-         );
-         // The query sources that read it through a join_many keyed on
-         // their primary key: that key unique and never NULL.
-         await checkParentKeys(
-            run.uniqueness,
-            rollupParentKeyChecksOf(run.compiled, persistSource.sourceID),
-            connection,
-            graphConnectionName,
-            persistSource.name,
-            sourceEntityId,
-            writtenTableIdentity(instruction, graphConnectionName),
-         );
-      }
-      // A rollup in a destination whose base a join reaches on a column
-      // other than its primary key: that key unique and never NULL, checked
-      // over the base's rows on its own connection.
-      if (!orchestrated && run.uniqueness && entry.storageDestinationName) {
-         await checkParentKeys(
-            run.uniqueness,
-            rollupParentKeyChecksOf(run.compiled, persistSource.sourceID),
-            connection,
-            graphConnectionName,
-            persistSource.name,
-            sourceEntityId,
-            writtenTableIdentity(instruction, graphConnectionName),
-         );
-      }
-      // A pair table (an inlined join_many): its leaf's key unique and never
-      // NULL, checked over the leaf source's rows on the source's own
-      // connection, which the served copy needs before it serves a count
-      // through the path (known limitation 40). Never fails the build.
-      if (!orchestrated && run.uniqueness) {
-         await checkPairLeafKeys(
-            run.uniqueness,
-            pairLeafKeyChecksOf(
-               compiled.tables[persistSource.sourceID]?.materialize,
-            ),
-            connection,
-            persistSource.name,
-            sourceEntityId,
-            writtenTableIdentity(instruction, graphConnectionName),
-         );
-      }
-      // A source stored in a destination, read there beside a joined
-      // source's rollup through a join keyed on its primary key (#1704):
-      // check that key over the rows its table holds.
-      if (!orchestrated && run.uniqueness && entry.storageDestinationName) {
-         await checkStoredKey(
-            run,
-            run.uniqueness,
-            persistSource,
-            entry,
-            sourceEntityId,
-         );
-      }
-      run.writtenTargets.set(target, {
-         sourceEntityId,
-         sourceName: persistSource.name,
-      });
-      if (isReclaimableStorageTable(entry)) {
-         run.builtThisRun.push(entry);
-      } else if (entry.storageDestinationName) {
-         // Recorded, not logged: only a failed run leaves these behind.
-         run.retainedThisRun.push(entry);
-      }
+      return entry;
    }
 
    /**

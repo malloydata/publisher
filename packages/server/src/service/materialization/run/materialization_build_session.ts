@@ -710,6 +710,80 @@ export interface BuildSessionDeps {
 }
 
 /**
+ * Ready a build's session: its resource limits, the destination attached
+ * read-write with its schema present, DuckLake row inlining off, and UTC.
+ */
+async function prepareBuildSession(
+   session: DuckDBConnection,
+   workDir: string,
+   destinationName: string,
+   destinationConnection: ApiConnection,
+   environmentPath: string,
+): Promise<void> {
+   // Before the destination attach, which applies (and latches) the limits
+   // without a `tempDirectory` for DuckLake: afterwards, spill would go to the
+   // shared configured path, outliving `dispose` and colliding between
+   // builds. It also bounds memory during the attach itself.
+   await applySessionResourceLimits(session, { tempDirectory: workDir });
+   await attachDestinationReadWrite(
+      session,
+      destinationName,
+      destinationConnection,
+      environmentPath,
+   );
+   await assertDestinationSchemaExists(
+      session,
+      destinationName,
+      destinationName,
+      destinationConnection,
+   );
+
+   if (destinationConnection.type === "ducklake") {
+      // Disable row inlining for this session so rows land as Parquet in the
+      // data store, not in the catalog database — in a shared catalog,
+      // inlining would push tenant data into the catalog Postgres.
+      // Session-scoped; the catalog's persisted options are untouched.
+      await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
+   }
+   // Before any predicate is rendered (incremental refresh only); see
+   // pinSessionToUTC.
+   await pinSessionToUTC(session);
+}
+
+/**
+ * Advance an incremental table in place when its plan can: the result, or
+ * undefined for a full build.
+ */
+async function refreshInPlace(
+   incremental: StorageIncrementalRefresh,
+   session: DuckDBConnection,
+   sourceType: ReturnType<typeof passthroughSourceType>,
+   handle: string,
+   target: string,
+   destinationName: string,
+): Promise<StorageBuildResult | undefined> {
+   const refreshed = await incremental.plan({
+      session,
+      sourceType,
+      handle,
+      quotedTablePath: target,
+   });
+   if (refreshed) {
+      return {
+         storageDestinationName: destinationName,
+         // A delta cannot change the shape, but the manifest entry
+         // declares the schema on every publication; omitting it would
+         // leave the source unservable until its next full build.
+         schema: await describeTable(session, target),
+         rowCount: await countStoredRows(session, target),
+         readCost: refreshed.readCost,
+         refresh: refreshed,
+      };
+   }
+   return undefined;
+}
+
+/**
  * Build one persist source into a `storage=` destination via native
  * query-passthrough CTAS, on a build-scoped DuckDB session created and disposed
  * here — so the read-write destination attach and the source credentials exist
@@ -793,34 +867,13 @@ export async function buildSourceIntoStorage(params: {
    // the session does not close a listener opened outside it.
    let federatedClose: (() => Promise<void>) | undefined;
    try {
-      // Before the destination attach, which applies (and latches) the limits
-      // without a `tempDirectory` for DuckLake: afterwards, spill would go to the
-      // shared configured path, outliving `dispose` and colliding between
-      // builds. It also bounds memory during the attach itself.
-      await applySessionResourceLimits(session, { tempDirectory: workDir });
-      await attachDestinationReadWrite(
+      await prepareBuildSession(
          session,
+         workDir,
          destinationName,
          destinationConnection,
          environmentPath,
       );
-      await assertDestinationSchemaExists(
-         session,
-         destinationName,
-         destinationName,
-         destinationConnection,
-      );
-
-      if (destinationConnection.type === "ducklake") {
-         // Disable row inlining for this session so rows land as Parquet in the
-         // data store, not in the catalog database — in a shared catalog,
-         // inlining would push tenant data into the catalog Postgres.
-         // Session-scoped; the catalog's persisted options are untouched.
-         await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
-      }
-      // Before any predicate is rendered (incremental refresh only); see
-      // pinSessionToUTC.
-      await pinSessionToUTC(session);
 
       const federated = await federate(
          session,
@@ -853,26 +906,17 @@ export async function buildSourceIntoStorage(params: {
 
       // After the attach and federation, because the plan probes this
       // destination to decide; a seed then continues on the same session.
-      if (params.incremental) {
-         const refreshed = await params.incremental.plan({
-            session,
-            sourceType,
-            handle: federated.handle,
-            quotedTablePath: target,
-         });
-         if (refreshed) {
-            return {
-               storageDestinationName: destinationName,
-               // A delta cannot change the shape, but the manifest entry
-               // declares the schema on every publication; omitting it would
-               // leave the source unservable until its next full build.
-               schema: await describeTable(session, target),
-               rowCount: await countStoredRows(session, target),
-               readCost: refreshed.readCost,
-               refresh: refreshed,
-            };
-         }
-      }
+      const refreshed = params.incremental
+         ? await refreshInPlace(
+              params.incremental,
+              session,
+              sourceType,
+              federated.handle,
+              target,
+              destinationName,
+           )
+         : undefined;
+      if (refreshed) return refreshed;
 
       const passthrough = await read(
          session,
