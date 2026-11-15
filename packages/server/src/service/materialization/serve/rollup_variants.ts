@@ -171,10 +171,7 @@ import { sameGateSet } from "../../governance/query_governor";
 import { fieldNotes, noteSource } from "../text/field_notes";
 import { timeframeRestatements, typeDeclaration } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
-import {
-   getMaterializeEnabled,
-   getMaterializeGatedSources,
-} from "../../../config";
+import { gateSwitches, getMaterializeEnabled } from "../../../config";
 import { boundTablePath, buildVirtualMap, sqlReadsTable } from "./bindings";
 import { type ServeBinding } from "../domain/serve_binding";
 import type { ServedCopyJoinBasis } from "./served_copy_serve";
@@ -2472,7 +2469,10 @@ export function checkCoverage(
  * is read.
  */
 function planSwitches(): string {
-   return [getMaterializeEnabled(), getMaterializeGatedSources()].join("/");
+   const s = gateSwitches();
+   return [s.materialize, s.gatedSources, s.gatedStorageRollupsReviewed].join(
+      "/",
+   );
 }
 
 /**

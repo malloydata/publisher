@@ -33,7 +33,11 @@ import type {
    QueryMaterializer,
    VirtualMap,
 } from "@malloydata/malloy";
-import { getMaterializeGatedSources, getPersistStorageMode } from "../config";
+import { gateSwitches, getPersistStorageMode } from "../config";
+import {
+   answerKeepsGates,
+   legMayPassGate,
+} from "./materialization/domain/gate_policy";
 import type { GraftScope } from "./gate_classification";
 import { logger } from "../logger";
 import { recordStorageServeRouting } from "../materialization_metrics";
@@ -121,18 +125,13 @@ export type RoutedExtra =
         graftScope?: GraftScope;
      };
 
-/**
- * Whether a served-copy answer reads stored tables, every one of them
- * colocated (the source's own warehouse): the v1 cutover's contracts at read
- * (G3) apply to it. A `storage=` table waits for the managed-tier review
- * (`materialize.gatedSources`), so an answer reading one, or none, does not.
- */
-function readsOnlyColocatedTables(extra: RoutedExtra): boolean {
-   return (
-      extra.kind === "served" &&
-      extra.tablesRead.length > 0 &&
-      extra.tablesRead.every((b) => b.colocated === true)
-   );
+/** The tier of each stored table a served-copy answer reads. */
+function tiersRead(extra: RoutedExtra): { tier: "colocated" | "storage" }[] {
+   return extra.kind === "served"
+      ? extra.tablesRead.map((b) => ({
+           tier: b.colocated === true ? "colocated" : "storage",
+        }))
+      : [];
 }
 
 /**
@@ -478,6 +477,12 @@ export function routeCandidates(
 ): Variant<RoutedExtra>[] {
    const { queryString, surfaceGivens, buildManifest, servedCopyPossible } =
       args;
+   // Gate keeping, one policy (`domain/gate_policy.ts`), its switches read
+   // once for the query.
+   const switches = gateSwitches();
+   const gateContext = {
+      colocatedReadsKeepGates: !!args.colocatedKeepsContracts,
+   };
    const candidates: Variant<RoutedExtra>[] = [];
    // A persisted view first (R1: view by exact call, rollup, nearest table,
    // live). Listed only when the model has one; applicable only when the text
@@ -489,7 +494,7 @@ export function routeCandidates(
          applicable: !!host.persistedViews.calledView(queryString),
          // R3, behind the same switch as the served copy (question 14): the
          // source's gates are written on the variant and grafted there.
-         keepsContracts: getMaterializeGatedSources(),
+         keepsContracts: legMayPassGate("view", switches, gateContext),
          attempt: async () => {
             const answer = await host.persistedViews.attempt({
                queryString,
@@ -531,8 +536,8 @@ export function routeCandidates(
          // redeclared over the rollup with its gates, proven exact on the
          // rollup before it is used (RollupVariantServe), then grafted and
          // re-proven by `govern()`. A `storage=` rollup over a gated base
-         // waits for question 14's review (rollupsServeGatedBases).
-         keepsContracts: getMaterializeGatedSources(),
+         // waits for question 14's review (the gate policy's rollup row).
+         keepsContracts: legMayPassGate("rollup", switches, gateContext),
          attempt: async () => {
             const answer = await host.rollupVariants.attempt({
                queryString,
@@ -569,7 +574,6 @@ export function routeCandidates(
    // files with each stored source re-rooted on its table. Tried first when
    // enabled; a query it cannot answer falls through to the serve shape.
    if (servedCopyPossible) {
-      const gatedSources = getMaterializeGatedSources();
       candidates.push({
          kind: "served",
          applicable: true,
@@ -577,13 +581,9 @@ export function routeCandidates(
          // question 14): a row-level gate is grafted on the served copy.
          // Under the v1 cutover, also for an answer reading only colocated
          // tables (decided per answer, below).
-         keepsContracts: gatedSources || !!args.colocatedKeepsContracts,
-         ...(gatedSources || !args.colocatedKeepsContracts
-            ? {}
-            : {
-                 keepsContractsFor: (extra: RoutedExtra) =>
-                    readsOnlyColocatedTables(extra),
-              }),
+         keepsContracts: legMayPassGate("served", switches, gateContext),
+         keepsContractsFor: (extra: RoutedExtra) =>
+            answerKeepsGates("served", tiersRead(extra), switches, gateContext),
          attempt: async () => {
             const served = await host.servedCopy.loadQuery(
                queryString,

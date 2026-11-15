@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { allowGatedStorageRollupsForTests } from "../../../config";
 import {
    afterAll,
    afterEach,
@@ -17,9 +18,7 @@ import {
    generateRollupBuildFile,
    planModelRollups,
    rollupName,
-   allowGatedStorageRollupsForTests,
    rollupGateEnforcedAtRead,
-   rollupsServeGatedBases,
    type RollupRefusal,
    type RollupVariantPlan,
 } from "./rollup_plan";
@@ -283,7 +282,9 @@ describe("#(preaggregate) access filters (A4)", () => {
 
 describe("#(preaggregate) over a gated source with gated sources off (row 21)", () => {
    it("plans no rollup over a gated source, even one whose grain keeps the gate's field", async () => {
-      expect(rollupsServeGatedBases({})).toBe(false);
+      expect(rollupGateEnforcedAtRead({ variant: true, baseGated: true })).toBe(
+         false,
+      );
       const { plans, refused } = await plan(GATED);
       expect(plans).toEqual([]);
       expect(refused.map((r) => [r.tier, r.code])).toEqual([

@@ -72,7 +72,8 @@ import {
    timezoneOf,
 } from "../../governance/ir/compiled_model";
 import type { ModelDef, SourceDef } from "@malloydata/malloy";
-import { getMaterializeGatedSources } from "../../../config";
+import { gateSwitches } from "../../../config";
+import { tableKeepsGates } from "../domain/gate_policy";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
 import { basePersistNamespace } from "./preaggregation_synthesis";
 import { collectEntryPointGates } from "../../gate_classification";
@@ -248,41 +249,21 @@ export interface RollupKeyCheck {
 }
 
 /**
- * Whether a `storage=` rollup over a gated base may be built and read. Not
- * until question 14's managed-tier review: a stored rollup puts tenant-keyed
- * aggregates (the gate's field and each tenant's partials) in a storage
- * destination, which the review covers for `#(materialize)` tables and is
- * proposed to cover for rollups too. A colocated rollup stays in the author's
- * warehouse, so it is read past its gate under `materialize.gatedSources`
- * alone; this keeps the two apart. Only a test turns it on
- * ({@link allowGatedStorageRollupsForTests}).
- */
-let gatedStorageRollupsReviewed = false;
-
-/**
- * For tests only: let `storage=` rollups over gated bases be built and read
- * (behind `materialize.gatedSources`), as they will be once question 14's
- * review passes. Returns the restore.
- */
-export function allowGatedStorageRollupsForTests(on = true): () => void {
-   const before = gatedStorageRollupsReviewed;
-   gatedStorageRollupsReviewed = on;
-   return () => {
-      gatedStorageRollupsReviewed = before;
-   };
-}
-
-/**
  * Whether a rollup at `placement` over a gated base may be read past its
- * base's gate (and so is worth building): `materialize.gatedSources` is on,
- * and the rollup is colocated, or in a storage destination once the
+ * base's gate (and so is worth building), by the gate policy: under
+ * `materialize.gatedSources`, colocated, or in a storage destination once the
  * managed-tier review allows it.
  */
-export function rollupsServeGatedBases(placement: {
-   storage?: string;
-}): boolean {
-   if (!getMaterializeGatedSources()) return false;
-   return placement.storage === undefined || gatedStorageRollupsReviewed;
+function rollupsServeGatedBases(placement: { storage?: string }): boolean {
+   return tableKeepsGates(
+      {
+         kind: "rollup",
+         tier: placement.storage === undefined ? "colocated" : "storage",
+         v1: false,
+         baseGateProven: true,
+      },
+      gateSwitches(),
+   );
 }
 
 /** A `#(preaggregate)` rollup's plan, never a v1 `#@ preaggregate` one. */
@@ -302,14 +283,26 @@ function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
  * `#(preaggregate)` rollup (a v1 `#@ preaggregate` rollup's serve shape keeps
  * no gates) over a gated base, whose every gate the planner proved exact on
  * the rollup (table 1: each field a grain dimension, no gated join), at a
- * placement {@link rollupsServeGatedBases} allows. The build plan, the
+ * placement the gate policy allows (`domain/gate_policy.ts`). The build plan, the
  * host-instructed build and the serve bind all ask this one question, through
  * `gateEnforcedAtRead`, so a rollup is never built that cannot be read, nor
  * read because it was built.
  */
 export function rollupGateEnforcedAtRead(plan: unknown): boolean {
-   if (!isRollupVariantPlan(plan)) return false;
-   return plan.baseGated && rollupsServeGatedBases(plan);
+   if (typeof plan !== "object" || plan === null) return false;
+   const variant = isRollupVariantPlan(plan);
+   return tableKeepsGates(
+      {
+         kind: "rollup",
+         tier:
+            (plan as { storage?: unknown }).storage === undefined
+               ? "colocated"
+               : "storage",
+         v1: !variant,
+         baseGateProven: variant && plan.baseGated === true,
+      },
+      gateSwitches(),
+   );
 }
 
 /** Why a declaration was not planned. */
@@ -843,7 +836,7 @@ export function planSourceRollups(
             unservable(
                "preaggregate-access-filter",
                decl.measure,
-               decl.storage !== undefined && getMaterializeGatedSources()
+               decl.storage !== undefined && gateSwitches().gatedSources
                   ? "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a rollup in a storage destination is not read past a gate yet, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse"
                   : "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads",
             ),

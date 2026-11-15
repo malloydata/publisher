@@ -14,11 +14,12 @@ import {
 import { components } from "../../api";
 import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
 import {
-   getMaterializeGatedSources,
+   gateSwitches,
    getPersistCollisionEnforce,
    getMaterializeEnabled,
    getPersistStorageMode,
 } from "../../config";
+import { legMayPassGate } from "./domain/gate_policy";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
 import { BuildPlanRefreshingError } from "../../errors";
 import { logger } from "../../logger";
@@ -1694,7 +1695,12 @@ export class PackageMaterialization {
             );
             return reaching.length > 0 && reaching.every((root) => root.gated);
          },
-         servedCopyKeepsGates: getMaterializeGatedSources(),
+         // The verdict does not apply G3's colocated rule, which the router
+         // decides per answer: it asks whether the served copy passes a gate
+         // for every table it may read.
+         servedCopyKeepsGates: legMayPassGate("served", gateSwitches(), {
+            colocatedReadsKeepGates: false,
+         }),
          rollupKeepsGates: (sourceID) => this.rollupsKeepingGates.has(sourceID),
          refusedAtBind: (sourceID, source, tier) =>
             this.refusedAtBind(sourceID, source, tier),

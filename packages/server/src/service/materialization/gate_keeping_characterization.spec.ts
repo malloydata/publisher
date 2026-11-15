@@ -36,7 +36,7 @@ import { Package } from "../package";
 import { routeCandidates, type QueryServingHost } from "../query_serving";
 import { routeQuery } from "../query_router";
 import { gateEnforcedAtRead } from "./plan/materialization_eligibility";
-import { allowGatedStorageRollupsForTests } from "./plan/rollup_plan";
+import { allowGatedStorageRollupsForTests } from "../../config";
 
 const DUMP = process.env.GATE_KEEPING_DUMP;
 
