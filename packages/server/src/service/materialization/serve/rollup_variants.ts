@@ -171,6 +171,7 @@ import type { ServedCopyJoinBasis } from "./served_copy_serve";
 import { isDeclineOf, LegDecline } from "../domain/leg_decline";
 import type { MaterializedTableCatalog } from "./query_path";
 import { queryShapeOf } from "./query_path";
+import { STORAGE_DIALECT } from "../domain/dialect";
 
 type VirtualMap = Map<string, Map<string, string>>;
 
@@ -1436,12 +1437,18 @@ export class RollupVariantServe {
                   new Map([
                      [
                         binding.virtualHandle,
-                        quoteManifestTablePath(binding.tablePath, "duckdb"),
+                        quoteManifestTablePath(
+                           binding.tablePath,
+                           STORAGE_DIALECT,
+                        ),
                      ],
                   ]),
                ],
             ]),
-            quotedPath: quoteManifestTablePath(binding.tablePath, "duckdb"),
+            quotedPath: quoteManifestTablePath(
+               binding.tablePath,
+               STORAGE_DIALECT,
+            ),
             binding,
          };
       }

@@ -24,7 +24,6 @@ import {
 } from "./incremental_apply";
 import {
    issuePassthroughRead,
-   STORAGE_TARGET_DIALECT,
    wrapPassthrough,
 } from "./materialization_build_session";
 import type { BuildReadCost } from "./build_read_cost";
@@ -33,6 +32,7 @@ import type { QueryMetadata } from "../../query_metadata";
 import { quoteIdentifier } from "../../quoting";
 import { errMessage } from "../../../utils";
 import { storageTablePath } from "../domain/storage_table_path";
+import { STORAGE_DIALECT } from "../domain/dialect";
 
 /**
  * The delta target for a source materialized into a `storage=` destination — the
@@ -107,7 +107,7 @@ export function storageDeltaTarget(params: {
    return {
       readCost: () => readCost,
       target: {
-         dialect: STORAGE_TARGET_DIALECT,
+         dialect: STORAGE_DIALECT,
          runner: (sql) => session.runSQL(sql),
          quotedTablePath,
          logicalTablePath,

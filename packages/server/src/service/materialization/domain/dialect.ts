@@ -38,6 +38,13 @@ export type DialectName =
    | "mysql"
    | "sqlserver";
 
+/**
+ * The dialect every storage destination speaks (DuckDB and DuckLake are both
+ * DuckDB-family): the dialect of a stored table's DDL, DML and identifier
+ * quoting, which is NOT its source's.
+ */
+export const STORAGE_DIALECT: DialectName = "duckdb";
+
 /** One dialect's capability flags. */
 export interface Capabilities {
    /**

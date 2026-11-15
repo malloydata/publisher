@@ -26,7 +26,7 @@ import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import type { Omission } from "../domain/omitted_sources";
-import { capabilitiesOf } from "../domain/dialect";
+import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
 import {
    keyCheckCompilerKey,
    type KeyCheckCompiler,
@@ -685,7 +685,7 @@ function destinationStandIn(name: string): Connection {
    const none = "not available to an extension table's build";
    const standIn = {
       name,
-      dialectName: "duckdb",
+      dialectName: STORAGE_DIALECT,
       getDigest: () => `materialize-stored-chain:${name}`,
       fetchSchemaForTables: async (tables: Record<string, string>) => ({
          schemas: {},

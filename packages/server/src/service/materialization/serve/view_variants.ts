@@ -93,6 +93,7 @@ import {
    serveTypePlan,
    storedColumnTypeMismatches,
 } from "../stored_column_types";
+import { STORAGE_DIALECT } from "../domain/dialect";
 
 type VirtualMap = Map<string, Map<string, string>>;
 
@@ -368,7 +369,10 @@ export class PersistedViewServe {
                stale: true,
             };
          }
-         const quotedPath = quoteManifestTablePath(binding.tablePath, "duckdb");
+         const quotedPath = quoteManifestTablePath(
+            binding.tablePath,
+            STORAGE_DIALECT,
+         );
          return {
             ...withId,
             ...dataAsOf,
