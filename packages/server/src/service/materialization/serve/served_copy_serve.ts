@@ -882,6 +882,7 @@ export class ServedCopyServe {
             "served_copy_not_served",
          );
       }
+      await checkSourceZone(attempt);
       await this.checkResultShape(attempt, tablesRead);
       // A join answered from stored columns is a record, so an aggregate at
       // its grain (`j.x.sum()`, `j.count()`, a measure that reads one) would
@@ -1415,6 +1416,10 @@ export class ServedCopyServe {
          connectionAlias: servedConnectionOf(binding),
          virtualHandle: binding.virtualHandle,
          typeName: `${sourceName}__served`,
+         ...(typeof (node.def as { queryTimezone?: unknown }).queryTimezone ===
+         "string"
+            ? { zone: (node.def as { queryTimezone: string }).queryTimezone }
+            : {}),
          columns,
          reservedNames,
          ...(plan
@@ -2893,6 +2898,62 @@ function v1ColumnsOf(
       return undefined;
    }
    return { columns, columnsLeftOut };
+}
+
+/**
+ * A backstop under every answer: the source the query runs on, and each one
+ * on its chain the author's model declares, must compute in the same zone in
+ * the copy as in the author's model (their `queryTimezone`, which Malloy
+ * gives a query's first stage). A re-root that dropped a zone (one the source
+ * inherits from the base it replaces) would compute every query on it in
+ * another zone than live: declined, never served. Fails closed on a source
+ * that cannot be resolved.
+ */
+async function checkSourceZone(attempt: AnswerAttempt): Promise<void> {
+   const { compiled, decline, prepared } = attempt;
+   const author = compiled.authorModelDef;
+   if (author === undefined) return;
+   const zoneOf = (def: unknown) => {
+      const z = (def as { queryTimezone?: unknown } | undefined)?.queryTimezone;
+      return typeof z === "string" ? z : undefined;
+   };
+   let differs: boolean;
+   try {
+      const view = await prepared();
+      const struct = resolveStructRefSource<unknown>(
+         view.structRef as never,
+         compiled.modelDef as never,
+      );
+      if (struct === undefined) {
+         differs = true;
+      } else {
+         const served = SourceMap.of(compiled.modelDef);
+         const authored = SourceMap.of(author);
+         const name = structRefName(view.structRef);
+         const authorStruct =
+            name !== undefined
+               ? resolveStructRefSource<unknown>(name as never, author as never)
+               : undefined;
+         differs =
+            (authorStruct !== undefined &&
+               !sameZone(zoneOf(struct), zoneOf(authorStruct))) ||
+            served.chainOf(struct).some((id) => {
+               const a = authored.node(id);
+               return (
+                  a !== undefined &&
+                  !sameZone(zoneOf(served.node(id)?.def), zoneOf(a.def))
+               );
+            });
+      }
+   } catch {
+      differs = true;
+   }
+   if (differs) {
+      decline(
+         "the source the query runs on computes in another time zone in the served copy than in the author's model",
+         "served_copy_time_zone",
+      );
+   }
 }
 
 /**

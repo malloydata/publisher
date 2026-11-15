@@ -35,6 +35,8 @@ The rule, for every value a table stores that depends on the zone:
 - **An unknown stored source** is treated as built in an unknown zone, so a query that reads its zone-dependent values answers live.
 - **A `#(materialize)` source with its own zone now keeps its timestamp truncations.** They are judged by the same rule, so `mzny -> { group_by: ts_day }` stays served. A query-shaped source that sets a zone still leaves them out, because its query's zone does not reach a query over it.
 
+**A source that inherits its zone now computes in it.** A `#(materialize)` source that inherits its zone from its base (`inh is ny_base extend { … }`, with the base in the same file or another) was answered by the served copy in UTC. The re-root replaced that base with the stored table and dropped the zone, so an `hour(ts)`, a truncation and a time-literal filter came back in UTC where live answers in New York. This was wrong on main for a base in the same file. The re-root now writes the author's zone again. As a backstop, any query whose source computes in another zone in the served copy than in the author's model answers live.
+
 The decline messages now say the query reads a table, or a value, "in another time zone than it was built in". No table is rebuilt or re-addressed, and no API change.
 
 ## [Unreleased] — error messages no longer include the server's filesystem paths
