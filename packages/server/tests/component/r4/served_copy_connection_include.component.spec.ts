@@ -120,6 +120,33 @@ source: raw_hidden is ${ORDERS_SQL} include {
   measure: total is amount.sum()
 }
 
+#@ persist name="raw_hidden_used" storage="lake"
+source: raw_hidden_used is ${ORDERS_SQL} include {
+  public: region, amount
+  private: id
+} extend {
+  dimension: id_band is floor(id / 10)
+  measure: total is amount.sum()
+}
+
+#@ persist name="query_hidden_used" storage="lake"
+source: query_hidden_used is ${ORDERS_SQL} -> { select: * } include {
+  public: region, amount
+  private: id
+} extend {
+  dimension: id_band is floor(id / 10)
+  measure: total is amount.sum()
+}
+
+#@ persist name="raw_hidden_filtered" storage="lake"
+source: raw_hidden_filtered is ${ORDERS_SQL} include {
+  public: region, amount
+  private: id
+} extend {
+  where: id is not null
+  measure: total is amount.sum()
+}
+
 #@ persist name="query_hidden" storage="lake"
 source: query_hidden is ${ORDERS_SQL} -> { select: * } include {
   public: region, amount
@@ -135,7 +162,15 @@ describe("an include that hides a column a v1 storage= table does not store", ()
    let fixture: LoadedFixture | undefined;
    const live = new Map<string, Outcome>();
    const served = new Map<string, Outcome>();
-   const sources = ["raw_hidden", "query_hidden"];
+   // A hidden column the extend reads (a dimension over it, a where:) is
+   // still one the table must store.
+   const sources = [
+      "raw_hidden",
+      "query_hidden",
+      "raw_hidden_used",
+      "query_hidden_used",
+      "raw_hidden_filtered",
+   ];
    const queryOf = (source: string) =>
       `run: ${source} -> { group_by: region; aggregate: total }`;
 

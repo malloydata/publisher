@@ -2442,8 +2442,12 @@ function nativeSchemaMissingMessage(n: NativeSchemaNotice): string {
    }
    if (n.leftOut.length > 0) {
       parts.push(
-         `${names(n.leftOut)} cannot be read exactly without one, so a query ` +
-            `that reads ${n.leftOut.length === 1 ? "it" : "one of them"} is answered live`,
+         `${names(n.leftOut)} cannot be read exactly without one, so ` +
+            `${n.leftOut.length === 1 ? "it is" : "they are"} left out of the table's read: ` +
+            "the source answers live wherever it needs " +
+            `${n.leftOut.length === 1 ? "it" : "them"}, and wholly live when its other fields ` +
+            `cannot be served without ${n.leftOut.length === 1 ? "it" : "them"} (the ` +
+            "`served-copy-not-served` warning on the source says so)",
       );
    }
    return (

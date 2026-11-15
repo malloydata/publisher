@@ -159,6 +159,9 @@ describe("a colocated table bound with no captured warehouse types", () => {
       expect(notices[0].message).toContain(
          "`total` cannot be read exactly without one",
       );
+      // Here the whole source answers live (`column_types`), and the
+      // message does not claim only the queries reading it do.
+      expect(notices[0].message).toContain("wholly live");
    });
 
    it("warns of nothing for a table whose build captured the types", async () => {

@@ -19,7 +19,10 @@ import {
    type Reroot,
    replacePairJoin,
 } from "./served_copy";
-import { inverseRenameBlocks } from "../text/declaration_text";
+import {
+   hiddenIncludeNames,
+   inverseRenameBlocks,
+} from "../text/declaration_text";
 
 /** The zero-based range of `needle`'s declaration (after `source: `) in `text`. */
 function rangeOf(text: string, name: string): Reroot["range"] {
@@ -467,6 +470,31 @@ source: raw is duckdb.sql("""SELECT r, total, id FROM t""") include {
             hiddenUnstored: ["id"],
          },
       ]);
+   });
+
+   it("counts a hidden name as stored-or-defined only where the run defines it", () => {
+      const run = (extend: string) =>
+         `include {\n  public: r\n  private: s\n} extend {\n  ${extend}\n}`;
+      // A use is not a definition.
+      expect(hiddenIncludeNames(run("dimension: s_len is length(s)"))).toEqual([
+         "s",
+      ]);
+      expect(hiddenIncludeNames(run("where: s is not null"))).toEqual(["s"]);
+      expect(
+         hiddenIncludeNames(
+            run("dimension: f is pick 1 when s is null else 0"),
+         ),
+      ).toEqual(["s"]);
+      // A rename target or a field the run defines is.
+      expect(
+         hiddenIncludeNames(
+            "extend { rename: s is r } include { internal: s; public: * }",
+         ),
+      ).toEqual([]);
+      expect(hiddenIncludeNames(run("dimension: s is upper(r)"))).toEqual([]);
+      expect(
+         hiddenIncludeNames(run("dimension:\n    a is 1\n    s is 2")),
+      ).toEqual([]);
    });
 
    it("refuses every re-root of a file it cannot read", () => {
