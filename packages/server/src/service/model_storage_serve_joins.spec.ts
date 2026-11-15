@@ -28,7 +28,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { pathToFileURL } from "url";
 import { Model } from "./model";
-import type { ServeBinding } from "./materialization/domain/serve_binding";
+import type { Binding } from "./materialization/domain/binding";
 import { installSettings } from "../test_helpers/settings_env";
 import { QueryPrivileges } from "./model_query_request";
 
@@ -59,7 +59,9 @@ source: orders is duckdb.sql("SELECT 10 AS amount, 'r1' AS region_id") extend {
 }
 `;
 
-const ORDERS_BINDING: ServeBinding = {
+const ORDERS_BINDING: Binding = {
+   kind: "persist",
+   tier: "storage",
    sourceName: "orders",
    destinationName: "duckdb",
    virtualHandle: "orders_h",
@@ -69,7 +71,9 @@ const ORDERS_BINDING: ServeBinding = {
       { name: "region_id", type: "VARCHAR" },
    ],
 };
-const REGIONS_BINDING: ServeBinding = {
+const REGIONS_BINDING: Binding = {
+   kind: "persist",
+   tier: "storage",
    sourceName: "regions",
    destinationName: "duckdb",
    virtualHandle: "regions_h",

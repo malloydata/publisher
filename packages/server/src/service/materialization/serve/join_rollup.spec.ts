@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import type { SourceJoin } from "../text/source_map";
-import type { RollupVariantPlan } from "../plan/rollup_plan";
+import type { RollupVariantPlan } from "../domain/table_plans";
 import type { QueryLevelFacts } from "../../governance/ir/prepared_query";
 import {
    checkJoinCoverage,

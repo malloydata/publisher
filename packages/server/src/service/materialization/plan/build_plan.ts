@@ -59,7 +59,7 @@ import {
    companionOmissions,
    type SynthesizedRuntimeFactory,
 } from "../text/generated_files";
-import type { RollupPlan } from "./preaggregation_synthesis";
+import type { RollupPlan } from "../domain/rollup_measures";
 import {
    materializeRefusalFinding,
    pairFullRefreshFinding,

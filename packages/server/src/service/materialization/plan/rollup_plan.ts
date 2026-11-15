@@ -72,7 +72,8 @@ import {
    timezoneOf,
 } from "../../governance/ir/compiled_model";
 import type { ModelDef, SourceDef } from "@malloydata/malloy";
-import { getMaterializeGatedSources } from "../../../config";
+import { gateSwitches } from "../../../config";
+import { tableKeepsGates } from "../domain/gate_policy";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
 import { basePersistNamespace } from "./preaggregation_synthesis";
 import { collectEntryPointGates } from "../../gate_classification";
@@ -88,11 +89,6 @@ import {
    routeOfNote,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
-import {
-   annotationValue,
-   doubleQuotedString,
-   identifier,
-} from "../../malloy_text";
 import { placementOf, readNotes } from "./declaration";
 import { malloyIdentifiers } from "../../query_text";
 import {
@@ -100,23 +96,28 @@ import {
    currentTimeFields,
    readsCurrentTime,
 } from "./persist_dynamic_terms";
-import { splitSourceID } from "./persisted_view";
 import { isSpliceableNamespace } from "./preaggregation_namespace";
-import type { RollupPlan } from "./preaggregation_synthesis";
 import {
    measureAggregates,
    type MeasureAggregate,
 } from "../../governance/ir/measure_aggregates";
 import {
    decomposeMeasure,
-   emitMeasureExpr,
    isMeasureRefusal,
-   type AggregateLeaf,
    type DecomposedMeasure,
-   type MeasureExpr,
    type MeasureRefusal,
-   type Reaggregate,
 } from "./rollup_measure_grammar";
+import type { AggregateLeaf, Reaggregate } from "../domain/rollup_measures";
+import {
+   splitSourceID,
+   type ParentKeyCheck,
+   type RollupKeyCheck,
+   type RollupMeasure,
+   type RollupVariantPlan,
+} from "../domain/table_plans";
+import { rollupBaseAlias } from "../text/read_text";
+
+export type { ParentKeyCheck, RollupKeyCheck };
 import type { SourceMap, SourceNode } from "../text/source_map";
 
 /** The route `#(preaggregate)` is on. */
@@ -124,97 +125,6 @@ const PREAGGREGATE_ROUTE = "preaggregate";
 
 /** A v1 `#@ preaggregate` (or `#@ -preaggregate`) line. */
 const V1_PREAGGREGATE_NOTE = /^\s*#@\s*-?preaggregate\b/;
-
-/** Appended to a declaring model's path to name its rollup build companion. */
-export const ROLLUP_COMPANION_SUFFIX = ".preaggregate.malloy";
-
-/** One stored partial of a measure. */
-interface RollupPartial {
-   /** The stored column. */
-   column: string;
-   leaf: AggregateLeaf;
-}
-
-/** One measure a rollup serves. */
-export interface RollupMeasure {
-   name: string;
-   partials: RollupPartial[];
-   /** The measure re-stated over its merged partials. */
-   merged: MeasureExpr;
-   /**
-    * Grain dimensions this measure's join-level `sum` or `count` merges across
-    * (A2): every grain dimension but the join's key. Its partial is the joined
-    * rows' total within one group, and two groups that share a key hold the
-    * same joined rows, so a query reads the measure from the rollup only when
-    * each of these is grouped or fixed at every level that aggregates it.
-    */
-   fanOutDimensions: string[];
-}
-
-/**
- * One `#(preaggregate)` rollup: one base, one grain, one placement, one table.
- * A {@link RollupPlan} for the build plan's plumbing (its wire `preaggregate`
- * entry, eligibility and run instructions), with what the variant needs.
- */
-export interface RollupVariantPlan extends RollupPlan {
-   /** Marks a `#(preaggregate)` rollup apart from a v1 `#@ preaggregate` one. */
-   variant: true;
-   baseSourceID: string;
-   /** The base's declared name (its name in its declaring file). */
-   baseDeclaredName: string;
-   /** The measures served, sorted by name. */
-   rollupMeasures: RollupMeasure[];
-   /**
-    * Grain dimensions read through a join_many or join_cross (A6): a query
-    * reads the rollup only when each is fixed at every aggregating level.
-    */
-   fanOutDimensions: string[];
-   /**
-    * Whether the base declares a row-level gate (`#(access_filter)` or
-    * `#(authorize)`): the join-to-rollup leg (A7) reads the rollup through a
-    * join, where no gate is grafted, so it declines such a base.
-    */
-   baseGated: boolean;
-   /**
-    * Grain dimensions the base declares `internal` (A4: only a field a gate
-    * reads), stored, and redeclared `internal` on the variant.
-    */
-   internalGrain: string[];
-   /**
-    * The uniqueness check of the grain's one dimension (known limitation 29):
-    * set when the grain is one dimension of the base, the rollup is
-    * colocated, and the companion compiled the check. A run builds it only
-    * when a join_one in the package is keyed on that dimension (see
-    * {@link joinOneKeysOf}); the join-to-rollup leg (A7) reads its outcome.
-    */
-   keyCheck?: RollupKeyCheck;
-   /**
-    * The primary key checks of the query sources that read this rollup through
-    * a join read as a join_many (see {@link readsAsJoinMany}): set at plan time
-    * for each such source the package declares (see {@link parentKeyNeedsOf}),
-    * and run by the rollup's build. The join-to-rollup leg (A7) reads their
-    * outcome: a rollup row is met by every parent row that shares its key, so
-    * the leg answers as live does only when the query source's key is unique
-    * and never NULL.
-    */
-   parentKeyChecks?: ParentKeyCheck[];
-}
-
-/**
- * A query source's primary key check: whether a source that reads a rollup
- * through a join read as a join_many holds a value of its declared
- * `primary_key` more than once, or a NULL. The SQL is compiled from the
- * author's model, over the source's rows as a query reads them, and returns
- * one row when the key repeats or is NULL.
- */
-export interface ParentKeyCheck {
-   /** The query source whose key is checked. */
-   sourceID: string;
-   keyColumn: string;
-   /** The connection the query source reads; the check runs only on it. */
-   connectionName: string | undefined;
-   sql: string;
-}
 
 /**
  * A source that may read a rollup through a join keyed on its declared
@@ -237,55 +147,27 @@ export interface ParentKeyNeed {
 }
 
 /**
- * A rollup's key check: whether its base holds a value of its one grain
- * dimension (a join_one's key) on more than one row. The SQL is compiled from
- * the rollup companion, over the rows the rollup's build reads, and returns
- * one row when a non-NULL value repeats.
- */
-export interface RollupKeyCheck {
-   keyColumn: string;
-   sql: string;
-}
-
-/**
- * Whether a `storage=` rollup over a gated base may be built and read. Not
- * until question 14's managed-tier review: a stored rollup puts tenant-keyed
- * aggregates (the gate's field and each tenant's partials) in a storage
- * destination, which the review covers for `#(materialize)` tables and is
- * proposed to cover for rollups too. A colocated rollup stays in the author's
- * warehouse, so it is read past its gate under `materialize.gatedSources`
- * alone; this keeps the two apart. Only a test turns it on
- * ({@link allowGatedStorageRollupsForTests}).
- */
-let gatedStorageRollupsReviewed = false;
-
-/**
- * For tests only: let `storage=` rollups over gated bases be built and read
- * (behind `materialize.gatedSources`), as they will be once question 14's
- * review passes. Returns the restore.
- */
-export function allowGatedStorageRollupsForTests(on = true): () => void {
-   const before = gatedStorageRollupsReviewed;
-   gatedStorageRollupsReviewed = on;
-   return () => {
-      gatedStorageRollupsReviewed = before;
-   };
-}
-
-/**
  * Whether a rollup at `placement` over a gated base may be read past its
- * base's gate (and so is worth building): `materialize.gatedSources` is on,
- * and the rollup is colocated, or in a storage destination once the
+ * base's gate (and so is worth building), by the gate policy: under
+ * `materialize.gatedSources`, colocated, or in a storage destination once the
  * managed-tier review allows it.
  */
-export function rollupsServeGatedBases(placement: {
-   storage?: string;
-}): boolean {
-   if (!getMaterializeGatedSources()) return false;
-   return placement.storage === undefined || gatedStorageRollupsReviewed;
+function rollupsServeGatedBases(placement: { storage?: string }): boolean {
+   return tableKeepsGates(
+      {
+         kind: "rollup",
+         tier: placement.storage === undefined ? "colocated" : "storage",
+         v1: false,
+         baseGateProven: true,
+      },
+      gateSwitches(),
+   );
 }
 
-/** A `#(preaggregate)` rollup's plan, never a v1 `#@ preaggregate` one. */
+/**
+ * A rollup the variant leg planned: a `#(preaggregate)` one, or a v1
+ * `#@ preaggregate` line read as one (the cutover's G4).
+ */
 function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
    return (
       typeof plan === "object" &&
@@ -298,18 +180,31 @@ function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
  * Whether a planned rollup's base gate is enforced when it is read (R3 for
  * rollups): `govern()` grafts and proves the base's gates on the rollup
  * variant, so the tier checks that refuse a gated build (the colocated and
- * storage `authorize` refusals) do not apply to it. True only for a
- * `#(preaggregate)` rollup (a v1 `#@ preaggregate` rollup's serve shape keeps
- * no gates) over a gated base, whose every gate the planner proved exact on
- * the rollup (table 1: each field a grain dimension, no gated join), at a
- * placement {@link rollupsServeGatedBases} allows. The build plan, the
+ * storage `authorize` refusals) do not apply to it. True only for a rollup
+ * the variant leg planned (a `#(preaggregate)` one, or a v1 `#@ preaggregate`
+ * line read as one, the cutover's G4) over a gated base, whose every gate the
+ * planner proved exact on the rollup (table 1: each field a grain dimension,
+ * no gated join), at a
+ * placement the gate policy allows (`domain/gate_policy.ts`). The build plan, the
  * host-instructed build and the serve bind all ask this one question, through
  * `gateEnforcedAtRead`, so a rollup is never built that cannot be read, nor
  * read because it was built.
  */
 export function rollupGateEnforcedAtRead(plan: unknown): boolean {
-   if (!isRollupVariantPlan(plan)) return false;
-   return plan.baseGated && rollupsServeGatedBases(plan);
+   if (typeof plan !== "object" || plan === null) return false;
+   const variant = isRollupVariantPlan(plan);
+   return tableKeepsGates(
+      {
+         kind: "rollup",
+         tier:
+            (plan as { storage?: unknown }).storage === undefined
+               ? "colocated"
+               : "storage",
+         v1: !variant,
+         baseGateProven: variant && plan.baseGated === true,
+      },
+      gateSwitches(),
+   );
 }
 
 /** Why a declaration was not planned. */
@@ -843,7 +738,7 @@ export function planSourceRollups(
             unservable(
                "preaggregate-access-filter",
                decl.measure,
-               decl.storage !== undefined && getMaterializeGatedSources()
+               decl.storage !== undefined && gateSwitches().gatedSources
                   ? "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a rollup in a storage destination is not read past a gate yet, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse"
                   : "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads",
             ),
@@ -1217,52 +1112,6 @@ export function rollupRefusalFinding(
 // The build file
 // ---------------------------------------------------------------------------
 
-/** The alias a build file imports a base under. */
-export function rollupBaseAlias(baseDeclaredName: string): string {
-   return `${baseDeclaredName}__rollup_base`;
-}
-
-/** One rollup's `#@ persist` line. */
-function persistLine(plan: RollupVariantPlan): string {
-   if (plan.storage !== undefined) {
-      return `#@ persist storage=${annotationValue(plan.storage)}`;
-   }
-   if (plan.namespace !== undefined) {
-      return `#@ persist name=${annotationValue(`${plan.namespace}.${plan.rollupSourceName}`)}`;
-   }
-   return "#@ persist";
-}
-
-/** One rollup's build source. */
-function emitRollupBuildSource(plan: RollupVariantPlan): string {
-   const grain = plan.grainDimensions
-      .map((g) => `    ${identifier(g)}`)
-      .join("\n");
-   // malloy-text: each leaf re-emitted from the measure grammar's parse, every name and value through malloy_text
-   const partials = plan.rollupMeasures
-      .flatMap((m) => m.partials)
-      .map(
-         (p) =>
-            `    ${identifier(p.column)} is ${emitMeasureExpr(p.leaf.expr)}`,
-      )
-      .join("\n");
-   // A grain an `internal` gate field is in reads it through
-   // `include { public: * }`, which lifts the fields the base hides from a
-   // query (A4); the SQL, and so the table's address, is the same.
-   const base = identifier(rollupBaseAlias(plan.baseDeclaredName));
-   const from =
-      (plan.internalGrain ?? []).length > 0
-         ? `${base} include { public: * }`
-         : base;
-   return `${persistLine(plan)}
-source: ${identifier(plan.rollupSourceName)} is ${from} -> {
-  group_by:
-${grain}
-  aggregate:
-${partials}
-}`;
-}
-
 /**
  * The Malloy text of a rollup's key check (known limitation 29), or undefined
  * when the rollup's grain is not one dimension or it is not colocated (the
@@ -1463,36 +1312,4 @@ export function joinOneKeysOf(map: SourceMap): Set<string> {
       }
    }
    return keys;
-}
-
-/**
- * The generated build companion for one declaring model, or undefined when it
- * declares no rollup. Every planned base is declared in that model, so each is
- * imported from it by `importPath`. The experimental flag lives here, so the
- * author's file needs none.
- */
-export function generateRollupBuildFile(
-   plans: readonly RollupVariantPlan[],
-   importPath: string,
-): string | undefined {
-   if (plans.length === 0) return undefined;
-   const bases = [...new Set(plans.map((p) => p.baseDeclaredName))].sort(
-      byCodepoint,
-   );
-   const imports = bases
-      .map(
-         (base) =>
-            `import { ${identifier(rollupBaseAlias(base))} is ${identifier(base)} } from ${doubleQuotedString(importPath)}`,
-      )
-      .join("\n");
-   // `include { public: * }` (an internal gate field in a grain) needs the
-   // access-modifier flag; the SQL, and so every table's address, is the same.
-   const flags = plans.some((p) => (p.internalGrain ?? []).length > 0)
-      ? "##! experimental { access_modifiers persistence }"
-      : "##! experimental.persistence";
-   return `${flags}
-${imports}
-
-${plans.map((p) => emitRollupBuildSource(p)).join("\n\n")}
-`;
 }

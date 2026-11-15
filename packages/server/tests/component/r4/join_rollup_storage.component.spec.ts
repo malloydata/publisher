@@ -320,7 +320,7 @@ for (const [kind, model, materialize] of [
             "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }";
          fixture.setBindings(
             fixture.bindings.map((b) =>
-               b.origin === "preaggregate"
+               b.kind === "rollup"
                   ? b
                   : {
                        ...b,
@@ -347,7 +347,7 @@ for (const [kind, model, materialize] of [
             "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }";
          fixture.setBindings(
             fixture.bindings.map((b) =>
-               b.origin === "preaggregate"
+               b.kind === "rollup"
                   ? {
                        ...b,
                        freshAsOf: "2020-01-01T00:00:00.000Z",

@@ -9,9 +9,12 @@ import { readsAGiven } from "../../probe_compiler";
 import { forEachFieldPath } from "../../governance/ir/array_query";
 import {
    NOW_OFFSET_UNITS,
+   type MalloyRange,
    type NowComparisonOp,
    type NowOffsetUnit,
-} from "../../malloy_text";
+   type RollingWindow,
+   type TermUse,
+} from "../domain/read_time_terms";
 
 /**
  * Where a persist source's givens sit, and whether that lets the source be
@@ -492,18 +495,6 @@ export function readTimeDynamicTerms(
    }
 }
 
-/** A zero-based range in a Malloy file, as the compiler reports one. */
-export interface MalloyRange {
-   start: { line: number; character: number };
-   end: { line: number; character: number };
-}
-
-/** Where a term reads a field or a given, as its `refSummary` records it. */
-export interface TermUse {
-   url: string;
-   range: MalloyRange;
-}
-
 function termUse(use: unknown): TermUse | undefined {
    const at = (use as { at?: { url?: unknown; range?: unknown } } | null)?.at;
    const range = at?.range as MalloyRange | undefined;
@@ -616,22 +607,6 @@ function dynamicTerm(entry: object): DynamicTerm {
 // every term of a compiled source by what it depends on beside the stored
 // columns: nothing (fixed), a given, the current time, or both.
 // ---------------------------------------------------------------------------
-
-/**
- * A current-time comparison in the one shape a stored table can re-apply at
- * read: a one-segment field compared with `now`, optionally offset by a whole
- * number of one unit, read with the field on the left. The direction is the
- * comparison: `>=`/`>` keep rows newer than the cut-off (a lower bound),
- * `<`/`<=` rows older than it (an upper bound).
- */
-export interface RollingWindow {
-   /** The field the term compares (a stored column, when it is stored). */
-   field: string;
-   /** As read with the field on the left. */
-   op: NowComparisonOp;
-   /** `now + sign * amount unit`; absent for a bare `now`. */
-   offset?: { sign: 1 | -1; amount: number; unit: NowOffsetUnit };
-}
 
 /** What one `where:` term of a compiled source depends on. */
 type WhereTermDependency =

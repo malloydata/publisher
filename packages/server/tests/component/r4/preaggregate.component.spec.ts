@@ -491,12 +491,12 @@ function scenarioSuite(label: string, placement: string): void {
          // compile (and fail) every query against it.
          fixture.setBindings(fixture.bindings);
          const internals = fixture.model as unknown as {
-            storageServe: { serveBindings: unknown[] };
+            storageTables(): { kept: unknown[] };
             servedCopy: { hasBindings(): boolean };
          };
          // A storage= rollup is bound; a colocated one has no binding.
          expect(fixture.bindings.length > 0).toBe(placement !== "");
-         expect(internals.storageServe.serveBindings).toEqual([]);
+         expect(internals.storageTables().kept).toEqual([]);
          expect(internals.servedCopy.hasBindings()).toBe(false);
       });
 

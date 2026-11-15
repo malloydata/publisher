@@ -6,7 +6,7 @@
  * place: a `Model`'s `ModelDef`, a persist source's own `SourceDef`, its
  * explore and the model it was planned in, and the facts read off a compiled
  * source that more than one reader needs (its declared primary key, the time
- * zone it sets).
+ * zone it sets, a field's access modifier).
  *
  * Malloy keeps these slots internal (`_modelDef`, `_sourceDef`, `_explore`),
  * so a Malloy upgrade that moves one breaks this module alone. Every reader
@@ -49,6 +49,21 @@ export function plannedModelDefOf(source: {
    _model?: { _modelDef?: unknown };
 }): unknown {
    return source._model?._modelDef;
+}
+
+/**
+ * A compiled field's access modifier when it is not public, or undefined. Fails
+ * closed, as `isHidden` in preaggregation_synthesis.ts does: a modifier it does
+ * not know reads as private. The one reader of `accessModifier` for P3: the
+ * plan, the build copy's selectable set and the bind guard's access proof.
+ */
+export function hiddenAccess(field: {
+   accessModifier?: unknown;
+}): "private" | "internal" | undefined {
+   if (field.accessModifier == null || field.accessModifier === "public") {
+      return undefined;
+   }
+   return field.accessModifier === "internal" ? "internal" : "private";
 }
 
 /** A compiled source's declared `primary_key:`, if it has one. */

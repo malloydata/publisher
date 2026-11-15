@@ -11,6 +11,7 @@ import {
    PUBLISHER_CONFIG_NAME,
 } from "./constants";
 import { logger } from "./logger";
+import type { GateSwitches } from "./service/materialization/domain/gate_policy";
 import { defaultOpenAiBaseUrl } from "./retrieval/llm/openai_compatible";
 import {
    referencedVariable,
@@ -933,6 +934,36 @@ export const getMaterializeEnabled = (): boolean =>
  */
 export const getMaterializeGatedSources = (): boolean =>
    settings.get("materialize.gatedSources");
+
+/**
+ * Whether a `storage=` rollup over a gated base may be read past its gate.
+ * No setting turns it on until the managed-tier review; only a test does
+ * ({@link allowGatedStorageRollupsForTests}).
+ */
+let gatedStorageRollupsReviewed = false;
+
+/**
+ * For tests only: let `storage=` rollups over gated bases be built and read
+ * (behind `materialize.gatedSources`), as they will be once the managed-tier
+ * review passes. Returns the restore.
+ */
+export function allowGatedStorageRollupsForTests(on = true): () => void {
+   const before = gatedStorageRollupsReviewed;
+   gatedStorageRollupsReviewed = on;
+   return () => {
+      gatedStorageRollupsReviewed = before;
+   };
+}
+
+/**
+ * The switches gate keeping reads, read once at a shell and passed to the
+ * policy (`materialization/domain/gate_policy.ts`).
+ */
+export const gateSwitches = (): GateSwitches => ({
+   materialize: getMaterializeEnabled(),
+   gatedSources: getMaterializeGatedSources(),
+   gatedStorageRollupsReviewed,
+});
 
 /**
  * Whether a within-package persist-target COLLISION (two distinct persist

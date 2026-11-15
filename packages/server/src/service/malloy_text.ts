@@ -12,6 +12,12 @@
  * text, compile it, and let the compiler judge it.
  */
 
+import {
+   NOW_OFFSET_UNITS,
+   type NowComparisonOp,
+   type NowOffsetUnit,
+} from "./materialization/domain/read_time_terms";
+
 /** A name Malloy reads as one identifier without quoting. */
 const PLAIN_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -237,22 +243,6 @@ export function doubleQuotedString(value: string): string {
 export function annotationValue(value: string): string {
    return JSON.stringify(value);
 }
-
-/** The current-time offset units a rolling-window term may use. */
-export const NOW_OFFSET_UNITS = [
-   "second",
-   "minute",
-   "hour",
-   "day",
-   "week",
-   "month",
-   "quarter",
-   "year",
-] as const;
-export type NowOffsetUnit = (typeof NOW_OFFSET_UNITS)[number];
-
-/** The comparisons a rolling-window term may use. */
-export type NowComparisonOp = ">=" | ">" | "<" | "<=";
 
 /**
  * A comparison of a field with the current time, `<field> <op> now [± <n>

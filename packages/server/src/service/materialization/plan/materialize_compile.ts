@@ -10,7 +10,11 @@
  * against the author's edits.
  */
 
-import { modelDefIfAny, modelDefOf } from "../../governance/ir/compiled_model";
+import {
+   hiddenAccess,
+   modelDefIfAny,
+   modelDefOf,
+} from "../../governance/ir/compiled_model";
 import {
    FixedConnectionMap,
    type Runtime,
@@ -35,7 +39,6 @@ import {
    generatedNamesOf,
    generateBuildFiles,
    givenReadTerms,
-   hiddenAccess,
    keptBasesInText,
    levelFileName,
    MATERIALIZE_COMPANION_SUFFIX,
@@ -48,7 +51,7 @@ import {
    type MaterializeRefusal,
    type StoredColumnType,
 } from "./build_file_generator";
-import type { TermUse } from "./persist_dynamic_terms";
+import type { TermUse } from "../domain/read_time_terms";
 import {
    compileInMemory,
    companionOmissions,

@@ -18,7 +18,7 @@
 
 import type { SiblingModelDefResolver } from "./filter_binding_guard";
 import type { MaterializedTableCatalog } from "./materialization/serve/query_path";
-import type { BuildManifest } from "./materialization/domain/types";
+import type { Snapshot } from "./materialization/domain/binding";
 import type { ReportLayout } from "./report";
 
 /** The package's published surface, as an explained refusal describes it:
@@ -69,10 +69,10 @@ export interface ModelPolicy {
     */
    siblingModelDefResolver(): SiblingModelDefResolver | undefined;
    /**
-    * The freshness-filtered build manifest for this query, passed as Malloy's
-    * per-query `buildManifest` override. Undefined means no override.
+    * Every table the package serves now, as one immutable snapshot, which a
+    * query pins once (freshness included). Undefined serves nothing stored.
     */
-   freshBuildManifestEntries(): BuildManifest["entries"] | undefined;
+   snapshot(): Snapshot | undefined;
    /** The `sourceEntityId`s pre-aggregation synthesized, stripped from the
     *  author model's manifest. Undefined or empty strips nothing. */
    preaggregateEntityIds(): ReadonlySet<string> | undefined;
@@ -117,8 +117,8 @@ export interface FixedModelPolicy {
    siblingModelDefResolver?: SiblingModelDefResolver;
    /** The materialized tables the path report reads; omitted names none. */
    materializedTables?: MaterializedTableCatalog;
-   /** The per-query build manifest; omitted passes none. Read per call. */
-   freshBuildManifestEntries?: () => BuildManifest["entries"] | undefined;
+   /** The tables served; omitted serves nothing stored. Read per query. */
+   snapshot?: () => Snapshot | undefined;
    /** The rollups' `sourceEntityId`s, stripped from the author's manifest. */
    preaggregateEntityIds?: ReadonlySet<string>;
 }
@@ -136,7 +136,7 @@ function fixedPolicy(
       discoveryCurationEnabled: () => discoveryCuration,
       queryBoundary: () => boundary,
       siblingModelDefResolver: () => sibling,
-      freshBuildManifestEntries: () => fields.freshBuildManifestEntries?.(),
+      snapshot: () => fields.snapshot?.(),
       preaggregateEntityIds: () => fields.preaggregateEntityIds,
       materializedTables: () => tables,
    });
@@ -177,9 +177,9 @@ export class PackageModelPolicy {
    private discoveryCuration = false;
    private boundaries: ReadonlyMap<string, QueryBoundaryPolicy> | undefined;
    private siblingResolver: SiblingModelDefResolver | undefined;
-   private freshness:
+   private serving:
       | {
-           manifest: () => BuildManifest["entries"] | undefined;
+           snapshot: () => Snapshot;
            preaggregateEntityIds: () => ReadonlySet<string>;
            materializedTables?: () => MaterializedTableCatalog | undefined;
         }
@@ -194,9 +194,9 @@ export class PackageModelPolicy {
          queryBoundary: () =>
             this.boundaries?.get(modelPath) ?? UNDECIDED_PACKAGE_BOUNDARY,
          siblingModelDefResolver: () => this.siblingResolver,
-         freshBuildManifestEntries: () => this.freshness?.manifest(),
-         preaggregateEntityIds: () => this.freshness?.preaggregateEntityIds(),
-         materializedTables: () => this.freshness?.materializedTables?.(),
+         snapshot: () => this.serving?.snapshot(),
+         preaggregateEntityIds: () => this.serving?.preaggregateEntityIds(),
+         materializedTables: () => this.serving?.materializedTables?.(),
       });
    }
 
@@ -218,14 +218,14 @@ export class PackageModelPolicy {
    }
 
    /**
-    * Install the per-query freshness resolvers. Left unset until the package
-    * wires them, so a model serves with its hydration manifest until then.
+    * Install the package's serving resolvers. Left unset until the package
+    * wires them, so a model serves nothing stored until then.
     */
-   public setFreshnessResolvers(resolvers: {
-      manifest: () => BuildManifest["entries"] | undefined;
+   public setServingResolvers(resolvers: {
+      snapshot: () => Snapshot;
       preaggregateEntityIds: () => ReadonlySet<string>;
       materializedTables?: () => MaterializedTableCatalog | undefined;
    }): void {
-      this.freshness = resolvers;
+      this.serving = resolvers;
    }
 }

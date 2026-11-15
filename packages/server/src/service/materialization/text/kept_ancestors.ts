@@ -26,33 +26,7 @@
 import { declarationSpans, declaredBaseName } from "./declaration_text";
 import { offsetOf } from "./malloy_lexer";
 import type { SourceMap } from "./source_map";
-
-/** A zero-based Malloy range, as a compiled source's `location.range` carries. */
-interface KeptRange {
-   start: { line: number; character: number };
-   end: { line: number; character: number };
-}
-
-/** One ancestor on the kept walk, as the compiled model places it. */
-export interface KeptAncestor {
-   sourceID: string;
-   /** Its declaration's range in the file (`<name> is <definition>`). */
-   range: KeptRange;
-   /**
-    * Renames of it declared in the file (`b2 is base`, and renames of those).
-    * The base edge reads an extension of one as an extension of the ancestor
-    * itself (a rename adds nothing, so the two are alike and the edge takes
-    * the one the other is built from), so the text may name one of these
-    * where the walk names the ancestor.
-    */
-   aliases?: KeptAlias[];
-}
-
-/** A plain rename on the kept walk ({@link KeptAncestor.aliases}). */
-interface KeptAlias {
-   sourceID: string;
-   range: KeptRange;
-}
+import type { KeptAlias, KeptAncestor, KeptRange } from "../domain/table_plans";
 
 /** A {@link KeptAncestor} the file's text confirms, with its kept run. */
 interface ConfirmedAncestor extends KeptAncestor {

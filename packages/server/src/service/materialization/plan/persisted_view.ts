@@ -60,7 +60,6 @@ import {
    type NotedSourceDef,
    type SourceScope,
 } from "../../governance/ir/declared_notes";
-import { doubleQuotedString, identifier } from "../../malloy_text";
 import { hasEnvReference } from "../../motly";
 import {
    EMPTY_STORAGE_REASON,
@@ -68,35 +67,19 @@ import {
    readNotesIfAny,
 } from "./declaration";
 import { SourceMap, type SourceNode } from "../text/source_map";
+import {
+   PERSISTED_VIEW_COMPANION_SUFFIX,
+   persistedViewCompanionHref,
+} from "../text/read_text";
+import { splitSourceID, type PersistedViewPlan } from "../domain/table_plans";
 
-/** Appended to a declaring file's URL to name its persisted-view companion. */
-export const PERSISTED_VIEW_COMPANION_SUFFIX = ".persist-view.malloy";
+export { PERSISTED_VIEW_COMPANION_SUFFIX };
 
 /** The package warning for a persisted view that is not built, or not served. */
 export const PERSIST_VIEW_NOT_BUILT = "persist-view-not-built";
 
 /** `#@ persist` keys that make a build incremental: a view rebuilds whole. */
 const INCREMENTAL_KEYS = ["watermark", "merge_key", "partition"] as const;
-
-/** One `#@ persist` view, as planned. */
-export interface PersistedViewPlan {
-   /** The declaring source's `sourceID` (`<name>@<declaring file URL>`). */
-   sourceID: string;
-   /** The source's name in its declaring file. */
-   sourceName: string;
-   /** The view's name on the source. */
-   viewName: string;
-   /** The generated build source's name, inside the companion. */
-   buildSourceName: string;
-   /** The generated build source's `sourceID`, as the companion compiles it. */
-   buildSourceID: string;
-   /** The author's `#@` lines on the view, verbatim, trimmed. */
-   persistLines: string[];
-   /** The `storage=` destination, when the view declares one. */
-   storage?: string;
-   /** The declaring file's URL. */
-   declaringURL: string;
-}
 
 /** A declaration the planner would not build. */
 export interface PersistedViewRefusal {
@@ -106,27 +89,9 @@ export interface PersistedViewRefusal {
    reason: string;
 }
 
-/** `<name>@<url>` split, or undefined for any other shape. */
-export function splitSourceID(
-   sourceID: string,
-): { name: string; url: string } | undefined {
-   const match = /^(.+)@([a-z][a-z0-9+.-]*:.*)$/i.exec(sourceID);
-   return match ? { name: match[1], url: match[2] } : undefined;
-}
-
-/** The companion URL for a declaring file, as an `href`. */
-export function persistedViewCompanionHref(declaringURL: string): string {
-   return `${declaringURL}${PERSISTED_VIEW_COMPANION_SUFFIX}`;
-}
-
 /** The generated build source's name for `source -> view`. */
 function persistedViewBuildName(source: string, view: string): string {
    return `${source}__${view}__view`;
-}
-
-/** The alias the companion imports a declaring source under. */
-function baseAlias(source: string): string {
-   return `${source}__pv_base`;
 }
 
 interface FieldLike {
@@ -295,37 +260,4 @@ export function persistedViewRefusalFinding(
       subject: `${refusal.sourceName} -> ${refusal.viewName}`,
       model,
    };
-}
-
-/**
- * The companion's text for the views `plans` declares, all in the file
- * imported as `importPath`, or undefined when there are none.
- */
-export function generatePersistedViewFile(
-   plans: readonly PersistedViewPlan[],
-   importPath: string,
-): string | undefined {
-   if (plans.length === 0) return undefined;
-   const sources = [...new Set(plans.map((p) => p.sourceName))].sort(
-      byCodepoint,
-   );
-   const imports = sources
-      .map(
-         (s) =>
-            `import { ${identifier(baseAlias(s))} is ${identifier(s)} } from ${doubleQuotedString(importPath)}`,
-      )
-      .join("\n");
-   const sourcesText = plans
-      .map(
-         (p) =>
-            // malloy-text: the author's own `#@` lines, verbatim (single lines, no `@env.`; see planSourcePersistedViews)
-            `${p.persistLines.join("\n")}
-source: ${identifier(p.buildSourceName)} is ${identifier(baseAlias(p.sourceName))} -> ${identifier(p.viewName)}`,
-      )
-      .join("\n\n");
-   return `##! experimental.persistence
-${imports}
-
-${sourcesText}
-`;
 }

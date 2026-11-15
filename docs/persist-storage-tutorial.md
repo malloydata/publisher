@@ -793,9 +793,9 @@ Everything you need is on the package status and the logs:
   That fallback line is the only per-query account of a storage-tier miss, since
   the response reports it as a bare `null` (see the caveat below).
 - Metrics (OpenTelemetry, under the `publisher` meter):
-  - `publisher_storage_serve_routing_total{outcome=storage|live_fallback|runtime_live_fallback}`
-    — the serve hit rate; the headline signal for "is the tier actually serving?"
-    `runtime_live_fallback` is the one to watch: the query **routed** and then the
+  - `publisher_query_route_total{leg,outcome,reason}` — the serve hit rate; the
+    headline signal for "is the tier actually serving?" `outcome="fallback"`
+    (`reason="RUN_FAILED"`) is the one to watch: the query **routed** and then the
     store failed under it, so the caller still got a correct answer from the
     warehouse while the tier is broken. The hit rate alone will not show that.
 
