@@ -47,7 +47,7 @@ source: p_named_nested is __served_copy_alias_of_lake.virtual('2132b8ba56b26471f
 
 #(materialize) storage="lake"
 source: m_storage is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb')::m_storage__served extend {
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order

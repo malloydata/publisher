@@ -1,0 +1,28 @@
+##! experimental { persistence access_modifiers }
+
+source: raw_customers is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (1, 'a', 'west', 10.0),
+    (2, 'b', 'east', 5.0),
+    (3, 'a', 'west', 7.0)
+  ) AS t(id, segment, home_region, amount)
+""")
+
+// A stored parent with a hidden column and a renamed one: its table holds
+// both, under the names its query gives them.
+#@ persist name="customers_hidden" storage=lake
+source: customers_hidden is raw_customers -> {
+  select: id, segment, home_region, amount
+} extend {
+  rename: spend is amount
+} include { internal: home_region; public: * }
+
+// A chained child over the parent's table that reads the hidden and the
+// renamed column through the parent's own text.
+#@ persist name="west_spend" storage=lake
+source: west_spend is customers_hidden extend {
+  measure: west_total is spend.sum() { where: home_region = 'west' }
+} -> {
+  group_by: segment
+  aggregate: west_total
+}

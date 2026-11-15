@@ -732,7 +732,7 @@ describe("a stored timeframe truncation (decision 3)", () => {
             },
          ),
       ).toBe(
-         "daily is x.virtual('h')::daily__served extend {\n  internal rename:\n    m__stored is m\n  dimension:\n    m is m__stored.month\n}",
+         "daily is x.virtual('h')::daily__served extend {\n  private rename:\n    m__stored is m\n  dimension:\n    m is m__stored.month\n}",
       );
    });
 
@@ -845,9 +845,10 @@ describe("hidden stored columns (P3)", () => {
 
    it("restores a hidden timeframe column under the author's modifier, its stored column renamed as hidden (row 8)", () => {
       // Inherited, so the re-root defines the field under its own modifier.
-      // A hidden field's stored column is `private` (an `internal` one a
-      // caller's own `extend` could read), hidden by a labelled rename in the
-      // first block: no include, so an author's `rename:` still compiles.
+      // Every redefined field's stored column is `private` (an `internal` one
+      // a caller's own `extend` or `include` could read), hidden by a labelled
+      // rename in the first block: no include, so an author's `rename:` still
+      // compiles.
       const out = rerootDeclaration(
          "orders is base extend {\n  measure: n is count()\n}",
          {
@@ -876,11 +877,10 @@ describe("hidden stored columns (P3)", () => {
       );
       expect(out).toBe(
          "orders is x.virtual('h')::orders__served extend {\n" +
-            "  internal rename:\n" +
-            "    order_day__stored is order_day\n" +
             "  private rename:\n" +
             "    order_month__stored is order_month\n" +
             "    order_week__stored is order_week\n" +
+            "    order_day__stored is order_day\n" +
             "  dimension:\n" +
             "    order_day is order_day__stored.day\n" +
             "  internal dimension:\n" +
@@ -918,7 +918,7 @@ describe("hidden stored columns (P3)", () => {
             "  rename:\n" +
             "    order_month__stored is order_month\n" +
             "    order_day__stored is order_day\n" +
-            "} include { public: *; private: order_month__stored; internal: org_id, order_day__stored } extend {\n" +
+            "} include { public: *; private: order_month__stored, order_day__stored; internal: org_id } extend {\n" +
             "  dimension:\n" +
             "    order_day is order_day__stored.day\n" +
             "  private dimension:\n" +
