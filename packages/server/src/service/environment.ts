@@ -2941,6 +2941,9 @@ export class Environment {
                            splitManifestEntries(
                               entries,
                               `local store (package ${packageName} version ${versionId})`,
+                              // From the store, with the key checks its
+                              // newest run stands behind (withRollupKeyRecords).
+                              true,
                            );
                         if (
                            Object.keys(tableNameManifest).length > 0 ||

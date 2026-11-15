@@ -25,7 +25,11 @@ import {
    ManifestReference,
    SourceFailure,
 } from "../domain/types";
-import { keyUniquenessAt, type RollupKeyRecord } from "./inline_uniqueness";
+import {
+   keyUniquenessAt,
+   withRollupKeyRecords,
+   type RollupKeyRecord,
+} from "./inline_uniqueness";
 import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 import type { RunLifecycle } from "./run_lifecycle";
 
@@ -345,20 +349,39 @@ export class ManifestCommitter {
       excludeId: string,
       reader: ServingReader = {},
    ): Promise<Record<string, ManifestEntry>> {
-      const list =
+      const list = await this.runsFor(environmentId, packageName, reader);
+      return servingEntriesOf(list, reader, excludeId);
+   }
+
+   /**
+    * The entries a rebind binds: {@link mostRecentEntries}, each with the
+    * key checks the newest run stands behind (`withRollupKeyRecords`), as a
+    * load binds them from the store (`storageBindingResolverFor`). Without
+    * them a rebind after the run would drop what its own load bound, and a
+    * served copy would read every recorded key as unknown.
+    */
+   private async boundEntries(
+      environmentId: string,
+      packageName: string,
+      reader: ServingReader = {},
+   ): Promise<Record<string, ManifestEntry>> {
+      const list = await this.runsFor(environmentId, packageName, reader);
+      // "" excludes nothing — a deleted record is already gone.
+      return withRollupKeyRecords(servingEntriesOf(list, reader, ""), list);
+   }
+
+   /** The runs `reader` reads (see newestServingEntries). */
+   private async runsFor(
+      environmentId: string,
+      packageName: string,
+      reader: ServingReader,
+   ) {
+      return (
          (await this.repository.listMaterializations(
             environmentId,
             packageName,
             reader.owned !== undefined ? { version: reader.owned } : undefined,
-         )) ?? [];
-      // Legacy tolerance, removable with `ManifestEntry.error`: manifests
-      // from 0.0.245-0.0.246 record failed sources among their entries.
-      // Reusing one would never retry the source and would seed a downstream
-      // from a table that was never created.
-      return Object.fromEntries(
-         Object.entries(newestServingEntries(list, reader, excludeId)).filter(
-            ([, entry]) => !isLegacyFailedEntry(entry),
-         ),
+         )) ?? []
       );
    }
 
@@ -492,9 +515,7 @@ export class ManifestCommitter {
          await environment.rebindVersionFromStore(
             packageName,
             versionId,
-            (reader) =>
-               // "" excludes nothing — a deleted record is already gone.
-               this.mostRecentEntries(environmentId, packageName, "", reader),
+            (reader) => this.boundEntries(environmentId, packageName, reader),
             { onlyIfMoved: true },
          );
       } catch (err) {
@@ -565,26 +586,16 @@ export class ManifestCommitter {
                packageName,
                versionId,
                (reader) =>
-                  // "" excludes nothing — a deleted record is already gone.
-                  this.mostRecentEntries(
-                     environmentId,
-                     packageName,
-                     "",
-                     reader,
-                  ),
+                  this.boundEntries(environmentId, packageName, reader),
             );
             continue;
          }
          try {
-            // "" excludes nothing — a deleted record is already gone.
-            const entries = await this.mostRecentEntries(
-               environmentId,
-               packageName,
-               "",
-            );
+            const entries = await this.boundEntries(environmentId, packageName);
             const { tableNameManifest, storageEntries } = splitManifestEntries(
                entries,
                `rebind (package ${packageName})`,
+               true,
             );
             // Colocated: re-derive (or clear) regardless of mode.
             await environment.bindPackageColocatedServeManifest(
@@ -634,4 +645,23 @@ export function referenceManifestToEntries(
       };
    }
    return entries;
+}
+
+/**
+ * The newest serving entries of `runs` for `reader`, but `excludeId`'s.
+ * Legacy tolerance, removable with `ManifestEntry.error`: manifests from
+ * 0.0.245-0.0.246 record failed sources among their entries. Reusing one
+ * would never retry the source and would seed a downstream from a table that
+ * was never created.
+ */
+function servingEntriesOf(
+   runs: Parameters<typeof newestServingEntries>[0],
+   reader: ServingReader,
+   excludeId: string,
+): Record<string, ManifestEntry> {
+   return Object.fromEntries(
+      Object.entries(newestServingEntries(runs, reader, excludeId)).filter(
+         ([, entry]) => !isLegacyFailedEntry(entry),
+      ),
+   );
 }
