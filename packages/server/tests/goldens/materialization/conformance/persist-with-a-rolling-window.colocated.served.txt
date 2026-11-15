@@ -9,27 +9,20 @@ type: recent_read__served is {
    amount::number,
    created_at::timestamp
 }
-type: recent_body__served is {
-   id::number,
-   region::string,
-   amount::number,
-   created_at::timestamp
-}
 
 import "raw.malloy"
 
 #@ persist name="recent_body"
-source: recent_body is duckdb.virtual('107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e')::recent_body__served extend {
-  internal rename:
-    id__stored is id
-  dimension:
-    id is id__stored::"BIGINT"
+source: recent_body is orders_raw -> {
+  where: created_at >= now - 3650 days
+  select: id, region, amount, created_at
+} extend {
   measure: total is amount.sum()
 }
 
 #@ persist name="recent_read"
 source: recent_read is duckdb.virtual('b8e1660417d152c47e6402d43cac5b3445a682feaa4410edbedb9791919eaee3')::recent_read__served extend {
-  internal rename:
+  private rename:
     id__stored is id
   dimension:
     id is id__stored::"BIGINT"

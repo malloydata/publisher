@@ -1057,7 +1057,14 @@ export class Environment {
          this.planRefreshesRunning++;
          const connections = this.lastChangedConnections;
          next
-            .refreshBuildPlan({ retryFailed })
+            .refreshBuildPlan({
+               retryFailed,
+               // A version's files never change; only the unversioned package
+               // a reload replaces can serve an older model than its files.
+               isStale: () =>
+                  next.getVersionId() === undefined &&
+                  this.getStaleCompileErrors().has(next.getPackageName()),
+            })
             .then((derived) => {
                if (derived) {
                   const backoff = this.planRefreshBackoff.get(next);
@@ -2843,6 +2850,8 @@ export class Environment {
             packageName,
             versionPath,
             () => this.malloyConfig.malloyConfig,
+            false,
+            { versionId: version.versionId },
          );
          this.attachDestinationServeConfig(loaded);
          // The version's serving state lives on its registry row, not in its
@@ -3451,11 +3460,14 @@ export class Environment {
          const versionId = options.readVersion
             ? (await readManifestVersion(stagingPath)).versionId
             : undefined;
+         // As the version it would publish, so it is judged as the
+         // versioned publish judges it (a scope: version package names its
+         // tables per version).
          const pkg = await this.loadStagedTree(
             packageName,
             stagingPath,
             options.validate,
-            { dryRun: true },
+            { dryRun: true, ...(versionId !== undefined ? { versionId } : {}) },
          );
          try {
             // Awaited here: a preview compiles against the staged files.
@@ -3517,7 +3529,7 @@ export class Environment {
       packageName: string,
       treePath: string,
       validate: ((pkg: Package) => string | undefined) | undefined,
-      options: { dryRun: boolean },
+      options: { dryRun: boolean; versionId?: string },
    ): Promise<Package> {
       const pkg = await Package.create(
          this.environmentName,
@@ -3527,7 +3539,12 @@ export class Environment {
          // Freshly staged, so a failed load's half-built tree is ours to
          // remove.
          true,
-         { dryRun: options.dryRun },
+         {
+            dryRun: options.dryRun,
+            ...(options.versionId !== undefined
+               ? { versionId: options.versionId }
+               : {}),
+         },
       );
       this.attachDestinationServeConfig(pkg);
       // Publish, update and dry run only (reload passes no validator). A

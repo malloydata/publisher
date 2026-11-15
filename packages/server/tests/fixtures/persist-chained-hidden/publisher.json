@@ -1,0 +1,5 @@
+{
+  "name": "persist-chained-hidden",
+  "version": "1.0.0",
+  "description": "DuckDB chained storage= fixture over a parent with a hidden and a renamed column (customers_hidden -> west_spend)"
+}

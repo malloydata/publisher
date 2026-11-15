@@ -25,6 +25,7 @@ import {
    gateEnforcedAtRead,
    READ_ONLY_DIALECTS,
 } from "./materialization_eligibility";
+import { collectSourceEligibility } from "./eligibility_collect";
 import { installSettings } from "../../../test_helpers/settings_env";
 import type { PersistSourceGateOutcome } from "./persist_source_fields";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
@@ -762,6 +763,32 @@ source: by_category is orders -> {
                gateEnforcedAtRead(id, inputs(id)),
             ),
          ).toBe(false);
+      });
+
+      it("collectSourceEligibility asks as storage: a colocated-planned gated #(materialize) table is refused for a storage= bind under G3", async () => {
+         // The storage bind (admitStorage / refusedAtBind) reads this record,
+         // so a table G3 admits only colocated must not land in `eligible`.
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         const G3_ONLY = {
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+         };
+         const plan = {
+            sources: { [id]: source },
+            connectionDigests: {},
+            ...inputs(id),
+         };
+         // Colocated, the plan admits it (the precondition for the guard).
+         expect(withEnv(G3_ONLY, () => gateEnforcedAtRead(id, plan))).toBe(
+            true,
+         );
+         const { eligible, refused } = withEnv(G3_ONLY, () =>
+            collectSourceEligibility(plan),
+         );
+         expect(eligible).toEqual([]);
+         expect(Object.keys(refused)).toEqual([id]);
+         expect(refused[id]).toMatch(/authorize|access_filter/i);
       });
 
       it("never admits a row filter the source inherits: the served copy cannot graft it", async () => {

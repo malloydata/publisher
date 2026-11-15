@@ -14,7 +14,7 @@ import "raw.malloy"
 
 #(materialize) storage="lake"
 source: pv_base is __served_copy_alias_of_lake.virtual('cca1df00b9373e067e5ea94d46dc1396e1ca1d6841cf3b625670efbda19b4da2')::pv_base__served extend {
-  internal rename:
+  private rename:
     id__stored is id
   dimension:
     id is id__stored::"HUGEINT"

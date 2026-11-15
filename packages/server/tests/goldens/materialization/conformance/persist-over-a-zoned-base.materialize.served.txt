@@ -28,7 +28,7 @@ source: orders_ny is orders_raw extend {
 
 #(materialize) storage="lake"
 source: inherits_zone is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb')::inherits_zone__served extend { timezone: 'America/New_York' } extend {
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order
@@ -41,7 +41,7 @@ source: inherits_zone is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f75
 
 #(materialize) storage="lake"
 source: sets_zone is __served_copy_alias_of_lake.virtual('7087a145c021bb3abb6d843089ba74ee113f6841371adbd448bc5ce0667f9cd1')::sets_zone__served extend {
-  internal rename:
+  private rename:
     id__stored is id
   dimension:
     id is id__stored::"HUGEINT"
@@ -80,7 +80,7 @@ source: orders_ny is orders_raw extend {
 
 #(materialize) storage="lake"
 source: inherits_zone is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb')::inherits_zone__served extend { timezone: 'America/New_York' } extend {
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order
@@ -93,7 +93,7 @@ source: inherits_zone is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f75
 
 #(materialize) storage="lake"
 source: sets_zone is __served_copy_alias_of_lake.virtual('7087a145c021bb3abb6d843089ba74ee113f6841371adbd448bc5ce0667f9cd1')::sets_zone__served extend {
-  internal rename:
+  private rename:
     id__stored is id
   dimension:
     id is id__stored::"HUGEINT"

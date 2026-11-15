@@ -29,7 +29,7 @@ source: segment_totals is __served_copy_alias_of_lake.virtual('a1e3ce7de9baaf4db
 
 #@ persist name="with_lines" storage="lake"
 source: with_lines is __served_copy_alias_of_lake.virtual('056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3')::with_lines__served extend {
-  internal rename:
+  private rename:
     id__stored is id
   dimension:
     id is id__stored::"HUGEINT"
@@ -66,7 +66,7 @@ source: segment_totals is __served_copy_alias_of_lake.virtual('a1e3ce7de9baaf4db
 
 #@ persist name="with_lines" storage="lake"
 source: with_lines is __served_copy_alias_of_lake.virtual('056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3')::with_lines__served extend {
-  internal rename:
+  private rename:
     id__stored is id
   dimension:
     id is id__stored::"HUGEINT"

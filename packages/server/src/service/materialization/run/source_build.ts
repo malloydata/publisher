@@ -14,7 +14,7 @@ import { getPersistStorageMode } from "../../../config";
 import { mergeQueryMetadata, type QueryMetadata } from "../../query_metadata";
 import {
    buildSQLOf,
-   projectToPublicColumns,
+   projectToStoredColumns,
    resolveQueryMetadata,
 } from "../plan/build_plan";
 import { authorModelLiftContext } from "../text/author_model";
@@ -392,18 +392,16 @@ export class SourceBuilder {
          // table (the two renders differ). The walk alone must not decide: a
          // declared join the query never reads needs no chained attempt.
          const dependsOnStorageUpstream = sqlInlinesStored;
-         // Materialize ONLY the source's PUBLIC columns. The build SQL projects
-         // hidden ones too (`except:`, access modifiers); serving is already
-         // bounded by the shape, so this keeps hidden VALUES from sitting at
-         // rest in the destination, reachable by direct catalog access. Refuses
-         // the build (422) if the public surface can't be determined.
-         const publicBuildSQL = projectToPublicColumns(persistSource, buildSQL);
+         // Materialize every column the source declares, hidden ones
+         // included (`private:`, `internal:`), which the served copy hides
+         // again; a column `except:` drops is left out. Refuses the build
+         // (422) if the column surface can't be determined.
          return this.storage({
             persistSource,
             instruction,
             manifest,
             environment,
-            publicBuildSQL,
+            storedBuildSQL: projectToStoredColumns(persistSource, buildSQL),
             // Unprojected, for a delta: it projects outermost, around its range
             // predicate, since the projection may not carry the watermark.
             buildSQL,

@@ -1,0 +1,27 @@
+// conformance: same-named sources in two models [materialize]: files generated while serving
+
+// ==== <pkg>/a.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: summary__served is {
+   region::string,
+   total::number
+}
+
+import "raw.malloy"
+
+#(materialize) storage="lake"
+source: summary is __served_copy_alias_of_lake.virtual('2bc8e6b03947bd397184af804c21e9d894683327921d58b6b411e3faaec2465f')::summary__served
+
+// ==== <pkg>/b.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: summary__served is {
+   region::string,
+   total::number
+}
+
+import "raw.malloy"
+
+#(materialize) storage="lake"
+source: summary is __served_copy_alias_of_lake.virtual('dd6c6173497ad72575666949d2ef30d23439f8ebbd55ed53dc98b1744ceab392')::summary__served

@@ -23,7 +23,7 @@ import "raw.malloy"
 
 #(materialize) name="mz_dim_colocated"
 source: mz_dim is duckdb.virtual('d97e22c42cac6734195188c4a825c6947067a776f362f519546a5e1190f1d900')::mz_dim__served extend {
-  internal rename:
+  private rename:
     id__stored is id
   dimension:
     id is id__stored::"BIGINT"
@@ -61,7 +61,7 @@ import "raw.malloy"
 
 #(materialize) name="mz_dim_colocated"
 source: mz_dim is duckdb.virtual('d97e22c42cac6734195188c4a825c6947067a776f362f519546a5e1190f1d900')::mz_dim__served extend {
-  internal rename:
+  private rename:
     id__stored is id
   dimension:
     id is id__stored::"BIGINT"
@@ -70,7 +70,7 @@ source: mz_dim is duckdb.virtual('d97e22c42cac6734195188c4a825c6947067a776f362f5
 
 #(materialize) storage="lake"
 source: mz_fact is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb')::mz_fact__served extend {
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order
