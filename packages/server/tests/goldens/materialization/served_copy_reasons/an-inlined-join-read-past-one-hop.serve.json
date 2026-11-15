@@ -1,0 +1,18 @@
+{
+  "problems": [
+    {
+      "join": "carriers",
+      "reason": "inline_join_kept",
+      "sourceName": "flights_wide"
+    },
+    {
+      "join": "alliance",
+      "reason": "cross_connection_join",
+      "sourceName": "carriers"
+    }
+  ],
+  "query": {
+    "equalToLive": true,
+    "servedFrom": "storage"
+  }
+}

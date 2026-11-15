@@ -234,7 +234,7 @@ describe("the served copy's refusal codes", () => {
    it("codes every reason's warning the same", () => {
       for (const problem of Object.values(PROBLEMS)) {
          for (const w of warningsFor([problem])) {
-            if (w.message.includes("is not classified")) continue;
+            if (w.message?.includes("is not classified")) continue;
             expect(w.code).toBe(SERVED_COPY_WARNING_CODE);
             expect(w.severity).toBe("warn");
          }

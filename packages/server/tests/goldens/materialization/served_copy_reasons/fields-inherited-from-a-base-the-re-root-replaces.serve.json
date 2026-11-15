@@ -1,0 +1,12 @@
+{
+  "problems": [
+    {
+      "reason": "fields_not_carried",
+      "sourceName": "kept_west"
+    }
+  ],
+  "query": {
+    "equalToLive": true,
+    "servedFrom": null
+  }
+}

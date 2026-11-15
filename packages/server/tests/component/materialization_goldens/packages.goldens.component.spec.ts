@@ -56,6 +56,8 @@ const AREAS = ["conformance", "features", "fixtures"];
 const CORPUS_AREA = "corpus";
 /** The area served_copy.goldens.component.spec.ts owns. */
 const SERVED_COPY_AREA = "served_copy";
+/** The area served_copy_reasons.goldens.component.spec.ts owns. */
+const SERVED_COPY_REASONS_AREA = "served_copy_reasons";
 
 /**
  * Every file under `dir`, by path relative to it with `/` separators, with LF
@@ -189,8 +191,13 @@ describe("materialization goldens: housekeeping", () => {
    });
 
    it("keeps every golden under an area a spec owns", () => {
-      expect(unownedEntries([...AREAS, CORPUS_AREA, SERVED_COPY_AREA])).toEqual(
-         [],
-      );
+      expect(
+         unownedEntries([
+            ...AREAS,
+            CORPUS_AREA,
+            SERVED_COPY_AREA,
+            SERVED_COPY_REASONS_AREA,
+         ]),
+      ).toEqual([]);
    });
 });
