@@ -3,7 +3,7 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# The storage tier: `storage=`, `partition=`, and how a stored table is served
+# The storage tier: `storage=`, and how a stored table is served
 
 By default a persist source is built **in its own connection** (colocated): the warehouse runs the query and the table lands beside the data. `#@ persist name="..." storage=<destination>` builds it into a **storage destination** the environment declares instead - today a DuckLake catalog over local or object storage - and serves it from there, so a query served from the table never runs in the warehouse at all.
 
@@ -16,24 +16,16 @@ source: daily_orders is orders -> { group_by: order_date; aggregate: total is am
 - The build is a native **query passthrough**: the source warehouse (Postgres, BigQuery or Snowflake) computes the query and only the result crosses into the store, through DuckDB. A source on a DuckDB connection is refused for `storage=` (there is nothing to push down). A `#(access_filter)`-gated source is always refused on this tier (`reference/access-filter.md`).
 - The tier is gated by `PERSIST_STORAGE_MODE` (`off` / `write-only` / `on`). Under `off` a `storage=` source is **skipped by the build and served live, with no error** - it is never built colocated instead. Under `write-only` it builds but is still served live, and the package warns. If a `storage=` source "did nothing", check the mode before the model.
 - A package may name several destinations; each source routes to its own.
-- `partition=` requires `storage=` (refused as `partition_without_storage` otherwise) and every named column must be one of the source's public output columns.
+- `partition=` is not supported: a stored table is written unpartitioned, and a publish whose `#@ persist` or `#(materialize)` carries `partition=` is refused (`persist-retired-key`, `materialize-retired-key`). Remove the key; it was a layout only, so the cost is scan time and no answer changes.
 
 ## Where a given may sit
 
 A persisted table is built once, with no caller present, so a `given` has to be somewhere the build never reads it.
 
 - **Inside the persisted query - refused.** `scoped_rollup is orders -> { where: region = $REGION; group_by: ... }` has only the declaration default available at build time, so the table would hold one caller's slice and nothing at read would re-apply the filter. The build refuses it (`given_in_persisted_query`). The same applies when the given is *inherited*: a query over a source whose `extend` block carries the term reads that filter into its SQL, and is refused just the same - what decides is whether the **build** would substitute a value, not which line the author typed it on.
-- **In the persist source's own `extend` block - honoured per caller.** `#@ persist ... storage=lake` on `fact is raw -> { select: * } extend { where: org_id = $ORG_ID }` strips the term from the build, stores every caller's rows in one table, and re-applies the term per caller at read. One artifact serves every tenant, and a term a caller writes on an extension of it still scopes what is read. Partition on the scoped column (`partition="org_id"`) so each caller's reads touch one partition.
+- **In the persist source's own `extend` block - honoured per caller.** `#@ persist ... storage=lake` on `fact is raw -> { select: * } extend { where: org_id = $ORG_ID }` strips the term from the build, stores every caller's rows in one table, and re-applies the term per caller at read. One artifact serves every tenant, and a term a caller writes on an extension of it still scopes what is read.
 
 A `#(access_filter)` gate is the same shape with a different source of truth; see `reference/access-filter.md`.
-
-## `partition=`: laying the table out
-
-`#@ persist ... storage=lake partition="org_id"` writes the stored table as one file set per distinct value, so an equality term on that column (`=`, `in`) reads only the files it names; `partition="org_id,day"` nests them in the order given. It is a **layout and carries no isolation**: every filter is re-applied at read whether or not its column is partitioned, so a partition list that omits the column a query filters by costs a full scan, never a wrong answer.
-
-Use it for the column the reads filter by. A rollup carrying every key at a fine grain (every species, every tenant, every product) that each query filters to one key is read **whole** per query without a partition on that key - that is what makes a pre-aggregated table answer in seconds instead of milliseconds. Partition on the filter key and read cost tracks one partition while build cost tracks the whole table. Nothing checks the column's cardinality for you: a partition per value across very many values is the many-small-files case, and that judgement is yours.
-
-`partition=` is part of the source's content address, so changing it rebuilds the table. A chained downstream of a partitioned parent reads the parent's table like any other.
 
 ## Shaping a rollup for its reads
 

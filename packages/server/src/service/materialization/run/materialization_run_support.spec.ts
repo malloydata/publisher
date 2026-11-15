@@ -533,7 +533,7 @@ describe("upstreamReuseFromManifest", () => {
 describe("manifestForCompiler", () => {
    const facts = {
       addressBySourceId: {
-         "p@m": "addr-p-partitioned",
+         "p@m": "addr-p-with-destination",
          "u@m": "addr-u",
          "x@m": undefined,
       },
@@ -543,10 +543,10 @@ describe("manifestForCompiler", () => {
          "x@m": "key-x",
       },
    };
-   it("adds a partitioned entry under the compiler's key and leaves everything else alone", () => {
+   it("adds the entry of a source whose address folds in its destination under the compiler's key and leaves everything else alone", () => {
       const full = {
          entries: {
-            "addr-p-partitioned": { tableName: "p__g1" },
+            "addr-p-with-destination": { tableName: "p__g1" },
             "addr-u": { tableName: "u__g1" },
          },
          strict: true,
@@ -556,9 +556,11 @@ describe("manifestForCompiler", () => {
          strict: boolean;
       };
       expect(out.entries["key-p"]).toEqual({ tableName: "p__g1" });
-      expect(out.entries["addr-p-partitioned"]).toEqual({ tableName: "p__g1" });
+      expect(out.entries["addr-p-with-destination"]).toEqual({
+         tableName: "p__g1",
+      });
       expect(Object.keys(out.entries).sort()).toEqual([
-         "addr-p-partitioned",
+         "addr-p-with-destination",
          "addr-u",
          "key-p",
       ]);

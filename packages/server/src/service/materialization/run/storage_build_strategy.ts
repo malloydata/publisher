@@ -70,7 +70,6 @@ import {
    BuildEnvironment,
    ChainedPlanFacts,
    NO_PLAN_FACTS,
-   partitionColumnsForBuild,
    readAuthorFile,
    redactConnectionSecrets,
    currentUpstreamEntries,
@@ -434,7 +433,6 @@ export class StorageBuildStrategy
                      sourceDefOf(persistSource),
                   ),
                   physicalTableName,
-                  partitionColumns: partitionColumnsForBuild(persistSource),
                   declaredColumns,
                   castOptions,
                   environmentPath: environment.getEnvironmentPath(),
@@ -776,7 +774,6 @@ export class StorageBuildStrategy
             recomputes: persistSource,
             virtualMap: text.virtualMap,
             physicalTableName,
-            partitionColumns: partitionColumnsForBuild(persistSource),
             environmentPath: environment.getEnvironmentPath(),
             ...(replacesView ? { replacesView } : {}),
          });
@@ -889,7 +886,6 @@ export class StorageBuildStrategy
                ],
             ]),
             physicalTableName,
-            partitionColumns: partitionColumnsForBuild(persistSource),
             environmentPath: environment.getEnvironmentPath(),
             ...(replacesView ? { replacesView } : {}),
          });

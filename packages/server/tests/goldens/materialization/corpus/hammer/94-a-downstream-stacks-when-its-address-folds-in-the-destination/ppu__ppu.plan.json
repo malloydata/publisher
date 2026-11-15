@@ -64,7 +64,6 @@
       "orders_all@<hammer>/ppu/ppu.malloy": {
         "annotationFields": {
           "name": "ppu_orders",
-          "partition": "org_id",
           "storage": "lake"
         },
         "columns": [
@@ -87,13 +86,10 @@
         "modelPath": "ppu.malloy",
         "name": "orders_all",
         "origin": "persist",
-        "partition": [
-          "org_id"
-        ],
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "4ec213661900b95f0c62b5af954319decea2cf369c2cf55ca3f87c02866990c5",
+        "sourceEntityId": "8a63d1881bfbddd03bd50f539d20f21c76919924c321214cc32e2ac0430da70b",
         "sourceID": "orders_all@<hammer>/ppu/ppu.malloy",
         "sql": "sha256:7e01dc96ad4d2a08"
       },
