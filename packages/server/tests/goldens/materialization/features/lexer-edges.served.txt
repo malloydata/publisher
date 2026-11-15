@@ -33,7 +33,7 @@ source: café is __served_copy_alias_of_lake.virtual('906722090c9ae623e7254ab13c
 
 #(materialize) storage="lake" name="orders_cjk"
 source: 注文 is __served_copy_alias_of_lake.virtual('f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652')::`注文__served` extend {
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order

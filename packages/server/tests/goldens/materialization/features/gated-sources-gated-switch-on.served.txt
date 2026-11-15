@@ -46,7 +46,7 @@ source: by_lock is orders_raw extend {
 #(access_filter) region = $REGION
 #(materialize) storage="lake"
 source: gated_mat is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb')::gated_mat__served extend {
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order
@@ -62,7 +62,7 @@ source: gated_mat is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f757192
 #(authorize) 'admin' = $ROLE
 #(materialize) storage="lake"
 source: locked_mat is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb')::locked_mat__served extend {
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order

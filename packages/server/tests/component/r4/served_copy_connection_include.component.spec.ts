@@ -104,10 +104,8 @@ describe("R4: a connection-rooted source with an include before its extend", () 
 // A v1 `storage=` table stores the columns an `include` hides too, so the
 // include is kept on it and hides them again, whether its base is a
 // connection's SQL or a query: a caller can no more read the hidden column
-// than live. An `internal:` column is answered from the table. A source an
-// `include` makes a column `private:` on is left as written and answers live,
-// warned, exactly as on a colocated table (the served copy's proof of the
-// re-root does not carry it).
+// than live. Every one of these sources is answered from the table, equal to
+// live, exactly as on a colocated table.
 const ORDERS_SQL = `duckdb.sql("""
   SELECT region, CAST(amount AS DOUBLE) AS amount, CAST(id AS BIGINT) AS id
   FROM read_csv('data/orders.csv', header=true, all_varchar=true)
@@ -174,7 +172,13 @@ describe("an include that hides a column a v1 storage= table stores", () => {
       "query_hidden_used",
       "raw_hidden_filtered",
    ];
-   const fromTable = new Set(["query_hidden"]);
+   const fromTable = new Set([
+      "raw_hidden",
+      "query_hidden",
+      "raw_hidden_used",
+      "query_hidden_used",
+      "raw_hidden_filtered",
+   ]);
    const queryOf = (source: string) =>
       `run: ${source} -> { group_by: region; aggregate: total }`;
    const hiddenOf = (source: string) => `run: ${source} -> { group_by: id }`;

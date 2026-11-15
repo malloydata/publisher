@@ -1,6 +1,26 @@
 {
   "rows": [
     {
+      "model": "fixtures/persist-chained-hidden/chained_hidden.malloy",
+      "source": "west_spend",
+      "address": "d03442ec5b0f07fce9cfd666c714e94c4f36dc63382c07a8ebcd8cefee4ce069",
+      "destination": "lake",
+      "upstreams": [
+        "customers_hidden"
+      ],
+      "outcome": "stacked (reused)",
+      "schema": [
+        {
+          "name": "segment",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "west_total",
+          "type": "DECIMAL(38,1)"
+        }
+      ]
+    },
+    {
       "model": "hammer/05-a-stored-source-built-on-another-rebuilds/ivc/ivc.malloy",
       "source": "doubled",
       "address": "5875d5353c8ddde5587013b5dbf932da78a0e3b0c296ea7926ae7844d7514515",

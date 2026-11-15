@@ -4056,7 +4056,7 @@ function readsJoinStar(
 /**
  * A v1 table's columns as its source's fields (G2): every stored
  * column matched to the author's field of its name (exactly, else one field
- * whose name folds to it, as `narrowSchemaToPublic` matches), with the
+ * whose name folds to it, a warehouse folding the case DESCRIBE reports), with the
  * field's access modifier when it is `internal` or `private`. Malloy built
  * the table from the source's own query, hidden columns included, so a column
  * no field names is left out (the served copy finds it missing).

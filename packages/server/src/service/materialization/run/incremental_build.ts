@@ -26,6 +26,7 @@ import {
    collectIncrementalDeclarations,
    CompiledBuildPlan,
    deriveColumns,
+   storedColumnOf,
 } from "../plan/build_plan";
 import { storageDeltaTarget } from "./incremental_storage";
 import {
@@ -863,11 +864,17 @@ export function storageRefreshFor(params: {
             quotedTablePath,
             persistSource,
          );
+         // The stored table's columns, under the names the delta's SQL
+         // emits them (a renamed field's column under its own name), so a
+         // delta of a source with a `rename:` matches the table.
+         const toStored = storedColumnOf(persistSource);
          let step = await planSourceRefresh({
             context,
             lineage,
             target,
-            columns: deriveColumns(persistSource).map((c) => String(c.name)),
+            columns: deriveColumns(persistSource).map((c) =>
+               toStored(String(c.name)),
+            ),
             reseed: instruction.reseed || recast.length > 0,
          });
          if (

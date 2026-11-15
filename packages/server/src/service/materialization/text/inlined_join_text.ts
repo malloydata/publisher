@@ -82,7 +82,7 @@ function accessLabel(access: "private" | "internal" | undefined): string {
  * block; a public field's definition may be rewritten in place in a later
  * block, which is why its stored column stays `internal`.
  */
-export function renameAccess(c: {
+function renameAccess(c: {
    access?: "private" | "internal";
 }): "private" | "internal" {
    return c.access ? "private" : "internal";

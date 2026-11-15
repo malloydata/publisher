@@ -275,6 +275,25 @@ function planDynamicFields(source: PersistSource): {
 }
 
 /**
+ * The stored column a source's field is read from, by the field's name: the
+ * column's own name, which a renamed field's definition keeps (`name`) beside
+ * the one the source gives it (`as`), and which the build SQL emits. A field
+ * the definition does not name maps to itself.
+ */
+export function storedColumnOf(
+   persistSource: PersistSource,
+): (field: string) => string {
+   const columnOf = new Map<string, string>();
+   const def = sourceDefOf(persistSource) as { fields?: unknown[] } | null;
+   for (const f of def?.fields ?? []) {
+      const { name, as } = f as { name?: unknown; as?: unknown };
+      if (typeof name !== "string") continue;
+      columnOf.set(typeof as === "string" ? as : name, name);
+   }
+   return (field) => columnOf.get(field) ?? field;
+}
+
+/**
  * The columns a source's stored table holds, by the names its build SQL emits
  * them under, or a throw: every column the source declares, public or hidden
  * (`private:`, `internal:`), so a hidden measure or dimension over one is
@@ -287,18 +306,10 @@ function planDynamicFields(source: PersistSource): {
 export function storedColumnNames(persistSource: PersistSource): string[] {
    let names: string[];
    try {
-      // A renamed field's definition keeps the column's own name (`name`)
-      // beside the one the source gives it (`as`).
-      const columnOf = new Map<string, string>();
-      const def = sourceDefOf(persistSource) as { fields?: unknown[] } | null;
-      for (const f of def?.fields ?? []) {
-         const { name, as } = f as { name?: unknown; as?: unknown };
-         if (typeof name !== "string") continue;
-         columnOf.set(typeof as === "string" ? as : name, name);
-      }
+      const columnOf = storedColumnOf(persistSource);
       names = exploreOf(persistSource)
          .intrinsicFields.filter((f) => f.isAtomicField())
-         .map((f) => columnOf.get(f.name) ?? f.name)
+         .map((f) => columnOf(f.name))
          .filter((n): n is string => typeof n === "string" && n.length > 0);
    } catch (err) {
       throw new Error(

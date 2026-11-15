@@ -73,6 +73,12 @@ const JOINED: Case[] = [
       malloy: "run: customer_dim -> { select: *; order_by: id }",
    },
    {
+      name: "every column through a caller's include { public: * }",
+      model: "dims.malloy",
+      malloy:
+         "run: customer_dim include { public: * } -> { select: *; order_by: id }",
+   },
+   {
       name: "a public measure over the internal column",
       model: "dims.malloy",
       malloy: "run: customer_dim -> { group_by: segment; aggregate: west_n }",
@@ -255,6 +261,7 @@ for (const variant of ["colocated", "storage"] as const) {
          "run: customer_c -> { group_by: segment; aggregate: n }",
          "run: customer_c -> { select: id, segment; order_by: id }",
          "run: customer_c -> { group_by: home_region }",
+         "run: customer_c -> { select: *; order_by: id }",
       ];
 
       beforeAll(async () => {
@@ -287,7 +294,7 @@ for (const variant of ["colocated", "storage"] as const) {
       });
 
       it("serves the public surface from the table, equal to live, without the hidden column", async () => {
-         for (const q of queries.slice(0, 2)) {
+         for (const q of [queries[0], queries[1], queries[3]]) {
             const l = live.get(q)!;
             if ("error" in l) throw new Error(l.error);
             const served = await fixture.run("c.malloy", q);

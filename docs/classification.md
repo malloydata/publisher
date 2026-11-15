@@ -296,6 +296,9 @@ Both follow what a caller can reach, not what a file declares:
   is never reachable. A caller's own query can re-expose an `internal:` field through `extend`, so
   `#(carries)` is enforced again per query, on what the query reads: classify any `internal:` field a
   caller could read (see [The ceiling is checked per query](#the-ceiling-is-checked-per-query)).
+  Since `#(carries)` holds what a caller can reach, a hidden column of a class the list leaves out
+  may be stored in a `storage=` destination, where anyone with direct access to it can read it
+  ([what a `storage=` table holds](materialization.md#where-a-table-is-built-storage)).
 - A source locked with `#(authorize) false` publishes nothing a caller can read, so coverage does
   not report its own fields (its fields reached through a join from an open source are). A
   `#(carries)` on it is still enforced.
