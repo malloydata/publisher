@@ -30,8 +30,8 @@ import {
    parseMetadata,
    refusedSourcesOf,
    sourcesSummary,
-   statusColor,
-   statusLabel,
+   runColor,
+   runLabel,
 } from "./utils";
 
 /**
@@ -86,8 +86,8 @@ export default function MaterializationDetailDialog({
                   >
                      <Chip
                         size="small"
-                        label={statusLabel(materialization.status)}
-                        color={statusColor(materialization.status)}
+                        label={runLabel(materialization)}
+                        color={runColor(materialization)}
                         variant={
                            isActiveStatus(materialization.status)
                               ? "filled"

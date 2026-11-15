@@ -61,6 +61,7 @@ import {
 import { InstructedBuild, tableSiteContext } from "./instructed_build";
 import {
    ManifestCommitter,
+   rebindsOwnVersionAfter,
    referenceManifestToEntries,
 } from "./manifest_committer";
 import type { EligibilityTier } from "./materialization_instructed_run";
@@ -136,6 +137,8 @@ export class MaterializationService {
          repository,
          host,
          lifecycle: this.lifecycle,
+         tableLock: (environmentId, packageName) =>
+            this.claims.lockFor(environmentId, packageName),
       });
       this.reclaimer = new Reclaimer({
          repository,
@@ -996,51 +999,86 @@ export class MaterializationService {
          const sourcesRefused =
             Object.keys(derivedRefused).length + instructedRefused;
          const durationMs = Date.now() - startedAt;
-         await this.commitManifest(id, entries, failures, {
-            forceRefresh: opts.forceRefresh,
-            sourceNames: opts.sourceNames ?? null,
-            mode,
-            trigger: opts.trigger,
-            sourcesBuilt,
-            sourcesReused,
-            ...(sourcesRefused > 0 ? { sourcesRefused } : {}),
-            // Auto-run's refusals, plus instructed sources refused beside a
-            // table an eligible sibling built (ms2data/service#7078), which
-            // are not in `failures`.
-            ...(Object.keys(derivedRefused).length +
-               Object.keys(refusedBesideBuilt).length >
-            0
-               ? {
-                    refusedSources: {
-                       ...derivedRefused,
-                       ...refusedBesideBuilt,
-                    },
-                 }
-               : {}),
-            durationMs,
-            // The inline uniqueness checks: the passes the next run may
-            // rely on, and whether each ran or was skipped.
-            ...(uniquenessChecks
-               ? { [INLINE_UNIQUENESS_KEY]: uniquenessChecks }
-               : {}),
-            // commitManifest replaces the metadata, so the version is set again.
-            ...(versionId !== undefined
-               ? {
-                    versionId,
-                    scope: pkg.getPackageMetadata().scope ?? "package",
-                 }
-               : {}),
-         });
+         const served = await this.commitManifest(
+            id,
+            entries,
+            failures,
+            {
+               forceRefresh: opts.forceRefresh,
+               sourceNames: opts.sourceNames ?? null,
+               mode,
+               trigger: opts.trigger,
+               sourcesBuilt,
+               sourcesReused,
+               ...(sourcesRefused > 0 ? { sourcesRefused } : {}),
+               // Auto-run's refusals, plus instructed sources refused beside a
+               // table an eligible sibling built (ms2data/service#7078), which
+               // are not in `failures`.
+               ...(Object.keys(derivedRefused).length +
+                  Object.keys(refusedBesideBuilt).length >
+               0
+                  ? {
+                       refusedSources: {
+                          ...derivedRefused,
+                          ...refusedBesideBuilt,
+                       },
+                    }
+                  : {}),
+               durationMs,
+               // The inline uniqueness checks: the passes the next run may
+               // rely on, and whether each ran or was skipped.
+               ...(uniquenessChecks
+                  ? { [INLINE_UNIQUENESS_KEY]: uniquenessChecks }
+                  : {}),
+               // commitManifest replaces the metadata, so the version is set again.
+               ...(versionId !== undefined
+                  ? {
+                       versionId,
+                       scope: pkg.getPackageMetadata().scope ?? "package",
+                    }
+                  : {}),
+            },
+            // Auto-run owns distribution, and loads the manifest into its own
+            // package before the run reports MANIFEST_FILE_READY, so "done"
+            // means served. Orchestrated leaves it to the caller
+            // (manifestLocation). Other loaded versions are rebound after,
+            // below: they read the run from the store, which counts it only
+            // once it is MANIFEST_FILE_READY.
+            orchestrated
+               ? undefined
+               : (finish) =>
+                    this.autoLoadManifest(
+                       environment,
+                       packageName,
+                       entries,
+                       versionId,
+                       uniquenessChecks?.rollupKeys,
+                       // A stop that landed during the load did not cut it
+                       // short; the run says so.
+                       (served) =>
+                          finish(
+                             signal.aborted
+                                ? {
+                                     ...served,
+                                     metadata: {
+                                        ...served.metadata,
+                                        stopIgnored: true,
+                                     },
+                                  }
+                                : served,
+                          ),
+                    ),
+         );
 
-         // Auto-run owns distribution; orchestrated leaves it to the caller
-         // (manifestLocation).
-         if (!orchestrated) {
-            await this.autoLoadManifest(
-               environment,
+         if (
+            !orchestrated &&
+            versionId !== undefined &&
+            rebindsOwnVersionAfter(served)
+         ) {
+            await this.committer.rebindOwnVersionIfMoved(
+               environmentName,
                packageName,
-               entries,
                versionId,
-               uniquenessChecks?.rollupKeys,
             );
          }
          if (markedShared && versionId !== undefined) {
@@ -1204,14 +1242,14 @@ export class MaterializationService {
    /** See {@link ManifestCommitter.commit}. */
    private commitManifest(
       ...args: Parameters<ManifestCommitter["commit"]>
-   ): Promise<void> {
+   ): ReturnType<ManifestCommitter["commit"]> {
       return this.committer.commit(...args);
    }
 
    /** See {@link ManifestCommitter.autoLoad}. */
    private autoLoadManifest(
       ...args: Parameters<ManifestCommitter["autoLoad"]>
-   ): Promise<void> {
+   ): ReturnType<ManifestCommitter["autoLoad"]> {
       return this.committer.autoLoad(...args);
    }
 

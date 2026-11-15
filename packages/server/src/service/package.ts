@@ -3701,12 +3701,21 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   databasePath,
                   error: message,
                });
-               // The connection's message names the server's own paths; the
-               // caller sees the package's files package-relative and no other.
+               // Named by the file's package-relative path, with the
+               // connection's own reason, never the SQL the probe compiled;
+               // that reason names the package's files package-relative and
+               // no other path.
+               const reason =
+                  error instanceof MalloyError && error.problems.length > 0
+                     ? error.problems.map((p) => p.message).join("; ")
+                     : message;
+               const readable = callerVisibleText(reason, packagePath);
                return {
                   path: databasePath,
                   type: "embedded" as const,
-                  error: callerVisibleText(message, packagePath),
+                  error: readable.startsWith(`Cannot read ${databasePath}`)
+                     ? readable
+                     : `Cannot read ${databasePath}: ${readable}`,
                };
             }
          }),

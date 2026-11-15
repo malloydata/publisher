@@ -151,3 +151,11 @@ export interface KeyUniqueness {
 
 /** Full (unfiltered) manifest map keyed by sourceEntityId. */
 export type FreshnessManifest = Record<string, FreshnessAwareManifestEntry>;
+
+/**
+ * How loading an auto-run's manifest into its package went
+ * (`Environment.loadRunManifest`): the step that failed, when one did.
+ */
+export type RunManifestLoad =
+   | { loaded: true }
+   | { loaded: false; step: "reload" | "bind"; error: string };

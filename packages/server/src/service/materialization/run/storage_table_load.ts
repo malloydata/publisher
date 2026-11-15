@@ -250,6 +250,9 @@ export function readerRefusal(
  * - A partitioned source (one a since-retired `partition=` build wrote) is
  *   written with its partition spec and in partition order, and the spec is
  *   returned. A partitioned table copied onto itself is refused (400).
+ *   Copied with `replace` onto a table an incremental build manages, the
+ *   spec stays until that build's next full refresh, and its deltas into it
+ *   run without the copy's memory bounds (as before `partition=` was retired).
  * - The caller checks that the source exists and that the destination may
  *   hold its rows before calling: this attaches and writes.
  *

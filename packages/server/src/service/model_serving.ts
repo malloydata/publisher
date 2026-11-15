@@ -227,7 +227,7 @@ export interface ModelServingHost {
    legs(pinned: Pinned, servedCopy: ServedCopyServe): readonly Leg[];
    /** What the path report reads of the model, around `servedCopy`. */
    servingHost(servedCopy: ServedCopyServe): QueryServingHost;
-   /** Whether the view leg is on (the path report then names the called view). */
+   /** Whether the view or query leg is on (the path report then names the called view or query). */
    persistedViewsEnabled(): boolean;
    /** `manifest` with the rollups' own entries removed. */
    withoutPreaggregateEntries(

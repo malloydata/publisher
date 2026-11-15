@@ -88,7 +88,9 @@ export class TableClaims {
             (m) =>
                !isVersionOwnedRun(m) &&
                (m.metadata?.mode !== "orchestrated" || m.version === null) &&
-               m.status === "MANIFEST_FILE_READY",
+               // A run loading its manifest has recorded it already.
+               (m.status === "MANIFEST_FILE_READY" ||
+                  (m.status === "MANIFEST_ROWS_READY" && m.manifest != null)),
          )
          .flatMap((m) =>
             Object.values(m.manifest?.entries ?? {}).map(
