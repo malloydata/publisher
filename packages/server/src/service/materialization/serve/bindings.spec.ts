@@ -5,11 +5,7 @@
 
 import { describe, expect, it } from "bun:test";
 
-import {
-   buildVirtualMap,
-   sqlReadsTable,
-   tablesReadForGates,
-} from "./bindings";
+import { buildVirtualMap, sqlReadsTable, tablesReadForGates } from "./bindings";
 import { answerKeepsGates } from "../domain/gate_policy";
 import {
    bindingServesModelSource,

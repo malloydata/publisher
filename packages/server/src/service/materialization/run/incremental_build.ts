@@ -466,6 +466,8 @@ export async function advanceLedgerAfterSeed(params: {
    quotedTablePath: string;
    runner: SqlRunner;
    dialect: string;
+   /** The column the table holds the watermark under, when renamed. */
+   storedColumn?: (field: string) => string;
 }): Promise<WatermarkBound | undefined> {
    const boundary = await seedCoveredThrough(
       params.runner,
@@ -473,6 +475,7 @@ export async function advanceLedgerAfterSeed(params: {
       params.lineage,
       params.quotedTablePath,
       params.context.now,
+      params.storedColumn,
    );
    if (!boundary.bound) {
       if (boundary.error) {
@@ -928,6 +931,7 @@ export function storageRefreshFor(params: {
             quotedTablePath,
             dialect: STORAGE_TARGET_DIALECT,
             runner: (sql) => session.runSQL(sql),
+            storedColumn: storedColumnOf(persistSource),
          }),
    };
 }
