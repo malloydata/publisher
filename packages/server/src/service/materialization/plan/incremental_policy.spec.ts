@@ -22,7 +22,7 @@ import * as path from "path";
 
 import { BadRequestError, internalErrorToHttpError } from "../../../errors";
 import { Environment } from "../../environment";
-import type { IncrementalDeclaration } from "./incremental_declaration";
+import type { IncrementalDeclaration } from "../domain/incremental";
 import {
    INCREMENTAL_NO_MERGE_KEY_CODE,
    INCREMENTAL_SHARED_ADDRESS_CODE,

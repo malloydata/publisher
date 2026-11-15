@@ -17,6 +17,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "line_totals@<pkg>/m.malloy": "materialize",
+      "segment_totals@<pkg>/m.malloy": "materialize",
+      "with_lines@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "line_totals@<pkg>/m.malloy": {
         "buildSourceName": "line_totals__mat",

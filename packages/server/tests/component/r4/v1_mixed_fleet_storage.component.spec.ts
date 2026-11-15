@@ -27,7 +27,7 @@ import {
    loadFixture,
    withSwitch,
    type Row,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { renderFiles, SHAPES } from "./conformance/shapes";
 
 const SHAPE = SHAPES.find((s) => s.name === "v1 rollup on annotated measures");

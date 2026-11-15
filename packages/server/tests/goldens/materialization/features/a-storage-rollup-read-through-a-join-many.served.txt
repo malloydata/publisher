@@ -1,0 +1,71 @@
+// feature: a storage= rollup read through a join_many: files generated while serving
+
+// ==== <pkg>/m.malloy (text 1 of 2)
+##! experimental { virtual_source }
+type: orders__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number
+}
+
+import "raw.malloy"
+
+source: lines is lines_raw extend {
+  #(preaggregate) grain=["order_id"] storage="lake"
+  measure: qty_total is qty.sum()
+}
+
+#(materialize) storage="lake"
+source: orders is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb')::orders__served extend {
+  private rename:
+    id__stored is id
+    customer_id__stored is customer_id
+    order__stored is order
+  dimension:
+    id is id__stored::"HUGEINT"
+    customer_id is customer_id__stored::"HUGEINT"
+    order is order__stored::"HUGEINT"
+  join_many: lines on lines.order_id = id
+  measure: n is count()
+}
+
+// ==== <pkg>/m.malloy (text 2 of 2)
+##! experimental { virtual_source }
+type: orders__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number
+}
+
+import "raw.malloy"
+
+source: lines is lines_raw extend {
+  #(preaggregate) grain=["order_id"] storage="lake"
+  measure: qty_total is qty.sum()
+}
+
+#(materialize) storage="lake"
+source: orders is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb')::orders__served extend {
+  private rename:
+    id__stored is id
+    customer_id__stored is customer_id
+    order__stored is order
+  dimension:
+    id is id__stored::"HUGEINT"
+    customer_id is customer_id__stored::"HUGEINT"
+    order is order__stored::"HUGEINT"
+                                         
+  measure: n is count()
+}

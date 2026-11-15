@@ -11,7 +11,7 @@ Queries do not change. They name the source they always named, ask for the measu
 
 This is the same machinery as [materialization](materialization.md) with a different trigger. `#@ persist` stores a source you wrote; `#@ preaggregate` stores a rollup Publisher derives from a measure you annotated. Both build through the same plan, manifest, and scheduler.
 
-Since the v1 cutover, a `#@ preaggregate` line is read as a `#(preaggregate)` declaration: planned once in its base's model, built under the v2 rollup's table name (its [readable name](materialization.md#readable-table-names), `<package>__<file>__<base>_by_<grain>__p<hash>`; a rollup built before the cutover under `__preagg__` is built again once), and served by the same rollup leg, so the limits below are the rollup leg's for both spellings. Materialization v2 renames `#@ preaggregate` to `#(preaggregate)`; [materialization-migration.md](materialization-migration.md#preaggregate) maps one to the other. Which to write depends on the server: with `PUBLISHER_MATERIALIZE` on, write `#(preaggregate)` (below), and `#@ preaggregate` carries a deprecation warning; with it off (the default), `#(preaggregate)` is not read (an `annotation-near-miss` warning) and its measure serves live, so `#@ preaggregate` is the spelling that builds.
+Since the v1 cutover, a `#@ preaggregate` line is read as a `#(preaggregate)` declaration: planned once in its base's model, built under the v2 rollup's table name (its [readable name](materialization.md#readable-table-names), `<package>__<file>__<base>_by_<grain>__p<hash>`; a rollup built before the cutover under `__preagg__` is built again once), and served by the same rollup leg, so the limits below are the rollup leg's for both spellings. Materialization v2 renames `#@ preaggregate` to `#(preaggregate)`; [materialization-migration.md](materialization-migration.md#preaggregate) maps one to the other. Which to write depends on the server: with `PUBLISHER_MATERIALIZE` on (the default since #1754), write `#(preaggregate)` (below), and `#@ preaggregate` carries a deprecation warning; with it off (`PUBLISHER_MATERIALIZE=false`), `#(preaggregate)` is not read (an `annotation-near-miss` warning) and its measure serves live, so `#@ preaggregate` is the spelling that builds.
 
 ## `#(preaggregate)` (materialization v2, behind `PUBLISHER_MATERIALIZE`)
 
@@ -310,11 +310,10 @@ from the rollup; one it does not is answered as it was before:
 
 - **A query-shaped base** builds its own stored table as well, which keeps answering every
   query no rollup covers, the base's own measures included.
-- **A table extended with measures** is not a build root, so its `#@ persist` plans
-  nothing: the package carries a `persist-not-materializable` warning, a query no rollup
-  covers is answered live, and a run of the whole package is refused for that source, as
-  it is for any `#@ persist` Malloy cannot build. A run that names the rollups builds them;
-  drop the `#@ persist`, which stores nothing, and every run does.
+- **A table extended with measures** is not a build root, so a `#@ persist` on it is
+  invalid: the publish and the load fail (`persist-not-materializable`), as they do for any
+  `#@ persist` on a shape Malloy does not plan. Drop the `#@ persist`, which could store
+  nothing; the rollups build without it, and a query no rollup covers is answered live.
 
 The refusals are the rollup leg's, for the same reasons as `#(preaggregate)`: a base whose
 rows read a given (`preaggregate-reads-given`) or the current time

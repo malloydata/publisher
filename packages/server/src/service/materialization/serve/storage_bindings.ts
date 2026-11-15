@@ -66,7 +66,7 @@ interface ModelStorageTables {
  * The `#@ persist` `storage=` bindings of `bindings` this model may serve,
  * and their stored columns' types against the model's declared ones. A
  * binding whose sourceIDs do not include this model's own source of that
- * name is for another model's source (malloydata/publisher#1001), so that
+ * name is for another model's source (model_storage_serve.spec.ts), so that
  * source serves live here. A type check that cannot run reports nothing but
  * why (`checkFailed`): the served copy decides each column on its own.
  */

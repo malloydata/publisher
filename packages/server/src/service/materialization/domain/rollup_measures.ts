@@ -122,7 +122,8 @@ export interface RollupPlan {
     * The base's Malloy `sourceID`, `<declared name>@<declaring file URL>`. A
     * model that only imports the base (an `index.malloy` re-export) cannot
     * rename-import it from itself, so the companion imports it from the file
-    * that declares it (#6646). Absent when the compiler gave none.
+    * that declares it (preaggregation_seams.spec.ts pins it). Absent when the
+    * compiler gave none.
     */
    baseSourceID?: string;
 }

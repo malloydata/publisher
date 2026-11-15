@@ -23,6 +23,7 @@
         "name": "high_value"
       }
     ],
+    "kinds": {},
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {},

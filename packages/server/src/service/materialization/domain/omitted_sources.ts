@@ -28,7 +28,7 @@ type OmittedFile = components["schemas"]["OmittedFile"];
 export type Omission = OmittedSource | OmittedFile;
 
 /**
- * The codes Publisher reports today. The wire field is an open string, so a
+ * The codes Publisher reports. The wire field is an open string, so a
  * client must accept a code it does not know; this union only keeps the
  * server's own spelling consistent.
  */

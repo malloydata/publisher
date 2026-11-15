@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "from_view@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "from_view@<pkg>/m.malloy": {
         "buildSourceName": "from_view__mat",

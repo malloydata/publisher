@@ -38,6 +38,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "own@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "own@<pkg>/m.malloy": {
         "buildSourceName": "own__mat",

@@ -13,13 +13,18 @@
  * colocated table's serve binding.
  */
 
+import {
+   materializePlansIn,
+   sourcesIn,
+   targetsIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { computeSourceEntityId } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
-import type { MaterializePlan } from "../plan/build_file_generator";
+import type { MaterializePlan } from "../domain/table_plans";
 import {
    PackageMaterialization,
    type PackageMaterializationOwner,
@@ -75,15 +80,15 @@ async function scenario() {
    )) as unknown as MalloyConnection;
    for (const sql of SEED) await duckdb.runSQL(sql);
    const compiled = await compilePackageBuildPlan(pkg);
-   const [sourceID] = Object.keys(compiled.materializePlans ?? {});
-   const source = compiled.sources[sourceID ?? ""];
+   const [sourceID] = Object.keys(materializePlansIn(compiled) ?? {});
+   const source = sourcesIn(compiled)[sourceID ?? ""];
    if (!sourceID || !source) throw new Error("no planned pair source");
    const address = computeSourceEntityId(
       source,
       compiled.connectionDigests,
-      compiled.targets?.[sourceID],
+      targetsIn(compiled)?.[sourceID],
    );
-   const [leaf] = pairLeafKeyChecksOf(compiled.materializePlans?.[sourceID]);
+   const [leaf] = pairLeafKeyChecksOf(materializePlansIn(compiled)?.[sourceID]);
    if (!leaf) throw new Error("no leaf key check planned");
    const environment = {
       getApiConnection: () => ({ name: "duckdb", type: "duckdb" }),
@@ -224,7 +229,7 @@ describe("a pair table's leaf key check, on a build", () => {
                   connectionName: "duckdb",
                },
             },
-            materializePlans: s.compiled.materializePlans ?? {},
+            materializePlans: materializePlansIn(s.compiled) ?? {},
             eligible: () => true,
          });
          expect(bindings.map((b) => b.primaryKeys)).toEqual([

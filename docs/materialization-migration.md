@@ -594,8 +594,12 @@ has the full list.
 
 ## Known limitations you may hit
 
-Each of these answers live, costs extra, or loses metadata; none serves a wrong answer. Row numbers
-are in the plan's [known limitations](materialization-v2-plan.md#known-limitations-to-revisit).
+Each of these answers live, refuses, costs extra, or loses metadata. The two shapes found serving
+wrong rows are fixed and now answer live: a zone-dependent stored table read through a join in
+another zone (#1773), and a persisted view's stored result read through caller text that names its
+source again (#1763). One case below can still differ from live when the data breaks a declared key
+(see after the table). Row numbers are in the plan's
+[known limitations](materialization-v2-plan.md#known-limitations-to-revisit).
 
 | What you wrote | What happens | Plan |
 | --- | --- | --- |
@@ -605,10 +609,10 @@ are in the plan's [known limitations](materialization-v2-plan.md#known-limitatio
 | `inline=` on a path through a join_one | Not built: `materialize-not-built` | Row 9 |
 | A pair-table query that reads two blocks, or aggregates a middle level beside the leaf; an incremental refresh of a path or a multi-block table | Answered live; the table rebuilds in full (`materialize-pair-full-refresh`) | Row 9 |
 | `inline=` on a join_cross | Not built: `materialize-not-built` | — |
-| A dimension, or a `where:` term, that reads a given and is not written on the materialized source itself (a base in this file or another, a materialized parent) | The source is refused and serves live | Rows 5 and 32 |
+| A dimension, or a `where:` term, that reads a given and is not written on the materialized source itself (a base in this file or another, a materialized parent) | The source is refused and serves live | Row 5 |
 | A query with its own `timezone:` over a stored truncation or rolling window | Answered live | Row 7 |
 | A hidden stored column beside your own `rename:` of a stored column, or a pair table's renames | Answered live (in the second case, the whole model's served copy) | Row 30 |
-| A query on a gated entry point, over a rollup, without `PUBLISHER_MATERIALIZE_GATED_SOURCES`, over a `storage=` rollup, or through a gate that reads a field outside the grain or through a join | Answered live (`CONTRACT`); a rollup no gated query could read is not built (`preaggregate-access-filter`) | Row 1 |
+| A query on a gated entry point, over a rollup, without `PUBLISHER_MATERIALIZE_GATED_SOURCES`, over a `storage=` rollup, or through a gate that reads a field outside the grain or through a join | Answered live (`CONTRACT`); a rollup no gated query could read is not built (`preaggregate-access-filter`) | Rows 1 and 43 |
 | A query through a join to a joined source's `#(preaggregate) storage=` rollup | Answered live (`CROSS_CONNECTION`) | Row 26 |
 | A `count()` through a join_many, against a joined source's rollup | Answered live (`COUNT_SEMANTICS`) until Publisher's Malloy carries the fix | Row 25 |
 | A query through a join that fans out across a grain dimension it neither groups nor fixes, against the joined source's rollup | Answered live (`GRAIN_TOO_COARSE`), as for the rollup's own source | — |

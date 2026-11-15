@@ -6,9 +6,9 @@
  * place materialization walks a source's chain (design in
  * `docs/materialization-source-map.md`).
  *
- * Every reader that used to walk the compiled IR on its own (the build-side
- * reach, the path report's chain, the unreachable verdict's reachability)
- * reads it instead. It records structure only: no content address (the build
+ * The readers of a source's chain (the build-side reach, the path report's
+ * chain, the unreachable verdict's reachability) read it rather than walk the
+ * compiled IR themselves. It records structure only: no content address (the build
  * plan's), no Malloy text (the rewriter's and generator's), and no IR edits. It
  * reads the chain through the governance IR's hop readers
  * (`governance/ir/source_graph.ts`), shared with the gate walks.

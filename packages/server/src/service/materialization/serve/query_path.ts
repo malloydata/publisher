@@ -2,13 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The path report (materialization v2, D1): what answered a query and why.
+ * The path report (D1): what answered a query and why.
  *
  * Built after the query runs, from three things Publisher already has:
  *
  * - the router's decision ({@link routeQuery}'s `considered`), which says how
- *   each candidate variant (the `storage=` serve shape, the pre-aggregation
- *   companion) fared;
+ *   each candidate (the view, query, rollup and served legs) fared;
  * - the build-manifest entries the run that answered actually read, which say
  *   which colocated table answered: a colocated `#@ persist` table (or rollup)
  *   Malloy substituted through the manifest, a tier that never reaches the
@@ -133,7 +132,7 @@ interface ModelRollup {
    baseSourceID?: string;
    /**
     * A `#(preaggregate)` rollup, which the router's rollup leg answers on
-    * either tier (its `storage=` table too), never the serve shape.
+    * either tier (its `storage=` table too).
     */
    variant?: boolean;
 }
@@ -168,7 +167,7 @@ interface TableState {
     * the binding.
     */
    binding?: StorageTable;
-   /** For a rollup: its synthesized source name (the composite member). */
+   /** For a rollup: its synthesized source name. */
    rollupName?: string;
    /** A `#(preaggregate)` rollup: the rollup leg decides it on either tier. */
    variant?: boolean;
@@ -226,10 +225,8 @@ export interface QueryPathInput {
     */
    colocatedRead?: ReadonlySet<string>;
    /**
-    * For a query the pre-aggregation companion answered: the composite member
-    * its compile resolved to (a rollup's name, or the base's). A composite
-    * looks every member up in the manifest, so the manifest's reads cannot
-    * say which rollup answered; the compiled query can.
+    * For a query the rollup leg answered: the rollup it answered from (its
+    * synthesized source name).
     */
    rollupMember?: string;
    /**
@@ -298,7 +295,7 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    );
    const { considered, tierOf, markUsed, skip } = tally;
 
-   // A join leg answered in a storage destination reads the query source's
+   // A join branch answered in a storage destination reads the query source's
    // stored table there as well as the rollup's: named as used beside it,
    // while the rollup stays the table that answered.
    if (rollupAnswered) {
@@ -559,8 +556,8 @@ function storageTableDecisions(
 }
 
 /**
- * Colocated rollups, through the pre-aggregation companion. Returns whether
- * a rollup answered.
+ * Rollups the rollup leg decides: colocated ones, and `#(preaggregate)` ones
+ * on either tier. Returns whether a rollup answered.
  */
 function colocatedRollupDecisions(
    input: QueryPathInput,
@@ -596,7 +593,7 @@ function colocatedRollupDecisions(
                markUsed(t);
                rollupAnswered = true;
             } else if (!used && input.rollupMember !== undefined) {
-               // The companion compiled, but Malloy's composite chose the base.
+               // The rollup leg answered from another rollup.
                skip(t, "GRAIN_TOO_COARSE");
             }
          } else {
@@ -1132,7 +1129,7 @@ export function queryShapeOf(
             if (def?.type === "turtle") {
                // A nested named view (`nest: by_category`): its own groups,
                // filters and measures are part of what the query reads. (Malloy
-               // refuses a view through a join today; the prefix keeps paths
+               // refuses a view through a join; the prefix keeps paths
                // dotted from the queried source if that changes.)
                if (followed.has(def)) continue;
                followed.add(def);

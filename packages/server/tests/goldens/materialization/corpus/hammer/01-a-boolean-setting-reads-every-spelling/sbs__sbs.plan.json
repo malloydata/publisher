@@ -16,6 +16,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "alpha@<hammer>/sbs/sbs.malloy": "persist",
+      "beta@<hammer>/sbs/sbs.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

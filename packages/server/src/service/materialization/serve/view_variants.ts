@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Persisted-view variants (materialization v2, phase 4, P14): the router's
- * view leg for `#@ persist` on a view.
+ * Persisted-view variants (P14): the router's view leg for `#@ persist` on a
+ * view.
  *
  * A persisted view's table holds the view's result, so it answers a query
  * only when the query calls that view exactly, or starts from it and goes on:
@@ -93,6 +93,7 @@ import {
    serveTypePlan,
    storedColumnTypeMismatches,
 } from "../stored_column_types";
+import { STORAGE_DIALECT } from "../domain/dialect";
 
 type VirtualMap = Map<string, Map<string, string>>;
 
@@ -368,7 +369,10 @@ export class PersistedViewServe {
                stale: true,
             };
          }
-         const quotedPath = quoteManifestTablePath(binding.tablePath, "duckdb");
+         const quotedPath = quoteManifestTablePath(
+            binding.tablePath,
+            STORAGE_DIALECT,
+         );
          return {
             ...withId,
             ...dataAsOf,

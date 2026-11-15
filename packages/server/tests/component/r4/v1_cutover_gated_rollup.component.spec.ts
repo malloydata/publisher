@@ -157,7 +157,7 @@ source: ext_open is by_column extend {
 #(access_filter) carrier = $CARRIER
 source: ext_gated is by_column extend {}
 
-// A gated parent joining a rollup's base (A7): the join leg redeclares the
+// A gated parent joining a rollup's base (A7): the join branch redeclares the
 // parent around the join, carrying no gate to prove, so it declines.
 source: order_lines is duckdb.table('lines_raw') extend {
   #@ preaggregate grain="order_id"${p}

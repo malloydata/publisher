@@ -29,7 +29,7 @@
  * computes (an instructed build keys its entry by it, whatever identity the
  * instruction used), so an entry at another address was built from another
  * definition: a source edited under its old name in an unversioned package, a
- * manifest restored from before the edit, or one from a release that addressed
+ * run manifest restored from before the edit, or one from a release that addressed
  * the source differently. Its table holds that definition's rows, and its
  * columns may well be the same, so it serves nothing and the source answers
  * live until its own table is built. An empty list matches no model's source.
@@ -56,14 +56,12 @@ export function planSourceIds(
  * table — the `aliasesBySourceName` argument {@link deriveServeBindings} takes.
  *
  * Grouped by content address (which decides who shares a table), then keyed by
- * name, the only identifier a manifest entry carries that means the same thing
+ * name, the only identifier a run manifest entry carries that means the same thing
  * whoever built it (an instructed build stamps the caller's `sourceEntityId`).
  *
  * A name declared at more than one address is dropped from aliasing: names are
- * not unique in a package, and binding one name to two tables puts two `source:`
- * declarations in the package-wide serve shape, which fails to compile and
- * silently takes the storage tier out for every model. Dropping costs only that
- * source its routing. The source that OWNS the name still binds it (see
+ * not unique in a package, and one name must not bind two tables. Dropping
+ * costs only that source its routing. The source that OWNS the name still binds it (see
  * {@link deriveServeBindings}).
  */
 export function groupAliasesByName(

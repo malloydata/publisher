@@ -330,7 +330,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // Archiving a version reclaims the tables it alone owns, in the background.
    environmentStore.setVersionArchivedHook(
       (environmentName, packageName, versionId) => {
-         void materializationService.reclaimVersionTables(
+         void materializationService.reclaimer.reclaimVersionTables(
             environmentName,
             packageName,
             versionId,
@@ -341,7 +341,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // background, once its row is gone.
    environmentStore.setVersionDeletedHook(
       (environmentName, packageName, versionId) => {
-         void materializationService.cleanUpDeletedVersion(
+         void materializationService.reclaimer.cleanUpDeletedVersion(
             environmentName,
             packageName,
             versionId,
@@ -351,7 +351,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // A publish of a version id a delete freed first reclaims what the deleted
    // version still owes, if that delete's cleanup has not run yet.
    environmentStore.setOwedReclaimHook((environment, packageName, versionId) =>
-      materializationService.reclaimOwedNow(
+      materializationService.reclaimer.reclaimOwedNow(
          environment,
          packageName,
          versionId,
@@ -360,7 +360,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // A reclaim that a crash cut short is finished once the environments have
    // loaded: nothing else would start it again.
    void environmentStore.finishedInitialization.then(
-      () => materializationService.reclaimArchivedVersions(),
+      () => materializationService.reclaimer.reclaimArchivedVersions(),
       () => undefined,
    );
    // Every hook is installed: open storage and load the environments.

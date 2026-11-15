@@ -32,7 +32,7 @@ import {
    type LoadedFixture,
    loadFixture,
    type Outcome,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import {
    typeWithoutDrillExpression,
    withoutDrillExpression,

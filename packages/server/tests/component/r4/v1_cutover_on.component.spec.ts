@@ -13,7 +13,7 @@ import {
    loadFixture,
    type Outcome,
    withSwitch,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { RAW_MODEL } from "./conformance/data";
 import { rowDifference } from "./harness";
 

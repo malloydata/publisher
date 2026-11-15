@@ -24,7 +24,10 @@ import {
    withChainBuildText,
    ChainedPackageStaleError,
 } from "./materialization_run_support";
-import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
+import {
+   fakeSource,
+   persistTables,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { logger } from "../../../logger";
 import * as sinon from "sinon";
@@ -650,7 +653,7 @@ describe("current tiers (implied destinations, the source's own connection)", ()
       });
       const facts = withMode("on", () =>
          chainedPlanFacts(
-            { tier_up: up, tier_stored: stored },
+            persistTables({ tier_up: up, tier_stored: stored }),
             { duckdb: "dig" },
             (sourceID) =>
                sourceID === "tier_up" ? { destination: "lake2" } : undefined,
@@ -665,9 +668,13 @@ describe("current tiers (implied destinations, the source's own connection)", ()
    it("reads an instructed destination that is the source's own connection as the warehouse", () => {
       const up = fakeSource({ name: "tier_own", sourceEntityId: "tierown" });
       const facts = withMode("on", () =>
-         chainedPlanFacts({ tier_own: up }, { duckdb: "dig" }, () => ({
-            destination: "duckdb",
-         })),
+         chainedPlanFacts(
+            persistTables({ tier_own: up }),
+            { duckdb: "dig" },
+            () => ({
+               destination: "duckdb",
+            }),
+         ),
       );
       expect(facts.declaredTiersByAddress?.tierown).toEqual([null]);
    });
@@ -679,11 +686,15 @@ describe("current tiers (implied destinations, the source's own connection)", ()
          annotationFields: { storage: "lake" },
       });
       const off = withMode("off", () =>
-         chainedPlanFacts({ tier_mode: stored }, { duckdb: "dig" }),
+         chainedPlanFacts(persistTables({ tier_mode: stored }), {
+            duckdb: "dig",
+         }),
       );
       expect(off.declaredTiersByAddress?.tiermode).toEqual([null]);
       const writeOnly = withMode("write-only", () =>
-         chainedPlanFacts({ tier_mode: stored }, { duckdb: "dig" }),
+         chainedPlanFacts(persistTables({ tier_mode: stored }), {
+            duckdb: "dig",
+         }),
       );
       expect(writeOnly.declaredTiersByAddress?.tiermode).toEqual(["lake"]);
    });
@@ -699,10 +710,9 @@ describe("current tiers (implied destinations, the source's own connection)", ()
          annotationFields: { storage: "lake" },
       });
       const facts = withMode("on", () =>
-         chainedPlanFacts(
-            { split_base: base, split_ext: ext },
-            { duckdb: "dig" },
-         ),
+         chainedPlanFacts(persistTables({ split_base: base, split_ext: ext }), {
+            duckdb: "dig",
+         }),
       );
       expect([...(facts.declaredTiersByAddress?.splitab ?? [])].sort()).toEqual(
          ["lake", null].sort(),

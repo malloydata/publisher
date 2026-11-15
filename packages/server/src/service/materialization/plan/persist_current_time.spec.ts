@@ -245,7 +245,12 @@ source: ok is ev -> { select: * } extend { where: ts < now }
          Object.values(sources).map((s) => [s.sourceID, s]),
       );
       const eligibility = collectSourceEligibility({
-         sources: byID,
+         tables: Object.fromEntries(
+            Object.entries(byID).map(([id, source]) => [
+               id,
+               { kind: "persist" as const, source },
+            ]),
+         ),
          connectionDigests: {},
       });
       const refusedID = sources["p"].sourceID;

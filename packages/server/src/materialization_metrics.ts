@@ -775,9 +775,7 @@ export function setEligibilityRefusalSink(
  * type-fidelity loss specific to the storage tier. `array` = a collection/array type; `unrecognized`
  * = an unknown/nested/struct/enum/blob type.
  */
-export function recordServeShapeTypeFallback(
-   kind: "array" | "unrecognized",
-): void {
+export function recordStoredTypeFallback(kind: "array" | "unrecognized"): void {
    serveShapeTypeFallbackCounter().add(1, { kind });
 }
 
