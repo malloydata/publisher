@@ -39,6 +39,12 @@ Step 2 of the configuration design. Every setting now has one name of each kind,
 - **A boolean flag takes no value.** `--allow-proxy-connections false` turns proxy connections on, as it did before; startup now warns that the `false` is ignored and names `--no-allow-proxy-connections`.
 - A secret has no flag, and is never logged or echoed in an error. `packageVersioning`, `packageInlineFields` and `modelPage` have no flag either: the design gives the two transition settings and the model page none.
 
+## [Unreleased] — a `storage=` rollup returns exact big-integer sums and keeps `timestamptz` grains
+
+A rollup stored in a `storage=` destination (`#(preaggregate)` or v1 `#@ preaggregate`) read its stored table with the wrong types in two cases. A big-integer measure (a `sum` of a BIGINT) whose total passed 2^53 came back rounded, as `-9007199254740992` where live gives `-9007199254740993`; it is now read through its native type and returns every digit, as live does. A grain dimension live types as `timestamptz` came back typed `timestamp`, with equal rows; it now keeps its `timestamptz` type. A big-integer column the destination stored where no cast reads it exactly (a float, its digits already lost) is no longer served: the rollup is skipped with reason `MISSING_FIELD` and the query is answered live. Colocated rollups are unchanged; they were already exact.
+
+No API, enum or metric value changes.
+
 ## [Unreleased] — a `#@ preaggregate` rollup over a stored base builds and serves, as documented now
 
 A `#@ preaggregate` on a measure of a source that is itself `#@ persist storage=` builds and serves, with no change to the model. It has since 0.13.0, when the v1 cutover began reading each `#@ preaggregate` line as the `#(preaggregate)` it spells: that rollup is built from the author's rows, never from the base's stored table, so neither reason such rollups were once left out holds. The documentation still said they were left out with a `preaggregate-over-stored-base` warning; it now says what happens, and the code that would have left them out, which nothing reached any more, is removed.

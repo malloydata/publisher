@@ -29,6 +29,11 @@ interface ResultColumn {
    timeframe?: string;
    notes: string[];
    kind: "measure" | "dimension" | "nest";
+   /**
+    * Declared `timestamptz` rather than the stored type's `timestamp`: a
+    * TIMESTAMP WITH TIME ZONE column whose field live types as one.
+    */
+   timestamptz?: true;
 }
 
 /**
@@ -57,12 +62,16 @@ export function storedTypedSource(args: {
             : c.notes,
       ]),
    );
+   const zoned = new Set(
+      columns.filter((c) => c.timestamptz).map((c) => c.name),
+   );
    const typed = binding.schema.map((c) => {
       const notes = columnNotes.get(c.name);
       return {
          name: c.name,
          type: c.type,
          ...(notes && notes.length > 0 ? { notes } : {}),
+         ...(zoned.has(c.name) ? { timestamptz: true as const } : {}),
       };
    });
    const timeframes = timeframeRestatements(
