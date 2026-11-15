@@ -77,7 +77,6 @@ import { rollupGateEnforcedAtRead } from "./rollup_plan";
 import { rollupRefusalFinding } from "./rollup_plan";
 import { getMaterializeEnabled } from "../../../config";
 import { admitGivenPositions, type DynamicTerm } from "./persist_dynamic_terms";
-import { resolvePartitionColumns } from "./persist_partition";
 import {
    deriveAnnotationFields,
    deriveColumns,
@@ -242,27 +241,18 @@ function wireTerm(term: DynamicTerm): WireStrippedTerm {
 }
 
 /**
- * The plan's `partition`, `strippedTerms` and `joinedTerms` for one source.
- * Omits a field rather than reporting a wrong one (the gate normally refuses such
- * a source first). Informational only: the build re-resolves these.
+ * The plan's `strippedTerms` and `joinedTerms` for one source. Omits a field
+ * rather than reporting a wrong one (the gate normally refuses such a source
+ * first). Informational only: the build re-resolves these.
  */
-function planDynamicFields(
-   source: PersistSource,
-   annotationFields: Record<string, string>,
-): {
-   partition?: string[];
+function planDynamicFields(source: PersistSource): {
    strippedTerms?: WireStrippedTerm[];
    joinedTerms?: WireJoinedTerms[];
 } {
    const out: {
-      partition?: string[];
       strippedTerms?: WireStrippedTerm[];
       joinedTerms?: WireJoinedTerms[];
    } = {};
-   const partition = resolvePartitionColumns(source, annotationFields);
-   if (partition.ok && partition.columns.length > 0) {
-      out.partition = partition.columns;
-   }
    const classified = admitGivenPositions(source);
    if (classified.ok && classified.terms.length > 0) {
       out.strippedTerms = classified.terms.map(wireTerm);
@@ -1425,7 +1415,7 @@ export function deriveBuildPlan(
             columns: deriveColumns(source),
             // Resolved, not passed through; a source failing either is in
             // `refusedSources` instead.
-            ...planDynamicFields(source, annotationFields),
+            ...planDynamicFields(source),
             annotationFields,
             modelPath: sourceModelPaths?.[sourceID],
          };
@@ -1582,10 +1572,15 @@ export interface BuildPlanOutcome {
 export function deriveBuildPlanOutcome(
    collected: Omit<CompiledBuildPlan, "connections">,
    materializationConfig: WirePackageMaterialization | null,
+   /** The package's materialization `scope` (`"version"` suffixes every name). */
+   scope?: string | null,
 ): BuildPlanOutcome {
    // Before anything reads the plan: a refused source is neither built nor
    // served, and its warning replaces it (#6644).
-   const compiled = refuseCollidingMaterialize(collected);
+   const compiled = refuseCollidingMaterialize({
+      ...collected,
+      ...(scope === "version" ? { versionScoped: true } : {}),
+   });
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
    const incrementalDeclarations = collectIncrementalDeclarations(
       compiled.sources,

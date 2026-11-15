@@ -130,19 +130,18 @@ export interface Reroot {
     * current-time term inherited from a base is not in the source's own text,
     * so the re-root writes it right on the stored table (one the source's own
     * `extend` repeats is applied twice, which is harmless). A given-reading
-    * term is kept as the author wrote it, in the source's own blocks or a
-    * base's kept block ({@link keptBlocks}).
+    * term is kept as the author wrote it, in the source's own blocks: one
+    * written anywhere else refuses the source at plan.
     */
    readTimeTerms?: readonly MaterializeReadTimeTerm[];
    /**
     * The trailing `extend` runs of the bases the source is built from in this
     * file, root first, as their own declarations wrote them
     * (kept_ancestors.ts). For an extension table (P10), whose table holds
-    * every one of their rows and stored columns, and for a source whose plan
-    * left out a base's given-reading `where:` or caller-dependent dimension
-    * (`keptBases`), which only that base's block re-applies at read. The
-    * re-root keeps their blocks ahead of its own, and their measures, joins
-    * and views stay the source's.
+    * every one of their rows and stored columns, and for a source whose bases
+    * declare a measure, view or join it inherits (G8). The re-root keeps their
+    * blocks ahead of its own, and their measures, joins and views stay the
+    * source's.
     */
    keptBlocks?: string;
    /**

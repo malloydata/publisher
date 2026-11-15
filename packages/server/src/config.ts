@@ -310,29 +310,6 @@ export const getDuckLakeTargetFileSizeBytes = (): string | undefined =>
    settings.get("ducklake.targetFileSizeBytes");
 
 /**
- * How many rows the appender buffers before a partitioned storage build flushes
- * them to the partition files (`partitioned_write_flush_threshold`,
- * `PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`). Default 8192 rows. `off` turns
- * the whole partitioned-insert treatment off -- this threshold, the ordered
- * insert and the single appender thread together -- and leaves DuckDB's own
- * behaviour, which is the one the treatment exists to avoid; it is the escape
- * hatch for a source that built fine before, at the cost of the sort.
- *
- * A partitioned COPY buffers rows per partition per thread inside the buffer
- * manager, so this term fails as `failed to pin block`. The threshold bounds
- * rows buffered before a flush; the per-partition up-front cost is bounded by
- * the ordered, single-threaded insert (`orderByPartitionColumns` in
- * service/materialization/run/materialization_build_session.ts). Neither half suffices alone. See
- * docs/configuration.md.
- */
-export const DEFAULT_PARTITIONED_WRITE_FLUSH_THRESHOLD = 8192;
-
-export const getPartitionedWriteFlushThreshold = (): number | undefined => {
-   const raw = settings.get("duckdb.partitionedWriteFlushThreshold");
-   return raw.toLowerCase() === "off" ? undefined : Number(raw);
-};
-
-/**
  * Directory DuckDB spills to. A materialization build overrides this with its
  * own disposable working directory; every other session and instance uses this.
  *
@@ -385,19 +362,6 @@ export function assertDuckDBResourceConfig(): void {
       throw new Error(
          `Invalid value for PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES: expected a ` +
             `size like "256MB", got "${targetFileSizeBytes}"`,
-      );
-   }
-   const flushThreshold = settings.get("duckdb.partitionedWriteFlushThreshold");
-   if (
-      flushThreshold.toLowerCase() !== "off" &&
-      !/^[1-9]\d{0,8}$/.test(flushThreshold)
-   ) {
-      // At most nine digits: above a billion rows the bound is
-      // indistinguishable from `off`, so a larger value is a typo.
-      throw new Error(
-         `Invalid value for PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: expected a ` +
-            `row count like "8192" (up to nine digits), or "off" to turn the ` +
-            `partitioned-insert bounds off, got "${flushThreshold}"`,
       );
    }
    const threads = settings.get("duckdb.threads");

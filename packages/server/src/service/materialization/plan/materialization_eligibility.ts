@@ -18,24 +18,22 @@ import {
 import {
    buildSubstitutesAGiven,
    admitGivenPositions,
+   inheritedGivenWhereRefusal,
    readTimeDynamicTerms,
    type DynamicTerm,
 } from "./persist_dynamic_terms";
 import { routeReadsEnv } from "../../motly";
 import { EMPTY_STORAGE_REASON } from "./declaration";
-import { resolvePartitionColumns } from "./persist_partition";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
 
 /**
  * What an eligible source carries into the build and the serve shape. Returned
- * by the gate rather than re-derived, because each is only valid because the
- * gate proved it: where a term sits, and that a partition column resolves.
+ * by the gate rather than re-derived, because it is only valid because the
+ * gate proved it: where each term sits.
  */
 interface PersistDynamicPlan {
    /** Terms absent from the build, re-applied per caller at read. */
    terms: DynamicTerm[];
-   /** Declared `partition=` columns, resolved and ordered. Empty for none. */
-   partitionColumns: string[];
 }
 
 /**
@@ -75,8 +73,8 @@ interface PersistDynamicPlan {
  * before the build, so it fails fast before warehouse work.
  *
  * @param annotationFields the source's `#@ persist` key=value fields, which is
- *   where `partition=` is read from.
- * @returns the terms the build strips and the columns it lays the table out by.
+ *   where `merge_key=` is read from.
+ * @returns the terms the build strips.
  * @throws {MaterializationEligibilityError} (HTTP 422) naming the source and the
  *   specific reason, so the author can either fix the source or drop `storage=`.
  */
@@ -154,20 +152,7 @@ export function assertMaterializationEligible(
       });
    }
 
-   // Last: the only check not about isolation, so the refusals above are
-   // reported ahead of a mistyped column.
-   const partition = resolvePartitionColumns(persistSource, annotationFields);
-   if (!partition.ok) {
-      recordEligibilityRefused(partition.reason);
-      throw new MaterializationEligibilityError({
-         reason: partition.reason,
-         message:
-            `Source '${sourceName}' cannot be materialized into a storage ` +
-            `destination: ${partition.detail}.`,
-      });
-   }
-
-   return { terms: classified.terms, partitionColumns: partition.columns };
+   return { terms: classified.terms };
 }
 
 /**
@@ -229,6 +214,27 @@ function assertMergeKeyScopeResolvable(
  * than the caller's tier.
  */
 export const READ_ONLY_DIALECTS: ReadonlySet<string> = new Set(["sqlserver"]);
+
+/**
+ * A colocated `#@ persist` whose given-reading `where:` is inherited from a
+ * base is refused: only the declaration carrying its `#@ persist` is
+ * re-applied over its table at read, so the source answers live, under the
+ * term (as on storage=, through `admitGivenPositions`).
+ */
+function assertNoInheritedGivenWhere(
+   persistSource: PersistSource,
+   sourceName: string,
+): void {
+   const inherited = inheritedGivenWhereRefusal(persistSource);
+   if (inherited === undefined) return;
+   recordEligibilityRefused("inherited_where_with_given");
+   throw new MaterializationEligibilityError({
+      reason: "inherited_where_with_given",
+      message:
+         `Source '${sourceName}' cannot be materialized (colocated ` +
+         `'#@ persist'): ${inherited}.`,
+   });
+}
 
 /**
  * Compile-time eligibility gate for the COLOCATED persist path (`#@ persist`
@@ -302,24 +308,6 @@ export function assertColocatedPersistNotAuthorizeGated(
       });
    }
 
-   // `partition=` is meaningless without `storage=`. Only this gate sees a
-   // colocated source declaring it, which would otherwise reach a build that
-   // silently ignores it.
-   const partition = resolvePartitionColumns(persistSource, annotationFields);
-   if (!partition.ok) {
-      recordEligibilityRefused(partition.reason);
-      const what =
-         origin === "preaggregate"
-            ? `Pre-aggregation rollup '${sourceName}'`
-            : `Source '${sourceName}'`;
-      throw new MaterializationEligibilityError({
-         reason: partition.reason,
-         message:
-            `${what} cannot be materialized (colocated '#@ persist'): ` +
-            `${partition.detail}.`,
-      });
-   }
-
    // A given INSIDE the persisted query is frozen at its default and served to
    // every caller; one in the source's `filterList` is applied per caller at
    // read and is the documented form (docs/row-level-access.md). Only the first
@@ -363,6 +351,10 @@ export function assertColocatedPersistNotAuthorizeGated(
             `there — where it binds per caller over the materialized rows. ` +
             `Otherwise stop persisting this source.`,
       });
+   }
+
+   if (origin === "persist") {
+      assertNoInheritedGivenWhere(persistSource, sourceName);
    }
 
    // The colocated artifact also omits extend-block `where:` terms, so the

@@ -16,7 +16,7 @@ import * as Malloy from "@malloydata/malloy-interfaces";
 import { DataStyles } from "@malloydata/render";
 import { withSpan } from "../telemetry";
 import {
-   recordSourceDeclined,
+   recordServedCopyOutcome,
    recordStoredColumnTypeMismatch,
 } from "../materialization_metrics";
 import type { QueryServingHost } from "./query_serving";
@@ -46,12 +46,6 @@ import {
    OffSurfaceError,
 } from "../errors";
 import { getMaterializeEnabled, getPersistStorageMode } from "../config";
-import { keyedOverlay } from "./overlay_key";
-import {
-   compiledFileText,
-   loadLeavingOutCrossConnectionJoins,
-   type LeftOutDefinition,
-} from "./materialization/plan/cross_connection_joins";
 import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
@@ -64,6 +58,7 @@ import {
    type Pinned,
    type Snapshot,
 } from "./materialization/domain/binding";
+import { servedCopyOutcomes } from "./materialization/domain/source_decline";
 import { deserializeError } from "../package_load/package_load_pool";
 import type { SerializedModel } from "../package_load/protocol";
 import { decodeSerializedModel } from "../package_load/protocol_decode";
@@ -390,11 +385,6 @@ export class Model {
     * on disk is newer than the served IR.
     */
    private compiledSourceText: string | undefined;
-   /**
-    * For a model whose files join sources across connections (#6982), loaded
-    * from its build view: the definitions left out. Undefined otherwise.
-    */
-   private crossConnectionLeftOut: LeftOutDefinition[] | undefined;
    /** {@link getReportModelFacts}, once read; boxed so `undefined` is cached too. */
    private reportModelFacts:
       | { value: ReportModelFacts | undefined }
@@ -825,50 +815,9 @@ export class Model {
             modelURL,
             modelPath,
          );
-         let modelMaterializer = loadedModel.modelMaterializer;
+         const modelMaterializer = loadedModel.modelMaterializer;
          const runnableNotebookCells = loadedModel.runnableNotebookCells;
-         let gateRuntime = runtime;
-         let compiled:
-            | Awaited<ReturnType<ModelMaterializer["getModel"]>>
-            | undefined;
-         let crossConnectionLeftOut: LeftOutDefinition[] | undefined;
-         try {
-            compiled = await modelMaterializer?.getModel();
-         } catch (first) {
-            // A file that joins sources across connections (#6982) loads
-            // from its build view behind the materialize switch.
-            const view =
-               modelType === "model"
-                  ? await loadLeavingOutCrossConnectionJoins({
-                       firstError: first,
-                       readText: (url) =>
-                          compiledFileText(url, options?.overlay),
-                       load: async (files) => {
-                          const rt = await Model.getModelRuntime(
-                             packagePath,
-                             modelPath,
-                             malloyConfig,
-                             {
-                                ...options,
-                                overlay: new Map([
-                                   ...(options?.overlay ?? []),
-                                   ...keyedOverlay(files),
-                                ]),
-                             },
-                          );
-                          const mm = rt.runtime.loadModel(rt.modelURL, {
-                             importBaseURL: rt.importBaseURL,
-                          });
-                          return { rt, mm, model: await mm.getModel() };
-                       },
-                    })
-                  : undefined;
-            if (!view) throw first;
-            modelMaterializer = view.result.mm;
-            gateRuntime = view.result.rt.runtime;
-            compiled = view.result.model;
-            crossConnectionLeftOut = view.leftOut;
-         }
+         const compiled = await modelMaterializer?.getModel();
          const checked =
             modelMaterializer && compiled
                ? await extractCheckedModel(
@@ -912,10 +861,9 @@ export class Model {
             policy,
             // Cast: `_loadModelFromModelDef` is internal and undeclared on the
             // public `Runtime` type.
-            gateRuntime: gateRuntime as HydrationRuntime,
+            gateRuntime: runtime as HydrationRuntime,
          });
          model.compiledSourceText = compiledTextFor(modelURL);
-         model.crossConnectionLeftOut = crossConnectionLeftOut;
          return model;
       } catch (thrown) {
          if (thrown instanceof Error && thrown.stack) {
@@ -1042,9 +990,6 @@ export class Model {
       // Paired with `modelDef` above: the coordinates in that IR index this
       // text and no other revision of the file.
       model.compiledSourceText = data.modelSourceText;
-      model.crossConnectionLeftOut = data.crossConnectionLeftOut as
-         | LeftOutDefinition[]
-         | undefined;
       model.preparedRenderTagResults = data.renderTagResults as
          | { label: string; result?: Malloy.Result }[]
          | undefined;
@@ -2720,22 +2665,15 @@ export class Model {
       this.storageTables(pinned.snapshot);
       if (!this.servedCopyEnabled()) return;
       await this.servedCopy.prepare(pinned);
-      // Once per model per snapshot it compiles (a load or a rebind): each
-      // source the copy leaves unserved, by the reason its package warning
-      // gives. `inline_join_kept` and `cross_connection_join` still serve
-      // the source, with that join live; the bind label has no outcome for
-      // a partial serve, so they count as declined.
-      for (const problem of this.servedCopy.problems()) {
-         recordSourceDeclined(problem.reason);
+      // Once per source per model per snapshot it compiles (a load or a
+      // rebind): each source the copy does not serve whole, `declined`
+      // beating `partial`, and `partial` only while it is still re-rooted.
+      for (const { outcome, reason } of servedCopyOutcomes(
+         this.servedCopy.problems(),
+         this.servedCopy.rerootedSourceIDs() ?? new Set(),
+      )) {
+         recordServedCopyOutcome(outcome, reason);
       }
-   }
-
-   /**
-    * The definitions this model's build view leaves out because they join
-    * sources across connections (#6982); empty for any other model.
-    */
-   public crossConnectionLeftOutDefinitions(): readonly LeftOutDefinition[] {
-      return this.crossConnectionLeftOut ?? [];
    }
 
    /**

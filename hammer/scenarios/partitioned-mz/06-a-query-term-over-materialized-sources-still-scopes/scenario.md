@@ -65,12 +65,12 @@ given:
 source: raw_orders is orders_pg.sql('SELECT order_id, org_id, list_id, amount FROM public.qts_orders')
 source: raw_vis is orders_pg.sql('SELECT org_id, user_id, list_id FROM public.qts_visibility')
 
-#@ persist name="qts_orders_all" storage=lake partition="org_id"
+#@ persist name="qts_orders_all" storage=lake
 source: orders_all is raw_orders -> { select: * } extend {
   where: org_id = $ORG_ID
 }
 
-#@ persist name="qts_vis_all" storage=lake partition="org_id"
+#@ persist name="qts_vis_all" storage=lake
 source: vis_all is raw_vis -> { select: * } extend {
   where: org_id = $ORG_ID
 }

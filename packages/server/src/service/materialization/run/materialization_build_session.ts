@@ -28,7 +28,6 @@ import {
 } from "../../../errors";
 import { logger } from "../../../logger";
 import { errorCodeOf } from "./error_code";
-import { getPartitionedWriteFlushThreshold } from "../../../config";
 import { errMessage } from "../../../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "../../quoting";
 import { fromSubselect } from "../subselect";
@@ -144,33 +143,15 @@ export function wrapPassthrough(
 }
 
 /**
- * The SELECT a partitioned insert reads, ordered by the partition columns.
+ * The SELECT a partitioned insert reads, ordered by `expressions`.
  *
  * DuckDB's partitioned COPY (what a DuckLake insert into a laid-out table
  * plans) charges each appender one vector per column for every partition it
  * has met, before flushing any. Rows in partition order keep that set at one or
  * two partitions; interleaved rows bring in every partition within a few
  * chunks, and a wide, many-partition insert then exceeds `memory_limit` at any
- * flush threshold.
- *
- * Applied only at the top of a passthrough-sourced partitioned INSERT, so what
- * the warehouse runs and is attributed for is unchanged. Sorted by DuckDB
- * (out of core, against the session's spill directory) rather than by the
- * warehouse, because a multi-stream read (BigQuery) re-interleaves a sorted
- * result. Wrapped as a subselect so the SELECT is not parsed.
+ * flush threshold. Wrapped as a subselect so the SELECT is not parsed.
  */
-export function orderByPartitionColumns(
-   selectSQL: string,
-   partitionColumns: readonly string[],
-   dialect: string,
-): string {
-   return orderByExpressions(
-      selectSQL,
-      partitionColumns.map((name) => quoteIdentifier(name, dialect)),
-   );
-}
-
-/** {@link orderByPartitionColumns}, for order terms already rendered as SQL. */
 function orderByExpressions(
    selectSQL: string,
    expressions: readonly string[],
@@ -756,12 +737,6 @@ export async function buildSourceIntoStorage(params: {
    /** Logical, unquoted physical table path (may carry a container path). */
    physicalTableName: string;
    /**
-    * Columns to lay the destination table out by (`#@ persist partition=`),
-    * already resolved against the source's public projection. Empty means a
-    * single-statement CTAS.
-    */
-   partitionColumns?: string[];
-   /**
     * The source's public columns as Malloy declares them; the CTAS casts the
     * ones with a single faithful DuckDB type to it ({@link castToDeclaredTypes}).
     * Absent or empty stores whatever the warehouse returned.
@@ -781,8 +756,8 @@ export async function buildSourceIntoStorage(params: {
     * Absent for a non-incremental source, which always builds in full.
     */
    incremental?: StorageIncrementalRefresh;
-   /** The name holds this package's own `name=` view, which the table replaces. */
-   replacesNameView?: boolean;
+   /** See StorageBuildRequest.replacesView. */
+   replacesView?: string[];
    /**
     * Test seam for federation and the passthrough read; production passes
     * nothing. Lets a spec prove the `finally` closes a proxied source's tunnel
@@ -879,39 +854,12 @@ export async function buildSourceIntoStorage(params: {
       // After the attach and federation, because the plan probes this
       // destination to decide; a seed then continues on the same session.
       if (params.incremental) {
-         // A delta into a laid-out table is the same partitioned COPY as the
-         // seed, whose memory scales with width x partitions. The threshold and
-         // single appender apply via the session; the ordered read is the
-         // seed's alone (see createTableAndDescribe).
-         const partitioned = (params.partitionColumns?.length ?? 0) > 0;
-         const flushThreshold = getPartitionedWriteFlushThreshold();
-         const boundDelta = partitioned && flushThreshold !== undefined;
-         if (boundDelta) {
-            await session.runSQL(
-               `SET partitioned_write_flush_threshold = ${flushThreshold}`,
-            );
-            await session.runSQL("SET threads = 1");
-         }
-         let refreshed;
-         try {
-            refreshed = await params.incremental.plan({
-               session,
-               sourceType,
-               handle: federated.handle,
-               quotedTablePath: target,
-            });
-         } finally {
-            if (boundDelta) {
-               try {
-                  await session.runSQL("RESET threads");
-                  await session.runSQL(
-                     "RESET partitioned_write_flush_threshold",
-                  );
-               } catch {
-                  // best-effort, as in createTableAndDescribe
-               }
-            }
-         }
+         const refreshed = await params.incremental.plan({
+            session,
+            sourceType,
+            handle: federated.handle,
+            quotedTablePath: target,
+         });
          if (refreshed) {
             return {
                storageDestinationName: destinationName,
@@ -943,10 +891,11 @@ export async function buildSourceIntoStorage(params: {
          target,
          passthrough.selectSQL,
          { columns: params.declaredColumns ?? [], ...params.castOptions },
-         params.partitionColumns ?? [],
          {
             sourceType,
-            ...(params.replacesNameView ? { replacesView: true } : {}),
+            ...(params.replacesView
+               ? { replacesView: params.replacesView }
+               : {}),
          },
       );
       // Record where the new snapshot reaches, so the next refresh can be a
@@ -1017,11 +966,10 @@ async function buildSameCatalogIntoStorage(params: {
    buildSQL: string;
    sourceCarriesAuthorSql?: boolean;
    physicalTableName: string;
-   partitionColumns?: string[];
    declaredColumns?: readonly DeclaredColumn[];
    castOptions?: BuildCastOptions;
    environmentPath: string;
-   replacesNameView?: boolean;
+   replacesView?: string[];
 }): Promise<StorageBuildResult> {
    const { destinationName, destinationConnection, physicalTableName } = params;
    const alias = params.sourceConnection.name || destinationName;
@@ -1067,8 +1015,7 @@ async function buildSameCatalogIntoStorage(params: {
          target,
          params.buildSQL,
          { columns: params.declaredColumns ?? [], ...params.castOptions },
-         params.partitionColumns ?? [],
-         params.replacesNameView ? { replacesView: true } : {},
+         params.replacesView ? { replacesView: params.replacesView } : {},
       );
       // Reads no warehouse, as a chained build does: nothing was charged.
       return {
@@ -1304,15 +1251,9 @@ export async function buildDownstreamIntoStorage(params: {
    virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
    /** Logical, unquoted physical table path for the downstream's own table. */
    physicalTableName: string;
-   /**
-    * Columns to lay the destination table out by (`#@ persist partition=`),
-    * already resolved against the source's public projection. Empty means a
-    * single-statement CTAS.
-    */
-   partitionColumns?: string[];
    environmentPath: string;
-   /** The name holds this package's own `name=` view, which the table replaces. */
-   replacesNameView?: boolean;
+   /** See StorageBuildRequest.replacesView. */
+   replacesView?: string[];
 }): Promise<StorageBuildResult> {
    const {
       destinationName,
@@ -1380,8 +1321,7 @@ export async function buildDownstreamIntoStorage(params: {
          target,
          sql,
          { columns: casts.declaredColumns, ...casts.castOptions },
-         params.partitionColumns ?? [],
-         params.replacesNameView ? { replacesView: true } : {},
+         params.replacesView ? { replacesView: params.replacesView } : {},
       );
 
       return {
@@ -1505,8 +1445,8 @@ export async function withStorageDestinationSession<T>(
 
 /**
  * The tables in one schema of a `storage=` destination, in name order.
- * Tables only: a `name=` view (name_view.ts) is never listed, so a sweep
- * that drops what it lists never reaches one.
+ * Tables only: a view is never listed, so a sweep that drops what it lists
+ * never reaches one.
  *
  * Read-only, on an isolated instance. A plain DuckDB destination with no
  * database file yet is reported empty rather than created by looking.
@@ -1777,8 +1717,13 @@ export async function createTableWithDeclaredTypes(
    quotedTablePath: string,
    selectSQL: string,
    declared: { columns: readonly DeclaredColumn[] } & BuildCastOptions,
-   partitionColumns: readonly string[],
-   options: Parameters<typeof createTableAndDescribe>[4] = {},
+   options: {
+      /**
+       * The passthrough engine the SELECT reads from; absent on a chained
+       * build. Decides which declared columns are cast ({@link columnsToCast}).
+       */
+      sourceType?: FederatedSourceType;
+   } & Parameters<typeof createTableAndDescribe>[3] = {},
 ): Promise<WireColumn[]> {
    const columns = await columnsToCast(
       session,
@@ -1792,7 +1737,6 @@ export async function createTableWithDeclaredTypes(
          session,
          quotedTablePath,
          selectSQL,
-         partitionColumns,
          options,
       );
    }
@@ -1801,7 +1745,6 @@ export async function createTableWithDeclaredTypes(
          session,
          quotedTablePath,
          cast,
-         partitionColumns,
          options,
       );
    } catch (err) {
@@ -1820,7 +1763,6 @@ export async function createTableWithDeclaredTypes(
          session,
          quotedTablePath,
          selectSQL,
-         partitionColumns,
          options,
       );
    }
@@ -1872,63 +1814,37 @@ async function columnsToCast(
 }
 
 /**
- * Build the table and read back its schema.
- *
- * Without partition columns, a CTAS; with them, create-empty / lay out / insert,
- * because DuckLake applies a layout only to files written after it is set.
- * Either way the table is created and read back in ONE transaction: the
- * physical name is stable across generations (`selfAssignTableName`), so a
- * rebuild replaces the table being SERVED, and a failure anywhere, the
- * read-back included, rolls back to the previous generation (or, on a first
- * build, to no table, which no reclaim would otherwise find: the caller
- * records nothing until this returns).
+ * Build the table and read back its schema, as a CTAS created and read back in
+ * ONE transaction: the physical name is stable across generations
+ * (`selfAssignTableName`), so a rebuild replaces the table being SERVED, and a
+ * failure anywhere, the read-back included, rolls back to the previous
+ * generation (or, on a first build, to no table, which no reclaim would
+ * otherwise find: the caller records nothing until this returns).
  */
 export async function createTableAndDescribe(
    session: DuckDBConnection,
    quotedTablePath: string,
    selectSQL: string,
-   partitionColumns: readonly string[] = [],
    options: {
       /**
-       * The passthrough engine the SELECT reads from; absent on a chained build.
-       * Its presence (not its value) enables the partitioned path's memory
-       * bounds — ordered insert, single thread, flush threshold — since the
-       * failure they prevent is the writer's, whatever the source.
+       * Statements that drop this package's own leftover `name=` view at the
+       * name, run first in the same transaction, so a failure leaves the view
+       * (leftover_name_views.ts).
        */
-      sourceType?: FederatedSourceType;
-      /**
-       * The name holds this package's own `name=` view, which the table
-       * replaces: the view is dropped in the same transaction, so a failure
-       * leaves it (see viewToTableSwap in name_view.ts).
-       */
-      replacesView?: boolean;
+      replacesView?: string[];
    } = {},
 ): Promise<WireColumn[]> {
-   if (partitionColumns.length === 0) {
-      // In the transaction, not create-then-drop-on-failure: a DROP after the
-      // CREATE OR REPLACE committed would delete the name the previous
-      // manifest serves from.
-      return await inTransaction(session, quotedTablePath, async () => {
-         if (options.replacesView) {
-            await session.runSQL(`DROP VIEW IF EXISTS ${quotedTablePath}`);
-         }
-         await session.runSQL(
-            `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
-         );
-         return await describeTable(session, quotedTablePath);
-      });
-   }
-   return await writePartitionedTable(session, {
-      quotedTablePath,
-      selectSQL,
-      keys: partitionColumns.map((column) => ({
-         column,
-         transform: "identity",
-      })),
-      createStatement: "CREATE OR REPLACE TABLE",
-      bounded: options.sourceType !== undefined,
-      read: () => describeTable(session, quotedTablePath),
-      ...(options.replacesView ? { replacesView: true } : {}),
+   // In the transaction, not create-then-drop-on-failure: a DROP after the
+   // CREATE OR REPLACE committed would delete the name the previous manifest
+   // serves from.
+   return await inTransaction(session, quotedTablePath, async () => {
+      for (const sql of options.replacesView ?? []) {
+         await session.runSQL(sql);
+      }
+      await session.runSQL(
+         `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
+      );
+      return await describeTable(session, quotedTablePath);
    });
 }
 
@@ -1982,82 +1898,73 @@ export function partitionOrderSql(keys: readonly PartitionKey[]): string[] {
 }
 
 /**
- * Create `quotedTablePath` empty, lay it out by `keys`, fill it from `selectSQL`,
- * then run `read`, all in ONE transaction, and return what `read` returns.
- * Shared by a partitioned build and a partitioned copy (the admin API's).
+ * Rows the appender buffers before a partitioned copy flushes them to the
+ * partition files (DuckDB's `partitioned_write_flush_threshold`, whose own
+ * default is 524,288). Measured at a `768MB` memory limit on 122 columns, 616k
+ * rows, 308 partitions: ordered rows on one thread complete at this value and
+ * fail at DuckDB's default.
+ */
+const PARTITIONED_WRITE_FLUSH_THRESHOLD = 8192;
+
+/**
+ * Create `quotedTablePath` empty, lay it out by `keys`, and fill it from
+ * `selectSQL`, all in ONE transaction. Used only by the admin API's copy of a
+ * partitioned table (`copyStorageTable`), which keeps the source table's
+ * layout; a build writes every table unpartitioned.
  *
  * Create-empty / lay out / insert because DuckLake applies a layout only to files
- * written after it is set. Run bare, `WITH NO DATA` would serve zero rows until
- * the INSERT lands, and a failed INSERT would lose the previous generation; a
+ * written after it is set. Run bare, `WITH NO DATA` would hold zero rows until
+ * the INSERT lands, and a failed INSERT would lose the previous table; a
  * ROLLBACK keeps it.
  *
  * The layout only means something because the session disabled inlining
  * (`ducklake_default_data_inlining_row_limit=0`); inlined rows have no files.
  *
- * @param params.bounded Turn on the memory bounds (ordered insert, single
- *   thread, flush threshold) unless the flush threshold is configured `off`.
+ * Memory is bounded three ways, which only work together: the insert reads its
+ * rows in partition order ({@link orderByExpressions}), on one thread, at a
+ * low flush threshold ({@link PARTITIONED_WRITE_FLUSH_THRESHOLD}).
  */
-export async function writePartitionedTable<T>(
+export async function writePartitionedTable(
    session: DuckDBConnection,
    params: {
       quotedTablePath: string;
       selectSQL: string;
       keys: readonly PartitionKey[];
       createStatement: "CREATE TABLE" | "CREATE OR REPLACE TABLE";
-      bounded: boolean;
-      read: () => Promise<T>;
-      /** Drop this package's own `name=` view at the name first, in the transaction. */
-      replacesView?: boolean;
    },
-): Promise<T> {
+): Promise<void> {
    const { quotedTablePath, selectSQL, keys } = params;
    const layout = keys.map(partitionKeySql).join(", ");
    const order = partitionOrderSql(keys);
-   // One switch: `off` on the threshold disables all three bounds, which only
-   // work together.
-   const flushThreshold = getPartitionedWriteFlushThreshold();
-   const bounded = params.bounded && flushThreshold !== undefined;
-   if (bounded) {
-      // Bounds the rows each appender holds before flushing to partition files
-      // (see getPartitionedWriteFlushThreshold). The session is this build's
-      // own instance, so the setting reaches nothing else.
-      await session.runSQL(
-         `SET partitioned_write_flush_threshold = ${flushThreshold}`,
-      );
-      // One appender: a sorted result is read in parallel, so with several
-      // threads each meets every partition again and the insert runs out of
-      // memory. Costs scan parallelism only on the labelled BigQuery split
-      // (`bigquery_scan` is multi-stream). `SET threads` is NOT transactional,
-      // so the RESET in the finally is what restores it after a rollback.
-      await session.runSQL("SET threads = 1");
-   }
+   // The session is this copy's own instance, so the setting reaches nothing
+   // else.
+   await session.runSQL(
+      `SET partitioned_write_flush_threshold = ${PARTITIONED_WRITE_FLUSH_THRESHOLD}`,
+   );
+   // One appender: a sorted result is read in parallel, so with several
+   // threads each meets every partition again and the insert runs out of
+   // memory. `SET threads` is NOT transactional, so the RESET in the finally is
+   // what restores it after a rollback.
+   await session.runSQL("SET threads = 1");
    try {
-      return await inTransaction(session, quotedTablePath, async () => {
-         if (params.replacesView) {
-            await session.runSQL(`DROP VIEW IF EXISTS ${quotedTablePath}`);
-         }
+      await inTransaction(session, quotedTablePath, async () => {
          await session.runSQL(
             `${params.createStatement} ${quotedTablePath} AS (${selectSQL}) WITH NO DATA`,
          );
          await session.runSQL(
             `ALTER TABLE ${quotedTablePath} SET PARTITIONED BY (${layout})`,
          );
-         // See orderByPartitionColumns.
-         const inserted = bounded
-            ? orderByExpressions(selectSQL, order)
-            : selectSQL;
-         await session.runSQL(`INSERT INTO ${quotedTablePath} (${inserted})`);
-         return await params.read();
+         await session.runSQL(
+            `INSERT INTO ${quotedTablePath} (${orderByExpressions(selectSQL, order)})`,
+         );
       });
    } finally {
-      // Best-effort: the session is disposed with the build, so a stuck setting
+      // Best-effort: the session is disposed with the copy, so a stuck setting
       // dies with it.
-      if (bounded) {
-         try {
-            await session.runSQL("RESET threads");
-         } catch {
-            // see above
-         }
+      try {
+         await session.runSQL("RESET threads");
+      } catch {
+         // see above
       }
    }
 }

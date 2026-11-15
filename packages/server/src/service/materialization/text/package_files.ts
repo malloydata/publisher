@@ -20,23 +20,19 @@ import { GeneratedFiles } from "./generated_files";
 
 /**
  * Generated files over `packagePath`'s files, compiled as `modelPath` would
- * be, with `config`'s connections. `base` is served under every overlay (a
- * package's build view, which leaves joins across connections out).
+ * be, with `config`'s connections.
  */
 export function packageFiles(
    packagePath: string,
    modelPath: string,
    config: ModelConnectionInput,
-   base?: ReadonlyMap<string, string>,
 ): GeneratedFiles {
    return GeneratedFiles.over(async (overlay) => {
-      const files =
-         base && base.size > 0 ? new Map([...base, ...overlay]) : overlay;
       const { runtime, importBaseURL, modelURL } = await createModelRuntime(
          packagePath,
          modelPath,
          config,
-         files.size > 0 || base ? { overlay: files } : undefined,
+         overlay.size > 0 ? { overlay } : undefined,
       );
       return { runtime, importBaseURL, modelURL };
    });

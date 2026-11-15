@@ -50,11 +50,14 @@ afterEach(async () => {
    await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
 });
 
-async function loadPackage(model: string): Promise<Package> {
+async function loadPackage(
+   model: string,
+   manifest: Record<string, unknown> = {},
+): Promise<Package> {
    writePackageFiles(
       path.join(envPath, "pkg"),
       { "model.malloy": model, "rows.csv": "a\n1\n" },
-      { manifest: { name: "pkg", description: "fixture" } },
+      { manifest: { name: "pkg", description: "fixture", ...manifest } },
    );
    const env = await Environment.create("testEnv", envPath, []);
    await env.addPackage("pkg");
@@ -188,6 +191,84 @@ describe("annotation findings on a loaded package", () => {
       { timeout: 30000 },
    );
 
+   const GIVEN_IN_QUERY = `##! experimental { persistence composite_sources givens }
+given: CAT :: string is 'A'
+source: raw is duckdb.sql("""SELECT 1 AS amount, 'A' AS category""")
+#@ persist name="t" partition="category"
+source: daily is raw -> { where: category = $CAT; group_by: category; aggregate: total is amount.sum() }
+`;
+   it.each([
+      [
+         "a colocated",
+         `${RAW}#@ persist name="t" partition="category"\n${ROLLUP}\n`,
+      ],
+      [
+         "a storage=",
+         `${RAW}#@ persist name="t" storage="lake" partition="category"\n${ROLLUP}\n`,
+      ],
+      [
+         "a list-valued",
+         `${RAW}#@ persist name="t" partition=[category]\n${ROLLUP}\n`,
+      ],
+      [
+         "a nested",
+         `${RAW}#@ persist { name="t" partition="category" }\n${ROLLUP}\n`,
+      ],
+      ["an otherwise-refused source's", GIVEN_IN_QUERY],
+   ])(
+      "refuses %s #@ persist partition= at publish, saying to remove it",
+      async (_case, model) => {
+         const pkg = await loadPackage(model);
+         const [warning] = coded(pkg, "persist-retired-key");
+         expect(warning).toMatchObject({ severity: "error", subject: "daily" });
+         expect(warning.message).toContain("`partition=`");
+         expect(warning.message).toContain("partition= is not supported");
+         expect(warning.message).toContain("remove it");
+         // Not the vaguer unknown-key warning, which publish would allow.
+         expect(coded(pkg, "persist-unknown-key")).toEqual([]);
+         expect(formatPublishRejections(pkg)).toContain(
+            "partition= is not supported",
+         );
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "refuses #@ persist partition= only at publish: the scheduler keeps it, and a policy PATCH is not refused",
+      async () => {
+         writePackageFiles(
+            path.join(envPath, "pkg"),
+            {
+               "model.malloy": `${RAW}#@ persist name="t" partition="category"\n${ROLLUP}\n`,
+            },
+            {
+               manifest: {
+                  name: "pkg",
+                  description: "fixture",
+                  materialization: { scope: "version", schedule: "0 * * * *" },
+               },
+            },
+         );
+         const env = await Environment.create("testEnv", envPath, []);
+         await env.addPackage("pkg");
+         const pkg = await env.getPackage(parsePackageName("pkg"), false);
+         expect(formatPublishRejections(pkg)).toContain(
+            "partition= is not supported",
+         );
+         // The scheduler disarms a package on any persistence-policy warning.
+         expect(pkg.persistencePolicyWarnings()).toEqual([]);
+         const patched = await env.updatePackage("pkg", {
+            name: "pkg",
+            materialization: { schedule: "30 * * * *" },
+         });
+         expect(
+            (patched as { materialization?: { schedule?: string } })
+               .materialization?.schedule,
+         ).toBe("30 * * * *");
+      },
+      { timeout: 30000 },
+   );
+
    it(
       "reports an unknown key on a plain persist source as a warning, and publish allows it",
       async () => {
@@ -289,6 +370,125 @@ describe("annotation findings on a loaded package", () => {
          }
       },
       { timeout: 30000 },
+   );
+
+   it(
+      "refuses a #(materialize) partition= at publish, saying to remove it",
+      async () => {
+         const { restore } = installSettings({
+            env: { PUBLISHER_MATERIALIZE: "true" },
+         });
+         await __setPackageLoadPoolForTests(new PackageLoadPool(1));
+         try {
+            const pkg = await loadPackage(
+               `${RAW}#(materialize) name="t" storage="lake" partition="category"\nsource: orders is raw\n`,
+            );
+            const [warning] = coded(pkg, "materialize-retired-key");
+            expect(warning).toMatchObject({
+               severity: "error",
+               subject: "orders",
+            });
+            expect(warning.message).toContain("`partition=`");
+            expect(warning.message).toContain("partition= is not supported");
+            expect(warning.message).toContain("remove it");
+            expect(coded(pkg, "materialize-unknown-key")).toEqual([]);
+            expect(formatPublishRejections(pkg)).toContain("`partition=`");
+         } finally {
+            await __setPackageLoadPoolForTests(null);
+            restore();
+         }
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "plans #(materialize) name= at that name, whatever the package's scope, colocated or stored, and refuses no publish",
+      async () => {
+         const { restore } = installSettings({
+            env: { PUBLISHER_MATERIALIZE: "true", PERSIST_STORAGE_MODE: "on" },
+         });
+         await __setPackageLoadPoolForTests(new PackageLoadPool(1));
+         try {
+            for (const [manifest, keys] of [
+               [{}, ""],
+               [{ materialization: { scope: "package" } }, ' storage="lake"'],
+               [{ materialization: { scope: "version" } }, ""],
+            ] as const) {
+               for (const [name, written] of [
+                  [' name="analytics.orders_t"', "analytics.orders_t"],
+                  ["", "orders"],
+               ] as const) {
+                  await fs.rm(path.join(envPath, "pkg"), {
+                     recursive: true,
+                     force: true,
+                  });
+                  const pkg = await loadPackage(
+                     `${RAW}#(materialize)${name}${keys}\nsource: orders is raw\n`,
+                     manifest,
+                  );
+                  // Planned, under the author's name (schema included) or the
+                  // source's own; the run adds a suffix only to the latter.
+                  expect(
+                     Object.values(pkg.getBuildPlan()?.sources ?? {}).map(
+                        (s) => s.annotationFields?.name,
+                     ),
+                  ).toEqual([written]);
+                  expect(formatPublishRejections(pkg)).toBeUndefined();
+               }
+            }
+            // #(preaggregate) never took a name=: an unknown key, refused too.
+            await fs.rm(path.join(envPath, "pkg"), {
+               recursive: true,
+               force: true,
+            });
+            const rollup = await loadPackage(
+               `${RAW}source: sales is raw extend {\n  #(preaggregate) grain=["category"] name="r"\n  measure: total is amount.sum()\n}\n`,
+            );
+            expect(formatPublishRejections(rollup)).toContain("name");
+         } finally {
+            await __setPackageLoadPoolForTests(null);
+            restore();
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "under scope: version, a defaulted #(materialize) name and an equal name= write one table, and both are refused; unversioned they are two",
+      async () => {
+         const { restore } = installSettings({
+            env: { PUBLISHER_MATERIALIZE: "true", PERSIST_STORAGE_MODE: "on" },
+         });
+         await __setPackageLoadPoolForTests(new PackageLoadPool(1));
+         try {
+            const model = `${RAW}#(materialize) storage="lake"
+source: daily is raw extend { where: amount > 0 }
+
+#(materialize) name="daily" storage="lake"
+source: other is raw extend { where: amount < 0 }
+`;
+            const refusedIn = async (manifest: Record<string, unknown>) => {
+               await fs.rm(path.join(envPath, "pkg"), {
+                  recursive: true,
+                  force: true,
+               });
+               const pkg = await loadPackage(model, manifest);
+               return coded(pkg, "materialize-not-built")
+                  .map((w) => w.subject)
+                  .sort();
+            };
+            // Both take the version's suffix: daily__v<...> twice.
+            expect(
+               await refusedIn({ materialization: { scope: "version" } }),
+            ).toEqual(["daily", "other"]);
+            // Unversioned, the defaulted one takes the package's suffix.
+            expect(await refusedIn({})).toEqual([]);
+         } finally {
+            await __setPackageLoadPoolForTests(null);
+            restore();
+         }
+      },
+      { timeout: 60000 },
    );
 
    it(

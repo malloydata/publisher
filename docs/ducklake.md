@@ -221,8 +221,9 @@ A copy reads a table of another catalog in the same catalog database, attached r
 catalog's owner, or of the same catalog, and writes it the same way; the configured role must be able to
 act as both owners (otherwise `409 CATALOG_OWNER_UNSUPPORTED`). A copy from an encrypted catalog into an
 unencrypted one is refused, since it would write the rows unencrypted. A copy keeps the source table's
-partition spec (`partition=`, or any `SET PARTITIONED BY`) and writes its rows in partition order, as a
-partitioned build does, so the copy prunes files the way the source did; a partitioned table copied onto
+partition spec (one a since-retired `partition=` build wrote, or any `SET PARTITIONED BY`) and writes
+its rows in partition order, on one thread at a low flush threshold, so the copy prunes files the way the
+source did; a partitioned table copied onto
 itself, under any spelling of its name (DuckDB matches names case-insensitively), is refused, since the
 rewrite would empty it before reading it. `GET …/tables/{table}` reports a
 table's spec as `partitionedBy`, empty for an unpartitioned table, so a migration can check a copy against

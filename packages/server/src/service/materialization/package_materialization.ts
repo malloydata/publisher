@@ -9,6 +9,7 @@ import {
 import {
    findingSeverity,
    MATERIALIZE_V2_ROUTES,
+   POLICY_REFUSED_RETIRED_KEYS,
    type PackageAnnotationFinding,
 } from "../annotation_reader";
 import { components } from "../../api";
@@ -1434,47 +1435,14 @@ export class PackageMaterialization {
 
    /**
     * Warnings for a model whose served copy (materialization v2) leaves
-    * sources unserved: it did not compile, a cross-connection join waits for
-    * the other side to build, or a source could not be re-rooted. Those
+    * sources unserved: it did not compile, a join it moved across connections
+    * reads a source that is not stored, or a source could not be re-rooted. Those
     * sources serve through today's serve shape, or live. Empty when the served
     * copy is off.
     */
    servedCopyWarnings(): ApiPackageWarning[] {
       const warnings: ApiPackageWarning[] = [];
       for (const [modelPath, model] of this.owner.models()) {
-         const leftOut = model.crossConnectionLeftOutDefinitions?.() ?? [];
-         // What read a left-out join goes with it; nothing leaves silently.
-         const readers = leftOut.filter((l) => !l.crossConnection);
-         if (readers.length > 0) {
-            warnings.push({
-               model: modelPath,
-               code: SERVED_COPY_WARNING_CODE,
-               severity: "warn",
-               message:
-                  "These definitions read a join left out across connections, so this model loads without them: " +
-                  readers
-                     .map((l) =>
-                        l.declaration
-                           ? `\`${l.declaration}.${l.name}\``
-                           : `\`${l.name}\``,
-                     )
-                     .join(", ") +
-                  ".",
-            });
-         }
-         for (const l of leftOut) {
-            if (!l.crossConnection) continue;
-            warnings.push({
-               model: modelPath,
-               subject: l.declaration ?? l.name,
-               code: SERVED_COPY_WARNING_CODE,
-               severity: "warn",
-               message:
-                  `This model joins sources on different connections (the join \`${l.name}\`), ` +
-                  "which does not compile live, so it loads without that join and what reads it. " +
-                  "Queries that need it are answered once both sides are built into one storage destination.",
-            });
-         }
          const problems = model.servedCopyProblems?.() ?? [];
          // A join already inlined, but kept as written: its own warning says
          // why, so the cross-connection one does not advise inlining it.
@@ -2147,10 +2115,12 @@ export class PackageMaterialization {
    }
 
    /**
-    * The publish refusal for `#@` lines that do not parse, and for malformed
-    * materialization v2 declarations (an unknown key on `#(materialize)` or
-    * `#(preaggregate)`, whose key sets are closed), one per line, or "" when
-    * none. Publish only: a load warns (the finding rides
+    * The publish refusal for `#@` lines that do not parse, for a retired
+    * `#@ persist` key the persistence policy does not already refuse
+    * (`partition=`; {@link POLICY_REFUSED_RETIRED_KEYS}), and for malformed
+    * materialization v2 declarations (an unknown or retired key on
+    * `#(materialize)` or `#(preaggregate)`, whose key sets are closed), one per
+    * line, or "" when none. Publish only: a load warns (the finding rides
     * `Package.warnings`), so a package already published keeps loading and its
     * schedule keeps running, and a metadata PATCH is not refused for it. Kept
     * out of {@link persistencePolicyWarnings}, which the scheduler and the
@@ -2161,12 +2131,16 @@ export class PackageMaterialization {
          .filter(
             (finding) =>
                finding.code === "persist-unparseable" ||
+               (finding.code === "persist-retired-key" &&
+                  (finding.nested ||
+                     !POLICY_REFUSED_RETIRED_KEYS.has(finding.key ?? ""))) ||
                (finding.tier === "malformed" &&
                   MATERIALIZE_V2_ROUTES.has(finding.route)),
          )
          .map(
             (finding) =>
-               `${finding.model ? `${finding.model}: ` : ""}${finding.message}`,
+               `${finding.model ? `${finding.model}: ` : ""}${finding.message}` +
+               (finding.rewrite ? `; ${finding.rewrite}` : ""),
          )
          .join("\n");
    }
@@ -2266,15 +2240,15 @@ export class PackageMaterialization {
     * cross-package collisions need the host's global view.
     */
    persistenceCollisionWarnings(): string[] {
-      const sources = this.buildPlan?.sources
-         ? Object.values(this.buildPlan.sources)
-         : [];
       const targets = new Map<
          string,
          { name: string; destination: string; sources: Map<string, string> }
       >();
-      for (const source of sources) {
+      for (const [sourceID, source] of Object.entries(
+         this.buildPlan?.sources ?? {},
+      )) {
          // The one definition of a collision, shared with the serve refusal.
+         const materialize = this.materializePlans?.[sourceID];
          const {
             key,
             name: physicalName,
@@ -2283,6 +2257,15 @@ export class PackageMaterialization {
             source.annotationFields ?? {},
             source.name,
             source.connectionName,
+            {
+               ...(materialize
+                  ? { defaulted: !!materialize.nameDefaulted }
+                  : {}),
+               ...(source.dialect ? { dialect: source.dialect } : {}),
+               ...(this.owner.metadata().scope === "version"
+                  ? { versionScoped: true }
+                  : {}),
+            },
          );
          const bucket = targets.get(key) ?? {
             name: physicalName,
@@ -2413,7 +2396,7 @@ function servedCopyProblemMessage(
       case "compile_failed":
          return "This model's served copy does not compile, so its stored sources serve through the serve shape or live.";
       case "cross_connection_unbuilt":
-         return "This model joins sources from different connections; its served copy compiles once both sides are built into one destination, and serves live until then.";
+         return "This model's served copy re-roots a source onto its storage destination, which moves a join of it across connections, and the join cannot be left out; the copy compiles once both sides are built into one destination, and serves live until then.";
       case "column_types":
          return "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it to the serve shape.";
       case "no_declaration":
@@ -2457,9 +2440,9 @@ function servedCopyProblemMessage(
          );
       case "classification_not_kept":
          return (
-            "This source's served copy reaches fields its compile of record does not (a join left out " +
-            "across connections, answered once both sides are built), and the load's classification " +
-            "checks flag them there, so its queries are not answered from the stored tables: " +
+            "This source's re-root changed what it exposes or how a field is classified, which the load's " +
+            "classification checks flag on the served copy, so its queries are not answered from the " +
+            "stored tables (a Publisher bug; please report it): " +
             [...(problem.leaks ?? []), ...(problem.coverage ?? [])].join(" ")
          );
    }

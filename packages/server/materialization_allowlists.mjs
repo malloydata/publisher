@@ -44,15 +44,11 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.3",
    "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/build_plan":
       "2g.3",
-   "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/persist_partition":
-      "2g.3",
    "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/persist_source_fields":
       "2g.3",
    "service/materialization/run/materialization_service.ts -> service/materialization/plan/build_plan":
       "2g.3",
    "service/materialization/run/materialization_service.ts -> service/materialization/plan/build_plan_compile":
-      "2g.3",
-   "service/materialization/run/name_view.ts -> service/materialization/plan/build_plan":
       "2g.3",
    "service/materialization/run/run_instructions.ts -> service/materialization/plan/build_plan":
       "2g.3",
@@ -85,8 +81,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.3",
    "package_load/package_load_worker.ts -> service/materialization/plan/build_plan":
       "2g.3",
-   "package_load/package_load_worker.ts -> service/materialization/plan/cross_connection_joins":
-      "2g.3",
    "package_load/protocol.ts -> service/materialization/plan/build_plan":
       "2g.3",
    "service/catalog_admin.ts -> service/materialization/run/materialization_build_session":
@@ -100,8 +94,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/model.ts -> service/materialization/plan/build_file_generator":
       "2g.3",
    "service/model.ts -> service/materialization/plan/build_plan": "2g.3",
-   "service/model.ts -> service/materialization/plan/cross_connection_joins":
-      "2g.3",
    "service/model.ts -> service/materialization/plan/persisted_view": "2g.3",
    "service/model.ts -> service/materialization/plan/preaggregation_validation":
       "2g.3",
@@ -171,7 +163,6 @@ export const MATERIALIZATION_HEADER_ALLOWLIST = {
    "service/materialization/plan/materialization_eligibility.ts": "5",
    "service/materialization/plan/persist_annotation_validation.ts": "5",
    "service/materialization/plan/persist_dynamic_terms.ts": "5",
-   "service/materialization/plan/persist_partition.ts": "5",
    "service/materialization/run/build_failure_class.ts": "5",
    "service/materialization/run/build_query_tag.ts": "5",
    "service/materialization/run/build_read_cost.ts": "5",
@@ -190,8 +181,6 @@ export const MATERIALIZATION_HEADER_ALLOWLIST = {
    "service/materialization/run/materialization_run_support.ts": "5",
    "service/materialization/run/materialization_scheduler.ts": "5",
    "service/materialization/run/materialization_service.ts": "5",
-   "service/materialization/run/name_view.ts": "5",
-   "service/materialization/run/name_view_sql.ts": "5",
    "service/materialization/run/reclaimer.ts": "5",
    "service/materialization/run/run_instructions.ts": "5",
    "service/materialization/run/run_lifecycle.ts": "5",
@@ -219,10 +208,6 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
    },
    "service/materialization/plan/build_plan.ts": { count: 8, step: "5" },
    "service/materialization/plan/build_plan_compile.ts": {
-      count: 2,
-      step: "5",
-   },
-   "service/materialization/plan/cross_connection_joins.ts": {
       count: 1,
       step: "5",
    },
@@ -243,7 +228,7 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
    },
    "service/materialization/plan/rollup_plan.ts": { count: 5, step: "5" },
    "service/materialization/plan/v1_build_companion.ts": {
-      count: 3,
+      count: 2,
       step: "5",
    },
    "service/materialization/run/incremental_build.ts": { count: 1, step: "5" },
@@ -264,8 +249,6 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
       count: 3,
       step: "5",
    },
-   "service/materialization/run/name_view.ts": { count: 1, step: "5" },
-   "service/materialization/run/name_view_sql.ts": { count: 1, step: "5" },
    "service/materialization/run/run_instructions.ts": { count: 1, step: "5" },
    "service/materialization/run/source_build.ts": { count: 4, step: "5" },
    "service/materialization/run/storage_build_strategy.ts": {
@@ -278,14 +261,14 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
    "service/materialization/serve/serve_verdict.ts": { count: 8, step: "5" },
    "service/materialization/serve/served_copy.ts": { count: 3, step: "5" },
    "service/materialization/serve/served_copy_serve.ts": {
-      count: 6,
+      count: 5,
       step: "5",
    },
    "service/materialization/serve/storage_bindings.ts": { count: 1, step: "5" },
    "service/materialization/serve/view_variants.ts": { count: 1, step: "5" },
    "service/materialization/stored_column_types.ts": { count: 1, step: "5" },
    "service/materialization/text/cross_connection_text.ts": {
-      count: 4,
+      count: 1,
       step: "5",
    },
 };
@@ -346,8 +329,7 @@ export const RATCHET_DIALECT_LITERALS = {
       step: "2l",
    },
    "service/materialization/run/incremental_build.ts": { count: 2, step: "2l" },
-   "service/materialization/run/name_view.ts": { count: 1, step: "2l" },
-   "service/materialization/run/name_view_sql.ts": { count: 8, step: "2l" },
+   "service/materialization/run/table_mark_sql.ts": { count: 3, step: "2l" },
    "service/materialization/run/table_ownership.ts": { count: 4, step: "2l" },
    "service/materialization/serve/bind.ts": {
       count: 1,
@@ -369,8 +351,6 @@ export const RATCHET_LONG_FUNCTIONS = {
       "2g.3",
    "service/materialization/plan/rollup_plan.ts#planSourceRollups": "2g.3",
    "service/materialization/run/instructed_build.ts#InstructedBuild.buildInstructedSource":
-      "2g.4",
-   "service/materialization/run/instructed_build.ts#InstructedBuild.run":
       "2g.4",
    "service/materialization/run/materialization_build_session.ts#buildSourceIntoStorage":
       "2g.4",

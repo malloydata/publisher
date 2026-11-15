@@ -40,7 +40,10 @@ import {
 } from "../errors";
 import { getPersistStorageMode, isPackageInlineFieldsEnabled } from "../config";
 import { logger } from "../logger";
-import { packageRelativeText } from "../package_relative_text";
+import {
+   withoutAbsolutePaths,
+   withPackageRelativeErrors,
+} from "../package_relative_text";
 import { redactPgSecrets } from "../pg_helpers";
 import {
    mergeConnectionUpdate,
@@ -2442,27 +2445,31 @@ export class Environment {
          sourceLocation: string | null;
       },
    ): Promise<Package> {
-      const loaded = await Package.create(
-         this.environmentName,
-         packageName,
-         versionPath,
-         () => this.malloyConfig.malloyConfig,
-      );
-      this.attachDestinationServeConfig(loaded);
-      // The version's serving state lives on its registry row, not in its
-      // immutable publisher.json: where it came from, which version it is,
-      // and the manifest it is bound to.
-      loaded.setPackageMetadata({
-         ...loaded.getPackageMetadata(),
-         versionId: version.versionId,
-         ...(version.sourceLocation
-            ? { location: version.sourceLocation }
-            : {}),
-         manifestLocation: version.manifestPath,
+      // A failed load names the version's files package-relative, as a
+      // failed reload does, never this server's version folder.
+      return withPackageRelativeErrors(versionPath, async () => {
+         const loaded = await Package.create(
+            this.environmentName,
+            packageName,
+            versionPath,
+            () => this.malloyConfig.malloyConfig,
+         );
+         this.attachDestinationServeConfig(loaded);
+         // The version's serving state lives on its registry row, not in its
+         // immutable publisher.json: where it came from, which version it is,
+         // and the manifest it is bound to.
+         loaded.setPackageMetadata({
+            ...loaded.getPackageMetadata(),
+            versionId: version.versionId,
+            ...(version.sourceLocation
+               ? { location: version.sourceLocation }
+               : {}),
+            manifestLocation: version.manifestPath,
+         });
+         await this.bindManifestIfConfigured(loaded);
+         await this.rebindServeBindingsFromLocalStore(loaded);
+         return loaded;
       });
-      await this.bindManifestIfConfigured(loaded);
-      await this.rebindServeBindingsFromLocalStore(loaded);
-      return loaded;
    }
 
    /**
@@ -2768,33 +2775,38 @@ export class Environment {
       return this.trackPackageLoad(packageName, async () => {
          this.transition(packageName, { type: "beginLoad" });
 
-         let packagePath: string | undefined;
          try {
             logger.debug(`Loading package ${packageName}...`);
-            packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
-            const _package = await Package.create(
-               this.environmentName,
+            const packagePath = safeJoinUnderRoot(
+               this.environmentPath,
                packageName,
-               packagePath,
-               () => this.malloyConfig.malloyConfig,
             );
-            this.attachDestinationServeConfig(_package);
-            await this.commitLoadedPackage(packageName, _package, {
-               bindServeState: true,
-               replaces: existingPackage,
-               reportSurfaceChange: true,
-            });
+            // The load failure is the caller's answer and the package's
+            // status: it names the package's files package-relative, never
+            // where this server keeps them, binding included.
+            const _package = await withPackageRelativeErrors(
+               packagePath,
+               async () => {
+                  const created = await Package.create(
+                     this.environmentName,
+                     packageName,
+                     packagePath,
+                     () => this.malloyConfig.malloyConfig,
+                  );
+                  this.attachDestinationServeConfig(created);
+                  await this.commitLoadedPackage(packageName, created, {
+                     bindServeState: true,
+                     replaces: existingPackage,
+                     reportSurfaceChange: true,
+                  });
+                  return created;
+               },
+            );
             logger.debug(`Successfully loaded package ${packageName}`);
 
             return _package;
          } catch (error) {
             logger.error(`Failed to load package ${packageName}`, { error });
-            // The load failure is the caller's answer and the package's
-            // status: a compile error in it names the package's files
-            // package-relative, never where this server keeps them.
-            if (packagePath !== undefined && error instanceof Error) {
-               error.message = packageRelativeText(error.message, packagePath);
-            }
             if (existingPackage !== undefined) {
                // A failed reload keeps serving the last good model (replaced
                // only on success) rather than evicting the package. Recorded
@@ -4111,7 +4123,7 @@ export class Environment {
 
    /** Every change to a package's phase or problems goes through here. */
    private transition(packageName: string, event: PackageLifecycleEvent): void {
-      this.lifecycle.apply(packageName, event);
+      this.lifecycle.apply(packageName, callerVisibleEvent(event));
    }
 
    public async deletePackage(
@@ -4549,5 +4561,32 @@ function servingVerdicts(pkg: Package | undefined): {
          error: error instanceof Error ? error.message : String(error),
       });
       return {};
+   }
+}
+
+/**
+ * `event` with the message it records (a load, mount or stale-reload error,
+ * read back by /status `loadErrors`, MCP `get_status` and `list_packages`)
+ * naming no server path. A load error is already package-relative; this is
+ * the backstop for every other record, such as a configured location that
+ * did not mount.
+ */
+function callerVisibleEvent(
+   event: PackageLifecycleEvent,
+): PackageLifecycleEvent {
+   switch (event.type) {
+      case "recordLoadError":
+      case "recordMountError":
+         return { ...event, message: withoutAbsolutePaths(event.message) };
+      case "reloadFailed":
+         return {
+            ...event,
+            stale: {
+               ...event.stale,
+               message: withoutAbsolutePaths(event.stale.message),
+            },
+         };
+      default:
+         return event;
    }
 }
