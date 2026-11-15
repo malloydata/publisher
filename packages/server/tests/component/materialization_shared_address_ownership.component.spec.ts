@@ -2,15 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A refused `name=` refuses every source sharing its table, on a DuckLake
- * `storage=` destination, end to end through a real Environment and
- * MaterializationService.
+ * One table per name, on a DuckLake `storage=` destination, end to end
+ * through a real Environment and MaterializationService.
  *
- * `owned` and `plain` compile to the same build SQL, so they share one content
- * address, and auto-run derives ONE instruction for it, at `owned`'s `name=`.
- * When another package's table holds that name, the ownership check refuses
- * the instruction: no source on the address may write it. `solo` is a table
- * of its own, so the run commits and its manifest can be read.
+ * `owned` and `plain` compile to the same build SQL, but `owned` names its
+ * table (`name=`) and `plain` does not, so each is addressed apart
+ * (foldDistinctTableNames) and builds its own table. When another package's
+ * table holds `owned`'s name, the ownership check refuses `owned` alone, and
+ * `plain` never writes that table. `solo` is a table of its own.
+ *
+ * Two gated sources of one build with different `name=`s build two tables,
+ * each served to its own callers as live answers them; and two sources of
+ * one build that store different columns (`private:` keeps `status`,
+ * `except:` drops it) each store their own, in either declaration order.
  *
  * The DuckLake seams are faked as in the other DuckLake component specs: the
  * three exported attaches attach a DuckLake catalog kept in a local file, the
@@ -48,6 +52,7 @@ import type {
 import { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
 import { createDuckDBRepository } from "../../src/storage/duckdb/DuckDBRepository";
 import { initializeSchema } from "../../src/storage/duckdb/schema";
+import { freshLoadPool } from "../../src/test_helpers/conformance/package_runner";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
 
@@ -60,7 +65,8 @@ const LAKE = "lake";
 const OTHER_MARK = ownedTableComment("other/pkg2");
 const OWN_MARK = ownedTableComment(`${ENV}/${PKG}`);
 
-const MODEL = `##! experimental.persistence
+const MODEL = `##! experimental { persistence givens access_modifiers }
+given: ROLE :: string
 source: raw is warehouse.sql("""
   SELECT * FROM (VALUES ('a', 1.0), ('a', 2.0), ('b', 4.0)) AS t(cat, amt)
 """)
@@ -73,6 +79,30 @@ source: plain is raw extend { measure: total is amt.sum() }
 
 #(materialize) storage="lake"
 source: solo is raw extend { where: cat = 'a' }
+
+source: orders_raw is warehouse.sql("""
+  SELECT * FROM (VALUES (1, 'east', 'open'), (2, 'west', 'closed')) AS t(id, region, status)
+""")
+
+#(authorize) true
+#(materialize) storage="lake" name="open_t"
+source: open_orders is orders_raw -> { select: id, region }
+
+#(authorize) $ROLE = 'admin'
+#(materialize) storage="lake" name="admin_t"
+source: admin_orders is orders_raw -> { select: id, region }
+
+#@ persist storage="lake"
+source: b_hides is orders_raw -> { select: id, region, status } include { public: id, region; private: status }
+
+#@ persist storage="lake"
+source: a_drops is orders_raw -> { select: id, region, status } extend { except: status }
+
+#@ persist storage="lake"
+source: a_drops2 is orders_raw -> { where: id > 0; select: id, region, status } extend { except: status }
+
+#@ persist storage="lake"
+source: b_hides2 is orders_raw -> { where: id > 0; select: id, region, status } include { public: id, region; private: status }
 `;
 
 const QUERY = (source: string) =>
@@ -98,7 +128,7 @@ function asNumber(v: unknown): unknown {
 describe.skipIf(process.platform === "win32")(
    // Skipped on Windows: the catalog file is opened by several in-process
    // DuckDB instances at once, which Windows' mandatory file locks refuse.
-   "a refused name= on a DuckLake destination refuses the sibling sharing its table",
+   "one table per name= and per stored projection on a DuckLake destination",
    () => {
       let root: string;
       let lakeDir: string;
@@ -213,8 +243,12 @@ describe.skipIf(process.platform === "win32")(
             env: {
                PERSIST_STORAGE_MODE: "on",
                PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
             },
          }).restore;
+         // The package-load worker plans under the settings it was spawned
+         // with: one spawned now plans the gated sources as the run does.
+         await freshLoadPool();
          root = fs.realpathSync(
             fs.mkdtempSync(path.join(os.tmpdir(), "ducklake-shared-address-")),
          );
@@ -326,6 +360,7 @@ describe.skipIf(process.platform === "win32")(
          await db?.close();
          if (root) fs.rmSync(root, { recursive: true, force: true });
          restore?.();
+         await freshLoadPool();
       });
 
       async function run(): Promise<Materialization> {
@@ -357,11 +392,18 @@ describe.skipIf(process.platform === "win32")(
       async function ask(
          source: string,
       ): Promise<{ rows: unknown[]; servedFrom: string | null }> {
+         return askQuery(QUERY(source));
+      }
+
+      async function askQuery(
+         query: string,
+         givens?: Record<string, string>,
+      ): Promise<{ rows: unknown[]; servedFrom: string | null }> {
          const result = await pkg
             .getModel("m.malloy")!
             .runQuery(
                unrecordedAudit(),
-               { query: QUERY(source) } as never,
+               { query, ...(givens ? { givens } : {}) } as never,
                QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
             );
          const rows = (result.compactResult as Record<string, unknown>[])
@@ -370,9 +412,53 @@ describe.skipIf(process.platform === "win32")(
                   Object.entries(r).map(([k, v]) => [k, asNumber(v)]),
                ),
             )
-            .sort((x, y) => String(x.cat).localeCompare(String(y.cat)));
+            .sort((x, y) =>
+               String(x.cat ?? x.id).localeCompare(String(y.cat ?? y.id)),
+            );
          return { rows, servedFrom: result.servedFrom ?? null };
       }
+
+      /** What `query` answers for `givens`, or the error it is refused with. */
+      async function answerOf(
+         query: string,
+         givens?: Record<string, string>,
+      ): Promise<{ rows: unknown[] } | { error: string }> {
+         try {
+            return { rows: (await askQuery(query, givens)).rows };
+         } catch (error) {
+            return { error: (error as Error).message };
+         }
+      }
+
+      /** The table the run built for `source`. */
+      function tableOf(m: Materialization, source: string): string {
+         const entries = Object.values(
+            (m.manifest as { entries: Record<string, Entry> }).entries,
+         ).filter((e) => e.sourceName === source && e.physicalTableName);
+         expect(entries).toHaveLength(1);
+         return entries[0].physicalTableName!;
+      }
+
+      /** Each gated or projected case, as every caller asks it. */
+      type Case = [string, Record<string, string> | undefined];
+      const CASES: Case[] = [
+         ...["open_orders", "admin_orders"].flatMap((source) =>
+            [{ ROLE: "admin" }, { ROLE: "viewer" }].map(
+               (givens): Case => [
+                  `run: ${source} -> { select: id, region }`,
+                  givens,
+               ],
+            ),
+         ),
+         ...["b_hides", "a_drops", "a_drops2", "b_hides2"].map(
+            (source): Case => [
+               `run: ${source} -> { select: id, region }`,
+               undefined,
+            ],
+         ),
+      ];
+      const live = new Map<string, unknown>();
+      let firstRun: Materialization;
 
       function outcome(m: Materialization) {
          const manifest = m.manifest as {
@@ -393,9 +479,15 @@ describe.skipIf(process.platform === "win32")(
          { cat: "b", total: 4 },
       ];
 
-      it("refuses the name= source AND its same-address sibling, leaving the other package's table and mark untouched", async () => {
+      it("refuses the name= source alone, leaving the other package's table and mark untouched, and builds its same-build sibling a table of its own", async () => {
          for (const source of ["owned", "plain"]) {
             expect(await ask(source)).toEqual({ rows: LIVE, servedFrom: null });
+         }
+         for (const [query, givens] of CASES) {
+            live.set(
+               JSON.stringify([query, givens]),
+               await answerOf(query, givens),
+            );
          }
          await inspect(async (c) => {
             await c.runSQL(
@@ -412,12 +504,23 @@ describe.skipIf(process.platform === "win32")(
          });
 
          const m = await run();
+         firstRun = m;
          expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
-         expect(m.metadata).toMatchObject({ sourcesBuilt: 1 });
          const { built, failures } = outcome(m);
-         // Only `solo`: nothing on the refused address was built.
-         expect(built).toEqual(["solo"]);
+         // Everything but `owned`: `plain` names no table of its own, so it
+         // is not on `owned`'s address (foldDistinctTableNames).
+         expect(built).toEqual([
+            "a_drops",
+            "a_drops2",
+            "admin_orders",
+            "b_hides",
+            "b_hides2",
+            "open_orders",
+            "plain",
+            "solo",
+         ]);
          expect(failures).toHaveLength(1);
+         expect(failures[0].sourceName).toBe("owned");
          expect(failures[0].reason).toContain(
             "is not built (table-owned-elsewhere): its name= 'shared_t' in storage destination 'lake' is held by a table package 'other/pkg2' built",
          );
@@ -425,14 +528,90 @@ describe.skipIf(process.platform === "win32")(
          // The other package's table: its rows, files and mark, as they were.
          expect((await catalog()).shared_t).toEqual(before);
 
-         // Both sources sharing the refused table answer live.
-         for (const source of ["owned", "plain"]) {
-            expect(await ask(source)).toEqual({ rows: LIVE, servedFrom: null });
-         }
+         // The refused source answers live; its sibling from its own table.
+         expect(await ask("owned")).toEqual({ rows: LIVE, servedFrom: null });
+         expect(tableOf(m, "plain")).not.toBe("shared_t");
+         expect(await ask("plain")).toEqual({
+            rows: LIVE,
+            servedFrom: "storage",
+         });
          expect((await ask("solo")).servedFrom).toBe("storage");
       });
 
-      it("once the name is free, builds the shared table once, marks it as this package's, and serves both from it", async () => {
+      it("builds two gated sources of one build a table each, under each name=, each serving its own callers as live", async () => {
+         const tables = await catalog();
+         expect(tableOf(firstRun, "open_orders")).toBe("open_t");
+         expect(tableOf(firstRun, "admin_orders")).toBe("admin_t");
+         for (const table of ["open_t", "admin_t"]) {
+            expect(tables[table]?.rows).toEqual([
+               [1, "east"],
+               [2, "west"],
+            ]);
+         }
+         for (const [query, givens] of CASES.slice(0, 4)) {
+            const served = await answerOf(query, givens);
+            expect(served).toEqual(
+               live.get(JSON.stringify([query, givens])) as never,
+            );
+            if ("rows" in served) {
+               expect((await askQuery(query, givens)).servedFrom).toBe(
+                  "storage",
+               );
+            }
+         }
+         // The gate still decides: a viewer is refused admin_orders, served
+         // or live.
+         expect(await answerOf(CASES[3][0], CASES[3][1])).toMatchObject({
+            error: expect.any(String),
+         });
+      });
+
+      it("stores each projection of one build in its own table, in either order: a column dropped with except: is never at rest", async () => {
+         const tables = await catalog();
+         const names = ["b_hides", "a_drops", "a_drops2", "b_hides2"].map(
+            (source) => tableOf(firstRun, source),
+         );
+         expect(new Set(names).size).toBe(4);
+         const columns = await inspect(async (c) =>
+            Object.fromEntries(
+               await Promise.all(
+                  names.map(async (table) => [
+                     table,
+                     (
+                        await c.runSQL(
+                           `SELECT column_name FROM duckdb_columns() WHERE database_name = '${LAKE}' AND table_name = '${table}' ORDER BY column_index`,
+                        )
+                     ).rows.map((r) => String(r.column_name)),
+                  ]),
+               ),
+            ),
+         );
+         const [bHides, aDrops, aDrops2, bHides2] = names;
+         expect(columns[aDrops]).toEqual(["id", "region"]);
+         expect(columns[aDrops2]).toEqual(["id", "region"]);
+         expect(columns[bHides]).toContain("status");
+         expect(columns[bHides2]).toContain("status");
+         expect(Object.keys(tables)).toEqual(expect.arrayContaining(names));
+         // Each answers as live. The `except:` sources are read from their own
+         // tables; a v1 `storage=` source with a `private:` column is not yet
+         // re-rooted by the served copy on this branch (#1788), so it answers
+         // live from beside a table that is its own either way.
+         for (const [query, givens] of CASES.slice(4)) {
+            const served = await askQuery(query, givens);
+            expect(served.rows).toEqual(
+               (
+                  live.get(JSON.stringify([query, givens])) as {
+                     rows: unknown[];
+                  }
+               ).rows,
+            );
+            if (query.includes("a_drops")) {
+               expect(served.servedFrom).toBe("storage");
+            }
+         }
+      });
+
+      it("once the name is free, builds owned's table, marks it as this package's, and serves it, while plain keeps its own", async () => {
          await inspect(async (c) => {
             await c.runSQL(`DROP TABLE ${LAKE}.main.shared_t`);
          }, false);
@@ -452,6 +631,8 @@ describe.skipIf(process.platform === "win32")(
                servedFrom: "storage",
             });
          }
+         expect(tableOf(m, "owned")).toBe("shared_t");
+         expect(tableOf(m, "plain")).toBe(tableOf(firstRun, "plain"));
       });
    },
 );

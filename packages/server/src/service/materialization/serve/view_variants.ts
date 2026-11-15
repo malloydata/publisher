@@ -338,7 +338,16 @@ export class PersistedViewServe {
          modelPath: this.host.modelPath(),
          subject: `${plan.sourceName} -> ${plan.viewName}`,
          cacheScope: `persisted_view\u0000${this.generation}\u0000${plan.buildSourceID}\u0000${localName}`,
+         compilerKey: this.compilerKeyOf(plan.buildSourceID),
       });
+   }
+
+   /**
+    * The key Malloy substitutes `buildSourceID`'s colocated table under,
+    * where it is not the table's address (see PlannedTable.compilerKey).
+    */
+   compilerKeyOf(buildSourceID: string): string | undefined {
+      return this.host.catalog()?.planned.get(buildSourceID)?.compilerKey;
    }
 
    /** A persisted result's table: a `storage=` binding, or a colocated manifest entry. */
@@ -563,8 +572,26 @@ export async function readStoredVariant(args: {
    subject: string;
    /** The graft cache scope of this variant. */
    cacheScope: string;
+   /** The key Malloy substitutes a colocated table under, when not its address. */
+   compilerKey?: string;
 }): Promise<ViewAnswer> {
    const { variant, table } = args;
+   // Sources folded apart on one build share Malloy's key: under it, this
+   // variant reads its own table.
+   const own =
+      args.compilerKey && table.tableId
+         ? args.buildManifest?.entries[table.tableId]
+         : undefined;
+   const buildManifest =
+      own && args.buildManifest
+         ? {
+              ...args.buildManifest,
+              entries: {
+                 ...args.buildManifest.entries,
+                 [args.compilerKey!]: own,
+              },
+           }
+         : args.buildManifest;
    if (!variant.materializer || !variant.modelDef) {
       logger.warn("A persisted-view variant did not compile", {
          modelPath: args.modelPath,
@@ -582,7 +609,7 @@ export async function readStoredVariant(args: {
       const result = await runnable.getPreparedResult({
          ...(table.virtualMap ? { virtualMap: table.virtualMap } : {}),
          ...(args.givens ? { givens: args.givens as never } : {}),
-         ...(table.virtualMap ? {} : { buildManifest: args.buildManifest }),
+         ...(table.virtualMap ? {} : { buildManifest }),
       } as never);
       sql = result.sql;
    } catch {

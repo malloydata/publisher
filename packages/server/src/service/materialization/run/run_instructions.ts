@@ -30,6 +30,7 @@ import {
 import {
    CompiledBuildPlan,
    computeSourceEntityId,
+   foldDistinctTableNames,
    sourcesInBuildOrder,
    tierGateInputs,
 } from "../plan/build_plan";
@@ -544,6 +545,8 @@ export function deriveSelfInstructions(
    /** Tables this run builds under a new name in place of an earlier run's. */
    renamed: RenamedTable[];
 } {
+   // A compiled package's plan is decided already; a hand-made one here.
+   foldDistinctTableNames(compiled);
    const include = sourceNames ? new Set(sourceNames) : null;
    const instructions: BuildInstruction[] = [];
    const carried: Record<string, ManifestEntry> = {};

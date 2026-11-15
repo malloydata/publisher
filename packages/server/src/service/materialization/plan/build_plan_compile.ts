@@ -18,6 +18,7 @@ import {
    collectModelBuildPlan,
    deriveBuildPlanOutcome,
    emptyBuildPlanParts,
+   foldDistinctTableNames,
    resolveConnectionDigests,
    resolvePackageConnections,
    type BuildPlanOutcome,
@@ -175,12 +176,16 @@ export async function compilePackageBuildPlan(
       },
    );
 
+   const versionScoped = pkg.getPackageMetadata?.()?.scope === "version";
+   // Before anything addresses a source: each author `name=` its own table.
+   foldDistinctTableNames(
+      { ...parts, connectionDigests, versionScoped },
+      { force: true },
+   );
    // The build path reads this plan directly: a `#(materialize)` source
    // refused for its table name must not build here either.
    return refuseCollidingMaterialize({
-      ...(pkg.getPackageMetadata?.()?.scope === "version"
-         ? { versionScoped: true }
-         : {}),
+      ...(versionScoped ? { versionScoped: true } : {}),
       builds: parts.builds,
       sources: parts.sources,
       targets: parts.targets,

@@ -22,7 +22,12 @@ import {
    getPersistAddressIncludesDestination,
    getPersistStorageMode,
 } from "../../../config";
-import { declaredStorage } from "./persist_source_fields";
+import { tableIdentity } from "../../versions/materialization_scope";
+import {
+   declaredStorage,
+   deriveAnnotationFields,
+   deriveColumns,
+} from "./persist_source_fields";
 
 /**
  * One connection's persist sources in the order they build, from Malloy's
@@ -329,9 +334,11 @@ export function computeSourceEntityId(
 /**
  * The key the compiler itself files a source's table under: its target's
  * `buildId`, which the compiler computed and looks tables up by. Like
- * {@link computeSourceEntityId} but without the folded destination, so for a
- * source that has one the two differ and a manifest handed to the compiler
- * carries the entry under both (see `manifestForCompiler`).
+ * {@link computeSourceEntityId} but without what {@link addressText} folds in
+ * (a destination, a distinct `name=` or projection), so for a source that has
+ * one the two differ and a manifest handed to the compiler carries the entry
+ * under both (see `manifestForCompiler`). Sources folded apart share one
+ * compiler key, whose entry is then either of their tables: the same rows.
  *
  * `connectionDigests` is unused: the target's key was computed under the
  * runtime's own digests, for the same connections Publisher resolves
@@ -369,8 +376,12 @@ export function addressDestination(source: PersistSource): string | undefined {
 /**
  * Fold what the target's `sql` cannot carry into the text a source's address
  * is computed from: (P12, behind a switch) the storage destination it builds
- * into. The target's `sql` carries no annotation bytes, so without this a
- * source moved to `storage=` would keep its colocated address (#7087).
+ * into, and the author's `name=` (or stored projection) where another source
+ * of the same build names (or stores) another table
+ * ({@link foldDistinctTableNames}). The target's `sql` carries no annotation
+ * bytes, so without this a source moved to `storage=` would keep its
+ * colocated address (#7087), and two `name=`s on one build would get one
+ * table.
  *
  * Derived here rather than passed in so every caller agrees
  * (`build_targets_address_equality` pins it). Nothing to fold appends
@@ -381,7 +392,139 @@ export function addressText(source: PersistSource, sql: string): string {
    let text = sql;
    const destination = addressDestination(source);
    if (destination !== undefined) text += `\n-- stored in: ${destination}`;
+   const table = tableNameFolds.get(source);
+   if (table) text += `\n-- table: ${table}`;
    return text;
+}
+
+/**
+ * The columns a `storage=` build of `source` stores (its public columns,
+ * as projectToPublicColumns writes them), sorted; "" for a colocated source,
+ * whose build writes its whole query, or one whose columns cannot be read
+ * (its storage build refuses on its own).
+ */
+function storedProjection(source: PersistSource): string {
+   try {
+      if (!declaredStorage(source)) return "";
+   } catch {
+      return "";
+   }
+   return deriveColumns(source)
+      .map((c) => c.name)
+      .sort()
+      .join(",");
+}
+
+/**
+ * What {@link foldDistinctTableNames} folded into each planned source's
+ * address: the name's identity, or the stored columns where projections
+ * differ, or "" when nothing is folded. A source with no entry has not been
+ * decided.
+ */
+const tableNameFolds = new WeakMap<PersistSource, string>();
+
+/**
+ * Give each author `name=` its own table: two sources that compile to one
+ * build (one address, say gated differently at read) but name different
+ * tables are each addressed with their name folded in, so every plan, build,
+ * manifest and bind path keys two tables. A source with no `name=` of its
+ * own (a defaulted readable name, a rollup) keeps the plain address, as does
+ * every source of an address whose sources all name one table: the same
+ * source reached from two models, or identical SQL with no `name=`.
+ *
+ * Likewise two `storage=` sources of one build with no `name=` that store
+ * different columns (one keeps a column `private:`, the other drops it with
+ * `except:`): each is addressed with its projection folded in, so each gets
+ * its own readable table and a column one drops is never at rest in its
+ * table. Sources of one `name=` stay on that one table.
+ *
+ * So only an address that held sources naming or storing different tables
+ * moves, and the result does not depend on build order.
+ *
+ * A name is its {@link tableIdentity}, so two names a warehouse may read as
+ * one table (`T` and `t`, `s.t` and `t`) are never split onto two addresses
+ * writing it. Under `scope: "version"` (`versionScoped`) a defaulted name
+ * that equals an author's is that author's table, as persistTableTarget
+ * keys it.
+ *
+ * Decided once per source object, over the package's whole plan, before any
+ * source is refused: a later call (on a plan less its refused sources) keeps
+ * those decisions, so its addresses agree with the plan's. `force` decides
+ * again, as a fresh compile of the package does.
+ */
+export function foldDistinctTableNames(
+   plan: {
+      sources: Record<string, PersistSource>;
+      targets?: Record<string, BuildTarget>;
+      connectionDigests: Record<string, string>;
+      preaggregatePlans?: Record<string, unknown>;
+      materializePlans?: Record<string, { nameDefaulted?: true }>;
+      versionScoped?: boolean;
+   },
+   options: { force?: boolean } = {},
+): void {
+   const entries = Object.entries(plan.sources);
+   if (!options.force && entries.every(([, s]) => tableNameFolds.has(s))) {
+      return;
+   }
+   const groups = new Map<
+      string,
+      {
+         source: PersistSource;
+         name: string;
+         defaulted: boolean;
+         stores: string;
+      }[]
+   >();
+   for (const [sourceID, source] of entries) {
+      tableNameFolds.set(source, "");
+      let address: string;
+      try {
+         address = computeSourceEntityId(
+            source,
+            plan.connectionDigests,
+            plan.targets?.[sourceID],
+         );
+      } catch {
+         continue; // Unaddressable: refused on its own path.
+      }
+      const declared = deriveAnnotationFields(source).name?.trim();
+      const materialize = plan.materializePlans?.[sourceID];
+      const defaulted =
+         !!plan.preaggregatePlans?.[sourceID] ||
+         (materialize ? !!materialize.nameDefaulted : !declared);
+      const group = groups.get(address) ?? [];
+      group.push({
+         source,
+         name: tableIdentity(declared || source.name),
+         defaulted,
+         stores: plan.preaggregatePlans?.[sourceID]
+            ? ""
+            : storedProjection(source),
+      });
+      groups.set(address, group);
+   }
+   for (const group of groups.values()) {
+      const authored = new Set(
+         group.filter((m) => !m.defaulted).map((m) => m.name),
+      );
+      const nameOf = (m: (typeof group)[number]) =>
+         !m.defaulted || (plan.versionScoped && authored.has(m.name))
+            ? m.name
+            : "";
+      // Projections split only `storage=` sources with no table name of
+      // their own: one `name=` is one table, whatever each source stores in
+      // it, and a colocated build stores its whole query.
+      const projected = (m: (typeof group)[number]) =>
+         nameOf(m) === "" && m.stores !== "";
+      const projections = new Set(group.filter(projected).map((m) => m.stores));
+      const keyOf = (m: (typeof group)[number]) =>
+         projected(m) && projections.size > 1 ? `\u0000${m.stores}` : nameOf(m);
+      if (new Set(group.map(keyOf)).size < 2) continue;
+      for (const member of group) {
+         tableNameFolds.set(member.source, keyOf(member));
+      }
+   }
 }
 
 /**

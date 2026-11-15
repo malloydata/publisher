@@ -39,6 +39,7 @@ import { pathToFileURL } from "url";
 import {
    collectModelBuildPlan,
    deriveBuildPlanOutcome,
+   foldDistinctTableNames,
    emptyBuildPlanParts,
    type CompiledBuildPlan,
 } from "../../../src/service/materialization/plan/build_plan";
@@ -154,6 +155,9 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
          build: undefined,
       };
    }
+   // As a package's plan is: each `name=` its own table, before anything
+   // reads an address.
+   foldDistinctTableNames(compiled);
    const addresses = addressesOf(compiled);
    learnAddresses(normalizer, addresses);
    const { connections: _connections, ...collected } = compiled;

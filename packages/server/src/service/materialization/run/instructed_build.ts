@@ -979,9 +979,10 @@ export class InstructedBuild {
  * Publisher chose (its readable name, hashed over the package and the
  * version, so no other package writes it), or a run that cannot say whose it
  * is. Decided by the instruction, not the source: every source sharing the
- * address builds the one instruction, named after the first of them, so a
- * sibling with no `name=` of its own writes that author's name too, and is
- * checked as the author's source is.
+ * address builds the one instruction. An auto-run gives each `name=` its own
+ * address (foldDistinctTableNames); an instruction a run is handed may still
+ * name one table for sources that differ, so a sibling with no `name=` of its
+ * own that writes an author's name is checked as the author's source is.
  */
 function authorNamedTarget(
    run: InstructedRun,

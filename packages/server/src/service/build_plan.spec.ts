@@ -838,13 +838,15 @@ describe("BuildPlan.refusedSources", () => {
    it(
       "refuses a colocated source whose table a refused source shares, with that source's reason",
       async () => {
-         // `ok` and `leaky` compile to the same SQL, so one table. The build
-         // and the bind refuse an address any source on it is refused for,
-         // so the plan does not list `ok` as buildable.
+         // `ok` and `leaky` compile to the same SQL, so one table (`ok` names
+         // none, and `leaky`'s route, `name=` included, is dropped, so neither
+         // names one of its own). The build and the bind refuse an address
+         // any source on it is refused for, so the plan does not list `ok` as
+         // buildable.
          const pkg = await packages.create(`##! experimental.persistence
 source: base is duckdb.sql("SELECT 1 AS amount")
 
-#@ persist name="ok"
+#@ persist
 source: ok is base -> { aggregate: c is count() }
 
 #@ persist name="leaky" storage="dest"

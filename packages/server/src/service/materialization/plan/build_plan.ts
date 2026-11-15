@@ -95,7 +95,9 @@ import {
 import { quoteIdentifier } from "../../quoting";
 import {
    addressSQL,
+   compilerBuildId,
    computeSourceEntityId,
+   foldDistinctTableNames,
    isUnkeyable,
    plannedSources,
    presentAs,
@@ -130,6 +132,7 @@ export {
    buildTargetOf,
    compilerBuildId,
    computeSourceEntityId,
+   foldDistinctTableNames,
    plannedSources,
    resolveConnectionDigests,
    setTestAddressForTarget,
@@ -1678,6 +1681,13 @@ export interface BuildPlanOutcome {
     * Optional: a worker that predates it sends none.
     */
    refusedRollups?: Record<string, RefusedRollup>;
+   /**
+    * The key Malloy files each table under (its target's `buildId`), by
+    * content address, where the two differ: an address
+    * foldDistinctTableNames gave a source its own `name=` or projection on.
+    * Optional: a worker that predates it sends none.
+    */
+   compilerKeys?: Record<string, string>;
 }
 
 /** What a refused rollup's warning names: its base and its grain. */
@@ -1697,6 +1707,11 @@ export function deriveBuildPlanOutcome(
    /** The package's materialization `scope` (`"version"` suffixes every name). */
    scope?: string | null,
 ): BuildPlanOutcome {
+   // Before anything addresses a source: each author `name=` its own table.
+   foldDistinctTableNames({
+      ...collected,
+      ...(scope === "version" ? { versionScoped: true } : {}),
+   });
    // Before anything reads the plan: a refused source is neither built nor
    // served, and its warning replaces it (#6644).
    const compiled = refuseCollidingMaterialize({
@@ -1743,7 +1758,37 @@ export function deriveBuildPlanOutcome(
          .map(([sourceID]) => sourceID)
          .sort(),
       refusedRollups: refusedRollupsOf(plan, compiled.preaggregatePlans),
+      compilerKeys: compilerKeysOf(compiled),
    };
+}
+
+/** {@link BuildPlanOutcome.compilerKeys}. */
+function compilerKeysOf(
+   compiled: Pick<
+      CompiledBuildPlan,
+      "sources" | "targets" | "connectionDigests"
+   >,
+): Record<string, string> {
+   const keys: Record<string, string> = {};
+   for (const [sourceID, source] of Object.entries(compiled.sources)) {
+      try {
+         const target = compiled.targets?.[sourceID];
+         const address = computeSourceEntityId(
+            source,
+            compiled.connectionDigests,
+            target,
+         );
+         const key = compilerBuildId(
+            source,
+            compiled.connectionDigests,
+            target,
+         );
+         if (key !== address) keys[address] = key;
+      } catch {
+         // Unaddressable: refused on its own path.
+      }
+   }
+   return keys;
 }
 
 /** {@link BuildPlanOutcome.refusedRollups}. */

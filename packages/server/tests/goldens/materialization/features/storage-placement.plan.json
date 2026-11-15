@@ -540,7 +540,7 @@
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4",
+        "sourceEntityId": "2132b8ba56b26471fd390f5db5b1efafcc536a1b564a521951213e4f8928e006",
         "sourceID": "p_named_nested@<pkg>/m.malloy",
         "sql": "sha256:8b0c58a474b6c64b"
       },
@@ -568,7 +568,7 @@
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4",
+        "sourceEntityId": "9dd25350bdb25aa9f7851c358e415a9fd78d32524fe535ed1ecd8aacf8eeec6b",
         "sourceID": "p_named_sibling@<pkg>/m.malloy",
         "sql": "sha256:8b0c58a474b6c64b"
       },

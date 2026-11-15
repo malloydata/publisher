@@ -21,6 +21,16 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a different `name=` always gets its own table
+
+Two stored sources that compile to the same build SQL (for example two sources over one query that differ only in an `#(authorize)` gate, which is applied at read) shared one content address, and so one table, named by whichever of them came first in build order. When each had its own `name=`, only one of those names was ever written; the other source's `name=` table was silently never built, and which one won depended on build order. Now an author's `name=` is part of what identifies a table: sources of one build with different `name=`s build and bind a table each, under each name, and a source with no `name=` beside them keeps its own readable table. The same rule covers two `storage=` sources of one build that store different columns (one keeps a column `private:`, the other drops it with `except:`): each now stores its own columns, so a column a source drops is never written to its table. This holds for `#@ persist`, `#(materialize)`, persisted views and queries, colocated and `storage=` tables, and every materialization scope.
+
+Sources that agree still share one table at the address they always had: the same `name=`, no `name=`, or the same source reached from two models. Nothing else rebuilds.
+
+What to expect on upgrade: on the next run, each source affected (one whose `name=` or stored columns differ from another source of the same build) builds its own table once, including a source whose `name=` table was never written before; an incremental one seeds in full. Table names no longer depend on build order. A table one of those sources' earlier runs wrote stays with those runs and goes when they are deleted with `dropTables=true`.
+
+No API, enum, warning code or metric value changes. The incremental shared-address advisory (`persist-incremental-shared-address`) no longer meets sources with different `name=`s, and its message for agreeing declarations now says the sources read one table.
+
 ## [Unreleased] — a `storage=` rollup returns exact big-integer sums and keeps `timestamptz` grains
 
 A rollup stored in a `storage=` destination (`#(preaggregate)` or v1 `#@ preaggregate`) read its stored table with the wrong types in two cases. A big-integer measure (a `sum` of a BIGINT) whose total passed 2^53 came back rounded, as `-9007199254740992` where live gives `-9007199254740993`; it is now read through its native type and returns every digit, as live does. A grain dimension live types as `timestamptz` came back typed `timestamp`, with equal rows; it now keeps its `timestamptz` type. A big-integer column the destination stored where no cast reads it exactly (a float, its digits already lost) is no longer served: the rollup is skipped with reason `MISSING_FIELD` and the query is answered live. Colocated rollups are unchanged; they were already exact.
