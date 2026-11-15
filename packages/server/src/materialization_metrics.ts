@@ -21,7 +21,11 @@ import {
    resetInstrumentsForTesting,
 } from "./telemetry";
 import type { components } from "./api";
-import type { SourceDeclineReason } from "./service/materialization/domain/source_decline";
+import type {
+   BindDeclineReason,
+   ServedCopyProblemReason,
+   SourceDeclineReason,
+} from "./service/materialization/domain/source_decline";
 
 /**
  * Every label below is a closed union whose values are listed in a const array
@@ -168,6 +172,7 @@ export const BIND_OUTCOMES = [
    "failure",
    "timeout",
    "bound",
+   "partial",
    "declined",
 ] as const;
 export type BindOutcome = (typeof BIND_OUTCOMES)[number];
@@ -298,18 +303,21 @@ const connectionDigestSkipCounter = lazyCounter(
 const servedCopyBindCounter = lazyCounter(
    "publisher_served_copy_bind_total",
    "Serving's binds. Labels: scope ('manifest': one manifest bind, from REST, " +
-      "auto-load or a rebind; 'source': one source entry deciding whether it " +
+      "auto-load or a rebind; 'source': one source deciding whether it " +
       "serves), outcome ('success'|'failure'|'timeout' for a manifest; " +
-      "'bound'|'declined' for a source), reason ('none', or why a source was " +
-      "declined: 'build_plan_unavailable' when the package's build plan failed " +
-      "to compute, so every colocated source reverts to live; 'refused'; " +
-      "'missing_table'; or the served copy's reason, as its package warning). " +
-      "'bound' and the bind's declines count once per source entry per bind; " +
-      "the served copy's count once per model per snapshot it compiles, so a " +
-      "source two models read is counted by each. Two of the served copy's " +
-      "reasons leave the source served with a join answered live " +
-      "('inline_join_kept', 'cross_connection_join'): counted 'declined', " +
-      "since the label has no outcome for a partial serve.",
+      "'bound'|'partial'|'declined' for a source: 'partial' is a source that " +
+      "serves with a join read as written or left out), reason ('none' when " +
+      "bound, else why: 'build_plan_unavailable' when the package's build " +
+      "plan failed to compute, so every colocated source reverts to live; " +
+      "'refused'; 'missing_table'; or the served copy's reason, as its " +
+      "package warning, 'inline_join_kept' and 'cross_connection_join' being " +
+      "the partial ones). Units differ by who counts: 'bound' and the bind's " +
+      "declines count once per stored table per bind; the served copy counts " +
+      "once per source per model per snapshot it compiles, 'declined' beating " +
+      "'partial'. So a source two models read is counted by each, and the " +
+      "outcomes do not sum to a number of sources. An extension table that " +
+      "falls back to its own blocks ('compile_failed', 'reroot_not_compiled') " +
+      "may still serve, and is counted 'declined'.",
 );
 const manifestBindDegradedCounter = lazyCounter(
    "publisher_materialization_manifest_bind_degraded_total",
@@ -653,12 +661,24 @@ export function recordSourceBound(): void {
  * PERSIST_STORAGE_MODE, so every colocated source of the package reverts to
  * live until a load succeeds.
  */
-export function recordSourceDeclined(reason: SourceDeclineReason): void {
+export function recordSourceDeclined(reason: BindDeclineReason): void {
    servedCopyBindCounter().add(1, {
       scope: "source",
       outcome: "declined",
       reason,
    });
+}
+
+/**
+ * Record one source the served copy's compile did not serve whole, with the
+ * outcome `servedCopyOutcomes` resolved for it: `partial` when it still
+ * serves with part of its copy read as written or left out, else `declined`.
+ */
+export function recordServedCopyOutcome(
+   outcome: "partial" | "declined",
+   reason: ServedCopyProblemReason,
+): void {
+   servedCopyBindCounter().add(1, { scope: "source", outcome, reason });
 }
 
 /**
