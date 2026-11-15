@@ -16,7 +16,7 @@ import * as Malloy from "@malloydata/malloy-interfaces";
 import { DataStyles } from "@malloydata/render";
 import { withSpan } from "../telemetry";
 import {
-   recordSourceDeclined,
+   recordServedCopyProblem,
    recordStoredColumnTypeMismatch,
 } from "../materialization_metrics";
 import type { QueryServingHost } from "./query_serving";
@@ -2721,12 +2721,10 @@ export class Model {
       if (!this.servedCopyEnabled()) return;
       await this.servedCopy.prepare(pinned);
       // Once per model per snapshot it compiles (a load or a rebind): each
-      // source the copy leaves unserved, by the reason its package warning
-      // gives. `inline_join_kept` and `cross_connection_join` still serve
-      // the source, with that join live; the bind label has no outcome for
-      // a partial serve, so they count as declined.
+      // source the copy does not serve whole, by the reason its package
+      // warning gives; `partial` when it still serves with a join live.
       for (const problem of this.servedCopy.problems()) {
-         recordSourceDeclined(problem.reason);
+         recordServedCopyProblem(problem.reason);
       }
    }
 

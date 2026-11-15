@@ -9,6 +9,9 @@
  * value of `publisher_served_copy_bind_total`'s `reason` label, so the label
  * and the code that declines can never name different things.
  *
+ * A reason whose row says `servesInPart` leaves the source served with part
+ * of its copy left out; the bind counter counts it `partial`.
+ *
  * Pure.
  */
 
@@ -29,11 +32,16 @@ const SOURCE_DECLINES = {
    pair_not_compiled: { stage: "served_copy" },
    fields_not_carried: { stage: "served_copy" },
    read_terms_not_kept: { stage: "served_copy" },
-   cross_connection_join: { stage: "served_copy" },
-   inline_join_kept: { stage: "served_copy" },
+   // These two leave the source served, with one join answered live: the
+   // copy keeps the join as written, or leaves out a join across connections.
+   cross_connection_join: { stage: "served_copy", servesInPart: true },
+   inline_join_kept: { stage: "served_copy", servesInPart: true },
    reroot_not_compiled: { stage: "served_copy" },
    classification_not_kept: { stage: "served_copy" },
-} as const satisfies Record<string, { stage: "bind" | "served_copy" }>;
+} as const satisfies Record<
+   string,
+   { stage: "bind" | "served_copy"; servesInPart?: true }
+>;
 
 /** Why a source entry is not served. */
 export type SourceDeclineReason = keyof typeof SOURCE_DECLINES;
@@ -54,3 +62,13 @@ export type ServedCopyProblemReason = DeclinedAt<"served_copy">;
 export const SOURCE_DECLINE_REASONS = Object.keys(
    SOURCE_DECLINES,
 ) as SourceDeclineReason[];
+
+/**
+ * Whether a source declined for `reason` still serves, with part of its copy
+ * left out (a join answered live): the bind counter's `partial`, not
+ * `declined`.
+ */
+export function servesInPart(reason: SourceDeclineReason): boolean {
+   const row: { stage: string; servesInPart?: true } = SOURCE_DECLINES[reason];
+   return row.servesInPart === true;
+}

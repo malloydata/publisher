@@ -26,6 +26,7 @@ import {
    recordServeShapeTypeFallback,
    recordManifestBind,
    recordSourceBound,
+   recordServedCopyProblem,
    recordSourceDeclined,
    ROUTE_LEGS,
    ROUTE_OUTCOMES,
@@ -34,7 +35,10 @@ import {
    BIND_OUTCOMES,
    resetMaterializationTelemetryForTesting,
 } from "./materialization_metrics";
-import { SOURCE_DECLINE_REASONS } from "./service/materialization/domain/source_decline";
+import {
+   SOURCE_DECLINE_REASONS,
+   servesInPart,
+} from "./service/materialization/domain/source_decline";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -257,6 +261,30 @@ describe("materialization_metrics", () => {
       ).toBe(1);
    });
 
+   it("counts a served-copy source that still serves with a join live as partial, the rest as declined", async () => {
+      recordServedCopyProblem("inline_join_kept");
+      recordServedCopyProblem("cross_connection_join");
+      recordServedCopyProblem("column_types");
+      const bind = (labels: Record<string, string>) =>
+         harness.collectCounter("publisher_served_copy_bind_total", labels);
+      for (const reason of ["inline_join_kept", "cross_connection_join"]) {
+         expect(
+            await bind({ scope: "source", outcome: "partial", reason }),
+         ).toBe(1);
+         expect(
+            await bind({ scope: "source", outcome: "declined", reason }),
+         ).toBe(0);
+      }
+      expect(
+         await bind({
+            scope: "source",
+            outcome: "declined",
+            reason: "column_types",
+         }),
+      ).toBe(1);
+      expect(await bind({ outcome: "partial" })).toBe(2);
+   });
+
    it("counts serving's binds by scope, outcome and reason", async () => {
       recordManifestBind("success");
       recordManifestBind("timeout");
@@ -368,6 +396,7 @@ describe("the routing and bind label vocabularies", () => {
          "failure",
          "timeout",
          "bound",
+         "partial",
          "declined",
       ]);
       expect(["none", ...SOURCE_DECLINE_REASONS]).toEqual([
@@ -389,6 +418,15 @@ describe("the routing and bind label vocabularies", () => {
          "inline_join_kept",
          "reroot_not_compiled",
          "classification_not_kept",
+      ]);
+   });
+});
+
+describe("which source declines still serve the source", () => {
+   it("is exactly the served copy's two partial reasons", () => {
+      expect(SOURCE_DECLINE_REASONS.filter(servesInPart)).toEqual([
+         "cross_connection_join",
+         "inline_join_kept",
       ]);
    });
 });
