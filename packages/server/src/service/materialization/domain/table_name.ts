@@ -320,3 +320,23 @@ export function readableTableName(args: {
            );
    return `${args.container ? `${args.container}.` : ""}${readable}${tail}`;
 }
+
+/**
+ * The table-segment endings Publisher gives the names it chooses: every
+ * readable name (`__p<8 hex>`, above, a `scope: version`
+ * one's included), and the names from before readable names, a package's
+ * own (`__p<8 hex>`) and a version's own (`__v<version>_<8 hex>`), which
+ * tables built then still carry until their next build. Those tables carry no mark
+ * and are built without a probe, since no other package's name ends that
+ * way. An author's `name=` spelled with one could be another package's
+ * default name, which that package would then build over (and the other way
+ * round), so it is refused: at load (an invalid `name=`), and again at build
+ * (run/table_ownership.ts). Case-insensitive, as DuckDB, MySQL and SQL
+ * Server resolve names.
+ */
+const RESERVED_TABLE_SUFFIX = /__(?:p[0-9a-f]{8}|v[a-z0-9_]*_[0-9a-f]{8})$/i;
+
+/** Whether `name`'s table segment ends the way Publisher's own names do. */
+export function hasReservedTableSuffix(name: string): boolean {
+   return RESERVED_TABLE_SUFFIX.test(name.slice(name.lastIndexOf(".") + 1));
+}

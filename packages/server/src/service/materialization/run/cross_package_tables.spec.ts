@@ -328,7 +328,7 @@ describe("two packages on one warehouse connection", () => {
       }
    });
 
-   it("a name= spelled as another package's own table name is refused", async () => {
+   it("a name= spelled as another package's own table name fails the load", async () => {
       fs.writeFileSync(
          path.join(envPath, "pa", "model.malloy"),
          [
@@ -339,15 +339,12 @@ describe("two packages on one warehouse connection", () => {
             "",
          ].join("\n"),
       );
-      await env.getPackage(parsePackageName("pa"), true);
-      // pa goes first, onto a free name: it would have built pb's table.
-      const a = await build("pa");
-      expect(failureReasons(a).join(" ")).toContain(TABLE_OWNED_ELSEWHERE);
-      expect(await tables()).toEqual([]);
+      // Invalid: it could build over pb's table, so it never loads to try
+      // (the build's own ownership check stays, behind it).
+      await expect(
+         env.getPackage(parsePackageName("pa"), true),
+      ).rejects.toThrow("[persist-invalid]");
       await build("pb");
-      await build("pa");
-      expect(await who("pa", "summary")).toBe("pa");
       expect(await who("pb", "summary")).toBe("pb");
-      expect(await tables()).toEqual([`named_t`, summaryTable("pb")]);
    });
 });

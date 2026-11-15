@@ -20,12 +20,17 @@ import type {
 } from "@malloydata/malloy";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
+import { incrementalUnbuildableReason } from "./incremental_policy";
+import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
 import {
+   PERSIST_INVALID_CODE,
+   PERSIST_NOT_BUILT_CODE,
    persistAnnotationFindings,
    persistUnparseableFinding,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
 import { declares } from "./declaration";
+import { persistDeclarationProblems } from "./persist_annotation_validation";
 import { Annotations, isSourceDef } from "@malloydata/malloy";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
@@ -74,6 +79,7 @@ import {
 } from "./persisted_view";
 import {
    declaredPersistQueries,
+   persistQueryInvalidFindings,
    persistQueryKeyFindings,
    persistQueryNotBuiltFinding,
    type DeclaredPersistQuery,
@@ -110,6 +116,7 @@ import {
    collectSourceEligibility,
    collidingRollups,
    refuseCollidingMaterialize,
+   withoutSources,
    type ColocatedSourceEligibility,
    type SourceEligibility,
 } from "./eligibility_collect";
@@ -1063,7 +1070,9 @@ function collectPersistQueryFindings(
       for (const finding of persistQueryKeyFindings(query, args.modelPath)) {
          addAnnotationFinding(parts, finding);
       }
-      if (args.notBuilt) {
+      const invalid = persistQueryInvalidFindings(query, args.modelPath);
+      for (const finding of invalid) addAnnotationFinding(parts, finding);
+      if (args.notBuilt && invalid.length === 0) {
          addAnnotationFinding(
             parts,
             persistQueryNotBuiltFinding(query.name, args.modelPath),
@@ -1277,6 +1286,22 @@ export async function collectModelBuildPlan(
       recognizedNames,
    )) {
       parts.droppedPersistSources.push({ name, modelPath });
+      // A `#@ persist` on a shape Malloy does not plan is a misplaced
+      // annotation: it fails the load, as a misplaced `#@ preaggregate` does.
+      addAnnotationFinding(parts, {
+         route: "@",
+         tier: "malformed",
+         code: "persist-not-materializable",
+         message:
+            `#@ persist source "${name}" is not a source Malloy can ` +
+            `materialize: only a query or aggregate source builds, and a ` +
+            `filtered pass-through, a table with only added fields, or an ` +
+            `unbound parameterized source does not. Persist a query source ` +
+            `over it, invoke a parameterized source with a bound argument, or ` +
+            `remove the annotation`,
+         subject: name,
+         model: modelPath,
+      });
    }
 
    if (planned.length === 0) return;
@@ -1314,6 +1339,16 @@ export async function collectModelBuildPlan(
             { incremental: isIncrementalSource(source) },
          )) {
             addAnnotationFinding(parts, finding);
+         }
+         for (const problem of persistDeclarationProblems(source.annotations)) {
+            addAnnotationFinding(parts, {
+               route: "@",
+               tier: "malformed",
+               code: PERSIST_INVALID_CODE,
+               message: `#@ persist source "${source.name}" is invalid: ${problem}`,
+               subject: source.name,
+               model: declaredIn,
+            });
          }
       } catch {
          // No findings for a source whose annotations cannot be read.
@@ -1699,10 +1734,14 @@ export function deriveBuildPlanOutcome(
 ): BuildPlanOutcome {
    // Before anything reads the plan: a refused source is neither built nor
    // served, and its warning replaces it (#6644).
-   const compiled = refuseCollidingMaterialize({
-      ...collected,
-      ...(scope === "version" ? { versionScoped: true } : {}),
-   });
+   // A valid incremental declaration this deployment cannot honour refuses
+   // its source alone, the same way.
+   const compiled = refuseIncrementalUnbuildable(
+      refuseCollidingMaterialize({
+         ...collected,
+         ...(scope === "version" ? { versionScoped: true } : {}),
+      }),
+   );
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
    const incrementalDeclarations = collectIncrementalDeclarations(
       compiled.sources,
@@ -1744,6 +1783,72 @@ export function deriveBuildPlanOutcome(
          .sort(),
       refusedRollups: refusedRollupsOf(plan, compiled.preaggregatePlans),
    };
+}
+
+/**
+ * The compiled plan less each source whose VALID incremental declaration this
+ * deployment cannot honour (incremental_policy's rules 6, 7 and 12), each
+ * reported as its route's `*-not-built` warning: not built, answered live,
+ * and the rest of the package loads. An invalid declaration is left in, for
+ * the load's incremental gate to fail.
+ */
+export function refuseIncrementalUnbuildable<
+   T extends Omit<CompiledBuildPlan, "connections">,
+>(compiled: T): T {
+   const declarations = collectIncrementalDeclarations(
+      compiled.sources,
+      compiled.materializePlans,
+   );
+   const findings: PackageAnnotationFinding[] = [];
+   const dropped = new Set<string>();
+   for (const [sourceID, declaration] of Object.entries(declarations)) {
+      const source = compiled.sources[sourceID];
+      if (!source) continue;
+      const view = persistedViewOf(source);
+      const reason = incrementalUnbuildableReason({
+         sourceName: view?.sourceName ?? source.name,
+         ...(view ? { viewName: view.viewName } : {}),
+         dialect: source.dialectName,
+         declaration,
+      });
+      if (reason === undefined) continue;
+      dropped.add(sourceID);
+      const model = compiled.sourceModelPaths?.[sourceID] ?? "";
+      const plan = compiled.materializePlans?.[sourceID];
+      findings.push(
+         plan
+            ? materializeRefusalFinding(
+                 { sourceName: plan.sourceName, sourceID, reason },
+                 model,
+              )
+            : view
+              ? persistedViewRefusalFinding({ ...view, reason }, model)
+              : {
+                   route: "@",
+                   tier: "unservable",
+                   code: PERSIST_NOT_BUILT_CODE,
+                   message: `#@ persist source "${source.name}" is not built, so it is answered live: ${reason}.`,
+                   subject: source.name,
+                   model,
+                },
+      );
+   }
+   return withoutSources(compiled, findings, dropped);
+}
+
+/** A persisted view's generated build source, read back to the author's names. */
+function persistedViewOf(
+   source: PersistSource,
+): { sourceName: string; viewName: string } | undefined {
+   if (
+      !sourceIDFileURL(source.sourceID)?.endsWith(
+         PERSISTED_VIEW_COMPANION_SUFFIX,
+      )
+   ) {
+      return undefined;
+   }
+   const match = /^(.+)__(.+)__view$/.exec(source.name);
+   return match ? { sourceName: match[1], viewName: match[2] } : undefined;
 }
 
 /** {@link BuildPlanOutcome.refusedRollups}. */

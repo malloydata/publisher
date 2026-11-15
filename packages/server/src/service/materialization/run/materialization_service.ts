@@ -5,7 +5,6 @@ import {
    BadRequestError,
    BuildPlanUnavailableError,
    InvalidStateTransitionError,
-   MaterializationEligibilityError,
    MaterializationNotFoundError,
    PackageVersionError,
 } from "../../../errors";
@@ -36,6 +35,7 @@ import {
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
 import { CompiledBuildPlan } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
+import { refuseIncrementalUnbuildable } from "../plan/build_plan";
 import {
    BuildInstruction,
    LedgerEntry,
@@ -690,32 +690,21 @@ export class MaterializationService {
 
          // A published version's tree never changes, so compiling it needs
          // no lock; an unversioned package's can be replaced under it.
-         const compiled =
+         // A source whose valid incremental declaration this deployment
+         // cannot honour was refused alone when the package loaded; it is
+         // not built here either.
+         const compiled = refuseIncrementalUnbuildable(
             versionId !== undefined
                ? await compilePackageBuildPlan(pkg, signal)
                : await environment.withPackageLock(packageName, () =>
                     compilePackageBuildPlan(pkg, signal),
-                 );
-
-         // Refuse a `#@ persist` source that Malloy's build walk silently
-         // dropped (see detectDroppedPersistSources); otherwise the build
-         // succeeds with an empty manifest and the source serves live. Scoped to
-         // this build's targets so a dropped sibling does not block it.
-         const relevantDropped = (compiled.droppedPersistSources ?? []).filter(
-            (d) => !opts.sourceNames || opts.sourceNames.includes(d.name),
+                 ),
          );
-         if (relevantDropped.length > 0) {
-            const names = relevantDropped.map((d) => `'${d.name}'`).join(", ");
-            throw new MaterializationEligibilityError({
-               message:
-                  `Source(s) ${names} are annotated '#@ persist' but were not ` +
-                  `recognized as a materializable source, so nothing would be ` +
-                  `built (they would be served live). Only query/aggregate ` +
-                  `sources materialize; a filtered pass-through does not. Persist ` +
-                  `a query source, or invoke a parameterized source with a bound ` +
-                  `argument, or drop the annotation to serve live.`,
-            });
-         }
+
+         // A `#@ persist` source Malloy's build walk did not plan fails the
+         // package's load (`persist-not-materializable`), so a package that
+         // reaches a run has none: one source's mistake never refuses the
+         // whole run.
 
          // Assembled BEFORE the instructions because skip-if-unchanged consults
          // it: an incremental source is exempt from the carry-forward below.
