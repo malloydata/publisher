@@ -205,12 +205,6 @@ export class Reclaimer {
           * a failing drop.
           */
          dropManifestEntries: DropManifestEntries;
-         /**
-          * How a deleted version's cleanup and the startup sweep reclaim one
-          * version: back through the facade's public `reclaimVersionTables`,
-          * which its specs observe.
-          */
-         reclaimVersionTables: Reclaimer["reclaimVersionTables"];
       },
    ) {}
 
@@ -1073,11 +1067,7 @@ export class Reclaimer {
             error: errMessage(err),
          });
       }
-      await this.deps.reclaimVersionTables(
-         environmentName,
-         packageName,
-         versionId,
-      );
+      await this.reclaimVersionTables(environmentName, packageName, versionId);
    }
 
    /**
@@ -1244,7 +1234,7 @@ export class Reclaimer {
                }
             }
             for (const { packageName, versionId } of toFinish.values()) {
-               await this.deps.reclaimVersionTables(
+               await this.reclaimVersionTables(
                   environmentName,
                   packageName,
                   versionId,

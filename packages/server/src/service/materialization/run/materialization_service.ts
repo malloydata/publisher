@@ -33,7 +33,7 @@ import {
    tableNamesIn,
    WRITES_TABLES_KEY,
 } from "../../versions/materialization_scope";
-import type { MaterializationEnvironment, MaterializationHost } from "../host";
+import type { MaterializationHost } from "../host";
 import { CompiledBuildPlan } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
 import {
@@ -126,7 +126,11 @@ export class MaterializationService {
    private readonly lifecycle: RunLifecycle;
    private readonly claims: TableClaims;
    private readonly committer: ManifestCommitter;
-   private readonly reclaimer: Reclaimer;
+   /**
+    * Giving tables back: the version lifecycle's hooks (main_server.ts) and
+    * the startup sweep call it directly.
+    */
+   readonly reclaimer: Reclaimer;
 
    constructor(private readonly host: MaterializationHost) {
       const repository = () => this.repository;
@@ -144,7 +148,6 @@ export class MaterializationService {
          host,
          lifecycle: this.lifecycle,
          dropManifestEntries: (...args) => this.dropManifestEntries(...args),
-         reclaimVersionTables: (...args) => this.reclaimVersionTables(...args),
       });
    }
 
@@ -1451,46 +1454,6 @@ export class MaterializationService {
       ...args: Parameters<Reclaimer["dropManifestEntries"]>
    ): Promise<ManifestEntry[]> {
       return this.reclaimer.dropManifestEntries(...args);
-   }
-
-   /** See {@link Reclaimer.reclaimVersionTables}. */
-   reclaimVersionTables(
-      environmentName: string,
-      packageName: string,
-      versionId: string,
-   ): Promise<void> {
-      return this.reclaimer.reclaimVersionTables(
-         environmentName,
-         packageName,
-         versionId,
-      );
-   }
-
-   /** See {@link Reclaimer.reclaimOwedNow}. */
-   reclaimOwedNow(
-      environment: MaterializationEnvironment,
-      packageName: string,
-      versionId: string,
-   ): Promise<void> {
-      return this.reclaimer.reclaimOwedNow(environment, packageName, versionId);
-   }
-
-   /** See {@link Reclaimer.cleanUpDeletedVersion}. */
-   cleanUpDeletedVersion(
-      environmentName: string,
-      packageName: string,
-      versionId: string,
-   ): Promise<void> {
-      return this.reclaimer.cleanUpDeletedVersion(
-         environmentName,
-         packageName,
-         versionId,
-      );
-   }
-
-   /** See {@link Reclaimer.reclaimArchivedVersions}. */
-   reclaimArchivedVersions(): Promise<void> {
-      return this.reclaimer.reclaimArchivedVersions();
    }
 
    private resolveEnvironmentId(environmentName: string): Promise<string> {

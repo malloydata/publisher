@@ -148,7 +148,9 @@ function newService(environment: Environment): MaterializationService {
    } as unknown as EnvironmentStore;
    const created = new MaterializationService(store);
    environment.setVersionArchivedHook((packageName, versionId) => {
-      reclaims.push(created.reclaimVersionTables(ENV, packageName, versionId));
+      reclaims.push(
+         created.reclaimer.reclaimVersionTables(ENV, packageName, versionId),
+      );
    });
    return created;
 }
@@ -634,7 +636,7 @@ describe('scope "version": each version builds and serves its own tables', () =>
       expect(await repo.getMaterializationById(v1.id)).toBeNull();
       expect(await warehouseTables()).toContain(TABLE_V1);
 
-      await service.reclaimArchivedVersions();
+      await service.reclaimer.reclaimArchivedVersions();
       expect(await warehouseTables()).toContain(TABLE_V1);
    });
 });

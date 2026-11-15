@@ -176,11 +176,11 @@ describe("leftover name= views through real builds", () => {
       const created = new MaterializationService(store);
       environment.setVersionArchivedHook((packageName, versionId) => {
          reclaims.push(
-            created.reclaimVersionTables(ENV, packageName, versionId),
+            created.reclaimer.reclaimVersionTables(ENV, packageName, versionId),
          );
       });
       environment.setOwedReclaimHook((packageName, versionId) =>
-         created.reclaimOwedNow(environment, packageName, versionId),
+         created.reclaimer.reclaimOwedNow(environment, packageName, versionId),
       );
       return created;
    }
