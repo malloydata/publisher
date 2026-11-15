@@ -10,9 +10,8 @@
  *  - a rollup on a zoned source read through a join from a source in the
  *    same zone, the one reader a zoned rollup has (v1 and v2);
  *  - the column types a rollup stores (v1 and v2): a BIGINT partial past
- *    2^53, a TIMESTAMPTZ grain, a DECIMAL partial and grain; all exact
- *    colocated, the DECIMAL ones in a `storage=` destination too. In a `storage=` destination both
- *    are known gaps, skipped with their reasons unless CONFORMANCE_GAPS=run.
+ *    2^53, a TIMESTAMPTZ grain, a DECIMAL partial and grain; all exact,
+ *    colocated and in a `storage=` destination.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -26,8 +25,6 @@ import {
    type R4Fixture,
    type R4Run,
 } from "./harness";
-
-const RUN_GAPS = process.env.CONFORMANCE_GAPS === "run";
 
 /** Field types with each number's subtype left out. */
 function withoutSubtype(fields: { name: string; type: unknown }[]): unknown {
@@ -195,25 +192,6 @@ const TYPED_SEED = [
     ) AS t(big, tstz, g, dec)`,
 ];
 
-/** A stored-rollup type case main gets wrong: skipped with its reason. */
-interface TypeGap {
-   kind: "wrong" | "metadata";
-   reason: string;
-}
-
-const STORED_GAPS: Record<string, TypeGap> = {
-   "a BIGINT sum past 2^53": {
-      kind: "wrong",
-      reason:
-         "the storage= rollup declares its BIGINT partial as a plain number, so -9007199254740993 comes back as -9007199254740992",
-   },
-   "a TIMESTAMPTZ grain": {
-      kind: "metadata",
-      reason:
-         "the storage= rollup declares the TIMESTAMPTZ grain column as timestamp_type where live gives timestamptz_type; the rows are equal",
-   },
-};
-
 const ROUTES = {
    v2: (grain: string, placement: string) =>
       `#(preaggregate) grain=["${grain}"]${placement}`,
@@ -272,7 +250,7 @@ source: typed is duckdb.table('typed') extend {
                "run: typed -> { group_by: dec; aggregate: n_by_dec; order_by: dec }",
             ],
          ] as const) {
-            const test = async () => {
+            it(`${name}: served from the rollup, rows and types equal to live`, async () => {
                const run = await fixture.run({ name, malloy });
                expectRollup(run);
                // A stored number loses its integer/decimal subtype (known
@@ -280,14 +258,7 @@ source: typed is duckdb.table('typed') extend {
                expect(withoutSubtype(run.servedFields)).toEqual(
                   withoutSubtype(run.liveFields),
                );
-            };
-            const gap = placement ? STORED_GAPS[name] : undefined;
-            const title = `${name}: served from the rollup, rows and types equal to live`;
-            if (gap && !RUN_GAPS) {
-               it.skip(`${title} [gap ${gap.kind}: ${gap.reason}]`, test);
-            } else {
-               it(title, test);
-            }
+            });
          }
       });
    }

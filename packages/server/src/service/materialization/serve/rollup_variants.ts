@@ -101,11 +101,7 @@ import { quoteManifestTablePath } from "../../quoting";
 import { ownModelNoteObjects } from "../../annotations";
 import { routeOfNote } from "../../annotation_reader";
 import { experimentalFlagKeys } from "../../motly";
-import {
-   doubleQuotedString,
-   identifier,
-   stringLiteral,
-} from "../../malloy_text";
+import { doubleQuotedString, identifier } from "../../malloy_text";
 import {
    fieldNameReads,
    sourceDelta,
@@ -162,8 +158,9 @@ import {
 import { enforcedGatesOf, type EnforcedGates } from "../../access_record";
 import { sameGateSet } from "../../governance/query_governor";
 import { fieldNotes, noteSource } from "../text/field_notes";
-import { timeframeRestatements, typeDeclaration } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
+import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
+import { bigIntegerReadOf } from "../stored_column_types";
 import { gateSwitches, getMaterializeEnabled } from "../../../config";
 import { boundTablePath, buildVirtualMap, sqlReadsTable } from "./bindings";
 import { type Binding, type Pinned } from "../domain/binding";
@@ -269,6 +266,11 @@ interface CompiledVariant {
    /** The compile's cache key and generation: its graft cache scope. */
    cacheScope?: string;
    error?: string;
+   /**
+    * Why a `storage=` rollup's stored columns cannot read as live's
+    * ({@link storedRollupReads}), so the query answers live.
+    */
+   refusal?: string;
 }
 
 /** One query, as every rollup it is offered to reads it. */
@@ -1051,6 +1053,7 @@ export class RollupVariantServe {
          },
          table,
       );
+      if (variant.refusal) throw storedReadSkip(variant.refusal);
       // A definition the copy left out reads a join across connections: a
       // query that reads one does not compile over the copy.
       const leftOutHere = basis.leftOut.length > 0;
@@ -1197,6 +1200,7 @@ export class RollupVariantServe {
          },
          table,
       );
+      if (variant.refusal) throw storedReadSkip(variant.refusal);
       if (!variant.materializer) {
          // A generated model that does not compile is a publisher bug.
          logger.warn("A #(preaggregate) rollup variant did not compile", {
@@ -1504,6 +1508,10 @@ export class RollupVariantServe {
       const modelPath = this.host.modelPath();
       const modelFile = path.join(packagePath, modelPath);
       const queryModelURL = pathToFileURL(`${modelFile}.rollup.malloy`);
+      const reads = table.binding
+         ? storedRollupReads(plan, table.binding, this.host.modelDef())
+         : undefined;
+      if (reads && "refusal" in reads) return { refusal: reads.refusal };
       const destinations = this.host.serveDestinationConfig();
       const config =
          table.binding && destinations
@@ -1513,11 +1521,12 @@ export class RollupVariantServe {
                  new Set([table.binding.destinationName]),
               )
             : packageConfig;
-      if (use.kind === "join" && use.destination && table.binding) {
+      if (use.kind === "join" && use.destination && table.binding && reads) {
          return this.compileJoinInDestination(
             plan,
             { ...use, destination: use.destination },
             table.binding,
+            reads,
             {
                packagePath,
                modelPath,
@@ -1533,6 +1542,7 @@ export class RollupVariantServe {
             config,
             modelPath,
             queryModelURL,
+            ...(reads ? { reads } : {}),
          });
       }
       const { localName } = use;
@@ -1602,6 +1612,7 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
          >;
       },
       binding: Binding,
+      reads: StoredRollupReads,
       ctx: {
          packagePath: string;
          modelPath: string;
@@ -1612,7 +1623,7 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
       const modelDef = this.host.modelDef();
       const { basis } = use.destination;
       const servedName = `${plan.rollupSourceName}__served`;
-      const declaration = `${storedRollupDeclaration(plan, binding, servedName, modelDef)}
+      const declaration = `${storedRollupDeclaration(plan, binding, reads, servedName, modelDef)}
 ${sourceOverRollup(plan, use, servedName, "")}`;
       // The served copy's names, imported from its files: a definition it
       // left out across connections is not one of them.
@@ -1660,6 +1671,8 @@ ${declaration}
          config: ModelConnectionInput;
          modelPath: string;
          queryModelURL: URL;
+         /** A `storage=` rollup's stored reads ({@link storedRollupReads}). */
+         reads?: StoredRollupReads;
       },
    ): Promise<CompiledVariant> {
       const modelDef = this.host.modelDef() as ModelDef | undefined;
@@ -1703,10 +1716,11 @@ ${declaration}
                servedName,
                added.text,
             );
-            if (table.binding) {
+            if (table.binding && ctx.reads) {
                const stored = storedRollupDeclaration(
                   plan,
                   table.binding,
+                  ctx.reads,
                   servedName,
                   modelDef,
                );
@@ -2018,44 +2032,128 @@ function rollupSourceID(plan: RollupVariantPlan): string | undefined {
    return companion ? `${plan.rollupSourceName}@${companion.href}` : undefined;
 }
 
+/** A `storage=` rollup's stored columns, as {@link storedTypedSource} reads them. */
+interface StoredRollupReads {
+   columns: {
+      name: string;
+      timeframe?: string;
+      notes: string[];
+      kind: "measure" | "dimension";
+      timestamptz?: true;
+   }[];
+   casts: Map<string, ColumnCast>;
+}
+
+/**
+ * How a `storage=` rollup's stored columns read as live's, or why one cannot,
+ * so the query answers live:
+ *
+ * - a grain column whose dimension live types `timestamptz`, stored with its
+ *   zone, is declared `timestamptz` (a `type:` would declare the stored
+ *   type's `timestamp`);
+ * - a big integer (a grain dimension, or the partial of a measure live types
+ *   as a `bigint` number) is read through its native type
+ *   ({@link bigIntegerReadOf}): a `type:` declares it only as a `number`,
+ *   which Malloy reads through a JavaScript number and rounds above 2^53.
+ *   One stored where no cast reads it exactly (a float, its digits already
+ *   lost) is the refusal.
+ */
+function storedRollupReads(
+   plan: RollupVariantPlan,
+   binding: Pick<Binding, "schema">,
+   modelDef: unknown,
+): StoredRollupReads | { refusal: string } {
+   const base = SourceMap.of(modelDef).node(plan.baseSourceID)?.def as
+      | {
+           dialect?: unknown;
+           fields?: { name?: unknown; as?: unknown; type?: unknown }[];
+        }
+      | undefined;
+   const fields = new Map(
+      (base?.fields ?? []).map((f) => [String(f.as ?? f.name), f]),
+   );
+   const stored = new Map(binding.schema.map((c) => [c.name, c]));
+   const columns: StoredRollupReads["columns"] = [];
+   const casts = new Map<string, ColumnCast>();
+   const read = (
+      column: StoredRollupReads["columns"][number],
+      fieldName: string,
+   ): string | undefined => {
+      const storedColumn = stored.get(column.name);
+      const field = fields.get(fieldName);
+      if (storedColumn) {
+         const big = bigIntegerReadOf(field, storedColumn, {
+            dialect: base?.dialect,
+         });
+         if (big && !big.castTo) {
+            return `the stored \`${fieldName}\` (${storedColumn.type}) cannot hold live's integer exactly`;
+         }
+         if (big?.castTo) casts.set(column.name, { nativeCast: big.castTo });
+         if (
+            column.kind === "dimension" &&
+            field?.type === "timestamptz" &&
+            /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/i.test(
+               storedColumn.type.trim(),
+            )
+         ) {
+            column = { ...column, timestamptz: true };
+         }
+      }
+      columns.push(column);
+      return undefined;
+   };
+   for (const g of grainColumns(plan, modelDef)) {
+      const refusal = read({ ...g, kind: "dimension" }, g.name);
+      if (refusal) return { refusal };
+   }
+   for (const m of plan.rollupMeasures) {
+      for (const p of m.partials) {
+         const refusal = read(
+            { name: p.column, notes: [], kind: "measure" },
+            m.name,
+         );
+         if (refusal) return { refusal };
+      }
+   }
+   return { columns, casts };
+}
+
 /**
  * A `storage=` rollup declared over its table in the destination, as
  * `servedName`: a `type:` of its stored columns (each grain column with its
  * dimension's notes, as the served copy's stored columns carry theirs), the
  * `virtual()` source on the destination's served-copy alias, its
- * timeframes restated and its merged measures.
+ * timeframes and big-integer reads restated ({@link storedRollupReads}) and
+ * its merged measures.
  */
 function storedRollupDeclaration(
    plan: RollupVariantPlan,
    binding: Binding,
+   reads: StoredRollupReads,
    servedName: string,
    modelDef: unknown,
 ): string {
-   const typeName = `${plan.rollupSourceName}__type`;
-   const grain = grainColumns(plan, modelDef);
-   // A `type:` field keeps its annotations, so a result column reads them as
-   // live's does. A timeframe column's go on its redefined field
-   // (timeframeRestatements) instead.
-   const grainNotes = new Map(
-      grain.map((g) => [g.name, g.timeframe ? [] : g.notes]),
-   );
-   const columns = binding.schema.map((c) => {
-      const notes = grainNotes.get(c.name);
-      return {
-         name: c.name,
-         type: c.type,
-         ...(notes && notes.length > 0 ? { notes } : {}),
-      };
+   const { typeText, timeframes } = storedTypedSource({
+      columns: reads.columns,
+      casts: reads.casts,
+      binding,
+      typeName: `${plan.rollupSourceName}__type`,
+      stored: servedName,
    });
-   // malloy-text: the served copy's timeframe emitter, names through identifier
-   const timeframes = timeframeRestatements(
-      grain,
-      binding.schema.map((c) => c.name),
-   );
-   // malloy-text: the served copy's type emitter; rollupStatements re-emits the grammar's parse through malloy_text
-   return `${typeDeclaration({ typeName, columns })}
-source: ${identifier(servedName)} is ${identifier(servedCopyAlias(binding.destinationName))}.virtual(${stringLiteral(binding.virtualHandle)})::${identifier(typeName)} extend {${timeframes}${rollupStatements(plan, modelDef)}
+   // malloy-text: storedTypedSource's text; rollupStatements re-emits the grammar's parse through malloy_text
+   return `${typeText} extend {${timeframes}${rollupStatements(plan, modelDef)}
 }`;
+}
+
+/**
+ * A `storage=` rollup whose stored columns cannot read as live's
+ * ({@link storedRollupReads}), as the persisted view's leg declines one.
+ */
+function storedReadSkip(refusal: string): LegDecline {
+   return new LegDecline(
+      "rollup_missing_field",
+      `the stored rollup cannot answer with live's columns: ${refusal}`,
+   );
 }
 
 /**
