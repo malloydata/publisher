@@ -31,8 +31,9 @@ export { OWNED_TABLE_MARK, parseOwnedTableComment };
 /**
  * Who owns a table an auto-run writes at a name the author chose.
  *
- * Auto-run names every other table for its package (`__p<hash>`, see
- * packageTableSuffix), so two packages, or two environments, that share a
+ * Auto-run names every other table readably, ending `__p<hash>` of the
+ * table's identity (environment, package, model, source; see
+ * domain/table_name.ts), so two packages, or two environments, that share a
  * connection or a storage destination never build one table. An explicit
  * `name=` keeps its name: the author chose it, and a reader outside Malloy
  * may rely on it. Two packages that declare the same `name=` on one schema
@@ -101,9 +102,11 @@ export class TableOwnershipError extends BadRequestError {
 }
 
 /**
- * The table-segment endings Publisher gives the names it chooses: a
- * package's own (`__p<8 hex>`, packageTableSuffix) and a version's own
- * (`__v<version>_<8 hex>`, versionTableSuffix). Those tables carry no mark
+ * The table-segment endings Publisher gives the names it chooses: every
+ * readable name (`__p<8 hex>`, domain/table_name.ts, a `scope: version`
+ * one's included), and the names from before readable names, a package's
+ * own (`__p<8 hex>`) and a version's own (`__v<version>_<8 hex>`), which
+ * tables built then still carry until their next build. Those tables carry no mark
  * and are built without a probe, since no other package's name ends that
  * way. An author's `name=` spelled with one could be another package's
  * default name, which that package would then build over (and the other way
