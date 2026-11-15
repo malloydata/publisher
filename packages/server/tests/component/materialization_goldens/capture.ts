@@ -11,8 +11,9 @@
  *    exposing it;
  *  - each planned source's content address, compiler key, address SQL and
  *    build SQL, in build order;
- *  - the internal plans (`MaterializePlan`, the rollup plans) and the plan's
- *    refusals and findings.
+ *  - the internal plans (`MaterializePlan`, the rollup plans), each planned
+ *    source's kind, the stored-table key checks, and the plan's refusals and
+ *    findings.
  */
 
 import { makeDigest, type PersistSource } from "@malloydata/malloy";
@@ -25,6 +26,7 @@ import {
    computeSourceEntityId,
 } from "../../../src/service/materialization/plan/addressing";
 import type { CompiledBuildPlan } from "../../../src/service/materialization/plan/build_plan";
+import { buildKindOf } from "../../../src/service/materialization/run/run_telemetry";
 import * as modelRuntime from "../../../src/service/model_runtime";
 import type { Normalizer } from "./normalize";
 
@@ -295,7 +297,16 @@ export function renderBuild(
 
 /** The internal plan state a golden keeps, beside the wire plan. */
 export function internalPlans(compiled: CompiledBuildPlan): unknown {
+   const storedKeyChecks = compiled.storedKeyChecks ?? {};
    return {
+      // What each planned table is, as the build and its telemetry read it.
+      kinds: Object.fromEntries(
+         Object.keys(compiled.sources).map((sourceID) => [
+            sourceID,
+            buildKindOf(compiled, sourceID),
+         ]),
+      ),
+      ...(Object.keys(storedKeyChecks).length > 0 ? { storedKeyChecks } : {}),
       materializePlans: compiled.materializePlans ?? {},
       rollupPlans: compiled.preaggregatePlans ?? {},
       sourceGateOutcomes: compiled.sourceGateOutcomes ?? {},

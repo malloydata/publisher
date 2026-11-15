@@ -39,6 +39,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "customer_dim@<pkg>/dims.malloy": "persist",
+      "order_facts@<pkg>/facts.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

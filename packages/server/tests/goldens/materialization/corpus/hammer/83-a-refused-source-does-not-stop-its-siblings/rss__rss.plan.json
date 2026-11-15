@@ -16,6 +16,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "by_date@<hammer>/rss/rss.malloy": "persist",
+      "scoped_rollup@<hammer>/rss/rss.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

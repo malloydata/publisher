@@ -16,6 +16,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "all_rollup@<hammer>/hbi/hbi.malloy": "persist",
+      "scoped_rollup@<hammer>/hbi/hbi.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

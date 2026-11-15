@@ -17,6 +17,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "orders_base@<pkg>/multi_level.malloy": "persist",
+      "orders_rollup@<pkg>/multi_level.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

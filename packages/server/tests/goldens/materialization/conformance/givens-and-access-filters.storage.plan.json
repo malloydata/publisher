@@ -17,6 +17,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "gated@<pkg>/m.malloy": "persist",
+      "gated_ext@<pkg>/m.malloy": "persist",
+      "scoped@<pkg>/m.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

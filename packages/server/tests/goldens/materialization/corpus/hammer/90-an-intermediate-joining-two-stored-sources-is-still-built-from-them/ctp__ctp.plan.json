@@ -23,6 +23,12 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "daily@<hammer>/ctp/ctp.malloy": "persist",
+      "daily_counts@<hammer>/ctp/ctp.malloy": "persist",
+      "joined@<hammer>/ctp/ctp.malloy": "persist",
+      "rollup@<hammer>/ctp/ctp.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

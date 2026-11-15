@@ -39,6 +39,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "d_plus@<pkg>/dash.malloy": "persist",
+      "daily@<pkg>/facts.malloy": "persist",
+      "daily_ext@<pkg>/facts.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

@@ -42,6 +42,15 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "deals@<hammer>/frp/frp.malloy": "persist",
+      "deals_alias@<hammer>/frp/frp.malloy": "persist",
+      "pipeline_now@<hammer>/frp/frp.malloy": "persist",
+      "w@<hammer>/frp/frp.malloy": "persist",
+      "x@<hammer>/frp/frp.malloy": "persist",
+      "y@<hammer>/frp/frp.malloy": "persist",
+      "z@<hammer>/frp/frp.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

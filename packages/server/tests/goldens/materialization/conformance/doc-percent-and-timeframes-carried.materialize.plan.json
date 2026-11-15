@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "monthly@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "monthly@<pkg>/m.malloy": {
         "buildSourceName": "monthly__mat",

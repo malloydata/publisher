@@ -18,6 +18,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "batch_totals@<hammer>/ivc/ivc.malloy": "persist",
+      "doubled@<hammer>/ivc/ivc.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

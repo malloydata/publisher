@@ -21,6 +21,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "counts@<hammer>/ujp/ujp.malloy": "persist",
+      "daily@<hammer>/ujp/ujp.malloy": "persist",
+      "rollup@<hammer>/ujp/ujp.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

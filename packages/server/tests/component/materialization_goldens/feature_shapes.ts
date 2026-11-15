@@ -673,6 +673,40 @@ source: orders is orders_raw extend {
       ],
    },
    {
+      // A `storage=` rollup read through a join_many keyed on the query
+      // source's primary key: the join-to-rollup leg reads the query source's
+      // stored table beside it, so the plan checks each stored source's key at
+      // its own build (the plan's stored-table key checks).
+      name: "a storage= rollup read through a join_many",
+      files: {
+         "m.malloy": `import "raw.malloy"
+
+source: lines is lines_raw extend {
+  #(preaggregate) grain=["order_id"] storage="lake"
+  measure: qty_total is qty.sum()
+}
+
+#(materialize) storage="lake"
+source: orders is orders_raw extend {
+  join_many: lines on lines.order_id = id
+  measure: n is count()
+}
+`,
+         ...raw,
+      },
+      queries: [
+         {
+            name: "the rollup through the join",
+            malloy:
+               "run: orders -> { group_by: region; aggregate: lines.qty_total }",
+         },
+         {
+            name: "the materialized source alone",
+            malloy: "run: orders -> { group_by: region; aggregate: n }",
+         },
+      ],
+   },
+   {
       name: "time zones",
       files: {
          "m.malloy": `import "raw.malloy"
