@@ -20,7 +20,7 @@ import {
    recordStoredColumnTypeMismatch,
 } from "../materialization_metrics";
 import type { QueryServingHost } from "./query_serving";
-import { makeLegs } from "./materialization/serve/leg";
+import { makeLegs, PersistedQueryServe } from "./materialization/serve/leg";
 import {
    ModelServing,
    type ModelQueryResults,
@@ -172,7 +172,10 @@ import {
    planSourceRollups,
    rollupGateEnforcedAtRead,
 } from "./materialization/plan/rollup_plan";
-import { planModelPersistedViews } from "./materialization/plan/persisted_view";
+import {
+   planModelPersistedQueries,
+   planModelPersistedViews,
+} from "./materialization/plan/persisted_view";
 import {
    chainBuildText,
    resultShapeOf,
@@ -186,7 +189,10 @@ import type {
 
 import { PersistedViewServe } from "./materialization/serve/view_variants";
 import { sourceChain } from "./materialization/text/source_map";
-import type { ViewServeVerdict } from "./materialization/serve/serve_verdict";
+import type {
+   PersistedResultOf,
+   ViewServeVerdict,
+} from "./materialization/serve/serve_verdict";
 
 export type { ModelConnectionInput, ModelType } from "./model_runtime";
 export type { ModelQueryResults } from "./model_serving";
@@ -339,7 +345,23 @@ export class Model {
       serveDestinationConfig: () => this.serveDestinationConfig,
       catalog: () => this.policy.materializedTables(),
       planModelPersistedViews,
+      planModelPersistedQueries,
    });
+   /**
+    * The `#@ persist` named-query leg: a router candidate only when
+    * `materialize.enabled` is on and this model sees a persisted query.
+    */
+   private persistedQueries = new PersistedQueryServe(
+      {
+         modelPath: () => this.modelPath,
+         modelDef: () => this.modelDef,
+         modelMaterializer: () => this.modelMaterializer,
+         serveDestinationConfig: () => this.serveDestinationConfig,
+         planModelPersistedViews,
+         planModelPersistedQueries,
+      },
+      this.persistedViews,
+   );
    /**
     * The served copy on `virtual`: the author's own files with each stored
     * source re-rooted on its table.
@@ -2578,6 +2600,7 @@ export class Model {
       this.servedCopy.invalidate();
       this.rollupVariants.invalidate();
       this.persistedViews.invalidate();
+      this.persistedQueries.invalidate();
    }
 
    /**
@@ -2598,6 +2621,7 @@ export class Model {
       ];
       this.servedCopy.setContext(...this.servedCopyContext);
       this.persistedViews.setContext(packagePath, malloyConfig);
+      this.persistedQueries.setContext(packagePath, malloyConfig);
       this.rollupVariants.setContext(packagePath, malloyConfig);
    }
 
@@ -2615,23 +2639,42 @@ export class Model {
    }
 
    /**
+    * Whether the router may try the persisted-query leg: as for views, with
+    * a persisted named query this model sees.
+    */
+   private persistedQueriesEnabled(): boolean {
+      return (
+         this.modelType === "model" &&
+         !this.isNotebook() &&
+         getMaterializeEnabled() &&
+         this.persistedQueries.hasQueries()
+      );
+   }
+
+   /**
     * The persisted views' generated build sources this model can see, by
-    * `sourceID`, with the source and view each stores: the package's serve
+    * `sourceID`, with the source and view each stores, and the persisted
+    * named queries' with the query (and its run target): the package's serve
     * verdict reads a view's reach through its source.
     */
-   public persistedViewBuilds(): {
+   public persistedViewBuilds(): (PersistedResultOf & {
       buildSourceID: string;
-      sourceID: string;
-      sourceName: string;
-      viewName: string;
-   }[] {
+   })[] {
       if (!getMaterializeEnabled()) return [];
-      return this.persistedViews.plans().map((p) => ({
-         buildSourceID: p.buildSourceID,
-         sourceID: p.sourceID,
-         sourceName: p.sourceName,
-         viewName: p.viewName,
-      }));
+      return [
+         ...this.persistedViews.plans().map((p) => ({
+            buildSourceID: p.buildSourceID,
+            sourceID: p.sourceID,
+            sourceName: p.sourceName,
+            viewName: p.viewName,
+         })),
+         ...this.persistedQueries.plans().map((p) => ({
+            buildSourceID: p.buildSourceID,
+            queryName: p.queryName,
+            ...(p.sourceID !== undefined ? { sourceID: p.sourceID } : {}),
+            ...(p.sourceName !== undefined ? { sourceName: p.sourceName } : {}),
+         })),
+      ];
    }
 
    /**
@@ -2701,6 +2744,7 @@ export class Model {
       this.servedCopy.invalidate();
       this.rollupVariants.invalidate();
       this.persistedViews.invalidate();
+      this.persistedQueries.invalidate();
    }
 
    /**
@@ -2792,6 +2836,7 @@ export class Model {
       return [
          ...this.storageTables(pinned.snapshot).kept,
          ...this.persistedViews.viewBindings(pinned, "bound"),
+         ...this.persistedQueries.queryBindings(pinned, "bound"),
       ].map((b) => b.sourceName);
    }
 
@@ -3031,9 +3076,13 @@ export class Model {
                ...(this.persistedViewsEnabled()
                   ? { persistedViews: this.persistedViews }
                   : {}),
+               ...(this.persistedQueriesEnabled()
+                  ? { persistedQueries: this.persistedQueries }
+                  : {}),
             }),
          servingHost: (servedCopy) => this.servingHost(servedCopy),
-         persistedViewsEnabled: () => this.persistedViewsEnabled(),
+         persistedViewsEnabled: () =>
+            this.persistedViewsEnabled() || this.persistedQueriesEnabled(),
          withoutPreaggregateEntries: (manifest) =>
             this.withoutPreaggregateEntries(manifest),
          ensureSharedQueryModel: (materializer) =>
@@ -3103,6 +3152,7 @@ export class Model {
          servedCopy,
          rollupVariants: this.rollupVariants,
          persistedViews: this.persistedViews,
+         persistedQueries: this.persistedQueries,
          modelDef: () => this.modelDef,
          materializedTables: () => this.policy.materializedTables(),
          publishedNames: () => this.publishedNames(),

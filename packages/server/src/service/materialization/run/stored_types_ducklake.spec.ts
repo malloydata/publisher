@@ -233,10 +233,13 @@ describe("a Postgres build keeps a binary or interval column's warehouse type", 
 // `partition=` is retired, and with it the bounds (one thread, a low
 // partitioned_write_flush_threshold) a delta into a laid-out table ran under.
 // They are not needed: a table an earlier `partition=` build laid out is never
-// the target of a delta. The layout was part of the source's address, so the
-// first run after the upgrade has no boundary at the new address and builds in
-// full, and a full build replaces the table. This pins that the replacement
-// drops the layout, so the delta that follows writes unpartitioned files.
+// the target of a delta. The ledger is keyed by table, and its entry records the
+// address the boundary was measured under; that address folded the layout in,
+// so it no longer matches (incremental_build.spec): a standalone run seeds, and
+// a caller-supplied entry fails the run until it is reseeded. Either way the
+// next build is full, and a full build replaces the table. This pins that the
+// replacement drops the layout, so the delta that follows writes unpartitioned
+// files.
 describe("a table an earlier partition= build laid out", () => {
    async function laidOutFiles(conn: DuckDBConnection): Promise<string[]> {
       const files = await conn.runSQL(

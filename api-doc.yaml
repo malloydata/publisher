@@ -5909,7 +5909,12 @@ components:
                   key, `subject` the source; `warn`).
                   `persist-not-materializable`: a `#@ persist` source the build
                   walk did not recognize, served live (`subject` the source;
-                  `warn`). `persist-source-refused`: a `#@ persist` source a
+                  `warn`). `persist-query-not-built`: a `#@ persist` named
+                  query that is not built, so it is answered live: the feature
+                  is off (`PUBLISHER_MATERIALIZE`), or the message says why it
+                  was refused; it names the workaround, a persisted
+                  `source: x is q` (`subject` the query; `warn`).
+                  `persist-source-refused`: a `#@ persist` source a
                   compile-time gate refused (a row-level gate, a free
                   parameter, a given in the persisted query, or the `storage=`
                   gate), served live, with the gate's message (`subject` the
@@ -8806,11 +8811,13 @@ components:
 
     QueryPathTableKind:
       type: string
-      enum: [view, rollup, materialized, live]
+      enum: [view, query, rollup, materialized, live]
       description: >-
-        What kind of answer: `view`, a persisted view's table; `rollup`, a
-        pre-aggregation; `materialized`, a materialized source's table; `live`,
-        the source's own warehouse.
+        What kind of answer: `view`, a persisted view's table; `query`, a
+        persisted named query's table (`#@ persist` on a top-level `query:`);
+        `rollup`, a pre-aggregation; `materialized`, a materialized source's
+        table; `live`, the source's own warehouse. A client treats a kind it
+        does not know as a materialized table it cannot name.
 
     SkipReason:
       type: string
@@ -10383,7 +10390,18 @@ components:
 
     MaterializationStatus:
       type: string
-      description: Phase-aware status of a materialization run.
+      description: >-
+        Phase-aware status of a materialization run. `MANIFEST_ROWS_READY`:
+        the tables are built and the manifest is recorded. `MANIFEST_FILE_READY`:
+        the run is done; an auto-run reaches it only after its manifest is
+        loaded into the package it built, so a query sent after it is answered
+        from the new tables (`metadata.autoLoad` is `loaded`). When that load
+        does not take, the run still reaches `MANIFEST_FILE_READY`, since its
+        tables were built, with `metadata.autoLoad` `failed`,
+        `metadata.autoLoadStep` (`reload`, `bind` or `timeout`),
+        `metadata.autoLoadError`, and `error` set; the package's next reload
+        or restart binds the run's manifest. An orchestrated run never loads
+        its manifest, so for it `MANIFEST_FILE_READY` means built.
       enum:
         - PENDING
         - MANIFEST_ROWS_READY
@@ -10407,7 +10425,12 @@ components:
           oneOf:
             - $ref: "#/components/schemas/BuildManifest"
             - type: "null"
-          description: Build output. Null until status = MANIFEST_FILE_READY.
+          description: >-
+            Build output. Null until the tables are built (status
+            MANIFEST_ROWS_READY), and on a run that failed or was cancelled
+            before then. A run interrupted at MANIFEST_ROWS_READY (the server
+            stopped while it loaded its manifest) ends FAILED with its
+            manifest; that manifest is never served.
         startedAt:
           type: ["string", "null"]
           format: date-time

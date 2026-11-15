@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The Malloy that declares a source over a stored table: a persisted view's
- * build companion, a rollup's build companion and its merged measures, the
- * companion URLs beside a declaring file, and the notes a variant carries
- * onto a view it redeclares.
+ * The Malloy that declares a source over a stored table: the build companion
+ * of a file's persisted views and named queries, a rollup's build companion
+ * and its merged measures, the companion URLs beside a declaring file, and
+ * the notes a variant carries onto a view it redeclares.
  *
  * Shared by the planner, which compiles the companions at load to validate
  * them and address their tables, and the rollup and view legs, which compile
@@ -35,6 +35,7 @@ import type {
 } from "../domain/rollup_measures";
 import {
    splitSourceID,
+   type PersistedQueryPlan,
    type PersistedViewPlan,
    type RollupVariantPlan,
 } from "../domain/table_plans";
@@ -54,35 +55,94 @@ function baseAlias(source: string): string {
 
 /**
  * The companion's text for the views `plans` declares, all in the file
- * imported as `importPath`, or undefined when there are none.
+ * imported as `importPath`, with `extra`'s imports and sources after theirs
+ * (the persisted queries', see {@link generatePersistedResultFile}), or
+ * undefined when there are none.
  */
 export function generatePersistedViewFile(
    plans: readonly PersistedViewPlan[],
    importPath: string,
+   extra?: { imports: string; sources: string },
 ): string | undefined {
-   if (plans.length === 0) return undefined;
+   if (plans.length === 0 && !extra) return undefined;
    const sources = [...new Set(plans.map((p) => p.sourceName))].sort(
       byCodepoint,
    );
-   const imports = sources
-      .map(
-         (s) =>
-            `import { ${identifier(baseAlias(s))} is ${identifier(s)} } from ${doubleQuotedString(importPath)}`,
-      )
-      .join("\n");
-   const sourcesText = plans
-      .map(
-         (p) =>
-            // malloy-text: the author's own `#@` lines, verbatim (single lines, no `@env.`; see planSourcePersistedViews)
-            `${p.persistLines.join("\n")}
+   const viewImports = sources.map(
+      (s) =>
+         `import { ${identifier(baseAlias(s))} is ${identifier(s)} } from ${doubleQuotedString(importPath)}`,
+   );
+   const viewSources = plans.map(
+      (p) =>
+         // malloy-text: the author's own `#@` lines, verbatim (single lines, no `@env.`; see planSourcePersistedViews)
+         `${p.persistLines.join("\n")}
 source: ${identifier(p.buildSourceName)} is ${identifier(baseAlias(p.sourceName))} -> ${identifier(p.viewName)}`,
-      )
-      .join("\n\n");
+   );
+   // malloy-text: import lines built through identifier and doubleQuotedString
+   const imports = [...viewImports, ...(extra ? [extra.imports] : [])].join(
+      "\n",
+   );
+   // malloy-text: build sources named through identifier, under the author's own `#@` lines
+   const sourcesText = [...viewSources, ...(extra ? [extra.sources] : [])].join(
+      "\n\n",
+   );
    return `##! experimental.persistence
 ${imports}
 
 ${sourcesText}
 `;
+}
+
+/**
+ * The companion's lines for the queries `plans` declares, all in the file
+ * imported as `importPath`: one import of each query and its named run
+ * target, then one build source per query.
+ *
+ * The run target is imported beside the query because a selectively imported
+ * named query keeps its source as a bare name and resolves it in the
+ * importing model, so `{ q }` alone does not compile.
+ */
+function persistedQueryCompanionParts(
+   plans: readonly PersistedQueryPlan[],
+   importPath: string,
+): { imports: string; sources: string } | undefined {
+   if (plans.length === 0) return undefined;
+   const names = [
+      ...new Set(
+         plans.flatMap((p) =>
+            p.sourceName !== undefined
+               ? [p.queryName, p.sourceName]
+               : [p.queryName],
+         ),
+      ),
+   ].sort(byCodepoint);
+   const imports = `import { ${names.map((n) => identifier(n)).join(", ")} } from ${doubleQuotedString(importPath)}`;
+   const sources = plans
+      .map(
+         (p) =>
+            // malloy-text: the author's own `#@` lines, verbatim (single lines, no `@env.`; see planModelPersistedQueries)
+            `${p.persistLines.join("\n")}
+source: ${identifier(p.buildSourceName)} is ${identifier(p.queryName)}`,
+      )
+      .join("\n\n");
+   return { imports, sources };
+}
+
+/**
+ * The persisted-result companion's text for one declaring file: its persisted
+ * views' build sources, then its persisted queries', or undefined when it
+ * declares neither.
+ */
+export function generatePersistedResultFile(
+   views: readonly PersistedViewPlan[],
+   queries: readonly PersistedQueryPlan[],
+   importPath: string,
+): string | undefined {
+   return generatePersistedViewFile(
+      views,
+      importPath,
+      persistedQueryCompanionParts(queries, importPath),
+   );
 }
 
 /** Appended to a declaring model's path to name its rollup build companion. */

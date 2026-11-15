@@ -42,11 +42,11 @@ export interface AuthorImportOptions {
     */
    alias?: ReadonlyMap<string, string>;
    /**
-    * Names declared in `from` (an overlay key) other than `keep` are imported
-    * from `to` instead: a name a file imports is not exported again, so when
-    * the variant overlays the declaring file, only `keep` stays there.
+    * Names declared in `from` (an overlay key) other than those in `keep` are
+    * imported from `to` instead: a name a file imports is not exported again,
+    * so when the variant overlays the declaring file, only `keep` stays there.
     */
-   redirect?: { from: string; to: string; keep: string };
+   redirect?: { from: string; to: string; keep: ReadonlySet<string> };
 }
 
 /**
@@ -71,7 +71,7 @@ export function authorNameImports(
       const target =
          redirect &&
          overlayKey(url) === redirect.from &&
-         declaredName !== redirect.keep
+         !redirect.keep.has(declaredName)
             ? redirect.to
             : url;
       byFile.set(target, [...(byFile.get(target) ?? []), item]);

@@ -33,6 +33,65 @@ A colocated source bound with no recorded type for a big-integer column, on any 
 
 API addition: the package warning code `stored-native-schema-missing`. No field or enum value is added.
 
+## [Unreleased] — the remaining lookups through a package author's links stay inside the package
+
+Every lookup Publisher makes through a path a package author controls now resolves it with the walk that confines model imports, which never looks at a path outside the package. A link that leads out, or out and back through another directory, gets the same answer whether or not what it passes through exists:
+
+- **HTML data apps.** `public/` itself is now confined to the package: a `public/` that is a symlink out of the package serves and lists nothing (403), whatever it leads to. Before, its target was treated as the package's own, so `public -> /` served any file the server could read. A `public/` that links inside the package (`public -> web`) still serves. A link in `public/` that leads out answers 403 whether or not its target exists (before, 403 when it existed and 404 when it did not), and is left out of the data-app listing, which no longer opens such a page for its title.
+- **Package listing.** A directory link that passes out of the package and back is listed as itself, so whether the outside directory exists no longer decides whether the package loads.
+- **Retrieval prompts** (`retrieval.prompts.*` in `publisher.json`), **package and agent skills** (the skills directory, a skill directory, `reference/`, an agent's skills root and its assets), and **the report write path** (`PUT …/models/{path}`) refuse a link out the same way whatever it leads to. One visible change: a `skills/` that is a dangling link out of the package (`skills -> /absent`) is now reported as leading outside the package, which blocks the package's skills, where it used to be skipped silently; a dangling link inside the package is still skipped.
+- **A walk that stops at a missing directory** opens only that point and the next name, so a directory appearing there afterwards cannot carry the open out of the package. Its error reads as the kernel's would (`f.md/..` fails with ENOTDIR).
+- **Data probe errors** (`GET …/databases`) name the file by its package-relative path with the connection's reason, rather than echoing the SQL the probe compiled; a path inside Malloy's escaped quotes is no longer mangled (`'bad.parquet/'`).
+
+No API change.
+## [Unreleased] — an auto-run reports `MANIFEST_FILE_READY` only once its package serves the new tables
+
+A materialization auto-run used to report `MANIFEST_FILE_READY` and then load its manifest into the package. A caller that waited for `MANIFEST_FILE_READY` (the REST `GET …/materializations/{id}`, `malloy-pub materialize --wait`, the Console) and queried at once could be answered live, or from the previous table, until the load finished.
+
+Now the run records its manifest when it reaches `MANIFEST_ROWS_READY`, loads it into its package, and only then reports `MANIFEST_FILE_READY`, so a query sent after it is answered from the new tables. The load and that last move happen under the package's lock, so a reload or publish that lands meanwhile waits for them and binds the new manifest, not the one before it.
+
+The run's `metadata` says how the load went: `autoLoad: "loaded"`, or `autoLoad: "failed"` with `autoLoadStep` (`reload`, `bind` or `timeout`) and `autoLoadError`. A failed load also sets the run's `error` ("Built, but not served …"). Such a run still settles at `MANIFEST_FILE_READY`, since its tables were built:
+
+- `malloy-pub materialize --wait` prints "built but not served" and exits **2** for it, where it used to print "ready" and exit 0. A script that treats any non-zero exit as a failed build should treat 2 as "built, not yet served".
+- The Console shows it as a warning, "Built, not served", not as done.
+- What the package serves meanwhile depends on the step: after `reload` it keeps the models it had; after `bind` the run's colocated tables are served and its `storage=` ones are not. The package's next reload or restart binds the run's manifest either way.
+
+Also:
+
+- A load that has not finished after ten minutes settles the run as `autoLoad: "failed"`, `autoLoadStep: "timeout"`, so a hung load no longer holds the package's build slot until a restart.
+- A stop that lands while the manifest loads does not cut the load short; the run settles at `MANIFEST_FILE_READY` with `stopIgnored: true`.
+- A run's `manifest` is now present from `MANIFEST_ROWS_READY`, not only from `MANIFEST_FILE_READY`.
+- Other loaded versions that share the run's tables (`scope: "package"`) are rebound just after the run reports `MANIFEST_FILE_READY`, as before.
+- An orchestrated run never loads its manifest (the host distributes it), so for it nothing changes.
+- No status is added. `MANIFEST_ROWS_READY` now also spans the load, so a run can be seen there a little longer.
+## [Unreleased] — `#@ persist` on a named query stores its result (`PUBLISHER_MATERIALIZE`)
+
+With `PUBLISHER_MATERIALIZE` on (the default), `#@ persist` on a top-level `query:` builds the query's result as a generated source, `<query>__query`, in the same companion as the file's persisted views, colocated or with `storage=`. Its table answers exactly the calls of the query, and answers them equal to live:
+
+- **Served from the table:** REST and MCP `queryName`, a single-query report and a report tile naming the query, `run: q`, and `run: q -> { … }`. The answer keeps the query's name, its columns in order, each column's kind (an aggregate is still a measure) and annotations, its ordering and its render tags.
+- **Answered live:** `run: q + { … }` (a refinement; the path report skips the table `MISSING_FIELD`), any use of `q` inside another definition, and a query text that, outside the call, names the run target, any named query, or any source from another file (`MISSING_FIELD`). A later stage that joins a source declared in another file answers live; join it in the model instead.
+- **Fixes wrong rows from a persisted view.** The view leg on main answered a later stage that joined the view's source back (`run: fv -> by_c -> { extend: { join_many: f is fv … } }`), or a caller's source built over it, from the stored result, so the join read the stored rows: `f.count()` was 1 for every row. A text that, outside the call (in a later stage, or a definition before the `run:`), names the run target, any named query, or any source from another file now declines (`MISSING_FIELD`) and is answered live, on both the view and query legs; the caller's own definitions before the `run:`, a dimension-only `extend:` and a join to another source of the declaring file are still served.
+- **Ordering:** rows that tie on `order_by:`, or a query or later stage with no `order_by:`, may come back in another order than live's.
+- **Governance fails closed.** Not built, with `persist-query-not-built` naming why: a query that reads a given or the current time, whose source has a given-reading `where:`, and any query that reaches a row-level gate (`#(access_filter)` or `#(authorize)`: its source's own, one it inherits, or one on a source it joins), whatever `PUBLISHER_MATERIALIZE_GATED_SOURCES` says. Such a query is answered live under its gate, and the leg is never tried past an entry-point gate (`publisher_query_route_total` counts it `leg="query"`, `skipped`, `CONTRACT`).
+- **Regrouped as a persisted view is.** The table answers with each measure a measure again by the persisted view's regroup rule: only when the last stage groups by at least one dimension and nests nothing. A query that aggregates with no `group_by:` is built but answered live (`MISSING_FIELD`); a result that nests is not built.
+- **Changed meaning of a signal: a new `leg` value.** `publisher_query_route_total` gains `leg="query"`, which counts the persisted-query leg's routes (`used`, `skipped` with the path report's reason, `fallback`). This value is new. A persisted view's routes stay `leg="view"`. The path report names the table `kind: "query"`.
+- **Not yet:** persisting a query from inside a report file.
+
+**API addition.** `QueryPathTableKind` (the path report's `servedBy.kind` and each candidate's `kind`) gains `query`, a persisted named query's table. A client treats a kind it does not know as a stored table it cannot name. The build plan lists a persisted query as an ordinary persist source (`origin: persist`); its serve verdict reads `The persisted query \`<query>\``.
+
+Off, nothing changes from the entry below: the query is warned `persist-query-not-built` and answered live.
+
+## [Unreleased] — `#@ persist` on a named query says what it does
+
+`#@ persist` on a top-level `query:` builds nothing: Malloy's persistence planner walks sources only. The package used to warn with the source warning, `persist-not-materializable`, which told the author to "persist a query source" about something that already is a query, and a materialization run over the whole package was refused because of it.
+
+- **A dedicated warning.** The query now carries `persist-query-not-built` (`warn`, `subject` the query), which says it is answered live and names the workaround: persist a source over the query (`#@ persist` on `source: q_result is q`) and query that source. The code is an open string.
+- **A misspelled key is reported.** An unknown or retired key on the query's `#@` line is reported as on a source (`persist-unknown-key`, `persist-retired-key`).
+- **A build run is no longer refused.** A persisted query is not a dropped persist source, so it no longer fails a whole-package run.
+
+No API change beyond the new warning code.
+
+
 ## [Unreleased] — error messages no longer include the server's filesystem paths
 
 A package that failed to load at boot reported the compile error with the server's absolute path to the file (`FILE: file:///…/publisher_data/<env>/<pkg>/<version>/m.malloy`) in `/status` `loadErrors`, MCP `get_status` and `list_packages`, and the package resource; a refused publish (424) did too. A failed reload already named the file package-relative. Every package load, compile and recompile now names the package's files relative to the package root (`FILE: m.malloy`), and `compile` diagnostics carry a package-relative `at.url` instead of a `file://` URL. Any other server path in such a message (a file imported from outside the package, a configured location that did not mount) reads `<outside package>`, and a missing location is named by its package.
