@@ -1,0 +1,77 @@
+# TEMPORARY: calibration runs for the main-thread regression check. Removed
+# before merge.
+name: mtr-calibration
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/mtr-calibration.yml"
+
+env:
+  BUN_VERSION: 1.4.4
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+jobs:
+  ab:
+    name: ${{ matrix.pair }} ${{ matrix.n }}
+    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: ["126-vs-131", "126-vs-126", "126-vs-fixed"]
+        n: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
+      - run: bun install --frozen-lockfile
+      - name: Fixed candidate (the three fix branches merged in the runner)
+        if: ${{ matrix.pair == '126-vs-fixed' }}
+        run: |
+          git fetch origin fix/7795-load-gate-cpu fix/7795-served-copy-rebind fix/7795-status-snapshot
+          git worktree add --detach "$RUNNER_TEMP/fixed" origin/main
+          cd "$RUNNER_TEMP/fixed"
+          for b in load-gate-cpu served-copy-rebind status-snapshot; do
+            git -c user.name=ci -c user.email=ci@local merge --no-edit "origin/fix/7795-$b" || {
+              git checkout --ours RELEASE_NOTES.md && git add RELEASE_NOTES.md &&
+              git -c user.name=ci -c user.email=ci@local commit --no-edit; }
+          done
+          git log --oneline -4
+          bun install --frozen-lockfile
+      - name: A/B
+        working-directory: packages/server
+        env:
+          PAIR: ${{ matrix.pair }}
+        run: |
+          case "$PAIR" in
+            126-vs-131) cand="git:v0.13.1" ;;
+            126-vs-126) cand="git:v0.12.6" ;;
+            126-vs-fixed) cand="$RUNNER_TEMP/fixed" ;;
+          esac
+          nproc; free -g
+          bun tests/perf/main-thread/run.ts --baseline git:v0.12.6 --candidate "$cand" \
+            --rounds 2 --out "$RUNNER_TEMP/mtr" || echo "exit $?"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cal-${{ matrix.pair }}-${{ matrix.n }}
+          path: |
+            ${{ runner.temp }}/mtr/*.json
+            ${{ runner.temp }}/mtr/*.md
+          if-no-files-found: ignore
+          retention-days: 5
