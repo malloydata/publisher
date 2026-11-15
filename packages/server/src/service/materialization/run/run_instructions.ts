@@ -31,9 +31,9 @@ import {
    CompiledBuildPlan,
    computeSourceEntityId,
    sourcesInBuildOrder,
+   sharedTables,
    tierGateInputs,
 } from "../plan/build_plan";
-import { sharedTables } from "../plan/eligibility_collect";
 import {
    assertPlacementNamed,
    assertTierEligible,

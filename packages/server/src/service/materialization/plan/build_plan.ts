@@ -145,8 +145,10 @@ export {
    sourcesInBuildOrder,
    type SourceBuild,
 } from "./addressing";
+export { loadGateText } from "./load_gate_text";
 export {
    collidingRollups,
+   sharedTables,
    tierGateInputs,
    type ColocatedSourceEligibility,
    type SourceEligibility,
@@ -1733,15 +1735,13 @@ export function deriveBuildPlanOutcome(
    scope?: string | null,
 ): BuildPlanOutcome {
    // Before anything reads the plan: a refused source is neither built nor
-   // served, and its warning replaces it (#6644).
-   // A valid incremental declaration this deployment cannot honour refuses
-   // its source alone, the same way.
-   const compiled = refuseIncrementalUnbuildable(
-      refuseCollidingMaterialize({
-         ...collected,
-         ...(scope === "version" ? { versionScoped: true } : {}),
-      }),
-   );
+   // served, and its warning replaces it (#6644). A valid incremental
+   // declaration this deployment cannot honour was refused alone where the
+   // plan was compiled (compilePackageBuildPlan, or the load worker).
+   const compiled = refuseCollidingMaterialize({
+      ...collected,
+      ...(scope === "version" ? { versionScoped: true } : {}),
+   });
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
    const incrementalDeclarations = collectIncrementalDeclarations(
       compiled.sources,

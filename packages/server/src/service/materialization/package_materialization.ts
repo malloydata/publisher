@@ -2339,6 +2339,7 @@ export class PackageMaterialization {
       code: string;
       subject: string;
    }[] {
+      if (!this.buildPlan) return [];
       return planCollisions(
          this.buildPlan,
          this.materializePlans,

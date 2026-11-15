@@ -691,28 +691,12 @@ import { shipped is summary } from "b.malloy"
             model: "a.malloy",
             malloy:
                "run: summary -> { group_by: region; aggregate: t is total.sum() }",
-            gaps: {
-               "storage/off": {
-                  kind: "live",
-                  issue: "#6644",
-                  reason:
-                     "the serve shape does not serve a source whose name another model also persists (the v1 fix refuses rather than mis-serves)",
-               },
-            },
          },
          {
             name: "summary in b.malloy",
             model: "b.malloy",
             malloy:
                "run: summary -> { group_by: region; aggregate: t is total.sum() }",
-            gaps: {
-               "storage/off": {
-                  kind: "live",
-                  issue: "#6644",
-                  reason:
-                     "the serve shape does not serve a source whose name another model also persists (the v1 fix refuses rather than mis-serves)",
-               },
-            },
          },
          {
             name: "a.malloy's summary imported as placed",

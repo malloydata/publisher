@@ -121,12 +121,10 @@ export function registerReloadPackageTool(
                description: pkg.description,
             }),
             // The persist-source-refused alias repeats a persist-not-built
-            // warning for REST clients; an agent reads it once.
+            // warning, same message, for REST clients; an agent reads it once.
             ...(pkg.warnings !== undefined &&
                pkg.warnings.length > 0 && {
-                  warnings: pkg.warnings.filter(
-                     (w) => w.code !== "persist-source-refused",
-                  ),
+                  warnings: withoutRefusedAlias(pkg.warnings),
                }),
             // An explores entry that did not resolve to a model, so a
             // mistyped explores edit is not silently swallowed.
@@ -139,4 +137,18 @@ export function registerReloadPackageTool(
          return jsonResource(uri, payload);
       },
    });
+}
+
+/** `warnings` less each `persist-source-refused` alias of a `persist-not-built` beside it. */
+function withoutRefusedAlias<T extends { code?: string; message?: string }>(
+   warnings: readonly T[],
+): T[] {
+   const notBuilt = new Set(
+      warnings
+         .filter((w) => w.code === "persist-not-built")
+         .map((w) => w.message),
+   );
+   return warnings.filter(
+      (w) => w.code !== "persist-source-refused" || !notBuilt.has(w.message),
+   );
 }

@@ -36,8 +36,7 @@ import {
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
 import { CompiledBuildPlan } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
-import { deriveBuildPlanOutcome } from "../plan/build_plan";
-import { loadGateText } from "../plan/load_gate_text";
+import { deriveBuildPlanOutcome, loadGateText } from "../plan/build_plan";
 import {
    BuildInstruction,
    LedgerEntry,
