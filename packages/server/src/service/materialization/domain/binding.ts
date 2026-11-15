@@ -63,6 +63,12 @@ export interface Binding {
     */
    primaryKeys?: Record<string, boolean>;
    /**
+    * A stored rollup's own key check (known limitation 29), as the run that
+    * wrote or carried the table found it: whether its base held the grain's
+    * one dimension once per row. Internal, as {@link primaryKeys} is.
+    */
+   rollupKey?: { keyColumn: string; unique: boolean };
+   /**
     * The storage destination the table lives in; for a colocated table, the
     * source's own connection.
     */
@@ -254,6 +260,16 @@ export function primaryKeysOf(entry: {
    return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** A rollup's own key check a local run recorded on a stored entry, as {@link primaryKeysOf}. */
+function rollupKeyOf(entry: {
+   keyUniqueness?: { keyColumn?: unknown; unique?: unknown };
+}): Binding["rollupKey"] {
+   const k = entry.keyUniqueness;
+   return typeof k?.keyColumn === "string" && typeof k.unique === "boolean"
+      ? { keyColumn: k.keyColumn, unique: k.unique }
+      : undefined;
+}
+
 /**
  * The `storage=` bindings a run's manifest entries make: one per name that
  * reads each table (its builder, then its aliases), each with the plan's
@@ -299,6 +315,10 @@ export function deriveServeBindings(
          ),
       ].filter((name, i, all) => all.indexOf(name) === i);
       const primaryKeys = primaryKeysOf(entry as never);
+      const rollupKey =
+         entry.origin === "preaggregate"
+            ? rollupKeyOf(entry as never)
+            : undefined;
       for (const sourceName of names) {
          // Set whenever there is a plan to read, even empty: an empty list
          // names no source, so the binding serves nothing (planSourceIds).
@@ -322,6 +342,7 @@ export function deriveServeBindings(
             freshnessWindowSeconds: entry.freshnessWindowSeconds,
             freshnessFallback: entry.freshnessFallback,
             ...(primaryKeys ? { primaryKeys } : {}),
+            ...(rollupKey ? { rollupKey } : {}),
          });
       }
    }

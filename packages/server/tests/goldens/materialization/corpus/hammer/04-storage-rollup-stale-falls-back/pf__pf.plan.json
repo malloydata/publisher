@@ -29,6 +29,10 @@
           "category"
         ],
         "internalGrain": [],
+        "keyCheck": {
+          "keyColumn": "category",
+          "sql": "SELECT \n   base.\"category\" as \"category\",\n   COUNT(1) as \"key_rows__check\"\nFROM public.pf_orders as base\nWHERE base.\"category\" IS NOT NULL\nGROUP BY 1\nHAVING (COUNT(1))>1\nORDER BY 2 desc NULLS LAST\nLIMIT 1\n"
+        },
         "measures": [
           {
             "name": "total",

@@ -102,6 +102,26 @@ describe("deriveColocatedServeBindings", () => {
       expect(derive({ entry: { connectionName: "other" } })).toEqual([]);
    });
 
+   it("declares the plan's columns as typed, and adds only a zoned timestamp the build captured", () => {
+      const [binding] = derive({
+         entry: {
+            schema: [
+               // The warehouse holds a truncation as a timestamp: the plan's
+               // type stands.
+               { name: "id", type: "BIGINT" },
+               { name: "region", type: "TIMESTAMP" },
+               { name: "seen", type: "TIMESTAMP WITH TIME ZONE" },
+               { name: "blob", type: "BLOB" },
+            ],
+         },
+      });
+      expect(binding?.schema).toEqual([
+         { name: "id", type: "BIGINT" },
+         { name: "region", type: "VARCHAR" },
+         { name: "seen", type: "TIMESTAMP WITH TIME ZONE" },
+      ]);
+   });
+
    it("binds nothing when the build's columns are unknown, so the source serves live", () => {
       expect(derive({ plan: { storedColumns: undefined } })).toEqual([]);
       expect(derive({ plan: { storedColumns: [] } })).toEqual([]);

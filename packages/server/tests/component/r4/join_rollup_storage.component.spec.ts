@@ -208,6 +208,13 @@ const SERVED = [
       "a count through a join_one (unmatched parents count zero live too)",
       "run: flights -> { group_by: carrier; aggregate: crew.crew_count }",
    ],
+   // Known limitation 29: `crew` holds each flight at most once, and its
+   // rollup's build checked it over the rows it read, as a colocated one's
+   // does, so the parent's own aggregates read the join_one as live does.
+   [
+      "the parent's own aggregates beside a join_one checked unique",
+      "run: flights -> { group_by: carrier; aggregate: flight_count, crew.crew_size }",
+   ],
 ] as const;
 
 const DECLINED = [
@@ -235,11 +242,6 @@ const DECLINED = [
       "a query in its own time zone",
       "run: flights -> { timezone: 'America/Los_Angeles'; group_by: carrier; aggregate: segments.seg_miles }",
       "TIME_ZONE",
-   ],
-   [
-      "the parent's own aggregates beside a join_one",
-      "run: flights -> { group_by: carrier; aggregate: flight_count, crew.crew_size }",
-      "COUNT_SEMANTICS",
    ],
 ] as const;
 

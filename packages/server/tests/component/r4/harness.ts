@@ -53,6 +53,7 @@ import {
    kindFromPlan,
 } from "../../../src/service/materialization/serve/bind";
 import { capturedNativeSchema } from "../../../src/service/materialization/run/colocated_native_types";
+import { capturedColocatedSchema } from "../../../src/service/materialization/run/colocated_build_strategy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
 import * as os from "os";
@@ -182,7 +183,7 @@ export interface R4Scenario {
     */
    preaggregate?: boolean;
    /**
-    * With {@link preaggregate}: run each colocated rollup's key check (known
+    * With {@link preaggregate}: run each rollup's key check (known
     * limitation 29) once its table is built, as an auto-run does, and bind
     * what it found. `false` binds no check, as for a table a host's manifest
     * binds or a build that could not check; `"unique"` binds a pass without
@@ -312,6 +313,13 @@ export interface R4Fixture {
    setClock(at: string): void;
    /** Why the persisted-view planner refused a view, one sentence each. */
    viewRefusals: string[];
+   /**
+    * With {@link R4Scenario.preaggregate}: each `#(preaggregate)` declaration
+    * the rollup planner refused, by its code and base source.
+    */
+   rollupRefusals: { code: string; sourceName: string }[];
+   /** For a `#(materialize)` scenario: each source's plan, by its name. */
+   materializePlans: Record<string, MaterializePlan>;
    /** Rows of a stored table, by its physical name, with SQL over it. */
    storedSQL(
       sql: (table: (sourceName: string) => string) => string,
@@ -756,6 +764,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       string,
       {
          tableName: string;
+         schema?: { name: string; type: string }[];
          nativeSchema?: { name: string; type: string }[];
          keyUniqueness?: KeyUniqueness;
       }
@@ -828,9 +837,18 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             dialect: builder.dialectName,
             sourceName: source.name,
          });
+         // And its columns, read back as a colocated build reads them
+         // (colocated_build_strategy.ts), which its binding declares.
+         const schema = await capturedColocatedSchema({
+            connection: builder,
+            physicalTableName: table,
+            dialect: builder.dialectName,
+            sourceName: source.name,
+         });
          const leafKeys = await pairLeafKeys(source);
          colocatedMaterializeEntries[entityIdOf(source, i)] = {
             tableName: table,
+            ...(schema ? { schema } : {}),
             ...(nativeSchema ? { nativeSchema } : {}),
             ...(leafKeys ? { keyUniqueness: { parentKeys: leafKeys } } : {}),
          };
@@ -1009,6 +1027,41 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             parentKeys: { ...entry.keyUniqueness?.parentKeys, ...parentKeys },
          };
       }
+      // A storage rollup's own key check (known limitation 29), run on its
+      // base's connection over the rows its build reads, as a colocated
+      // one's is, when a join_one is keyed on its grain.
+      const rollupKey = rollupOrigin.has(source.sourceID)
+         ? rollupPlanByName.get(source.name)?.keyCheck
+         : undefined;
+      if (
+         rollupKey &&
+         checks !== false &&
+         joinOneKeys.has(
+            joinOneKey(
+               rollupPlanByName.get(source.name)?.baseSourceID ?? "",
+               rollupKey.keyColumn,
+            ),
+         )
+      ) {
+         const record =
+            checks === "unique"
+               ? { keyColumn: rollupKey.keyColumn, unique: true }
+               : await runRollupKeyCheck(
+                    rollupKey,
+                    connections.get(source.connectionName) ?? duckdb,
+                    table,
+                 );
+         if (record) {
+            const entry = entries[`h${i}`] as ManifestEntry & {
+               keyUniqueness?: KeyUniqueness;
+            };
+            entry.keyUniqueness = {
+               ...entry.keyUniqueness,
+               keyColumn: record.keyColumn,
+               unique: record.unique,
+            };
+         }
+      }
       entryBySourceID.set(source.sourceID, entries[`h${i}`]);
    }
    // Each kind read off the plan, as the package's bind reads it.
@@ -1170,6 +1223,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       duckdb,
       model,
       viewRefusals,
+      rollupRefusals: (rollups?.refused ?? []).map((r) => ({
+         code: r.code,
+         sourceName: r.sourceName,
+      })),
+      materializePlans: Object.fromEntries(
+         Object.values(materializePlans).map((p) => [p.sourceName, p]),
+      ),
       setClock(at) {
          if (!pinned) throw new Error("the scenario's clock is not pinned");
          pinned.clock = at;

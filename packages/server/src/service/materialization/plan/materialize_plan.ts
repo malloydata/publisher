@@ -1690,7 +1690,7 @@ function pairLayoutOf(
    }
    let pairFullRefresh: string | undefined;
    if (pair && persist.refresh === "incremental") {
-      const incremental = pairIncremental({
+      let incremental = pairIncremental({
          pairs: pairBlocks?.blocks ?? [pair],
          persist,
          names:
@@ -1710,6 +1710,23 @@ function pairLayoutOf(
          },
          windowFields: args.windowFields,
       });
+      // A pair table's delta replaces whole parents in DuckDB only
+      // (pairDeltaStatements): the target of every `storage=` table, and of a
+      // colocated one in a DuckDB warehouse. A colocated one anywhere else is
+      // rebuilt in full every refresh, which the package says.
+      if (
+         "watermark" in incremental &&
+         persist.storage === undefined &&
+         !capabilitiesOf(def.dialect).pairDelta
+      ) {
+         incremental = {
+            fullRefresh:
+               `its table is colocated in its source's warehouse (dialect ` +
+               `${String(def.dialect)}), and a pair table's delta is applied only in DuckDB ` +
+               `(a \`storage=\` destination, or a DuckDB warehouse); declare ` +
+               `storage= to refresh it incrementally`,
+         };
+      }
       if ("watermark" in incremental) {
          if (pairBlocks) {
             pairBlocks = { ...pairBlocks, watermark: incremental.watermark };

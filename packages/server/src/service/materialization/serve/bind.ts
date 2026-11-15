@@ -235,8 +235,11 @@ interface ColocatedPlanSource {
  * `storage=` whose content address the manifest names, admitted by
  * `eligible` (the same positive eligibility a `storage=` binding needs).
  *
- * A plan with no compiled output columns ({@link MaterializePlan.storedColumns})
- * binds nothing: its table's columns are unknown, so it serves live.
+ * Its columns are the plan's compiled output columns
+ * ({@link MaterializePlan.storedColumns}) and each one the build captured from
+ * the table it wrote that the plan cannot spell (a zoned timestamp), so a
+ * source over one is bound as a `storage=` source is. With neither, it binds
+ * nothing: its table's columns are unknown, so it serves live.
  */
 export function deriveColocatedServeBindings(args: {
    /** The bound colocated manifest, freshness fields included. */
@@ -276,7 +279,7 @@ export function deriveColocatedServeBindings(args: {
       const entry = entries[source.sourceEntityId];
       if (!entry?.tableName) continue;
       const schema = plan
-         ? plan.storedColumns
+         ? plannedWithCaptured(plan.storedColumns, entry.schema)
          : v1ColumnsOf(entry, () => args.v1Schema?.(sourceID));
       if (!schema?.length) continue;
       // Built on another connection than the plan names (a manifest from
@@ -318,6 +321,31 @@ export function deriveColocatedServeBindings(args: {
       });
    }
    return bindings;
+}
+
+/** A captured zoned timestamp's spelling (`storedColumnsOfOutput`). */
+const ZONED_TIMESTAMP = /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/i;
+
+/**
+ * A colocated `#(materialize)` table's columns: the plan's, typed as Malloy
+ * declares them (a truncation's `DATE`, which the warehouse may hold as a
+ * timestamp), and each zoned timestamp the build captured, which the plan
+ * cannot spell, as it captured it, as a `storage=` binding declares one. No
+ * other captured column is added: one the plan leaves out has no faithful
+ * declaration. With no capture (a table built before it), the plan's alone.
+ */
+function plannedWithCaptured(
+   planned: StoredColumn[] | undefined,
+   captured: StoredColumn[] | undefined,
+): StoredColumn[] | undefined {
+   if (!planned?.length) return planned;
+   const named = new Set(planned.map((c) => c.name));
+   return [
+      ...planned,
+      ...(captured ?? []).filter(
+         (c) => !named.has(c.name) && ZONED_TIMESTAMP.test(c.type.trim()),
+      ),
+   ];
 }
 
 /**

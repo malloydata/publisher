@@ -256,8 +256,10 @@ export function incrementalLineage(params: {
    // A pair table's delta replaces whole parents by its key, in DuckDB, the
    // target of every `storage=` table and of a colocated table in a DuckDB
    // warehouse (pairDeltaStatements). Anything else seeds: a colocated pair
-   // table in another warehouse, or a pair whose merge key is not its parent
-   // key, which was planned wrong.
+   // table in another warehouse, which its plan already rebuilds in full with
+   // a package warning (`materialize-pair-full-refresh`), so this is only a
+   // backstop, or a pair whose merge key is not its parent key, which was
+   // planned wrong.
    if (
       d.pair &&
       (!capabilitiesOf(params.targetDialect).pairDelta ||
