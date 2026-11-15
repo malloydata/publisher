@@ -1,19 +1,12 @@
 {
   "bind": {
     "buildErrors": {},
-    "built": [
-      {
-        "name": "daily_orders",
-        "tier": "colocated"
-      }
-    ],
-    "verdicts": [
-      "daily_orders:serves"
-    ],
+    "built": [],
+    "verdicts": [],
     "warnings": [
       {
-        "code": "persist-unknown-key",
-        "message": "#@ persist source \"daily_orders\": `mergekey=` is not a key `#@` reads, so it does nothing (did you mean `merge_key=`?)",
+        "code": "persist-not-built",
+        "message": "#@ persist source \"daily_orders\" is not built, so it is answered live: it declares refresh=\"incremental\", which is not supported on dialect \"duckdb\". Incremental refresh reads a bounded watermark range out of the source and applies it transactionally, so it is enabled only where the publisher has proven both: postgres, snowflake, standardsql (BigQuery). Use refresh=\"full\" to build it; the supported set widens in a later release.",
         "subject": "daily_orders"
       }
     ]
@@ -48,13 +41,7 @@
       "equalToLive": true,
       "malloy": "run: daily_orders -> { aggregate: n is count() }",
       "path": {
-        "considered": [
-          {
-            "kind": "materialized",
-            "outcome": "used",
-            "tableId": "3e2e0d29260223019303fa0c3cbb3679421f9c8a7dd2c9ff514138e9b30592bc"
-          }
-        ],
+        "considered": [],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -63,14 +50,12 @@
           "sourceName": "daily_orders"
         },
         "servedBy": {
-          "kind": "materialized",
-          "tableId": "3e2e0d29260223019303fa0c3cbb3679421f9c8a7dd2c9ff514138e9b30592bc",
-          "via": "served_copy"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "count daily_orders",
-      "servedBy": "materialized",
+      "servedBy": "live",
       "servedFrom": null,
       "switch": "off"
     },
@@ -103,13 +88,7 @@
       "equalToLive": true,
       "malloy": "run: daily_orders -> { aggregate: n is count() }",
       "path": {
-        "considered": [
-          {
-            "kind": "materialized",
-            "outcome": "used",
-            "tableId": "3e2e0d29260223019303fa0c3cbb3679421f9c8a7dd2c9ff514138e9b30592bc"
-          }
-        ],
+        "considered": [],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -118,14 +97,12 @@
           "sourceName": "daily_orders"
         },
         "servedBy": {
-          "kind": "materialized",
-          "tableId": "3e2e0d29260223019303fa0c3cbb3679421f9c8a7dd2c9ff514138e9b30592bc",
-          "via": "served_copy"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "count daily_orders",
-      "servedBy": "materialized",
+      "servedBy": "live",
       "servedFrom": null,
       "switch": "on"
     }

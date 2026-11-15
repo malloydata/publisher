@@ -5,7 +5,7 @@
  * A v1 `#@ persist` whose build reads the current time, through the real
  * package path (load, plan, build, bind, serve). Built, its table would hold
  * the rows as of the build and serve them until the next rebuild; it is
- * refused at plan (`current_time`, a `persist-source-refused` warning) and
+ * refused at plan (`current_time`, a `persist-not-built` warning) and
  * answered live. A neighbour whose `now` is in its own extend block is
  * applied at every read, so it still builds, and its table answers as live.
  *
@@ -184,7 +184,7 @@ describe("v1 #@ persist over now, through a real package", () => {
          expect(entry?.reason).toBe("current_time");
          expect(entry?.tier).toBe(s === "sq_now" ? "storage" : "colocated");
          const warning = fixture.warnings.find((w) => w.subject === s);
-         expect(warning?.code).toBe("persist-source-refused");
+         expect(warning?.code).toBe("persist-not-built");
          expect(warning?.message).toContain("reads the current time");
       }
    });

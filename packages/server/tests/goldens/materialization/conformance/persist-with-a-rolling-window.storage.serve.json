@@ -13,6 +13,11 @@
     ],
     "warnings": [
       {
+        "code": "persist-not-built",
+        "message": "Source 'recent_body' cannot be materialized: the relation it persists reads the current time (`now`), in its query, a view it runs, the `where:`, a field or a join of the source that query reads, or the query of a query-shaped source it is built from or joins. Its table would hold the rows as of the build and serve them until the next rebuild, while a live query reads `now` again every time, so it is not built and is answered live. To serve it from a table, move the `now` into the persisted source's own extend block (a `where:`, dimension or measure there is applied at every read), or stop persisting this source.",
+        "subject": "recent_body"
+      },
+      {
         "code": "persist-source-refused",
         "message": "Source 'recent_body' cannot be materialized: the relation it persists reads the current time (`now`), in its query, a view it runs, the `where:`, a field or a join of the source that query reads, or the query of a query-shaped source it is built from or joins. Its table would hold the rows as of the build and serve them until the next rebuild, while a live query reads `now` again every time, so it is not built and is answered live. To serve it from a table, move the `now` into the persisted source's own extend block (a `where:`, dimension or measure there is applied at every read), or stop persisting this source.",
         "subject": "recent_body"

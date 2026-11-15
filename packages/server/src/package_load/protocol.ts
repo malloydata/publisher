@@ -131,6 +131,13 @@ export interface LoadPackageRequest {
     */
    withPreaggregateCompanions?: boolean;
    /**
+    * The package is a published version (its version owns its runs' tables
+    * when its scope is `"version"`), so its tables take readable names whose
+    * hash covers the version, which decides which sources share a table.
+    * Absent: unversioned, whose `name=`s are written as given.
+    */
+   publishedVersion?: boolean;
+   /**
     * Plan each `.malloy` model's entities for the main thread to resolve (see
     * SerializedModel.entities). Set by the loads that compute the package's
     * entities: a load that serves it, and the package-scope compile.

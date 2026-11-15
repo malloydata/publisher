@@ -14,9 +14,19 @@
     ],
     "warnings": [
       {
+        "code": "persist-not-built",
+        "message": "Source 'gated_ext' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
+        "subject": "gated_ext"
+      },
+      {
         "code": "persist-source-refused",
         "message": "Source 'gated_ext' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
         "subject": "gated_ext"
+      },
+      {
+        "code": "persist-not-built",
+        "message": "Source 'gated' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
+        "subject": "gated"
       },
       {
         "code": "persist-source-refused",

@@ -20,10 +20,10 @@ import {
    storageTableSite,
    type TableSiteContext,
 } from "./table_site";
+import { hasReservedTableSuffix } from "../domain/table_name";
 import {
    assertTableOwnable,
    hasAuthorTableName,
-   hasReservedTableSuffix,
    markOwnedTable,
    ownedElsewhere,
    ownedTableComment,

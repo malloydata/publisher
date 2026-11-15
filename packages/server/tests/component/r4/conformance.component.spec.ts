@@ -264,7 +264,7 @@ for (const shape of SHAPES) {
             // rollup leg's, under their v2 names) and at bind, so it gets a
             // package of its own, loaded, built and bound under it, by a
             // load pool spawned with it.
-            restore = withSwitch("on");
+            restore = withSwitch("on", shape.env);
             try {
                await freshLoadPool();
                const loader = await loadFixture({
@@ -277,13 +277,13 @@ for (const shape of SHAPES) {
                fixture = await loader.bind({ includeRollups: true });
                for (const on of SWITCHES.filter((s) => s !== "cutover")) {
                   restore();
-                  restore = withSwitch(on);
+                  restore = withSwitch(on, shape.env);
                   for (const q of shape.queries) {
                      served.set(key(q, on), await runIn(fixture, q));
                   }
                }
                restore();
-               restore = withSwitch("cutover");
+               restore = withSwitch("cutover", shape.env);
                await freshLoadPool();
                const cutoverLoader = await loadFixture({
                   ...DATA_FILES,

@@ -71,6 +71,15 @@ function viewFindings(c: Awaited<ReturnType<typeof compiled>>): string[] {
       .map((f) => f.message);
 }
 
+/** The findings that fail the load, as `[code, message]`. */
+function invalidFindings(
+   c: Awaited<ReturnType<typeof compiled>>,
+): [string, string][] {
+   return (c.annotationFindings ?? [])
+      .filter((f) => f.tier === "malformed")
+      .map((f) => [f.code, f.message]);
+}
+
 describe("generatePersistedViewFile", () => {
    const plan = (o: Partial<PersistedViewPlan>): PersistedViewPlan => ({
       sourceID: "ops@file:///pkg/m.malloy",
@@ -205,7 +214,7 @@ source: ops is qb extend {
       );
    });
 
-   it("refuses an incremental key and an @env. reference", async () => {
+   it("finds an incremental key and an @env. reference invalid", async () => {
       const c = await compiled(`##! experimental.persistence
 source: ops is ${TABLE} extend {
   measure: n is count()
@@ -216,12 +225,17 @@ source: ops is ${TABLE} extend {
 }
 `);
       expect(viewSources(c)).toEqual([]);
-      const findings = viewFindings(c);
-      expect(findings.some((m) => m.includes("incremental"))).toBe(true);
-      expect(findings.some((m) => m.includes("@env."))).toBe(true);
+      expect(viewFindings(c)).toEqual([]);
+      const findings = invalidFindings(c);
+      expect(findings.map(([code]) => code)).toEqual([
+         "persist-view-invalid",
+         "persist-view-invalid",
+      ]);
+      expect(findings.some(([, m]) => m.includes("incremental"))).toBe(true);
+      expect(findings.some(([, m]) => m.includes("@env."))).toBe(true);
    });
 
-   it("refuses the retired partition=, saying to remove it", async () => {
+   it("finds the retired partition= invalid, saying to remove it", async () => {
       const c = await compiled(`##! experimental.persistence
 source: ops is ${TABLE} extend {
   measure: n is count()
@@ -230,9 +244,32 @@ source: ops is ${TABLE} extend {
 }
 `);
       expect(viewSources(c)).toEqual([]);
-      expect(viewFindings(c)).toEqual([
-         expect.stringContaining("`partition=` is not supported; remove it"),
+      expect(invalidFindings(c)).toEqual([
+         [
+            "persist-retired-key",
+            expect.stringContaining("partition= is not supported"),
+         ],
       ]);
+   });
+
+   it.each([
+      ["an unknown key", '#@ persist nmae="x"', "persist-unknown-key"],
+      ["an empty storage=", '#@ persist storage=""', "persist-view-invalid"],
+      [
+         "a line that does not parse",
+         '#@ persist name="x',
+         "persist-view-invalid",
+      ],
+   ])("finds %s invalid", async (_case, line, code) => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  ${line}
+  view: v is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual([]);
+      expect(invalidFindings(c).map(([c]) => c)).toEqual([code]);
    });
 
    it("refuses a nested view stored with storage=, and builds it colocated", async () => {
