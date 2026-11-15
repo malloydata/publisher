@@ -252,6 +252,12 @@ export class PersistedQueryServe {
             inlineTargetOf(plan),
          ],
          call.query,
+         {
+            contents: this.host.modelDef()?.contents as
+               | Record<string, unknown>
+               | undefined,
+            declaringURL: plan.declaringURL,
+         },
       );
       if (unfollowed) throw unfollowed;
       const prepared = await readPreparedQuery(args.authorRunnable);

@@ -81,9 +81,25 @@ describe("exactCallDecline", () => {
 });
 
 describe("callerTextDecline", () => {
-   it("passes a text that names none of the redeclared names", () => {
+   const M = "file:///p/m.malloy";
+   const model = {
+      declaringURL: M,
+      contents: {
+         fl: { type: "source", sourceID: `fl@${M}` },
+         counts: { type: "source", sourceID: `counts@${M}` },
+         fl_q: { type: "query", location: { url: M } },
+         alias: { type: "source", sourceID: "alias@file:///p/viewer.malloy" },
+      },
+   };
+
+   it("passes a caller's own names and the declaring file's other sources", () => {
       expect(
-         callerTextDecline(new Set(["run", "mine", "fl2"]), ["fl", "q"], "q"),
+         callerTextDecline(
+            new Set(["run", "mine", "counts"]),
+            ["fl", "q"],
+            "q",
+            model,
+         ),
       ).toBeUndefined();
    });
 
@@ -92,9 +108,20 @@ describe("callerTextDecline", () => {
          new Set(["run", "join_many", "fl"]),
          ["q", undefined, "fl"],
          "q",
+         model,
       );
       expect(decline?.code).toBe("view_missing_field");
       expect(decline?.reason).toBe("MISSING_FIELD");
       expect(decline?.callerDetail).toContain("`fl`");
+   });
+
+   it("declines a named query of the model, and a name from another file", () => {
+      expect(
+         callerTextDecline(new Set(["fl_q"]), ["fl"], "q", model)?.callerDetail,
+      ).toContain("named query `fl_q`");
+      expect(
+         callerTextDecline(new Set(["alias"]), ["fl"], "q", model)
+            ?.callerDetail,
+      ).toContain("`alias`, declared in another file");
    });
 });

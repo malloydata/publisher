@@ -118,6 +118,8 @@ query: over_by_carrier is by_carrier -> { aggregate: total is dist.sum() }
 
 source: carrier_counts is fl -> { group_by: carrier; aggregate: c is count() }
 
+query: fl_q is fl -> { group_by: carrier; aggregate: c is count() }
+
 #(access_filter) tenant = $TENANT
 source: ops is ${GATED_TABLE} extend { measure: n is count() }
 
@@ -159,10 +161,17 @@ source: vs is ${TABLE} extend {
 // Each result differs from the others, so no two share a table address.
 #@ persist
 query: vq is vs -> { group_by: tenant; aggregate: c; order_by: c desc, tenant }
+
+query: vs_q is vs -> { group_by: tenant; aggregate: c }
+
+source: tenants_src is ${TABLE} extend {}
 `;
 
 /** A model that imports the persisted view's file whole. */
 const VIEWER = `import "inline.malloy"
+
+source: vs_alias is vs extend {}
+source: cc2 is vs -> { group_by: tenant; aggregate: c is count() }
 `;
 
 const FILES = {
@@ -500,42 +509,78 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
       leg: "view" | "query",
       model: string,
       malloy: string,
-      named: string,
+      /** A fragment of the skip's detail. */
+      detail: string,
    ][] = [
       [
          "a later stage that joins the run target",
          "query",
          "m.malloy",
          "run: by_carrier -> { extend: { join_many: f is fl on carrier = f.carrier }; group_by: carrier; aggregate: c is f.count(); order_by: carrier }",
-         "fl",
+         "names `fl` beside",
       ],
       [
          "a caller's source over the run target, joined after the call",
          "query",
          "m.malloy",
          "source: mine is fl -> { group_by: carrier; aggregate: rows is count() }\nrun: by_carrier -> { extend: { join_one: m is mine on carrier = m.carrier }; select: carrier, m.rows; order_by: carrier }",
-         "fl",
+         "names `fl` beside",
       ],
       [
          "a later stage that joins the run target, from an importing model",
          "query",
          "viewer.malloy",
          "run: vq -> { extend: { join_many: f is vs on tenant = f.tenant }; group_by: tenant; aggregate: c2 is f.count(); order_by: tenant }",
-         "vs",
+         "names `vs` beside",
       ],
       [
          "a later stage that joins the view's source",
          "view",
          "inline.malloy",
          "run: vs -> by_tenant -> { extend: { join_many: f is vs on tenant = f.tenant }; group_by: tenant; aggregate: c2 is f.count(); order_by: tenant }",
-         "vs",
+         "names `vs` beside",
       ],
       [
          "a caller's source over the view's source, joined after the call",
          "view",
          "inline.malloy",
          "source: mine is vs -> { group_by: tenant; aggregate: rows is count() }\nrun: vs -> by_tenant -> { extend: { join_one: m is mine on tenant = m.tenant }; select: tenant, m.rows; order_by: tenant }",
-         "vs",
+         "names `vs` beside",
+      ],
+      [
+         "a join to a named query that reads the run target",
+         "query",
+         "m.malloy",
+         "run: by_carrier_colocated -> { extend: { join_one: f is fl_q on carrier = f.carrier }; select: carrier, f.c; order_by: carrier }",
+         "names the named query `fl_q` beside",
+      ],
+      [
+         "a join to a named query that reads the view's source",
+         "view",
+         "inline.malloy",
+         "run: vs -> by_tenant -> { extend: { join_one: f is vs_q on tenant = f.tenant }; select: tenant, f.c; order_by: tenant }",
+         "names the named query `vs_q` beside",
+      ],
+      [
+         "a join to a named query that reads the run target, from an importing model",
+         "query",
+         "viewer.malloy",
+         "run: vq -> { extend: { join_one: f is vs_q on tenant = f.tenant }; select: tenant, f.c; order_by: tenant }",
+         "names the named query `vs_q` beside",
+      ],
+      [
+         "a join to the importing model's extension of the run target",
+         "query",
+         "viewer.malloy",
+         "run: vq -> { extend: { join_many: f is vs_alias on tenant = f.tenant }; group_by: tenant; aggregate: c2 is f.count(); order_by: tenant }",
+         "names `vs_alias`, declared in another file",
+      ],
+      [
+         "a join to the importing model's source over the run target",
+         "query",
+         "viewer.malloy",
+         "run: vq -> { extend: { join_one: f is cc2 on tenant = f.tenant }; select: tenant, f.c; order_by: tenant }",
+         "names `cc2`, declared in another file",
       ],
    ];
 
@@ -548,7 +593,7 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
             QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
          );
 
-   for (const [label, leg, model, malloy, named] of namedAgain) {
+   for (const [label, leg, model, malloy, detail] of namedAgain) {
       it(`declines ${label} on the ${leg} leg, equal to live`, async () => {
          const before = answerOf(await loaded.run(model, malloy));
          const result = await pathOf(model, malloy);
@@ -559,7 +604,7 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
          );
          expect(considered?.outcome).toBe("skipped");
          expect(considered?.reason).toBe("MISSING_FIELD");
-         expect(considered?.detail).toContain(`names \`${named}\` beside`);
+         expect(considered?.detail).toContain(detail);
       });
    }
 
@@ -574,7 +619,7 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
          "a report's preamble of unrelated definitions",
          "view",
          "inline.malloy",
-         "query: tenants_seen is inline_target -> { select: tenant }\nsource: seen is tenants_seen\nrun: vs -> by_tenant",
+         "source: seen is tenants_src -> { group_by: tenant }\nquery: seen_q is seen -> { select: tenant }\nrun: vs -> by_tenant",
       ],
       [
          "a dimension-only extend: after the view",

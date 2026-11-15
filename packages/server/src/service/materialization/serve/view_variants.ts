@@ -277,6 +277,12 @@ export class PersistedViewServe {
             call.otherNames,
             [call.source, plan.sourceName],
             call.view,
+            {
+               contents: this.host.modelDef()?.contents as
+                  | Record<string, unknown>
+                  | undefined,
+               declaringURL: splitSourceID(plan.sourceID)?.url,
+            },
          );
       if (refined) throw refined;
       // The run target must be the view's own source, by sourceID: not an
@@ -998,25 +1004,70 @@ export function refinedCallDecline(call: RunViewCall): LegDecline | undefined {
 }
 
 /**
- * A caller's text that names, outside the call's head, a name the variant
- * redeclares (`redeclared`: the run target's, and for a named query its own).
- * The variant gives that name to the stored result, so a join back to the
- * source, or a preamble source built over it, would read the stored rows
- * where live reads the source: fails closed. Any other preamble (a report's
- * definition cells), a dimension-only `extend:` and a join to another source
- * read as live does.
+ * A caller's text that names, outside the call's head, a name that may read
+ * the stored rows where live reads the source, or undefined: fails closed.
+ *
+ * - A name the variant redeclares (`redeclared`: the run target's, and for a
+ *   named query its own): the variant gives it to the stored result, so a
+ *   join back to the source, or a preamble source built over it, reads the
+ *   stored rows.
+ * - A named query of the model (`contents`): a named query keeps its source
+ *   as a bare name, resolved where the query is used, which in the variant
+ *   is the stored result.
+ * - A model name declared in a file other than the redeclared one
+ *   (`declaringURL`): that file's own import of the declaring file resolves
+ *   to the variant's overlay.
+ *
+ * A caller's own preamble names (a report's definition cells), the declaring
+ * file's other sources (read from its copy), a dimension-only `extend:` and
+ * a join to one of those sources read as live does.
  */
 export function callerTextDecline(
    otherNames: ReadonlySet<string>,
    redeclared: readonly (string | undefined)[],
    name: string,
+   model: {
+      contents: Record<string, unknown> | undefined;
+      declaringURL: string | undefined;
+   },
 ): LegDecline | undefined {
    const named = redeclared.find((n) => n !== undefined && otherNames.has(n));
-   if (named === undefined) return undefined;
-   return new LegDecline(
-      "view_missing_field",
-      `the query text names \`${named}\` beside the call of \`${name}\`, a name the stored result's variant gives to the stored rows`,
-   );
+   if (named !== undefined) {
+      return new LegDecline(
+         "view_missing_field",
+         `the query text names \`${named}\` beside the call of \`${name}\`, a name the stored result's variant gives to the stored rows`,
+      );
+   }
+   for (const other of otherNames) {
+      if (!model.contents || !Object.hasOwn(model.contents, other)) continue;
+      const entry = model.contents[other] as
+         | {
+              type?: unknown;
+              sourceID?: unknown;
+              location?: { url?: unknown };
+           }
+         | undefined;
+      if (entry?.type === "query") {
+         return new LegDecline(
+            "view_missing_field",
+            `the query text names the named query \`${other}\` beside the call of \`${name}\`, which may read the stored rows where live reads its source`,
+         );
+      }
+      const declaredIn =
+         (typeof entry?.sourceID === "string"
+            ? splitSourceID(entry.sourceID)?.url
+            : undefined) ??
+         (typeof entry?.location?.url === "string"
+            ? entry.location.url
+            : undefined);
+      if (declaredIn === undefined || declaredIn !== model.declaringURL) {
+         return new LegDecline(
+            "view_missing_field",
+            `the query text names \`${other}\`, declared in another file than the stored result's, beside the call of \`${name}\`, which may read the stored rows where live reads its source`,
+         );
+      }
+   }
+   return undefined;
 }
 
 /**
