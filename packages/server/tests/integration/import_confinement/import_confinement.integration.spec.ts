@@ -582,6 +582,8 @@ describe("publisher.json that is a link out of the package", () => {
          );
       }
       expect(new Set(answers).size).toBe(1);
+      // The server's own path to the package is not in the answer.
+      expect(answers[0]).not.toContain("publisher_data");
       const status = await (await fetch(`${baseUrl}/api/v0/status`)).text();
       expect(status).not.toContain(MARKER);
    });
@@ -745,6 +747,9 @@ describe("the data probe of a package's files", () => {
       );
       fs.symlinkSync(path.join(outside, "dir.csv"), path.join(dir, "dir.csv"));
       fs.symlinkSync(path.join(outside, "dir.csv"), path.join(dir, "data"));
+      // A file of the package's own the probe cannot read: listed with its
+      // error, which names no server path.
+      fs.writeFileSync(path.join(dir, "bad.parquet"), "not a parquet file");
       expect(await publish("probe", dir)).toBe(200);
       const res = await fetch(api("/probe/databases"));
       const text = await res.text();
@@ -753,6 +758,8 @@ describe("the data probe of a package's files", () => {
       expect(text).not.toContain("SECRETCOLUMN");
       expect(text).not.toContain("leak.csv");
       expect(text).not.toContain("dir.csv");
+      expect(text).toContain("bad.parquet");
+      expect(text).not.toContain("publisher_data");
    });
 });
 

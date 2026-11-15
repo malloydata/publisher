@@ -3632,7 +3632,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const notThere = () => {
          logger.error(`Can't find ${packageConfigPath}`);
          return new PackageNotFoundError(
-            `Package manifest for ${packagePath} does not exist.`,
+            callerVisibleText(
+               `Package manifest for ${packagePath} does not exist.`,
+               packagePath,
+            ),
          );
       };
       // A package directory Publisher may not open is reported as such (its
@@ -3698,10 +3701,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   databasePath,
                   error: message,
                });
+               // The connection's message names the server's own paths; the
+               // caller sees the package's files package-relative and no other.
                return {
                   path: databasePath,
                   type: "embedded" as const,
-                  error: message,
+                  error: callerVisibleText(message, packagePath),
                };
             }
          }),

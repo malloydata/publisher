@@ -125,8 +125,12 @@ Concretely:
 - **Where a link leads is decided as the kernel decides it.** A path that does not resolve is
   walked one component at a time, and a `..` after a symlinked directory steps to the parent of
   that link's real target, not to the parent its spelling suggests. So a link whose text climbs
-  back through another link is judged by where opening it would really go, and a target that
-  does not exist outside the package is refused exactly like one that does.
+  back through another link is judged by where opening it would really go. The walk starts at
+  the package's real root and never looks at a path outside the package: a step into a directory
+  that is neither inside the package nor an ancestor of it is refused before it is looked at, so
+  a path that goes out and comes back, through a directory that exists or one that does not,
+  gets the same refusal, and a target outside the package that does not exist is refused exactly
+  like one that does.
 - **Registering a package is an operator action.** Packages come from `publisher.config.json` or a
   `POST` to the packages endpoint. That endpoint is gated only by `frozenConfig`, so on a
   reachable server with the default config it is open — but so is the query API, and an attacker
